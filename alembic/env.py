@@ -15,8 +15,20 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+#
+# disable_existing_loggers=False (NOT the fileConfig default): this env.py
+# runs in-process, not just from the standalone `alembic` CLI — Alembic's
+# own command.upgrade() is called directly by tests/test_migrations.py in
+# the same pytest process as every other module's already-created loggers
+# (e.g. worker/llm/router_client.py's). fileConfig()'s default of `True`
+# permanently disables any logger not listed in alembic.ini's [loggers]
+# section for the rest of that process — verified live: this silently
+# broke tests/test_router_client.py's two logger.warning() assertions
+# whenever they ran in the same session AFTER test_migrations.py (alphabetic
+# collection order), a real, deterministic bug (not flakiness), not
+# something a caplog fixture could work around on its own.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # DATABASE_URL comes from config/settings.py (env-driven), never hardcoded here (AD-8)
 config.set_main_option("sqlalchemy.url", settings.database_url)
