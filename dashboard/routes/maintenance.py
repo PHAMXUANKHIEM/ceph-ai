@@ -15,7 +15,7 @@ from dashboard.routes.settings import (
 )
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import Action, AuditEntry, Incident, NodeDiagnosticRun
+from shared.models import Action, AuditEntry, ChatMessage, Incident, NodeDiagnosticRun
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,17 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
     NodeDiagnosticRuns created before `cutoff` (unrelated table, no FK to
     Incident).
 
+    ChatMessage.proposed_incident_id also FKs to Incident (set once a chat
+    proposal is confirmed, dashboard/routes/chat.py:446) but chat history
+    itself is out of this purge's scope (the Settings page checkbox only
+    promises Incident/Audit Trail/CLI diagnostics) — so those rows are
+    de-referenced (set to NULL) rather than deleted, same
+    "manually break the FK before deleting the parent" need as
+    Action/AuditEntry above, just without also deleting the child.
+    Skipping this step used to make the whole purge fail with a FOREIGN KEY
+    constraint error the moment any old incident had ever been confirmed
+    from chat.
+
     This is the intentional second writer to AuditEntry beyond
     shared/audit.py::record() (AD-7 documents that as the only INSERT path,
     not the only DELETE path) — an explicit, operator-triggered purge, not
@@ -109,6 +120,9 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
         action_deleted = 0
         incident_deleted = 0
         if incident_ids:
+            session.query(ChatMessage).filter(
+                ChatMessage.proposed_incident_id.in_(incident_ids)
+            ).update({"proposed_incident_id": None}, synchronize_session=False)
             audit_deleted = (
                 session.query(AuditEntry)
                 .filter(AuditEntry.incident_id.in_(incident_ids))

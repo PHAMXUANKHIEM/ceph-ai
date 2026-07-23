@@ -2,11 +2,13 @@ from datetime import datetime, timedelta
 
 import dashboard.routes.maintenance as maintenance_route
 from shared import db as db_module
+from shared.db import Base, make_engine
 from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    ChatMessage,
     Incident,
     IncidentStatus,
     NodeDiagnosticRun,
@@ -122,6 +124,46 @@ def test_cleanup_db_blank_cutoff_deletes_everything(dashboard_client):
         assert session.query(Action).count() == 0
         assert session.query(AuditEntry).count() == 0
         assert session.query(NodeDiagnosticRun).count() == 0
+
+
+def test_purge_old_records_dereferences_chat_message_pointing_at_deleted_incident(monkeypatch):
+    # dashboard_client's fixture engine doesn't enable SQLite FK enforcement
+    # (unlike production's shared.db.make_engine), so it can't catch this —
+    # use a real FK-enforcing engine instead. ChatMessage.proposed_incident_id
+    # FKs to Incident (set once a chat proposal is confirmed,
+    # dashboard/routes/chat.py:446); before the fix, purging an incident that
+    # had ever been confirmed from chat raised "FOREIGN KEY constraint
+    # failed" and aborted the ENTIRE purge (DB and, if selected together,
+    # log files too), rolled back by the `with SessionLocal()` block's
+    # implicit close-time rollback.
+    engine = make_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(db_module, "engine", engine)
+    monkeypatch.setattr(db_module, "SessionLocal", db_module.sessionmaker(bind=engine))
+
+    with db_module.SessionLocal() as session:
+        session.add(
+            Incident(id="inc-1", ceph_code="OSD_DOWN", status=IncidentStatus.RESOLVED.value, detected_at=datetime(2026, 1, 1))
+        )
+        session.flush()
+        session.add(
+            ChatMessage(
+                session_id="s1",
+                role="assistant",
+                content="confirmed remediation",
+                proposed_incident_id="inc-1",
+                created_at=datetime(2026, 1, 1),
+            )
+        )
+        session.commit()
+
+    counts = maintenance_route.purge_old_records(None)
+
+    assert counts["incidents"] == 1
+    with db_module.SessionLocal() as session:
+        assert session.query(Incident).count() == 0
+        message = session.query(ChatMessage).one()  # chat history itself is out of purge scope, kept
+        assert message.proposed_incident_id is None
 
 
 def test_cleanup_files_only_does_not_touch_db(dashboard_client, monkeypatch, tmp_path):
