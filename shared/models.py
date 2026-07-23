@@ -254,6 +254,33 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class UpgradeProcedureDocument(Base):
+    """Singleton (id always 1, upserted) — the operator's own upgrade
+    runbook for THIS cluster, uploaded via the Upgrade Cluster page
+    (dashboard/routes/upgrade.py). Re-uploading replaces the previous row
+    entirely; there is no history of past uploads kept here (this is a
+    live reference document, not an audit trail — the upload/re-summarize
+    events themselves are NOT written to AuditEntry either, since nothing
+    here executes or changes cluster state).
+
+    `summary_text`/`summary_error` are mutually exclusive in practice (only
+    one is ever non-NULL after an upload or a re-summarize attempt) — kept
+    as two separate nullable columns rather than one "status" enum because
+    this is descriptive state, not a safety-critical machine like
+    Incident.status/Action.status.
+    """
+
+    __tablename__ = "upgrade_procedure_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    uploaded_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class WatcherHeartbeat(Base):
     """Singleton row (Story 5.2) — `id` is always `1`, upserted by
     `shared/heartbeat.py::record()` after EVERY Watcher poll cycle (success

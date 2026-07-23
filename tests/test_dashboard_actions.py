@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import dashboard.routes.upgrade as upgrade_route
 from shared import db as db_module
 from shared.models import Action, ActionClassification, ActionStatus, AuditEntry, Incident, IncidentStatus
 
@@ -174,3 +175,134 @@ def test_approve_already_approved_action_is_a_no_op(dashboard_client):
     with db_module.SessionLocal() as session:
         entries = session.query(AuditEntry).filter_by(incident_id="inc-double").all()
         assert len(entries) == 1  # not 2
+
+
+# --- Approving an unrelated Action is blocked while a cluster upgrade is
+# proposed/approved (2026-07-23) -------------------------------------------
+
+
+def _pending_upgrade_action(status: str, action_id: str = upgrade_route.CLUSTER_UPGRADE_ACTION_ID) -> str:
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=status,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=ActionClassification.RISKY.value,
+            status=status,
+        )
+        session.add(action)
+        session.commit()
+        return action.id
+
+
+def test_approve_other_action_is_blocked_while_upgrade_is_pending_approval(dashboard_client):
+    _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
+    other_action_id = _pending_action("inc-other-1")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, other_action_id)
+        assert action.status == ActionStatus.PENDING_APPROVAL.value  # untouched
+
+
+def test_approve_other_action_is_blocked_while_upgrade_is_approved(dashboard_client):
+    _pending_upgrade_action(ActionStatus.APPROVED.value)
+    other_action_id = _pending_action("inc-other-2")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+
+
+def test_approve_other_action_still_works_when_no_upgrade_active(dashboard_client):
+    other_action_id = _pending_action("inc-other-3")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, other_action_id).status == ActionStatus.APPROVED.value
+
+
+def test_approving_the_upgrade_action_itself_is_never_blocked_by_its_own_gate(dashboard_client):
+    upgrade_action_id = _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{upgrade_action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, upgrade_action_id).status == ActionStatus.APPROVED.value
+
+
+def test_reject_other_action_is_never_blocked_by_an_active_upgrade(dashboard_client):
+    # Rejecting never executes anything — no reason to gate it the way
+    # approve is gated.
+    _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
+    other_action_id = _pending_action("inc-other-4")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/reject", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, other_action_id).status == ActionStatus.REJECTED.value
+
+
+def test_approve_other_action_is_blocked_when_upgrade_physically_running(dashboard_client, monkeypatch):
+    # No PENDING_APPROVAL/APPROVED upgrade Action at all (e.g. already
+    # EXECUTED — "start command sent") but cephadm reports the upgrade is
+    # still actually running — the live-check layer must catch this too.
+    monkeypatch.setattr(upgrade_route, "is_cluster_upgrade_physically_running", lambda: True)
+    other_action_id = _pending_action("inc-other-5")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+
+
+def test_approve_gate_also_covers_both_package_based_upgrade_action_ids(dashboard_client):
+    # The gate must recognize ALL 3 cluster-upgrade action_ids, not just the
+    # original cephadm one — a pending package-based proposal must block
+    # approving some OTHER risky action exactly the same way.
+    for action_id in (
+        "upgrade_ceph_cluster_package_download",
+        "upgrade_ceph_cluster_package_local",
+    ):
+        with db_module.SessionLocal() as session:
+            for row in session.query(Action).all():
+                session.delete(row)
+            for row in session.query(Incident).all():
+                session.delete(row)
+            session.commit()
+
+        _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value, action_id=action_id)
+        other_action_id = _pending_action(f"inc-other-{action_id}")
+        _login(dashboard_client)
+
+        response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+        assert response.status_code == 409, f"expected block for {action_id}"
+
+
+def test_index_shows_disabled_approve_button_for_other_action_while_upgrade_pending(dashboard_client):
+    _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
+    _pending_action("inc-other-6")
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/")
+
+    assert response.status_code == 200
+    assert 'class="btn btn-approve" disabled' in response.text

@@ -1,0 +1,735 @@
+import asyncio
+import json
+import logging
+import re
+from datetime import datetime
+
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
+from openai import APIError, APIConnectionError, AuthenticationError
+from sqlalchemy.exc import SQLAlchemyError
+
+from config.settings import settings
+from dashboard.routes.auth import require_login
+from dashboard.templating import make_templates
+from shared import audit, db
+from shared.ceph_releases import codename_for_version
+from shared.cluster_nodes import configured_nodes
+from shared.models import Action, ActionStatus, Incident, IncidentStatus, UpgradeProcedureDocument
+from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
+from watcher.ceph_client import (
+    CephQueryError,
+    get_upgrade_status,
+    pause_upgrade,
+    propose_next_version,
+    resume_upgrade,
+    summarize_cluster_versions,
+)
+from worker.executor import commands as executor_commands
+from worker.executor.ssh_executor import ExecutorError
+from worker.policy import gate
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+templates = make_templates()
+
+# Synthetic Incident.ceph_code for this feature — same trick
+# dashboard/routes/chat.py uses (CHAT_REQUEST_CEPH_CODE): AuditEntry.incident_id
+# is a required FK (AD-7), and this feature has no real detected Incident
+# behind it, only an operator explicitly proposing an upgrade. Reusing the
+# existing Action/Incident/audit/kill-switch/approval pipeline (Epic 3/4)
+# this way means dashboard/routes/actions.py's approve/reject routes and
+# worker/llm/router_client.py's approved-action poller need ZERO changes to
+# support this feature.
+CLUSTER_UPGRADE_CEPH_CODE = "CLUSTER_UPGRADE"
+
+# Three action_id "flavors", one per supported deployment style — see
+# worker/policy/action_policy.yaml's `cluster_upgrade_action_ids:` comment.
+CLUSTER_UPGRADE_ACTION_ID = "upgrade_ceph_cluster"  # cephadm
+PACKAGE_DOWNLOAD_ACTION_ID = "upgrade_ceph_cluster_package_download"  # ceph-deploy, download.ceph.com
+PACKAGE_LOCAL_ACTION_ID = "upgrade_ceph_cluster_package_local"  # ceph-deploy, local package dir
+CLUSTER_UPGRADE_ACTION_IDS = frozenset(
+    {CLUSTER_UPGRADE_ACTION_ID, PACKAGE_DOWNLOAD_ACTION_ID, PACKAGE_LOCAL_ACTION_ID}
+)
+
+_TARGET_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_PACKAGE_DIR_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+
+_IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+
+_CEPHADM_PLAN_TEMPLATE = """\
+Lệnh sẽ gửi tới cụm: `ceph orch upgrade start --ceph-version {target_version}`
+
+cephadm sẽ tự động điều phối toàn bộ quá trình nâng cấp lên {target_version}:
+1. Kiểm tra cụm đang HEALTH_OK trước khi bắt đầu — nếu cụm đang WARN/ERR, cephadm mặc định
+   dừng lại, không tự nâng cấp lên một cụm đang có vấn đề.
+2. Nâng cấp lần lượt từng nhóm daemon, mỗi daemon một lần: mgr (standby trước, active sau)
+   → mon → crash → osd → mds → rgw → rbd-mirror → ceph-exporter. Sau mỗi daemon, cephadm chờ
+   daemon đó healthy trở lại rồi mới chuyển sang daemon tiếp theo — không nâng cấp đồng thời
+   nhiều daemon cùng lúc.
+3. Toàn bộ quá trình chạy nền bên trong mgr của cephadm, độc lập với tiến trình Worker của hệ
+   thống này — có thể theo dõi tiến độ trực tiếp ngay tại trang này (mục "Tiến độ nâng cấp").
+4. Nếu cụm chuyển sang HEALTH_ERR giữa chừng, cephadm tự tạm dừng (không tự rollback) — cần
+   theo dõi và can thiệp thủ công nếu xảy ra. Bạn cũng có thể chủ động bấm "Tạm dừng" bất cứ
+   lúc nào trong lúc nâng cấp đang chạy.
+
+An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi gửi lệnh
+`ceph orch upgrade start` ở trên (nếu kill-switch đang bật, lệnh sẽ không được gửi và đề xuất
+quay lại trạng thái chờ duyệt). Lưu ý: kill-switch chỉ chặn được việc GỬI lệnh bắt đầu — một
+khi cephadm đã bắt đầu điều phối nâng cấp, việc dừng lại giữa chừng cần bấm "Tạm dừng" ở trên,
+không phải kill-switch (xem watcher/ceph_client.py để biết lý do)."""
+
+# 2026-07-23: shared tail for both package-based (ceph-deploy) plan texts
+# below — the execution-model caveat that does NOT apply to the cephadm
+# plan above (there IS an orchestrator gating cephadm's steps on cluster
+# health; there is none here — see worker/executor/commands.py's module
+# comment on the package-based builders for the full reasoning).
+_PACKAGE_METHOD_SAFETY_NOTE = """\
+QUAN TRỌNG — khác với cephadm: KHÔNG có orchestrator tự kiểm tra sức khoẻ cụm giữa các bước.
+Nếu một node gặp lỗi, hệ thống VẪN thử tiếp node kế tiếp trong danh sách (không tự dừng lại) —
+cách duy nhất để dừng giữa chừng là bấm nút khẩn cấp (kill-switch) trên Dashboard NGAY khi phát
+hiện sự cố: kill-switch được kiểm tra lại trước MỖI node, node tiếp theo sẽ không được thử nếu
+kill-switch đang bật. Khuyến nghị theo dõi sát Audit Trail trong suốt quá trình, đặc biệt với
+cụm nhiều node.
+
+An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi chạy bước
+đầu tiên (nếu đang bật, đề xuất quay lại trạng thái chờ duyệt, chưa node nào bị đụng tới)."""
+
+
+def _upgrade_plan_text(target_version: str) -> str:
+    return _CEPHADM_PLAN_TEMPLATE.format(target_version=target_version)
+
+
+def _package_download_plan_text(target_version: str, codename: str, target_nodes: list[str]) -> str:
+    return (
+        f"Cụm này dùng kiểu triển khai ceph-deploy/gói cài đặt trực tiếp "
+        f"(ceph_exec_mode=none) — hệ thống sẽ tự thực hiện các bước sau, LẦN LƯỢT trên "
+        f"{len(target_nodes)} node đã cấu hình (thứ tự: {', '.join(target_nodes)}):\n"
+        f"1. Thêm/cập nhật repo gói Ceph chính thức từ download.ceph.com cho bản "
+        f"{target_version} (mã tên release: {codename}) — tự nhận diện apt (Debian/Ubuntu) "
+        f"hay yum/dnf (RHEL/CentOS) trên từng node.\n"
+        f"2. Cài đặt/nâng cấp gói `ceph` qua trình quản lý gói tương ứng trên node đó.\n"
+        f"3. Khởi động lại toàn bộ daemon Ceph đang chạy trên node đó (dò qua `systemctl`).\n"
+        f"4. Chuyển sang node tiếp theo.\n\n"
+        f"{_PACKAGE_METHOD_SAFETY_NOTE}"
+    )
+
+
+def _package_local_plan_text(package_dir: str, target_nodes: list[str]) -> str:
+    return (
+        f"Cụm này dùng kiểu triển khai ceph-deploy/gói cài đặt trực tiếp "
+        f"(ceph_exec_mode=none) — hệ thống sẽ tự thực hiện các bước sau, LẦN LƯỢT trên "
+        f"{len(target_nodes)} node đã cấu hình (thứ tự: {', '.join(target_nodes)}):\n"
+        f"1. Kiểm tra thư mục `{package_dir}` tồn tại trên node đó.\n"
+        f"2. Cài đặt các gói .deb/.rpm có sẵn TRONG THƯ MỤC NÀY (không tải gì từ Internet) — "
+        f"gói phải đã được đặt sẵn tại CÙNG đường dẫn `{package_dir}` trên MỌI node liên quan "
+        f"từ trước.\n"
+        f"3. Khởi động lại toàn bộ daemon Ceph đang chạy trên node đó.\n"
+        f"4. Chuyển sang node tiếp theo.\n\n"
+        f"{_PACKAGE_METHOD_SAFETY_NOTE}"
+    )
+
+
+# --- Uploaded upgrade-procedure document (operator's own runbook, AI-
+# summarized) -----------------------------------------------------------
+
+ALLOWED_PROCEDURE_EXTENSIONS = (".txt", ".md")
+# No PDF/Word parser dependency in this codebase — only plain-text formats
+# are accepted; a binary/undecodable upload is rejected with a clear error
+# rather than silently mangling it (see upload_upgrade_procedure below).
+MAX_PROCEDURE_FILE_BYTES = 2 * 1024 * 1024  # 2 MB — generous for a text runbook
+# 9router request-size guard, same posture as chat_client.py's
+# MAX_TOOL_RESULT_CHARS — the full document is always kept in
+# UpgradeProcedureDocument.raw_text regardless; only what's SENT to the
+# model for summarization is capped.
+MAX_PROCEDURE_TEXT_CHARS_FOR_AI = 40_000
+PROCEDURE_SUMMARY_MAX_TOKENS = 2048
+PROCEDURE_SUMMARY_ROUTER_TIMEOUT_SECONDS = 60.0
+
+_PROCEDURE_SUMMARY_SYSTEM_PROMPT = (
+    "Bạn là trợ lý vận hành cụm Ceph. Operator vừa upload một tài liệu quy trình "
+    "nâng cấp cụm do chính họ soạn (runbook nội bộ, không phải tài liệu chính thức "
+    "của Ceph). Đọc kỹ toàn bộ nội dung và tóm tắt lại thành các bước rõ ràng, đánh "
+    "số thứ tự, ngắn gọn, dễ làm theo, bằng tiếng Việt. GIỮ NGUYÊN mọi cảnh báo, "
+    "điều kiện tiên quyết, và lệnh cụ thể (nếu có) trong tài liệu gốc — không được "
+    "bỏ sót thông tin an toàn quan trọng. Nếu tài liệu không liên quan gì đến nâng "
+    "cấp cụm Ceph, hãy nói rõ điều đó thay vì bịa ra một quy trình."
+)
+
+
+class UpgradeProcedureSummaryError(Exception):
+    """Raised when 9router itself fails while summarizing an uploaded
+    procedure document (not configured, auth, network, empty response) —
+    caught by upload_upgrade_procedure/resummarize_upgrade_procedure below
+    and stored as UpgradeProcedureDocument.summary_error rather than failing
+    the upload/retry outright. The raw document is always saved regardless
+    of whether summarization succeeds — 9router being unreachable or
+    unconfigured must not lose the operator's uploaded runbook."""
+
+
+async def _summarize_upgrade_procedure(raw_text: str) -> str:
+    """Sends the operator's uploaded upgrade-procedure document to 9router
+    for a plain-language Vietnamese summary — same client + streaming-call
+    pattern dashboard/chat_client.py and worker/llm/router_client.py already
+    use against this router (verified: it always responds via SSE regardless
+    of whether streaming was requested). Unlike those two call sites, no
+    tool schema is forced here — this is a single free-text summarization
+    for a human to read, not a structured decision the rest of the system
+    acts on.
+    """
+    try:
+        client = build_router_client(settings.router_api_key, settings.router_base_url)
+    except RouterNotConfiguredError as exc:
+        raise UpgradeProcedureSummaryError(str(exc)) from exc
+
+    content = raw_text[:MAX_PROCEDURE_TEXT_CHARS_FOR_AI]
+    try:
+        async with client.chat.completions.stream(
+            model=settings.router_model,
+            max_tokens=PROCEDURE_SUMMARY_MAX_TOKENS,
+            messages=[
+                {"role": "system", "content": _PROCEDURE_SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            timeout=httpx.Timeout(PROCEDURE_SUMMARY_ROUTER_TIMEOUT_SECONDS),
+        ) as stream:
+            completion = await stream.get_final_completion()
+    except AuthenticationError as exc:
+        raise UpgradeProcedureSummaryError(
+            f"Model {settings.router_model!r} hoặc API key không hợp lệ trên 9router: "
+            f"{readable_exception_message(exc)}"
+        ) from exc
+    except APIConnectionError as exc:
+        raise UpgradeProcedureSummaryError(
+            f"Không thể kết nối 9router ({settings.router_base_url}). Kiểm tra host/port."
+        ) from exc
+    except APIError as exc:
+        raise UpgradeProcedureSummaryError(
+            f"Model {settings.router_model!r} không khả dụng trên 9router: "
+            f"{readable_exception_message(exc)}"
+        ) from exc
+    except Exception as exc:
+        raise UpgradeProcedureSummaryError(
+            f"Không thể kết nối 9router: {readable_exception_message(exc)}"
+        ) from exc
+
+    choice = completion.choices[0]
+    if choice.finish_reason == "length":
+        raise UpgradeProcedureSummaryError(
+            f"Phản hồi bị cắt do vượt giới hạn token (max_tokens={PROCEDURE_SUMMARY_MAX_TOKENS})"
+        )
+    text = (choice.message.content or "").strip()
+    if not text:
+        raise UpgradeProcedureSummaryError("9router không trả về nội dung tóm tắt")
+    return text
+
+
+def _get_upgrade_procedure_document(session) -> UpgradeProcedureDocument | None:
+    return session.get(UpgradeProcedureDocument, 1)
+
+
+async def _save_upgrade_procedure(filename: str, raw_text: str, user: str) -> None:
+    """Upserts the singleton row (id=1) — re-uploading always replaces the
+    previous document and its summary/error wholesale, same posture as
+    WatcherHeartbeat's singleton row elsewhere in this codebase."""
+    try:
+        summary_text = await _summarize_upgrade_procedure(raw_text)
+        summary_error = None
+    except UpgradeProcedureSummaryError as exc:
+        summary_text = None
+        summary_error = str(exc)
+
+    with db.SessionLocal() as session:
+        doc = _get_upgrade_procedure_document(session)
+        if doc is None:
+            doc = UpgradeProcedureDocument(id=1)
+            session.add(doc)
+        doc.filename = filename
+        doc.raw_text = raw_text
+        doc.summary_text = summary_text
+        doc.summary_error = summary_error
+        doc.uploaded_by = user
+        doc.uploaded_at = datetime.utcnow()
+        session.commit()
+
+
+def _safe_command_preview(action_id: str, host: str, params: dict) -> str:
+    """Best-effort preview of the FIRST target node's resolved command, for
+    display on the pending-approval screen only — the real execution
+    (worker/llm/router_client.py::_execute_approved_action) always
+    re-resolves the command fresh, per host, at approval time, so this
+    string is illustrative, not authoritative (a package-based upgrade's
+    command legitimately differs per host — different systemd units get
+    discovered/restarted on a mon node vs an osd node).
+
+    Input validity (target_version/package_dir format, exec_mode) is
+    already checked by the route BEFORE this is called, so an ExecutorError
+    here can only be the per-host SSH unit-discovery call itself failing
+    (e.g. this one node unreachable) — that must not block creating the
+    proposal (every other node is unaffected), just fall back to a clear
+    "preview unavailable" string instead of a real command.
+    """
+    try:
+        command = executor_commands.get_command(action_id, host, params)
+        return (
+            f"[Xem trước trên node {host} — lệnh thực tế cho từng node được tính lại khi "
+            f"thực thi]\n{command}"
+        )
+    except ExecutorError as exc:
+        return (
+            f"[Không xem trước được lệnh trên node {host}: {exc} — lệnh thực tế vẫn sẽ được "
+            f"tính khi thực thi]"
+        )
+
+
+def is_cluster_upgrade_pending_or_approved(session) -> bool:
+    """True while a cluster-upgrade Action (any of the 3 action_ids — see
+    CLUSTER_UPGRADE_ACTION_IDS) has been proposed but not yet resolved
+    either way — PENDING_APPROVAL (awaiting the admin) or APPROVED
+    (awaiting the Worker's next poll tick to actually start executing).
+    This is the window where approving some OTHER risky action (e.g.
+    restart_osd_daemon) could race with an upgrade that's about to begin —
+    used both to disable "Duyệt" for other pending actions on the main
+    Dashboard (index.html) and as the authoritative server-side gate in
+    dashboard/routes/actions.py::approve_action.
+    """
+    return (
+        session.query(Action)
+        .filter(Action.action_id.in_(CLUSTER_UPGRADE_ACTION_IDS))
+        .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
+        .first()
+        is not None
+    )
+
+
+def is_cluster_upgrade_physically_running() -> bool:
+    """Best-effort live check for the window AFTER the Worker has already
+    told cephadm to start (Action.status is already EXECUTED by then —
+    "sent the start command successfully", not "the upgrade finished" — see
+    this module's docstring notes — so is_cluster_upgrade_pending_or_approved()
+    alone can't see this phase at all).
+
+    Only meaningful for cephadm (`ceph orch upgrade status`) — a package-
+    based (ceph-deploy) upgrade has no orchestrator/status API to query at
+    all, so this always returns False for that deployment style; the
+    DB-based check above is the only signal available for it.
+
+    Fails OPEN (returns False) on any error — this is a secondary
+    convenience gate, not the primary safety guarantee (the kill-switch,
+    checked fresh before every remediation command, still is that). A
+    transient connectivity hiccup here must not block approving every OTHER
+    risky action system-wide just because the Upgrade page happened to be
+    unreachable for a moment.
+    """
+    if settings.ceph_exec_mode != "cephadm":
+        return False
+    try:
+        return bool(get_upgrade_status().get("in_progress"))
+    except CephQueryError:
+        return False
+
+
+def _latest_upgrade_action(session) -> tuple[Action | None, Incident | None]:
+    action = (
+        session.query(Action)
+        .filter(Action.action_id.in_(CLUSTER_UPGRADE_ACTION_IDS))
+        .order_by(Action.created_at.desc())
+        .first()
+    )
+    if action is None:
+        return None, None
+    return action, session.get(Incident, action.incident_id)
+
+
+def _reject_duplicate_proposal(session) -> None:
+    existing, _ = _latest_upgrade_action(session)
+    if existing is not None and existing.status in _IN_FLIGHT_ACTION_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Đã có một đề xuất nâng cấp đang chờ duyệt hoặc đã duyệt — không thể tạo thêm.",
+        )
+
+
+@router.get("/upgrade", response_class=HTMLResponse)
+async def upgrade_page(request: Request, user: str = Depends(require_login)):
+    try:
+        with db.SessionLocal() as session:
+            last_action, last_incident = _latest_upgrade_action(session)
+            procedure_document = _get_upgrade_procedure_document(session)
+    except SQLAlchemyError:
+        logger.exception("upgrade_page: failed to query DB")
+        raise HTTPException(
+            status_code=503,
+            detail="Không kết nối được database — đã chạy `alembic upgrade head` chưa?",
+        )
+
+    exec_mode = settings.ceph_exec_mode
+    supports_cephadm = exec_mode == "cephadm"
+    supports_package = exec_mode == "none"
+    upgrade_unsupported = not supports_cephadm and not supports_package
+
+    pending_action = (
+        last_action if last_action is not None and last_action.status in _IN_FLIGHT_ACTION_STATUSES else None
+    )
+
+    last_action_params: dict = {}
+    if last_action is not None and last_action.action_params:
+        try:
+            last_action_params = json.loads(last_action.action_params) or {}
+        except (TypeError, ValueError):
+            last_action_params = {}
+
+    current_versions = None
+    versions_error = None
+    suggested_target = None
+    if (supports_cephadm or supports_package) and pending_action is None:
+        try:
+            current_versions = summarize_cluster_versions()
+            if current_versions.get("current_version"):
+                suggested_target = propose_next_version(current_versions["current_version"])
+        except CephQueryError as exc:
+            versions_error = str(exc)
+
+    upgrade_progress = None
+    progress_error = None
+    if supports_cephadm:
+        try:
+            upgrade_progress = get_upgrade_status()
+        except CephQueryError as exc:
+            progress_error = str(exc)
+
+    package_nodes = [n["host"] for n in configured_nodes()] if supports_package else []
+
+    return templates.TemplateResponse(
+        request,
+        "upgrade.html",
+        {
+            "user": user,
+            "ceph_exec_mode": exec_mode,
+            "supports_cephadm": supports_cephadm,
+            "supports_package": supports_package,
+            "upgrade_unsupported": upgrade_unsupported,
+            "pending_action": pending_action,
+            "pending_incident": last_incident if pending_action is not None else None,
+            "current_versions": current_versions,
+            "versions_error": versions_error,
+            "suggested_target": suggested_target,
+            "upgrade_progress": upgrade_progress,
+            "progress_error": progress_error,
+            "last_action": last_action,
+            "last_action_target_version": last_action_params.get("target_version"),
+            "last_action_package_dir": last_action_params.get("package_dir"),
+            "package_nodes": package_nodes,
+            "procedure_document": procedure_document,
+        },
+    )
+
+
+@router.post("/upgrade/propose")
+async def propose_upgrade(target_version: str = Form(...), user: str = Depends(require_login)):
+    """cephadm path — creates a PENDING_APPROVAL Action the exact same way
+    dashboard/routes/chat.py::confirm_chat_action does for a chat proposal —
+    a synthetic Incident, an Action row, one audit.record() call. From here
+    the row is indistinguishable from any other RISKY action: it shows up
+    in index.html's "Chờ duyệt" card and /upgrade's own pending-approval
+    view, and POST /actions/{id}/approve|reject (unchanged) is what the
+    admin actually clicks to approve or reject it.
+    """
+    target_version = target_version.strip()
+    if not _TARGET_VERSION_RE.match(target_version):
+        raise HTTPException(status_code=400, detail="Phiên bản không hợp lệ (định dạng x.y.z, vd 19.2.0)")
+    if settings.ceph_exec_mode != "cephadm":
+        raise HTTPException(
+            status_code=400,
+            detail="Chỉ hỗ trợ nâng cấp qua cephadm cho cụm dùng ceph_exec_mode=cephadm",
+        )
+
+    with db.SessionLocal() as session:
+        _reject_duplicate_proposal(session)
+
+        mon_nodes = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+        if not mon_nodes:
+            raise HTTPException(status_code=400, detail="Chưa cấu hình MON node nào (xem trang Cài đặt)")
+        target_node = mon_nodes[0]
+        action_params = {"target_version": target_version}
+
+        try:
+            resolved_command = executor_commands.get_command(
+                CLUSTER_UPGRADE_ACTION_ID, target_node, action_params
+            )
+        except ExecutorError as exc:
+            raise HTTPException(status_code=400, detail=f"Không tạo được lệnh nâng cấp: {exc}")
+
+        classification = gate.classify_action(CLUSTER_UPGRADE_ACTION_ID)  # always RISKY (AD-5)
+
+        incident = Incident(
+            ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"Đề xuất nâng cấp cụm (cephadm) lên {target_version} bởi {user}",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()  # assigns incident.id, needed by the Action FK below
+
+        action = Action(
+            incident_id=incident.id,
+            action_id=CLUSTER_UPGRADE_ACTION_ID,
+            classification=classification.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=_upgrade_plan_text(target_version),
+            target_nodes=json.dumps([target_node]),
+            action_params=json.dumps(action_params),
+            proposed_command=resolved_command,
+        )
+        session.add(action)
+        session.flush()
+
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+            actor=user,
+        )
+        session.commit()
+
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/propose-package-download")
+async def propose_package_download_upgrade(
+    target_version: str = Form(...), user: str = Depends(require_login)
+):
+    """ceph-deploy path, option 1 — download the target release from
+    download.ceph.com on each configured node (mon/mgr/osd/rgw, in that
+    priority order — shared/cluster_nodes.py::configured_nodes) and restart
+    whatever daemons that node runs. See worker/executor/commands.py's
+    `_upgrade_ceph_cluster_package_download_command` for the actual
+    per-host command, and this module's `_PACKAGE_METHOD_SAFETY_NOTE` for
+    why this has no cephadm-style orchestrator gating between nodes.
+    """
+    target_version = target_version.strip()
+    if not _TARGET_VERSION_RE.match(target_version):
+        raise HTTPException(status_code=400, detail="Phiên bản không hợp lệ (định dạng x.y.z, vd 19.2.0)")
+    if settings.ceph_exec_mode != "none":
+        raise HTTPException(
+            status_code=400,
+            detail="Chỉ áp dụng cho cụm kiểu ceph-deploy (ceph_exec_mode=none)",
+        )
+    codename = codename_for_version(target_version)
+    if codename is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Không tìm thấy mã tên release Ceph cho phiên bản {target_version!r}",
+        )
+
+    with db.SessionLocal() as session:
+        _reject_duplicate_proposal(session)
+
+        target_nodes = [n["host"] for n in configured_nodes()]
+        if not target_nodes:
+            raise HTTPException(status_code=400, detail="Chưa cấu hình node nào (xem trang Cài đặt)")
+
+        action_params = {"target_version": target_version}
+        preview_command = await asyncio.to_thread(
+            _safe_command_preview, PACKAGE_DOWNLOAD_ACTION_ID, target_nodes[0], action_params
+        )
+
+        incident = Incident(
+            ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=(
+                f"Đề xuất nâng cấp cụm (ceph-deploy, tải từ download.ceph.com) lên "
+                f"{target_version} bởi {user}"
+            ),
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+
+        action = Action(
+            incident_id=incident.id,
+            action_id=PACKAGE_DOWNLOAD_ACTION_ID,
+            classification=gate.classify_action(PACKAGE_DOWNLOAD_ACTION_ID).value,  # always RISKY
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=_package_download_plan_text(target_version, codename, target_nodes),
+            target_nodes=json.dumps(target_nodes),
+            action_params=json.dumps(action_params),
+            proposed_command=preview_command,
+        )
+        session.add(action)
+        session.flush()
+
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+            actor=user,
+        )
+        session.commit()
+
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/propose-package-local")
+async def propose_package_local_upgrade(package_dir: str = Form(...), user: str = Depends(require_login)):
+    """ceph-deploy path, option 2 — install from a directory of packages
+    already staged on each node (no download, no scp — the operator is
+    responsible for having put the right packages at the SAME path on
+    every configured node beforehand)."""
+    package_dir = package_dir.strip()
+    if not _PACKAGE_DIR_RE.match(package_dir):
+        raise HTTPException(
+            status_code=400,
+            detail="Đường dẫn không hợp lệ (phải là đường dẫn tuyệt đối, vd /opt/ceph-packages)",
+        )
+    if settings.ceph_exec_mode != "none":
+        raise HTTPException(
+            status_code=400,
+            detail="Chỉ áp dụng cho cụm kiểu ceph-deploy (ceph_exec_mode=none)",
+        )
+
+    with db.SessionLocal() as session:
+        _reject_duplicate_proposal(session)
+
+        target_nodes = [n["host"] for n in configured_nodes()]
+        if not target_nodes:
+            raise HTTPException(status_code=400, detail="Chưa cấu hình node nào (xem trang Cài đặt)")
+
+        action_params = {"package_dir": package_dir}
+        preview_command = await asyncio.to_thread(
+            _safe_command_preview, PACKAGE_LOCAL_ACTION_ID, target_nodes[0], action_params
+        )
+
+        incident = Incident(
+            ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=(
+                f"Đề xuất nâng cấp cụm (ceph-deploy, gói cục bộ tại {package_dir}) bởi {user}"
+            ),
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+
+        action = Action(
+            incident_id=incident.id,
+            action_id=PACKAGE_LOCAL_ACTION_ID,
+            classification=gate.classify_action(PACKAGE_LOCAL_ACTION_ID).value,  # always RISKY
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=_package_local_plan_text(package_dir, target_nodes),
+            target_nodes=json.dumps(target_nodes),
+            action_params=json.dumps(action_params),
+            proposed_command=preview_command,
+        )
+        session.add(action)
+        session.flush()
+
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+            actor=user,
+        )
+        session.commit()
+
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/procedure/upload")
+async def upload_upgrade_procedure(file: UploadFile = File(...), user: str = Depends(require_login)):
+    """Operator uploads their own upgrade runbook (plain text/markdown only —
+    no PDF/Word parser in this codebase). Saved regardless of whether 9router
+    is configured/reachable; the AI summary is best-effort (see
+    _save_upgrade_procedure) and shown alongside the system's own generated
+    plan text on the pending-approval screen (upgrade.html) once proposed.
+    """
+    filename = file.filename or "upload.txt"
+    if not filename.lower().endswith(ALLOWED_PROCEDURE_EXTENSIONS):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Chỉ hỗ trợ file văn bản thuần ({', '.join(ALLOWED_PROCEDURE_EXTENSIONS)}) — "
+                f"PDF/Word chưa được hỗ trợ."
+            ),
+        )
+
+    raw_bytes = await file.read()
+    if len(raw_bytes) > MAX_PROCEDURE_FILE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File quá lớn (tối đa {MAX_PROCEDURE_FILE_BYTES // (1024 * 1024)}MB).",
+        )
+    try:
+        raw_text = raw_bytes.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Không đọc được nội dung file — cần file văn bản UTF-8 thuần (.txt/.md).",
+        )
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="File rỗng.")
+
+    await _save_upgrade_procedure(filename, raw_text, user)
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/procedure/resummarize")
+async def resummarize_upgrade_procedure(user: str = Depends(require_login)):
+    """Retries AI summarization on the already-uploaded document's stored
+    raw_text — no re-upload needed, e.g. after fixing 9router config
+    following an upload that saved with a summary_error."""
+    with db.SessionLocal() as session:
+        doc = _get_upgrade_procedure_document(session)
+        if doc is None:
+            raise HTTPException(
+                status_code=404, detail="Chưa có tài liệu quy trình nâng cấp nào được upload."
+            )
+        filename, raw_text = doc.filename, doc.raw_text
+
+    await _save_upgrade_procedure(filename, raw_text, user)
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/pause")
+async def pause_upgrade_route(user: str = Depends(require_login)):
+    try:
+        pause_upgrade()
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không tạm dừng được: {exc}")
+    with db.SessionLocal() as session:
+        _, incident = _latest_upgrade_action(session)
+        if incident is not None:
+            audit.record(
+                session,
+                incident_id=incident.id,
+                action_id=None,
+                event_type=audit.EVENT_CLUSTER_UPGRADE_PAUSED,
+                actor=user,
+            )
+            session.commit()
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/resume")
+async def resume_upgrade_route(user: str = Depends(require_login)):
+    try:
+        resume_upgrade()
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không tiếp tục được: {exc}")
+    with db.SessionLocal() as session:
+        _, incident = _latest_upgrade_action(session)
+        if incident is not None:
+            audit.record(
+                session,
+                incident_id=incident.id,
+                action_id=None,
+                event_type=audit.EVENT_CLUSTER_UPGRADE_RESUMED,
+                actor=user,
+            )
+            session.commit()
+    return RedirectResponse(url="/upgrade", status_code=303)

@@ -128,6 +128,29 @@ def test_chat_request_incident_is_never_auto_resolved_by_recovery(isolated_db):
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_cluster_upgrade_incident_is_never_auto_resolved_by_recovery(isolated_db):
+    # 2026-07-23 regression (found live): dashboard/routes/upgrade.py's
+    # synthetic Incident (ceph_code="CLUSTER_UPGRADE") never matches any
+    # real `ceph health detail` check code either — same bug class as
+    # CHAT_REQUEST above. Without this guard, a real upgrade Action that had
+    # just failed (e.g. a stale Worker process not yet loaded with the
+    # upgrade_ceph_cluster command) got silently overwritten from FAILED to
+    # RESOLVED on Watcher's very next poll (~watcher_poll_interval_seconds
+    # later), making the failure invisible on the Upgrade page.
+    failed_upgrade_id = _seed_incident("CLUSTER_UPGRADE", IncidentStatus.FAILED.value)
+    pending_upgrade_id = _seed_incident("CLUSTER_UPGRADE", IncidentStatus.PENDING_APPROVAL.value)
+    real_failed_id = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, failed_upgrade_id).status == IncidentStatus.FAILED.value
+        assert (
+            session.get(Incident, pending_upgrade_id).status == IncidentStatus.PENDING_APPROVAL.value
+        )
+        assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
+
+
 def test_already_terminal_incidents_are_never_touched_by_recovery(isolated_db):
     resolved_id = _seed_incident("OSD_DOWN", IncidentStatus.RESOLVED.value)
     auto_fixed_id = _seed_incident("MON_CLOCK_SKEW", IncidentStatus.AUTO_FIXED.value)

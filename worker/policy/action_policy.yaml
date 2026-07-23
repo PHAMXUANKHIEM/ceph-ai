@@ -38,6 +38,25 @@ management_action_ids:
 # action_id that gets added to `action_ids` without an explicit safe entry.
 # This is an operational decision, not an architectural one — adjust freely
 # without touching code.
+# 2026-07-23: Cluster Upgrade feature (Dashboard "Nâng cấp cụm" page) — a
+# THIRD separate action_id family, same reasoning as management_action_ids
+# above: this is never proposed by the Incident-diagnosis pipeline
+# (worker/llm/router_client.py) or Chat-with-AI, only by an operator
+# explicitly clicking "Đề xuất nâng cấp" on dashboard/routes/upgrade.py
+# after reviewing the current cluster version. worker/policy/gate.py loads
+# this as VALID_CLUSTER_UPGRADE_ACTION_IDS.
+#
+# 2026-07-23: extended with two more members for clusters NOT managed by
+# cephadm (ceph_exec_mode="none" — the traditional/"ceph-deploy" package
+# install style, no orchestrator available) — `ceph orch upgrade` simply
+# doesn't work there, so the Upgrade page offers a package-based upgrade
+# instead: either download the target release from download.ceph.com, or
+# install from an already-staged local directory on each node.
+cluster_upgrade_action_ids:
+  - upgrade_ceph_cluster
+  - upgrade_ceph_cluster_package_download
+  - upgrade_ceph_cluster_package_local
+
 safe:
   - resync_ntp
   # 2026-07-23: operator explicitly requested every management action
@@ -68,3 +87,13 @@ safe:
 risky:
   - restart_osd_daemon
   - pg_repair_force
+  # 2026-07-23: a live cluster version upgrade is never auto-executed —
+  # always requires an explicit Dashboard approval (AD-5's conservative
+  # default already puts anything absent from `safe:` here; listed
+  # explicitly for the same documentation reason enable_pool_application
+  # etc. are listed in `safe:` above). Same for both package-based
+  # (ceph-deploy) upgrade variants below — if anything, MORE reason for
+  # explicit approval, since there's no cephadm orchestrator gating them.
+  - upgrade_ceph_cluster
+  - upgrade_ceph_cluster_package_download
+  - upgrade_ceph_cluster_package_local

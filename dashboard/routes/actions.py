@@ -1,8 +1,10 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
+from dashboard.routes import upgrade as upgrade_routes
 from dashboard.routes.auth import require_login
 from shared import audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
@@ -39,6 +41,26 @@ async def approve_action(action_id: str, user: str = Depends(require_login)):
             # resubmit) or a second operator tab. No-op: the page they land
             # back on already reflects reality.
             return RedirectResponse(url="/", status_code=303)
+
+        # 2026-07-23: a live cluster upgrade must never race with some OTHER
+        # risky action being approved at the same time (e.g. restarting an
+        # OSD daemon mid-upgrade) — the upgrade's OWN approval is exempt
+        # from its own gate. Cheap DB check first (covers proposed/approved-
+        # awaiting-poll); only falls through to a live `ceph orch upgrade
+        # status` check (see is_cluster_upgrade_physically_running's
+        # docstring for why it's needed AND why it fails open) when the
+        # cheap check didn't already find anything.
+        if action.action_id not in upgrade_routes.CLUSTER_UPGRADE_ACTION_IDS:
+            if upgrade_routes.is_cluster_upgrade_pending_or_approved(
+                session
+            ) or await asyncio.to_thread(upgrade_routes.is_cluster_upgrade_physically_running):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Đang có đề xuất/quá trình nâng cấp cụm — tạm khoá duyệt hành động khác "
+                        "cho tới khi nâng cấp xong."
+                    ),
+                )
 
         incident = session.get(Incident, action.incident_id)
 

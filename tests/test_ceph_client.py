@@ -6,12 +6,17 @@ import watcher.ceph_client as ceph_client
 from watcher.ceph_client import (
     CephQueryError,
     get_mon_nodes,
+    get_upgrade_status,
+    pause_upgrade,
+    propose_next_version,
     query_cluster_health,
     query_cluster_health_with,
     read_public_key,
+    resume_upgrade,
     run_ceph_json_command,
     run_diagnostic_command,
     ssh_key_path_error,
+    summarize_cluster_versions,
 )
 
 
@@ -476,6 +481,115 @@ def test_run_diagnostic_command_wraps_via_build_exec_command_for_cephadm_mode(mo
     assert captured["command"] == "cephadm shell -- ceph -s"
     assert captured["timeout"] == ceph_client.CEPHADM_COMMAND_TIMEOUT_SECONDS
     assert output == "cluster:\n  id: abc\n"
+
+
+# --- Cluster Upgrade feature -------------------------------------------------
+
+
+def test_propose_next_version_known_major():
+    assert propose_next_version("18.2.4") == "19.2.0"
+    assert propose_next_version("17.2.7") == "18.2.0"
+
+
+def test_propose_next_version_unknown_major_returns_none():
+    # Not a fabricated guess — a major version this table hasn't been
+    # updated for yet must not silently suggest something wrong.
+    assert propose_next_version("99.0.0") is None
+
+
+def test_propose_next_version_unparseable_string_returns_none():
+    assert propose_next_version("not-a-version") is None
+
+
+def test_summarize_cluster_versions_uniform_cluster(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {
+            "mon": {"ceph version 18.2.4 (abc) reef (stable)": 3},
+            "mgr": {"ceph version 18.2.4 (abc) reef (stable)": 2},
+            "osd": {"ceph version 18.2.4 (abc) reef (stable)": 6},
+            "overall": {"ceph version 18.2.4 (abc) reef (stable)": 11},
+        }
+    }
+
+    summary = summarize_cluster_versions()
+
+    assert summary["current_version"] == "18.2.4"
+    assert summary["is_mixed"] is False
+    assert summary["distinct_versions"] == ["18.2.4"]
+    assert summary["per_type"]["mon"] == ["18.2.4"]
+    assert "overall" not in summary["per_type"]
+
+
+def test_summarize_cluster_versions_mixed_cluster_has_no_current_version(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {
+            "mon": {"ceph version 18.2.4 (abc) reef (stable)": 3},
+            "osd": {"ceph version 19.2.0 (def) squid (stable)": 6},
+        }
+    }
+
+    summary = summarize_cluster_versions()
+
+    assert summary["current_version"] is None
+    assert summary["is_mixed"] is True
+    assert summary["distinct_versions"] == ["18.2.4", "19.2.0"]
+
+
+def test_get_upgrade_status_requires_cephadm(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "docker")
+    with pytest.raises(CephQueryError, match="cephadm"):
+        get_upgrade_status()
+
+
+def test_get_upgrade_status_returns_parsed_payload(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "cephadm")
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": {"in_progress": True, "target_image": "19.2.0", "progress": "1/5"}}
+
+    status = get_upgrade_status()
+
+    assert status["in_progress"] is True
+    assert status["progress"] == "1/5"
+
+
+def test_pause_upgrade_requires_cephadm(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "docker")
+    with pytest.raises(CephQueryError, match="cephadm"):
+        pause_upgrade()
+
+
+def test_pause_upgrade_sends_expected_command(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "cephadm")
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    captured = {}
+
+    def fake_run_remote_command(host, command, command_timeout=ceph_client.COMMAND_TIMEOUT_SECONDS):
+        captured["host"] = host
+        captured["command"] = command
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run_remote_command)
+
+    pause_upgrade()
+
+    assert captured["host"] == "10.20.1.150"
+    assert captured["command"] == "cephadm shell -- ceph orch upgrade pause"
+
+
+def test_resume_upgrade_sends_expected_command(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "cephadm")
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    captured = {}
+
+    def fake_run_remote_command(host, command, command_timeout=ceph_client.COMMAND_TIMEOUT_SECONDS):
+        captured["command"] = command
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run_remote_command)
+
+    resume_upgrade()
+
+    assert captured["command"] == "cephadm shell -- ceph orch upgrade resume"
 
 
 def test_run_diagnostic_command_wraps_via_build_exec_command_for_docker_mode(monkeypatch):

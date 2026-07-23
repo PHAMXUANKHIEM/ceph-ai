@@ -83,3 +83,31 @@ def test_management_action_ids_disjoint_from_incident_diagnosis_action_ids():
     from worker.llm.router_client import VALID_ACTION_IDS
 
     assert gate.VALID_MANAGEMENT_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
+
+
+def test_cluster_upgrade_action_ids_loaded_from_policy_yaml():
+    import worker.policy.gate as gate
+
+    assert gate.VALID_CLUSTER_UPGRADE_ACTION_IDS == {
+        "upgrade_ceph_cluster",
+        "upgrade_ceph_cluster_package_download",
+        "upgrade_ceph_cluster_package_local",
+    }
+
+
+def test_upgrade_ceph_cluster_is_classified_risky():
+    # AD-5: a live cluster upgrade must never be in `safe:` — it always
+    # requires an explicit Dashboard approval. Same for both package-based
+    # (ceph-deploy) variants — if anything, more reason for approval, since
+    # there's no cephadm orchestrator gating them.
+    assert classify_action("upgrade_ceph_cluster") == ActionClassification.RISKY
+    assert classify_action("upgrade_ceph_cluster_package_download") == ActionClassification.RISKY
+    assert classify_action("upgrade_ceph_cluster_package_local") == ActionClassification.RISKY
+
+
+def test_cluster_upgrade_action_ids_disjoint_from_other_families():
+    import worker.policy.gate as gate
+    from worker.llm.router_client import VALID_ACTION_IDS
+
+    assert gate.VALID_CLUSTER_UPGRADE_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
+    assert gate.VALID_CLUSTER_UPGRADE_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)

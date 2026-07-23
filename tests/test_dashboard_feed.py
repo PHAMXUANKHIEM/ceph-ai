@@ -177,10 +177,11 @@ def test_index_shows_healthy_connection_details_when_recent_and_successful(dashb
     assert "10.20.1.150" in response.text
 
 
-# --- Audit Trail preview on the Dashboard page ------------------------------
+# --- Audit Trail on the Dashboard page (see test_dashboard_audit.py for
+# filtering behavior) ---------------------------------------------------
 
 
-def test_index_shows_audit_trail_section_with_recent_entries(dashboard_client):
+def test_index_shows_audit_trail_section_with_entries(dashboard_client):
     with db_module.SessionLocal() as session:
         session.add(
             Incident(id="inc-1", ceph_code="OSD_DOWN", status="NEW", detected_at=datetime.utcnow())
@@ -201,10 +202,8 @@ def test_index_shows_audit_trail_section_with_recent_entries(dashboard_client):
 
     assert response.status_code == 200
     assert '<h2>Audit Trail</h2>' in response.text
-    assert 'id="audit-feed-preview"' in response.text
+    assert 'id="audit-feed"' in response.text
     assert "INCIDENT_DETECTED" in response.text
-    assert 'href="/audit"' in response.text
-    assert "Xem tất cả" in response.text
 
 
 def test_index_shows_empty_state_when_no_audit_entries(dashboard_client):
@@ -213,32 +212,3 @@ def test_index_shows_empty_state_when_no_audit_entries(dashboard_client):
 
     assert response.status_code == 200
     assert "Chưa có hoạt động nào." in response.text
-
-
-def test_index_audit_trail_preview_caps_at_20_most_recent_entries(dashboard_client):
-    with db_module.SessionLocal() as session:
-        session.add(
-            Incident(id="inc-1", ceph_code="OSD_DOWN", status="NEW", detected_at=datetime.utcnow())
-        )
-        base = datetime.utcnow()
-        for i in range(25):
-            session.add(
-                AuditEntry(
-                    incident_id="inc-1",
-                    action_id=None,
-                    event_type=f"EVENT_{i}",
-                    actor="system",
-                    created_at=base + timedelta(seconds=i),
-                )
-            )
-        session.commit()
-
-    _login(dashboard_client)
-    response = dashboard_client.get("/")
-
-    assert response.status_code == 200
-    # Newest 20 (EVENT_5..EVENT_24) shown, oldest 5 (EVENT_0..EVENT_4) not.
-    for i in range(5, 25):
-        assert f"EVENT_{i}" in response.text
-    for i in range(0, 5):
-        assert f"EVENT_{i}<" not in response.text

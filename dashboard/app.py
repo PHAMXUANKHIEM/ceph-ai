@@ -12,13 +12,13 @@ from config.settings import (
 )
 from dashboard.routes import (
     actions,
-    audit,
     auth,
     chat,
     incidents,
     maintenance,
     nodes,
     settings as settings_routes,
+    upgrade,
 )
 from dashboard.ws import router as ws_router
 
@@ -50,8 +50,8 @@ def create_app() -> FastAPI:
     application.include_router(settings_routes.router)
     application.include_router(maintenance.router)
     application.include_router(actions.router)
-    application.include_router(audit.router)
     application.include_router(chat.router)
+    application.include_router(upgrade.router)
     application.include_router(ws_router)
     return application
 

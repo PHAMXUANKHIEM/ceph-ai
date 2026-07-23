@@ -41,6 +41,15 @@ _RECOVERABLE_STATUSES = {
 # must never touch its status.
 _CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
 
+# 2026-07-23: same reasoning as _CHAT_REQUEST_CEPH_CODE above, for
+# dashboard/routes/upgrade.py's synthetic Cluster Upgrade Incident. Without
+# this guard, an upgrade Action stuck at PENDING_APPROVAL/APPROVED — or one
+# that genuinely FAILED — gets silently overwritten to RESOLVED on
+# Watcher's very next poll (its ceph_code can never match a real
+# `ceph health detail` check code either), hiding the real outcome from the
+# operator exactly the way the CHAT_REQUEST bug did before that fix.
+_CLUSTER_UPGRADE_CEPH_CODE = "CLUSTER_UPGRADE"
+
 
 def default_on_transition(previous_status: Optional[str], current: dict) -> None:
     """v1: just log the transition. Story 1.4 will replace/wrap this to build
@@ -82,12 +91,13 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
             session.query(Incident).filter(Incident.status.in_(_RECOVERABLE_STATUSES)).all()
         )
         for incident in open_incidents:
-            if incident.ceph_code == _CHAT_REQUEST_CEPH_CODE:
-                # 2026-07-23 fix: a chat-confirmed action's synthetic
-                # Incident never corresponds to a real `ceph health detail`
-                # check code, so it would ALWAYS look "recovered" here
-                # (its ceph_code can never be in current_codes) — without
-                # this guard, a genuinely FAILED chat action got silently
+            if incident.ceph_code in (_CHAT_REQUEST_CEPH_CODE, _CLUSTER_UPGRADE_CEPH_CODE):
+                # 2026-07-23 fix: a chat-confirmed action's (or cluster-
+                # upgrade proposal's) synthetic Incident never corresponds
+                # to a real `ceph health detail` check code, so it would
+                # ALWAYS look "recovered" here (its ceph_code can never be
+                # in current_codes) — without this guard, a genuinely
+                # FAILED/PENDING_APPROVAL/APPROVED action got silently
                 # overwritten to RESOLVED on Watcher's very next poll,
                 # hiding the real outcome from the incident history.
                 continue

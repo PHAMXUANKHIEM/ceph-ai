@@ -1,6 +1,7 @@
 import re
 import shlex
 
+from config.settings import settings
 from worker.executor.ssh_executor import ExecutorError, execute_command
 
 # v1 (Story 3.2): the lab cluster was torn down mid-development, so this
@@ -40,7 +41,12 @@ _SYSTEMCTL_UNIT_RE = re.compile(r"^\s*(\S+\.service)\b")
 # cluster this doesn't false-positive on its other daemon units (grafana,
 # prometheus, node-exporter, ceph-exporter, alertmanager, crash — none of
 # them contain "osd"/"mon"/"mgr").
-_UNIT_TYPE_MARKERS = ("osd", "mon", "mgr")
+#
+# 2026-07-23: "mds"/"rgw" added for the package-based (ceph-deploy) upgrade
+# path (worker/executor/commands.py's _package_upgrade_and_restart_command
+# below) — restart_osd_daemon itself still only ever reads units["osd"], so
+# this extension changes nothing for it.
+_UNIT_TYPE_MARKERS = ("osd", "mon", "mgr", "mds", "rgw")
 
 
 def _classify_ceph_unit(unit_name: str) -> str | None:
@@ -65,7 +71,7 @@ def _discover_ceph_units(host: str) -> dict[str, list[str]]:
     ExecutorError for a perfectly legitimate "no ceph units here" result.
     """
     output = execute_command(host, "systemctl | grep ceph || true")
-    units: dict[str, list[str]] = {"osd": [], "mon": [], "mgr": []}
+    units: dict[str, list[str]] = {"osd": [], "mon": [], "mgr": [], "mds": [], "rgw": []}
     for line in output.splitlines():
         match = _SYSTEMCTL_UNIT_RE.match(line)
         if not match:
@@ -229,15 +235,225 @@ _MANAGEMENT_COMMAND_BUILDERS = {
 }
 
 
+# --- Cluster Upgrade action (2026-07-23) -----------------------------------
+#
+# dashboard/routes/upgrade.py-only — see action_policy.yaml's
+# `cluster_upgrade_action_ids:` comment for why this is a third action_id
+# family. Same "validate before it ever reaches a shell string" posture as
+# the management-action builders above.
+_TARGET_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _require_target_version(params: dict) -> str:
+    target_version = params.get("target_version")
+    if not isinstance(target_version, str) or not _TARGET_VERSION_RE.match(target_version):
+        raise ExecutorError(f"invalid or missing target_version: {target_version!r} (expected x.y.z)")
+    return target_version
+
+
+def _upgrade_ceph_cluster_command(host: str | None, params: dict) -> str:
+    """`ceph orch upgrade start` requires cephadm's orchestrator — a
+    non-cephadm deployment (docker/podman/none exec mode) has no
+    orchestrator to drive a rolling upgrade at all, so this fails loudly
+    here rather than sending a command that would just error on the
+    remote end anyway.
+
+    Only the cephadm wrapping style is applied (not the full docker/podman/
+    none matrix watcher/ceph_client.py::build_exec_command handles) —
+    worker/executor/ is deliberately self-contained (no import from
+    watcher/, see ssh_executor.py's docstring), and the cephadm-only gate
+    right above means no other wrapping style is ever needed here. `host`
+    is unused (the command is identical regardless of host) — accepted
+    only so every _CLUSTER_UPGRADE_COMMAND_BUILDERS entry shares one
+    signature (see the package-based builders below, which DO need it).
+    """
+    target_version = _require_target_version(params)
+    if settings.ceph_exec_mode != "cephadm":
+        raise ExecutorError(
+            f"upgrade_ceph_cluster requires ceph_exec_mode=cephadm (currently "
+            f"{settings.ceph_exec_mode!r}) — non-cephadm deployments have no orchestrator "
+            "to drive `ceph orch upgrade`"
+        )
+    inner_command = f"ceph orch upgrade start --ceph-version {shlex.quote(target_version)}"
+    return f"cephadm shell -- {inner_command}"
+
+
+# --- Package-based (ceph-deploy / traditional) Cluster Upgrade (2026-07-23) -
+#
+# For a cluster with ceph_exec_mode="none" (no cephadm orchestrator — a
+# traditional/"ceph-deploy"-style package install), `ceph orch upgrade` isn't
+# available at all. The Upgrade page instead offers upgrading the OS Ceph
+# packages directly on each configured node (mon/mgr/osd/rgw — see
+# shared/cluster_nodes.py::configured_nodes for the ordering) and restarting
+# whichever daemons that node runs. Two ways to get the new packages onto
+# each node: download them from download.ceph.com (this codebase adds the
+# right apt/yum repo for the target release), or install from a directory of
+# packages already staged on the node.
+#
+# IMPORTANT — unlike `ceph orch upgrade start` above (fire-and-forget; a
+# cephadm mgr module supervises the rest, gating each daemon's upgrade on
+# cluster health), THESE commands are run one host at a time by the exact
+# same generic per-host loop every other Action uses
+# (worker/llm/router_client.py::_execute_approved_action) — there is no
+# orchestrator here gating progress on cluster health between hosts. If one
+# host's command fails, the loop still tries the REMAINING hosts (existing,
+# unchanged behavior — see that function's docstring); the only way to halt
+# it mid-sequence is the kill-switch, checked fresh before each host (AD-4) —
+# flipping it stops any host after the current one from being attempted. The
+# Dashboard's generated plan text (dashboard/routes/upgrade.py) says this
+# explicitly before the operator approves.
+#
+# Verified against a real cephadm/reef cluster like the rest of this file —
+# but NOT against a real ceph-deploy/traditional-package cluster (this
+# codebase's own lab cluster runs cephadm), so the exact repo-setup commands
+# below are written defensively from Ceph's own published install
+# instructions rather than from a live test, same posture COMMANDS["resync_ntp"]
+# already documents for itself.
+_PACKAGE_DIR_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+
+
+def _require_package_dir(params: dict) -> str:
+    package_dir = params.get("package_dir")
+    if not isinstance(package_dir, str) or not _PACKAGE_DIR_RE.match(package_dir):
+        raise ExecutorError(
+            f"invalid or missing package_dir: {package_dir!r} (expected an absolute path)"
+        )
+    return package_dir
+
+
+def _require_non_cephadm_exec_mode(action_id: str) -> None:
+    if settings.ceph_exec_mode != "none":
+        raise ExecutorError(
+            f"{action_id} is for ceph_exec_mode=none (ceph-deploy/traditional package install) "
+            f"clusters only — currently configured as {settings.ceph_exec_mode!r}"
+        )
+
+
+def _restart_discovered_units_snippet(host: str) -> str | None:
+    """Restarts every Ceph systemd unit `_discover_ceph_units` finds on
+    `host`, across ALL daemon types (not just OSD, unlike
+    _restart_osd_daemon_command) — a package upgrade updates every Ceph
+    binary on the host regardless of which daemon(s) happen to run there.
+    Returns None (not an empty string) if the host runs no discoverable
+    Ceph unit at all, so callers can tell "nothing to restart" apart from
+    "restart nothing" — a package-only host (e.g. a client-only node,
+    though none of this app's configured roles describe one) is not an
+    error, just has no restart step.
+    """
+    discovered = _discover_ceph_units(host)
+    all_units = [name for units in discovered.values() for name in units]
+    if not all_units:
+        return None
+    return " && ".join(f"systemctl restart {shlex.quote(name)}" for name in all_units)
+
+
+def _package_manager_branch(install_snippet_by_manager: dict[str, str]) -> str:
+    """Builds one `if command -v apt-get ...; elif command -v dnf/yum ...;
+    else ...; fi` shell block, same inline-detection style as
+    COMMANDS["resync_ntp"] above — no separate SSH round trip just to ask
+    "which package manager" before the real command.
+    """
+    apt_snippet = install_snippet_by_manager["apt"]
+    rpm_snippet = install_snippet_by_manager["rpm"]
+    return (
+        "if command -v apt-get >/dev/null 2>&1; then "
+        f"{apt_snippet}; "
+        "elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
+        f"{rpm_snippet}; "
+        "else echo 'no supported package manager (apt-get/dnf/yum) found' >&2; exit 1; fi"
+    )
+
+
+def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dict) -> str:
+    """Adds the official Ceph package repo for the target release
+    (download.ceph.com) and installs/upgrades the `ceph` package, then
+    restarts whatever this host actually runs. See this section's module
+    comment for the execution-model caveats (no orchestrator, kill-switch
+    is the only mid-sequence stop)."""
+    _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_download")
+    if host is None:
+        raise ExecutorError(
+            "upgrade_ceph_cluster_package_download needs a specific host to discover its "
+            "Ceph systemd unit(s) and detect its package manager — no host given"
+        )
+    target_version = _require_target_version(params)
+    from shared.ceph_releases import codename_for_version
+
+    codename = codename_for_version(target_version)
+    if codename is None:
+        raise ExecutorError(
+            f"no known Ceph release codename for target_version={target_version!r} — "
+            "shared/ceph_releases.py may need a new entry"
+        )
+
+    apt_snippet = (
+        "wget -q -O- https://download.ceph.com/keys/release.asc "
+        "| gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg "
+        f"&& echo \"deb [signed-by=/usr/share/keyrings/ceph-archive-keyring.gpg] "
+        f"https://download.ceph.com/debian-{codename}/ $(lsb_release -sc) main\" "
+        "> /etc/apt/sources.list.d/ceph.list "
+        "&& apt-get update -y && apt-get install -y ceph"
+    )
+    rpm_snippet = (
+        "rpm --import https://download.ceph.com/keys/release.asc "
+        "&& (dnf config-manager --add-repo "
+        f"https://download.ceph.com/rpm-{codename}/el$(rpm -E %rhel)/ 2>/dev/null "
+        "|| yum-config-manager --add-repo "
+        f"https://download.ceph.com/rpm-{codename}/el$(rpm -E %rhel)/) "
+        "&& (dnf install -y ceph || yum install -y ceph)"
+    )
+    install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+
+    restart_snippet = _restart_discovered_units_snippet(host)
+    if restart_snippet is None:
+        return install_command
+    return f"{install_command} && {restart_snippet}"
+
+
+def _upgrade_ceph_cluster_package_local_command(host: str | None, params: dict) -> str:
+    """Installs Ceph packages already staged in `package_dir` on this SAME
+    host (no scp/copy step — the operator is responsible for having put the
+    right packages there beforehand), then restarts whatever this host
+    actually runs."""
+    _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_local")
+    if host is None:
+        raise ExecutorError(
+            "upgrade_ceph_cluster_package_local needs a specific host to discover its Ceph "
+            "systemd unit(s) and detect its package manager — no host given"
+        )
+    package_dir = _require_package_dir(params)
+    quoted_dir = shlex.quote(package_dir)
+
+    exists_check = f"[ -d {quoted_dir} ] || {{ echo '{quoted_dir}: directory not found' >&2; exit 1; }}"
+    apt_snippet = f"apt-get install -y {quoted_dir}/*.deb"
+    rpm_snippet = f"(dnf install -y {quoted_dir}/*.rpm || yum localinstall -y {quoted_dir}/*.rpm)"
+    install_command = (
+        f"{exists_check} && " + _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+    )
+
+    restart_snippet = _restart_discovered_units_snippet(host)
+    if restart_snippet is None:
+        return install_command
+    return f"{install_command} && {restart_snippet}"
+
+
+_CLUSTER_UPGRADE_COMMAND_BUILDERS = {
+    "upgrade_ceph_cluster": _upgrade_ceph_cluster_command,
+    "upgrade_ceph_cluster_package_download": _upgrade_ceph_cluster_package_download_command,
+    "upgrade_ceph_cluster_package_local": _upgrade_ceph_cluster_package_local_command,
+}
+
+
 def get_command(action_id: str, host: str | None = None, params: dict | None = None) -> str:
     """No command defined -> ExecutorError, never a silent no-op or a guess
     at what to run — an unrecognized action_id must never execute anything.
 
-    `host` is only actually used by restart_osd_daemon (systemd unit names
-    must be discovered per-host, see `_restart_osd_daemon_command`) — every
-    other action_id's command is the same regardless of host, so callers
-    that don't have a specific host yet (e.g. building a preview string
-    before any node is chosen) may omit it.
+    `host` is used by restart_osd_daemon and both package-based Cluster
+    Upgrade action_ids (systemd unit names must be discovered per-host —
+    see `_restart_osd_daemon_command`/`_restart_discovered_units_snippet`) —
+    every other action_id's command is the same regardless of host, so
+    callers that don't have a specific host yet (e.g. building a preview
+    string before any node is chosen) may omit it.
 
     `params` is only used by the management actions (see
     `_MANAGEMENT_COMMAND_BUILDERS` above) — missing/invalid required keys
@@ -248,6 +464,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _restart_osd_daemon_command(host)
     if action_id in _MANAGEMENT_COMMAND_BUILDERS:
         return _MANAGEMENT_COMMAND_BUILDERS[action_id](params or {})
+    if action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS:
+        return _CLUSTER_UPGRADE_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id not in COMMANDS:
         raise ExecutorError(f"no Command defined for action_id={action_id!r}")
     return COMMANDS[action_id]
@@ -271,5 +489,6 @@ def has_command(action_id: str) -> bool:
     return (
         action_id == "restart_osd_daemon"
         or action_id in _MANAGEMENT_COMMAND_BUILDERS
+        or action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS
         or action_id in COMMANDS
     )

@@ -31,6 +31,16 @@ EVENT_RISKY_ACTION_ACKNOWLEDGED_NO_COMMAND = "risky_action_acknowledged_no_comma
 # "this Action originated from a real detected Incident".
 EVENT_CHAT_ACTION_REQUESTED = "chat_action_requested"
 
+# dashboard/routes/upgrade.py: an in-flight upgrade's pause/resume are
+# operator-triggered commands run directly (not through the Action/approval
+# pipeline — see watcher/ceph_client.py's module note on why cephadm's own
+# upgrade loop isn't gated by the kill-switch once started), so they need
+# their own audit events distinct from the EVENT_RISKY_ACTION_* family that
+# covers the Action row's own PENDING_APPROVAL -> APPROVED -> EXECUTED
+# lifecycle (i.e. issuing the initial `ceph orch upgrade start`).
+EVENT_CLUSTER_UPGRADE_PAUSED = "cluster_upgrade_paused"
+EVENT_CLUSTER_UPGRADE_RESUMED = "cluster_upgrade_resumed"
+
 
 def record(
     session: Session, *, incident_id: str, action_id: str | None, event_type: str, actor: str

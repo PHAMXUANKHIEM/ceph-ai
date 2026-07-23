@@ -68,6 +68,186 @@ def test_get_command_restart_osd_daemon_discovers_via_systemctl_and_restarts(mon
     )
 
 
+# --- upgrade_ceph_cluster ----------------------------------------------------
+
+
+def test_upgrade_ceph_cluster_requires_cephadm_exec_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "docker")
+    with pytest.raises(ExecutorError, match="cephadm"):
+        get_command("upgrade_ceph_cluster", "10.20.1.150", {"target_version": "19.2.0"})
+
+
+def test_upgrade_ceph_cluster_builds_expected_command(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+
+    command = get_command("upgrade_ceph_cluster", "10.20.1.150", {"target_version": "19.2.0"})
+
+    assert command == "cephadm shell -- ceph orch upgrade start --ceph-version 19.2.0"
+
+
+def test_upgrade_ceph_cluster_rejects_missing_target_version(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+    with pytest.raises(ExecutorError, match="target_version"):
+        get_command("upgrade_ceph_cluster", "10.20.1.150", {})
+
+
+def test_upgrade_ceph_cluster_rejects_malformed_target_version(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+    with pytest.raises(ExecutorError, match="target_version"):
+        get_command(
+            "upgrade_ceph_cluster", "10.20.1.150", {"target_version": "19.2.0; rm -rf /"}
+        )
+
+
+def test_has_command_true_for_upgrade_ceph_cluster():
+    from worker.executor.commands import has_command
+
+    assert has_command("upgrade_ceph_cluster") is True
+
+
+# --- upgrade_ceph_cluster_package_download / _package_local -----------------
+#
+# ceph-deploy/traditional (ceph_exec_mode=none) package-based upgrade —
+# these do a real SSH round trip (unit discovery, execute_command) as part
+# of building the command, so every test here stubs execute_command the
+# same way test_get_command_restart_osd_daemon_discovers_via_systemctl_and_restarts
+# above does.
+
+_MIXED_UNITS_OUTPUT = (
+    "  ceph-mon@a.service"
+    "                                                          loaded active running   Ceph mon.a\n"
+    "  ceph-osd@0.service"
+    "                                                          loaded active running   Ceph osd.0\n"
+)
+
+
+def test_package_download_requires_non_cephadm_exec_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+    with pytest.raises(ExecutorError, match="ceph_exec_mode=none"):
+        get_command(
+            "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "19.2.0"}
+        )
+
+
+def test_package_download_requires_host(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="needs a specific host"):
+        get_command("upgrade_ceph_cluster_package_download", None, {"target_version": "19.2.0"})
+
+
+def test_package_download_rejects_malformed_target_version(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="target_version"):
+        get_command(
+            "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "not-a-version"}
+        )
+
+
+def test_package_download_rejects_unknown_release_codename(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="codename"):
+        get_command(
+            "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "99.0.0"}
+        )
+
+
+def test_package_download_builds_expected_command_and_restarts_discovered_units(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "19.2.0"}
+    )
+
+    assert "debian-squid" in command
+    assert "rpm-squid" in command
+    assert "apt-get install -y ceph" in command
+    assert "dnf install -y ceph || yum install -y ceph" in command
+    assert "systemctl restart ceph-mon@a.service" in command
+    assert "systemctl restart ceph-osd@0.service" in command
+
+
+def test_package_download_with_no_discovered_units_skips_restart(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: "")
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "19.2.0"}
+    )
+
+    assert "systemctl restart" not in command
+    assert "apt-get install -y ceph" in command
+
+
+def test_package_local_requires_non_cephadm_exec_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+    with pytest.raises(ExecutorError, match="ceph_exec_mode=none"):
+        get_command(
+            "upgrade_ceph_cluster_package_local", "10.20.1.150", {"package_dir": "/opt/pkgs"}
+        )
+
+
+def test_package_local_rejects_missing_package_dir(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="package_dir"):
+        get_command("upgrade_ceph_cluster_package_local", "10.20.1.150", {})
+
+
+def test_package_local_rejects_relative_path(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="package_dir"):
+        get_command(
+            "upgrade_ceph_cluster_package_local",
+            "10.20.1.150",
+            {"package_dir": "relative/path"},
+        )
+
+
+def test_package_local_rejects_shell_injection_attempt(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="package_dir"):
+        get_command(
+            "upgrade_ceph_cluster_package_local",
+            "10.20.1.150",
+            {"package_dir": "/opt/pkgs; rm -rf /"},
+        )
+
+
+def test_package_local_builds_expected_command_and_restarts_discovered_units(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_local", "10.20.1.150", {"package_dir": "/opt/ceph-pkgs"}
+    )
+
+    assert "[ -d /opt/ceph-pkgs ]" in command
+    assert "apt-get install -y /opt/ceph-pkgs/*.deb" in command
+    assert "dnf install -y /opt/ceph-pkgs/*.rpm || yum localinstall -y /opt/ceph-pkgs/*.rpm" in command
+    assert "systemctl restart ceph-mon@a.service" in command
+    assert "systemctl restart ceph-osd@0.service" in command
+
+
+def test_has_command_true_for_both_package_based_upgrade_action_ids():
+    assert commands_module.has_command("upgrade_ceph_cluster_package_download") is True
+    assert commands_module.has_command("upgrade_ceph_cluster_package_local") is True
+
+
+def test_discover_ceph_units_also_classifies_mds_and_rgw(monkeypatch):
+    output = (
+        "  ceph-mds@a.service"
+        "                                                          loaded active running   Ceph mds.a\n"
+        "  ceph-radosgw@rgw.a.service"
+        "                                                  loaded active running   Ceph rgw.a\n"
+    )
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, command: output)
+
+    units = commands_module._discover_ceph_units("10.20.1.200")
+
+    assert units["mds"] == ["ceph-mds@a.service"]
+    assert units["rgw"] == ["ceph-radosgw@rgw.a.service"]
+
+
 def test_get_command_restart_osd_daemon_works_for_traditional_non_cephadm_unit_names(monkeypatch):
     # "bất kể cụm nào" — a plain package-install deployment names its units
     # differently (type BEFORE the "@", no fsid wrapper) but must still work,

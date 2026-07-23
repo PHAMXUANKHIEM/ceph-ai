@@ -1,11 +1,13 @@
 import json
 import logging
 import os
+import re
 import shlex
 
 import paramiko
 
 from config.settings import settings
+from shared import ceph_releases
 
 logger = logging.getLogger(__name__)
 
@@ -322,3 +324,115 @@ def query_cluster_health_with(
             logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
             errors.append(f"{host}: {exc}")
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
+
+
+# --- Cluster Upgrade feature (2026-07-23) ----------------------------------
+#
+# dashboard/routes/upgrade.py-only — read-only version detection + upgrade
+# progress, plus two narrow write commands (pause/resume) an operator uses
+# to intervene in an upgrade already in flight. Unlike every remediation
+# command (worker/executor/), these two run directly from the Dashboard
+# process rather than through the Action/approval pipeline: once
+# `ceph orch upgrade start` has been issued (see
+# worker/executor/commands.py::_upgrade_ceph_cluster_command), cephadm's own
+# mgr module drives the rest of the upgrade in the background — it is NOT
+# gated by this codebase's kill-switch or by the Worker process being alive
+# at all, so the kill-switch's normal "checked fresh before every
+# remediation command" guarantee (AD-4) does not apply to it once started.
+# Pause/resume are the operator's actual off-switch for an in-flight
+# upgrade; they are read as directly-actionable admin commands (like the
+# Nodes page's read-only diagnostics), not as a new Action row.
+_VERSION_RE = re.compile(r"ceph version (\d+\.\d+\.\d+)")
+
+
+def propose_next_version(current_version: str) -> str | None:
+    """Best-effort "what's the next release" suggestion shown on the
+    Upgrade page — the operator can always type a different target version
+    instead. Returns None (no guess) if `current_version`'s major isn't in
+    shared/ceph_releases.py's table — already on the newest release it
+    knows about, or an unparseable string — rather than fabricating a
+    suggestion."""
+    return ceph_releases.next_min_version(current_version)
+
+
+def summarize_cluster_versions() -> dict:
+    """Runs `ceph versions` (already whitelisted in DIAGNOSTIC_COMMANDS for
+    the Nodes page) and summarizes it for the Upgrade page: per-daemon-type
+    version(s), the set of distinct versions cluster-wide, and whether
+    they're mixed (e.g. a previous upgrade only partially completed).
+
+    `current_version` is only set when every daemon reports the exact same
+    single version — a mixed cluster has no one "current version" to
+    propose an upgrade FROM, so the Upgrade page must show the raw
+    breakdown instead of a single-version summary in that case.
+
+    Raises CephQueryError if no MON node could be reached (same as
+    query_cluster_health/run_ceph_json_command).
+    """
+    _, payload = run_ceph_json_command("ceph versions")
+    per_type: dict[str, list[str]] = {}
+    distinct: set[str] = set()
+    if isinstance(payload, dict):
+        for daemon_type, version_counts in payload.items():
+            if daemon_type == "overall" or not isinstance(version_counts, dict):
+                continue
+            versions_for_type = set()
+            for version_string in version_counts:
+                match = _VERSION_RE.search(version_string)
+                if match:
+                    versions_for_type.add(match.group(1))
+                    distinct.add(match.group(1))
+            per_type[daemon_type] = sorted(versions_for_type)
+    return {
+        "raw": payload,
+        "per_type": per_type,
+        "distinct_versions": sorted(distinct),
+        "is_mixed": len(distinct) > 1,
+        "current_version": next(iter(distinct)) if len(distinct) == 1 else None,
+    }
+
+
+def get_upgrade_status() -> dict:
+    """`ceph orch upgrade status` — live progress of an in-flight (or just-
+    finished/never-started) upgrade, queried directly from the cluster each
+    call, independent of any Action/Incident row in this app's own DB (an
+    upgrade cephadm is driving in the background is real regardless of
+    whether THIS app's DB still thinks an Action is EXECUTED/pending).
+
+    Requires ceph_exec_mode=cephadm — `ceph orch` commands only work at all
+    on a cephadm-managed cluster.
+    """
+    if settings.ceph_exec_mode != "cephadm":
+        raise CephQueryError("ceph orch upgrade status requires ceph_exec_mode=cephadm")
+    _, payload = run_ceph_json_command("ceph orch upgrade status")
+    return payload if isinstance(payload, dict) else {"raw_output": payload}
+
+
+def _run_upgrade_control_command(inner_command: str) -> None:
+    if settings.ceph_exec_mode != "cephadm":
+        raise CephQueryError(f"{inner_command} requires ceph_exec_mode=cephadm")
+    nodes = get_mon_nodes()
+    if not nodes:
+        raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
+    command = build_exec_command(settings.ceph_exec_mode, settings.ceph_container_name, inner_command)
+    errors = []
+    for host in nodes:
+        try:
+            _run_remote_command(host, command, CEPHADM_COMMAND_TIMEOUT_SECONDS)
+            return
+        except Exception as exc:
+            logger.warning("_run_upgrade_control_command: %s failed: %s", host, exc)
+            errors.append(f"{host}: {exc}")
+    raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
+
+
+def pause_upgrade() -> None:
+    """Operator's off-switch for an in-flight upgrade (see module note
+    above on why this isn't gated by the kill-switch) — pauses cephadm's
+    own upgrade loop after whichever daemon it's currently mid-upgrading
+    finishes; does not roll anything back."""
+    _run_upgrade_control_command("ceph orch upgrade pause")
+
+
+def resume_upgrade() -> None:
+    _run_upgrade_control_command("ceph orch upgrade resume")

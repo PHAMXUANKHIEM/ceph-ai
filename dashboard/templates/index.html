@@ -29,8 +29,8 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link active">Dashboard</a>
-        <a href="/nodes" class="nav-link">Nodes</a>
-        <a href="/audit" class="nav-link">Audit Trail</a>
+        <a href="/nodes" class="nav-link">Metrics Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
         <a href="/settings" class="nav-link">Cài đặt</a>
       </nav>
       <form method="post" action="/logout" class="topbar-user">
@@ -89,6 +89,7 @@
         <article class="pending-action-card">
           <p><strong>Nguồn:</strong>
             {% if incident and incident.ceph_code == "CHAT_REQUEST" %}Yêu cầu qua Chat với AI
+            {% elif incident and incident.ceph_code == "CLUSTER_UPGRADE" %}Đề xuất nâng cấp cụm (xem <a href="/upgrade">trang Nâng cấp</a>)
             {% else %}Tự động phát hiện — Mã lỗi <code>{{ incident.ceph_code if incident else "—" }}</code>{% endif %}
             {% if incident %}<span class="hint">(lúc {{ incident.detected_at|vntime }})</span>{% endif %}
           </p>
@@ -98,6 +99,15 @@
             {% if action.proposed_command %}<code>{{ action.proposed_command }}</code>
             {% else %}<span class="hint">Không có lệnh tự động cho hành động này — bấm Duyệt sẽ đóng sự cố lại (ghi nhận đã xử lý thủ công), không có lệnh nào được chạy.</span>{% endif %}
           </p>
+          {% if not action.action_id.startswith("upgrade_ceph_cluster") and upgrade_blocks_other_actions %}
+          <p class="hint">⏸ Đang có đề xuất/quá trình nâng cấp cụm — tạm khoá duyệt hành động khác cho tới khi xong (xem <a href="/upgrade">trang Nâng cấp</a>). Có thể Từ chối bình thường.</p>
+          <div class="pending-action-buttons">
+            <button type="button" class="btn btn-approve" disabled title="Tạm khoá trong khi đang nâng cấp cụm">Duyệt</button>
+            <form method="post" action="/actions/{{ action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-reject">Từ chối</button>
+            </form>
+          </div>
+          {% else %}
           <div class="pending-action-buttons">
             <form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
               <button type="submit" class="btn btn-approve">Duyệt</button>
@@ -106,6 +116,7 @@
               <button type="submit" class="btn btn-reject">Từ chối</button>
             </form>
           </div>
+          {% endif %}
         </article>
         {% endfor %}
       </div>
@@ -134,9 +145,27 @@
     </section>
 
     <section class="card">
+      <div class="card-body">
+        <form method="get" action="/" class="audit-filters">
+          <label>Incident ID
+            <input type="text" name="incident_id" value="{{ filter_incident_id }}" placeholder="để trống = tất cả">
+          </label>
+          <label>Từ
+            <input type="datetime-local" name="since" value="{{ filter_since }}">
+          </label>
+          <label>Đến
+            <input type="datetime-local" name="until" value="{{ filter_until }}">
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Lọc</button>
+          <a href="/" class="btn btn-ghost btn-sm">Xoá lọc</a>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>Audit Trail</h2></div>
       <div class="card-body table-wrap">
-        <table id="audit-feed-preview">
+        <table id="audit-feed">
           <thead>
             <tr><th>Thời điểm</th><th>Incident</th><th>Action</th><th>Sự kiện</th><th>Người thực hiện</th></tr>
           </thead>
@@ -154,9 +183,6 @@
             {% endfor %}
           </tbody>
         </table>
-      </div>
-      <div class="card-footer">
-        <a href="/audit" class="card-footer-link">Xem tất cả →</a>
       </div>
     </section>
   </main>

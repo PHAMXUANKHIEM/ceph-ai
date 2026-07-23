@@ -6,9 +6,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
-from dashboard.routes.audit import recent_audit_entries
 from dashboard.routes.auth import require_login
 from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
+from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
 from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
@@ -68,6 +68,13 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
     failed chat action is still fully visible via its own Action row/audit
     trail, just not conflated with cluster health.
 
+    Same reasoning applies to `dashboard/routes/upgrade.py`'s synthetic
+    Incident (ceph_code=CLUSTER_UPGRADE_CEPH_CODE) — an upgrade proposal
+    that's rejected, or whose `ceph orch upgrade start` command itself
+    fails to send, must not flip the cluster-wide health badge to "ERR"
+    either; it's the same kind of "our own pipeline's outcome", not a real
+    `ceph health` signal.
+
     2026-07-23 fix #2: this used to derive ERR from
     `Incident.status == FAILED` — i.e. "did OUR remediation attempt fail",
     not "is the cluster actually in HEALTH_ERR". Those are different
@@ -85,7 +92,9 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
     via the Action row/pending-approval section/audit trail; it no longer
     overrides the cluster-health badge.
     """
-    real_incidents = [i for i in incidents if i.ceph_code != CHAT_REQUEST_CEPH_CODE]
+    real_incidents = [
+        i for i in incidents if i.ceph_code not in (CHAT_REQUEST_CEPH_CODE, CLUSTER_UPGRADE_CEPH_CODE)
+    ]
     open_incidents = [i for i in real_incidents if i.status in OPEN_STATUSES]
     if not open_incidents:
         return "UNKNOWN" if heartbeat_stale else "OK"
@@ -109,13 +118,50 @@ def is_heartbeat_stale(latest_heartbeat: WatcherHeartbeat | None) -> bool:
     return age > timedelta(seconds=HEARTBEAT_STALE_MULTIPLIER * settings.watcher_poll_interval_seconds)
 
 
-def _fetch_dashboard_data() -> tuple[
-    list[Incident], WatcherHeartbeat | None, bool, list[Action], list[AuditEntry]
+def _parse_datetime_filter(raw: str) -> datetime | None:
+    """Accepts the value an HTML <input type="datetime-local"> submits
+    (`YYYY-MM-DDTHH:MM`). Returns None for blank/unparseable input rather
+    than raising — an invalid filter should be silently ignored (show
+    everything), not 500 the whole page."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _query_audit_entries(
+    session, incident_id: str, since_dt: datetime | None, until_dt: datetime | None
+) -> list[AuditEntry]:
+    query = session.query(AuditEntry)
+    if incident_id:
+        query = query.filter(AuditEntry.incident_id == incident_id)
+    if since_dt is not None:
+        query = query.filter(AuditEntry.created_at >= since_dt)
+    if until_dt is not None:
+        query = query.filter(AuditEntry.created_at <= until_dt)
+    return query.order_by(AuditEntry.created_at.desc()).all()
+
+
+def _fetch_dashboard_data(
+    incident_id: str, since_dt: datetime | None, until_dt: datetime | None
+) -> tuple[
+    list[Incident], WatcherHeartbeat | None, bool, list[Action], list[AuditEntry], bool
 ]:
     with db.SessionLocal() as session:
         incidents = session.query(Incident).order_by(Incident.detected_at.desc()).all()
         latest_heartbeat = heartbeat.get_latest(session)
         kill_switch_enabled = is_kill_switch_enabled(session)
+        # Cheap DB-only signal (no SSH) for disabling "Duyệt" on every OTHER
+        # pending risky action while a cluster upgrade is proposed/approved —
+        # see dashboard/routes/upgrade.py::is_cluster_upgrade_pending_or_approved
+        # for what this does and does NOT cover (the window after the Worker
+        # has already sent `ceph orch upgrade start` is deliberately not
+        # checked here — that would need a live SSH call on every Dashboard
+        # page load; the authoritative gate for THAT window lives in
+        # dashboard/routes/actions.py::approve_action instead).
+        upgrade_blocks_other_actions = is_cluster_upgrade_pending_or_approved(session)
         # 2026-07-23 restore: a RISKY Action — whether from the auto-diagnosis
         # pipeline OR a chat-confirmed proposal (dashboard/routes/chat.py::
         # confirm_chat_action, same Action/Incident state machine) — lands
@@ -133,16 +179,30 @@ def _fetch_dashboard_data() -> tuple[
             .order_by(Action.created_at.desc())
             .all()
         )
-        # Dashboard-page preview of the same /audit page (Story: "move Audit
-        # Trail onto the Dashboard") — recent_audit_entries() is the exact
-        # same query audit_trail() itself runs unfiltered, just capped, so
-        # both pages stay backed by one data source instead of two.
-        audit_entries = recent_audit_entries(session)
-    return (incidents, latest_heartbeat, kill_switch_enabled, pending_actions, audit_entries)
+        # Audit Trail (filters + full history) now lives directly on the
+        # Dashboard — there is no separate /audit page anymore.
+        audit_entries = _query_audit_entries(session, incident_id, since_dt, until_dt)
+    return (
+        incidents,
+        latest_heartbeat,
+        kill_switch_enabled,
+        pending_actions,
+        audit_entries,
+        upgrade_blocks_other_actions,
+    )
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, user: str = Depends(require_login)):
+async def index(
+    request: Request,
+    user: str = Depends(require_login),
+    incident_id: str = "",
+    since: str = "",
+    until: str = "",
+):
+    incident_id = incident_id.strip()
+    since_dt = _parse_datetime_filter(since.strip())
+    until_dt = _parse_datetime_filter(until.strip())
     try:
         (
             incidents,
@@ -150,7 +210,8 @@ async def index(request: Request, user: str = Depends(require_login)):
             kill_switch_enabled,
             pending_actions,
             audit_entries,
-        ) = _fetch_dashboard_data()
+            upgrade_blocks_other_actions,
+        ) = _fetch_dashboard_data(incident_id, since_dt, until_dt)
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
         # (e.g. a malformed row) should surface the same friendly error,
@@ -193,6 +254,10 @@ async def index(request: Request, user: str = Depends(require_login)):
             "kill_switch_enabled": kill_switch_enabled,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
+            "filter_incident_id": incident_id,
+            "filter_since": since,
+            "filter_until": until,
+            "upgrade_blocks_other_actions": upgrade_blocks_other_actions,
         },
     )
 

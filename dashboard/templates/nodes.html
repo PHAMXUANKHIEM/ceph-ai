@@ -11,8 +11,8 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link active">Nodes</a>
-        <a href="/audit" class="nav-link">Audit Trail</a>
+        <a href="/nodes" class="nav-link active">Metrics Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
         <a href="/settings" class="nav-link">Cài đặt</a>
       </nav>
       <form method="post" action="/logout" class="topbar-user">
@@ -73,39 +73,6 @@
       </div>
     </section>
 
-    <section class="card" id="cli-panel" data-host="{{ selected_host }}">
-      <div class="card-header">
-        <h2>Chẩn đoán nhanh</h2>
-      </div>
-      <div class="card-body">
-        <p class="hint">
-          Chỉ các lệnh đọc (read-only) đã duyệt sẵn — không có ô nhập lệnh tự do.
-          Mọi lần chạy đều được ghi lại bên dưới (host, lệnh, kết quả, người chạy).
-        </p>
-        <div class="cli-buttons" id="cli-buttons"></div>
-        <div class="cli-output" id="cli-output" hidden>
-          <div class="cli-output-head">
-            <span id="cli-output-title"></span>
-            <span class="cli-output-meta" id="cli-output-meta"></span>
-          </div>
-          <pre class="cli-output-body" id="cli-output-body"></pre>
-        </div>
-        <div class="cli-history">
-          <h3 class="cli-history-title">Lịch sử chạy lệnh</h3>
-          <div class="table-wrap">
-            <table id="cli-history-table">
-              <thead>
-                <tr><th>Thời điểm</th><th>Lệnh</th><th>Người chạy</th><th>Kết quả</th></tr>
-              </thead>
-              <tbody id="cli-history-body">
-                <tr class="empty-row"><td colspan="4" class="empty-state">Chưa có lịch sử.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
-
     {% if selected_node and 'RGW' in selected_node.roles %}
     <section class="card" id="rgw-log-panel" data-host="{{ selected_host }}">
       <div class="card-header">
@@ -143,7 +110,6 @@
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/nodes.js?v={{ static_version }}"></script>
-  <script src="/static/nodes_cli.js?v={{ static_version }}"></script>
   <script src="/static/nodes_rgw_log.js?v={{ static_version }}"></script>
 </body>
 </html>
