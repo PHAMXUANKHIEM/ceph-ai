@@ -28,7 +28,6 @@ TEST_CEPH_MON_HOSTNAMES = "khiempx-mon1,khiempx-mon2,khiempx-mon3"
 TEST_CEPH_CONTAINER_NAME = "ceph-mon-B"
 TEST_CEPH_OSD_NODES = "10.20.1.83,10.20.1.78,10.20.1.1"
 TEST_CEPH_OSD_CONTAINER_NAME = "ceph-osd-B"
-TEST_SSH_KEY_PATH = "/root/.ssh/ceph_lab_watcher"
 # Blank by default (like the real production default) — most tests don't
 # care about MGR nodes at all, and a nonblank value here would silently leak
 # an extra configured host into every test that lists nodes (e.g. the Nodes
@@ -64,11 +63,28 @@ TEST_ROUTER_BASE_URL = "http://localhost:20128"
 
 
 @pytest.fixture(autouse=True)
-def _pin_cluster_settings(monkeypatch):
+def _pin_cluster_settings(monkeypatch, tmp_path):
     """Applies to every test in the suite (autouse, defined in the top-level
     conftest.py) — individual tests are still free to monkeypatch their own
     narrower values on top of these within their own test body; monkeypatch
-    calls simply layer in call order, same as any other fixture override."""
+    calls simply layer in call order, same as any other fixture override.
+
+    2026-07-23 fix: ssh_key_path used to be pinned to a hardcoded real path
+    (`/root/.ssh/ceph_lab_watcher`) that happens to exist on this specific
+    lab machine (the actual Watcher SSH key) — every test that never
+    explicitly overrides ssh_key_path itself (most of tests/
+    test_dashboard_settings.py's cluster-connection tests) was silently
+    passing an "does this key file exist" check only because of that
+    coincidence, not because the test suite is actually hermetic. A truly
+    clean environment (verified: GitHub Actions CI) has no such file, so
+    those tests failed there while passing here — not flakiness, a real
+    portability bug. Pointing this at a `tmp_path`-created file (guaranteed
+    to exist, unique per test, cleaned up by pytest automatically) makes
+    the suite depend on nothing outside its own tmp dir.
+    """
+    test_ssh_key_path = tmp_path / "ceph_lab_watcher_test_key"
+    test_ssh_key_path.write_text("fake test-only private key, never used for a real SSH connection\n")
+
     monkeypatch.setattr(settings, "router_api_key", TEST_ROUTER_API_KEY)
     monkeypatch.setattr(settings, "router_model", TEST_ROUTER_MODEL)
     monkeypatch.setattr(settings, "router_base_url", TEST_ROUTER_BASE_URL)
@@ -82,7 +98,7 @@ def _pin_cluster_settings(monkeypatch):
     monkeypatch.setattr(settings, "ceph_rgw_nodes", TEST_CEPH_RGW_NODES)
     monkeypatch.setattr(settings, "ceph_rgw_container_name", TEST_CEPH_RGW_CONTAINER_NAME)
     monkeypatch.setattr(settings, "ceph_exec_mode", TEST_CEPH_EXEC_MODE)
-    monkeypatch.setattr(settings, "ssh_key_path", TEST_SSH_KEY_PATH)
+    monkeypatch.setattr(settings, "ssh_key_path", str(test_ssh_key_path))
 
 
 @pytest.fixture()
