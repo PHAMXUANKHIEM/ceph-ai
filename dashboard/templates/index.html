@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Ceph AIOps Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <div class="mon-strip">
+    <div class="mon-strip-inner">
+      <span class="mon-strip-label">MON</span>
+      {% for node in cluster_mon_nodes.split(',') %}
+        {% set node = node.strip() %}
+        {% if node %}
+          {% if heartbeat_stale %}
+            <span class="mon-node-chip"><span class="mon-dot is-offline"></span>{{ node }}</span>
+          {% elif heartbeat and node == heartbeat.mon_node %}
+            <span class="mon-node-chip is-online"><span class="mon-dot is-online"></span>{{ node }}</span>
+          {% else %}
+            <span class="mon-node-chip"><span class="mon-dot"></span>{{ node }}</span>
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link active">Dashboard</a>
+        <a href="/nodes" class="nav-link">Nodes</a>
+        <a href="/audit" class="nav-link">Audit Trail</a>
+        <a href="/settings" class="nav-link">Cài đặt</a>
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <div class="app-body">
+  <main class="page">
+    <section class="kill-switch {% if kill_switch_enabled %}kill-switch-active{% endif %}">
+      <form method="post" action="/kill-switch">
+        <input type="hidden" name="enabled" value="{{ 'false' if kill_switch_enabled else 'true' }}">
+        {% if kill_switch_enabled %}
+          <strong>🛑 KILL-SWITCH ĐANG BẬT — mọi auto-remediation (Safe lẫn Risky đã duyệt) bị chặn.</strong>
+          <button type="submit" class="btn btn-kill-switch-off">Tắt kill-switch</button>
+        {% else %}
+          <button type="submit" class="btn btn-kill-switch-on">🛑 Bật khẩn cấp — dừng toàn bộ tự động hoá</button>
+        {% endif %}
+      </form>
+    </section>
+
+    <section class="card auto-approve-card {% if auto_approve_restart_osd_enabled %}auto-approve-active{% endif %}">
+      <div class="card-body auto-approve-body">
+        <div>
+          <strong>
+            {% if auto_approve_restart_osd_enabled %}
+              🤖 Tự động restart OSD ĐANG BẬT
+            {% else %}
+              Tự động restart OSD: đang TẮT
+            {% endif %}
+          </strong>
+          <p class="hint">
+            {% if auto_approve_restart_osd_enabled %}
+              Khi phát hiện OSD_DOWN, AI tự chạy lệnh restart OSD daemon ngay, không cần bạn bấm Duyệt.
+            {% else %}
+              Hiện tại hành động restart OSD (RISKY) vẫn cần bạn bấm Duyệt thủ công cho từng Incident. Bật lên để AI tự chạy ngay khi phát hiện lỗi.
+            {% endif %}
+            Chỉ áp dụng cho <code>restart_osd_daemon</code> — các hành động RISKY khác vẫn cần duyệt tay.
+          </p>
+        </div>
+        <form
+          method="post"
+          action="/auto-approve-restart-osd"
+          onsubmit="return confirm({% if auto_approve_restart_osd_enabled %}'Tắt tự động restart OSD? Sự cố OSD_DOWN tiếp theo sẽ quay lại chờ bạn duyệt tay.'{% else %}'Bật tự động restart OSD? Từ giờ, mỗi khi phát hiện OSD_DOWN, AI sẽ TỰ CHẠY lệnh restart OSD daemon ngay lập tức — KHÔNG hỏi bạn trước, KHÔNG cần bấm Duyệt. Có thể gây gián đoạn ngắn nếu restart nhầm lúc dữ liệu đang tái cân bằng/phục hồi. Bạn chắc chắn muốn bật?'{% endif %});"
+        >
+          <input type="hidden" name="enabled" value="{{ 'false' if auto_approve_restart_osd_enabled else 'true' }}">
+          {% if auto_approve_restart_osd_enabled %}
+            <button type="submit" class="btn btn-kill-switch-off">Tắt tự động restart OSD</button>
+          {% else %}
+            <button type="submit" class="btn btn-kill-switch-on">Bật tự động restart OSD</button>
+          {% endif %}
+        </form>
+      </div>
+    </section>
+
+    <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
+      {% if heartbeat_stale %}
+        <strong>⚠ Mất kết nối cụm Ceph</strong>
+        <p class="hint">
+          {% if heartbeat is none %}
+            Watcher chưa từng poll thành công lần nào kể từ khi khởi động.
+          {% elif not heartbeat.success %}
+            Lần poll gần nhất (lúc {{ heartbeat.polled_at|vntime }}) thất bại{% if heartbeat.error_message %}: {{ heartbeat.error_message }}{% endif %}.
+          {% else %}
+            Lần poll thành công gần nhất lúc {{ heartbeat.polled_at|vntime }} — đã quá lâu, Watcher có thể đã dừng hoạt động.
+          {% endif %}
+          Đây là cảnh báo MẤT KẾT NỐI tới cụm — khác với trạng thái sức khoẻ cluster bên dưới (cụm có thể đang khoẻ mạnh nhưng Watcher không SSH tới được).
+        </p>
+      {% else %}
+        <strong>✓ Đang kết nối cụm Ceph</strong>
+        <p class="hint">MON node trả lời gần nhất: <code>{{ heartbeat.mon_node }}</code> — lúc {{ heartbeat.polled_at|vntime }}.</p>
+      {% endif %}
+      <p class="hint">
+        Cụm đang theo dõi: MON nodes <code>{{ cluster_mon_nodes }}</code>{% if cluster_exec_mode in ("none", "cephadm") %}, không dùng tên container cố định ({{ cluster_exec_mode }}){% else %}, container <code>{{ cluster_container_name }}</code> ({{ cluster_exec_mode }}){% endif %} (chỉnh tại <a href="/settings">Cài đặt</a>).
+      </p>
+    </section>
+
+    <section class="status-strip">
+      <span class="status-pill status-{{ status|lower }}"><span class="dot"></span><strong>Trạng thái sức khoẻ cluster: {{ status }}</strong></span>
+      <p class="hint">Suy từ dữ liệu Incident đã ghi nhận — trạng thái có thể trễ tối đa vài giây so với cluster thật (theo chu kỳ poll của Watcher). Đây là tình trạng CỦA CLUSTER (vd HEALTH_WARN/HEALTH_ERR thật), khác với việc Watcher có kết nối được tới cụm hay không (xem section phía trên).</p>
+    </section>
+
+    {% if pending_actions %}
+    <section class="card">
+      <div class="card-header"><h2>Chờ duyệt — Risky Action</h2></div>
+      <div class="card-body pending-actions">
+        {% for action, incident in pending_actions %}
+        <article class="pending-action-card">
+          <p><strong>Mã lỗi:</strong> {{ incident.ceph_code if incident else "—" }}
+            {% if incident %}<span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span>{% endif %}</p>
+          <p><strong>Chẩn đoán:</strong> {{ incident.diagnosis_text if incident and incident.diagnosis_text else "—" }}</p>
+          <p><strong>Hành động đề xuất:</strong> <code>{{ action.action_id }}</code></p>
+          <p><strong>Giải thích rủi ro:</strong> {{ action.rationale if action.rationale else "—" }}</p>
+          <p><strong>Lệnh sẽ chạy:</strong>
+            {% if action.proposed_command %}<code>{{ action.proposed_command }}</code>
+            {% else %}<span class="hint">Không có lệnh tự động cho hành động này — bấm Duyệt sẽ đóng sự cố lại (ghi nhận đã xử lý thủ công), không có lệnh nào được chạy.</span>{% endif %}
+          </p>
+          <div class="pending-action-buttons">
+            <form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
+              <button type="submit" class="btn btn-approve">Duyệt</button>
+            </form>
+            <form method="post" action="/actions/{{ action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-reject">Từ chối</button>
+            </form>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-header"><h2>Incident Feed</h2></div>
+      <div class="card-body table-wrap">
+        <table id="incident-feed">
+          <thead>
+            <tr><th>Mã lỗi</th><th>Mức độ</th><th>Thời điểm phát hiện</th><th>Trạng thái</th><th>Chẩn đoán</th></tr>
+          </thead>
+          <tbody>
+            {% for incident in incidents %}
+            <tr>
+              <td>{{ incident.ceph_code }}</td>
+              <td>
+                {% if incident.severity == "HEALTH_ERR" %}
+                <span class="severity-badge severity-err">ERR</span>
+                {% elif incident.severity == "HEALTH_WARN" %}
+                <span class="severity-badge severity-warn">WARN</span>
+                {% else %}
+                <span class="hint">—</span>
+                {% endif %}
+              </td>
+              <td>{{ incident.detected_at|vntime }}</td>
+              <td>{{ incident.status }}</td>
+              <td>{% if incident.diagnosis_text %}{{ incident.diagnosis_text }}{% elif incident.status == "DIAGNOSING" %}Đang chẩn đoán...{% else %}—{% endif %}</td>
+            </tr>
+            {% else %}
+            <tr class="empty-row"><td colspan="5" class="empty-state"><span class="empty-icon" aria-hidden="true">&#8709;</span>Chưa có Incident nào.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Audit Trail</h2></div>
+      <div class="card-body table-wrap">
+        <table id="audit-feed-preview">
+          <thead>
+            <tr><th>Thời điểm</th><th>Incident</th><th>Action</th><th>Sự kiện</th><th>Người thực hiện</th></tr>
+          </thead>
+          <tbody>
+            {% for entry in audit_entries %}
+            <tr>
+              <td>{{ entry.created_at|vntime }}</td>
+              <td><code>{{ entry.incident_id }}</code></td>
+              <td>{% if entry.action_id %}<code>{{ entry.action_id }}</code>{% else %}—{% endif %}</td>
+              <td>{{ entry.event_type }}</td>
+              <td>{{ entry.actor }}</td>
+            </tr>
+            {% else %}
+            <tr class="empty-row"><td colspan="5" class="empty-state"><span class="empty-icon" aria-hidden="true">&#8709;</span>Chưa có hoạt động nào.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer">
+        <a href="/audit" class="card-footer-link">Xem tất cả →</a>
+      </div>
+    </section>
+  </main>
+
+  <aside class="chat-panel" id="chat-panel">
+    <header class="chat-panel-header">
+      <div class="chat-panel-title">
+        <span class="chat-panel-icon" aria-hidden="true">&#129302;</span>
+        <span>Chat với AI</span>
+      </div>
+      <div class="chat-panel-controls">
+        <button type="button" class="chat-panel-btn" id="chat-panel-history" aria-label="Lịch sử đoạn chat" title="Lịch sử đoạn chat">&#128337;</button>
+        <button type="button" class="chat-panel-btn" id="chat-panel-new-session" aria-label="Đoạn chat mới" title="Đoạn chat mới">&#43;</button>
+        <button type="button" class="chat-panel-btn" id="chat-panel-minimize" aria-label="Thu nhỏ" title="Thu nhỏ">&#8722;</button>
+        <button type="button" class="chat-panel-btn" id="chat-panel-close" aria-label="Đóng" title="Đóng">&#215;</button>
+      </div>
+    </header>
+
+    <div class="chat-panel-body" id="chat-panel-body">
+      <div class="chat-history-list-view" id="chat-history-list-view" hidden>
+        <div class="chat-history-list" id="chat-history-list"></div>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        <div class="chat-empty-state" id="chat-empty-state">
+          <span class="chat-empty-icon" aria-hidden="true">&#129302;</span>
+          <p class="chat-empty-text">Hỏi tôi về trạng thái cụm Ceph</p>
+          <p class="chat-empty-subtext">VD: cụm có bao nhiêu pool? OSD nào đang down?</p>
+        </div>
+      </div>
+
+      <p class="chat-error" id="chat-error" hidden></p>
+
+      <form class="chat-input-bar" id="chat-form">
+        <textarea
+          id="chat-input"
+          class="chat-textarea"
+          rows="1"
+          placeholder="Nhập câu hỏi về cụm Ceph..."
+          required
+        ></textarea>
+        <button type="submit" class="chat-send-btn" id="chat-send-btn" disabled aria-label="Gửi">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </form>
+    </div>
+  </aside>
+  </div>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/chat_widget.js?v={{ static_version }}"></script>
+</body>
+</html>

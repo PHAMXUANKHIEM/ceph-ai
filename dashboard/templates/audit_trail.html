@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Audit Trail — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Nodes</a>
+        <a href="/audit" class="nav-link active">Audit Trail</a>
+        <a href="/settings" class="nav-link">Cài đặt</a>
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-body">
+        <form method="get" action="/audit" class="audit-filters">
+          <label>Incident ID
+            <input type="text" name="incident_id" value="{{ filter_incident_id }}" placeholder="để trống = tất cả">
+          </label>
+          <label>Từ
+            <input type="datetime-local" name="since" value="{{ filter_since }}">
+          </label>
+          <label>Đến
+            <input type="datetime-local" name="until" value="{{ filter_until }}">
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Lọc</button>
+          <a href="/audit" class="btn btn-ghost btn-sm">Xoá lọc</a>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Audit Trail</h2></div>
+      <div class="card-body table-wrap">
+        <table id="audit-feed">
+          <thead>
+            <tr><th>Thời điểm</th><th>Incident</th><th>Action</th><th>Sự kiện</th><th>Người thực hiện</th></tr>
+          </thead>
+          <tbody>
+            {% for entry in entries %}
+            <tr>
+              <td>{{ entry.created_at|vntime }}</td>
+              <td><code>{{ entry.incident_id }}</code></td>
+              <td>{% if entry.action_id %}<code>{{ entry.action_id }}</code>{% else %}—{% endif %}</td>
+              <td>{{ entry.event_type }}</td>
+              <td>{{ entry.actor }}</td>
+            </tr>
+            {% else %}
+            <tr class="empty-row"><td colspan="5" class="empty-state"><span class="empty-icon" aria-hidden="true">&#8709;</span>Không có bản ghi audit nào khớp bộ lọc.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

@@ -1,0 +1,1539 @@
+import httpx
+import openai
+import pytest
+
+import dashboard.routes.settings as settings_route
+from config.settings import settings
+from watcher.ceph_client import CephQueryError
+
+
+def _login(client):
+    # dashboard_client fixture (conftest.py) pins these credentials.
+    client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def test_unauthenticated_get_settings_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/settings", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_authenticated_get_settings_returns_form(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+    assert response.status_code == 200
+    assert "API Key" in response.text
+
+
+# --- POST /settings/9router/save (Step 2 "[Lưu cấu hình]" button) ---------
+
+
+def test_post_settings_save_router_with_invalid_key_shows_error_and_does_not_persist(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return False, "API key không hợp lệ", None
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", False, raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-wrong",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "không hợp lệ" in response.text
+    assert "ROUTER_API_KEY" not in tmp_env.read_text()
+    assert settings.router_api_key == ""
+
+
+def test_post_settings_save_router_with_valid_key_persists_updates_settings_and_restarts_worker(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "Kết nối thành công — tìm thấy 1 model", ["gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", False, raising=False)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 99999, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-real-key-value",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu" in response.text
+    assert "khởi động lại Worker (PID 99999)" in response.text
+    env_text = tmp_env.read_text()
+    assert "ROUTER_API_KEY=sk-real-key-value" in env_text
+    assert "ROUTER_MODEL=gc/gemini-2.5-pro" in env_text
+    assert "ROUTER_BASE_URL=http://localhost:20128" in env_text
+    assert "ROUTER_ENABLED=true" in env_text
+    assert settings.router_api_key == "sk-real-key-value"
+    assert settings.router_model == "gc/gemini-2.5-pro"
+    assert settings.router_base_url == "http://localhost:20128"
+    assert settings.router_enabled is True
+
+
+def test_post_settings_save_router_persists_selected_model(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "ok", ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "router_model", "old-model", raising=False)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-real-key",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "ROUTER_MODEL=gc/gemini-2.5-pro" in tmp_env.read_text()
+    assert settings.router_model == "gc/gemini-2.5-pro"
+
+
+def test_post_settings_save_router_captures_submitted_base_url(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "router_base_url", "http://old-router.example", raising=False)
+    captured = []
+
+    async def fake_verify(api_key, base_url):
+        captured.append(base_url)
+        return True, "ok", ["gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-router-key",
+            "router_model_id": "gc/gemini-2.5-pro",
+            "router_base_url": "http://localhost:20128",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == ["http://localhost:20128"]
+    env_text = tmp_env.read_text()
+    assert "ROUTER_MODEL=gc/gemini-2.5-pro" in env_text
+    assert "ROUTER_BASE_URL=http://localhost:20128" in env_text
+    assert settings.router_base_url == "http://localhost:20128"
+
+
+def test_post_settings_save_router_blank_base_url_keeps_existing_one(dashboard_client, monkeypatch, tmp_path):
+    # Not a password field, but still falls back to the existing value when
+    # blank — the "[Đổi model]" flow re-saves without retyping the base_url.
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
+
+    async def fake_verify(api_key, base_url):
+        return True, "ok", ["gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={"router_api_key": "sk-router-key", "router_model_id": "gc/gemini-2.5-pro"},
+    )
+
+    assert response.status_code == 200
+    assert "ROUTER_BASE_URL=http://localhost:20128" in tmp_env.read_text()
+    assert settings.router_base_url == "http://localhost:20128"
+
+
+def test_post_settings_save_router_rejects_blank_base_url_with_nothing_already_configured(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "router_base_url", "", raising=False)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={"router_api_key": "sk-router-key", "router_model_id": "gc/gemini-2.5-pro"},
+    )
+
+    assert response.status_code == 200
+    assert "Base URL" in response.text
+    assert "ROUTER_BASE_URL" not in tmp_env.read_text()
+    assert settings.router_base_url == ""
+
+
+def test_post_settings_save_router_blank_model_shows_error_and_does_not_persist(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={"router_api_key": "sk-router-key", "router_base_url": "http://localhost:20128"},
+    )
+
+    assert response.status_code == 200
+    assert "Chưa chọn model" in response.text
+    assert "ROUTER_MODEL" not in tmp_env.read_text()
+
+
+def test_post_settings_save_router_model_not_in_returned_list_shows_error(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "ok", ["gc/gemini-2.5-flash"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-router-key",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/does-not-exist",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "không khả dụng" in response.text
+    assert "ROUTER_MODEL" not in tmp_env.read_text()
+
+
+def test_post_settings_save_router_valid_key_but_worker_restart_fails_still_reports_saved(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "ok", ["gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(
+        settings_route,
+        "restart_worker",
+        lambda: {"restarted": False, "new_pid": None, "error": "exited immediately"},
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-real-key-value",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    # Key save succeeded independently — must still be reported/persisted.
+    assert "Đã lưu" in response.text
+    assert "ROUTER_API_KEY=sk-real-key-value" in tmp_env.read_text()
+    assert settings.router_api_key == "sk-real-key-value"
+    # Restart failure is shown separately, not conflated with "wrong key".
+    assert "khởi động lại thủ công" in response.text
+    assert "không hợp lệ" not in response.text
+
+
+def test_post_settings_save_router_invalid_key_never_touches_worker_process_management(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return False, "API key không hợp lệ", None
+
+    restart_calls = []
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: restart_calls.append(1) or {}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-wrong",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "không hợp lệ" in response.text
+    assert restart_calls == []
+
+
+def test_post_settings_save_router_blank_key_keeps_existing_key_and_revalidates_it(
+    dashboard_client, monkeypatch, tmp_path
+):
+    # The api_key field is a password input that never gets pre-filled with
+    # the real (masked) value — an operator picking a different model must
+    # be able to save without retyping a key they aren't actually changing.
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\nROUTER_API_KEY=sk-already-configured\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "router_api_key", "sk-already-configured", raising=False)
+    monkeypatch.setattr(settings, "router_model", "old-model", raising=False)
+
+    captured = []
+
+    async def fake_verify(api_key, base_url):
+        captured.append(api_key)
+        return True, "ok", ["new-model"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={"router_base_url": "http://localhost:20128", "router_model_id": "new-model"},
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu" in response.text
+    assert captured == ["sk-already-configured"]
+    env_text = tmp_env.read_text()
+    assert "ROUTER_API_KEY=sk-already-configured" in env_text
+    assert "ROUTER_MODEL=new-model" in env_text
+
+
+def test_post_settings_save_router_network_error_shows_the_underlying_reason(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def flaky_verify(api_key, base_url):
+        return False, "network unreachable", None
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", flaky_verify)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-whatever",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "network unreachable" in response.text
+    assert "Đã lưu" not in response.text
+
+
+def test_post_settings_save_router_valid_key_but_restart_internals_raise_returns_200_not_500(
+    dashboard_client, monkeypatch, tmp_path
+):
+    # HTTP-level version of test_restart_worker_never_raises_on_internal_error
+    # — proves the raised exception never escapes as a raw FastAPI 500,
+    # exercised through the real POST /settings/9router/save route (not by
+    # calling restart_worker() directly).
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "ok", ["gc/gemini-2.5-pro"]
+
+    def boom():
+        raise RuntimeError("pgrep exploded")
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings_route, "_find_worker_pids", boom)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-real-key-value",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "gc/gemini-2.5-pro",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu" in response.text
+    assert "ROUTER_API_KEY=sk-real-key-value" in tmp_env.read_text()
+    assert "khởi động lại thủ công" in response.text
+    assert "pgrep exploded" not in response.text  # no raw exception leaked to the page
+
+
+# --- POST /settings/9router/disconnect ("[Huỷ kết nối]" button) -----------
+
+
+def test_unauthenticated_post_9router_disconnect_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/9router/disconnect", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_post_9router_disconnect_clears_config_and_restarts_worker(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text(
+        "DASHBOARD_USERNAME=admin\n"
+        "ROUTER_API_KEY=sk-currently-connected\n"
+        "ROUTER_MODEL=gc/gemini-2.5-pro\n"
+        "ROUTER_BASE_URL=http://localhost:20128\n"
+        "ROUTER_ENABLED=true\n"
+    )
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "router_api_key", "sk-currently-connected", raising=False)
+    monkeypatch.setattr(settings, "router_model", "gc/gemini-2.5-pro", raising=False)
+    monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", True, raising=False)
+    restart_calls = []
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: restart_calls.append(1) or {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/9router/disconnect")
+
+    assert response.status_code == 200
+    assert "Đã huỷ kết nối" in response.text
+    env_text = tmp_env.read_text()
+    assert "ROUTER_API_KEY=" in env_text and "sk-currently-connected" not in env_text
+    assert "ROUTER_ENABLED=false" in env_text
+    assert settings.router_api_key == ""
+    assert settings.router_model == ""
+    assert settings.router_base_url == ""
+    assert settings.router_enabled is False
+    assert restart_calls == [1]
+
+
+# --- restart_worker/restart_watcher process management ---------------------
+
+
+def test_restart_worker_starts_new_before_stopping_old(monkeypatch):
+    # Start-before-stop is deliberate: if starting the new process fails, the
+    # old one must still be running — never end up with zero Workers.
+    calls = []
+    monkeypatch.setattr(settings_route, "_find_worker_pids", lambda: [111, 222])
+    monkeypatch.setattr(settings_route, "_stop_worker", lambda pids, **kw: calls.append(("stop", pids)))
+    monkeypatch.setattr(settings_route, "_start_worker", lambda: calls.append(("start",)) or 333)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_worker()
+
+    assert calls == [("start",), ("stop", [111, 222])]
+    assert result == {"restarted": True, "new_pid": 333, "error": None}
+
+
+def test_restart_worker_leaves_old_process_running_when_new_start_fails(monkeypatch):
+    stop_calls = []
+    monkeypatch.setattr(settings_route, "_find_worker_pids", lambda: [111])
+    monkeypatch.setattr(settings_route, "_stop_worker", lambda pids, **kw: stop_calls.append(pids))
+    monkeypatch.setattr(settings_route, "_start_worker", lambda: 999)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: False)  # new process died
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_worker()
+
+    assert result["restarted"] is False
+    # The old (still-working) process must NOT have been touched.
+    assert stop_calls == []
+
+
+def test_restart_worker_with_no_prior_worker_still_starts_one(monkeypatch):
+    calls = []
+    monkeypatch.setattr(settings_route, "_find_worker_pids", lambda: [])
+    monkeypatch.setattr(
+        settings_route, "_stop_worker", lambda pids, **kw: calls.append(("stop", pids))
+    )
+    monkeypatch.setattr(settings_route, "_start_worker", lambda: 444)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_worker()
+
+    assert calls == []  # _stop_worker never called when there's nothing to stop
+    assert result == {"restarted": True, "new_pid": 444, "error": None}
+
+
+def test_restart_worker_reports_failure_when_new_process_dies_immediately(monkeypatch):
+    monkeypatch.setattr(settings_route, "_find_worker_pids", lambda: [])
+    monkeypatch.setattr(settings_route, "_start_worker", lambda: 555)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_worker()
+
+    assert result["restarted"] is False
+    assert result["new_pid"] is None
+    assert result["error"] is not None
+
+
+def test_restart_worker_never_raises_on_internal_error(monkeypatch):
+    def boom():
+        raise RuntimeError("pgrep exploded")
+
+    monkeypatch.setattr(settings_route, "_find_worker_pids", boom)
+
+    result = settings_route.restart_worker()
+
+    assert result["restarted"] is False
+    assert result["error"] is not None
+    # Raw exception text must not leak to the (eventually user-facing) message.
+    assert "pgrep exploded" not in result["error"]
+
+
+# --- Story 5.1: restart_watcher() mirrors restart_worker() exactly --------
+
+
+def test_restart_watcher_starts_new_before_stopping_old(monkeypatch):
+    calls = []
+    monkeypatch.setattr(settings_route, "_find_watcher_pids", lambda: [111, 222])
+    monkeypatch.setattr(settings_route, "_stop_worker", lambda pids, **kw: calls.append(("stop", pids)))
+    monkeypatch.setattr(settings_route, "_start_watcher", lambda: calls.append(("start",)) or 333)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_watcher()
+
+    assert calls == [("start",), ("stop", [111, 222])]
+    assert result == {"restarted": True, "new_pid": 333, "error": None}
+
+
+def test_restart_watcher_leaves_old_process_running_when_new_start_fails(monkeypatch):
+    stop_calls = []
+    monkeypatch.setattr(settings_route, "_find_watcher_pids", lambda: [111])
+    monkeypatch.setattr(settings_route, "_stop_worker", lambda pids, **kw: stop_calls.append(pids))
+    monkeypatch.setattr(settings_route, "_start_watcher", lambda: 999)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_watcher()
+
+    assert result["restarted"] is False
+    assert stop_calls == []
+
+
+def test_restart_watcher_with_no_prior_watcher_still_starts_one(monkeypatch):
+    calls = []
+    monkeypatch.setattr(settings_route, "_find_watcher_pids", lambda: [])
+    monkeypatch.setattr(
+        settings_route, "_stop_worker", lambda pids, **kw: calls.append(("stop", pids))
+    )
+    monkeypatch.setattr(settings_route, "_start_watcher", lambda: 444)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_watcher()
+
+    assert calls == []
+    assert result == {"restarted": True, "new_pid": 444, "error": None}
+
+
+def test_restart_watcher_reports_failure_when_new_process_dies_immediately(monkeypatch):
+    monkeypatch.setattr(settings_route, "_find_watcher_pids", lambda: [])
+    monkeypatch.setattr(settings_route, "_start_watcher", lambda: 555)
+    monkeypatch.setattr(settings_route, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(settings_route.time, "sleep", lambda _s: None)
+
+    result = settings_route.restart_watcher()
+
+    assert result["restarted"] is False
+    assert result["new_pid"] is None
+    assert result["error"] is not None
+
+
+def test_restart_watcher_never_raises_on_internal_error(monkeypatch):
+    def boom():
+        raise RuntimeError("pgrep exploded")
+
+    monkeypatch.setattr(settings_route, "_find_watcher_pids", boom)
+
+    result = settings_route.restart_watcher()
+
+    assert result["restarted"] is False
+    assert result["error"] is not None
+    assert "pgrep exploded" not in result["error"]
+
+
+def test_find_watcher_pids_uses_correct_pgrep_pattern_with_double_dash(monkeypatch):
+    # Regression guard for the Story 2.4/2.5 bug: pgrep -f "-m\s+..." (no --)
+    # makes pgrep parse "-m" as its own flag and exit with an error.
+    captured_args = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        captured_args.append(args)
+        return FakeResult()
+
+    monkeypatch.setattr(settings_route.subprocess, "run", fake_run)
+
+    settings_route._find_watcher_pids()
+
+    assert captured_args == [["pgrep", "-f", "--", settings_route.WATCHER_PGREP_PATTERN]]
+
+
+@pytest.mark.live
+def test_watcher_process_management_against_a_real_spawned_process(monkeypatch):
+    """Real OS-level test, mirrors test_worker_process_management_against_a_real_spawned_process —
+    actually spawns, finds, and kills a real `watcher.main` subprocess."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".log", delete=False) as f:
+        log_path = f.name
+    monkeypatch.setattr(settings_route, "WATCHER_LOG_PATH", settings_route.Path(log_path))
+
+    assert (
+        settings_route._find_watcher_pids() == []
+    ), "test must start with no watcher.main running"
+
+    pid = settings_route._start_watcher()
+    try:
+        assert settings_route._pid_alive(pid)
+        found = settings_route._find_watcher_pids()
+        assert pid in found
+    finally:
+        settings_route._stop_worker([pid])
+
+    assert not settings_route._pid_alive(pid)
+    assert pid not in settings_route._find_watcher_pids()
+
+
+# --- Story 5.1: cluster connection config route ----------------------------
+
+
+def _cluster_form_data(**overrides):
+    data = {
+        "ceph_mon_nodes": "10.9.9.1,10.9.9.2",
+        "ceph_mon_hostnames": "mon1,mon2",
+        "ceph_container_name": "ceph-mon-B",
+        "ceph_osd_nodes": "10.9.9.3",
+        "ceph_osd_container_name": "ceph-osd-B",
+        "ssh_user": "root",
+        "ssh_key_path": "/root/.ssh/some_key",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_get_settings_shows_cluster_form_with_current_values(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+    assert response.status_code == 200
+    assert settings.ceph_mon_nodes in response.text
+
+
+def test_get_settings_shows_public_key_when_pub_file_exists(dashboard_client, monkeypatch, tmp_path):
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake private key")
+    pub_file = tmp_path / "test_key.pub"
+    pub_file.write_text("ssh-ed25519 AAAAfakepubkey watcher@host\n")
+    monkeypatch.setattr(settings, "ssh_key_path", str(key_file), raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "ssh-ed25519 AAAAfakepubkey watcher@host" in response.text
+
+
+def test_get_settings_shows_hint_when_no_public_key_file(dashboard_client, monkeypatch, tmp_path):
+    key_file = tmp_path / "test_key_without_pub"
+    key_file.write_text("fake private key")
+    monkeypatch.setattr(settings, "ssh_key_path", str(key_file), raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Không tìm thấy file public key" in response.text
+
+
+def test_post_cluster_settings_missing_required_field_shows_error_and_skips_connection_test(
+    dashboard_client, monkeypatch
+):
+    called = []
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: called.append(1),
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster", data=_cluster_form_data(ceph_mon_nodes="")
+    )
+
+    assert response.status_code == 200
+    assert called == []
+
+
+def test_post_cluster_settings_missing_ssh_key_path_shows_error_and_skips_ssh(
+    dashboard_client, monkeypatch, tmp_path
+):
+    # ssh_key_path is no longer a form field — a bad path is now a
+    # server-config problem (settings.ssh_key_path), not something the
+    # submitted form data can express.
+    called = []
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: called.append(1),
+    )
+    missing_path = str(tmp_path / "no_such_key")
+    monkeypatch.setattr(settings, "ssh_key_path", missing_path)
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/cluster", data=_cluster_form_data())
+
+    assert response.status_code == 200
+    assert "không tồn tại" in response.text
+    assert called == []  # AC #4: never attempts SSH when the key path itself is bad
+
+
+def test_post_cluster_settings_blank_ssh_key_path_shows_distinct_server_config_error(
+    dashboard_client, monkeypatch
+):
+    called = []
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: called.append(1),
+    )
+    monkeypatch.setattr(settings, "ssh_key_path", "")
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/cluster", data=_cluster_form_data())
+
+    assert response.status_code == 200
+    assert "Chưa cấu hình SSH key path trên server" in response.text
+    assert called == []
+
+
+def test_post_cluster_settings_connection_test_fails_does_not_persist_or_restart(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake key")
+
+    def fake_query(*a, **kw):
+        raise CephQueryError("all MON nodes failed")
+
+    monkeypatch.setattr(settings_route, "query_cluster_health_with", fake_query)
+    restart_calls = []
+    monkeypatch.setattr(
+        settings_route, "restart_watcher", lambda: restart_calls.append(1) or {}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster", data=_cluster_form_data(ssh_key_path=str(key_file))
+    )
+
+    assert response.status_code == 200
+    assert "Không kết nối được" in response.text
+    assert "CEPH_MON_NODES" not in tmp_env.read_text()
+    assert restart_calls == []
+
+
+def test_post_cluster_settings_success_persists_updates_settings_and_restarts_watcher(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake key")
+
+    captured_query_args = []
+
+    def fake_query(mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode="docker"):
+        captured_query_args.append((mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode))
+        return {"status": "HEALTH_OK", "checks": {}}
+
+    monkeypatch.setattr(settings_route, "query_cluster_health_with", fake_query)
+    monkeypatch.setattr(
+        settings_route,
+        "restart_watcher",
+        lambda: {"restarted": True, "new_pid": 55555, "error": None},
+    )
+    # The route under test mutates the real `settings` singleton directly
+    # (not via monkeypatch) for all CLUSTER_ENV_NAMES fields. Priming each
+    # one with monkeypatch.setattr(self-value) here registers pytest's
+    # teardown to restore whatever the ORIGINAL value was, regardless of the
+    # route's later direct assignment — otherwise this test would leak
+    # mutated `settings` state into every test that runs after it in this
+    # session (Review Story 5.1).
+    for field in settings_route.CLUSTER_ENV_NAMES:
+        monkeypatch.setattr(settings, field, getattr(settings, field))
+    # ssh_key_path is a server-side setting, not a submitted form field —
+    # pin it explicitly to what this test expects the connection test/save
+    # to see.
+    monkeypatch.setattr(settings, "ssh_key_path", str(key_file))
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster",
+        data=_cluster_form_data(ceph_mon_nodes="9.9.9.1, 9.9.9.2"),
+    )
+
+    assert response.status_code == 200
+    assert "Kết nối thành công" in response.text
+    assert "55555" in response.text
+    # Connection was tested with the SUBMITTED cluster values, plus the
+    # server-configured (not submitted) ssh_key_path.
+    assert captured_query_args == [(["9.9.9.1", "9.9.9.2"], "ceph-mon-B", "root", str(key_file), "docker")]
+    env_text = tmp_env.read_text()
+    assert "CEPH_MON_NODES=9.9.9.1, 9.9.9.2" in env_text
+    # ssh_key_path is never written by this route — it's not part of
+    # CLUSTER_ENV_NAMES anymore.
+    assert "SSH_KEY_PATH" not in env_text
+    assert settings.ceph_mon_nodes == "9.9.9.1, 9.9.9.2"
+    assert settings.ssh_key_path == str(key_file)
+
+
+def test_post_cluster_settings_watcher_restart_failure_still_reports_saved(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake key")
+
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: {"status": "HEALTH_OK", "checks": {}},
+    )
+    monkeypatch.setattr(
+        settings_route,
+        "restart_watcher",
+        lambda: {"restarted": False, "new_pid": None, "error": "boom"},
+    )
+    for field in settings_route.CLUSTER_ENV_NAMES:
+        monkeypatch.setattr(settings, field, getattr(settings, field))
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster", data=_cluster_form_data(ssh_key_path=str(key_file))
+    )
+
+    assert response.status_code == 200
+    assert "Kết nối thành công" in response.text
+    assert "khởi động lại thủ công" in response.text
+    # Config save itself must not be reported as failed just because restart was.
+    assert "CEPH_MON_NODES" in tmp_env.read_text()
+
+
+# --- Multi-deploy-mode support: ceph_exec_mode (docker/podman/none) --------
+
+
+def test_post_cluster_settings_none_mode_does_not_require_container_name(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake key")
+
+    captured = []
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: captured.append((a, kw)) or {"status": "HEALTH_OK", "checks": {}},
+    )
+    monkeypatch.setattr(
+        settings_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+    for field in settings_route.CLUSTER_ENV_NAMES:
+        monkeypatch.setattr(settings, field, getattr(settings, field))
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster",
+        data=_cluster_form_data(
+            ceph_container_name="", ceph_osd_container_name="", ceph_exec_mode="none",
+            ssh_key_path=str(key_file),
+        ),
+    )
+
+    assert response.status_code == 200
+    assert "Kết nối thành công" in response.text
+    assert "CEPH_EXEC_MODE=none" in tmp_env.read_text()
+    assert captured  # the connection test still ran, just without a container name
+
+
+def test_post_cluster_settings_cephadm_mode_does_not_require_container_name(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    captured = []
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: captured.append((a, kw)) or {"status": "HEALTH_OK", "checks": {}},
+    )
+    monkeypatch.setattr(
+        settings_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+    for field in settings_route.CLUSTER_ENV_NAMES:
+        monkeypatch.setattr(settings, field, getattr(settings, field))
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster",
+        data=_cluster_form_data(
+            ceph_container_name="", ceph_osd_container_name="", ceph_exec_mode="cephadm",
+            ceph_mgr_nodes="10.20.1.112",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert "Kết nối thành công" in response.text
+    assert "CEPH_EXEC_MODE=cephadm" in tmp_env.read_text()
+    assert "CEPH_MGR_NODES=10.20.1.112" in tmp_env.read_text()
+    assert captured  # the connection test still ran, just without a container name
+    # exec_mode is passed through to the connection test as the 5th positional arg.
+    assert captured[0][0][4] == "cephadm"
+
+
+def test_post_cluster_settings_docker_mode_still_requires_container_name(
+    dashboard_client, monkeypatch
+):
+    called = []
+    monkeypatch.setattr(
+        settings_route, "query_cluster_health_with", lambda *a, **kw: called.append(1)
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster",
+        data=_cluster_form_data(ceph_container_name="", ceph_exec_mode="docker"),
+    )
+
+    assert response.status_code == 200
+    assert "Vui lòng điền đủ" in response.text
+    assert called == []
+
+
+def test_post_cluster_settings_rejects_unknown_exec_mode(dashboard_client, monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        settings_route, "query_cluster_health_with", lambda *a, **kw: called.append(1)
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster", data=_cluster_form_data(ceph_exec_mode="docker-compose")
+    )
+
+    assert response.status_code == 200
+    assert "Kiểu deploy không hợp lệ" in response.text
+    assert called == []
+
+
+def test_get_settings_renders_current_exec_mode_as_selected(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "ceph_exec_mode", "podman", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'value="podman" selected' in response.text
+
+
+def test_get_settings_renders_cephadm_mode_and_mgr_nodes(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "10.20.1.112,10.20.1.95", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'value="cephadm" selected' in response.text
+    assert "10.20.1.112,10.20.1.95" in response.text
+
+
+# --- Review Story 5.1: embedded-newline injection guard + cross-form -------
+# independence (findings from Blind Hunter / Edge Case Hunter / Acceptance
+# Auditor) --------------------------------------------------------------
+
+
+def test_post_cluster_settings_rejects_embedded_newline_and_does_not_write_env(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\nSESSION_SECRET_KEY=untouched\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake key")
+    monkeypatch.setattr(
+        settings_route,
+        "query_cluster_health_with",
+        lambda *a, **kw: {"status": "HEALTH_OK", "checks": {}},
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster",
+        data=_cluster_form_data(
+            ceph_container_name="ceph-mon-B\nSESSION_SECRET_KEY=pwned", ssh_key_path=str(key_file)
+        ),
+    )
+
+    assert response.status_code == 200
+    env_text = tmp_env.read_text()
+    assert "SESSION_SECRET_KEY=untouched" in env_text  # not overwritten
+    assert "pwned" not in env_text
+
+
+def test_apply_env_updates_rejects_newline_in_value():
+    with pytest.raises(ValueError):
+        settings_route._apply_env_updates([], {"SOME_KEY": "line1\nSOME_OTHER_KEY=injected"})
+
+
+def test_cluster_form_submission_does_not_leak_into_9router_form_state(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cluster", data=_cluster_form_data(ceph_mon_nodes="")
+    )
+
+    assert response.status_code == 200
+    assert "Vui lòng điền đủ" in response.text  # cluster_error IS shown
+    assert "API key không được để trống" not in response.text  # 9router form's error stays unset
+
+
+def test_9router_form_submission_does_not_leak_into_cluster_form_state(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    # Blank now falls back to whatever's already configured — pin it blank
+    # too so a blank submission still hits the "nothing configured" error.
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save", data={"router_api_key": "   ", "router_model_id": "gc/gemini-2.5-pro"}
+    )
+
+    assert response.status_code == 200
+    assert "API key không được để trống" in response.text
+    assert "Vui lòng điền đủ" not in response.text  # cluster form's error stays unset
+
+
+def test_post_settings_save_router_empty_key_shows_error(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    # Blank now falls back to whatever's already configured (see the
+    # "keep existing key" test above) — pin it blank too so this still
+    # tests the genuine "nothing configured at all yet" case.
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save", data={"router_api_key": "   ", "router_model_id": "gc/gemini-2.5-pro"}
+    )
+
+    assert response.status_code == 200
+    assert "không được để trống" in response.text
+
+
+def test_update_env_file_replaces_existing_line_in_place(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("DASHBOARD_USERNAME=admin\nROUTER_API_KEY=old-key\nOTHER=1\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", env_file)
+
+    settings_route._update_env_file("ROUTER_API_KEY", "new-key")
+
+    lines = env_file.read_text().splitlines()
+    assert lines == ["DASHBOARD_USERNAME=admin", "ROUTER_API_KEY=new-key", "OTHER=1"]
+
+
+def test_update_env_file_appends_when_missing(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", env_file)
+
+    settings_route._update_env_file("ROUTER_API_KEY", "brand-new-key")
+
+    lines = env_file.read_text().splitlines()
+    assert lines == ["DASHBOARD_USERNAME=admin", "ROUTER_API_KEY=brand-new-key"]
+
+
+def test_mask_key_shows_only_last_few_chars():
+    masked = settings_route._mask_key("sk-ant-api03-abcdefghijklmnopqrstuvwxyz")
+    assert masked.startswith("...")
+    assert "sk-ant-api03" not in masked
+    assert masked.endswith("wxyz")
+    assert masked == "...wxyz"
+
+
+@pytest.mark.parametrize("short_key", ["a", "ab", "abc", "abcd", "abcde", "abcdefghijklmnop"])
+def test_mask_key_never_reveals_the_full_key_even_when_short(short_key):
+    masked = settings_route._mask_key(short_key)
+    # This was a real AC violation before: `_mask_key` used to return
+    # "..." + the entire key for anything <= 12 chars, i.e. fully unmasked.
+    assert masked != "..." + short_key
+
+
+@pytest.mark.live
+def test_worker_process_management_against_a_real_spawned_process(monkeypatch):
+    """Real OS-level test for _find_worker_pids/_start_worker/_stop_worker —
+    every other test in this file mocks these three; this one actually
+    spawns, finds, and kills a real `worker.main` subprocess."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".log", delete=False) as f:
+        log_path = f.name
+    monkeypatch.setattr(settings_route, "WORKER_LOG_PATH", settings_route.Path(log_path))
+
+    assert settings_route._find_worker_pids() == [], "test must start with no worker.main running"
+
+    pid = settings_route._start_worker()
+    try:
+        assert settings_route._pid_alive(pid)
+        found = settings_route._find_worker_pids()
+        assert pid in found
+    finally:
+        settings_route._stop_worker([pid])
+
+    assert not settings_route._pid_alive(pid)
+    assert pid not in settings_route._find_worker_pids()
+
+
+# --- Dashboard self-restart (POST /settings/restart-dashboard) -------------
+
+
+def test_unauthenticated_restart_dashboard_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/restart-dashboard", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_restart_dashboard_launches_watchdog_with_request_host_and_port(dashboard_client, monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        settings_route,
+        "restart_dashboard_process",
+        lambda host, port: captured.append((host, port)),
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/restart-dashboard")
+
+    assert response.status_code == 200
+    assert "Đang khởi động lại" in response.text
+    assert len(captured) == 1
+    host, port = captured[0]
+    # TestClient's default base URL is http://testserver — confirms host/port
+    # are actually derived from the incoming request, not hardcoded.
+    assert host == "testserver"
+
+
+def test_restart_dashboard_reports_error_when_watchdog_launch_fails(dashboard_client, monkeypatch):
+    def fake_restart(host, port):
+        raise OSError("could not write watchdog script")
+
+    monkeypatch.setattr(settings_route, "restart_dashboard_process", fake_restart)
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/restart-dashboard")
+
+    assert response.status_code == 200
+    assert "Không khởi động lại được" in response.text
+
+
+def test_dashboard_restart_script_contains_pid_host_port_and_execs_uvicorn():
+    script = settings_route._dashboard_restart_script(12345, "10.20.1.5", 8000)
+
+    assert "kill 12345" in script
+    assert "kill -0 12345" in script
+    assert "--host 10.20.1.5 --port 8000" in script
+    assert script.strip().endswith(
+        f"{settings_route.shlex.quote(str(settings_route.DASHBOARD_LOG_PATH))} 2>&1"
+    )
+
+
+# --- 9router model picker (Step 2 <select>) --------------------------------
+
+
+def test_get_settings_shows_currently_configured_model_as_sole_initial_option(
+    dashboard_client, monkeypatch
+):
+    # The model <select> has no fixed/hardcoded option list — it starts with
+    # just whatever's currently configured, and gets populated with the
+    # router's REAL available models only after "Xác nhận kết nối" succeeds
+    # (settings.js).
+    monkeypatch.setattr(settings, "router_model", "gc/gemini-2.5-pro", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert '<option value="gc/gemini-2.5-pro" selected>' in response.text
+
+
+def test_get_settings_shows_configured_base_url_prefilled(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'id="router-base-url-input"' in response.text
+    assert 'value="http://localhost:20128"' in response.text
+
+
+def test_get_settings_shows_connected_display_state_when_fully_configured(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_api_key", "sk-connected-key", raising=False)
+    monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
+    monkeypatch.setattr(settings, "router_model", "gc/gemini-2.5-pro", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", True, raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "9router đã kết nối" in response.text
+    assert 'id="router-connected-view"' in response.text
+
+
+def test_get_settings_shows_wizard_when_not_fully_configured(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", False, raising=False)
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Xác nhận kết nối" in response.text
+
+
+# --- POST /settings/9router/verify (Step 1 "[Xác nhận kết nối]" button) ---
+
+
+def test_unauthenticated_post_settings_9router_verify_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/9router/verify", data={}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_post_settings_9router_verify_requires_an_api_key(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/9router/verify", data={})
+
+    assert response.status_code == 400
+
+
+def test_post_settings_9router_verify_requires_a_base_url(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_base_url", "", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/9router/verify", data={"router_api_key": "sk-real-key"}
+    )
+
+    assert response.status_code == 400
+    assert "Base URL" in response.json()["detail"]
+
+
+def test_post_settings_9router_verify_reports_valid_key_and_models(dashboard_client, monkeypatch):
+    async def fake_verify(api_key, base_url):
+        assert api_key == "sk-real-key"
+        assert base_url == "http://localhost:20128"
+        return True, "Kết nối thành công — tìm thấy 2 model", ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/9router/verify",
+        data={"router_api_key": "sk-real-key", "router_base_url": "http://localhost:20128"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "valid": True,
+        "message": "Kết nối thành công — tìm thấy 2 model",
+        "models": ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"],
+    }
+
+
+def test_post_settings_9router_verify_reports_invalid_key_with_reason(dashboard_client, monkeypatch):
+    async def fake_verify(api_key, base_url):
+        return False, "API key không hợp lệ", None
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/9router/verify",
+        data={"router_api_key": "sk-wrong", "router_base_url": "http://localhost:20128"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": False, "message": "API key không hợp lệ", "models": None}
+
+
+def test_post_settings_9router_verify_never_saves_anything(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "Kết nối thành công — tìm thấy 1 model", ["gc/gemini-2.5-flash"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/settings/9router/verify",
+        data={"router_api_key": "sk-should-not-be-saved", "router_base_url": "http://localhost:20128"},
+    )
+
+    assert "ROUTER_API_KEY" not in tmp_env.read_text()
+    assert settings.router_api_key != "sk-should-not-be-saved"
+
+
+def test_post_settings_9router_verify_blank_key_falls_back_to_configured_one(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_api_key", "sk-already-configured", raising=False)
+    captured = []
+
+    async def fake_verify(api_key, base_url):
+        captured.append(api_key)
+        return True, "Kết nối thành công — tìm thấy 0 model", []
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/settings/9router/verify", data={"router_base_url": "http://localhost:20128"}
+    )
+
+    assert captured == ["sk-already-configured"]
+
+
+def test_post_settings_9router_verify_passes_submitted_base_url_through(dashboard_client, monkeypatch):
+    # router_base_url IS a real, honored form field on this page (the
+    # operator's own 9router URL) — a submitted value must reach
+    # verify_router_connection, not silently fall back to whatever's saved.
+    monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
+    captured = []
+
+    async def fake_verify(api_key, base_url):
+        captured.append(base_url)
+        return True, "ok", []
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/settings/9router/verify",
+        data={
+            "router_api_key": "sk-real-key",
+            "router_base_url": "http://a-different-router.example",
+        },
+    )
+
+    assert captured == ["http://a-different-router.example"]
+
+
+def test_post_settings_9router_verify_blank_base_url_falls_back_to_configured_one(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
+    captured = []
+
+    async def fake_verify(api_key, base_url):
+        captured.append(base_url)
+        return True, "ok", []
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/settings/9router/verify", data={"router_api_key": "sk-real-key"}
+    )
+
+    assert captured == ["http://localhost:20128"]
+
+
+# --- verify_router_connection() itself (independent of the route) ---------
+
+
+def test_verify_router_connection_reports_missing_config_gracefully():
+    # shared/router_client.py::build_router_client raises
+    # RouterNotConfiguredError when base_url is blank (no direct-to-vendor
+    # fallback, by policy) — verify_router_connection's generic except must
+    # turn that into a normal (False, reason, None) result, not propagate.
+    import asyncio
+
+    is_valid, reason, models = asyncio.run(
+        settings_route.verify_router_connection("sk-real-key", "")
+    )
+
+    assert is_valid is False
+    assert "9router" in reason
+    assert models is None
+
+
+def test_verify_router_connection_maps_authentication_error_to_invalid_key(monkeypatch):
+    import asyncio
+
+    async def failing_list_models(api_key, base_url):
+        response = httpx.Response(401, request=httpx.Request("GET", "http://x"))
+        raise openai.AuthenticationError("bad key", response=response, body=None)
+
+    monkeypatch.setattr(settings_route, "list_router_models", failing_list_models)
+
+    is_valid, reason, models = asyncio.run(
+        settings_route.verify_router_connection("sk-real-key", "http://localhost:20128")
+    )
+
+    assert is_valid is False
+    assert reason == "API key không hợp lệ"
+    assert models is None
+
+
+def test_verify_router_connection_maps_connection_error_to_host_port_hint(monkeypatch):
+    import asyncio
+
+    async def failing_list_models(api_key, base_url):
+        raise openai.APIConnectionError(request=httpx.Request("GET", "http://x"))
+
+    monkeypatch.setattr(settings_route, "list_router_models", failing_list_models)
+
+    is_valid, reason, models = asyncio.run(
+        settings_route.verify_router_connection("sk-real-key", "http://localhost:20128")
+    )
+
+    assert is_valid is False
+    assert "http://localhost:20128" in reason
+    assert models is None
+
+
+def test_verify_router_connection_maps_unexpected_error_to_false_with_reason(monkeypatch):
+    import asyncio
+
+    async def failing_list_models(api_key, base_url):
+        raise RuntimeError("router listing endpoint hiccup")
+
+    monkeypatch.setattr(settings_route, "list_router_models", failing_list_models)
+
+    is_valid, reason, models = asyncio.run(
+        settings_route.verify_router_connection("sk-real-key", "http://localhost:20128")
+    )
+
+    assert is_valid is False
+    assert reason == "router listing endpoint hiccup"
+    assert models is None
+
+
+def test_verify_router_connection_reports_model_count_on_success(monkeypatch):
+    import asyncio
+
+    async def fake_list_models(api_key, base_url):
+        return ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
+
+    monkeypatch.setattr(settings_route, "list_router_models", fake_list_models)
+
+    is_valid, reason, models = asyncio.run(
+        settings_route.verify_router_connection("sk-real-key", "http://localhost:20128")
+    )
+
+    assert is_valid is True
+    assert reason == "Kết nối thành công — tìm thấy 2 model"
+    assert models == ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
+
+
+@pytest.mark.live
+def test_verify_router_connection_rejects_garbage_key_against_real_router():
+    import asyncio
+
+    is_valid, _reason, _models = asyncio.run(
+        settings_route.verify_router_connection(
+            "sk-definitely-not-a-real-key", settings.router_base_url
+        )
+    )
+    assert is_valid is False

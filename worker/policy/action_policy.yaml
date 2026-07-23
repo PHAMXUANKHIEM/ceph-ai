@@ -1,0 +1,70 @@
+# v1 (Story 2.3): closed enum of valid `action_id` values — this is what
+# constrains Claude's tool-use schema (AD-5: "action_id đóng từ structured
+# output, không parse free text").
+#
+# Story 3.1 (Epic 3) will ADD `safe:`/`risky:` classification lists to THIS
+# SAME FILE, referencing these same action_id values — it will not rename or
+# move them, and this story does not classify Safe/Risky at all.
+action_ids:
+  - restart_osd_daemon
+  - resync_ntp
+  - pg_repair_force
+  - investigate_manually  # fallback: no automated action applies
+
+# 2026-07-23: cluster-MANAGEMENT actions the Chat-with-AI feature
+# (dashboard/chat_client.py) can propose — deliberately a SEPARATE list from
+# `action_ids` above, not merged into it: `action_ids` constrains the
+# Incident-diagnosis tool schema (worker/llm/router_client.py), and none of
+# these make sense as an automated response to a detected HEALTH_WARN/
+# HEALTH_ERR incident — they require operator-supplied parameters (pool
+# name, pg_num, size, osd id) an Incident envelope never carries, and a
+# hallucinated "create_pool" recommendation for an unrelated incident would
+# be actively wrong. worker/policy/gate.py loads this as
+# VALID_MANAGEMENT_ACTION_IDS; worker/llm/router_client.py's VALID_ACTION_IDS
+# (Incident-diagnosis enum) is untouched by this list's existence.
+management_action_ids:
+  - create_pool
+  - delete_pool
+  - set_pool_size
+  - set_pool_pg_num
+  - mark_osd_out
+  - mark_osd_in
+  - mark_osd_down
+  - enable_pool_application
+
+# v1 (Story 3.1): Safe/Risky classification (AD-5). Anything NOT in `safe`
+# defaults to RISKY — including action_ids present in `action_ids` above but
+# absent from both lists here (e.g. investigate_manually), and any future
+# action_id that gets added to `action_ids` without an explicit safe entry.
+# This is an operational decision, not an architectural one — adjust freely
+# without touching code.
+safe:
+  - resync_ntp
+  # 2026-07-23: operator explicitly requested every management action
+  # execute immediately on chat confirm (single click via
+  # dashboard/routes/chat.py's confirm-action endpoint), same as any other
+  # Safe Action — INCLUDING delete_pool, acknowledged as permanent,
+  # unrecoverable data loss with no second Dashboard approval step. The
+  # remaining safeguards before execution: the chat confirm step itself
+  # shows the fully-resolved command (real pool name/osd id baked in, see
+  # dashboard/chat_client.py::resolve_command_preview) before the operator
+  # clicks "Thực hiện", and the kill-switch is still checked fresh
+  # immediately before execution (AD-4, no exceptions). To require a second
+  # manual approval for any of these instead, just move it to `risky:`
+  # below — no code change needed (same operational-decision posture as the
+  # rest of this file).
+  - create_pool
+  - delete_pool
+  - set_pool_size
+  - set_pool_pg_num
+  - mark_osd_out
+  - mark_osd_in
+  - mark_osd_down
+  # 2026-07-23: clears Ceph's own POOL_APP_NOT_ENABLED HEALTH_WARN — a
+  # metadata tag, not a data-affecting change, safe to auto-execute like
+  # the rest of this list.
+  - enable_pool_application
+
+risky:
+  - restart_osd_daemon
+  - pg_repair_force

@@ -1,0 +1,105 @@
+import time
+from collections import defaultdict
+
+import bcrypt
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from config.settings import settings
+from dashboard.templating import make_templates
+
+router = APIRouter()
+templates = make_templates()
+
+# A hash of a value nobody will ever submit as a real password — used to keep
+# bcrypt.checkpw's (deliberately slow) cost constant regardless of whether the
+# submitted username is valid, so response timing can't be used to enumerate
+# the one valid account.
+_DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode()
+
+# Simple in-memory rate limit: single-process, resets on restart — adequate
+# for a single static account, not meant to survive multi-worker deployment.
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_WINDOW_SECONDS = 300
+_failed_attempts: dict[str, list[float]] = defaultdict(list)
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _is_locked_out(key: str) -> bool:
+    now = time.monotonic()
+    _failed_attempts[key] = [t for t in _failed_attempts[key] if now - t < LOCKOUT_WINDOW_SECONDS]
+    return len(_failed_attempts[key]) >= MAX_LOGIN_ATTEMPTS
+
+
+def _record_failure(key: str) -> None:
+    _failed_attempts[key].append(time.monotonic())
+
+
+def _clear_failures(key: str) -> None:
+    _failed_attempts.pop(key, None)
+
+
+def _check_password(username: str, password: str) -> bool:
+    """Constant-cost check: always runs bcrypt, never short-circuits on username."""
+    is_valid_user = username == settings.dashboard_username
+    hash_to_check = settings.dashboard_password_hash if is_valid_user else _DUMMY_HASH
+    try:
+        password_matches = bcrypt.checkpw(password.encode(), hash_to_check.encode())
+    except ValueError:
+        # bcrypt rejects inputs over 72 bytes rather than silently truncating
+        # (current bcrypt) — either way, that's simply not a valid password.
+        password_matches = False
+    return is_valid_user and password_matches
+
+
+async def require_login(request: Request) -> str:
+    user = request.session.get("user")
+    if not user:
+        # 303 + Location header is honored as a redirect by browsers and by
+        # httpx/starlette's TestClient regardless of it being raised via
+        # HTTPException rather than returned as a RedirectResponse.
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    return user
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_form(request: Request):
+    if request.session.get("user"):
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"error": None})
+
+
+@router.post("/login")
+async def login_submit(
+    request: Request, username: str = Form(...), password: str = Form(...)
+):
+    client_key = _client_key(request)
+    if _is_locked_out(client_key):
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "Quá nhiều lần đăng nhập sai — thử lại sau ít phút"},
+            status_code=429,
+        )
+
+    if not _check_password(username, password):
+        _record_failure(client_key)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "Sai tên đăng nhập hoặc mật khẩu"},
+            status_code=401,
+        )
+
+    _clear_failures(client_key)
+    request.session["user"] = username
+    return RedirectResponse("/", status_code=303)
+
+
+@router.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)

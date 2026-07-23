@@ -1,0 +1,1071 @@
+/* =========================================================================
+   Ceph AIOps — dark ops-dashboard theme.
+   Font stack prefers Inter/JetBrains Mono if installed locally, but never
+   loads them from a CDN — this panel talks to a Ceph cluster over SSH from
+   inside a lab/ops network that may have no outbound internet, so a
+   web-font fetch failure must never be able to delay or break the login
+   screen. Falls back to solid system equivalents.
+   ========================================================================= */
+
+:root {
+  --font-sans: "Inter", "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --bg: #0f1117;
+  --bg-surface: #161922;
+  --bg-surface-2: #1b1f2a;
+  --bg-surface-hover: #20242f;
+  --border: #262b38;
+  --border-strong: #343b4c;
+
+  --text: #e7e9ee;
+  --text-muted: #99a1b3;
+  --text-faint: #6b7280;
+
+  --accent: #4f8cff;
+  --accent-hover: #6ea0ff;
+  --accent-bg: rgba(79, 140, 255, 0.12);
+
+  --critical: #f75667;
+  --critical-bg: rgba(247, 86, 103, 0.12);
+  --critical-border: rgba(247, 86, 103, 0.4);
+
+  --warning: #f0a72e;
+  --warning-bg: rgba(240, 167, 46, 0.1);
+  --warning-border: rgba(240, 167, 46, 0.45);
+
+  --healthy: #3ecf6e;
+  --healthy-bg: rgba(62, 207, 110, 0.12);
+  --healthy-border: rgba(62, 207, 110, 0.35);
+
+  --neutral: #7a8296;
+  --neutral-bg: rgba(122, 130, 150, 0.14);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; color: var(--text); }
+h2 { font-size: 0.95rem; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-surface-2);
+  color: #b9c6e6;
+  border: 1px solid var(--border);
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #454d61; }
+
+.hint { font-size: 0.8rem; color: var(--text-muted); margin: var(--space-2) 0 0; line-height: 1.55; }
+.error { color: var(--critical); font-size: 0.87rem; margin: 0 0 var(--space-3); }
+.success { color: var(--healthy); font-size: 0.87rem; margin: 0 0 var(--space-3); }
+
+/* ===== Mini cluster status bar (very top strip) ===== */
+.mon-strip {
+  background: var(--bg-surface-2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.mon-strip-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--space-2) var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  white-space: nowrap;
+}
+.mon-strip-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.mon-node-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.mon-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--neutral);
+  box-shadow: 0 0 0 3px var(--neutral-bg);
+}
+.mon-dot.is-online { background: var(--healthy); box-shadow: 0 0 0 3px var(--healthy-bg); }
+.mon-dot.is-offline { background: var(--critical); box-shadow: 0 0 0 3px var(--critical-bg); }
+.mon-node-chip.is-online { color: var(--text); }
+
+/* ===== Top navigation ===== */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 var(--space-5);
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.brand:hover { text-decoration: none; color: var(--text); }
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--accent), #8a5cf6);
+  color: #0b0d12;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.main-nav { display: flex; gap: var(--space-1); flex: 1; flex-wrap: wrap; height: 100%; }
+.nav-link {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.85rem;
+  padding: 0 var(--space-1);
+  border-bottom: 2px solid transparent;
+}
+.nav-link:hover { color: var(--text); text-decoration: none; }
+.nav-link.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.topbar-user { display: flex; align-items: center; gap: var(--space-3); margin: 0; }
+.user-chip { font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono); }
+
+/* ===== Page layout ===== */
+.page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.card-header {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.card-body { padding: var(--space-4); }
+.card-footer {
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+}
+.card-footer-link { color: var(--accent); font-size: 0.82rem; font-weight: 600; text-decoration: none; }
+.card-footer-link:hover { text-decoration: underline; }
+
+/* ===== Status pill (cluster health) — small badge, not a big tinted card ===== */
+.status-strip {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.status-pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+.status-ok { background: var(--healthy-bg); border-color: var(--healthy-border); color: var(--healthy); }
+.status-ok .dot { background: var(--healthy); }
+.status-warn { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
+.status-warn .dot { background: var(--warning); }
+.status-err { background: var(--critical-bg); border-color: var(--critical-border); color: var(--critical); }
+.status-err .dot { background: var(--critical); }
+.status-unknown { background: var(--neutral-bg); border-color: var(--border-strong); color: var(--neutral); }
+.status-unknown .dot { background: var(--neutral); }
+.status-strip .hint { margin: 0; flex: 1; min-width: 220px; }
+
+/* ===== Severity badge (Incident Feed) — Ceph's own per-check severity,
+   distinct from the Incident lifecycle `status` column next to it. ===== */
+.severity-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.severity-warn { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
+.severity-err { background: var(--critical-bg); border-color: var(--critical-border); color: var(--critical); }
+
+/* ===== Connection status — quiet when OK, loud (pulsing left border) when lost.
+   Deliberately NOT a full background fill for the lost state, per design
+   brief — a 4px accent border + icon reads as "attention" without turning
+   the whole section into a wall of color. ===== */
+.connection-status {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--border-strong);
+  background: transparent;
+}
+.connection-status strong { font-size: 0.88rem; }
+.connection-ok { border-left-color: var(--healthy); }
+.connection-ok strong { color: var(--healthy); font-size: 0.85rem; font-weight: 600; }
+.connection-lost {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warning);
+  animation: pulse-border 2.2s ease-in-out infinite;
+}
+.connection-lost strong { color: var(--warning); font-size: 0.92rem; }
+.connection-lost .hint { color: var(--text-muted); }
+
+@keyframes pulse-border {
+  0%, 100% { border-left-color: var(--warning); }
+  50% { border-left-color: rgba(240, 167, 46, 0.45); }
+}
+
+/* ===== Kill-switch — the most visually dominant control on the page ===== */
+.kill-switch {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--critical-border);
+  background: var(--bg-surface);
+}
+.kill-switch form { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+.kill-switch-active {
+  background: linear-gradient(180deg, rgba(247, 86, 103, 0.16), rgba(247, 86, 103, 0.08));
+  border-color: var(--critical);
+}
+.kill-switch-active strong { color: #ffd7db; font-size: 0.95rem; }
+
+/* ===== Auto-approve restart_osd_daemon toggle ===== */
+.auto-approve-card { border-color: var(--border-strong); }
+.auto-approve-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.auto-approve-body .hint { margin-top: 4px; max-width: 44rem; }
+.auto-approve-active {
+  background: linear-gradient(180deg, rgba(240, 167, 46, 0.14), rgba(240, 167, 46, 0.06));
+  border-color: var(--warning-border);
+}
+.auto-approve-active strong { color: var(--warning); }
+
+/* ===== Buttons ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.5rem 0.95rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: var(--bg-surface-2);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-surface-hover); }
+.btn:active { transform: translateY(1px); }
+.btn-block { width: 100%; justify-content: center; }
+.btn-sm { padding: 0.38rem 0.7rem; font-size: 0.78rem; }
+
+.btn-primary { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--border-strong); }
+.btn-ghost:hover { background: var(--bg-surface-2); color: var(--text); }
+
+.btn-kill-switch-on {
+  background: linear-gradient(180deg, #ff5f6f, var(--critical));
+  color: #fff;
+  border-color: var(--critical);
+  font-weight: 700;
+  padding: 0.7rem 1.3rem;
+  font-size: 0.88rem;
+  box-shadow: 0 0 0 1px rgba(247, 86, 103, 0.35), 0 6px 24px rgba(247, 86, 103, 0.28);
+}
+.btn-kill-switch-on:hover { background: linear-gradient(180deg, #ff7381, #ff4a5c); }
+.btn-kill-switch-off { background: transparent; color: var(--critical); border-color: var(--critical); font-weight: 700; }
+.btn-kill-switch-off:hover { background: var(--critical-bg); }
+
+.btn-approve { background: var(--healthy); color: #06210f; border-color: var(--healthy); }
+.btn-approve:hover { background: #55dd83; }
+.btn-reject { background: transparent; color: var(--critical); border-color: var(--critical-border); }
+.btn-reject:hover { background: var(--critical-bg); }
+
+.inline-form { display: inline-block; }
+
+/* ===== Pending Risky Action cards ===== */
+.pending-actions { display: flex; flex-direction: column; gap: var(--space-3); }
+.pending-action-card {
+  border: 1px solid var(--warning-border);
+  border-left: 3px solid var(--warning);
+  background: var(--warning-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+.pending-action-card p { margin: 0.3rem 0; font-size: 0.87rem; color: var(--text); }
+.pending-action-card p strong { color: var(--text); }
+.pending-action-buttons { margin-top: var(--space-3); display: flex; gap: var(--space-2); }
+
+/* ===== Tables ===== */
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  background: var(--bg-surface-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+thead th:hover { color: var(--text-muted); }
+thead th::after {
+  content: "\2195";
+  margin-left: 6px;
+  opacity: 0.25;
+  font-size: 0.85em;
+}
+thead th[aria-sort="ascending"]::after { content: "\2191"; opacity: 1; color: var(--accent); }
+thead th[aria-sort="descending"]::after { content: "\2193"; opacity: 1; color: var(--accent); }
+tbody td {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text);
+}
+tbody td:nth-child(1), tbody td:nth-child(2) { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--bg-surface-2); }
+
+.empty-row td { cursor: default; }
+.empty-row:hover td { background: transparent; }
+.empty-state {
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-faint);
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+}
+.empty-state .empty-icon { display: block; font-size: 1.6rem; margin-bottom: var(--space-2); opacity: 0.5; }
+
+/* ===== Forms (login + settings share the .login-box field-grid layout) ===== */
+.login-box { display: flex; flex-direction: column; gap: var(--space-4); max-width: 30rem; }
+.login-box label { display: flex; flex-direction: column; gap: var(--space-1); font-size: 0.84rem; font-weight: 500; color: var(--text-muted); }
+.login-box .checkbox-label { flex-direction: row; align-items: center; gap: var(--space-2); }
+.login-box .checkbox-label input[type="checkbox"] { width: auto; }
+.login-box input, .login-box textarea, .login-box select {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.login-box input::placeholder, .login-box textarea::placeholder { color: var(--text-faint); }
+.login-box input:focus, .login-box textarea:focus, .login-box select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.login-box textarea { font-family: var(--font-mono); font-size: 0.8rem; width: 100%; resize: vertical; }
+.login-box button { align-self: flex-start; }
+
+/* ===== AI Provider card (Settings) — "Kiểm tra kết nối" test row ===== */
+.ai-test-row { display: flex; align-items: center; gap: var(--space-3); }
+.ai-test-result { font-size: 0.85rem; font-weight: 600; }
+.ai-test-result.ai-test-ok { color: var(--healthy); }
+.ai-test-result.ai-test-fail { color: var(--critical); }
+
+/* ===== Login page ===== */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(79, 140, 255, 0.10) 0%, transparent 45%),
+    var(--bg);
+  padding: var(--space-5);
+}
+.login-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  width: 100%;
+  max-width: 23rem;
+}
+.login-card h1 { display: flex; align-items: center; gap: var(--space-2); font-size: 1.1rem; margin-bottom: var(--space-1); }
+.login-card .subtitle { color: var(--text-muted); font-size: 0.83rem; margin: 0 0 var(--space-5); }
+.login-card .login-box { max-width: none; }
+
+/* ===== Audit filters ===== */
+.audit-filters { display: flex; gap: var(--space-4); align-items: flex-end; flex-wrap: wrap; }
+.audit-filters label { display: flex; flex-direction: column; gap: var(--space-1); font-size: 0.78rem; font-weight: 500; color: var(--text-muted); }
+.audit-filters input {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+  color: var(--text);
+  color-scheme: dark;
+}
+.audit-filters input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+
+@media (max-width: 1280px) {
+  .page, .topbar-inner, .mon-strip-inner { max-width: 100%; }
+}
+
+@media (max-width: 640px) {
+  .page { padding: var(--space-4); gap: var(--space-3); }
+  .topbar-inner, .mon-strip-inner { padding: 0 var(--space-4); }
+  .card-body { padding: var(--space-3); }
+  .card-header { padding: var(--space-3); }
+}
+
+/* ===== Node metrics page ===== */
+
+/* Per-metric identity colors — distinct from the app's global accent/healthy/
+   warning tokens on purpose: these name a specific line in a chart (read by
+   an SRE mid-incident), not a semantic app-wide state, so they stay fixed
+   regardless of what --accent/--healthy happen to mean elsewhere. */
+:root {
+  --metric-cpu: #4ade80;
+  --metric-ram: #38bdf8;
+  --metric-disk-read: #4ade80;
+  --metric-disk-write: #fb923c;
+  --metric-latency: #fbbf24;
+}
+
+.node-selector { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
+.node-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-2);
+  color: var(--text-muted);
+}
+.node-chip:hover { color: var(--text); text-decoration: none; background: var(--bg-surface-hover); }
+.node-chip.active { color: var(--text); font-weight: 600; border-color: var(--accent); background: var(--accent-bg); }
+.node-chip-ip { font-family: var(--font-mono); }
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+}
+.role-badge-mon { color: #8fb8ff; background: rgba(79, 140, 255, 0.16); border: 1px solid rgba(79, 140, 255, 0.4); }
+.role-badge-osd { color: #ffc178; background: rgba(240, 167, 46, 0.16); border: 1px solid rgba(240, 167, 46, 0.4); }
+.role-badge-rgw { color: #c4a6ff; background: rgba(168, 116, 255, 0.16); border: 1px solid rgba(168, 116, 255, 0.4); }
+/* Loading: pulse only the node actually being polled — pulsing every pill
+   would read as "all nodes are loading" when only the selected one is. */
+.node-chip.is-loading { animation: pill-pulse 1.4s ease-in-out infinite; }
+@keyframes pill-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.metrics-status { font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: var(--space-2); }
+.metrics-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px var(--healthy-bg); }
+.metrics-status.is-stale .dot { background: var(--critical); box-shadow: 0 0 0 3px var(--critical-bg); animation: pulse-border 2.2s ease-in-out infinite; }
+.metrics-status.is-stale { color: var(--critical); }
+.metrics-status.is-loading .dot { background: var(--text-faint); box-shadow: none; }
+
+/* ===== Empty node-selection state ===== */
+.empty-node-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-faint);
+}
+.empty-node-icon { font-size: 2rem; opacity: 0.6; }
+.empty-node-text { margin: 0; font-size: 0.85rem; color: var(--text-faint); }
+
+/* ===== Metrics panel ===== */
+.metrics-panel { transition: border-color 0.15s ease; }
+.metrics-panel.is-error { border-color: var(--critical); }
+.metrics-panel-title { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.node-ip { font-family: var(--font-mono); font-weight: 700; font-size: 1rem; color: var(--text); }
+.metrics-panel-desc { margin: 4px 0 0; }
+
+.header-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.header-loading-text { font-size: 0.78rem; color: var(--text-muted); }
+
+/* ===== Stacked metric sections ===== */
+.metrics-stack { display: flex; flex-direction: column; }
+.metric-section { padding: var(--space-4) 0; }
+.metric-section:first-child { padding-top: 0; }
+.metric-section:last-child { padding-bottom: 0; }
+.metric-section + .metric-section { border-top: 1px solid var(--border); }
+
+.metric-section-head { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
+.metric-name { font-size: 0.85rem; font-weight: 700; letter-spacing: 0.01em; }
+.metric-value { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.metric-value .unit { font-size: 0.72rem; font-weight: 500; color: var(--text-muted); margin-left: 0.2em; }
+.metric-value-tag { font-size: 0.7rem; font-weight: 700; }
+.metric-value-sep { color: var(--text-faint); font-weight: 400; margin: 0 0.15em; }
+.metric-sub { font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); }
+
+.metric-chart-wrap { position: relative; height: 160px; }
+.metric-chart-wrap canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+/* Hover tooltip — dark popup per spec, deliberately not the app's --bg-surface
+   token: it needs to read as a floating overlay above the chart, not another
+   panel surface. */
+.tt {
+  position: absolute;
+  top: 2px;
+  min-width: 140px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 11px;
+  pointer-events: none;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  z-index: 5;
+}
+.tt-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+  font-size: 10px;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+.tt-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+.tt-key { width: 10px; height: 2px; border-radius: 1px; flex-shrink: 0; }
+.tt-name { color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-value {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+/* Loading: skeleton shimmer bars standing in for the not-yet-drawn line */
+.chart-skeleton { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 5px; padding: 10px 2px 22px; }
+.shimmer-bar {
+  flex: 1;
+  border-radius: 3px;
+  /* align-items:flex-end on the parent doesn't stretch children — without an
+     explicit height every bar collapses to 0px regardless of background. */
+  height: 45%;
+  /* --border-strong as the sweep highlight, not --bg-surface-hover — the
+     hover token is too close in luminance to the base fill to read as a
+     moving shimmer rather than a flat gray block. */
+  background: linear-gradient(90deg, var(--bg-surface-2) 25%, var(--border-strong) 37%, var(--bg-surface-2) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 0.06s);
+}
+/* Varied heights so the skeleton reads as a chart silhouette, not a flat bar. */
+.shimmer-bar:nth-child(1) { height: 42%; }
+.shimmer-bar:nth-child(2) { height: 68%; }
+.shimmer-bar:nth-child(3) { height: 54%; }
+.shimmer-bar:nth-child(4) { height: 82%; }
+.shimmer-bar:nth-child(5) { height: 58%; }
+.shimmer-bar:nth-child(6) { height: 72%; }
+.shimmer-bar:nth-child(7) { height: 48%; }
+.shimmer-bar:nth-child(8) { height: 64%; }
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+/* Per-chart error state */
+.chart-error-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  text-align: center;
+}
+.chart-error-overlay .icon { font-size: 1.2rem; line-height: 1; }
+.chart-error-overlay .msg { color: var(--critical); font-weight: 600; font-size: 0.8rem; }
+
+/* Empty/no-data state — flat zero baseline drawn on the canvas underneath,
+   this overlay just adds the message on top of it. */
+.chart-empty-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 0.8rem;
+  background: rgba(15, 17, 23, 0.3);
+}
+
+/* `[hidden]` and `.chart-skeleton`/`.chart-error-overlay`/`.chart-empty-overlay`
+   have EQUAL CSS specificity (one class, one attribute selector) — without
+   this, the browser's built-in `[hidden]{display:none}` loses that tie to
+   these `display:flex` rules (author styles beat user-agent styles on a
+   specificity tie), so toggling the `hidden` property from JS would silently
+   do nothing and all three could render stacked on top of each other. */
+.chart-skeleton[hidden], .chart-error-overlay[hidden], .chart-empty-overlay[hidden], .metrics-error-footer[hidden] { display: none; }
+
+.metrics-error-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.metrics-error-timestamp { margin: 0; font-size: 0.75rem; color: var(--text-faint); font-family: var(--font-mono); }
+
+/* Success: smooth draw-in for the line on first successful paint */
+.metric-chart-wrap canvas.is-drawing-in { animation: chart-fade-in 0.35s ease; }
+@keyframes chart-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .node-chip.is-loading, .header-spinner, .shimmer-bar, .metrics-status.is-stale .dot, .metric-chart-wrap canvas.is-drawing-in {
+    animation: none !important;
+  }
+}
+
+/* ===== Nodes-page CLI (read-only diagnostic commands) ===== */
+.cli-buttons { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.cli-cmd-btn { font-family: var(--font-mono); }
+.cli-cmd-btn.is-running { opacity: 0.6; cursor: wait; }
+.cli-cmd-btn:disabled { cursor: not-allowed; }
+
+.cli-output {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+  overflow: hidden;
+}
+.cli-output-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+#cli-output-title { color: var(--text); font-weight: 600; }
+.cli-output-meta { color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cli-output-body {
+  margin: 0;
+  padding: var(--space-3);
+  max-height: 360px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #b9c6e6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cli-output-body.cli-output-error { color: var(--critical); }
+
+.cli-history { margin-top: var(--space-5); }
+.cli-history-title { font-size: 0.82rem; font-weight: 600; color: var(--text-muted); margin: 0 0 var(--space-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.cli-result-ok { color: var(--healthy); font-weight: 600; }
+.cli-result-error { color: var(--critical); font-weight: 600; }
+
+/* ===== "Log RGW" panel — live-tailed radosgw daemon log, per node ===== */
+.rgw-log-controls { display: flex; align-items: center; gap: var(--space-3); }
+.rgw-log-status { font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: var(--space-2); }
+.rgw-log-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px var(--healthy-bg); }
+.rgw-log-status.is-loading .dot { background: var(--text-faint); box-shadow: none; }
+.rgw-log-status.is-stale .dot { background: var(--critical); box-shadow: 0 0 0 3px var(--critical-bg); }
+.rgw-log-status.is-stale { color: var(--critical); }
+#rgw-log-live-toggle.is-active { color: var(--healthy); border-color: var(--healthy); }
+
+.rgw-log-filter-bar { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
+.rgw-log-filter-input {
+  flex: 1 1 auto;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.rgw-log-filter-input:focus { outline: none; border-color: var(--accent); }
+
+.rgw-log-body {
+  margin: 0;
+  padding: var(--space-3);
+  max-height: 480px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #b9c6e6;
+  background: var(--bg-surface-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+.rgw-log-line { white-space: pre-wrap; word-break: break-word; }
+.rgw-log-line mark { background: rgba(240, 167, 46, 0.35); color: inherit; border-radius: 2px; }
+.rgw-log-empty { color: var(--text-faint); }
+
+/* ===== App body layout — main dashboard content (flex:1) + chat panel
+   (fixed width) side by side. The chat panel is a normal flex item, not a
+   position:fixed overlay — it participates in the page layout and the main
+   content genuinely shrinks to make room for it. ===== */
+.app-body { display: flex; align-items: stretch; }
+.app-body .page { flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; }
+
+/* ===== Chat panel — right side, Dashboard page only =====
+   position:sticky (not fixed): it's still a normal flex-row item (so main
+   content reflows around it), but stays pinned between the topbar's bottom
+   edge and the viewport bottom while the main content scrolls past it.
+   `top: 53px` matches .topbar's exact rendered height (52px .topbar-inner +
+   1px border-bottom) — once the topbar itself is stuck at top:0 (it's
+   already position:sticky/top:0), the panel sits flush right below it with
+   no gap or overlap. */
+.chat-panel {
+  flex: 0 0 380px;
+  width: 380px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 53px;
+  align-self: flex-start;
+  height: calc(100vh - 53px);
+  background: #0d1117;
+  border-left: 1px solid #2d3748;
+  overflow: hidden;
+  transition: flex-basis 300ms ease, width 300ms ease, height 300ms ease;
+}
+
+.chat-panel.is-minimized { flex: 0 0 auto; width: auto; height: 48px; }
+.chat-panel.is-minimized .chat-panel-body { display: none; }
+
+.chat-panel-header {
+  flex: 0 0 auto;
+  height: 48px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: #1e2433;
+  border-bottom: 1px solid #2d3748;
+  white-space: nowrap;
+}
+.chat-panel-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: #fff; }
+.chat-panel-icon { font-size: 16px; line-height: 1; }
+.chat-panel-controls { display: flex; align-items: center; gap: 4px; }
+.chat-panel-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-panel-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+
+.chat-panel-body { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+
+.chat-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #0d1117;
+}
+.chat-messages::-webkit-scrollbar { width: 4px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 2px; }
+.chat-messages::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+.chat-empty-state { margin: auto; text-align: center; padding: 24px; }
+.chat-empty-icon { display: block; font-size: 32px; margin-bottom: 8px; }
+.chat-empty-text { margin: 0; font-size: 14px; color: #64748b; }
+.chat-empty-subtext { margin: 6px 0 0; font-size: 12px; color: #475569; }
+
+.chat-msg { display: flex; flex-direction: column; }
+.chat-msg-user { align-self: flex-end; align-items: flex-end; max-width: 80%; }
+.chat-msg-assistant { align-self: flex-start; align-items: flex-start; max-width: 85%; }
+
+.chat-msg-meta { font-size: 10px; color: #64748b; margin-bottom: 4px; }
+
+.chat-msg-bubble { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; padding: 8px 12px; }
+.chat-msg-user .chat-msg-bubble { background: #2563eb; color: #fff; border-radius: 12px 12px 2px 12px; }
+.chat-msg-assistant .chat-msg-bubble {
+  background: #1e2433;
+  color: #e2e8f0;
+  border: 1px solid #2d3748;
+  border-radius: 12px 12px 12px 2px;
+}
+
+/* Typing indicator — animated 3-dot pulse inside an AI-styled bubble,
+   shown while waiting for the chat API's response. */
+.chat-typing-dots { display: inline-flex; gap: 4px; padding: 2px 0; }
+.chat-typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #64748b;
+  animation: chat-typing-pulse 1.2s ease-in-out infinite;
+}
+.chat-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.chat-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chat-typing-pulse {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-typing-dots span { animation: none !important; opacity: 0.7; }
+}
+
+/* Proposal card — a staged remediation action from dashboard/chat_client.py's
+   propose_action tool; unchanged behavior, restyled to fit the new bubbles. */
+.chat-proposal { margin-top: 10px; padding: 10px; background: #0d1117; border: 1px solid var(--warning-border); border-radius: 8px; }
+.chat-proposal p { margin: 4px 0; font-size: 12px; color: #e2e8f0; }
+.chat-proposal-actions { margin-top: 8px; }
+.chat-proposal-confirmed { color: var(--healthy); font-size: 12px; font-weight: 600; }
+
+.chat-error { margin: 0; padding: 0 16px 8px; font-size: 12px; color: var(--critical); }
+
+/* "🔧 Đã truy vấn: get_pool_list, get_df" — which tools the AI actually
+   called to answer this message, shown under (not inside) its bubble.
+   Click toggles .chat-tools-tooltip below it (call order, one per line). */
+.chat-tools-badge-wrap { position: relative; margin: 4px 0 0; }
+.chat-tools-badge {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 10px;
+  color: #64748b;
+  cursor: pointer;
+  font-family: inherit;
+}
+.chat-tools-badge:hover { color: #94a3b8; text-decoration: underline; }
+.chat-tools-tooltip {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  left: 0;
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  list-style: decimal;
+  list-style-position: inside;
+  background: #0f172a;
+  border: 1px solid #2d3748;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #cbd5e1;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.chat-tools-tooltip li { padding: 1px 0; }
+
+/* Session history — the list view (browsing past conversations). Takes over
+   the same spot .chat-messages/.chat-input-bar normally occupy. */
+.chat-history-list-view { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.chat-history-empty { margin: auto; text-align: center; padding: 24px; font-size: 13px; color: #64748b; }
+
+.chat-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #2d3748;
+  background: #1e2433;
+}
+.chat-history-row.is-current { border-color: var(--accent); }
+.chat-history-row-main { flex: 1 1 auto; min-width: 0; }
+.chat-history-row-preview {
+  margin: 0;
+  font-size: 12.5px;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-history-row-meta { margin: 3px 0 0; font-size: 10px; color: #64748b; }
+.chat-history-delete-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-history-delete-btn:hover { color: var(--critical); background: rgba(247, 86, 103, 0.12); }
+
+.chat-input-bar { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 8px; padding: 12px 16px; background: #1a1f2e; border-top: 1px solid #2d3748; }
+.chat-textarea {
+  flex: 1 1 auto;
+  min-height: 36px;
+  max-height: 120px;
+  resize: none;
+  overflow-y: auto;
+  background: #0d1117;
+  border: 1px solid #2d3748;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 8px 12px;
+}
+.chat-textarea::placeholder { color: #475569; }
+.chat-textarea:focus { outline: none; border-color: #2563eb; }
+
+.chat-send-btn {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #2563eb;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+.chat-send-btn:hover:not(:disabled) { background: #1d4ed8; }
+.chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Narrow viewport: stack the chat panel below the dashboard instead of a
+   side-by-side row a 380px-wide column can't afford there. */
+@media (max-width: 900px) {
+  .app-body { flex-direction: column; }
+  .chat-panel { position: static; width: auto; height: 60vh; border-left: none; border-top: 1px solid #2d3748; }
+  .chat-panel.is-minimized { height: 48px; }
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Đăng nhập — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body class="login-page">
+  <div class="login-card">
+    <h1><span class="brand-mark">CA</span> Ceph AIOps</h1>
+    <p class="subtitle">Đăng nhập để quản lý và giám sát cụm Ceph.</p>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <form class="login-box" method="post" action="/login">
+      <label>Tên đăng nhập
+        <input type="text" name="username" autofocus required>
+      </label>
+      <label>Mật khẩu
+        <input type="password" name="password" required>
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">Đăng nhập</button>
+    </form>
+  </div>
+</body>
+</html>

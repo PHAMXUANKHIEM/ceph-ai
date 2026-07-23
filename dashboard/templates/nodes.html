@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Giám sát Node — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link active">Nodes</a>
+        <a href="/audit" class="nav-link">Audit Trail</a>
+        <a href="/settings" class="nav-link">Cài đặt</a>
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header">
+        <h2>Chọn node</h2>
+        <span class="metrics-status" id="metrics-status">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="metrics-status-text">—</span>
+        </span>
+      </div>
+      <div class="card-body">
+        {% if nodes %}
+        <div class="node-selector" id="node-selector">
+          {% for node in nodes %}
+          <a
+            href="/nodes?host={{ node.host }}"
+            class="node-chip {% if node.host == selected_host %}active{% endif %}"
+            data-host="{{ node.host }}"
+          >
+            <span class="node-chip-ip">{{ node.host }}</span>
+            {% for role in node.roles %}
+            <span class="role-badge role-badge-{{ role|lower }}">{{ role }}</span>
+            {% endfor %}
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="hint">Chưa cấu hình MON/OSD node nào — thêm ở <a href="/settings">Cài đặt</a>.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if selected_host %}
+    <section class="card metrics-panel" id="metrics-panel">
+      <div class="card-header">
+        <div class="metrics-panel-title">
+          <span class="node-ip">{{ selected_host }}</span>
+          <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
+          <span class="header-loading-text" id="header-loading-text" hidden>Đang tải dữ liệu...</span>
+        </div>
+        <p class="hint metrics-panel-desc">CPU / RAM / Disk I/O của node — đọc trực tiếp từ <code>/proc</code> qua SSH mỗi vài giây, không phải số liệu cluster-wide.</p>
+      </div>
+      <div class="card-body">
+        <div class="metrics-stack" id="metrics-stack" data-host="{{ selected_host }}"></div>
+
+        <div class="metrics-error-footer" id="metrics-error-footer" hidden>
+          <p class="metrics-error-timestamp" id="metrics-error-timestamp"></p>
+          <button type="button" class="btn btn-primary btn-sm" id="retry-btn">Thử lại</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="cli-panel" data-host="{{ selected_host }}">
+      <div class="card-header">
+        <h2>Chẩn đoán nhanh</h2>
+      </div>
+      <div class="card-body">
+        <p class="hint">
+          Chỉ các lệnh đọc (read-only) đã duyệt sẵn — không có ô nhập lệnh tự do.
+          Mọi lần chạy đều được ghi lại bên dưới (host, lệnh, kết quả, người chạy).
+        </p>
+        <div class="cli-buttons" id="cli-buttons"></div>
+        <div class="cli-output" id="cli-output" hidden>
+          <div class="cli-output-head">
+            <span id="cli-output-title"></span>
+            <span class="cli-output-meta" id="cli-output-meta"></span>
+          </div>
+          <pre class="cli-output-body" id="cli-output-body"></pre>
+        </div>
+        <div class="cli-history">
+          <h3 class="cli-history-title">Lịch sử chạy lệnh</h3>
+          <div class="table-wrap">
+            <table id="cli-history-table">
+              <thead>
+                <tr><th>Thời điểm</th><th>Lệnh</th><th>Người chạy</th><th>Kết quả</th></tr>
+              </thead>
+              <tbody id="cli-history-body">
+                <tr class="empty-row"><td colspan="4" class="empty-state">Chưa có lịch sử.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {% if selected_node and 'RGW' in selected_node.roles %}
+    <section class="card" id="rgw-log-panel" data-host="{{ selected_host }}">
+      <div class="card-header">
+        <h2>Log RGW</h2>
+        <div class="rgw-log-controls">
+          <span class="rgw-log-status" id="rgw-log-status">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="rgw-log-status-text">—</span>
+          </span>
+          <button type="button" class="btn btn-sm" id="rgw-log-live-toggle">Theo dõi trực tiếp</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="rgw-log-filter-bar">
+          <input
+            type="text"
+            id="rgw-log-filter"
+            class="rgw-log-filter-input"
+            placeholder="Lọc theo từ khoá (VD: bucket name, mã lỗi, request id...)"
+            autocomplete="off"
+          >
+          <button type="button" class="btn btn-ghost btn-sm" id="rgw-log-filter-clear">Xoá lọc</button>
+        </div>
+        <pre class="rgw-log-body" id="rgw-log-body"><span class="rgw-log-empty">Đang tải log...</span></pre>
+      </div>
+    </section>
+    {% endif %}
+    {% else %}
+    <section class="empty-node-state">
+      <span class="empty-node-icon" aria-hidden="true">&#128421;</span>
+      <p class="empty-node-text">Chọn một node để xem thông số</p>
+    </section>
+    {% endif %}
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/nodes.js?v={{ static_version }}"></script>
+  <script src="/static/nodes_cli.js?v={{ static_version }}"></script>
+  <script src="/static/nodes_rgw_log.js?v={{ static_version }}"></script>
+</body>
+</html>

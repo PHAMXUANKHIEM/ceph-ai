@@ -1,0 +1,49 @@
+from sqlalchemy.orm import Session
+
+from shared.models import AuditEntry
+
+ACTOR_SYSTEM = "system"
+
+EVENT_SAFE_ACTION_EXECUTED = "safe_action_executed"
+EVENT_SAFE_ACTION_FAILED = "safe_action_failed"
+EVENT_SAFE_ACTION_BLOCKED_BY_KILL_SWITCH = "safe_action_blocked_by_kill_switch"
+
+# Story 4.2/4.3: RISKY-action lifecycle (FR8/FR9, AD-4).
+EVENT_RISKY_ACTION_PENDING_APPROVAL = "risky_action_pending_approval"
+EVENT_RISKY_ACTION_APPROVED = "risky_action_approved"
+EVENT_RISKY_ACTION_REJECTED = "risky_action_rejected"
+EVENT_RISKY_ACTION_EXECUTED = "risky_action_executed"
+EVENT_RISKY_ACTION_FAILED = "risky_action_failed"
+EVENT_RISKY_ACTION_BLOCKED_BY_KILL_SWITCH = "risky_action_blocked_by_kill_switch"
+# 2026-07-23: fired by dashboard/routes/actions.py::approve_action instead
+# of EVENT_RISKY_ACTION_APPROVED when the action_id has no automated
+# command at all (investigate_manually, pg_repair_force — see
+# worker/executor/commands.py::has_command) — "Duyệt" here means "operator
+# acknowledges, will handle manually", never routed to Worker execution, so
+# it must not read as a normal approved-and-executed action in the trail.
+EVENT_RISKY_ACTION_ACKNOWLEDGED_NO_COMMAND = "risky_action_acknowledged_no_command"
+
+# dashboard/routes/chat.py: fired once, when an operator confirms a chat
+# proposal and the Incident/Action rows get created — separate from
+# EVENT_RISKY_ACTION_PENDING_APPROVAL / the SAFE execution events (those
+# still fire too, from the normal pipeline that owns the row after this) so
+# the audit trail can tell "this Action originated from a chat request" from
+# "this Action originated from a real detected Incident".
+EVENT_CHAT_ACTION_REQUESTED = "chat_action_requested"
+
+
+def record(
+    session: Session, *, incident_id: str, action_id: str | None, event_type: str, actor: str
+) -> None:
+    """AD-7: the ONLY place that ever inserts an AuditEntry row. Does NOT
+    commit — the caller controls the transaction boundary, so this write is
+    always atomic with the Action/Incident status change it describes
+    (same pattern as shared/kill_switch.py::is_kill_switch_enabled)."""
+    session.add(
+        AuditEntry(
+            incident_id=incident_id,
+            action_id=action_id,
+            event_type=event_type,
+            actor=actor,
+        )
+    )

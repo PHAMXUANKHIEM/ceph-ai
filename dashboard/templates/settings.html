@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Cài đặt — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Nodes</a>
+        <a href="/audit" class="nav-link">Audit Trail</a>
+        <a href="/settings" class="nav-link active">Cài đặt</a>
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>Tiến trình Dashboard</h2></div>
+      <div class="card-body">
+        {% if dashboard_restart_error %}
+          <p class="error">{{ dashboard_restart_error }}</p>
+        {% endif %}
+        <p class="hint">
+          Khởi động lại tiến trình Dashboard để áp dụng code mới nhất — không cần quyền truy cập terminal server nữa.
+          Gây gián đoạn khoảng vài giây cho TẤT CẢ người đang dùng Dashboard.
+        </p>
+        <form
+          method="post"
+          action="/settings/restart-dashboard"
+          onsubmit="return confirm('Khởi động lại Dashboard ngay? Mọi người đang dùng sẽ bị gián đoạn vài giây.');"
+        >
+          <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Dashboard</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Cấu hình AI — 9router</h2></div>
+      <div class="card-body">
+        {% if error %}
+          <p class="error">{{ error }}</p>
+        {% endif %}
+        {% if success %}
+          <p class="success">{{ success }}</p>
+        {% endif %}
+        {% if worker_restart_error %}
+          <p class="error">{{ worker_restart_error }}</p>
+        {% endif %}
+
+        <div id="router-connected-view" {% if not router_connected %}hidden{% endif %}>
+          <p class="success">✅ 9router đã kết nối</p>
+          <p class="hint">Base URL: <code id="router-connected-base-url">{{ router_base_url }}</code></p>
+          <p class="hint">Model: <code id="router-connected-model">{{ router_model }}</code></p>
+          <p class="hint">Key hiện tại: <code>{{ masked_key }}</code></p>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="router-change-model-btn">Đổi model</button>
+            <form
+              method="post"
+              action="/settings/9router/disconnect"
+              onsubmit="return confirm('Huỷ kết nối 9router? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');"
+              style="display:inline"
+            >
+              <button type="submit" class="btn btn-sm btn-kill-switch-on">Huỷ kết nối</button>
+            </form>
+          </div>
+        </div>
+
+        <div id="router-wizard-view" {% if router_connected %}hidden{% endif %}>
+          <form class="login-box" id="router-step1-form">
+            <label>9router Base URL
+              <input
+                type="text"
+                name="router_base_url"
+                id="router-base-url-input"
+                value="{{ router_base_url }}"
+                placeholder="http://localhost:20128"
+                required
+              >
+            </label>
+            <label>API Key
+              <input
+                type="password"
+                name="router_api_key"
+                id="router-api-key-input"
+                placeholder="{% if masked_key %}để trống để giữ nguyên key hiện tại ({{ masked_key }}){% else %}sk-...{% endif %}"
+                autocomplete="off"
+              >
+            </label>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="router-verify-btn">Xác nhận kết nối</button>
+              <span id="router-verify-result" class="ai-test-result" hidden></span>
+            </div>
+          </form>
+
+          <form
+            class="login-box"
+            id="router-step2-form"
+            method="post"
+            action="/settings/9router/save"
+            {% if not router_models %}hidden{% endif %}
+          >
+            <input type="hidden" name="router_base_url" id="router-step2-base-url" value="{{ router_base_url }}">
+            <input type="hidden" name="router_api_key" id="router-step2-api-key">
+            <label>Model
+              <input type="text" id="router-model-filter" placeholder="Lọc model..." autocomplete="off" hidden>
+              <select name="router_model_id" id="router-model-select" required>
+                {% if router_models %}
+                  {% for m in router_models %}
+                    <option value="{{ m }}" {% if m == router_model %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                {% elif router_model %}
+                  <option value="{{ router_model }}" selected>{{ router_model }}</option>
+                {% endif %}
+              </select>
+            </label>
+            <button type="submit" class="btn btn-primary">Lưu cấu hình</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Kết nối cụm Ceph</h2></div>
+      <div class="card-body">
+        {% if cluster_error %}
+          <p class="error">{{ cluster_error }}</p>
+        {% endif %}
+        {% if cluster_success %}
+          <p class="success">{{ cluster_success }}</p>
+        {% endif %}
+        {% if watcher_restart_error %}
+          <p class="error">{{ watcher_restart_error }}</p>
+        {% endif %}
+        <p class="hint">
+          Watcher tự động khởi động lại sau khi lưu để áp dụng cấu hình mới ngay.
+        </p>
+        <form class="login-box" method="post" action="/settings/cluster">
+          <label>MON nodes (IP, phân tách dấu phẩy)
+            <input type="text" name="ceph_mon_nodes" value="{{ ceph_mon_nodes }}" placeholder="10.0.0.1,10.0.0.2,10.0.0.3" required>
+          </label>
+          <label>MON hostnames (tương ứng, phân tách dấu phẩy)
+            <input type="text" name="ceph_mon_hostnames" value="{{ ceph_mon_hostnames }}" placeholder="mon1,mon2,mon3">
+          </label>
+          <label>Kiểu deploy
+            <select name="ceph_exec_mode">
+              <option value="cephadm" {% if ceph_exec_mode == "cephadm" %}selected{% endif %}>cephadm (khuyến nghị — cephadm shell, không cần tên container)</option>
+              <option value="docker" {% if ceph_exec_mode == "docker" %}selected{% endif %}>docker (docker exec / docker compose, 1 tên container cố định)</option>
+              <option value="podman" {% if ceph_exec_mode == "podman" %}selected{% endif %}>podman thường (không phải cephadm, 1 tên container cố định)</option>
+              <option value="none" {% if ceph_exec_mode == "none" %}selected{% endif %}>Không dùng container (ceph-deploy / cài package trực tiếp)</option>
+            </select>
+          </label>
+          <p class="hint">
+            Cụm cephadm thật (podman) vẫn cần chọn <strong>cephadm</strong> ở trên, KHÔNG phải "podman thường" —
+            container mon dài hạn của cephadm không có sẵn keyring admin, và tên container tự sinh khác nhau theo từng node.
+            <code>cephadm shell</code> tự lo việc đó, không cần điền tên container.
+          </p>
+          <label>MON container name
+            <input type="text" name="ceph_container_name" value="{{ ceph_container_name }}" placeholder="ceph-mon-B">
+          </label>
+          <label>MGR nodes (IP, phân tách dấu phẩy, tuỳ chọn)
+            <input type="text" name="ceph_mgr_nodes" value="{{ ceph_mgr_nodes }}" placeholder="10.0.0.6,10.0.0.7">
+          </label>
+          <label>OSD nodes (IP, phân tách dấu phẩy)
+            <input type="text" name="ceph_osd_nodes" value="{{ ceph_osd_nodes }}" placeholder="10.0.0.4,10.0.0.5">
+          </label>
+          <label>OSD container name
+            <input type="text" name="ceph_osd_container_name" value="{{ ceph_osd_container_name }}" placeholder="ceph-osd-B">
+          </label>
+          <label>RGW nodes (IP, phân tách dấu phẩy, tuỳ chọn)
+            <input type="text" name="ceph_rgw_nodes" value="{{ ceph_rgw_nodes }}" placeholder="10.0.0.8,10.0.0.9">
+          </label>
+          <label>RGW container name
+            <input type="text" name="ceph_rgw_container_name" value="{{ ceph_rgw_container_name }}" placeholder="ceph-rgw-B">
+          </label>
+          <p class="hint">
+            3 ô tên container ở trên chỉ cần khi Kiểu deploy là docker/podman thường — bỏ trống nếu chọn "cephadm" hoặc "Không dùng container".
+          </p>
+          <label>SSH user
+            <input type="text" name="ssh_user" value="{{ ssh_user }}" placeholder="root" required>
+          </label>
+          <!-- SSH key path is not part of this form — it's a one-time
+               server-side setting (SSH_KEY_PATH in .env), not something
+               that changes per Ceph cluster the way MON/OSD nodes do. -->
+          {% if ssh_key_path %}
+            <p class="hint">SSH key: <code>{{ ssh_key_path }}</code> (đặt qua <code>SSH_KEY_PATH</code> trong <code>.env</code>).</p>
+            {% if ssh_public_key %}
+              <p class="hint">
+                Public key tương ứng — copy vào <code>~/.ssh/authorized_keys</code> trên các node MON/OSD của cụm Ceph bạn muốn kết nối, TRƯỚC khi bấm Lưu:
+              </p>
+              <textarea readonly rows="3" onclick="this.select()">{{ ssh_public_key }}</textarea>
+            {% else %}
+              <p class="hint">
+                Không tìm thấy file public key tương ứng (<code>&lt;đường dẫn&gt;.pub</code>) — tạo bằng <code>ssh-keygen</code> nếu chưa có.
+              </p>
+            {% endif %}
+          {% else %}
+            <p class="hint">
+              Chưa cấu hình SSH key path — đặt <code>SSH_KEY_PATH</code> trong file <code>.env</code> trên server rồi khởi động lại Dashboard.
+            </p>
+          {% endif %}
+          <button type="submit" class="btn btn-primary">Lưu &amp; kiểm tra kết nối</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Dọn dẹp log &amp; dữ liệu cũ</h2></div>
+      <div class="card-body">
+        {% if cleanup_error %}
+          <p class="error">{{ cleanup_error }}</p>
+        {% endif %}
+        {% if cleanup_success %}
+          <p class="success">{{ cleanup_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Xóa vĩnh viễn, không hoàn tác được. File log được xóa TRỰC TIẾP trong file đang dùng (Dashboard/Watcher/Worker vẫn ghi tiếp bình thường, không cần khởi động lại).
+        </p>
+        <form
+          class="login-box"
+          method="post"
+          action="/settings/cleanup"
+          onsubmit="return confirm('Xóa dữ liệu đã chọn? Hành động này KHÔNG thể hoàn tác.');"
+        >
+          <label class="checkbox-label">
+            <input type="checkbox" name="target_files" checked>
+            File log tiến trình (Dashboard, Watcher, Worker)
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="target_db" checked>
+            Lịch sử Incident / Audit Trail / Chẩn đoán CLI (database)
+          </label>
+          <label>Xóa dữ liệu trước ngày (để trống = xóa hết)
+            <input type="date" name="cutoff_date">
+          </label>
+          <p class="hint">
+            File log dashboard.log không có mốc thời gian theo từng dòng (định dạng log gốc của uvicorn) — chọn mốc ngày với file này sẽ xóa toàn bộ file, không xóa được từng phần theo ngày.
+          </p>
+          <button type="submit" class="btn btn-kill-switch-on">Xóa dữ liệu đã chọn</button>
+        </form>
+      </div>
+    </section>
+  </main>
+  <script src="/static/settings.js?v={{ static_version }}"></script>
+</body>
+</html>
