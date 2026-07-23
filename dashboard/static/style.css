@@ -888,6 +888,17 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 
 .chat-panel-body { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 
+/* `[hidden]` and `.chat-messages`/`.chat-input-bar`/`.chat-history-list-view`
+   have EQUAL CSS specificity (one class, one attribute selector) — same trap
+   as the .chart-skeleton/.chart-error-overlay/.chart-empty-overlay rule
+   above: the browser's built-in `[hidden]{display:none}` loses that tie to
+   these `display:flex` rules (author styles beat user-agent styles on a
+   specificity tie), so chat_widget.js's applyViewMode() toggling the
+   `hidden` property did nothing visually — the live chat and its input bar
+   stayed on screen, squeezing the history list into a sliver instead of
+   replacing it. */
+.chat-messages[hidden], .chat-input-bar[hidden], .chat-history-list-view[hidden] { display: none; }
+
 .chat-messages {
   flex: 1 1 auto;
   overflow-y: auto;
