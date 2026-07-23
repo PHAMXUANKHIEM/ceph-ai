@@ -444,11 +444,10 @@ def test_confirm_action_risky_action_routes_to_pending_approval(dashboard_client
         action = session.query(Action).filter_by(incident_id=incident.id).one()
         assert action.classification == ActionClassification.RISKY.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
-
-    # And it now shows up on the normal Dashboard "Chờ duyệt" section, same
-    # as any Incident-triggered RISKY action.
-    home = dashboard_client.get("/")
-    assert "restart_osd_daemon" in home.text
+    # 2026-07-23: the Dashboard no longer has a "Chờ duyệt" UI card (see
+    # tests/test_dashboard_actions.py) — this RISKY Action row still exists
+    # and is still approvable via POST /actions/{id}/approve, just not
+    # surfaced by any page anymore.
 
 
 def test_confirm_action_double_submit_is_a_no_op(dashboard_client):

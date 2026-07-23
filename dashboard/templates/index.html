@@ -54,40 +54,6 @@
       </form>
     </section>
 
-    <section class="card auto-approve-card {% if auto_approve_restart_osd_enabled %}auto-approve-active{% endif %}">
-      <div class="card-body auto-approve-body">
-        <div>
-          <strong>
-            {% if auto_approve_restart_osd_enabled %}
-              🤖 Tự động restart OSD ĐANG BẬT
-            {% else %}
-              Tự động restart OSD: đang TẮT
-            {% endif %}
-          </strong>
-          <p class="hint">
-            {% if auto_approve_restart_osd_enabled %}
-              Khi phát hiện OSD_DOWN, AI tự chạy lệnh restart OSD daemon ngay, không cần bạn bấm Duyệt.
-            {% else %}
-              Hiện tại hành động restart OSD (RISKY) vẫn cần bạn bấm Duyệt thủ công cho từng Incident. Bật lên để AI tự chạy ngay khi phát hiện lỗi.
-            {% endif %}
-            Chỉ áp dụng cho <code>restart_osd_daemon</code> — các hành động RISKY khác vẫn cần duyệt tay.
-          </p>
-        </div>
-        <form
-          method="post"
-          action="/auto-approve-restart-osd"
-          onsubmit="return confirm({% if auto_approve_restart_osd_enabled %}'Tắt tự động restart OSD? Sự cố OSD_DOWN tiếp theo sẽ quay lại chờ bạn duyệt tay.'{% else %}'Bật tự động restart OSD? Từ giờ, mỗi khi phát hiện OSD_DOWN, AI sẽ TỰ CHẠY lệnh restart OSD daemon ngay lập tức — KHÔNG hỏi bạn trước, KHÔNG cần bấm Duyệt. Có thể gây gián đoạn ngắn nếu restart nhầm lúc dữ liệu đang tái cân bằng/phục hồi. Bạn chắc chắn muốn bật?'{% endif %});"
-        >
-          <input type="hidden" name="enabled" value="{{ 'false' if auto_approve_restart_osd_enabled else 'true' }}">
-          {% if auto_approve_restart_osd_enabled %}
-            <button type="submit" class="btn btn-kill-switch-off">Tắt tự động restart OSD</button>
-          {% else %}
-            <button type="submit" class="btn btn-kill-switch-on">Bật tự động restart OSD</button>
-          {% endif %}
-        </form>
-      </div>
-    </section>
-
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}
         <strong>⚠ Mất kết nối cụm Ceph</strong>
@@ -115,61 +81,21 @@
       <p class="hint">Suy từ dữ liệu Incident đã ghi nhận — trạng thái có thể trễ tối đa vài giây so với cluster thật (theo chu kỳ poll của Watcher). Đây là tình trạng CỦA CLUSTER (vd HEALTH_WARN/HEALTH_ERR thật), khác với việc Watcher có kết nối được tới cụm hay không (xem section phía trên).</p>
     </section>
 
-    {% if pending_actions %}
-    <section class="card">
-      <div class="card-header"><h2>Chờ duyệt — Risky Action</h2></div>
-      <div class="card-body pending-actions">
-        {% for action, incident in pending_actions %}
-        <article class="pending-action-card">
-          <p><strong>Mã lỗi:</strong> {{ incident.ceph_code if incident else "—" }}
-            {% if incident %}<span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span>{% endif %}</p>
-          <p><strong>Chẩn đoán:</strong> {{ incident.diagnosis_text if incident and incident.diagnosis_text else "—" }}</p>
-          <p><strong>Hành động đề xuất:</strong> <code>{{ action.action_id }}</code></p>
-          <p><strong>Giải thích rủi ro:</strong> {{ action.rationale if action.rationale else "—" }}</p>
-          <p><strong>Lệnh sẽ chạy:</strong>
-            {% if action.proposed_command %}<code>{{ action.proposed_command }}</code>
-            {% else %}<span class="hint">Không có lệnh tự động cho hành động này — bấm Duyệt sẽ đóng sự cố lại (ghi nhận đã xử lý thủ công), không có lệnh nào được chạy.</span>{% endif %}
-          </p>
-          <div class="pending-action-buttons">
-            <form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
-              <button type="submit" class="btn btn-approve">Duyệt</button>
-            </form>
-            <form method="post" action="/actions/{{ action.id }}/reject" class="inline-form">
-              <button type="submit" class="btn btn-reject">Từ chối</button>
-            </form>
-          </div>
-        </article>
-        {% endfor %}
-      </div>
-    </section>
-    {% endif %}
-
     <section class="card">
       <div class="card-header"><h2>Incident Feed</h2></div>
       <div class="card-body table-wrap">
         <table id="incident-feed">
           <thead>
-            <tr><th>Mã lỗi</th><th>Mức độ</th><th>Thời điểm phát hiện</th><th>Trạng thái</th><th>Chẩn đoán</th></tr>
+            <tr><th>Mã lỗi</th><th>Lý do lỗi</th></tr>
           </thead>
           <tbody>
             {% for incident in incidents %}
             <tr>
-              <td>{{ incident.ceph_code }}</td>
-              <td>
-                {% if incident.severity == "HEALTH_ERR" %}
-                <span class="severity-badge severity-err">ERR</span>
-                {% elif incident.severity == "HEALTH_WARN" %}
-                <span class="severity-badge severity-warn">WARN</span>
-                {% else %}
-                <span class="hint">—</span>
-                {% endif %}
-              </td>
-              <td>{{ incident.detected_at|vntime }}</td>
-              <td>{{ incident.status }}</td>
-              <td>{% if incident.diagnosis_text %}{{ incident.diagnosis_text }}{% elif incident.status == "DIAGNOSING" %}Đang chẩn đoán...{% else %}—{% endif %}</td>
+              <td>{{ incident.ceph_code }} <span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span></td>
+              <td>{% if incident.diagnosis_text %}{{ incident.diagnosis_text }}{% elif incident.status == "DIAGNOSING" %}Đang chẩn đoán...{% else %}Chưa có chẩn đoán.{% endif %}</td>
             </tr>
             {% else %}
-            <tr class="empty-row"><td colspan="5" class="empty-state"><span class="empty-icon" aria-hidden="true">&#8709;</span>Chưa có Incident nào.</td></tr>
+            <tr class="empty-row"><td colspan="2" class="empty-state"><span class="empty-icon" aria-hidden="true">&#8709;</span>Chưa có Incident nào.</td></tr>
             {% endfor %}
           </tbody>
         </table>

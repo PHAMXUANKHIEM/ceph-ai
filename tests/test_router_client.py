@@ -156,61 +156,12 @@ def test_diagnose_incident_creates_risky_action_for_risky_action_id(isolated_db,
         assert actions[0].classification == ActionClassification.RISKY.value
 
 
-def _set_auto_approve_restart_osd(enabled: bool) -> None:
-    from shared.auto_approve import AUTO_APPROVE_RESTART_OSD_KEY
-
-    with db_module.SessionLocal() as session:
-        session.add(SystemFlag(key=AUTO_APPROVE_RESTART_OSD_KEY, value=enabled))
-        session.commit()
-
-
-def test_diagnose_incident_auto_approve_flag_on_makes_restart_osd_daemon_safe_and_executes(
-    isolated_db, monkeypatch
-):
-    async def fake_call_router(user_content):
-        return {
-            "diagnosis_text": "OSD daemon appears down.",
-            "action_id": "restart_osd_daemon",
-            "rationale": "restart clears a transient crash.",
-        }
-
-    execute_calls = []
-
-    def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
-            return "  ceph-fsid@osd.7.service   loaded active running   x\n"
-        execute_calls.append(host)
-        return "ok"
-
-    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
-    monkeypatch.setattr(router_client, "execute_command", fake_execute)
-    # Discovery (worker/executor/commands.py::_discover_ceph_units) calls
-    # execute_command via ITS OWN module-level import binding, a separate
-    # reference from router_client's — both must be patched, or discovery
-    # falls through to a REAL SSH attempt against whatever host string the
-    # test happens to use.
-    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
-    _set_auto_approve_restart_osd(True)
-
-    _create_incident("incident-auto-1")
-    envelope = dict(ENVELOPE, incident_id="incident-auto-1", nodes=["10.20.1.83"])
-
-    asyncio.run(router_client.diagnose_incident("incident-auto-1", envelope))
-
-    assert execute_calls == ["10.20.1.83"]  # ran immediately, no approval step
-    with db_module.SessionLocal() as session:
-        action = session.query(Action).filter_by(incident_id="incident-auto-1").one()
-        assert action.classification == ActionClassification.SAFE.value
-        assert action.status == ActionStatus.AUTO_EXECUTED.value
-        incident = session.get(Incident, "incident-auto-1")
-        assert incident.status == IncidentStatus.AUTO_FIXED.value
-
-
-def test_diagnose_incident_auto_approve_flag_off_by_default_keeps_restart_osd_daemon_risky(
-    isolated_db, monkeypatch
-):
-    # No flag row seeded at all (isolated_db only seeds kill_switch_enabled)
-    # — fail-closed default must still require approval.
+def test_diagnose_incident_keeps_restart_osd_daemon_risky(isolated_db, monkeypatch):
+    # 2026-07-23: the dashboard-controlled auto-approve-restart-osd override
+    # (shared/auto_approve.py) was removed along with its dashboard toggle
+    # and the "Chờ duyệt" approval card — restart_osd_daemon now always
+    # classifies via the plain policy (action_policy.yaml's `risky:` list),
+    # unconditionally, same as any other RISKY action_id.
     async def fake_call_router(user_content):
         return {
             "diagnosis_text": "OSD daemon appears down.",
@@ -230,35 +181,6 @@ def test_diagnose_incident_auto_approve_flag_off_by_default_keeps_restart_osd_da
 
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(incident_id="incident-auto-2").one()
-        assert action.classification == ActionClassification.RISKY.value
-        assert action.status == ActionStatus.PENDING_APPROVAL.value
-
-
-def test_diagnose_incident_auto_approve_flag_on_does_not_affect_other_risky_action_ids(
-    isolated_db, monkeypatch
-):
-    # Scoped to restart_osd_daemon only — pg_repair_force must stay RISKY
-    # even with the flag on.
-    async def fake_call_router(user_content):
-        return {
-            "diagnosis_text": "PG appears inconsistent.",
-            "action_id": "pg_repair_force",
-            "rationale": "force-repair clears the inconsistency.",
-        }
-
-    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
-    monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: pytest.fail("must not execute")
-    )
-    _set_auto_approve_restart_osd(True)
-
-    _create_incident("incident-auto-3")
-    envelope = dict(ENVELOPE, incident_id="incident-auto-3")
-
-    asyncio.run(router_client.diagnose_incident("incident-auto-3", envelope))
-
-    with db_module.SessionLocal() as session:
-        action = session.query(Action).filter_by(incident_id="incident-auto-3").one()
         assert action.classification == ActionClassification.RISKY.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
 
@@ -916,8 +838,9 @@ def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_
         return "ok"
 
     monkeypatch.setattr(router_client, "execute_command", fake_execute)
-    # See the auto-approve test's identical comment: discovery goes through
-    # commands.py's OWN execute_command binding, not router_client's.
+    # Discovery (worker/executor/commands.py::_discover_ceph_units) calls
+    # execute_command via ITS OWN module-level import binding, a separate
+    # reference from router_client's — both must be patched.
     monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
 
     _create_incident("incident-7z")

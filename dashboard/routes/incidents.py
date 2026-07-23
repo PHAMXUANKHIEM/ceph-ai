@@ -11,9 +11,8 @@ from dashboard.routes.auth import require_login
 from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.templating import make_templates
 from shared import db, heartbeat
-from shared.auto_approve import is_auto_approve_restart_osd_enabled, set_auto_approve_restart_osd
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
-from shared.models import Action, ActionStatus, AuditEntry, Incident, IncidentStatus, WatcherHeartbeat
+from shared.models import AuditEntry, Incident, IncidentStatus, WatcherHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -110,46 +109,23 @@ def is_heartbeat_stale(latest_heartbeat: WatcherHeartbeat | None) -> bool:
     return age > timedelta(seconds=HEARTBEAT_STALE_MULTIPLIER * settings.watcher_poll_interval_seconds)
 
 
-def _fetch_dashboard_data() -> tuple[
-    list[Incident], WatcherHeartbeat | None, bool, bool, list[Action], list[AuditEntry]
-]:
+def _fetch_dashboard_data() -> tuple[list[Incident], WatcherHeartbeat | None, bool, list[AuditEntry]]:
     with db.SessionLocal() as session:
         incidents = session.query(Incident).order_by(Incident.detected_at.desc()).all()
         latest_heartbeat = heartbeat.get_latest(session)
         kill_switch_enabled = is_kill_switch_enabled(session)
-        auto_approve_restart_osd_enabled = is_auto_approve_restart_osd_enabled(session)
-        pending_actions = (
-            session.query(Action)
-            .filter_by(status=ActionStatus.PENDING_APPROVAL.value)
-            .order_by(Action.created_at.desc())
-            .all()
-        )
         # Dashboard-page preview of the same /audit page (Story: "move Audit
         # Trail onto the Dashboard") — recent_audit_entries() is the exact
         # same query audit_trail() itself runs unfiltered, just capped, so
         # both pages stay backed by one data source instead of two.
         audit_entries = recent_audit_entries(session)
-    return (
-        incidents,
-        latest_heartbeat,
-        kill_switch_enabled,
-        auto_approve_restart_osd_enabled,
-        pending_actions,
-        audit_entries,
-    )
+    return (incidents, latest_heartbeat, kill_switch_enabled, audit_entries)
 
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, user: str = Depends(require_login)):
     try:
-        (
-            incidents,
-            latest_heartbeat,
-            kill_switch_enabled,
-            auto_approve_restart_osd_enabled,
-            pending_actions,
-            audit_entries,
-        ) = _fetch_dashboard_data()
+        (incidents, latest_heartbeat, kill_switch_enabled, audit_entries) = _fetch_dashboard_data()
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
         # (e.g. a malformed row) should surface the same friendly error,
@@ -157,14 +133,6 @@ async def index(request: Request, user: str = Depends(require_login)):
         # alone wouldn't catch.
         stale = is_heartbeat_stale(latest_heartbeat)
         status = compute_cluster_status(incidents, stale)
-        # Incidents already fetched are looked up by id (in-memory, no extra
-        # query) for the pending-approval section — every PENDING_APPROVAL
-        # Action has a corresponding row in `incidents` since both derive
-        # from the same DB snapshot.
-        incidents_by_id = {incident.id: incident for incident in incidents}
-        pending_actions_with_incident = [
-            (action, incidents_by_id.get(action.incident_id)) for action in pending_actions
-        ]
     except SQLAlchemyError:
         logger.exception("index: failed to query incidents from DB")
         raise HTTPException(
@@ -190,29 +158,9 @@ async def index(request: Request, user: str = Depends(require_login)):
             "cluster_container_name": settings.ceph_container_name,
             "cluster_exec_mode": settings.ceph_exec_mode,
             "kill_switch_enabled": kill_switch_enabled,
-            "auto_approve_restart_osd_enabled": auto_approve_restart_osd_enabled,
-            "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
         },
     )
-
-
-@router.post("/auto-approve-restart-osd", response_class=HTMLResponse)
-async def auto_approve_restart_osd_submit(
-    request: Request, user: str = Depends(require_login), enabled: str = Form(...)
-):
-    """Dashboard-controlled override, scoped to ONLY the restart_osd_daemon
-    action_id (see shared/auto_approve.py) — flips it from RISKY
-    (PENDING_APPROVAL, needs a manual Duyệt click) to auto-executing like a
-    SAFE action, the next time Claude classifies an OSD_DOWN/PG_-family
-    incident. Same "always post the opposite of what's displayed" pattern
-    as /kill-switch, so a stale/double-submitted page can't silently
-    re-apply a value the operator no longer intends.
-    """
-    with db.SessionLocal() as session:
-        set_auto_approve_restart_osd(session, enabled.strip().lower() == "true")
-        session.commit()
-    return RedirectResponse(url="/", status_code=303)
 
 
 @router.post("/kill-switch", response_class=HTMLResponse)

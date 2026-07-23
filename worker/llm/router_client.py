@@ -10,7 +10,6 @@ import yaml
 
 from config.settings import settings
 from shared import audit, db
-from shared.auto_approve import is_auto_approve_restart_osd_enabled
 from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from shared.router_client import build_router_client
@@ -280,16 +279,6 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 return
         else:
             classification = gate.classify_action(action_id)
-            if (
-                action_id == "restart_osd_daemon"
-                and classification == ActionClassification.RISKY
-                and is_auto_approve_restart_osd_enabled(session)
-            ):
-                # Dashboard-controlled, DB-backed override (fresh read every
-                # time, same AD-4 posture as the kill-switch) — scoped to
-                # this ONE action_id only, never a blanket "skip approval
-                # for every RISKY action" (see shared/auto_approve.py).
-                classification = ActionClassification.SAFE
             nodes = envelope.get("nodes")
             action = Action(
                 incident_id=incident_id,

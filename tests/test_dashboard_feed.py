@@ -22,10 +22,12 @@ def test_index_shows_incident_from_db(dashboard_client):
 
     assert response.status_code == 200
     assert "OSD_DOWN" in response.text
-    assert "NEW" in response.text
 
 
-def test_index_shows_severity_badge_for_incident(dashboard_client):
+def test_index_shows_diagnosis_text_as_the_error_reason(dashboard_client):
+    # 2026-07-23: the Incident Feed was simplified to just "Mã lỗi" + "Lý do
+    # lỗi" (Chat-with-AI now covers everything the removed status/severity/
+    # approve-action columns used to show) — diagnosis_text is the "reason".
     with db_module.SessionLocal() as session:
         session.add(
             Incident(
@@ -33,6 +35,7 @@ def test_index_shows_severity_badge_for_incident(dashboard_client):
                 status="NEW",
                 detected_at=datetime.utcnow(),
                 severity="HEALTH_ERR",
+                diagnosis_text="OSD.3 bị crash do hết dung lượng đĩa.",
             )
         )
         session.commit()
@@ -41,12 +44,10 @@ def test_index_shows_severity_badge_for_incident(dashboard_client):
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert 'severity-err">ERR' in response.text
+    assert "OSD.3 bị crash do hết dung lượng đĩa." in response.text
 
 
-def test_index_shows_dash_for_incident_with_no_severity(dashboard_client):
-    # Rows created before the severity column existed have no value to
-    # backfill — must render a plain dash, not crash or show "None".
+def test_index_shows_placeholder_when_incident_has_no_diagnosis_yet(dashboard_client):
     with db_module.SessionLocal() as session:
         session.add(Incident(ceph_code="OSD_DOWN", status="NEW", detected_at=datetime.utcnow()))
         session.commit()
@@ -55,7 +56,7 @@ def test_index_shows_dash_for_incident_with_no_severity(dashboard_client):
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "severity-badge" not in response.text
+    assert "Chưa có chẩn đoán." in response.text
 
 
 def test_index_shows_empty_state_when_no_incidents(dashboard_client):
