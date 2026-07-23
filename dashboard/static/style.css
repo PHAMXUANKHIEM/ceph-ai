@@ -346,6 +346,7 @@ code {
 }
 .btn:hover { background: var(--bg-surface-hover); }
 .btn:active { transform: translateY(1px); }
+.btn:disabled, .btn:disabled:hover { opacity: 0.45; cursor: not-allowed; transform: none; }
 .btn-block { width: 100%; justify-content: center; }
 .btn-sm { padding: 0.38rem 0.7rem; font-size: 0.78rem; }
 
@@ -440,8 +441,14 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 /* ===== Forms (login + settings share the .login-box field-grid layout) ===== */
 .login-box { display: flex; flex-direction: column; gap: var(--space-4); max-width: 30rem; }
 .login-box label { display: flex; flex-direction: column; gap: var(--space-1); font-size: 0.84rem; font-weight: 500; color: var(--text-muted); }
+/* Same specificity pitfall as the `[hidden]` comment further down this file:
+   `.login-box label` (author, display:flex) beats the UA `[hidden]{display:none}`
+   rule regardless of specificity, so JS toggling `.hidden` on a deploy-mode
+   field (settings.js's data-exec-modes logic) would silently do nothing
+   without this override. */
+.login-box label[hidden] { display: none; }
 .login-box .checkbox-label { flex-direction: row; align-items: center; gap: var(--space-2); }
-.login-box .checkbox-label input[type="checkbox"] { width: auto; }
+.login-box .checkbox-label input[type="checkbox"], .login-box .checkbox-label input[type="radio"] { width: auto; }
 .login-box input, .login-box textarea, .login-box select {
   font-family: var(--font-mono);
   font-size: 0.88rem;
@@ -775,6 +782,45 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   word-break: break-word;
 }
 .cli-output-body.cli-output-error { color: var(--critical); }
+
+/* Admin-only restart controls (dashboard/templates/settings.html) — three
+   independent process restarts side by side. */
+.restart-controls-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+.restart-control { display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
+
+/* Cluster Upgrade page's plan/procedure text (dashboard/templates/upgrade.html) —
+   same monospace-block treatment as .cli-output-body, just inline in a card
+   rather than the Nodes page's dedicated output panel. */
+.upgrade-plan-text {
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius, 6px);
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: #b9c6e6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ceph-deploy/package-based upgrade — two side-by-side sub-methods
+   (dashboard/templates/upgrade.html). */
+.upgrade-method-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-5);
+}
+.upgrade-method {
+  padding: var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius, 6px);
+}
+.upgrade-method h3 { margin: 0 0 var(--space-2); font-size: 0.95rem; }
 
 .cli-history { margin-top: var(--space-5); }
 .cli-history-title { font-size: 0.82rem; font-weight: 600; color: var(--text-muted); margin: 0 0 var(--space-2); text-transform: uppercase; letter-spacing: 0.04em; }

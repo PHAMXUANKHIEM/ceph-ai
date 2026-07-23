@@ -12,8 +12,13 @@ import time
 from pathlib import Path
 
 import openai
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
 from dashboard.routes.auth import require_login
@@ -61,6 +66,27 @@ WATCHER_LOG_PATH = Path("/var/log/ceph-aiops-watcher.log")
 DASHBOARD_LOG_PATH = Path("/var/log/ceph-aiops-dashboard.log")
 DASHBOARD_RESTART_GRACE_SECONDS = 1.0
 DASHBOARD_RESTART_WAIT_SECONDS = 10.0
+
+# 2026-07-23: this app has exactly ONE account (no RBAC anywhere else in this
+# codebase either — see shared/models.py's docstrings), so `require_login`
+# alone can't express "only a privileged user" — every logged-in user IS the
+# one account. Manually restarting Worker/Watcher/Dashboard from the browser
+# is disruptive to whoever else is using the Dashboard at that moment, so
+# it's gated behind a SEPARATE, hardcoded check against the literal username
+# "admin" — deliberately NOT `settings.dashboard_username` (comparing a
+# single-account system's current user against its own configured username
+# is always true, i.e. no real restriction at all). This means renaming the
+# account away from "admin" hides these controls for everyone, which is the
+# intended fail-safe: nobody sees "restart" buttons by accident.
+RESTART_CONTROLS_USERNAME = "admin"
+
+
+def _require_restart_privilege(user: str) -> None:
+    if user != RESTART_CONTROLS_USERNAME:
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ tài khoản admin mới được phép khởi động lại tiến trình hệ thống",
+        )
 
 
 def _mask_key(key: str) -> str:
@@ -285,6 +311,169 @@ def _start_watcher() -> int:
     return _start_process(WATCHER_MODULE, WATCHER_LOG_PATH, child_env)
 
 
+# --- Database connection (Settings page's "Kết nối Database" section) ---
+# The app's storage backend — everything in shared/models.py (Incident,
+# Action, AuditEntry, chat history...). Postgres only (not Mongo/MySQL): the
+# schema is fully relational (FK constraints, CheckConstraint-backed enums)
+# and already managed via Alembic SQL DDL — see the "3 loại db" conversation
+# this section answers.
+DATABASE_URL_ENV_NAME = "DATABASE_URL"
+ALEMBIC_INI_PATH = PROJECT_ROOT / "alembic.ini"
+ALEMBIC_SCRIPT_LOCATION = PROJECT_ROOT / "alembic"
+DEFAULT_POSTGRES_PORT = 5432
+DB_TEST_QUERY = text("SELECT 1")
+
+
+# Bare drivername values that mean "PostgreSQL, whatever driver's
+# available" rather than a specific one — "postgres" is the scheme every
+# managed-Postgres provider (Heroku-style DATABASE_URL, most k8s
+# pgbouncer/operator services...) actually hands out, but SQLAlchemy only
+# ever recognizes "postgresql" as a dialect name, never bare "postgres" (a
+# NoSuchModuleError, not a connection error) — and a driver-less
+# "postgresql://" defaults to psycopg2, which isn't installed in this
+# project (psycopg v3 is — see pyproject.toml).
+_BARE_POSTGRES_DRIVERNAMES = frozenset({"postgres", "postgresql"})
+
+
+def _normalize_postgres_driver(url):
+    """Rewrites a pasted "Nhập Database URL" value's drivername to
+    `postgresql+psycopg` whenever it's one of _BARE_POSTGRES_DRIVERNAMES —
+    every OTHER drivername (e.g. an explicit `+psycopg2` the operator
+    deliberately typed) is left untouched, since that's not this app's
+    driver to silently override."""
+    if url.drivername in _BARE_POSTGRES_DRIVERNAMES:
+        return url.set(drivername="postgresql+psycopg")
+    return url
+
+
+def _build_postgres_url(host: str, port: int, dbname: str, username: str, password: str) -> str:
+    return URL.create(
+        "postgresql+psycopg",
+        username=username,
+        password=password,
+        host=host,
+        port=port,
+        database=dbname,
+    )
+
+
+def _resolve_database_url(
+    db_host: str,
+    db_port: str,
+    db_name: str,
+    db_username: str,
+    db_password: str,
+    database_url_raw: str,
+) -> tuple[object | None, str | None]:
+    """Backs BOTH input modes the "Kết nối Database" form offers — "Nhập
+    từng trường" (host/port/dbname/username/password, built via
+    _build_postgres_url) and "Nhập Database URL" (a single already-complete
+    SQLAlchemy URL string, e.g. copy-pasted from another tool/ops runbook).
+    A non-blank database_url_raw always wins over the 5 separate fields —
+    the caller never has to know which mode the operator actually used.
+
+    Returns (url, None) on success, (None, error_message) otherwise — never
+    raises, so both call sites (settings_test_database/settings_save_database)
+    can turn a bad input straight into a user-facing message without a
+    try/except of their own."""
+    raw = database_url_raw.strip()
+    if raw:
+        try:
+            return _normalize_postgres_driver(make_url(raw)), None
+        except Exception as exc:
+            return None, f"Database URL không hợp lệ: {readable_exception_message(exc)}"
+
+    host, name, username = db_host.strip(), db_name.strip(), db_username.strip()
+    if not host or not name or not username:
+        return None, "Vui lòng điền đủ Host, Database name, Username (hoặc dùng ô Database URL)."
+    try:
+        port = int(db_port.strip())
+    except ValueError:
+        return None, f"Port không hợp lệ: {db_port!r}"
+    return _build_postgres_url(host, port, name, username, db_password), None
+
+
+DB_TEST_CONNECT_TIMEOUT_SECONDS = 5
+
+
+def _test_database_connection(url) -> tuple[bool, str]:
+    """Raw connectivity + auth check only (SELECT 1) — no schema/migration
+    involved. Always disposes the probe engine itself; never touches/replaces
+    shared.db.engine (that stays bound to whatever's actually configured
+    until a real save+restart — see _run_alembic_upgrade_head's docstring).
+
+    Deliberately does NOT go through shared.db.make_engine() here — that
+    helper sets no connect timeout at all (fine for the app's one long-lived
+    engine, which is only ever pointed at an already-verified database), but
+    this probe runs against operator-typed host/port that may simply be
+    wrong/unreachable. Verified live: without an explicit connect_timeout,
+    psycopg's TCP connect against a silently-dropping host/port hangs for
+    minutes before failing — a "Kiểm tra kết nối" click has to fail fast
+    instead."""
+    connect_args = (
+        {"connect_timeout": DB_TEST_CONNECT_TIMEOUT_SECONDS} if url.get_backend_name() == "postgresql" else {}
+    )
+    engine = create_engine(url, connect_args=connect_args)
+    try:
+        with engine.connect() as conn:
+            conn.execute(DB_TEST_QUERY)
+    except SQLAlchemyError as exc:
+        return False, readable_exception_message(exc)
+    except Exception as exc:  # e.g. driver-level connect refused
+        return False, readable_exception_message(exc)
+    finally:
+        engine.dispose()
+    return True, "Kết nối thành công"
+
+
+def _run_alembic_upgrade_head(url) -> None:
+    """Points Alembic's env.py (which always reads config/settings.py's
+    `settings.database_url` — AD-8, see alembic/env.py) at the CANDIDATE url
+    just long enough to run `upgrade head` against it, so a brand-new
+    Postgres database gets today's full schema before anything else ever
+    touches it — same in-process technique tests/test_migrations.py already
+    uses (Config + command.upgrade, no subprocess). Restores the previous
+    `settings.database_url` on any failure so a botched migration attempt
+    never leaves the in-memory settings pointed at a schema-less database;
+    on success the candidate url is deliberately left in place for the
+    caller to persist to .env right after."""
+    previous_url = settings.database_url
+    settings.database_url = url.render_as_string(hide_password=False)
+    try:
+        cfg = AlembicConfig(str(ALEMBIC_INI_PATH))
+        cfg.set_main_option("script_location", str(ALEMBIC_SCRIPT_LOCATION))
+        alembic_command.upgrade(cfg, "head")
+    except Exception:
+        settings.database_url = previous_url
+        raise
+
+
+def _database_form_values() -> dict:
+    """Pre-fills the form with whatever's already configured — parsed back
+    out of settings.database_url via SQLAlchemy's own URL parser rather than
+    a hand-rolled one. Never the password (write-only field, like the
+    9router API key input) — render_as_string(hide_password=True) is
+    SQLAlchemy's own masking, not a custom one, so it can't drift out of
+    sync with how URL.create()/str() format things."""
+    try:
+        parsed = make_url(settings.database_url)
+    except Exception:
+        return {"db_host": "", "db_port": "", "db_name": "", "db_username": ""}
+    return {
+        "db_host": parsed.host or "",
+        "db_port": str(parsed.port) if parsed.port else "",
+        "db_name": parsed.database or "",
+        "db_username": parsed.username or "",
+    }
+
+
+def _current_database_display() -> str:
+    try:
+        return make_url(settings.database_url).render_as_string(hide_password=True)
+    except Exception:
+        return settings.database_url
+
+
 def restart_worker() -> dict:
     """Best-effort: start a fresh Worker FIRST, confirm it's alive, THEN stop
     any previously-running one. Starting-before-stopping (rather than the
@@ -426,6 +615,13 @@ def _settings_context(
     router_models: list[str] | None = None,
     cleanup_error: str | None = None,
     cleanup_success: str | None = None,
+    manual_worker_restart_success: str | None = None,
+    manual_worker_restart_error: str | None = None,
+    manual_watcher_restart_success: str | None = None,
+    manual_watcher_restart_error: str | None = None,
+    database_error: str | None = None,
+    database_success: str | None = None,
+    database_values: dict | None = None,
 ) -> dict:
     """Every form on the Settings page (9router connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -438,6 +634,7 @@ def _settings_context(
     masked_key = _mask_key(settings.router_api_key) if settings.router_api_key else None
     context = {
         "user": user,
+        "is_admin": user == RESTART_CONTROLS_USERNAME,
         "masked_key": masked_key,
         "router_model": (
             router_model_value if router_model_value is not None else settings.router_model
@@ -466,7 +663,15 @@ def _settings_context(
         "dashboard_restart_error": dashboard_restart_error,
         "cleanup_error": cleanup_error,
         "cleanup_success": cleanup_success,
+        "manual_worker_restart_success": manual_worker_restart_success,
+        "manual_worker_restart_error": manual_worker_restart_error,
+        "manual_watcher_restart_success": manual_watcher_restart_success,
+        "manual_watcher_restart_error": manual_watcher_restart_error,
+        "database_error": database_error,
+        "database_success": database_success,
+        "current_database_display": _current_database_display(),
     }
+    context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
     # ssh_key_path is no longer an editable field on the cluster form (see
     # CLUSTER_ENV_NAMES) — always show the actual configured value here,
@@ -841,6 +1046,153 @@ async def cluster_settings_submit(
     )
 
 
+@router.post("/settings/database/test")
+async def settings_test_database(
+    user: str = Depends(require_login),
+    db_host: str = Form(""),
+    db_port: str = Form(str(DEFAULT_POSTGRES_PORT)),
+    db_name: str = Form(""),
+    db_username: str = Form(""),
+    db_password: str = Form(""),
+    database_url_raw: str = Form(""),
+):
+    """Backs the "Kiểm tra kết nối" button — raw SELECT 1 only, no
+    migration, no write to .env, so an operator can try several
+    host/port/credential combos (or a pasted Database URL — see
+    _resolve_database_url) before committing to one. Admin-gated like every
+    other control in this section (see RESTART_CONTROLS_USERNAME) — saving a
+    database connection always ends in a Dashboard self-restart (see
+    settings_save_database below), same privilege boundary as the manual
+    restart buttons."""
+    _require_restart_privilege(user)
+    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
+    if error:
+        return {"valid": False, "message": error}
+    valid, message = await asyncio.to_thread(_test_database_connection, url)
+    return {"valid": valid, "message": message}
+
+
+@router.post("/settings/database/save", response_class=HTMLResponse)
+async def settings_save_database(
+    request: Request,
+    user: str = Depends(require_login),
+    db_host: str = Form(""),
+    db_port: str = Form(str(DEFAULT_POSTGRES_PORT)),
+    db_name: str = Form(""),
+    db_username: str = Form(""),
+    db_password: str = Form(""),
+    database_url_raw: str = Form(""),
+):
+    """Switches the app's storage backend to a PostgreSQL database — the
+    Settings page's "Kết nối Database" section (Postgres only; see this
+    module's `_build_postgres_url` docstring for why Mongo/MySQL aren't
+    offered here). Sequence, each step gating the next:
+    1. re-test the connection server-side (never trust the browser's own
+       /settings/database/test round trip as proof — same posture as
+       settings_save_router re-verifying 9router before saving)
+    2. run `alembic upgrade head` against the CANDIDATE database — a brand
+       new Postgres database has no tables at all until this runs
+    3. persist DATABASE_URL to .env (only after 1+2 succeed — never leaves
+       .env pointed at an empty/unreachable database)
+    4. restart Worker + Watcher (separate processes — each binds its own
+       shared.db.engine at import time, so only a real process restart
+       picks up the new DATABASE_URL, same reasoning as
+       CLUSTER_ENV_NAMES/ROUTER_*_ENV_NAME restarts elsewhere in this file)
+    5. restart the Dashboard itself LAST — this very process's own
+       shared.db.engine/SessionLocal (module-level singletons, see
+       shared/db.py) are just as bound to the OLD url as Worker/Watcher's,
+       so without this the Dashboard would keep querying the OLD database
+       until someone restarts it by hand. Uses the same watchdog-script
+       self-restart as restart_dashboard_submit, so the response the
+       browser actually sees is "restarting.html", not a rendered success
+       message on this page.
+    """
+    _require_restart_privilege(user)
+
+    submitted_values = {
+        "db_host": db_host.strip(),
+        "db_port": db_port.strip(),
+        "db_name": db_name.strip(),
+        "db_username": db_username.strip(),
+    }
+
+    url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
+    if error:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(user, database_error=error, database_values=submitted_values),
+        )
+
+    valid, message = await asyncio.to_thread(_test_database_connection, url)
+    if not valid:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                database_error=f"Không kết nối được database: {message}",
+                database_values=submitted_values,
+            ),
+        )
+
+    try:
+        await asyncio.to_thread(_run_alembic_upgrade_head, url)
+    except Exception as exc:
+        logger.exception("settings_save_database: alembic upgrade head failed against candidate DB")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                database_error=f"Kết nối được nhưng chạy migration thất bại: {readable_exception_message(exc)}",
+                database_values=submitted_values,
+            ),
+        )
+
+    # settings.database_url is already the new url at this point (set by
+    # _run_alembic_upgrade_head on its success path) — persist it to .env
+    # so the NEXT process start (Worker/Watcher/Dashboard, right below) is
+    # the FIRST one to ever pick this up, not this request's own settings
+    # object doing double duty as the source of truth.
+    try:
+        _update_env_file_batch({DATABASE_URL_ENV_NAME: url.render_as_string(hide_password=False)})
+    except Exception:
+        logger.exception("settings_save_database: failed to persist DATABASE_URL to .env")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                database_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
+                database_values=submitted_values,
+            ),
+        )
+
+    await asyncio.to_thread(restart_worker)
+    await asyncio.to_thread(restart_watcher)
+
+    dashboard_host = request.url.hostname or "127.0.0.1"
+    dashboard_port = request.url.port or 80
+    try:
+        await asyncio.to_thread(restart_dashboard_process, dashboard_host, dashboard_port)
+    except Exception:
+        logger.exception("settings_save_database: failed to launch Dashboard restart watchdog")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                database_success=(
+                    "Đã lưu và migrate database mới — Worker/Watcher đã khởi động lại, nhưng KHÔNG tự "
+                    "khởi động lại được Dashboard. Vào mục 'Tiến trình hệ thống' phía trên để khởi động "
+                    "lại Dashboard thủ công (Dashboard vẫn đang đọc database CŨ cho tới lúc đó)."
+                ),
+            ),
+        )
+    return templates.TemplateResponse(request, "restarting.html", {"user": user})
+
+
 @router.post("/settings/restart-dashboard", response_class=HTMLResponse)
 async def restart_dashboard_submit(request: Request, user: str = Depends(require_login)):
     """Lets an operator restart the Dashboard itself from the browser —
@@ -850,6 +1202,7 @@ async def restart_dashboard_submit(request: Request, user: str = Depends(require
     yet another setting that would need to stay in sync with however this
     process was actually launched.
     """
+    _require_restart_privilege(user)
     host = request.url.hostname or "127.0.0.1"
     port = request.url.port or 80
     try:
@@ -867,3 +1220,60 @@ async def restart_dashboard_submit(request: Request, user: str = Depends(require
             ),
         )
     return templates.TemplateResponse(request, "restarting.html", {"user": user})
+
+
+@router.post("/settings/restart-worker", response_class=HTMLResponse)
+async def restart_worker_submit(request: Request, user: str = Depends(require_login)):
+    """Manual counterpart to the automatic restart_worker() call in
+    settings_save_router — for picking up a code change (e.g. a new
+    action_id's Command builder) without needing to also touch the 9router
+    config just to trigger a restart. restart_worker() itself never raises
+    (see its own docstring) — this route only has to handle rendering
+    whichever outcome it returns.
+    """
+    _require_restart_privilege(user)
+    result = await asyncio.to_thread(restart_worker)
+    if result["restarted"]:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user, manual_worker_restart_success=f"Đã khởi động lại Worker (PID {result['new_pid']})."
+            ),
+        )
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            manual_worker_restart_error=(
+                result["error"] or "Không khởi động lại được Worker — xem log server để biết chi tiết."
+            ),
+        ),
+    )
+
+
+@router.post("/settings/restart-watcher", response_class=HTMLResponse)
+async def restart_watcher_submit(request: Request, user: str = Depends(require_login)):
+    """Manual counterpart to the automatic restart_watcher() call in
+    cluster_settings_submit — same reasoning as restart_worker_submit above."""
+    _require_restart_privilege(user)
+    result = await asyncio.to_thread(restart_watcher)
+    if result["restarted"]:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user, manual_watcher_restart_success=f"Đã khởi động lại Watcher (PID {result['new_pid']})."
+            ),
+        )
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            manual_watcher_restart_error=(
+                result["error"] or "Không khởi động lại được Watcher — xem log server để biết chi tiết."
+            ),
+        ),
+    )

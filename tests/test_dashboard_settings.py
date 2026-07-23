@@ -1235,6 +1235,125 @@ def test_dashboard_restart_script_contains_pid_host_port_and_execs_uvicorn():
     )
 
 
+# --- Admin-only restart controls (Worker/Watcher/Dashboard) ----------------
+#
+# This app has exactly one account (no RBAC) — dashboard_client's TEST_USERNAME
+# is "admin", matching settings_route.RESTART_CONTROLS_USERNAME by default, so
+# these tests monkeypatch RESTART_CONTROLS_USERNAME itself to exercise the
+# "not admin" branch rather than trying to log in as a different user.
+
+
+def test_require_restart_privilege_allows_the_admin_username():
+    settings_route._require_restart_privilege("admin")  # must not raise
+
+
+def test_require_restart_privilege_rejects_any_other_username():
+    with pytest.raises(Exception) as exc_info:
+        settings_route._require_restart_privilege("someone-else")
+    assert getattr(exc_info.value, "status_code", None) == 403
+
+
+def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
+    _login(dashboard_client)  # logs in as "admin" (TEST_USERNAME)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Tiến trình hệ thống" in response.text
+    assert 'action="/settings/restart-worker"' in response.text
+    assert 'action="/settings/restart-watcher"' in response.text
+    assert 'action="/settings/restart-dashboard"' in response.text
+
+
+def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Tiến trình hệ thống" not in response.text
+    assert 'action="/settings/restart-worker"' not in response.text
+    assert 'action="/settings/restart-dashboard"' not in response.text
+
+
+def test_restart_worker_route_rejects_non_admin(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-worker")
+
+    assert response.status_code == 403
+
+
+def test_restart_watcher_route_rejects_non_admin(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-watcher")
+
+    assert response.status_code == 403
+
+
+def test_restart_dashboard_route_rejects_non_admin(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-dashboard")
+
+    assert response.status_code == 403
+
+
+def test_restart_worker_route_shows_success_message(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 4242, "error": None}
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-worker")
+
+    assert response.status_code == 200
+    assert "Đã khởi động lại Worker (PID 4242)" in response.text
+
+
+def test_restart_worker_route_shows_error_message_on_failure(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route,
+        "restart_worker",
+        lambda: {"restarted": False, "new_pid": None, "error": "boom"},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-worker")
+
+    assert response.status_code == 200
+    assert "boom" in response.text
+
+
+def test_restart_watcher_route_shows_success_message(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 4343, "error": None}
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-watcher")
+
+    assert response.status_code == 200
+    assert "Đã khởi động lại Watcher (PID 4343)" in response.text
+
+
+def test_unauthenticated_restart_worker_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/restart-worker", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_unauthenticated_restart_watcher_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/restart-watcher", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
 # --- 9router model picker (Step 2 <select>) --------------------------------
 
 

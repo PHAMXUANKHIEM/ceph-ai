@@ -11,8 +11,8 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Nodes</a>
-        <a href="/audit" class="nav-link">Audit Trail</a>
+        <a href="/nodes" class="nav-link">Metrics Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
         <a href="/settings" class="nav-link active">Cài đặt</a>
       </nav>
       <form method="post" action="/logout" class="topbar-user">
@@ -23,25 +23,135 @@
   </header>
 
   <main class="page">
+    {% if is_admin %}
     <section class="card">
-      <div class="card-header"><h2>Tiến trình Dashboard</h2></div>
+      <div class="card-header"><h2>Tiến trình hệ thống</h2></div>
       <div class="card-body">
-        {% if dashboard_restart_error %}
-          <p class="error">{{ dashboard_restart_error }}</p>
+        <p class="hint">
+          Chỉ tài khoản admin thấy mục này. Khởi động lại một tiến trình để áp dụng code mới nhất —
+          không cần quyền truy cập terminal server nữa.
+        </p>
+
+        <div class="restart-controls-row">
+          <div class="restart-control">
+            {% if dashboard_restart_error %}<p class="error">{{ dashboard_restart_error }}</p>{% endif %}
+            <p class="hint">Dashboard — gây gián đoạn vài giây cho TẤT CẢ người đang dùng.</p>
+            <form
+              method="post"
+              action="/settings/restart-dashboard"
+              onsubmit="return confirm('Khởi động lại Dashboard ngay? Mọi người đang dùng sẽ bị gián đoạn vài giây.');"
+            >
+              <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Dashboard</button>
+            </form>
+          </div>
+
+          <div class="restart-control">
+            {% if manual_worker_restart_success %}<p class="success">{{ manual_worker_restart_success }}</p>{% endif %}
+            {% if manual_worker_restart_error %}<p class="error">{{ manual_worker_restart_error }}</p>{% endif %}
+            <p class="hint">Worker — áp dụng thay đổi ở worker/ (vd action_id/Command mới) mà không cần đổi cấu hình 9router.</p>
+            <form
+              method="post"
+              action="/settings/restart-worker"
+              onsubmit="return confirm('Khởi động lại Worker ngay?');"
+            >
+              <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Worker</button>
+            </form>
+          </div>
+
+          <div class="restart-control">
+            {% if manual_watcher_restart_success %}<p class="success">{{ manual_watcher_restart_success }}</p>{% endif %}
+            {% if manual_watcher_restart_error %}<p class="error">{{ manual_watcher_restart_error }}</p>{% endif %}
+            <p class="hint">Watcher — áp dụng thay đổi ở watcher/ mà không cần đổi cấu hình kết nối cụm.</p>
+            <form
+              method="post"
+              action="/settings/restart-watcher"
+              onsubmit="return confirm('Khởi động lại Watcher ngay?');"
+            >
+              <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Watcher</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_admin %}
+    <section class="card">
+      <div class="card-header"><h2>Kết nối Database</h2></div>
+      <div class="card-body">
+        {% if database_error %}
+          <p class="error">{{ database_error }}</p>
+        {% endif %}
+        {% if database_success %}
+          <p class="success">{{ database_success }}</p>
         {% endif %}
         <p class="hint">
-          Khởi động lại tiến trình Dashboard để áp dụng code mới nhất — không cần quyền truy cập terminal server nữa.
-          Gây gián đoạn khoảng vài giây cho TẤT CẢ người đang dùng Dashboard.
+          Chỉ hỗ trợ PostgreSQL — schema hệ thống (Incident/Action/Audit Trail...) dùng khoá ngoại và
+          check constraint, không hợp với MongoDB; giữa MySQL/Postgres thì Postgres hỗ trợ tốt hơn.
+        </p>
+        <p class="hint">Đang dùng: <code>{{ current_database_display }}</code></p>
+        <p class="hint">
+          Lưu sẽ: kiểm tra kết nối → chạy migration (tạo schema mới, KHÔNG copy dữ liệu từ database cũ) →
+          khởi động lại Worker, Watcher và Dashboard. Gây gián đoạn vài giây cho tất cả người đang dùng.
         </p>
         <form
+          class="login-box"
+          id="database-form"
           method="post"
-          action="/settings/restart-dashboard"
-          onsubmit="return confirm('Khởi động lại Dashboard ngay? Mọi người đang dùng sẽ bị gián đoạn vài giây.');"
+          action="/settings/database/save"
+          onsubmit="return confirm('Chuyển sang database mới? Dữ liệu cũ (Incident/Audit Trail...) sẽ KHÔNG được copy sang, và Dashboard/Worker/Watcher sẽ khởi động lại ngay.');"
         >
-          <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Dashboard</button>
+          <div class="ai-test-row">
+            <label class="checkbox-label">
+              <input type="radio" name="db_input_mode" id="db-mode-fields" value="fields" checked>
+              Nhập từng trường
+            </label>
+            <label class="checkbox-label">
+              <input type="radio" name="db_input_mode" id="db-mode-url" value="url">
+              Nhập Database URL
+            </label>
+          </div>
+
+          <div data-db-modes="fields">
+            <label>Host
+              <input type="text" name="db_host" id="db-host-input" value="{{ db_host }}" placeholder="10.20.1.50">
+            </label>
+            <label>Port
+              <input type="text" name="db_port" id="db-port-input" value="{{ db_port or 5432 }}" placeholder="5432">
+            </label>
+            <label>Database name
+              <input type="text" name="db_name" id="db-name-input" value="{{ db_name }}" placeholder="ceph_aiops">
+            </label>
+            <label>Username
+              <input type="text" name="db_username" id="db-username-input" value="{{ db_username }}" placeholder="ceph_aiops">
+            </label>
+            <label>Password (để trống nếu dùng trust auth)
+              <input type="password" name="db_password" id="db-password-input" autocomplete="off">
+            </label>
+          </div>
+
+          <div data-db-modes="url" hidden>
+            <label>Database URL
+              <input
+                type="text"
+                name="database_url_raw"
+                id="db-url-input"
+                placeholder="postgresql+psycopg://user:password@host:5432/dbname"
+                autocomplete="off"
+              >
+            </label>
+            <p class="hint">Dán nguyên connection string — sẽ được dùng thay cho 5 trường ở trên.</p>
+          </div>
+
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="db-test-btn">Kiểm tra kết nối</button>
+            <span id="db-test-result" class="ai-test-result" hidden></span>
+          </div>
+          <button type="submit" class="btn btn-kill-switch-on">Lưu &amp; chuyển database</button>
         </form>
       </div>
     </section>
+    {% endif %}
 
     <section class="card">
       <div class="card-header"><h2>Cấu hình AI — 9router</h2></div>
@@ -151,19 +261,19 @@
             <input type="text" name="ceph_mon_hostnames" value="{{ ceph_mon_hostnames }}" placeholder="mon1,mon2,mon3">
           </label>
           <label>Kiểu deploy
-            <select name="ceph_exec_mode">
+            <select name="ceph_exec_mode" id="ceph-exec-mode-select">
               <option value="cephadm" {% if ceph_exec_mode == "cephadm" %}selected{% endif %}>cephadm (khuyến nghị — cephadm shell, không cần tên container)</option>
               <option value="docker" {% if ceph_exec_mode == "docker" %}selected{% endif %}>docker (docker exec / docker compose, 1 tên container cố định)</option>
               <option value="podman" {% if ceph_exec_mode == "podman" %}selected{% endif %}>podman thường (không phải cephadm, 1 tên container cố định)</option>
               <option value="none" {% if ceph_exec_mode == "none" %}selected{% endif %}>Không dùng container (ceph-deploy / cài package trực tiếp)</option>
             </select>
           </label>
-          <p class="hint">
+          <p class="hint" data-exec-modes="cephadm">
             Cụm cephadm thật (podman) vẫn cần chọn <strong>cephadm</strong> ở trên, KHÔNG phải "podman thường" —
             container mon dài hạn của cephadm không có sẵn keyring admin, và tên container tự sinh khác nhau theo từng node.
             <code>cephadm shell</code> tự lo việc đó, không cần điền tên container.
           </p>
-          <label>MON container name
+          <label data-exec-modes="docker,podman">MON container name
             <input type="text" name="ceph_container_name" value="{{ ceph_container_name }}" placeholder="ceph-mon-B">
           </label>
           <label>MGR nodes (IP, phân tách dấu phẩy, tuỳ chọn)
@@ -172,17 +282,17 @@
           <label>OSD nodes (IP, phân tách dấu phẩy)
             <input type="text" name="ceph_osd_nodes" value="{{ ceph_osd_nodes }}" placeholder="10.0.0.4,10.0.0.5">
           </label>
-          <label>OSD container name
+          <label data-exec-modes="docker,podman">OSD container name
             <input type="text" name="ceph_osd_container_name" value="{{ ceph_osd_container_name }}" placeholder="ceph-osd-B">
           </label>
           <label>RGW nodes (IP, phân tách dấu phẩy, tuỳ chọn)
             <input type="text" name="ceph_rgw_nodes" value="{{ ceph_rgw_nodes }}" placeholder="10.0.0.8,10.0.0.9">
           </label>
-          <label>RGW container name
+          <label data-exec-modes="docker,podman">RGW container name
             <input type="text" name="ceph_rgw_container_name" value="{{ ceph_rgw_container_name }}" placeholder="ceph-rgw-B">
           </label>
-          <p class="hint">
-            3 ô tên container ở trên chỉ cần khi Kiểu deploy là docker/podman thường — bỏ trống nếu chọn "cephadm" hoặc "Không dùng container".
+          <p class="hint" data-exec-modes="docker,podman">
+            3 ô tên container ở trên chỉ cần khi Kiểu deploy là docker/podman thường.
           </p>
           <label>SSH user
             <input type="text" name="ssh_user" value="{{ ssh_user }}" placeholder="root" required>
