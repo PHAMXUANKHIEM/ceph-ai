@@ -30,8 +30,13 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# DATABASE_URL comes from config/settings.py (env-driven), never hardcoded here (AD-8)
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# DATABASE_URL comes from config/settings.py (env-driven), never hardcoded here (AD-8).
+# `%` is escaped as `%%` because Config.set_main_option() stores it through a
+# stdlib ConfigParser, which treats a bare `%` as the start of a `%(name)s`
+# interpolation reference — a password containing ANY percent-encoded
+# character (`%40`, `%3B`, ... i.e. almost any real generated password)
+# raises `ValueError: invalid interpolation syntax` right here otherwise.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

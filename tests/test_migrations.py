@@ -46,3 +46,26 @@ def test_alembic_upgrade_head_enforces_status_check_constraint(tmp_path, monkeyp
         con.close()
 
     assert raised, "migration-created table should reject a status outside IncidentStatus"
+
+
+def test_alembic_upgrade_head_accepts_database_url_containing_percent_characters(tmp_path, monkeypatch):
+    """Regression test: a DATABASE_URL with a percent-encoded password (e.g.
+    `...:pass%40word@...` — routine for a generated password containing `@`,
+    `:`, `/`, or `%` itself) used to raise
+    `ValueError: invalid interpolation syntax` from env.py's
+    `config.set_main_option("sqlalchemy.url", ...)` — a bare `%` is stdlib
+    ConfigParser's own interpolation escape character, unrelated to URL
+    percent-encoding. Encoded here as an extra sqlite URL query param (sqlite
+    ignores unknown query params) purely to get a literal `%` into the exact
+    string env.py hands to set_main_option, without needing a real
+    percent-encoded password."""
+    db_path = tmp_path / "migration_test_percent.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{db_path}?note=pass%40word%3Bhere")
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    command.upgrade(cfg, "head")  # must not raise ValueError: invalid interpolation syntax
+
+    con = sqlite3.connect(db_path)
+    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert "incidents" in tables
