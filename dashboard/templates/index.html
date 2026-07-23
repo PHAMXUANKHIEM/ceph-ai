@@ -81,6 +81,37 @@
       <p class="hint">Suy từ dữ liệu Incident đã ghi nhận — trạng thái có thể trễ tối đa vài giây so với cluster thật (theo chu kỳ poll của Watcher). Đây là tình trạng CỦA CLUSTER (vd HEALTH_WARN/HEALTH_ERR thật), khác với việc Watcher có kết nối được tới cụm hay không (xem section phía trên).</p>
     </section>
 
+    {% if pending_actions %}
+    <section class="card">
+      <div class="card-header"><h2>Chờ duyệt — Risky Action</h2></div>
+      <div class="card-body pending-actions">
+        {% for action, incident in pending_actions %}
+        <article class="pending-action-card">
+          <p><strong>Nguồn:</strong>
+            {% if incident and incident.ceph_code == "CHAT_REQUEST" %}Yêu cầu qua Chat với AI
+            {% else %}Tự động phát hiện — Mã lỗi <code>{{ incident.ceph_code if incident else "—" }}</code>{% endif %}
+            {% if incident %}<span class="hint">(lúc {{ incident.detected_at|vntime }})</span>{% endif %}
+          </p>
+          <p><strong>Chẩn đoán / Lý do:</strong> {{ incident.diagnosis_text if incident and incident.diagnosis_text else (action.rationale if action.rationale else "—") }}</p>
+          <p><strong>Hành động đề xuất:</strong> <code>{{ action.action_id }}</code></p>
+          <p><strong>Lệnh sẽ chạy:</strong>
+            {% if action.proposed_command %}<code>{{ action.proposed_command }}</code>
+            {% else %}<span class="hint">Không có lệnh tự động cho hành động này — bấm Duyệt sẽ đóng sự cố lại (ghi nhận đã xử lý thủ công), không có lệnh nào được chạy.</span>{% endif %}
+          </p>
+          <div class="pending-action-buttons">
+            <form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
+              <button type="submit" class="btn btn-approve">Duyệt</button>
+            </form>
+            <form method="post" action="/actions/{{ action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-reject">Từ chối</button>
+            </form>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
     <section class="card">
       <div class="card-header"><h2>Incident Feed</h2></div>
       <div class="card-body table-wrap">

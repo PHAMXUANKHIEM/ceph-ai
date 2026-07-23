@@ -12,7 +12,7 @@ from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
-from shared.models import AuditEntry, Incident, IncidentStatus, WatcherHeartbeat
+from shared.models import Action, ActionStatus, AuditEntry, Incident, IncidentStatus, WatcherHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -109,23 +109,48 @@ def is_heartbeat_stale(latest_heartbeat: WatcherHeartbeat | None) -> bool:
     return age > timedelta(seconds=HEARTBEAT_STALE_MULTIPLIER * settings.watcher_poll_interval_seconds)
 
 
-def _fetch_dashboard_data() -> tuple[list[Incident], WatcherHeartbeat | None, bool, list[AuditEntry]]:
+def _fetch_dashboard_data() -> tuple[
+    list[Incident], WatcherHeartbeat | None, bool, list[Action], list[AuditEntry]
+]:
     with db.SessionLocal() as session:
         incidents = session.query(Incident).order_by(Incident.detected_at.desc()).all()
         latest_heartbeat = heartbeat.get_latest(session)
         kill_switch_enabled = is_kill_switch_enabled(session)
+        # 2026-07-23 restore: a RISKY Action — whether from the auto-diagnosis
+        # pipeline OR a chat-confirmed proposal (dashboard/routes/chat.py::
+        # confirm_chat_action, same Action/Incident state machine) — lands
+        # here and STAYS here until POST /actions/{id}/approve|reject is hit.
+        # Between 5a29d4e (removed this card, assuming Chat-with-AI's confirm
+        # click was itself sufficient) and this fix, nothing in the UI ever
+        # called those endpoints for a chat-originated RISKY action, so it
+        # (e.g. restart_osd_daemon, still `risky:` in action_policy.yaml)
+        # sat in PENDING_APPROVAL forever — visibly proposed, silently never
+        # run, with no operator-facing indication anything further was
+        # needed.
+        pending_actions = (
+            session.query(Action)
+            .filter_by(status=ActionStatus.PENDING_APPROVAL.value)
+            .order_by(Action.created_at.desc())
+            .all()
+        )
         # Dashboard-page preview of the same /audit page (Story: "move Audit
         # Trail onto the Dashboard") — recent_audit_entries() is the exact
         # same query audit_trail() itself runs unfiltered, just capped, so
         # both pages stay backed by one data source instead of two.
         audit_entries = recent_audit_entries(session)
-    return (incidents, latest_heartbeat, kill_switch_enabled, audit_entries)
+    return (incidents, latest_heartbeat, kill_switch_enabled, pending_actions, audit_entries)
 
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, user: str = Depends(require_login)):
     try:
-        (incidents, latest_heartbeat, kill_switch_enabled, audit_entries) = _fetch_dashboard_data()
+        (
+            incidents,
+            latest_heartbeat,
+            kill_switch_enabled,
+            pending_actions,
+            audit_entries,
+        ) = _fetch_dashboard_data()
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
         # (e.g. a malformed row) should surface the same friendly error,
@@ -133,6 +158,14 @@ async def index(request: Request, user: str = Depends(require_login)):
         # alone wouldn't catch.
         stale = is_heartbeat_stale(latest_heartbeat)
         status = compute_cluster_status(incidents, stale)
+        # Incidents already fetched are looked up by id (in-memory, no extra
+        # query) for the pending-approval section — every PENDING_APPROVAL
+        # Action has a corresponding row in `incidents` since both derive
+        # from the same DB snapshot.
+        incidents_by_id = {incident.id: incident for incident in incidents}
+        pending_actions_with_incident = [
+            (action, incidents_by_id.get(action.incident_id)) for action in pending_actions
+        ]
     except SQLAlchemyError:
         logger.exception("index: failed to query incidents from DB")
         raise HTTPException(
@@ -158,6 +191,7 @@ async def index(request: Request, user: str = Depends(require_login)):
             "cluster_container_name": settings.ceph_container_name,
             "cluster_exec_mode": settings.ceph_exec_mode,
             "kill_switch_enabled": kill_switch_enabled,
+            "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
         },
     )

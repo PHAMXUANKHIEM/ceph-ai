@@ -32,21 +32,26 @@ def _pending_action(incident_id: str = "inc-1") -> str:
         return action.id
 
 
-def test_index_no_longer_shows_a_pending_action_card(dashboard_client):
-    # 2026-07-23: the Dashboard's own "Chờ duyệt — Risky Action" card
-    # (approve/reject buttons + resolved command) was removed — now that
-    # Chat-with-AI can propose/confirm any action, the index page's Incident
-    # Feed only shows mã lỗi + lý do lỗi. The /actions/{id}/approve and
-    # /actions/{id}/reject endpoints themselves are untouched (still used
-    # by dashboard/routes/chat.py's confirm-action flow for a
-    # RISKY-classified chat proposal) — just no longer linked from any UI.
+def test_index_shows_pending_action_card(dashboard_client):
+    # 2026-07-23 restore: this card was removed in a prior session on the
+    # (wrong) assumption that Chat-with-AI's own confirm click was itself
+    # sufficient for a RISKY proposal. It isn't —
+    # dashboard/routes/chat.py::confirm_chat_action routes a RISKY-classified
+    # chat proposal (e.g. restart_osd_daemon, still `risky:` in
+    # action_policy.yaml) through this SAME PENDING_APPROVAL state, and
+    # without this card there was no UI path left to ever call
+    # POST /actions/{id}/approve|reject — the action just sat there forever,
+    # looking confirmed in the chat transcript but never actually executed.
     _pending_action()
     _login(dashboard_client)
 
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "Chờ duyệt" not in response.text
+    assert "Chờ duyệt" in response.text
+    assert "restart_osd_daemon" in response.text
+    assert "looks like a stuck OSD" in response.text
+    assert "docker restart ceph-osd-B" in response.text
 
 
 def test_approve_action_sets_approved_and_audits_operator_as_actor(dashboard_client):
