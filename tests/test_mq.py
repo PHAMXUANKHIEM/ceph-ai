@@ -4,7 +4,13 @@ from aiormq.exceptions import ChannelNotFoundEntity
 
 from shared.mq import DLQ_NAME, DLX_NAME, QUEUE_NAME, declare_topology, get_connection
 
-POLL_ATTEMPTS = 20
+# 2026-07-23: bumped from 20 (2s total) after a real CI failure elsewhere
+# in this file (see test_rejected_message_lands_in_dead_letter_queue's
+# comment) — GitHub Actions' freshly-started RabbitMQ service container
+# can be slower than this always-warm local broker; more attempts costs
+# nothing in the common case, this poll returns as soon as its predicate
+# is truthy.
+POLL_ATTEMPTS = 50
 POLL_INTERVAL_SECONDS = 0.1
 
 
@@ -90,10 +96,19 @@ def test_rejected_message_lands_in_dead_letter_queue():
 
             # queue.get(timeout=...) already waits for the message to become
             # available, so no fixed sleep is needed before either get() call.
-            incoming = await queue.get(timeout=5)
+            # 2026-07-23: bumped from 5s after a real CI failure (GitHub
+            # Actions' freshly-started RabbitMQ service container) —
+            # QueueEmpty on the DLQ get specifically, meaning the DLX
+            # reject->requeue=False->dead-letter hop occasionally takes
+            # longer than 5s on a colder/more loaded broker than this
+            # always-warm local one. The main queue get is bumped too for
+            # the same reason, defensively — either can in principle be the
+            # slow one, and a longer timeout costs nothing in the common
+            # case (get() returns as soon as the message IS available).
+            incoming = await queue.get(timeout=15)
             await incoming.reject(requeue=False)
 
-            dlq_message = await dlq.get(timeout=5)
+            dlq_message = await dlq.get(timeout=15)
             assert dlq_message.body == b"simulated failed incident"
             await dlq_message.ack()
 
