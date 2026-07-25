@@ -13,7 +13,7 @@ from shared import audit, db
 from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from shared.router_client import build_router_client
-from worker.executor import commands
+from worker.executor import cluster_deploy, commands
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.redaction import default_redactor
@@ -757,6 +757,35 @@ def _execute_approved_action(action_pk: str) -> None:
         action_params = json.loads(action_params_raw) if action_params_raw else None
     except (TypeError, ValueError):
         action_params = None
+
+    # 2026-07-25 (Story 8.1): Dựng cụm Ceph tự động's 3 action_ids delegate
+    # entirely to worker/executor/cluster_deploy.py's own multi-phase
+    # orchestrator instead of the generic per-host loop below — that loop
+    # fires ONE command family identically at every host with no
+    # cross-host ordering and no wait step, which cannot express "MON
+    # before MGR/OSD, wait for quorum first". cluster_deploy.run() reuses
+    # _write_action_progress/_check_kill_switch_safe unchanged (both are
+    # already generic enough to accept its own step-shaped progress lists).
+    if action_id_str in cluster_deploy.CLUSTER_DEPLOY_ACTION_IDS:
+        if not isinstance(action_params, dict):
+            logger.warning(
+                "_execute_approved_action: missing/malformed action_params for cluster-deploy "
+                "action %s (incident %s) — marking FAILED instead of guessing",
+                action_pk,
+                incident_id,
+            )
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        succeeded = cluster_deploy.run(
+            action_pk,
+            action_id_str,
+            action_params,
+            incident_id,
+            _write_action_progress,
+            _check_kill_switch_safe,
+        )
+        _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
+        return
 
     executed_any = False
     all_succeeded = True

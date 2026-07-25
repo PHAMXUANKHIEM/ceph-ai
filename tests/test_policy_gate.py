@@ -111,3 +111,32 @@ def test_cluster_upgrade_action_ids_disjoint_from_other_families():
 
     assert gate.VALID_CLUSTER_UPGRADE_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
     assert gate.VALID_CLUSTER_UPGRADE_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
+
+
+def test_cluster_deploy_action_ids_loaded_from_policy_yaml():
+    import worker.policy.gate as gate
+
+    assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS == {
+        "deploy_cluster_cephadm",
+        "deploy_cluster_ceph_deploy",
+        "deploy_cluster_rpm_local",
+    }
+
+
+def test_deploy_cluster_action_ids_are_classified_risky():
+    # AD-5: bootstrapping a brand-new cluster (package installs, MON/MGR/OSD
+    # creation, real disk formatting for the non-cephadm methods) must never
+    # be in `safe:` — always requires an explicit Dashboard approval.
+    assert classify_action("deploy_cluster_cephadm") == ActionClassification.RISKY
+    assert classify_action("deploy_cluster_ceph_deploy") == ActionClassification.RISKY
+    assert classify_action("deploy_cluster_rpm_local") == ActionClassification.RISKY
+
+
+def test_cluster_deploy_action_ids_disjoint_from_other_families():
+    import worker.policy.gate as gate
+    from worker.llm.router_client import VALID_ACTION_IDS
+
+    assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
+    assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
+    assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
+    assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)

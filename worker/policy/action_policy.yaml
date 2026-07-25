@@ -71,6 +71,22 @@ patch_action_ids:
   - patch_build_and_stage
   - patch_install
 
+# 2026-07-25: Dựng cụm Ceph tự động (Dashboard "Dựng cụm" page,
+# dashboard/routes/deploy_cluster.py) — a FIFTH separate action_id family,
+# same reasoning as cluster_upgrade_action_ids/patch_action_ids above: never
+# proposed by the Incident-diagnosis pipeline or Chat-with-AI, only by an
+# operator explicitly filling in the node table and clicking "Bắt đầu cài
+# đặt". Unlike every other family here, this one targets nodes that are NOT
+# yet part of any monitored cluster (a brand-new deploy, not a remediation
+# of an existing one) — worker/policy/gate.py loads this as
+# VALID_CLUSTER_DEPLOY_ACTION_IDS. One id per install method (Story 8.1 only
+# wires up real execution for deploy_cluster_cephadm; the other two are
+# registered now so Stories 8.2/8.3 need zero policy-layer changes).
+cluster_deploy_action_ids:
+  - deploy_cluster_cephadm
+  - deploy_cluster_ceph_deploy
+  - deploy_cluster_rpm_local
+
 safe:
   - resync_ntp
   # 2026-07-23: operator explicitly requested every management action
@@ -117,3 +133,10 @@ risky:
   # unseen by this codebase), so both always require explicit approval.
   - patch_build_and_stage
   - patch_install
+  # 2026-07-25: same conservative-by-default reasoning — bootstrapping a
+  # brand-new cluster runs package installs, MON/MGR/OSD creation, and (for
+  # ceph-deploy/rpm-local) real disk formatting, so all 3 install methods
+  # always require explicit approval, no exceptions.
+  - deploy_cluster_cephadm
+  - deploy_cluster_ceph_deploy
+  - deploy_cluster_rpm_local

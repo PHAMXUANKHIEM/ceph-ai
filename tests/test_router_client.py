@@ -1222,6 +1222,98 @@ def test_execute_approved_action_skips_non_approved_action(isolated_db, monkeypa
         assert session.get(Action, action_pk).status == ActionStatus.EXECUTED.value
 
 
+# --- Story 8.1: cluster-deploy action_ids delegate to cluster_deploy.run() ---
+# (cluster_deploy.run()'s own phase logic is covered exhaustively in
+# tests/test_cluster_deploy.py — these tests only cover the dispatch/
+# status-recording wiring in _execute_approved_action itself.)
+
+
+def _approved_cluster_deploy_action(session, incident_id: str, action_params: dict | None) -> Action:
+    import json as _json
+
+    action = Action(
+        incident_id=incident_id,
+        action_id="deploy_cluster_cephadm",
+        classification=ActionClassification.RISKY.value,
+        status=ActionStatus.APPROVED.value,
+        target_nodes=_json.dumps(["10.20.1.112"]),
+        action_params=_json.dumps(action_params) if action_params is not None else None,
+    )
+    session.add(action)
+    session.commit()
+    return action
+
+
+def test_execute_approved_action_delegates_to_cluster_deploy_for_deploy_action_ids(
+    isolated_db, monkeypatch
+):
+    monkeypatch.setattr(
+        router_client, "execute_command", lambda host, cmd: pytest.fail("must not use the generic loop")
+    )
+    run_calls = []
+
+    def fake_run(action_pk, action_id, action_params, incident_id, write_progress, check_kill_switch):
+        run_calls.append((action_pk, action_id, action_params, incident_id))
+        return True
+
+    monkeypatch.setattr(router_client.cluster_deploy, "run", fake_run)
+
+    _create_incident("incident-8a")
+    with db_module.SessionLocal() as session:
+        action = _approved_cluster_deploy_action(session, "incident-8a", {"version": "18.2.8", "nodes": []})
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert len(run_calls) == 1
+    assert run_calls[0][0] == action_pk
+    assert run_calls[0][1] == "deploy_cluster_cephadm"
+    assert run_calls[0][3] == "incident-8a"
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        assert action.executed_at is not None
+        incident = session.get(Incident, "incident-8a")
+        assert incident.status == IncidentStatus.RESOLVED.value
+        entries = session.query(AuditEntry).filter_by(incident_id="incident-8a").all()
+        assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
+
+
+def test_execute_approved_action_cluster_deploy_failure_marks_failed(isolated_db, monkeypatch):
+    monkeypatch.setattr(router_client.cluster_deploy, "run", lambda *a, **kw: False)
+
+    _create_incident("incident-8b")
+    with db_module.SessionLocal() as session:
+        action = _approved_cluster_deploy_action(session, "incident-8b", {"version": "18.2.8", "nodes": []})
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+        incident = session.get(Incident, "incident-8b")
+        assert incident.status == IncidentStatus.FAILED.value
+
+
+def test_execute_approved_action_cluster_deploy_malformed_action_params_marks_failed(
+    isolated_db, monkeypatch
+):
+    monkeypatch.setattr(
+        router_client.cluster_deploy, "run", lambda *a, **kw: pytest.fail("must not be called")
+    )
+
+    _create_incident("incident-8c")
+    with db_module.SessionLocal() as session:
+        action = _approved_cluster_deploy_action(session, "incident-8c", action_params=None)
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.FAILED.value
+
+
 def test_poll_approved_actions_processes_pending_approved_rows_then_stops(isolated_db, monkeypatch):
     execute_calls = []
 

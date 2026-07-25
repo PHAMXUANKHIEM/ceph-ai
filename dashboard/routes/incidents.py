@@ -9,6 +9,7 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
+from dashboard.routes.deploy_cluster import CLUSTER_DEPLOY_CEPH_CODE
 from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
 from dashboard.templating import make_templates
 from shared import db, heartbeat
@@ -76,6 +77,12 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
     either; it's the same kind of "our own pipeline's outcome", not a real
     `ceph health` signal.
 
+    2026-07-25: and to `dashboard/routes/deploy_cluster.py`'s synthetic
+    Incident (ceph_code=CLUSTER_DEPLOY_CEPH_CODE) — building a BRAND-NEW
+    cluster that isn't even monitored yet must never be conflated with the
+    health of whatever cluster IS currently configured/monitored; a failed
+    deploy attempt is visible via its own Action row/audit trail only.
+
     2026-07-23 fix #2: this used to derive ERR from
     `Incident.status == FAILED` — i.e. "did OUR remediation attempt fail",
     not "is the cluster actually in HEALTH_ERR". Those are different
@@ -94,7 +101,10 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
     overrides the cluster-health badge.
     """
     real_incidents = [
-        i for i in incidents if i.ceph_code not in (CHAT_REQUEST_CEPH_CODE, CLUSTER_UPGRADE_CEPH_CODE)
+        i
+        for i in incidents
+        if i.ceph_code
+        not in (CHAT_REQUEST_CEPH_CODE, CLUSTER_UPGRADE_CEPH_CODE, CLUSTER_DEPLOY_CEPH_CODE)
     ]
     open_incidents = [i for i in real_incidents if i.status in OPEN_STATUSES]
     if not open_incidents:

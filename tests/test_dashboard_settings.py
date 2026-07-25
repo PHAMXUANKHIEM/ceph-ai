@@ -8,6 +8,7 @@ import pytest
 import dashboard.routes.settings as settings_route
 from config.settings import settings
 from shared import db as db_module
+from shared import env_config
 from shared.models import User
 from watcher.ceph_client import CephQueryError
 
@@ -56,7 +57,7 @@ def test_post_settings_save_router_with_invalid_key_shows_error_and_does_not_per
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return False, "API key không hợp lệ", None
@@ -86,7 +87,7 @@ def test_post_settings_save_router_with_valid_key_persists_updates_settings_and_
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "Kết nối thành công — tìm thấy 1 model", ["gc/gemini-2.5-pro"]
@@ -130,7 +131,7 @@ def test_post_settings_save_router_persists_selected_provider(dashboard_client, 
     # router_api_key/router_base_url/router_model do.
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "Kết nối thành công — tìm thấy 1 model", ["gpt-5-codex"]
@@ -172,7 +173,7 @@ def test_post_settings_save_router_with_unknown_provider_falls_back_to_9router(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "ok", ["some-model"]
@@ -203,7 +204,7 @@ def test_post_settings_save_router_with_unknown_provider_falls_back_to_9router(
 def test_post_settings_save_router_persists_selected_model(dashboard_client, monkeypatch, tmp_path):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "ok", ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
@@ -233,7 +234,7 @@ def test_post_settings_save_router_persists_selected_model(dashboard_client, mon
 def test_post_settings_save_router_captures_submitted_base_url(dashboard_client, monkeypatch, tmp_path):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     monkeypatch.setattr(settings, "router_base_url", "http://old-router.example", raising=False)
     captured = []
 
@@ -270,7 +271,7 @@ def test_post_settings_save_router_blank_base_url_keeps_existing_one(dashboard_c
     # blank — the "[Đổi model]" flow re-saves without retyping the base_url.
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
 
     async def fake_verify(api_key, base_url):
@@ -298,7 +299,7 @@ def test_post_settings_save_router_rejects_blank_base_url_with_nothing_already_c
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     monkeypatch.setattr(settings, "router_base_url", "", raising=False)
     monkeypatch.setattr(settings, "router_api_key", "", raising=False)
 
@@ -319,7 +320,7 @@ def test_post_settings_save_router_blank_model_shows_error_and_does_not_persist(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     _login(dashboard_client)
     response = dashboard_client.post(
@@ -337,7 +338,7 @@ def test_post_settings_save_router_model_not_in_returned_list_shows_error(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "ok", ["gc/gemini-2.5-flash"]
@@ -364,7 +365,7 @@ def test_post_settings_save_router_valid_key_but_worker_restart_fails_still_repo
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "ok", ["gc/gemini-2.5-pro"]
@@ -402,7 +403,7 @@ def test_post_settings_save_router_invalid_key_never_touches_worker_process_mana
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return False, "API key không hợp lệ", None
@@ -436,7 +437,7 @@ def test_post_settings_save_router_blank_key_keeps_existing_key_and_revalidates_
     # be able to save without retyping a key they aren't actually changing.
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\nROUTER_API_KEY=sk-already-configured\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     monkeypatch.setattr(settings, "router_api_key", "sk-already-configured", raising=False)
     monkeypatch.setattr(settings, "router_model", "old-model", raising=False)
 
@@ -470,7 +471,7 @@ def test_post_settings_save_router_network_error_shows_the_underlying_reason(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def flaky_verify(api_key, base_url):
         return False, "network unreachable", None
@@ -501,7 +502,7 @@ def test_post_settings_save_router_valid_key_but_restart_internals_raise_returns
     # calling restart_worker() directly).
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "ok", ["gc/gemini-2.5-pro"]
@@ -548,7 +549,7 @@ def test_post_9router_disconnect_clears_config_and_restarts_worker(dashboard_cli
         "ROUTER_BASE_URL=http://localhost:20128\n"
         "ROUTER_ENABLED=true\n"
     )
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     monkeypatch.setattr(settings, "router_api_key", "sk-currently-connected", raising=False)
     monkeypatch.setattr(settings, "router_model", "gc/gemini-2.5-pro", raising=False)
     monkeypatch.setattr(settings, "router_base_url", "http://localhost:20128", raising=False)
@@ -886,7 +887,7 @@ def test_post_cluster_settings_connection_test_fails_does_not_persist_or_restart
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     key_file = tmp_path / "test_key"
     key_file.write_text("fake key")
 
@@ -915,7 +916,7 @@ def test_post_cluster_settings_success_persists_updates_settings_and_restarts_wa
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     key_file = tmp_path / "test_key"
     key_file.write_text("fake key")
 
@@ -981,7 +982,7 @@ def test_post_cluster_settings_watcher_restart_failure_still_reports_saved(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     key_file = tmp_path / "test_key"
     key_file.write_text("fake key")
 
@@ -1023,7 +1024,7 @@ def test_post_cluster_settings_none_mode_does_not_require_container_name(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     key_file = tmp_path / "test_key"
     key_file.write_text("fake key")
 
@@ -1062,7 +1063,7 @@ def test_post_cluster_settings_cephadm_mode_does_not_require_container_name(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     captured = []
     monkeypatch.setattr(
@@ -1164,7 +1165,7 @@ def test_post_cluster_settings_rejects_embedded_newline_and_does_not_write_env(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\nSESSION_SECRET_KEY=untouched\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     key_file = tmp_path / "test_key"
     key_file.write_text("fake key")
     monkeypatch.setattr(
@@ -1187,11 +1188,6 @@ def test_post_cluster_settings_rejects_embedded_newline_and_does_not_write_env(
     assert "pwned" not in env_text
 
 
-def test_apply_env_updates_rejects_newline_in_value():
-    with pytest.raises(ValueError):
-        settings_route._apply_env_updates([], {"SOME_KEY": "line1\nSOME_OTHER_KEY=injected"})
-
-
 def test_cluster_form_submission_does_not_leak_into_9router_form_state(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.post(
@@ -1208,7 +1204,7 @@ def test_9router_form_submission_does_not_leak_into_cluster_form_state(
 ):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     # Blank now falls back to whatever's already configured — pin it blank
     # too so a blank submission still hits the "nothing configured" error.
     monkeypatch.setattr(settings, "router_api_key", "", raising=False)
@@ -1226,7 +1222,7 @@ def test_9router_form_submission_does_not_leak_into_cluster_form_state(
 def test_post_settings_save_router_empty_key_shows_error(dashboard_client, monkeypatch, tmp_path):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     # Blank now falls back to whatever's already configured (see the
     # "keep existing key" test above) — pin it blank too so this still
     # tests the genuine "nothing configured at all yet" case.
@@ -1239,28 +1235,6 @@ def test_post_settings_save_router_empty_key_shows_error(dashboard_client, monke
 
     assert response.status_code == 200
     assert "không được để trống" in response.text
-
-
-def test_update_env_file_replaces_existing_line_in_place(tmp_path, monkeypatch):
-    env_file = tmp_path / ".env"
-    env_file.write_text("DASHBOARD_USERNAME=admin\nROUTER_API_KEY=old-key\nOTHER=1\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", env_file)
-
-    settings_route._update_env_file("ROUTER_API_KEY", "new-key")
-
-    lines = env_file.read_text().splitlines()
-    assert lines == ["DASHBOARD_USERNAME=admin", "ROUTER_API_KEY=new-key", "OTHER=1"]
-
-
-def test_update_env_file_appends_when_missing(tmp_path, monkeypatch):
-    env_file = tmp_path / ".env"
-    env_file.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", env_file)
-
-    settings_route._update_env_file("ROUTER_API_KEY", "brand-new-key")
-
-    lines = env_file.read_text().splitlines()
-    assert lines == ["DASHBOARD_USERNAME=admin", "ROUTER_API_KEY=brand-new-key"]
 
 
 def test_mask_key_shows_only_last_few_chars():
@@ -1516,7 +1490,7 @@ def test_get_settings_hides_patch_pipeline_tab_for_non_admin(dashboard_client):
 def test_patch_pipeline_settings_submit_persists_and_restarts_worker(dashboard_client, monkeypatch, tmp_path):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
     restart_calls = []
     monkeypatch.setattr(
         settings_route, "restart_worker", lambda: restart_calls.append(1) or {"restarted": True, "new_pid": 1, "error": None}
@@ -1547,7 +1521,7 @@ def test_patch_pipeline_settings_submit_persists_and_restarts_worker(dashboard_c
 
 
 def test_patch_pipeline_settings_submit_shows_error_on_write_failure(dashboard_client, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_path / "no-such-dir" / ".env")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / "no-such-dir" / ".env")
     _login(dashboard_client)
 
     response = dashboard_client.post(
@@ -1760,7 +1734,7 @@ def test_post_settings_9router_verify_reports_invalid_key_with_reason(dashboard_
 def test_post_settings_9router_verify_never_saves_anything(dashboard_client, monkeypatch, tmp_path):
     tmp_env = tmp_path / ".env"
     tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
 
     async def fake_verify(api_key, base_url):
         return True, "Kết nối thành công — tìm thấy 1 model", ["gc/gemini-2.5-flash"]

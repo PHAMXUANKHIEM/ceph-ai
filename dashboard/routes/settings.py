@@ -25,7 +25,7 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db
+from shared import db, env_config
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -42,7 +42,6 @@ templates = make_templates()
 
 MASK_VISIBLE_CHARS = 4
 
-ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 ROUTER_API_KEY_ENV_NAME = "ROUTER_API_KEY"
 ROUTER_MODEL_ENV_NAME = "ROUTER_MODEL"
 ROUTER_BASE_URL_ENV_NAME = "ROUTER_BASE_URL"
@@ -156,57 +155,12 @@ async def verify_router_connection(api_key: str, base_url: str) -> tuple[bool, s
     return True, f"Kết nối thành công — tìm thấy {len(models)} model", models
 
 
-def _apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:
-    for name, value in fields.items():
-        # Review Story 5.1: an unchecked embedded newline in a submitted
-        # field would inject an arbitrary extra line into .env (e.g.
-        # overwriting DASHBOARD_PASSWORD_HASH/SESSION_SECRET_KEY) — reject
-        # at the single insertion point so every caller is protected.
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"{name}: giá trị không được chứa ký tự xuống dòng")
-
-    remaining = dict(fields)
-    new_lines = []
-    for line in existing_lines:
-        matched_name = next((name for name in remaining if line.startswith(f"{name}=")), None)
-        if matched_name is not None:
-            new_lines.append(f"{matched_name}={remaining.pop(matched_name)}")
-        else:
-            new_lines.append(line)
-    for name, value in remaining.items():
-        new_lines.append(f"{name}={value}")
-    return new_lines
-
-
-def _write_env_lines(new_lines: list[str]) -> None:
-    """Writes to a temp file then os.replace()s over the original — never a
-    window where .env is truncated/partially written if the process dies
-    mid-write (.env also holds DASHBOARD_PASSWORD_HASH/SESSION_SECRET_KEY).
-    Restricts the file to owner-only read/write afterward — this file holds
-    multiple secrets."""
-    tmp_path = ENV_PATH.with_suffix(".tmp")
-    tmp_path.write_text("\n".join(new_lines) + "\n")
-    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-    os.replace(tmp_path, ENV_PATH)
-
-
-def _update_env_file(env_var_name: str, value: str) -> None:
-    """Replace the line `env_var_name=...` in .env if present, else append it."""
-    existing_lines = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
-    _write_env_lines(_apply_env_updates(existing_lines, {env_var_name: value}))
-
-
-def _update_env_file_batch(fields: dict[str, str]) -> None:
-    """Same atomicity guarantee as `_update_env_file`, but for several fields
-    written together in ONE read-modify-write-replace cycle (Review Story
-    5.1). The cluster-connection route originally called `_update_env_file`
-    once per field in a loop — a failure partway through left `.env` with a
-    mix of old and new field values and no rollback, while the in-memory
-    `settings` object (updated only after all writes succeeded) stayed
-    fully old. Writing the whole batch as a single temp-file-then-replace
-    makes it all-or-nothing."""
-    existing_lines = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
-    _write_env_lines(_apply_env_updates(existing_lines, fields))
+# Story 8.1: env-file read/write moved to shared/env_config.py so Worker-
+# side code can reuse it without importing this Dashboard route module.
+# Thin aliases kept so every existing call site below (and every existing
+# test) keeps working unchanged.
+_update_env_file = env_config.update_env_file
+_update_env_file_batch = env_config.update_env_file_batch
 
 
 def _find_pids(pgrep_pattern: str) -> list[int]:
@@ -315,22 +269,11 @@ def _start_worker() -> int:
     return _start_process(WORKER_MODULE, WORKER_LOG_PATH, child_env)
 
 
-CLUSTER_ENV_NAMES = {
-    "ceph_mon_nodes": "CEPH_MON_NODES",
-    "ceph_mon_hostnames": "CEPH_MON_HOSTNAMES",
-    "ceph_container_name": "CEPH_CONTAINER_NAME",
-    "ceph_osd_nodes": "CEPH_OSD_NODES",
-    "ceph_osd_container_name": "CEPH_OSD_CONTAINER_NAME",
-    "ceph_mgr_nodes": "CEPH_MGR_NODES",
-    "ceph_rgw_nodes": "CEPH_RGW_NODES",
-    "ceph_rgw_container_name": "CEPH_RGW_CONTAINER_NAME",
-    "ceph_exec_mode": "CEPH_EXEC_MODE",
-    "ssh_user": "SSH_USER",
-    # ssh_key_path is deliberately NOT here — it's no longer an editable
-    # field on the cluster form (one key, set once via .env/server config,
-    # not something that changes per Ceph cluster the way MON/OSD nodes do).
-    # cluster_settings_submit reads settings.ssh_key_path directly instead.
-}
+# Story 8.1: moved to shared/env_config.py so worker/executor/cluster_deploy.py
+# can reuse the same field->env-var-name mapping without importing this
+# Dashboard route module. Thin alias kept so every call site below (and
+# every existing test) keeps working unchanged.
+CLUSTER_ENV_NAMES = env_config.CLUSTER_ENV_NAMES
 
 # 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py) —
 # consumed by WORKER (worker/executor/commands.py's

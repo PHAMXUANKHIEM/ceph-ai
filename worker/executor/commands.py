@@ -614,6 +614,66 @@ _PATCH_COMMAND_BUILDERS = {
 }
 
 
+# --- Dựng cụm Ceph tự động (2026-07-25, Story 8.1) --------------------------
+#
+# dashboard/routes/deploy_cluster.py-only — see action_policy.yaml's
+# `cluster_deploy_action_ids:` comment for why this is a fifth action_id
+# family. Unlike every other family above, the REAL execution for these 3
+# action_ids is NOT a single resolved command string — it's a multi-phase,
+# multi-role, cross-host-ordered sequence (SSH check -> deps -> repo ->
+# packages -> MON init -> wait-for-quorum -> MGR -> OSD -> verify) that
+# worker/executor/cluster_deploy.py::run() owns entirely, because
+# worker/llm/router_client.py::_execute_approved_action's generic per-host
+# loop (one command family, fired identically at every host, no cross-host
+# ordering, no wait step) cannot express that. The three builders below are
+# ONLY an illustrative preview string for the pending-approval screen
+# (dashboard/routes/deploy_cluster.py's propose route, same posture as
+# _safe_command_preview's existing docstring already documents for the
+# Cluster Upgrade feature) — never executed, never authoritative.
+def _first_node_ip_with_role(params: dict, role: str) -> str | None:
+    for node in params.get("nodes") or []:
+        if role in (node.get("roles") or []):
+            return node.get("ip")
+    return None
+
+
+def _deploy_cluster_cephadm_preview_command(host: str | None, params: dict) -> str:
+    version = params.get("version", "?")
+    first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
+    return (
+        f"cephadm bootstrap --mon-ip {first_mon} (bản {version}), rồi 'ceph orch host add' + "
+        f"'ceph orch apply mgr|osd' cho các node còn lại — xem đầy đủ các pha khi bắt đầu cài đặt"
+    )
+
+
+def _deploy_cluster_ceph_deploy_preview_command(host: str | None, params: dict) -> str:
+    version = params.get("version", "?")
+    first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
+    return (
+        f"Cài gói ceph-mon/ceph-mgr/ceph-osd bản {version} qua repo download.ceph.com, khởi tạo "
+        f"MON thủ công (monmap/keyring/mkfs) bắt đầu từ {first_mon}, chờ quorum, rồi MGR/OSD — "
+        f"xem đầy đủ các pha khi bắt đầu cài đặt"
+    )
+
+
+def _deploy_cluster_rpm_local_preview_command(host: str | None, params: dict) -> str:
+    version = params.get("version", "?")
+    rpm_path = params.get("rpm_path", "?")
+    first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
+    return (
+        f"Cài gói ceph-mon/ceph-mgr/ceph-osd bản {version} từ thư mục RPM cục bộ {rpm_path} "
+        f"(không tải Internet), khởi tạo MON thủ công bắt đầu từ {first_mon}, chờ quorum, rồi "
+        f"MGR/OSD — xem đầy đủ các pha khi bắt đầu cài đặt"
+    )
+
+
+_CLUSTER_DEPLOY_COMMAND_BUILDERS = {
+    "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
+    "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
+    "deploy_cluster_rpm_local": _deploy_cluster_rpm_local_preview_command,
+}
+
+
 def get_command(action_id: str, host: str | None = None, params: dict | None = None) -> str:
     """No command defined -> ExecutorError, never a silent no-op or a guess
     at what to run — an unrecognized action_id must never execute anything.
@@ -638,6 +698,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _CLUSTER_UPGRADE_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id in _PATCH_COMMAND_BUILDERS:
         return _PATCH_COMMAND_BUILDERS[action_id](host, params or {})
+    if action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS:
+        return _CLUSTER_DEPLOY_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id not in COMMANDS:
         raise ExecutorError(f"no Command defined for action_id={action_id!r}")
     return COMMANDS[action_id]
@@ -663,5 +725,6 @@ def has_command(action_id: str) -> bool:
         or action_id in _MANAGEMENT_COMMAND_BUILDERS
         or action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS
         or action_id in _PATCH_COMMAND_BUILDERS
+        or action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS
         or action_id in COMMANDS
     )

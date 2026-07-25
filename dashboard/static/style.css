@@ -1212,3 +1212,47 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   .chat-panel { position: static; width: auto; height: 60vh; border-left: none; border-top: 1px solid #2d3748; }
   .chat-panel.is-minimized { height: 48px; }
 }
+
+/* ===== Dựng cụm (Story 8.1): two-column config form + terminal-style log ===== */
+.deploy-cluster-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .deploy-cluster-grid { grid-template-columns: 1fr; }
+}
+
+.version-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: -0.4rem; }
+.version-chip { font-family: var(--font-mono); }
+
+.deploy-method-options { display: flex; flex-direction: column; gap: var(--space-1); }
+
+.deploy-log-card .card-header { display: flex; align-items: center; justify-content: space-between; }
+.deploy-log-actions { display: flex; gap: var(--space-1); }
+
+/* Terminal-style log box — deliberately its own dark palette (per the
+   original design spec: #0d1117 bg) rather than reusing --bg-surface,
+   since this is meant to read visually as "a terminal", distinct from the
+   rest of the (already dark) UI. */
+.deploy-log-box {
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  max-height: 28rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.deploy-log-box .hint { margin: 0; }
+.deploy-log-line { margin: 0; }
+.deploy-log-time { color: #64748b; }
+.deploy-log-line.status-done { color: #4ade80; }
+.deploy-log-line.status-running { color: #fbbf24; }
+.deploy-log-line.status-failed { color: #ef4444; }
+.deploy-log-line.status-pending { color: var(--text-faint); }

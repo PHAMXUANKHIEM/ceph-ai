@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Dựng cụm — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Metrics Cluster</a>
+        <a href="/deploy-cluster" class="nav-link active">Dựng cụm</a>
+        <a href="/upgrade" class="nav-link">Nâng cấp cụm</a>
+        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
+        <a href="/settings" class="nav-link">Cài đặt</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    {% if last_action and last_action.status in ("EXECUTED", "FAILED") and not pending_action %}
+    <section class="card">
+      <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Cụm gần nhất đã dựng thành công{% else %}❌ Lần dựng cụm gần nhất thất bại{% endif %}</h2></div>
+      <div class="card-body">
+        <p><strong>Phiên bản:</strong> Ceph {{ last_action_params.version or "?" }}</p>
+        <p><strong>Phương thức:</strong> {{ last_action_params.method or "?" }}</p>
+        {% if last_action_params.nodes %}
+        <p><strong>Số node:</strong> {{ last_action_params.nodes|length }}</p>
+        {% endif %}
+        {% if last_action.status == "EXECUTED" %}
+        <div class="pending-action-buttons">
+          <a href="/" class="btn btn-primary">→ Xem Dashboard</a>
+          {% if is_admin %}
+          <form method="post" action="/settings/restart-worker" class="inline-form">
+            <button type="submit" class="btn btn-sm">Khởi động lại Worker</button>
+          </form>
+          <form method="post" action="/settings/restart-watcher" class="inline-form">
+            <button type="submit" class="btn btn-sm">Khởi động lại Watcher</button>
+          </form>
+          {% endif %}
+        </div>
+        <p class="hint">Cấu hình cụm mới đã được ghi vào .env — khởi động lại Watcher &amp; Worker để bắt đầu theo dõi cụm này.</p>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+
+    <div class="deploy-cluster-grid">
+      <section class="card">
+        <div class="card-header"><h2>Cấu hình</h2></div>
+        <div class="card-body">
+          {% if pending_action %}
+          <p class="hint">Đã có một đề xuất dựng cụm đang chờ xử lý — xem chi tiết bên phải.</p>
+          {% else %}
+          <form id="deploy-form" class="login-box">
+            <label>
+              Phiên bản Ceph
+              <input type="text" id="df-version" name="version" placeholder="17.2.6" pattern="\d+\.\d+\.\d+" required>
+            </label>
+            <div class="version-chips">
+              {% for chip in version_chips %}
+              <button type="button" class="btn btn-sm btn-ghost version-chip" data-version="{{ chip }}">{{ chip }}</button>
+              {% endfor %}
+            </div>
+
+            <label>Phương thức</label>
+            <div class="deploy-method-options">
+              <label class="checkbox-label"><input type="radio" name="method" value="cephadm" checked> cephadm — khuyến nghị cho bản mới</label>
+              <label class="checkbox-label"><input type="radio" name="method" value="ceph-deploy"> ceph-deploy — cho bản cũ (≤15){% if "ceph-deploy" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
+              <label class="checkbox-label"><input type="radio" name="method" value="rpm-local"> RPM local — đã có sẵn gói cài trên node{% if "rpm-local" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
+            </div>
+
+            <label id="df-rpm-path-label" hidden>
+              Đường dẫn thư mục RPM trên node
+              <input type="text" id="df-rpm-path" name="rpm_path" placeholder="/opt/ceph-rpms">
+            </label>
+
+            <label>
+              SSH User
+              <input type="text" id="df-ssh-user" value="{{ default_ssh_user }}" disabled>
+            </label>
+            <label>
+              SSH Key Path
+              <input type="text" id="df-ssh-key-path" value="{{ default_ssh_key_path }}" disabled>
+            </label>
+            <p class="hint">SSH User/Key Path lấy từ <a href="/settings">Cài đặt</a> — sửa tại đó nếu cần đổi.</p>
+
+            <label>Nodes trong cụm</label>
+            <div class="table-wrap">
+              <table id="node-table">
+                <thead>
+                  <tr>
+                    <th>IP Address</th>
+                    <th>MON</th><th>MGR</th><th>OSD</th><th>MDS</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="node-rows"></tbody>
+              </table>
+            </div>
+            <button type="button" class="btn btn-sm" id="df-add-node">+ Thêm node</button>
+            <p class="hint" id="df-node-warning"></p>
+
+            <label>
+              Public Network
+              <input type="text" id="df-public-network" name="public_network" placeholder="10.20.1.0/24">
+            </label>
+            <label>
+              Cluster Network
+              <input type="text" id="df-cluster-network" name="cluster_network" placeholder="(giống Public Network nếu để trống)">
+            </label>
+            <label>
+              Disk OSD trên các node
+              <input type="text" id="df-osd-disk" name="osd_disk" placeholder="/dev/vdc" required>
+            </label>
+            <p class="hint">Tên disk phải giống nhau trên tất cả node OSD.</p>
+
+            <details>
+              <summary>Tùy chọn nâng cao</summary>
+              <label>
+                osd_pool_default_size
+                <input type="number" id="df-pool-size" value="3" min="1">
+              </label>
+              <label>
+                osd_pool_default_min_size
+                <input type="number" id="df-pool-min-size" value="2" min="1">
+              </label>
+            </details>
+
+            <p class="error" id="df-error" hidden></p>
+            <button type="submit" class="btn btn-primary">Bắt đầu cài đặt</button>
+          </form>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card deploy-log-card">
+        <div class="card-header">
+          <h2 id="df-log-title">
+            {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
+            {% elif pending_action and pending_action.status == "APPROVED" %}● ĐANG CÀI ĐẶT...
+            {% elif last_action %}Nhật ký lần gần nhất
+            {% else %}Nhật ký tiến trình{% endif %}
+          </h2>
+          <div class="deploy-log-actions">
+            <button type="button" class="btn btn-sm btn-ghost" id="df-log-clear">Clear</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="df-log-copy">Copy</button>
+          </div>
+        </div>
+        <div class="card-body">
+          {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
+          <p><strong>Quy trình sẽ thực hiện:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
+          {% if pending_action.proposed_command %}
+          <p><strong>Xem trước lệnh:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>
+          {% endif %}
+          <div class="pending-action-buttons">
+            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+              <button type="submit" class="btn btn-approve">Duyệt — bắt đầu cài đặt</button>
+            </form>
+            <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-reject">Từ chối</button>
+            </form>
+          </div>
+          {% else %}
+          <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="df-progress-bar">
+            <div class="progress-bar-fill" id="df-progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <p class="hint" id="df-progress-label">&nbsp;</p>
+          <div class="deploy-log-box" id="df-log-box">
+            <p class="hint">Chưa có tiến trình nào — điền form bên trái và bấm "Bắt đầu cài đặt".</p>
+          </div>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script type="application/json" id="deploy-initial-state">
+    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress, "not_yet_supported_methods": not_yet_supported_methods}|tojson }}
+  </script>
+  <script src="/static/deploy_cluster.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

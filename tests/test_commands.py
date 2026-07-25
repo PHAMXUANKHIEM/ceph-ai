@@ -582,3 +582,47 @@ def test_patch_install_builds_expected_command_and_restarts_discovered_units(mon
 def test_has_command_true_for_both_patch_action_ids():
     assert commands_module.has_command("patch_build_and_stage") is True
     assert commands_module.has_command("patch_install") is True
+
+
+# --- Dựng cụm Ceph tự động (preview builders only — real execution is
+# worker/executor/cluster_deploy.py, not this module) -----------------------
+
+_DEPLOY_PARAMS = {
+    "version": "18.2.8",
+    "rpm_path": "/opt/ceph-rpms",
+    "nodes": [
+        {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
+        {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"]},
+        {"ip": "10.20.1.21", "roles": ["mon", "osd"]},
+    ],
+}
+
+
+def test_deploy_cluster_cephadm_preview_mentions_version_and_first_mon():
+    command = get_command("deploy_cluster_cephadm", None, _DEPLOY_PARAMS)
+    assert "18.2.8" in command
+    assert "10.20.1.112" in command
+    assert "cephadm bootstrap" in command
+
+
+def test_deploy_cluster_ceph_deploy_preview_mentions_version_and_first_mon():
+    command = get_command("deploy_cluster_ceph_deploy", None, _DEPLOY_PARAMS)
+    assert "18.2.8" in command
+    assert "10.20.1.112" in command
+
+
+def test_deploy_cluster_rpm_local_preview_mentions_rpm_path():
+    command = get_command("deploy_cluster_rpm_local", None, _DEPLOY_PARAMS)
+    assert "/opt/ceph-rpms" in command
+    assert "10.20.1.112" in command
+
+
+def test_deploy_cluster_preview_falls_back_to_host_when_no_mon_in_params():
+    command = get_command("deploy_cluster_cephadm", "10.20.1.200", {"version": "18.2.8", "nodes": []})
+    assert "10.20.1.200" in command
+
+
+def test_has_command_true_for_all_deploy_cluster_action_ids():
+    assert commands_module.has_command("deploy_cluster_cephadm") is True
+    assert commands_module.has_command("deploy_cluster_ceph_deploy") is True
+    assert commands_module.has_command("deploy_cluster_rpm_local") is True
