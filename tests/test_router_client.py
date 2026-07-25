@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -154,6 +155,100 @@ def test_diagnose_incident_creates_risky_action_for_risky_action_id(isolated_db,
         actions = session.query(Action).filter_by(incident_id="incident-1b").all()
         assert len(actions) == 1
         assert actions[0].classification == ActionClassification.RISKY.value
+
+
+def test_diagnose_incident_auto_rejects_risky_action_while_upgrade_in_flight(
+    isolated_db, monkeypatch
+):
+    # 2026-07-24: a cluster upgrade restarting every daemon one host at a
+    # time routinely trips a transient OSD_DOWN/MGR_DOWN incident — this
+    # must not surface as a new "chờ duyệt" proposal the operator has to
+    # reject just to let the upgrade they already approved keep running.
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "OSD daemon appears down, likely a transient crash.",
+            "action_id": "restart_osd_daemon",
+            "rationale": "restarting the daemon typically clears a transient crash.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+
+    upgrade_incident = Incident(
+        id="upgrade-incident-1",
+        ceph_code="CLUSTER_UPGRADE",
+        status=IncidentStatus.APPROVED.value,
+        detected_at=datetime.utcnow(),
+    )
+    with db_module.SessionLocal() as session:
+        session.add(upgrade_incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=upgrade_incident.id,
+                action_id="upgrade_ceph_cluster_package_download",
+                classification=ActionClassification.RISKY.value,
+                status=ActionStatus.APPROVED.value,
+            )
+        )
+        session.commit()
+
+    _create_incident("incident-suppressed")
+    envelope = dict(ENVELOPE, incident_id="incident-suppressed")
+
+    asyncio.run(router_client.diagnose_incident("incident-suppressed", envelope))
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-suppressed").one()
+        assert action.status == ActionStatus.REJECTED.value
+        incident = session.get(Incident, "incident-suppressed")
+        assert incident.status == IncidentStatus.REJECTED.value
+        entries = session.query(AuditEntry).filter_by(incident_id="incident-suppressed").all()
+        assert (
+            entries[-1].event_type
+            == audit.EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS
+        )
+
+
+def test_diagnose_incident_routes_risky_action_normally_once_upgrade_resolved(
+    isolated_db, monkeypatch
+):
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "OSD daemon appears down.",
+            "action_id": "restart_osd_daemon",
+            "rationale": "restart clears a transient crash.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client.commands, "execute_command", lambda host, command: "")
+
+    upgrade_incident = Incident(
+        id="upgrade-incident-2",
+        ceph_code="CLUSTER_UPGRADE",
+        status=IncidentStatus.RESOLVED.value,
+        detected_at=datetime.utcnow(),
+    )
+    with db_module.SessionLocal() as session:
+        session.add(upgrade_incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=upgrade_incident.id,
+                action_id="upgrade_ceph_cluster_package_download",
+                classification=ActionClassification.RISKY.value,
+                status=ActionStatus.EXECUTED.value,
+            )
+        )
+        session.commit()
+
+    _create_incident("incident-normal-again")
+    envelope = dict(ENVELOPE, incident_id="incident-normal-again")
+
+    asyncio.run(router_client.diagnose_incident("incident-normal-again", envelope))
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-normal-again").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
 
 
 def test_diagnose_incident_keeps_restart_osd_daemon_risky(isolated_db, monkeypatch):
@@ -862,6 +957,111 @@ def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_
         assert action.proposed_command == "systemctl restart ceph-fsid@osd.1.service"
         incident = session.get(Incident, "incident-7z")
         assert incident.status == IncidentStatus.RESOLVED.value
+
+
+def test_execute_approved_action_persists_execution_progress_per_host(
+    isolated_db, monkeypatch
+):
+    systemctl_outputs = {
+        "10.20.1.112": "  ceph-fsid@osd.0.service   loaded active running   x\n",
+        "10.20.1.95": "  ceph-fsid@osd.1.service   loaded active running   x\n",
+    }
+
+    def fake_execute(host, command):
+        if command == "systemctl | grep ceph || true":
+            return systemctl_outputs[host]
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+
+    _create_incident("incident-progress-db")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session, "incident-progress-db", nodes=["10.20.1.112", "10.20.1.95"]
+        )
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        progress = json.loads(action.execution_progress)
+
+    assert progress == [
+        {"host": "10.20.1.112", "status": "done"},
+        {"host": "10.20.1.95", "status": "done"},
+    ]
+
+
+def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monkeypatch):
+    from worker.executor.ssh_executor import ExecutorError
+
+    def fake_execute(host, command):
+        if command == "systemctl | grep ceph || true":
+            return "  ceph-fsid@osd.0.service   loaded active running   x\n"
+        raise ExecutorError(f"{host}: boom")
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+
+    _create_incident("incident-progress-fail")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(session, "incident-progress-fail", nodes=["10.20.1.83"])
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        progress = json.loads(action.execution_progress)
+
+    assert progress == [{"host": "10.20.1.83", "status": "failed"}]
+
+
+def test_execute_approved_action_logs_start_and_completion_per_host(
+    isolated_db, monkeypatch, caplog
+):
+    # 2026-07-24: an operator tailing worker.log during a real (multi-minute)
+    # upgrade run had no way to tell which host it was currently on vs.
+    # already done — this pins the per-host progress log lines added for
+    # exactly that.
+    systemctl_outputs = {
+        "10.20.1.112": "  ceph-fsid@osd.0.service   loaded active running   x\n",
+        "10.20.1.95": "  ceph-fsid@osd.1.service   loaded active running   x\n",
+    }
+
+    def fake_execute(host, command):
+        if command == "systemctl | grep ceph || true":
+            return systemctl_outputs[host]
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+
+    _create_incident("incident-progress")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session, "incident-progress", nodes=["10.20.1.112", "10.20.1.95"]
+        )
+        action_pk = action.id
+
+    with caplog.at_level(logging.INFO, logger="worker.llm.router_client"):
+        router_client._execute_approved_action(action_pk)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "bắt đầu" in m and "10.20.1.112" in m and "(1/2)" in m for m in messages
+    )
+    assert any(
+        "hoàn tất" in m and "10.20.1.112" in m and "(1/2)" in m for m in messages
+    )
+    assert any(
+        "bắt đầu" in m and "10.20.1.95" in m and "(2/2)" in m for m in messages
+    )
+    assert any(
+        "hoàn tất" in m and "10.20.1.95" in m and "(2/2)" in m for m in messages
+    )
 
 
 def test_execute_approved_action_ssh_failure_marks_failed(isolated_db, monkeypatch):

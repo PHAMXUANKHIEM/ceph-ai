@@ -552,6 +552,33 @@ def test_get_upgrade_status_returns_parsed_payload(fake_ssh, monkeypatch):
 
     assert status["in_progress"] is True
     assert status["progress"] == "1/5"
+    assert status["progress_percent"] == 20.0
+
+
+def test_get_upgrade_status_progress_percent_none_when_progress_missing(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "cephadm")
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": {"in_progress": False}}
+
+    status = get_upgrade_status()
+
+    assert status["progress_percent"] is None
+
+
+@pytest.mark.parametrize(
+    "progress,expected",
+    [
+        (None, None),
+        ("", None),
+        ("1/5", 20.0),
+        ("1/5 daemons upgraded", 20.0),
+        ("5/5", 100.0),
+        ("0/0", None),
+        ("not a fraction", None),
+    ],
+)
+def test_upgrade_progress_percent_parses_fraction(progress, expected):
+    assert ceph_client._upgrade_progress_percent(progress) == expected
 
 
 def test_pause_upgrade_requires_cephadm(monkeypatch):

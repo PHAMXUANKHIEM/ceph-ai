@@ -1,15 +1,38 @@
+import re
+
+import bcrypt
 import httpx
 import openai
 import pytest
 
 import dashboard.routes.settings as settings_route
 from config.settings import settings
+from shared import db as db_module
+from shared.models import User
 from watcher.ceph_client import CephQueryError
 
 
 def _login(client):
     # dashboard_client fixture (conftest.py) pins these credentials.
     client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def _create_user(username, password, *, is_admin=False, is_active=True, created_by="admin"):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username=username,
+                password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+                is_admin=is_admin,
+                is_active=is_active,
+                created_by=created_by,
+            )
+        )
+        session.commit()
+
+
+def _login_as(client, username, password):
+    client.post("/login", data={"username": username, "password": password})
 
 
 def test_unauthenticated_get_settings_redirects_to_login(dashboard_client):
@@ -97,6 +120,84 @@ def test_post_settings_save_router_with_valid_key_persists_updates_settings_and_
     assert settings.router_model == "gc/gemini-2.5-pro"
     assert settings.router_base_url == "http://localhost:20128"
     assert settings.router_enabled is True
+
+
+def test_post_settings_save_router_persists_selected_provider(dashboard_client, monkeypatch, tmp_path):
+    # 2026-07-24: Settings page's "Loại kết nối" picker (Claude/Codex/
+    # OpenRouter/9router) — router_provider is UI-only (see config/
+    # settings.py's comment: the actual client is provider-agnostic), but
+    # it must still round-trip through .env/settings the same way
+    # router_api_key/router_base_url/router_model do.
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "Kết nối thành công — tìm thấy 1 model", ["gpt-5-codex"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", False, raising=False)
+    monkeypatch.setattr(settings, "router_provider", "9router", raising=False)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-openai-key",
+            "router_base_url": "https://api.openai.com/v1",
+            "router_model_id": "gpt-5-codex",
+            "router_provider": "openai",
+        },
+    )
+
+    assert response.status_code == 200
+    env_text = tmp_env.read_text()
+    assert "ROUTER_PROVIDER=openai" in env_text
+    assert settings.router_provider == "openai"
+
+    # A fresh GET now shows the Codex (OpenAI) label and radio pre-selected.
+    get_response = dashboard_client.get("/settings")
+    assert "Codex (OpenAI)" in get_response.text
+    openai_input_tag = re.search(r'<input\b[^>]*value="openai"[^>]*>', get_response.text)
+    assert openai_input_tag is not None
+    assert "checked" in openai_input_tag.group(0)
+
+
+def test_post_settings_save_router_with_unknown_provider_falls_back_to_9router(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+
+    async def fake_verify(api_key, base_url):
+        return True, "ok", ["some-model"]
+
+    monkeypatch.setattr(settings_route, "verify_router_connection", fake_verify)
+    monkeypatch.setattr(settings, "router_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "router_enabled", False, raising=False)
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/9router/save",
+        data={
+            "router_api_key": "sk-key",
+            "router_base_url": "http://localhost:20128",
+            "router_model_id": "some-model",
+            "router_provider": "not-a-real-provider",
+        },
+    )
+
+    assert response.status_code == 200
+    assert settings.router_provider == "9router"
+    assert "ROUTER_PROVIDER=9router" in tmp_env.read_text()
 
 
 def test_post_settings_save_router_persists_selected_model(dashboard_client, monkeypatch, tmp_path):
@@ -830,6 +931,16 @@ def test_post_cluster_settings_success_persists_updates_settings_and_restarts_wa
         "restart_watcher",
         lambda: {"restarted": True, "new_pid": 55555, "error": None},
     )
+    # 2026-07-24: cluster_settings_submit now ALSO restarts Worker (not just
+    # Watcher) — without mocking this too, this test would spawn a REAL
+    # `python -m worker.main` subprocess (verified: it did, live, before this
+    # fix — see settings.py's cluster_worker_restart_error docstring for why
+    # Worker needs this restart at all).
+    monkeypatch.setattr(
+        settings_route,
+        "restart_worker",
+        lambda: {"restarted": True, "new_pid": 55556, "error": None},
+    )
     # The route under test mutates the real `settings` singleton directly
     # (not via monkeypatch) for all CLUSTER_ENV_NAMES fields. Priming each
     # one with monkeypatch.setattr(self-value) here registers pytest's
@@ -884,6 +995,11 @@ def test_post_cluster_settings_watcher_restart_failure_still_reports_saved(
         "restart_watcher",
         lambda: {"restarted": False, "new_pid": None, "error": "boom"},
     )
+    monkeypatch.setattr(
+        settings_route,
+        "restart_worker",
+        lambda: {"restarted": True, "new_pid": 1, "error": None},
+    )
     for field in settings_route.CLUSTER_ENV_NAMES:
         monkeypatch.setattr(settings, field, getattr(settings, field))
 
@@ -920,6 +1036,9 @@ def test_post_cluster_settings_none_mode_does_not_require_container_name(
     monkeypatch.setattr(
         settings_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 1, "error": None}
     )
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
     for field in settings_route.CLUSTER_ENV_NAMES:
         monkeypatch.setattr(settings, field, getattr(settings, field))
 
@@ -953,6 +1072,9 @@ def test_post_cluster_settings_cephadm_mode_does_not_require_container_name(
     )
     monkeypatch.setattr(
         settings_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 1, "error": None}
+    )
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None}
     )
     for field in settings_route.CLUSTER_ENV_NAMES:
         monkeypatch.setattr(settings, field, getattr(settings, field))
@@ -1237,19 +1359,19 @@ def test_dashboard_restart_script_contains_pid_host_port_and_execs_uvicorn():
 
 # --- Admin-only restart controls (Worker/Watcher/Dashboard) ----------------
 #
-# This app has exactly one account (no RBAC) — dashboard_client's TEST_USERNAME
-# is "admin", matching settings_route.RESTART_CONTROLS_USERNAME by default, so
-# these tests monkeypatch RESTART_CONTROLS_USERNAME itself to exercise the
-# "not admin" branch rather than trying to log in as a different user.
+# 2026-07-24: this app now has real per-account roles (shared/models.py::User)
+# instead of a single hardcoded account — these tests log in as an actual
+# DB-created non-admin user to exercise the "not admin" branch, rather than
+# monkeypatching an internal constant.
 
 
-def test_require_restart_privilege_allows_the_admin_username():
-    settings_route._require_restart_privilege("admin")  # must not raise
+def test_require_admin_privilege_allows_the_env_account():
+    settings_route._require_admin_privilege("admin")  # must not raise
 
 
-def test_require_restart_privilege_rejects_any_other_username():
+def test_require_admin_privilege_rejects_unknown_username():
     with pytest.raises(Exception) as exc_info:
-        settings_route._require_restart_privilege("someone-else")
+        settings_route._require_admin_privilege("someone-else")
     assert getattr(exc_info.value, "status_code", None) == 403
 
 
@@ -1265,43 +1387,201 @@ def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
     assert 'action="/settings/restart-dashboard"' in response.text
 
 
-def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client, monkeypatch):
-    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
-    _login(dashboard_client)
+def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
 
     response = dashboard_client.get("/settings")
 
     assert response.status_code == 200
     assert "Tiến trình hệ thống" not in response.text
+    assert "Kết nối Database" not in response.text
+    assert "Người dùng" not in response.text
     assert 'action="/settings/restart-worker"' not in response.text
     assert 'action="/settings/restart-dashboard"' not in response.text
 
 
-def test_restart_worker_route_rejects_non_admin(dashboard_client, monkeypatch):
-    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
-    _login(dashboard_client)
+def test_restart_worker_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
 
     response = dashboard_client.post("/settings/restart-worker")
 
     assert response.status_code == 403
 
 
-def test_restart_watcher_route_rejects_non_admin(dashboard_client, monkeypatch):
-    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
-    _login(dashboard_client)
+def test_restart_watcher_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
 
     response = dashboard_client.post("/settings/restart-watcher")
 
     assert response.status_code == 403
 
 
-def test_restart_dashboard_route_rejects_non_admin(dashboard_client, monkeypatch):
-    monkeypatch.setattr(settings_route, "RESTART_CONTROLS_USERNAME", "someone-else")
-    _login(dashboard_client)
+def test_restart_dashboard_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
 
     response = dashboard_client.post("/settings/restart-dashboard")
 
     assert response.status_code == 403
+
+
+# --- Reset DB connection (2026-07-24) ---------------------------------------
+
+
+def _use_file_based_test_db(monkeypatch, tmp_path):
+    """The dashboard_client fixture's default DB is an in-memory sqlite
+    engine with StaticPool (one shared connection — see conftest.py's
+    docstring on why: :memory: sqlite is otherwise per-connection). Resetting
+    the connection disposes that ONE connection, which would drop the
+    in-memory database entirely — so these two tests specifically need a
+    file-based sqlite instead (settings.database_url, which
+    _reset_database_connection's db.make_engine() actually reads), so the
+    fresh engine it creates points at the same real file, schema intact."""
+    from sqlalchemy import create_engine
+
+    from shared.db import Base
+
+    db_path = tmp_path / "reset_test.db"
+    file_url = f"sqlite:///{db_path}"
+    monkeypatch.setattr(settings, "database_url", file_url)
+    Base.metadata.create_all(create_engine(file_url))
+
+
+def test_reset_database_connection_success(dashboard_client, monkeypatch, tmp_path):
+    _use_file_based_test_db(monkeypatch, tmp_path)
+    _login(dashboard_client)
+    old_engine = db_module.engine
+
+    response = dashboard_client.post("/settings/database/reset-connection")
+
+    assert response.status_code == 200
+    assert "Đã khởi động lại kết nối" in response.text
+    assert db_module.engine is not old_engine
+
+
+def test_reset_database_connection_keeps_working_afterward(dashboard_client, monkeypatch, tmp_path):
+    _use_file_based_test_db(monkeypatch, tmp_path)
+    _login(dashboard_client)
+    dashboard_client.post("/settings/database/reset-connection")
+
+    # the fresh engine/session must still be fully usable — e.g. the very
+    # next page load, which queries the DB, must not fail
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+
+
+def test_reset_database_connection_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/settings/database/reset-connection")
+
+    assert response.status_code == 403
+
+
+def test_unauthenticated_reset_database_connection_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/database/reset-connection", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+# --- Patch pipeline settings (2026-07-24) -----------------------------------
+
+
+def test_get_settings_shows_patch_pipeline_tab_for_admin(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Build &amp; Copy Patch Ceph" in response.text
+    assert 'action="/settings/patch-pipeline"' in response.text
+
+
+def test_get_settings_hides_patch_pipeline_tab_for_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'action="/settings/patch-pipeline"' not in response.text
+
+
+def test_patch_pipeline_settings_submit_persists_and_restarts_worker(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_env)
+    restart_calls = []
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: restart_calls.append(1) or {"restarted": True, "new_pid": 1, "error": None}
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/patch-pipeline",
+        data={
+            "ceph_patch_build_node": "10.0.0.20",
+            "ceph_patch_source_dir": "/root/ceph",
+            "ceph_patch_build_command": "./make-srpm.sh && rpmbuild --rebuild x.src.rpm",
+            "ceph_patch_output_dir": "/root/rpmbuild/RPMS/x86_64",
+            "ceph_patch_node_staging_dir": "/opt/ceph-aiops-patch-staging",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình" in response.text
+    assert settings.ceph_patch_build_node == "10.0.0.20"
+    assert settings.ceph_patch_source_dir == "/root/ceph"
+    assert settings.ceph_patch_build_command == "./make-srpm.sh && rpmbuild --rebuild x.src.rpm"
+    assert settings.ceph_patch_output_dir == "/root/rpmbuild/RPMS/x86_64"
+    assert settings.ceph_patch_node_staging_dir == "/opt/ceph-aiops-patch-staging"
+    env_contents = tmp_env.read_text()
+    assert "CEPH_PATCH_BUILD_NODE=10.0.0.20" in env_contents
+    assert restart_calls == [1]
+
+
+def test_patch_pipeline_settings_submit_shows_error_on_write_failure(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_route, "ENV_PATH", tmp_path / "no-such-dir" / ".env")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/patch-pipeline",
+        data={"ceph_patch_build_node": "10.0.0.20"},
+    )
+
+    assert response.status_code == 200
+    assert "Không ghi được file cấu hình" in response.text
+
+
+def test_patch_pipeline_settings_submit_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post(
+        "/settings/patch-pipeline", data={"ceph_patch_build_node": "10.0.0.20"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_unauthenticated_patch_pipeline_settings_submit_redirects_to_login(dashboard_client):
+    response = dashboard_client.post(
+        "/settings/patch-pipeline", data={"ceph_patch_build_node": "10.0.0.20"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+# Note: user-management ("Người dùng") tests live in test_dashboard_users.py —
+# that feature is its own standalone page (/users), not a Settings card,
+# as of 2026-07-24.
 
 
 def test_restart_worker_route_shows_success_message(dashboard_client, monkeypatch):
@@ -1394,7 +1674,7 @@ def test_get_settings_shows_connected_display_state_when_fully_configured(dashbo
     response = dashboard_client.get("/settings")
 
     assert response.status_code == 200
-    assert "9router đã kết nối" in response.text
+    assert "đã kết nối" in response.text
     assert 'id="router-connected-view"' in response.text
 
 
@@ -1573,7 +1853,7 @@ def test_verify_router_connection_reports_missing_config_gracefully():
     )
 
     assert is_valid is False
-    assert "9router" in reason
+    assert "API AI" in reason
     assert models is None
 
 

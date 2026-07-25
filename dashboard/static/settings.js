@@ -10,11 +10,42 @@
   var step2Form = document.getElementById("router-step2-form");
   var step2BaseUrl = document.getElementById("router-step2-base-url");
   var step2ApiKey = document.getElementById("router-step2-api-key");
+  var step2Provider = document.getElementById("router-step2-provider");
   var modelSelect = document.getElementById("router-model-select");
   var modelFilter = document.getElementById("router-model-filter");
   var connectedView = document.getElementById("router-connected-view");
   var wizardView = document.getElementById("router-wizard-view");
   var changeModelBtn = document.getElementById("router-change-model-btn");
+  var providerInputs = Array.prototype.slice.call(
+    document.querySelectorAll('input[name="router_provider"]')
+  );
+
+  function selectedProvider() {
+    var checked = providerInputs.filter(function (r) { return r.checked; })[0];
+    return checked || providerInputs[0];
+  }
+
+  function selectedProviderLabel() {
+    var checked = selectedProvider();
+    return checked ? checked.parentNode.textContent.trim() : "API AI";
+  }
+
+  // Claude/Codex/OpenRouter each have one fixed, well-known Base URL — pick
+  // it for the operator on selection so they never have to look it up.
+  // 9router has none (data-base-url=""): it's always a self-hosted
+  // host:port, so switching TO it leaves whatever the operator already
+  // typed untouched instead of clobbering it with a guess.
+  providerInputs.forEach(function (input) {
+    input.addEventListener("change", function () {
+      var preset = input.getAttribute("data-base-url");
+      if (preset) {
+        baseUrlInput.value = preset;
+      }
+      baseUrlInput.placeholder = input.getAttribute("data-base-url-placeholder") || "";
+      resultEl.hidden = true;
+      step2Form.hidden = true;
+    });
+  });
 
   // Model count above which the plain <select> gets a search/filter box in
   // front of it — spec: "sorted alphabetically, shown as dropdown/radio
@@ -63,16 +94,20 @@
     // pre-filled with the real, already-saved value.
     var apiKey = apiKeyInput.value.trim();
     var baseUrl = baseUrlInput.value.trim();
+    var provider = selectedProvider();
+    var providerValue = provider ? provider.value : "9router";
+    var providerLabel = selectedProviderLabel();
 
     verifyBtn.disabled = true;
     resultEl.hidden = true;
     resultEl.classList.remove("ai-test-ok", "ai-test-fail");
     resultEl.hidden = false;
-    resultEl.textContent = "Đang kết nối 9router...";
+    resultEl.textContent = "Đang kết nối " + providerLabel + "...";
 
     var body = new URLSearchParams();
     body.set("router_api_key", apiKey);
     body.set("router_base_url", baseUrl);
+    body.set("router_provider", providerValue);
 
     fetch("/settings/9router/verify", { method: "POST", credentials: "same-origin", body: body })
       .then(handleAuthRedirect)
@@ -92,6 +127,7 @@
         }
         step2BaseUrl.value = baseUrl;
         step2ApiKey.value = apiKey;
+        step2Provider.value = providerValue;
         if (data.models && data.models.length) {
           renderModelOptions(data.models);
           showResult(true, data.message || "Kết nối thành công — tìm thấy " + data.models.length + " model");
@@ -103,7 +139,7 @@
       })
       .catch(function (err) {
         if (err.message === "unauthenticated") return;
-        showResult(false, "Không thể kết nối " + (baseUrl || "9router") + " — kiểm tra host/port");
+        showResult(false, "Không thể kết nối " + (baseUrl || providerLabel) + " — kiểm tra host/port");
       })
       .finally(function () {
         verifyBtn.disabled = false;
@@ -198,6 +234,70 @@
         dbResultEl.textContent = (ok ? "✅ " : "❌ ") + msg;
       }
     });
+
+    // "Lưu & chuyển database" is a single blocking POST that runs all 5
+    // steps documented in settings_save_database (test connection ->
+    // migration -> write .env -> restart Worker/Watcher -> restart
+    // Dashboard itself) before the browser gets ANY response back, so
+    // there's no live per-step signal to poll from the server. This just
+    // gives the operator a sense of progress for the (multi-second) wait —
+    // it's a time-estimated animation, not a real backend-reported percent,
+    // and deliberately caps below 100% since only the server's actual
+    // response (a fresh settings.html on error, or restarting.html on
+    // success) means the operation is actually done.
+    var dbForm = document.getElementById("database-form");
+    var dbSaveBtn = document.getElementById("db-save-btn");
+    var dbProgressEl = document.getElementById("db-migrate-progress");
+    var dbProgressStepEl = document.getElementById("db-migrate-step");
+    var dbProgressBarFillEl = document.getElementById("db-migrate-bar-fill");
+    var dbProgressBarEl = document.getElementById("db-migrate-bar");
+    if (dbForm && dbSaveBtn && dbProgressEl) {
+      // [percent-at-which-this-label-starts, label]
+      var DB_MIGRATE_STEPS = [
+        [0, "Đang kiểm tra kết nối..."],
+        [15, "Đang chạy migration (tạo schema)..."],
+        [40, "Đang lưu cấu hình..."],
+        [55, "Đang khởi động lại Worker/Watcher..."],
+        [85, "Đang khởi động lại Dashboard..."]
+      ];
+      var DB_MIGRATE_CAP = 97;
+
+      dbForm.addEventListener("submit", function (event) {
+        if (event.defaultPrevented) {
+          return; // the existing confirm() onsubmit handler already vetoed this submit
+        }
+        dbSaveBtn.disabled = true;
+        if (dbTestBtn) dbTestBtn.disabled = true;
+        dbProgressEl.hidden = false;
+        // Pulses the fill continuously so parking at DB_MIGRATE_CAP for a
+        // while (normal — the real work can legitimately take longer than
+        // the estimate) reads as "still working", not "stuck" — see the
+        // comment above DB_MIGRATE_CAP.
+        dbProgressBarFillEl.classList.add("is-active");
+
+        var percent = 0;
+        var render = function () {
+          var label = DB_MIGRATE_STEPS[0][1];
+          for (var i = 0; i < DB_MIGRATE_STEPS.length; i++) {
+            if (percent >= DB_MIGRATE_STEPS[i][0]) label = DB_MIGRATE_STEPS[i][1];
+          }
+          if (percent >= DB_MIGRATE_CAP) {
+            label += " (vẫn đang xử lý, có thể lâu hơn dự kiến — đừng tắt/rời trang)";
+          }
+          dbProgressStepEl.textContent = label;
+          dbProgressBarFillEl.style.width = percent + "%";
+          dbProgressBarEl.setAttribute("aria-valuenow", String(Math.round(percent)));
+        };
+        render();
+        // Native form submission navigates the page once the server responds
+        // (error re-render or restarting.html) — this interval just stops
+        // being relevant at that point, no need to clear it explicitly.
+        setInterval(function () {
+          percent = Math.min(DB_MIGRATE_CAP, percent + 1.5);
+          render();
+        }, 400);
+      });
+    }
   }
 
   // Kết nối cụm Ceph: only show the fields the currently-selected "Kiểu
@@ -216,5 +316,27 @@
     };
     execModeSelect.addEventListener("change", applyExecModeVisibility);
     applyExecModeVisibility();
+  }
+
+  // Settings sidebar (2026-07-24) — one section-panel visible at a time.
+  // The server already picks which panel starts visible (settings.py's
+  // _compute_active_section, so a form's error/success message after a
+  // POST always lands on the right panel, not hidden behind whichever one
+  // happened to be first) — this just handles CLICKING a different item
+  // without a page reload.
+  var settingsNavItems = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item"));
+  var settingsPanels = Array.prototype.slice.call(document.querySelectorAll(".settings-panel"));
+  if (settingsNavItems.length && settingsPanels.length) {
+    settingsNavItems.forEach(function (item) {
+      item.addEventListener("click", function () {
+        var section = item.getAttribute("data-section");
+        settingsNavItems.forEach(function (other) {
+          other.classList.toggle("active", other === item);
+        });
+        settingsPanels.forEach(function (panel) {
+          panel.hidden = panel.getAttribute("data-panel") !== section;
+        });
+      });
+    });
   }
 })();

@@ -69,3 +69,30 @@
 
   connect();
 })();
+
+(function () {
+  // Generic sidebar + single-panel tab switching (2026-07-24), shared by
+  // every page using the .tabbed-sidebar/.tabbed-nav-item/.tabbed-panel
+  // classes (dashboard/static/style.css) — settings.html has its own
+  // equivalent in settings.js under the older .settings-* names, since it
+  // loads settings.js instead of this file. The server picks which panel
+  // starts visible (each route's own "active tab" logic, so a form's
+  // error/success message after a POST always lands on the right panel,
+  // not hidden behind whichever one happened to be first) — this only
+  // handles CLICKING a different item without a page reload.
+  var tabNavItems = Array.prototype.slice.call(document.querySelectorAll(".tabbed-nav-item"));
+  var tabPanels = Array.prototype.slice.call(document.querySelectorAll(".tabbed-panel"));
+  if (tabNavItems.length && tabPanels.length) {
+    tabNavItems.forEach(function (item) {
+      item.addEventListener("click", function () {
+        var section = item.getAttribute("data-section");
+        tabNavItems.forEach(function (other) {
+          other.classList.toggle("active", other === item);
+        });
+        tabPanels.forEach(function (panel) {
+          panel.hidden = panel.getAttribute("data-panel") !== section;
+        });
+      });
+    });
+  }
+})();

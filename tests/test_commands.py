@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import worker.executor.commands as commands_module
@@ -159,12 +161,29 @@ def test_package_download_builds_expected_command_and_restarts_discovered_units(
         "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "19.2.0"}
     )
 
-    assert "debian-squid" in command
-    assert "rpm-squid" in command
+    # 2026-07-24 fix: verified live against download.ceph.com — repo path
+    # uses the exact target_version, NOT the codename ("squid" here would
+    # be a rolling alias that can silently drop OS support an older point
+    # release still had — see the command builder's own comment). Also
+    # needs the architecture segment (rpm-<version>/el<N>/ itself has no
+    # repodata, only rpm-<version>/el<N>/<arch>/ does — verified live too).
+    assert "debian-19.2.0" in command
+    assert "rpm-19.2.0/el$(rpm -E %rhel)/$(uname -m)/" in command
     assert "apt-get install -y ceph" in command
     assert "dnf install -y ceph || yum install -y ceph" in command
-    assert "systemctl restart ceph-mon@a.service" in command
-    assert "systemctl restart ceph-osd@0.service" in command
+    assert "(systemctl reset-failed ceph-mon@a.service 2>/dev/null; systemctl restart ceph-mon@a.service)" in command
+    assert "(systemctl reset-failed ceph-osd@0.service 2>/dev/null; systemctl restart ceph-osd@0.service)" in command
+    # 2026-07-24 regression test: `dnf/yum config-manager --add-repo` never
+    # removes an old repo file — a retried/earlier-version attempt's stale
+    # broken repo permanently blocks every future dnf/yum install on that
+    # host otherwise (verified live: this exact scenario left 2+ stale
+    # download.ceph.com_rpm-*.repo files on 3 real nodes).
+    assert "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo" in command
+    # 2026-07-24 regression test: ceph-mgr-modules-core (and other noarch
+    # deps) live under a SEPARATE .../noarch/ repo, not the arch-specific
+    # one — verified live: `dnf install ceph` failed with "nothing provides
+    # ceph-mgr-modules-core" until this repo was also added.
+    assert "rpm-19.2.0/el$(rpm -E %rhel)/noarch/" in command
 
 
 def test_package_download_with_no_discovered_units_skips_restart(monkeypatch):
@@ -224,8 +243,8 @@ def test_package_local_builds_expected_command_and_restarts_discovered_units(mon
     assert "[ -d /opt/ceph-pkgs ]" in command
     assert "apt-get install -y /opt/ceph-pkgs/*.deb" in command
     assert "dnf install -y /opt/ceph-pkgs/*.rpm || yum localinstall -y /opt/ceph-pkgs/*.rpm" in command
-    assert "systemctl restart ceph-mon@a.service" in command
-    assert "systemctl restart ceph-osd@0.service" in command
+    assert "(systemctl reset-failed ceph-mon@a.service 2>/dev/null; systemctl restart ceph-mon@a.service)" in command
+    assert "(systemctl reset-failed ceph-osd@0.service 2>/dev/null; systemctl restart ceph-osd@0.service)" in command
 
 
 def test_has_command_true_for_both_package_based_upgrade_action_ids():
@@ -440,3 +459,126 @@ def test_discover_ceph_units_classifies_osd_mon_mgr_and_ignores_sidecar_units(mo
     assert units["mgr"] == [
         "ceph-48a9efa2-8404-11f1-ac02-fa163ea23860@mgr.khiempx-ceph1.loylll.service"
     ]
+
+
+# --- patch_build_and_stage / patch_install (2026-07-24) ---------------------
+#
+# Ceph patch build & deploy pipeline (dashboard/routes/patch.py). Same "stub
+# execute_command" posture as the package-based upgrade tests above —
+# patch_install does a real unit-discovery SSH round trip just like those do.
+
+
+def _set_patch_build_settings(monkeypatch, *, mon_nodes="10.20.1.150"):
+    monkeypatch.setattr(commands_module.settings, "ceph_patch_source_dir", "/root/ceph")
+    monkeypatch.setattr(
+        commands_module.settings, "ceph_patch_build_command", "./make-srpm.sh && rpmbuild --rebuild x.src.rpm"
+    )
+    monkeypatch.setattr(commands_module.settings, "ceph_patch_output_dir", "/root/rpmbuild/RPMS/x86_64")
+    monkeypatch.setattr(commands_module.settings, "ceph_patch_node_staging_dir", "/opt/ceph-aiops-patch-staging")
+    monkeypatch.setattr(commands_module.settings, "ceph_mon_nodes", mon_nodes)
+    monkeypatch.setattr(commands_module.settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(commands_module.settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(commands_module.settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(commands_module.settings, "ssh_user", "root")
+    monkeypatch.setattr(commands_module.settings, "ssh_key_path", "/root/.ssh/ceph_lab_watcher")
+
+
+def test_patch_build_and_stage_requires_host(monkeypatch):
+    _set_patch_build_settings(monkeypatch)
+    with pytest.raises(ExecutorError, match="build server host"):
+        get_command("patch_build_and_stage", None, {"patch_content": "diff\n"})
+
+
+def test_patch_build_and_stage_requires_patch_content(monkeypatch):
+    _set_patch_build_settings(monkeypatch)
+    with pytest.raises(ExecutorError, match="patch_content"):
+        get_command("patch_build_and_stage", "10.9.9.9", {})
+
+
+def test_patch_build_and_stage_requires_patch_content_non_blank(monkeypatch):
+    _set_patch_build_settings(monkeypatch)
+    with pytest.raises(ExecutorError, match="patch_content"):
+        get_command("patch_build_and_stage", "10.9.9.9", {"patch_content": "   "})
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["ceph_patch_source_dir", "ceph_patch_build_command", "ceph_patch_output_dir", "ceph_patch_node_staging_dir"],
+)
+def test_patch_build_and_stage_requires_all_settings_configured(monkeypatch, field):
+    _set_patch_build_settings(monkeypatch)
+    monkeypatch.setattr(commands_module.settings, field, "")
+    with pytest.raises(ExecutorError, match="ceph_patch_"):
+        get_command("patch_build_and_stage", "10.9.9.9", {"patch_content": "diff\n"})
+
+
+def test_patch_build_and_stage_requires_configured_ceph_nodes(monkeypatch):
+    _set_patch_build_settings(monkeypatch, mon_nodes="")
+    with pytest.raises(ExecutorError, match="no Ceph nodes configured"):
+        get_command("patch_build_and_stage", "10.9.9.9", {"patch_content": "diff\n"})
+
+
+def test_patch_build_and_stage_builds_expected_command(monkeypatch):
+    _set_patch_build_settings(monkeypatch, mon_nodes="10.20.1.150,10.20.1.151")
+
+    command = get_command("patch_build_and_stage", "10.9.9.9", {"patch_content": "diff --git a b\n+x\n"})
+
+    # patch content round-trips through the embedded base64 payload
+    import base64
+
+    match = re.search(r"base64 -d > '?/root/ceph/ceph-aiops-current\.patch'? <<< '?(\S+)'?", command)
+    assert match is not None
+    assert base64.b64decode(match.group(1)).decode() == "diff --git a b\n+x\n"
+
+    assert "cd /root/ceph && git apply --check ceph-aiops-current.patch" in command
+    assert "git apply ceph-aiops-current.patch" in command
+    assert "./make-srpm.sh && rpmbuild --rebuild x.src.rpm" in command
+    assert (
+        "scp -o StrictHostKeyChecking=accept-new -i /root/.ssh/ceph_lab_watcher "
+        "/root/rpmbuild/RPMS/x86_64/*.rpm root@10.20.1.150:/opt/ceph-aiops-patch-staging/" in command
+    )
+    assert (
+        "scp -o StrictHostKeyChecking=accept-new -i /root/.ssh/ceph_lab_watcher "
+        "/root/rpmbuild/RPMS/x86_64/*.rpm root@10.20.1.151:/opt/ceph-aiops-patch-staging/" in command
+    )
+
+
+def test_patch_install_requires_non_cephadm_exec_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+    with pytest.raises(ExecutorError, match="ceph_exec_mode=none"):
+        get_command("patch_install", "10.20.1.150", {})
+
+
+def test_patch_install_requires_host(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="specific host"):
+        get_command("patch_install", None, {})
+
+
+def test_patch_install_requires_staging_dir_configured(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module.settings, "ceph_patch_node_staging_dir", "")
+    with pytest.raises(ExecutorError, match="ceph_patch_node_staging_dir"):
+        get_command("patch_install", "10.20.1.150", {})
+
+
+def test_patch_install_builds_expected_command_and_restarts_discovered_units(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module.settings, "ceph_patch_node_staging_dir", "/opt/ceph-aiops-patch-staging")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command("patch_install", "10.20.1.150", {})
+
+    assert "[ -d /opt/ceph-aiops-patch-staging ]" in command
+    assert "apt-get install -y /opt/ceph-aiops-patch-staging/*.deb" in command
+    assert (
+        "dnf install -y /opt/ceph-aiops-patch-staging/*.rpm || "
+        "yum localinstall -y /opt/ceph-aiops-patch-staging/*.rpm" in command
+    )
+    assert "(systemctl reset-failed ceph-mon@a.service 2>/dev/null; systemctl restart ceph-mon@a.service)" in command
+    assert "(systemctl reset-failed ceph-osd@0.service 2>/dev/null; systemctl restart ceph-osd@0.service)" in command
+
+
+def test_has_command_true_for_both_patch_action_ids():
+    assert commands_module.has_command("patch_build_and_stage") is True
+    assert commands_module.has_command("patch_install") is True

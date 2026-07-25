@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Vá lỗi Ceph — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Metrics Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link active">Vá lỗi Ceph</a>
+        <a href="/settings" class="nav-link">Cài đặt</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="tabbed-page">
+    <nav class="tabbed-sidebar">
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'upload' %}active{% endif %}" data-section="upload">Patch nguồn Ceph</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'build' %}active{% endif %}" data-section="build">Bước 1 — Build &amp; Copy</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'install' %}active{% endif %}" data-section="install">Bước 2 — Cài đặt</button>
+    </nav>
+    <div class="tabbed-content">
+    <section class="card tabbed-panel" data-panel="upload" {% if active_tab != 'upload' %}hidden{% endif %}>
+      <div class="card-header"><h2>Patch nguồn Ceph</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          Upload file patch (.patch/.diff) — bấm "Đề xuất Build &amp; Copy" để build server tự
+          áp patch, build RPM, rồi tự copy sang từng node Ceph đã cấu hình. Sau khi build xong,
+          bấm "Đề xuất Cài đặt" để cài các RPM đó lên cụm thật.
+        </p>
+        {% if patch_document %}
+        <p class="hint">
+          Đang lưu: <code>{{ patch_document.filename }}</code> —
+          upload bởi {{ patch_document.uploaded_by }} lúc {{ patch_document.uploaded_at|vntime }}
+        </p>
+        {% endif %}
+        <form class="login-box" method="post" action="/patch/upload" enctype="multipart/form-data">
+          <label>{% if patch_document %}Upload patch khác để thay thế{% else %}Chọn file patch{% endif %} (.patch, .diff)
+            <input type="file" name="file" accept=".patch,.diff" required>
+          </label>
+          <button type="submit" class="btn btn-primary">Upload patch</button>
+        </form>
+      </div>
+    </section>
+
+    <div class="tabbed-panel" data-panel="build" {% if active_tab != 'build' %}hidden{% endif %}>
+    {% if pending_action and pending_action.action_id == "patch_build_and_stage" %}
+    <section class="card">
+      <div class="card-header"><h2>Đề xuất đang chờ xử lý</h2></div>
+      <div class="card-body">
+        <article class="pending-action-card">
+          <p><strong>Bước:</strong>
+            {% if pending_action.action_id == "patch_build_and_stage" %}Build &amp; Copy
+            {% elif pending_action.action_id == "patch_install" %}Cài đặt
+            {% else %}{{ pending_action.action_id }}{% endif %}
+          </p>
+          <p><strong>Trạng thái:</strong>
+            {% if pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
+            {% elif pending_action.status == "APPROVED" %}Đã duyệt — Worker sẽ gửi lệnh trong giây lát
+            {% else %}{{ pending_action.status }}{% endif %}
+          </p>
+          <p><strong>Kế hoạch:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
+          {% if pending_action.proposed_command %}
+          <p><strong>Xem trước lệnh:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>
+          {% endif %}
+          {% if pending_action.status == "PENDING_APPROVAL" %}
+          <div class="pending-action-buttons">
+            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+              <button type="submit" class="btn btn-approve">Duyệt</button>
+            </form>
+            <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-reject">Từ chối</button>
+            </form>
+          </div>
+          {% endif %}
+        </article>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-header"><h2>Bước 1 — Build &amp; Copy</h2></div>
+      <div class="card-body">
+        {% if build_action %}
+        <p class="hint">
+          Lần gần nhất: trạng thái
+          <strong>{{ "Đã cài xong" if build_action.status == "EXECUTED" else build_action.status }}</strong>
+          — {{ build_action.created_at|vntime }}
+        </p>
+        {% else %}
+        <p class="hint">Chưa từng đề xuất Build &amp; Copy lần nào.</p>
+        {% endif %}
+        <form method="post" action="/patch/propose-build" class="inline-form">
+          <button type="submit" class="btn btn-primary" {% if not can_propose_build %}disabled{% endif %}>
+            Đề xuất Build &amp; Copy
+          </button>
+        </form>
+        {% if not patch_document %}
+        <p class="hint">Cần upload patch trước.</p>
+        {% endif %}
+      </div>
+    </section>
+    </div>
+
+    <div class="tabbed-panel" data-panel="install" {% if active_tab != 'install' %}hidden{% endif %}>
+    {% if pending_action and pending_action.action_id == "patch_install" %}
+    <section class="card">
+      <div class="card-header"><h2>Đề xuất đang chờ xử lý</h2></div>
+      <div class="card-body">
+        <article class="pending-action-card">
+          <p><strong>Bước:</strong>
+            {% if pending_action.action_id == "patch_build_and_stage" %}Build &amp; Copy
+            {% elif pending_action.action_id == "patch_install" %}Cài đặt
+            {% else %}{{ pending_action.action_id }}{% endif %}
+          </p>
+          <p><strong>Trạng thái:</strong>
+            {% if pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
+            {% elif pending_action.status == "APPROVED" %}Đã duyệt — Worker sẽ gửi lệnh trong giây lát
+            {% else %}{{ pending_action.status }}{% endif %}
+          </p>
+          <p><strong>Kế hoạch:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
+          {% if pending_action.proposed_command %}
+          <p><strong>Xem trước lệnh:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>
+          {% endif %}
+          {% if pending_action.status == "PENDING_APPROVAL" %}
+          <div class="pending-action-buttons">
+            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+              <button type="submit" class="btn btn-approve">Duyệt</button>
+            </form>
+            <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-reject">Từ chối</button>
+            </form>
+          </div>
+          {% endif %}
+        </article>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-header"><h2>Bước 2 — Cài đặt lên cụm</h2></div>
+      <div class="card-body">
+        {% if install_action %}
+        <p class="hint">
+          Lần gần nhất: trạng thái <strong>{{ install_action.status }}</strong> —
+          {{ install_action.created_at|vntime }}
+        </p>
+        {% else %}
+        <p class="hint">Chưa từng đề xuất Cài đặt lần nào.</p>
+        {% endif %}
+        <form method="post" action="/patch/propose-install" class="inline-form">
+          <button type="submit" class="btn btn-kill-switch-on" {% if not can_propose_install %}disabled{% endif %}>
+            Đề xuất Cài đặt
+          </button>
+        </form>
+        {% if not can_propose_install %}
+        <p class="hint">Chỉ bấm được sau khi Build &amp; Copy đã chạy xong thành công.</p>
+        {% endif %}
+      </div>
+    </section>
+    </div>
+    </div>
+    </div>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

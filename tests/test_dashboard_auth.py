@@ -1,3 +1,24 @@
+import bcrypt
+
+from dashboard.routes.auth import is_admin_user
+from shared import db as db_module
+from shared.models import User
+
+
+def _add_user(username, password, *, is_admin=False, is_active=True, created_by="admin"):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username=username,
+                password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+                is_admin=is_admin,
+                is_active=is_active,
+                created_by=created_by,
+            )
+        )
+        session.commit()
+
+
 def test_unauthenticated_redirects_to_login(dashboard_client):
     response = dashboard_client.get("/", follow_redirects=False)
     assert response.status_code == 303
@@ -77,3 +98,60 @@ def test_login_locks_out_after_repeated_failures(dashboard_client):
         follow_redirects=False,
     )
     assert response.status_code == 429
+
+
+def test_db_backed_user_can_log_in(dashboard_client):
+    _add_user("alice", "s3cret-pw")
+
+    response = dashboard_client.post(
+        "/login",
+        data={"username": "alice", "password": "s3cret-pw"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert response.url.path == "/"
+
+
+def test_db_backed_user_wrong_password_is_rejected(dashboard_client):
+    _add_user("alice", "s3cret-pw")
+
+    response = dashboard_client.post(
+        "/login",
+        data={"username": "alice", "password": "wrong"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+
+
+def test_inactive_db_user_cannot_log_in_even_with_correct_password(dashboard_client):
+    _add_user("bob", "s3cret-pw", is_active=False)
+
+    response = dashboard_client.post(
+        "/login",
+        data={"username": "bob", "password": "s3cret-pw"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+
+
+def test_is_admin_user_true_for_env_account(dashboard_client):
+    assert is_admin_user("admin") is True
+
+
+def test_is_admin_user_true_for_active_db_admin(dashboard_client):
+    _add_user("alice", "s3cret-pw", is_admin=True)
+    assert is_admin_user("alice") is True
+
+
+def test_is_admin_user_false_for_db_non_admin(dashboard_client):
+    _add_user("bob", "s3cret-pw", is_admin=False)
+    assert is_admin_user("bob") is False
+
+
+def test_is_admin_user_false_for_disabled_db_admin(dashboard_client):
+    _add_user("carol", "s3cret-pw", is_admin=True, is_active=False)
+    assert is_admin_user("carol") is False
+
+
+def test_is_admin_user_false_for_unknown_username(dashboard_client):
+    assert is_admin_user("nobody") is False

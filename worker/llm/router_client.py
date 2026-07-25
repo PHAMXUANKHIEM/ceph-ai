@@ -323,6 +323,17 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 )
         return
 
+    # 2026-07-24: a cluster upgrade/patch install restarting every daemon
+    # one host at a time routinely trips transient OSD_DOWN/MGR_DOWN
+    # incidents for the whole run — surfacing each as a new RISKY proposal
+    # means an operator has to manually reject a stream of them just to let
+    # the upgrade they already approved keep going. Skip proposing while
+    # one of those is in flight; normal proposal resumes on its own once it
+    # leaves PENDING_APPROVAL/APPROVED (no separate "turn back on" step).
+    if _is_disruptive_cluster_operation_in_flight():
+        _auto_reject_risky_during_cluster_operation(incident_id, action_pk, resolved_action_id)
+        return
+
     # Story 4.2: RISKY -> PENDING_APPROVAL — never auto-executed (FR8), just
     # surfaced on the Dashboard for an operator to Approve/Reject (Story 4.3).
     try:
@@ -545,6 +556,80 @@ def _record_execution_result(
         session.commit()
 
 
+_DISRUPTIVE_CLUSTER_OPERATION_ACTION_IDS = (
+    gate.VALID_CLUSTER_UPGRADE_ACTION_IDS | gate.VALID_PATCH_ACTION_IDS
+)
+
+
+def _is_disruptive_cluster_operation_in_flight() -> bool:
+    """True while a cluster-upgrade or patch-install Action is proposed but
+    not yet resolved (PENDING_APPROVAL/APPROVED) — same in-flight window
+    dashboard/routes/actions.py::approve_action already gates other RISKY
+    approvals on, checked here too so a fresh RISKY proposal doesn't even
+    get created in the first place. Fails closed (treated as "in flight",
+    i.e. suppress) on a DB error — "can't tell" must not mean "go ahead and
+    spam a new proposal".
+    """
+    try:
+        with db.SessionLocal() as session:
+            return (
+                session.query(Action)
+                .filter(Action.action_id.in_(_DISRUPTIVE_CLUSTER_OPERATION_ACTION_IDS))
+                .filter(
+                    Action.status.in_(
+                        (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+                    )
+                )
+                .first()
+                is not None
+            )
+    except Exception:
+        logger.exception(
+            "_is_disruptive_cluster_operation_in_flight: failed to query DB — "
+            "failing closed (treated as in-flight, suppressing new RISKY proposals)"
+        )
+        return True
+
+
+def _auto_reject_risky_during_cluster_operation(
+    incident_id: str, action_pk: str, action_id: str
+) -> None:
+    logger.warning(
+        "diagnose_incident: auto-rejecting RISKY action %s for incident %s — a cluster "
+        "upgrade/patch install is currently in flight",
+        action_id,
+        incident_id,
+    )
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, incident_id)
+        if action is None:
+            logger.warning(
+                "_auto_reject_risky_during_cluster_operation: no Action row for pk=%s "
+                "(incident %s)",
+                action_pk,
+                incident_id,
+            )
+        else:
+            action.status = ActionStatus.REJECTED.value
+        if incident is None:
+            logger.warning(
+                "_auto_reject_risky_during_cluster_operation: no Incident row for id=%s — "
+                "skipping audit.record() too (no valid Incident to attach it to)",
+                incident_id,
+            )
+        else:
+            incident.status = IncidentStatus.REJECTED.value
+            audit.record(
+                session,
+                incident_id=incident_id,
+                action_id=action_pk if action is not None else None,
+                event_type=audit.EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS,
+                actor=audit.ACTOR_SYSTEM,
+            )
+        session.commit()
+
+
 def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -> None:
     """Story 4.2: resolve the proposed command (best-effort — some
     action_ids have none, see worker/executor/commands.py's Epic-4 note)
@@ -681,8 +766,11 @@ def _execute_approved_action(action_pk: str) -> None:
     # discovered (see worker/executor/commands.py::get_command). Every
     # other action_id's command is identical regardless of host.
     last_command: str | None = None
+    total_nodes = len(nodes)
+    progress = [{"host": host, "status": "pending"} for host in nodes]
+    _write_action_progress(action_pk, progress)
 
-    for host in nodes:
+    for node_index, host in enumerate(nodes, start=1):
         if _check_kill_switch_safe(incident_id):
             if executed_any:
                 logger.warning(
@@ -709,8 +797,28 @@ def _execute_approved_action(action_pk: str) -> None:
                 incident_id,
             )
             all_succeeded = False
+            progress[node_index - 1]["status"] = "failed"
+            _write_action_progress(action_pk, progress)
             continue
         last_command = command
+
+        # 2026-07-24: added so an operator tailing worker.log (or the
+        # Upgrade page, via `progress` above) can tell WHICH node the
+        # upgrade is on right now and which ones already finished —
+        # execute_command() blocks for the whole duration of a real package
+        # install (minutes), so without this the log goes silent mid-run
+        # with no way to tell progress from a hang.
+        logger.info(
+            "_execute_approved_action: bắt đầu action_id=%s trên host %s (%d/%d) "
+            "(action %s)",
+            action_id_str,
+            host,
+            node_index,
+            total_nodes,
+            action_pk,
+        )
+        progress[node_index - 1]["status"] = "running"
+        _write_action_progress(action_pk, progress)
 
         try:
             execute_command(host, command)
@@ -725,9 +833,25 @@ def _execute_approved_action(action_pk: str) -> None:
             )
             all_succeeded = False
             executed_any = True
+            progress[node_index - 1]["status"] = "failed"
+            _write_action_progress(action_pk, progress)
             # Keep trying remaining nodes, same rationale as
             # _maybe_execute_safe_action: the log should show exactly which
             # nodes failed even though the overall Action is already FAILED.
+            continue
+
+        progress[node_index - 1]["status"] = "done"
+        _write_action_progress(action_pk, progress)
+
+        logger.info(
+            "_execute_approved_action: hoàn tất action_id=%s trên host %s (%d/%d) "
+            "(action %s)",
+            action_id_str,
+            host,
+            node_index,
+            total_nodes,
+            action_pk,
+        )
 
     if blocked_before_start:
         _revert_approved_action_to_pending(incident_id, action_pk)
@@ -770,6 +894,30 @@ def _revert_approved_action_to_pending(incident_id: str, action_pk: str) -> None
                 actor=audit.ACTOR_SYSTEM,
             )
         session.commit()
+
+
+def _write_action_progress(action_pk: str, progress: list[dict]) -> None:
+    """Persists per-host progress for the Upgrade page to display — a
+    package-based upgrade has no orchestrator to poll for status (unlike
+    cephadm's `ceph orch upgrade status`), and a single host's install can
+    block execute_command() for minutes, so without this the page has
+    nothing to show between "Đã duyệt" and the final result. Best-effort:
+    swallows its own failure rather than letting a progress-write bug take
+    down the actual upgrade.
+    """
+    try:
+        with db.SessionLocal() as session:
+            action = session.get(Action, action_pk)
+            if action is None:
+                return
+            action.execution_progress = json.dumps(progress)
+            session.commit()
+    except Exception:
+        logger.exception(
+            "_write_action_progress: failed to persist progress for action %s — "
+            "continuing execution regardless",
+            action_pk,
+        )
 
 
 def _record_approved_execution_result(

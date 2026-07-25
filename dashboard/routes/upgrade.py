@@ -11,6 +11,7 @@ from openai import APIError, APIConnectionError, AuthenticationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import audit, db
@@ -353,7 +354,7 @@ def _reject_duplicate_proposal(session) -> None:
 
 
 @router.get("/upgrade", response_class=HTMLResponse)
-async def upgrade_page(request: Request, user: str = Depends(require_login)):
+async def upgrade_page(request: Request, user: str = Depends(require_login), tab: str = "upgrade"):
     try:
         with db.SessionLocal() as session:
             last_action, last_incident = _latest_upgrade_action(session)
@@ -381,6 +382,19 @@ async def upgrade_page(request: Request, user: str = Depends(require_login)):
         except (TypeError, ValueError):
             last_action_params = {}
 
+    # 2026-07-24: package-based upgrade (exec_mode=none) has no orchestrator
+    # to poll for progress the way cephadm's `upgrade_progress` below does —
+    # this is worker/llm/router_client.py::_execute_approved_action's own
+    # per-host progress trail (Action.execution_progress), the only signal
+    # available while a real `dnf/apt install` is running (can take minutes
+    # per host with nothing else visible in between).
+    package_upgrade_progress = None
+    if pending_action is not None and pending_action.execution_progress:
+        try:
+            package_upgrade_progress = json.loads(pending_action.execution_progress)
+        except (TypeError, ValueError):
+            package_upgrade_progress = None
+
     current_versions = None
     versions_error = None
     suggested_target = None
@@ -407,6 +421,8 @@ async def upgrade_page(request: Request, user: str = Depends(require_login)):
         "upgrade.html",
         {
             "user": user,
+            "is_admin": auth.is_admin_user(user),
+            "active_tab": tab if tab in ("docs", "upgrade") else "upgrade",
             "ceph_exec_mode": exec_mode,
             "supports_cephadm": supports_cephadm,
             "supports_package": supports_package,
@@ -418,6 +434,7 @@ async def upgrade_page(request: Request, user: str = Depends(require_login)):
             "suggested_target": suggested_target,
             "upgrade_progress": upgrade_progress,
             "progress_error": progress_error,
+            "package_upgrade_progress": package_upgrade_progress,
             "last_action": last_action,
             "last_action_target_version": last_action_params.get("target_version"),
             "last_action_package_dir": last_action_params.get("package_dir"),
@@ -675,7 +692,7 @@ async def upload_upgrade_procedure(file: UploadFile = File(...), user: str = Dep
         raise HTTPException(status_code=400, detail="File rỗng.")
 
     await _save_upgrade_procedure(filename, raw_text, user)
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url="/upgrade?tab=docs", status_code=303)
 
 
 @router.post("/upgrade/procedure/resummarize")
@@ -692,7 +709,7 @@ async def resummarize_upgrade_procedure(user: str = Depends(require_login)):
         filename, raw_text = doc.filename, doc.raw_text
 
     await _save_upgrade_procedure(filename, raw_text, user)
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url="/upgrade?tab=docs", status_code=303)
 
 
 @router.post("/upgrade/pause")

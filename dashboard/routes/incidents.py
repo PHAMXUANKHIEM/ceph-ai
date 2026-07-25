@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
@@ -246,6 +247,7 @@ async def index(
             "status": status,
             "incidents": incidents,
             "user": user,
+            "is_admin": auth.is_admin_user(user),
             "heartbeat": latest_heartbeat,
             "heartbeat_stale": stale,
             "cluster_mon_nodes": settings.ceph_mon_nodes,
@@ -258,6 +260,11 @@ async def index(
             "filter_since": since,
             "filter_until": until,
             "upgrade_blocks_other_actions": upgrade_blocks_other_actions,
+            # Sidebar tab (2026-07-24) — lands on Audit Trail if the operator
+            # just used its filter form (a GET with query params, unlike
+            # Settings' POST-result sections), otherwise defaults to Chờ
+            # duyệt (the most actionable tab).
+            "active_tab": "audit" if (incident_id or since or until) else "pending",
         },
     )
 

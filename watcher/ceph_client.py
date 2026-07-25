@@ -392,6 +392,27 @@ def summarize_cluster_versions() -> dict:
     }
 
 
+_PROGRESS_FRACTION_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)")
+
+
+def _upgrade_progress_percent(progress: str | None) -> float | None:
+    """Parses cephadm's `progress` string (e.g. `"1/5"`, `"1/5 daemons
+    upgraded"`) into a 0-100 percentage for the Upgrade page's progress bar.
+    Returns None if `progress` is missing/unparseable (bar is simply omitted
+    then — the raw string is always shown regardless, see upgrade.html) or
+    if the total is 0 (nothing to divide by, e.g. before cephadm has
+    discovered any daemons to upgrade yet)."""
+    if not progress:
+        return None
+    match = _PROGRESS_FRACTION_RE.match(progress)
+    if not match:
+        return None
+    done, total = int(match.group(1)), int(match.group(2))
+    if total <= 0:
+        return None
+    return max(0.0, min(100.0, done * 100.0 / total))
+
+
 def get_upgrade_status() -> dict:
     """`ceph orch upgrade status` — live progress of an in-flight (or just-
     finished/never-started) upgrade, queried directly from the cluster each
@@ -405,7 +426,10 @@ def get_upgrade_status() -> dict:
     if settings.ceph_exec_mode != "cephadm":
         raise CephQueryError("ceph orch upgrade status requires ceph_exec_mode=cephadm")
     _, payload = run_ceph_json_command("ceph orch upgrade status")
-    return payload if isinstance(payload, dict) else {"raw_output": payload}
+    if not isinstance(payload, dict):
+        return {"raw_output": payload}
+    payload["progress_percent"] = _upgrade_progress_percent(payload.get("progress"))
+    return payload
 
 
 def _run_upgrade_control_command(inner_command: str) -> None:

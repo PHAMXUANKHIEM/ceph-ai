@@ -27,3 +27,14 @@ def configured_nodes() -> list[dict]:
     # Preserve MON-then-MGR-then-OSD-then-RGW configured order rather than dict/set order.
     ordered_hosts = list(dict.fromkeys(mon_nodes + mgr_nodes + osd_nodes + rgw_nodes))
     return [{"host": host, "roles": sorted(roles[host])} for host in ordered_hosts]
+
+
+def patch_build_node() -> str | None:
+    """The Ceph patch build server (dashboard/routes/patch.py) — deliberately
+    NOT part of configured_nodes()'s SSH SSRF whitelist above: that list is
+    specifically "hosts a Ceph-targeted action may SSH into", and the build
+    server is never a valid target for one (it isn't a Ceph node at all), the
+    same way a Ceph node must never be resolved as the build server. Returns
+    None if unconfigured (blank ceph_patch_build_node)."""
+    host = settings.ceph_patch_build_node.strip()
+    return host or None

@@ -13,7 +13,9 @@
         <a href="/" class="nav-link">Dashboard</a>
         <a href="/nodes" class="nav-link">Metrics Cluster</a>
         <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
         <a href="/settings" class="nav-link active">Cài đặt</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
@@ -22,9 +24,20 @@
     </div>
   </header>
 
-  <main class="page">
+  <main class="page settings-page">
+    <nav class="settings-sidebar">
+      {% if is_admin %}
+      <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch Ceph</button>
+      {% endif %}
+      <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Kết nối cụm Ceph</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Dọn dẹp log &amp; dữ liệu cũ</button>
+    </nav>
+    <div class="settings-content">
     {% if is_admin %}
-    <section class="card">
+    <section class="card settings-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
       <div class="card-header"><h2>Tiến trình hệ thống</h2></div>
       <div class="card-body">
         <p class="hint">
@@ -48,7 +61,7 @@
           <div class="restart-control">
             {% if manual_worker_restart_success %}<p class="success">{{ manual_worker_restart_success }}</p>{% endif %}
             {% if manual_worker_restart_error %}<p class="error">{{ manual_worker_restart_error }}</p>{% endif %}
-            <p class="hint">Worker — áp dụng thay đổi ở worker/ (vd action_id/Command mới) mà không cần đổi cấu hình 9router.</p>
+            <p class="hint">Worker — áp dụng thay đổi ở worker/ (vd action_id/Command mới) mà không cần đổi cấu hình API AI.</p>
             <form
               method="post"
               action="/settings/restart-worker"
@@ -76,7 +89,7 @@
     {% endif %}
 
     {% if is_admin %}
-    <section class="card">
+    <section class="card settings-panel" data-panel="database" {% if active_section != 'database' %}hidden{% endif %}>
       <div class="card-header"><h2>Kết nối Database</h2></div>
       <div class="card-body">
         {% if database_error %}
@@ -85,11 +98,30 @@
         {% if database_success %}
           <p class="success">{{ database_success }}</p>
         {% endif %}
+        {% if database_reset_error %}
+          <p class="error">{{ database_reset_error }}</p>
+        {% endif %}
+        {% if database_reset_success %}
+          <p class="success">{{ database_reset_success }}</p>
+        {% endif %}
         <p class="hint">
           Chỉ hỗ trợ PostgreSQL — schema hệ thống (Incident/Action/Audit Trail...) dùng khoá ngoại và
           check constraint, không hợp với MongoDB; giữa MySQL/Postgres thì Postgres hỗ trợ tốt hơn.
         </p>
         <p class="hint">Đang dùng: <code>{{ current_database_display }}</code></p>
+        <form
+          method="post"
+          action="/settings/database/reset-connection"
+          class="inline-form"
+          onsubmit="return confirm('Khởi động lại kết nối tới database hiện tại? Các câu lệnh đang chạy dở trên kết nối cũ sẽ bị huỷ ngang.');"
+        >
+          <button type="submit" class="btn btn-sm">Khởi động lại kết nối DB</button>
+        </form>
+        <p class="hint">
+          Chỉ reset connection pool của Dashboard (hữu ích khi kết nối bị treo, vd DB phía dưới bị
+          đứng I/O) — không đổi database, không restart Worker/Watcher. Nếu Worker/Watcher cũng cần
+          reset kết nối, dùng nút khởi động lại từng tiến trình ở mục "Tiến trình hệ thống" phía trên.
+        </p>
         <p class="hint">
           Lưu sẽ: kiểm tra kết nối → chạy migration (tạo schema mới, KHÔNG copy dữ liệu từ database cũ) →
           khởi động lại Worker, Watcher và Dashboard. Gây gián đoạn vài giây cho tất cả người đang dùng.
@@ -147,14 +179,57 @@
             <button type="button" class="btn btn-sm" id="db-test-btn">Kiểm tra kết nối</button>
             <span id="db-test-result" class="ai-test-result" hidden></span>
           </div>
-          <button type="submit" class="btn btn-kill-switch-on">Lưu &amp; chuyển database</button>
+          <button type="submit" class="btn btn-kill-switch-on" id="db-save-btn">Lưu &amp; chuyển database</button>
+        </form>
+        <div id="db-migrate-progress" hidden>
+          <p class="hint" id="db-migrate-step">Đang bắt đầu...</p>
+          <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="db-migrate-bar">
+            <div class="progress-bar-fill" id="db-migrate-bar-fill" style="width: 0%;"></div>
+          </div>
+          <p class="hint">Đang chờ Dashboard/Worker/Watcher khởi động lại — trang này sẽ tự chuyển tiếp khi xong.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="patch-pipeline" {% if active_section != 'patch-pipeline' %}hidden{% endif %}>
+      <div class="card-header"><h2>Build &amp; Copy Patch Ceph</h2></div>
+      <div class="card-body">
+        {% if patch_pipeline_error %}
+          <p class="error">{{ patch_pipeline_error }}</p>
+        {% endif %}
+        {% if patch_pipeline_success %}
+          <p class="success">{{ patch_pipeline_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Cấu hình cho trang <a href="/patch">Vá lỗi Ceph</a> — build server KHÔNG phải node Ceph,
+          là một máy riêng dùng để build RPM từ patch đã upload rồi tự <code>scp</code> sang từng
+          node Ceph. Dùng chung SSH user/key đã cấu hình ở "Kết nối cụm Ceph" — cần copy thêm 1 bản
+          private key đó lên chính build server này (một lần), để nó tự SSH được sang các node Ceph.
+        </p>
+        <form class="login-box" method="post" action="/settings/patch-pipeline">
+          <label>IP/hostname build server
+            <input type="text" name="ceph_patch_build_node" value="{{ ceph_patch_build_node }}" placeholder="10.0.0.20">
+          </label>
+          <label>Thư mục source Ceph trên build server
+            <input type="text" name="ceph_patch_source_dir" value="{{ ceph_patch_source_dir }}" placeholder="/root/ceph">
+          </label>
+          <label>Lệnh build (chạy trong thư mục trên, sau khi patch đã được áp)
+            <textarea name="ceph_patch_build_command" rows="3" placeholder="./make-srpm.sh &amp;&amp; rpmbuild --rebuild ceph.src.rpm">{{ ceph_patch_build_command }}</textarea>
+          </label>
+          <label>Thư mục chứa file .rpm sau khi build xong
+            <input type="text" name="ceph_patch_output_dir" value="{{ ceph_patch_output_dir }}" placeholder="/root/rpmbuild/RPMS/x86_64">
+          </label>
+          <label>Thư mục tạm trên MỖI node Ceph để nhận file .rpm (trước khi cài)
+            <input type="text" name="ceph_patch_node_staging_dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging">
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
         </form>
       </div>
     </section>
     {% endif %}
 
-    <section class="card">
-      <div class="card-header"><h2>Cấu hình AI — 9router</h2></div>
+    <section class="card settings-panel" data-panel="router" {% if active_section != 'router' %}hidden{% endif %}>
+      <div class="card-header"><h2>Cấu hình API AI</h2></div>
       <div class="card-body">
         {% if error %}
           <p class="error">{{ error }}</p>
@@ -167,7 +242,7 @@
         {% endif %}
 
         <div id="router-connected-view" {% if not router_connected %}hidden{% endif %}>
-          <p class="success">✅ 9router đã kết nối</p>
+          <p class="success">✅ {{ router_provider_label }} đã kết nối</p>
           <p class="hint">Base URL: <code id="router-connected-base-url">{{ router_base_url }}</code></p>
           <p class="hint">Model: <code id="router-connected-model">{{ router_model }}</code></p>
           <p class="hint">Key hiện tại: <code>{{ masked_key }}</code></p>
@@ -176,7 +251,7 @@
             <form
               method="post"
               action="/settings/9router/disconnect"
-              onsubmit="return confirm('Huỷ kết nối 9router? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');"
+              onsubmit="return confirm('Huỷ kết nối API AI? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');"
               style="display:inline"
             >
               <button type="submit" class="btn btn-sm btn-kill-switch-on">Huỷ kết nối</button>
@@ -185,8 +260,27 @@
         </div>
 
         <div id="router-wizard-view" {% if router_connected %}hidden{% endif %}>
+          <p class="hint">Chọn nơi gửi yêu cầu AI (chẩn đoán sự cố &amp; Chat-with-AI dùng chung một kết nối này).</p>
           <form class="login-box" id="router-step1-form">
-            <label>9router Base URL
+            <div class="ai-provider-field">
+              <span class="ai-provider-field-label">Loại kết nối</span>
+              <div class="ai-provider-options" id="router-provider-options">
+                {% for p in router_providers %}
+                  <label class="ai-provider-option">
+                    <input
+                      type="radio"
+                      name="router_provider"
+                      value="{{ p.id }}"
+                      data-base-url="{{ p.base_url or '' }}"
+                      data-base-url-placeholder="{{ p.base_url_placeholder }}"
+                      {% if p.id == router_provider %}checked{% endif %}
+                    >
+                    {{ p.label }}
+                  </label>
+                {% endfor %}
+              </div>
+            </div>
+            <label>Base URL
               <input
                 type="text"
                 name="router_base_url"
@@ -220,6 +314,7 @@
           >
             <input type="hidden" name="router_base_url" id="router-step2-base-url" value="{{ router_base_url }}">
             <input type="hidden" name="router_api_key" id="router-step2-api-key">
+            <input type="hidden" name="router_provider" id="router-step2-provider" value="{{ router_provider }}">
             <label>Model
               <input type="text" id="router-model-filter" placeholder="Lọc model..." autocomplete="off" hidden>
               <select name="router_model_id" id="router-model-select" required>
@@ -238,7 +333,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card settings-panel" data-panel="cluster" {% if active_section != 'cluster' %}hidden{% endif %}>
       <div class="card-header"><h2>Kết nối cụm Ceph</h2></div>
       <div class="card-body">
         {% if cluster_error %}
@@ -250,8 +345,11 @@
         {% if watcher_restart_error %}
           <p class="error">{{ watcher_restart_error }}</p>
         {% endif %}
+        {% if cluster_worker_restart_error %}
+          <p class="error">{{ cluster_worker_restart_error }}</p>
+        {% endif %}
         <p class="hint">
-          Watcher tự động khởi động lại sau khi lưu để áp dụng cấu hình mới ngay.
+          Watcher và Worker tự động khởi động lại sau khi lưu để áp dụng cấu hình mới ngay.
         </p>
         <form class="login-box" method="post" action="/settings/cluster">
           <label>MON nodes (IP, phân tách dấu phẩy)
@@ -322,7 +420,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card settings-panel" data-panel="cleanup" {% if active_section != 'cleanup' %}hidden{% endif %}>
       <div class="card-header"><h2>Dọn dẹp log &amp; dữ liệu cũ</h2></div>
       <div class="card-body">
         {% if cleanup_error %}
@@ -358,6 +456,7 @@
         </form>
       </div>
     </section>
+    </div>
   </main>
   <script src="/static/settings.js?v={{ static_version }}"></script>
 </body>

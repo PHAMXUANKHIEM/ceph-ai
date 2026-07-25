@@ -8,7 +8,14 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT_SECONDS = 5
-COMMAND_TIMEOUT_SECONDS = 30
+# paramiko's exec_command timeout is a channel READ timeout (no data for
+# this many seconds -> PipeTimeout), not a total-runtime cap — but a real
+# `dnf/apt install ceph` can sit silent for minutes while downloading
+# packages over the network. 30s was tuned for quick checks like
+# "systemctl | grep ceph" and killed real package-install remediation
+# commands mid-run (verified live: 2026-07-24, upgrade_ceph_cluster_package_download
+# failed with PipeTimeout after 30s even though dnf was still working).
+COMMAND_TIMEOUT_SECONDS = 1800
 KNOWN_HOSTS_PATH = os.path.expanduser("~/.ssh/ceph_lab_known_hosts")
 
 

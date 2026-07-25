@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.db import Base
@@ -102,6 +102,16 @@ class Action(Base):
     # (restart_osd_daemon/resync_ntp/pg_repair_force), which are still fully
     # determined by action_id + host alone.
     action_params: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 2026-07-24: JSON-encoded list[{"host": str, "status": "pending"|
+    # "running"|"done"|"failed"}], written by
+    # worker/llm/router_client.py::_execute_approved_action as it works
+    # through target_nodes one host at a time. A package-based cluster
+    # upgrade has no orchestrator to ask "how far along is this" (unlike
+    # cephadm's `ceph orch upgrade status`) and a single host's install can
+    # run for minutes — without this, the Upgrade page had nothing to show
+    # between "Đã duyệt" and the final EXECUTED/FAILED result. NULL for
+    # every action_id that doesn't opt into writing it.
+    execution_progress: Mapped[str | None] = mapped_column(Text, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -299,3 +309,48 @@ class WatcherHeartbeat(Base):
     mon_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class User(Base):
+    """Additional login accounts an admin creates via the Settings page's
+    "Người dùng" card — separate from the single `.env`-configured account
+    (config/settings.py's dashboard_username/dashboard_password_hash), which
+    stays the always-available root admin and never gets a row here (see
+    dashboard/routes/auth.py::is_admin_user/_check_password).
+
+    is_active is a soft-disable (AD-consistent with the rest of this
+    codebase preferring reversible state over deletion, e.g. Incident/Action
+    status transitions) — a deactivated user simply fails login like a wrong
+    password, never hard-deleted."""
+
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("username", name="uq_users_username"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(72), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class PatchDocument(Base):
+    """Singleton (id always 1, upserted) — the operator's currently-staged
+    Ceph source patch, uploaded via the "Vá lỗi Ceph" page
+    (dashboard/routes/patch.py). Re-uploading replaces the previous row
+    entirely, same posture as UpgradeProcedureDocument above — this is a
+    scratch staging area, not a history of past patches. `content` feeds
+    directly into the patch_build_and_stage Action's action_params (see
+    worker/executor/commands.py::_patch_build_and_stage_command) at propose
+    time, so its lifetime as a DB row is really just "between upload and
+    the next successful propose", though nothing here deletes it
+    automatically — re-uploading is the only way it changes."""
+
+    __tablename__ = "patch_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    uploaded_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

@@ -155,7 +155,7 @@
     },
 
     setLoadingUI: function (loading) {
-      var pill = document.querySelector('.node-chip[data-host="' + cssEscape(host) + '"]');
+      var pill = document.querySelector('.node-sidebar-item[data-host="' + cssEscape(host) + '"]');
       if (pill) pill.classList.toggle("is-loading", loading);
       var spinner = document.getElementById("header-spinner");
       var loadingText = document.getElementById("header-loading-text");

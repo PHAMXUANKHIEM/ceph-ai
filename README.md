@@ -1,6 +1,7 @@
 # Ceph AIOps
 
-Giám sát cụm Ceph tự động, chẩn đoán nguyên nhân bằng AI (qua 9router), tự
+Giám sát cụm Ceph tự động, chẩn đoán nguyên nhân bằng AI (qua một kết nối
+API AI — Claude, Codex/OpenAI, OpenRouter, hoặc 9router tự triển khai), tự
 động khắc phục sự cố an toàn (Safe Action) hoặc đề xuất chờ duyệt (Risky
 Action), kèm Dashboard quản trị có Chat-with-AI để tra cứu và quản lý
 cluster (tạo/xoá pool, bật/tắt OSD, ...).
@@ -30,8 +31,9 @@ trạng thái trong DB; Worker mới là nơi thực sự SSH vào cụm.
   của cụm Ceph cần giám sát
 - Cụm Ceph đã deploy sẵn (hỗ trợ cephadm, docker/podman exec, hoặc cài đặt
   package thuần — xem `CEPH_EXEC_MODE` bên dưới)
-- (Tuỳ chọn) Một endpoint 9router (proxy OpenAI-compatible) nếu muốn dùng
-  tính năng chẩn đoán AI / Chat-with-AI
+- (Tuỳ chọn) Một API key cho tính năng chẩn đoán AI / Chat-with-AI — Claude
+  (Anthropic), Codex (OpenAI), OpenRouter, hoặc một endpoint 9router tự
+  triển khai (proxy OpenAI-compatible); chọn loại kết nối ở trang Cài đặt
 
 ### Cài RabbitMQ nhanh bằng Docker
 
@@ -89,7 +91,8 @@ CEPH_RGW_CONTAINER_NAME=
 WORKER_MAX_RETRIES=3
 WORKER_APPROVAL_POLL_INTERVAL_SECONDS=5
 
-# --- 9router (AI) — để trống nếu chưa dùng tính năng AI ---
+# --- API AI (Claude/Codex/OpenRouter/9router) — để trống nếu chưa dùng tính năng AI ---
+ROUTER_PROVIDER=9router
 ROUTER_API_KEY=
 ROUTER_BASE_URL=
 ROUTER_MODEL=
@@ -167,13 +170,14 @@ Truy cập Dashboard tại `http://<ip-máy>:8000`, đăng nhập bằng
 ## 7. Cấu hình cụm Ceph / AI qua Dashboard (thay vì `.env`)
 
 Sau khi đăng nhập, vào trang **Cài đặt** để cấu hình/chỉnh lại kết nối cụm
-Ceph và 9router mà không cần SSH vào server:
+Ceph và API AI mà không cần SSH vào server:
 
 - Lưu cấu hình **cụm Ceph** (form "cluster") → ghi thẳng vào `.env` **và tự
   động khởi động lại tiến trình Watcher** (Worker/Dashboard không bị ảnh
   hưởng).
-- Lưu cấu hình **9router** (API key/model) → ghi thẳng vào `.env` **và tự
-  động khởi động lại tiến trình Worker**.
+- Lưu cấu hình **API AI** (chọn loại kết nối — Claude/Codex/OpenRouter/
+  9router — rồi nhập API key/model) → ghi thẳng vào `.env` **và tự động
+  khởi động lại tiến trình Worker**.
 - Nút **"Khởi động lại Dashboard"** riêng ở cuối trang Cài đặt → tự restart
   chính tiến trình Dashboard (cần thiết vì nó không thể tự restart giữa
   chừng một request như Worker/Watcher).
@@ -190,11 +194,11 @@ cho các thay đổi CODE (không phải cấu hình) — khi đó dùng lại
 pytest
 ```
 
-Mặc định loại trừ nhóm test `live` (gọi SSH/API thật ra cụm Ceph/9router
+Mặc định loại trừ nhóm test `live` (gọi SSH/API thật ra cụm Ceph/API AI
 thật — chỉ chạy tay khi có sẵn cụm lab thật để test):
 
 ```bash
-pytest -m live   # chỉ chạy khi thật sự có cụm/9router để test
+pytest -m live   # chỉ chạy khi thật sự có cụm/API AI để test
 ```
 
 ## 9. CI/CD (tuỳ chọn)
@@ -213,6 +217,6 @@ máy chủ mới.
 - **`xóa pool` báo lỗi `EPERM: pool deletion is disabled`** → cụm Ceph mặc
   định chặn xoá pool; tính năng `delete_pool` của Chat-with-AI tự bật/tắt
   `mon_allow_pool_delete` quanh lệnh xoá, không cần tự cấu hình tay.
-- **Chat-with-AI báo "Chưa kết nối 9router"** → chưa cấu hình
+- **Chat-with-AI báo "Chưa kết nối API AI"** → chưa cấu hình
   `ROUTER_API_KEY`/`ROUTER_BASE_URL`/`ROUTER_MODEL` (qua `.env` hoặc trang
-  Cài đặt).
+  Cài đặt — chọn loại kết nối Claude/Codex/OpenRouter/9router rồi nhập key).

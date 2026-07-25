@@ -533,3 +533,49 @@ def test_pending_package_download_action_shown_on_upgrade_page(dashboard_client,
     assert response.status_code == 200
     assert "ceph-deploy — tải từ download.ceph.com" in response.text
     assert "19.2.0" in response.text
+
+
+def test_approved_package_download_action_shows_per_host_progress(
+    dashboard_client, monkeypatch
+):
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.APPROVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id="upgrade_ceph_cluster_package_download",
+                classification="RISKY",
+                status=ActionStatus.APPROVED.value,
+                action_params=json.dumps({"target_version": "19.2.0"}),
+                execution_progress=json.dumps(
+                    [
+                        {"host": "10.20.1.112", "status": "done"},
+                        {"host": "10.20.1.95", "status": "running"},
+                        {"host": "10.20.1.21", "status": "pending"},
+                    ]
+                ),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "10.20.1.112" in response.text
+    assert "Xong" in response.text
+    assert "Đang chạy" in response.text
+    assert "Đang chờ" in response.text
+    # Auto-refresh while the action is still APPROVED (in-flight) — no other
+    # way for an operator watching the page to see progress land without
+    # manually reloading, since a real install can take minutes per host.
+    assert 'http-equiv="refresh"' in response.text

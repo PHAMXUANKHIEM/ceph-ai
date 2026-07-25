@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Người dùng — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Metrics Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
+        <a href="/settings" class="nav-link">Cài đặt</a>
+        <a href="/users" class="nav-link active">Người dùng</a>
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>Người dùng</h2></div>
+      <div class="card-body">
+        {% if user_create_error %}
+          <p class="error">{{ user_create_error }}</p>
+        {% endif %}
+        {% if user_create_success %}
+          <p class="success">{{ user_create_success }}</p>
+        {% endif %}
+        {% if user_toggle_error %}
+          <p class="error">{{ user_toggle_error }}</p>
+        {% endif %}
+        {% if user_delete_error %}
+          <p class="error">{{ user_delete_error }}</p>
+        {% endif %}
+        {% if user_delete_success %}
+          <p class="success">{{ user_delete_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Tài khoản admin gốc cấu hình trong <code>.env</code> không hiện trong danh sách này — luôn
+          là admin, không thể vô hiệu hoá.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Username</th><th>Vai trò</th><th>Trạng thái</th><th>Người tạo</th><th>Ngày tạo</th><th></th></tr>
+            </thead>
+            <tbody>
+              {% for u in users %}
+              <tr>
+                <td>{{ u.username }}</td>
+                <td>{{ "Admin" if u.is_admin else "User" }}</td>
+                <td>{{ "Đang hoạt động" if u.is_active else "Đã vô hiệu hoá" }}</td>
+                <td>{{ u.created_by }}</td>
+                <td>{{ u.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td>
+                  <form method="post" action="/users/{{ u.id }}/toggle-active" class="inline-form">
+                    {% if u.username == user %}
+                    <button type="submit" class="btn btn-sm" disabled title="Không thể tự vô hiệu hoá chính mình">
+                      {{ "Vô hiệu hoá" if u.is_active else "Kích hoạt lại" }}
+                    </button>
+                    {% else %}
+                    <button type="submit" class="btn btn-sm {{ 'btn-kill-switch-on' if u.is_active else '' }}">
+                      {{ "Vô hiệu hoá" if u.is_active else "Kích hoạt lại" }}
+                    </button>
+                    {% endif %}
+                  </form>
+                  {% if u.username == user %}
+                  <form method="post" action="/users/{{ u.id }}/delete" class="inline-form">
+                    <button type="submit" class="btn btn-sm" disabled title="Không thể tự xoá chính mình">Xoá</button>
+                  </form>
+                  {% else %}
+                  <form
+                    method="post"
+                    action="/users/{{ u.id }}/delete"
+                    class="inline-form"
+                    onsubmit="return confirm('Xoá vĩnh viễn user {{ u.username }}? Không thể hoàn tác.');"
+                  >
+                    <button type="submit" class="btn btn-sm btn-kill-switch-on">Xoá</button>
+                  </form>
+                  {% endif %}
+                </td>
+              </tr>
+              {% else %}
+              <tr class="empty-row"><td colspan="6" class="empty-state">Chưa có user nào được tạo.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <form class="login-box" id="user-create-form" method="post" action="/users/create">
+          <label>Username
+            <input type="text" name="new_username" placeholder="vd: on-call">
+          </label>
+          <label>Mật khẩu
+            <input type="password" name="new_password" autocomplete="off">
+          </label>
+          <label>Nhập lại mật khẩu
+            <input type="password" name="new_password_confirm" autocomplete="off">
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="new_is_admin">
+            Là admin (thấy được cả Tiến trình hệ thống / Kết nối Database / Người dùng)
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Tạo user</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

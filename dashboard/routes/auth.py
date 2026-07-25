@@ -7,6 +7,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config.settings import settings
 from dashboard.templating import make_templates
+from shared import db
+from shared.models import User
 
 router = APIRouter()
 templates = make_templates()
@@ -14,7 +16,7 @@ templates = make_templates()
 # A hash of a value nobody will ever submit as a real password — used to keep
 # bcrypt.checkpw's (deliberately slow) cost constant regardless of whether the
 # submitted username is valid, so response timing can't be used to enumerate
-# the one valid account.
+# whether an account exists.
 _DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode()
 
 # Simple in-memory rate limit: single-process, resets on restart — adequate
@@ -42,17 +44,51 @@ def _clear_failures(key: str) -> None:
     _failed_attempts.pop(key, None)
 
 
+def _find_active_user(username: str) -> User | None:
+    """Looks up an admin-created login account (shared/models.py::User) —
+    separate from the single `.env`-configured account below, which never
+    gets a row here. Uses `db.SessionLocal()` (module-attribute call, not
+    `from shared.db import SessionLocal`) so this keeps working after the
+    Settings page's runtime database-switch feature rebinds that attribute
+    (see dashboard/routes/settings.py::_run_alembic_upgrade_head)."""
+    with db.SessionLocal() as session:
+        return (
+            session.query(User)
+            .filter(User.username == username, User.is_active.is_(True))
+            .first()
+        )
+
+
 def _check_password(username: str, password: str) -> bool:
-    """Constant-cost check: always runs bcrypt, never short-circuits on username."""
-    is_valid_user = username == settings.dashboard_username
-    hash_to_check = settings.dashboard_password_hash if is_valid_user else _DUMMY_HASH
+    """Constant-cost check: always runs bcrypt exactly once, never
+    short-circuits on whether the username matches a real account (the
+    `.env` account or an active DB-created User row)."""
+    if username == settings.dashboard_username:
+        found = True
+        hash_to_check = settings.dashboard_password_hash
+    else:
+        db_user = _find_active_user(username)
+        found = db_user is not None
+        hash_to_check = db_user.password_hash if db_user else _DUMMY_HASH
     try:
         password_matches = bcrypt.checkpw(password.encode(), hash_to_check.encode())
     except ValueError:
         # bcrypt rejects inputs over 72 bytes rather than silently truncating
         # (current bcrypt) — either way, that's simply not a valid password.
         password_matches = False
-    return is_valid_user and password_matches
+    return found and password_matches
+
+
+def is_admin_user(username: str) -> bool:
+    """Single source of truth for "is this account allowed to see the
+    admin-only Settings sections (Tiến trình hệ thống / Kết nối Database /
+    Người dùng)" — the `.env` account is always admin (the always-available
+    root account, see shared/models.py::User's docstring), or an active
+    DB-created User row with is_admin=True."""
+    if username == settings.dashboard_username:
+        return True
+    db_user = _find_active_user(username)
+    return db_user is not None and db_user.is_admin
 
 
 async def require_login(request: Request) -> str:

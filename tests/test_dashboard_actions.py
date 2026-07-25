@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import dashboard.routes.patch as patch_route
 import dashboard.routes.upgrade as upgrade_route
 from shared import db as db_module
 from shared.models import Action, ActionClassification, ActionStatus, AuditEntry, Incident, IncidentStatus
@@ -244,6 +245,104 @@ def test_approving_the_upgrade_action_itself_is_never_blocked_by_its_own_gate(da
     assert response.status_code == 303
     with db_module.SessionLocal() as session:
         assert session.get(Action, upgrade_action_id).status == ActionStatus.APPROVED.value
+
+
+# --- Same mutual exclusion, symmetric for patch_install (2026-07-24) --------
+#
+# A live patch install is just as disruptive to the cluster as a cluster
+# upgrade — dashboard/routes/actions.py::approve_action blocks approving
+# some OTHER action (including an upgrade) while one is in-flight, both
+# ways, the same way it already does for CLUSTER_UPGRADE_ACTION_IDS.
+
+
+def _pending_patch_action(status: str, action_id: str = patch_route.PATCH_INSTALL_ACTION_ID) -> str:
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=patch_route.CLUSTER_PATCH_CEPH_CODE,
+            status=status,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=ActionClassification.RISKY.value,
+            status=status,
+        )
+        session.add(action)
+        session.commit()
+        return action.id
+
+
+def test_approve_other_action_is_blocked_while_patch_install_is_pending_approval(dashboard_client):
+    _pending_patch_action(ActionStatus.PENDING_APPROVAL.value)
+    other_action_id = _pending_action("inc-other-patch-1")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, other_action_id)
+        assert action.status == ActionStatus.PENDING_APPROVAL.value  # untouched
+
+
+def test_approve_other_action_is_blocked_while_patch_install_is_approved(dashboard_client):
+    _pending_patch_action(ActionStatus.APPROVED.value)
+    other_action_id = _pending_action("inc-other-patch-2")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+
+
+def test_approving_patch_install_itself_is_never_blocked_by_its_own_gate(dashboard_client):
+    patch_action_id = _pending_patch_action(ActionStatus.PENDING_APPROVAL.value)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{patch_action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+
+
+def test_approve_upgrade_is_blocked_while_patch_install_in_flight(dashboard_client):
+    _pending_patch_action(ActionStatus.PENDING_APPROVAL.value)
+    upgrade_action_id = _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{upgrade_action_id}/approve")
+
+    assert response.status_code == 409
+
+
+def test_approve_patch_install_is_blocked_while_upgrade_in_flight(dashboard_client):
+    _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
+    patch_action_id = _pending_patch_action(ActionStatus.PENDING_APPROVAL.value)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{patch_action_id}/approve")
+
+    assert response.status_code == 409
+
+
+def test_approving_patch_build_and_stage_is_blocked_while_patch_install_in_flight(dashboard_client):
+    """patch_build_and_stage is NOT exempt from the patch_install gate
+    (unlike patch_install approving itself) — it never touches the live
+    Ceph cluster, but this app's own propose-time guard
+    (_reject_duplicate_patch_proposal) already prevents this scenario from
+    arising via the UI; this test just confirms the actions.py backstop
+    would also catch it if it somehow did."""
+    _pending_patch_action(ActionStatus.PENDING_APPROVAL.value, action_id=patch_route.PATCH_INSTALL_ACTION_ID)
+    build_action_id = _pending_patch_action(
+        ActionStatus.PENDING_APPROVAL.value, action_id=patch_route.PATCH_BUILD_ACTION_ID
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{build_action_id}/approve")
+
+    assert response.status_code == 409
 
 
 def test_reject_other_action_is_never_blocked_by_an_active_upgrade(dashboard_client):

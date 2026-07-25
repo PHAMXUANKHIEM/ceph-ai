@@ -13,7 +13,9 @@
         <a href="/" class="nav-link">Dashboard</a>
         <a href="/nodes" class="nav-link active">Metrics Cluster</a>
         <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
         <a href="/settings" class="nav-link">Cài đặt</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
@@ -23,36 +25,34 @@
   </header>
 
   <main class="page">
-    <section class="card">
-      <div class="card-header">
-        <h2>Chọn node</h2>
+    <div class="tabbed-page">
+    <nav class="tabbed-sidebar node-sidebar" id="node-selector">
+      <div class="node-sidebar-header">
+        <span class="hint">Chọn node</span>
         <span class="metrics-status" id="metrics-status">
           <span class="dot" aria-hidden="true"></span>
           <span id="metrics-status-text">—</span>
         </span>
       </div>
-      <div class="card-body">
-        {% if nodes %}
-        <div class="node-selector" id="node-selector">
-          {% for node in nodes %}
-          <a
-            href="/nodes?host={{ node.host }}"
-            class="node-chip {% if node.host == selected_host %}active{% endif %}"
-            data-host="{{ node.host }}"
-          >
-            <span class="node-chip-ip">{{ node.host }}</span>
-            {% for role in node.roles %}
-            <span class="role-badge role-badge-{{ role|lower }}">{{ role }}</span>
-            {% endfor %}
-          </a>
+      {% if nodes %}
+        {% for node in nodes %}
+        <a
+          href="/nodes?host={{ node.host }}"
+          class="tabbed-nav-item node-sidebar-item {% if node.host == selected_host %}active{% endif %}"
+          data-host="{{ node.host }}"
+        >
+          <span class="node-chip-ip">{{ node.host }}</span>
+          {% for role in node.roles %}
+          <span class="role-badge role-badge-{{ role|lower }}">{{ role }}</span>
           {% endfor %}
-        </div>
-        {% else %}
+        </a>
+        {% endfor %}
+      {% else %}
         <p class="hint">Chưa cấu hình MON/OSD node nào — thêm ở <a href="/settings">Cài đặt</a>.</p>
-        {% endif %}
-      </div>
-    </section>
+      {% endif %}
+    </nav>
 
+    <div class="tabbed-content">
     {% if selected_host %}
     <section class="card metrics-panel" id="metrics-panel">
       <div class="card-header">
@@ -106,6 +106,8 @@
       <p class="empty-node-text">Chọn một node để xem thông số</p>
     </section>
     {% endif %}
+    </div>
+    </div>
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>

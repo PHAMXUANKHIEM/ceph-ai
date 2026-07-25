@@ -57,6 +57,20 @@ cluster_upgrade_action_ids:
   - upgrade_ceph_cluster_package_download
   - upgrade_ceph_cluster_package_local
 
+# 2026-07-24: Ceph patch build & deploy pipeline (Dashboard "Vá lỗi Ceph"
+# page, dashboard/routes/patch.py) — a FOURTH separate action_id family,
+# same reasoning as cluster_upgrade_action_ids above: never proposed by the
+# Incident-diagnosis pipeline or Chat-with-AI, only by an operator
+# explicitly uploading a patch and clicking "Đề xuất" on that page.
+# worker/policy/gate.py loads this as VALID_PATCH_ACTION_IDS.
+# patch_build_and_stage only ever touches the separate build server
+# (shared/cluster_nodes.py::patch_build_node(), NOT a Ceph node);
+# patch_install is the one that actually installs the built packages onto
+# the live Ceph nodes and restarts daemons there.
+patch_action_ids:
+  - patch_build_and_stage
+  - patch_install
+
 safe:
   - resync_ntp
   # 2026-07-23: operator explicitly requested every management action
@@ -97,3 +111,9 @@ risky:
   - upgrade_ceph_cluster
   - upgrade_ceph_cluster_package_download
   - upgrade_ceph_cluster_package_local
+  # 2026-07-24: same conservative-by-default reasoning as the upgrade
+  # action_ids just above — a patch install touches the live cluster (and
+  # patch_build_and_stage runs an operator-authored build command sight
+  # unseen by this codebase), so both always require explicit approval.
+  - patch_build_and_stage
+  - patch_install

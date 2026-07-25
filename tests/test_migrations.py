@@ -5,7 +5,7 @@ from alembic import command
 from alembic.config import Config
 
 from config.settings import settings
-from shared.models import Incident
+from shared.models import Action, Incident, PatchDocument, User
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,6 +26,42 @@ def test_alembic_upgrade_head_creates_incidents_table_matching_model(tmp_path, m
     con.close()
 
     model_columns = {c.name for c in Incident.__table__.columns}
+    assert columns == model_columns
+
+
+def test_alembic_upgrade_head_creates_users_table_matching_model(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_test.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(users)")}
+    con.close()
+
+    model_columns = {c.name for c in User.__table__.columns}
+    assert columns == model_columns
+
+
+def test_alembic_upgrade_head_creates_patch_documents_table_matching_model(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_test.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(patch_documents)")}
+    con.close()
+
+    model_columns = {c.name for c in PatchDocument.__table__.columns}
+    assert columns == model_columns
+
+
+def test_alembic_upgrade_head_creates_actions_table_matching_model(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_test.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(actions)")}
+    con.close()
+
+    model_columns = {c.name for c in Action.__table__.columns}
     assert columns == model_columns
 
 

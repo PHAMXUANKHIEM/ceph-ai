@@ -19,10 +19,13 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 from config.settings import settings
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
+from shared import db
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -44,6 +47,39 @@ ROUTER_API_KEY_ENV_NAME = "ROUTER_API_KEY"
 ROUTER_MODEL_ENV_NAME = "ROUTER_MODEL"
 ROUTER_BASE_URL_ENV_NAME = "ROUTER_BASE_URL"
 ROUTER_ENABLED_ENV_NAME = "ROUTER_ENABLED"
+ROUTER_PROVIDER_ENV_NAME = "ROUTER_PROVIDER"
+
+# API AI connection-type presets shown on the Settings page (2026-07-24).
+# Every entry still ends up going through the exact same generic
+# AsyncOpenAI(api_key=..., base_url=...) client (shared/router_client.py) —
+# this dict only drives the UI (label + which preset Base URL to prefill
+# when an operator picks that provider), never the actual request logic.
+# "base_url" is None for "9router" because that Base URL is operator-
+# specific (self-hosted host:port), never a fixed public endpoint like the
+# other three.
+PROVIDER_PRESETS: dict[str, dict[str, str | None]] = {
+    "9router": {
+        "label": "9router (tự triển khai)",
+        "base_url": None,
+        "base_url_placeholder": "http://localhost:20128",
+    },
+    "anthropic": {
+        "label": "Claude (Anthropic)",
+        "base_url": "https://api.anthropic.com/v1",
+        "base_url_placeholder": "https://api.anthropic.com/v1",
+    },
+    "openai": {
+        "label": "Codex (OpenAI)",
+        "base_url": "https://api.openai.com/v1",
+        "base_url_placeholder": "https://api.openai.com/v1",
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "base_url_placeholder": "https://openrouter.ai/api/v1",
+    },
+}
+DEFAULT_PROVIDER = "9router"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 WORKER_MODULE = "worker.main"
@@ -67,25 +103,18 @@ DASHBOARD_LOG_PATH = Path("/var/log/ceph-aiops-dashboard.log")
 DASHBOARD_RESTART_GRACE_SECONDS = 1.0
 DASHBOARD_RESTART_WAIT_SECONDS = 10.0
 
-# 2026-07-23: this app has exactly ONE account (no RBAC anywhere else in this
-# codebase either — see shared/models.py's docstrings), so `require_login`
-# alone can't express "only a privileged user" — every logged-in user IS the
-# one account. Manually restarting Worker/Watcher/Dashboard from the browser
-# is disruptive to whoever else is using the Dashboard at that moment, so
-# it's gated behind a SEPARATE, hardcoded check against the literal username
-# "admin" — deliberately NOT `settings.dashboard_username` (comparing a
-# single-account system's current user against its own configured username
-# is always true, i.e. no real restriction at all). This means renaming the
-# account away from "admin" hides these controls for everyone, which is the
-# intended fail-safe: nobody sees "restart" buttons by accident.
-RESTART_CONTROLS_USERNAME = "admin"
-
-
-def _require_restart_privilege(user: str) -> None:
-    if user != RESTART_CONTROLS_USERNAME:
+# 2026-07-24: this app now has real per-account roles (shared/models.py::User,
+# created via the "Người dùng" card below) instead of the single hardcoded
+# account it used to have — auth.is_admin_user() is the single source of
+# truth for "is this account allowed to see/use admin-only controls"
+# (restarting Worker/Watcher/Dashboard, switching the database, managing
+# users), true for the `.env`-configured account or any active DB-created
+# User row with is_admin=True.
+def _require_admin_privilege(user: str) -> None:
+    if not auth.is_admin_user(user):
         raise HTTPException(
             status_code=403,
-            detail="Chỉ tài khoản admin mới được phép khởi động lại tiến trình hệ thống",
+            detail="Chỉ tài khoản admin mới được phép thực hiện thao tác này",
         )
 
 
@@ -266,12 +295,22 @@ def _start_worker() -> int:
     # would otherwise prefer a real env var over .env file contents, and the
     # new Worker would silently keep using an old key/model despite .env
     # being updated.
+    #
+    # 2026-07-24: same reasoning now extends to the patch-pipeline fields
+    # (worker/executor/commands.py::_patch_build_and_stage_command reads
+    # them directly) and, since that same command also calls
+    # shared.cluster_nodes.configured_nodes(), to the cluster node fields
+    # too — a Worker restarted here (e.g. right after saving new patch
+    # settings) must see the CURRENT cluster node list, not a stale one
+    # from whenever it originally started.
     child_env = {
         **os.environ,
         ROUTER_API_KEY_ENV_NAME: settings.router_api_key,
         ROUTER_MODEL_ENV_NAME: settings.router_model,
         ROUTER_BASE_URL_ENV_NAME: settings.router_base_url,
         ROUTER_ENABLED_ENV_NAME: "true" if settings.router_enabled else "false",
+        **{env_name: getattr(settings, field) for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()},
+        **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},
     }
     return _start_process(WORKER_MODULE, WORKER_LOG_PATH, child_env)
 
@@ -291,6 +330,25 @@ CLUSTER_ENV_NAMES = {
     # field on the cluster form (one key, set once via .env/server config,
     # not something that changes per Ceph cluster the way MON/OSD nodes do).
     # cluster_settings_submit reads settings.ssh_key_path directly instead.
+}
+
+# 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py) —
+# consumed by WORKER (worker/executor/commands.py's
+# _patch_build_and_stage_command/_patch_install_command), not Watcher, so
+# saving these restarts Worker instead of Watcher (see _start_worker()'s
+# explicit child_env override below, same reasoning as ROUTER_*_ENV_NAME —
+# a fresh Worker process must see these values immediately, not whatever
+# was exported in the Dashboard's own os.environ once).
+PATCH_PIPELINE_ENV_NAMES = {
+    "ceph_patch_build_node": "CEPH_PATCH_BUILD_NODE",
+    "ceph_patch_source_dir": "CEPH_PATCH_SOURCE_DIR",
+    "ceph_patch_build_command": "CEPH_PATCH_BUILD_COMMAND",
+    "ceph_patch_output_dir": "CEPH_PATCH_OUTPUT_DIR",
+    "ceph_patch_node_staging_dir": "CEPH_PATCH_NODE_STAGING_DIR",
+    # ssh_user/ssh_key_path are deliberately NOT here — same shared SSH
+    # credential already used for every other cluster/build-server target
+    # (see config/settings.py's ceph_patch_build_node docstring), not a
+    # separate one for this form to manage.
 }
 
 
@@ -599,6 +657,16 @@ def _cluster_form_values() -> dict:
     }
 
 
+def _patch_pipeline_form_values() -> dict:
+    return {
+        "ceph_patch_build_node": settings.ceph_patch_build_node,
+        "ceph_patch_source_dir": settings.ceph_patch_source_dir,
+        "ceph_patch_build_command": settings.ceph_patch_build_command,
+        "ceph_patch_output_dir": settings.ceph_patch_output_dir,
+        "ceph_patch_node_staging_dir": settings.ceph_patch_node_staging_dir,
+    }
+
+
 def _settings_context(
     user: str,
     *,
@@ -608,10 +676,12 @@ def _settings_context(
     cluster_error: str | None = None,
     cluster_success: str | None = None,
     watcher_restart_error: str | None = None,
+    cluster_worker_restart_error: str | None = None,
     dashboard_restart_error: str | None = None,
     cluster_values: dict | None = None,
     router_model_value: str | None = None,
     router_base_url_value: str | None = None,
+    router_provider_value: str | None = None,
     router_models: list[str] | None = None,
     cleanup_error: str | None = None,
     cleanup_success: str | None = None,
@@ -622,8 +692,13 @@ def _settings_context(
     database_error: str | None = None,
     database_success: str | None = None,
     database_values: dict | None = None,
+    database_reset_error: str | None = None,
+    database_reset_success: str | None = None,
+    patch_pipeline_error: str | None = None,
+    patch_pipeline_success: str | None = None,
+    patch_pipeline_values: dict | None = None,
 ) -> dict:
-    """Every form on the Settings page (9router connection, cluster
+    """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
     every response must carry every form's variables, or Jinja2 silently
     renders the missing ones blank instead of showing the OTHER forms'
@@ -634,7 +709,7 @@ def _settings_context(
     masked_key = _mask_key(settings.router_api_key) if settings.router_api_key else None
     context = {
         "user": user,
-        "is_admin": user == RESTART_CONTROLS_USERNAME,
+        "is_admin": auth.is_admin_user(user),
         "masked_key": masked_key,
         "router_model": (
             router_model_value if router_model_value is not None else settings.router_model
@@ -642,6 +717,17 @@ def _settings_context(
         "router_base_url": (
             router_base_url_value if router_base_url_value is not None else settings.router_base_url
         ),
+        "router_provider": (
+            router_provider_value
+            if router_provider_value is not None
+            else (settings.router_provider or DEFAULT_PROVIDER)
+        ),
+        "router_providers": [
+            {"id": provider_id, **preset} for provider_id, preset in PROVIDER_PRESETS.items()
+        ],
+        "router_provider_label": PROVIDER_PRESETS[
+            _normalize_provider(router_provider_value or settings.router_provider or DEFAULT_PROVIDER)
+        ]["label"],
         # Populated after a successful "Xác nhận kết nối" (Step 1 -> Step 2)
         # — None on a fresh GET /settings load, when the operator hasn't
         # verified anything yet this page view.
@@ -660,6 +746,7 @@ def _settings_context(
         "cluster_error": cluster_error,
         "cluster_success": cluster_success,
         "watcher_restart_error": watcher_restart_error,
+        "cluster_worker_restart_error": cluster_worker_restart_error,
         "dashboard_restart_error": dashboard_restart_error,
         "cleanup_error": cleanup_error,
         "cleanup_success": cleanup_success,
@@ -669,10 +756,17 @@ def _settings_context(
         "manual_watcher_restart_error": manual_watcher_restart_error,
         "database_error": database_error,
         "database_success": database_success,
+        "database_reset_error": database_reset_error,
+        "database_reset_success": database_reset_success,
         "current_database_display": _current_database_display(),
+        "patch_pipeline_error": patch_pipeline_error,
+        "patch_pipeline_success": patch_pipeline_success,
     }
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
+    context.update(
+        patch_pipeline_values if patch_pipeline_values is not None else _patch_pipeline_form_values()
+    )
     # ssh_key_path is no longer an editable field on the cluster form (see
     # CLUSTER_ENV_NAMES) — always show the actual configured value here,
     # never a `cluster_values`/submitted one, since submitted dicts no
@@ -681,11 +775,63 @@ def _settings_context(
     # Shown as a read-only reference so the operator can copy it straight
     # into a NEW cluster's `~/.ssh/authorized_keys`.
     context["ssh_public_key"] = read_public_key(settings.ssh_key_path)
+    context["active_section"] = _compute_active_section(context, is_admin=context["is_admin"])
     return context
+
+
+def _compute_active_section(context: dict, *, is_admin: bool) -> str:
+    """Which of the sidebar sections (settings.html's left nav) should be
+    open when this response renders — 2026-07-24: the page used to be one
+    long scroll of every card at once, so every form's own error/success
+    message was always visible right where the operator just submitted it.
+    Now that only one section shows at a time, whichever form actually
+    produced THIS response's error/success must win over the default
+    landing tab, or the operator would submit a form and see no feedback
+    at all (the message would render into a hidden panel)."""
+    if any(
+        context.get(k)
+        for k in (
+            "dashboard_restart_error",
+            "manual_worker_restart_success",
+            "manual_worker_restart_error",
+            "manual_watcher_restart_success",
+            "manual_watcher_restart_error",
+        )
+    ):
+        return "restart-controls"
+    if any(
+        context.get(k)
+        for k in ("database_error", "database_success", "database_reset_error", "database_reset_success")
+    ):
+        return "database"
+    if any(context.get(k) for k in ("error", "success", "worker_restart_error")):
+        return "router"
+    if any(
+        context.get(k)
+        for k in ("cluster_error", "cluster_success", "watcher_restart_error", "cluster_worker_restart_error")
+    ):
+        return "cluster"
+    if any(context.get(k) for k in ("cleanup_error", "cleanup_success")):
+        return "cleanup"
+    if any(context.get(k) for k in ("patch_pipeline_error", "patch_pipeline_success")):
+        return "patch-pipeline"
+    # Fresh GET /settings, nothing to react to yet — land on the first
+    # section this account can actually see.
+    return "restart-controls" if is_admin else "router"
 
 
 def _parse_node_list(raw: str) -> list[str]:
     return [h.strip() for h in raw.split(",") if h.strip()]
+
+
+def _normalize_provider(raw: str) -> str:
+    """Falls back to DEFAULT_PROVIDER for anything not in PROVIDER_PRESETS
+    (blank, or a stale/unknown id from an old .env) — router_provider is
+    purely a UI label/preset picker (see config/settings.py's comment), so
+    an unrecognized value must never block saving or verifying a
+    connection, unlike router_api_key/router_base_url which are load-
+    bearing."""
+    return raw if raw in PROVIDER_PRESETS else DEFAULT_PROVIDER
 
 
 @router.get("/settings", response_class=HTMLResponse)
@@ -698,6 +844,7 @@ async def settings_verify_router(
     user: str = Depends(require_login),
     router_api_key: str = Form(""),
     router_base_url: str = Form(""),
+    router_provider: str = Form(DEFAULT_PROVIDER),
 ):
     """Backs the Settings page's Step 1 "[Xác nhận kết nối]" button — a
     single GET /v1/models round trip (verify_router_connection above) both
@@ -708,15 +855,24 @@ async def settings_verify_router(
     A blank router_api_key/router_base_url falls back to whatever is already
     saved — the API key is a password field the browser never pre-fills with
     the real (masked) value, so without this fallback the "[Đổi model]" flow
-    (re-verify against an already-connected 9router to refresh the model
+    (re-verify against an already-connected AI API to refresh the model
     list) could never work without forcing the operator to retype a key
-    they're not actually changing."""
+    they're not actually changing.
+
+    router_provider (Claude/Codex/OpenRouter/9router — see PROVIDER_PRESETS)
+    is only echoed back for the error message below; it never changes how
+    the connection itself is verified — shared/router_client.py builds the
+    same generic OpenAI-compatible client for every provider."""
     submitted_key = router_api_key.strip() or settings.router_api_key
     submitted_base_url = router_base_url.strip() or settings.router_base_url
+    provider = _normalize_provider(router_provider.strip())
+    provider_label = PROVIDER_PRESETS[provider]["label"]
     if not submitted_key:
         raise HTTPException(status_code=400, detail="Cần nhập API key trước khi kiểm tra kết nối")
     if not submitted_base_url:
-        raise HTTPException(status_code=400, detail="Cần nhập Base URL (9router) trước khi kiểm tra kết nối")
+        raise HTTPException(
+            status_code=400, detail=f"Cần nhập Base URL ({provider_label}) trước khi kiểm tra kết nối"
+        )
 
     is_valid, message, models = await verify_router_connection(submitted_key, submitted_base_url)
     return {"valid": is_valid, "message": message, "models": models}
@@ -729,6 +885,7 @@ async def settings_save_router(
     router_api_key: str = Form(""),
     router_base_url: str = Form(""),
     router_model_id: str = Form(""),
+    router_provider: str = Form(DEFAULT_PROVIDER),
 ):
     # Same blank-falls-back-to-saved-value semantics as the verify route
     # above — Step 2's "[Lưu cấu hình]" submit and the "[Đổi model]" re-save
@@ -736,12 +893,14 @@ async def settings_save_router(
     submitted_key = router_api_key.strip() or settings.router_api_key
     submitted_base_url = router_base_url.strip() or settings.router_base_url
     submitted_model = router_model_id.strip()
+    provider = _normalize_provider(router_provider.strip())
+    provider_label = PROVIDER_PRESETS[provider]["label"]
 
     if not submitted_key:
         return templates.TemplateResponse(
             request,
             "settings.html",
-            _settings_context(user, error="API key không được để trống"),
+            _settings_context(user, error="API key không được để trống", router_provider_value=provider),
         )
     if not submitted_base_url:
         return templates.TemplateResponse(
@@ -749,8 +908,9 @@ async def settings_save_router(
             "settings.html",
             _settings_context(
                 user,
-                error="Base URL (9router) không được để trống",
+                error=f"Base URL ({provider_label}) không được để trống",
                 router_base_url_value=submitted_base_url,
+                router_provider_value=provider,
             ),
         )
     if not submitted_model:
@@ -761,6 +921,7 @@ async def settings_save_router(
                 user,
                 error="Chưa chọn model — hãy xác nhận kết nối rồi chọn một model trước khi lưu",
                 router_base_url_value=submitted_base_url,
+                router_provider_value=provider,
             ),
         )
 
@@ -776,9 +937,10 @@ async def settings_save_router(
             "settings.html",
             _settings_context(
                 user,
-                error=f"Không thể lưu — kết nối 9router không còn hợp lệ"
+                error=f"Không thể lưu — kết nối {provider_label} không còn hợp lệ"
                 + (f": {reason}" if reason else ""),
                 router_base_url_value=submitted_base_url,
+                router_provider_value=provider,
             ),
         )
     if models is not None and submitted_model not in models:
@@ -787,8 +949,9 @@ async def settings_save_router(
             "settings.html",
             _settings_context(
                 user,
-                error=f"Model '{submitted_model}' không khả dụng trên 9router",
+                error=f"Model '{submitted_model}' không khả dụng trên {provider_label}",
                 router_base_url_value=submitted_base_url,
+                router_provider_value=provider,
                 router_models=models,
             ),
         )
@@ -805,14 +968,16 @@ async def settings_save_router(
                 ROUTER_MODEL_ENV_NAME: submitted_model,
                 ROUTER_BASE_URL_ENV_NAME: submitted_base_url,
                 ROUTER_ENABLED_ENV_NAME: "true",
+                ROUTER_PROVIDER_ENV_NAME: provider,
             }
         )
         settings.router_api_key = submitted_key
         settings.router_model = submitted_model
         settings.router_base_url = submitted_base_url
         settings.router_enabled = True
+        settings.router_provider = provider
     except Exception:
-        logger.exception("settings_save_router: failed to persist 9router config to .env")
+        logger.exception("settings_save_router: failed to persist API AI config to .env")
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -820,6 +985,7 @@ async def settings_save_router(
                 user,
                 error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
                 router_base_url_value=submitted_base_url,
+                router_provider_value=provider,
             ),
         )
 
@@ -847,9 +1013,12 @@ async def settings_save_router(
 @router.post("/settings/9router/disconnect", response_class=HTMLResponse)
 async def settings_disconnect_router(request: Request, user: str = Depends(require_login)):
     """Backs the DISPLAY STATE's "[Huỷ kết nối]" button — clears the saved
-    9router config entirely (api_key/base_url/model, router_enabled=False)
+    API AI config entirely (api_key/base_url/model, router_enabled=False)
     so the Settings page falls back to showing Step 1 again, and the
-    chatbox falls back to MISSING_AI_CONFIG_MESSAGE until reconnected."""
+    chatbox falls back to MISSING_AI_CONFIG_MESSAGE until reconnected.
+    Deliberately leaves router_provider untouched — reconnecting later
+    should still default back to whichever connection type (Claude/Codex/
+    OpenRouter/9router) the operator had picked, not reset to 9router."""
     try:
         _update_env_file_batch(
             {
@@ -864,7 +1033,7 @@ async def settings_disconnect_router(request: Request, user: str = Depends(requi
         settings.router_base_url = ""
         settings.router_enabled = False
     except Exception:
-        logger.exception("settings_disconnect_router: failed to clear 9router config in .env")
+        logger.exception("settings_disconnect_router: failed to clear API AI config in .env")
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -881,7 +1050,7 @@ async def settings_disconnect_router(request: Request, user: str = Depends(requi
     return templates.TemplateResponse(
         request,
         "settings.html",
-        _settings_context(user, success="Đã huỷ kết nối 9router."),
+        _settings_context(user, success="Đã huỷ kết nối."),
     )
 
 
@@ -1037,11 +1206,37 @@ async def cluster_settings_submit(
             "(xem log server để biết chi tiết)."
         )
 
+    # 2026-07-24 fix: Worker also reads ceph_exec_mode/ceph_mon_nodes/etc
+    # directly (worker/executor/commands.py's package-based upgrade AND
+    # patch-pipeline command builders — both call
+    # shared.cluster_nodes.configured_nodes() and/or check
+    # settings.ceph_exec_mode) — until now only Watcher got restarted here,
+    # so a Worker that had been running since BEFORE this save kept using
+    # its stale in-memory ceph_exec_mode/node list indefinitely (observed
+    # live: every package-based-upgrade approval failed with "no Command
+    # for action_id=... — marking this node failed" because Worker still
+    # thought ceph_exec_mode was something other than "none", the value
+    # just saved here). Same explicit env= override technique restart_worker
+    # already needs for router settings (see _start_worker's docstring).
+    worker_restart_result = await asyncio.to_thread(restart_worker)
+    cluster_worker_restart_error = (
+        None
+        if worker_restart_result["restarted"]
+        else (
+            "Không thể tự khởi động lại Worker — vui lòng khởi động lại thủ công ở mục 'Tiến "
+            "trình hệ thống' (xem log server để biết chi tiết). Cho tới lúc đó, Worker vẫn đang "
+            "dùng cấu hình cụm CŨ khi thực thi các hành động đã duyệt."
+        )
+    )
+
     return templates.TemplateResponse(
         request,
         "settings.html",
         _settings_context(
-            user, cluster_success=cluster_success, watcher_restart_error=watcher_restart_error
+            user,
+            cluster_success=cluster_success,
+            watcher_restart_error=watcher_restart_error,
+            cluster_worker_restart_error=cluster_worker_restart_error,
         ),
     )
 
@@ -1060,11 +1255,11 @@ async def settings_test_database(
     migration, no write to .env, so an operator can try several
     host/port/credential combos (or a pasted Database URL — see
     _resolve_database_url) before committing to one. Admin-gated like every
-    other control in this section (see RESTART_CONTROLS_USERNAME) — saving a
+    other control in this section (see auth.is_admin_user) — saving a
     database connection always ends in a Dashboard self-restart (see
     settings_save_database below), same privilege boundary as the manual
     restart buttons."""
-    _require_restart_privilege(user)
+    _require_admin_privilege(user)
     url, error = _resolve_database_url(db_host, db_port, db_name, db_username, db_password, database_url_raw)
     if error:
         return {"valid": False, "message": error}
@@ -1107,7 +1302,7 @@ async def settings_save_database(
        browser actually sees is "restarting.html", not a rendered success
        message on this page.
     """
-    _require_restart_privilege(user)
+    _require_admin_privilege(user)
 
     submitted_values = {
         "db_host": db_host.strip(),
@@ -1193,6 +1388,117 @@ async def settings_save_database(
     return templates.TemplateResponse(request, "restarting.html", {"user": user})
 
 
+def _reset_database_connection() -> None:
+    """Disposes the Dashboard's current DB connection pool and replaces it
+    with a fresh one bound to the SAME settings.database_url (not a
+    switch — see settings_save_database above for that) — useful when the
+    pool is holding a connection stuck against a misbehaving database
+    server (e.g. a hung backend on the DB host itself, observed once
+    against a test Postgres instance whose underlying storage had stalled;
+    `engine.dispose()` closes every pooled DBAPI connection immediately
+    rather than waiting for whatever query is stuck on it to time out).
+
+    Deliberately does NOT touch Worker/Watcher — each holds its own
+    separate `db.engine`/`SessionLocal` in its own process (same reasoning
+    _run_alembic_upgrade_head's docstring gives for why a database SWITCH
+    needs to restart all three processes) — this lighter action only
+    resets the Dashboard's own connection. If Worker/Watcher also need a
+    fresh connection, restart them individually via 'Tiến trình hệ thống'
+    above.
+
+    Rebinds the SAME `db.engine`/`db.SessionLocal` module attributes the
+    test suite's `dashboard_client` fixture already swaps for an isolated
+    test DB (shared/db.py) — proof this rebind-in-place technique works
+    without restarting the process.
+    """
+    old_engine = db.engine
+    db.engine = db.make_engine()
+    db.SessionLocal = sessionmaker(bind=db.engine, autoflush=False, autocommit=False)
+    old_engine.dispose()
+
+
+@router.post("/settings/database/reset-connection", response_class=HTMLResponse)
+async def settings_reset_database_connection(request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        await asyncio.to_thread(_reset_database_connection)
+    except Exception as exc:
+        logger.exception("settings_reset_database_connection: failed to reset DB connection")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(user, database_reset_error=f"Không reset được kết nối: {readable_exception_message(exc)}"),
+        )
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(user, database_reset_success="Đã khởi động lại kết nối tới database hiện tại."),
+    )
+
+
+@router.post("/settings/patch-pipeline", response_class=HTMLResponse)
+async def patch_pipeline_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    ceph_patch_build_node: str = Form(""),
+    ceph_patch_source_dir: str = Form(""),
+    ceph_patch_build_command: str = Form(""),
+    ceph_patch_output_dir: str = Form(""),
+    ceph_patch_node_staging_dir: str = Form(""),
+):
+    """Configures the Ceph patch build & deploy pipeline (Vá lỗi Ceph page,
+    dashboard/routes/patch.py) — where the build server is and how to build
+    RPMs on it. See config/settings.py's ceph_patch_* fields for what each
+    one means; ssh_user/ssh_key_path are NOT part of this form (same shared
+    SSH credential already used for every Ceph node — see "Kết nối cụm
+    Ceph" above).
+
+    No connection test here (unlike "Kết nối cụm Ceph"/"Kết nối Database")
+    — the build server doesn't need to be reachable just to SAVE its
+    address; worker/executor/commands.py's _patch_build_and_stage_command
+    already validates all of this is non-blank and fails loudly (not a
+    guess) if the build server itself turns out to be unreachable when a
+    patch build is actually proposed."""
+    _require_admin_privilege(user)
+
+    submitted = {
+        "ceph_patch_build_node": ceph_patch_build_node.strip(),
+        "ceph_patch_source_dir": ceph_patch_source_dir.strip(),
+        "ceph_patch_build_command": ceph_patch_build_command.strip(),
+        "ceph_patch_output_dir": ceph_patch_output_dir.strip(),
+        "ceph_patch_node_staging_dir": ceph_patch_node_staging_dir.strip(),
+    }
+
+    try:
+        _update_env_file_batch(
+            {env_name: submitted[field] for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()}
+        )
+        for field in PATCH_PIPELINE_ENV_NAMES:
+            setattr(settings, field, submitted[field])
+    except Exception:
+        logger.exception("patch_pipeline_settings_submit: failed to persist config to .env")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                patch_pipeline_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
+                patch_pipeline_values=submitted,
+            ),
+        )
+
+    await asyncio.to_thread(restart_worker)
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            patch_pipeline_success="Đã lưu cấu hình — Worker đã khởi động lại để áp dụng ngay.",
+        ),
+    )
+
+
 @router.post("/settings/restart-dashboard", response_class=HTMLResponse)
 async def restart_dashboard_submit(request: Request, user: str = Depends(require_login)):
     """Lets an operator restart the Dashboard itself from the browser —
@@ -1202,7 +1508,7 @@ async def restart_dashboard_submit(request: Request, user: str = Depends(require
     yet another setting that would need to stay in sync with however this
     process was actually launched.
     """
-    _require_restart_privilege(user)
+    _require_admin_privilege(user)
     host = request.url.hostname or "127.0.0.1"
     port = request.url.port or 80
     try:
@@ -1231,7 +1537,7 @@ async def restart_worker_submit(request: Request, user: str = Depends(require_lo
     (see its own docstring) — this route only has to handle rendering
     whichever outcome it returns.
     """
-    _require_restart_privilege(user)
+    _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_worker)
     if result["restarted"]:
         return templates.TemplateResponse(
@@ -1257,7 +1563,7 @@ async def restart_worker_submit(request: Request, user: str = Depends(require_lo
 async def restart_watcher_submit(request: Request, user: str = Depends(require_login)):
     """Manual counterpart to the automatic restart_watcher() call in
     cluster_settings_submit — same reasoning as restart_worker_submit above."""
-    _require_restart_privilege(user)
+    _require_admin_privilege(user)
     result = await asyncio.to_thread(restart_watcher)
     if result["restarted"]:
         return templates.TemplateResponse(

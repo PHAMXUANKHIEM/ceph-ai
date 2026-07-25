@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <title>Nâng cấp cụm — Ceph AIOps</title>
+  {% if pending_action and pending_action.status == "APPROVED" %}
+  <meta http-equiv="refresh" content="5;url=/upgrade?tab=upgrade">
+  {% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -13,7 +16,9 @@
         <a href="/" class="nav-link">Dashboard</a>
         <a href="/nodes" class="nav-link">Metrics Cluster</a>
         <a href="/upgrade" class="nav-link active">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
         <a href="/settings" class="nav-link">Cài đặt</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
@@ -23,7 +28,13 @@
   </header>
 
   <main class="page">
-    <section class="card">
+    <div class="tabbed-page">
+    <nav class="tabbed-sidebar">
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'docs' %}active{% endif %}" data-section="docs">Tài liệu quy trình</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'upgrade' %}active{% endif %}" data-section="upgrade">Nâng cấp cụm</button>
+    </nav>
+    <div class="tabbed-content">
+    <section class="card tabbed-panel" data-panel="docs" {% if active_tab != 'docs' %}hidden{% endif %}>
       <div class="card-header"><h2>Tài liệu quy trình nâng cấp</h2></div>
       <div class="card-body">
         <p class="hint">
@@ -54,6 +65,7 @@
       </div>
     </section>
 
+    <div class="tabbed-panel" data-panel="upgrade" {% if active_tab != 'upgrade' %}hidden{% endif %}>
     {% if upgrade_unsupported %}
     <section class="card">
       <div class="card-header"><h2>Nâng cấp cụm</h2></div>
@@ -87,6 +99,21 @@
             {% elif pending_action.status == "APPROVED" %}Đã duyệt — Worker sẽ gửi lệnh trong giây lát
             {% else %}{{ pending_action.status }}{% endif %}
           </p>
+          {% if package_upgrade_progress %}
+          <p><strong>Tiến trình theo từng node:</strong></p>
+          <ul class="package-upgrade-progress">
+            {% for item in package_upgrade_progress %}
+            <li class="progress-item progress-item-{{ item.status }}">
+              <code>{{ item.host }}</code> —
+              {% if item.status == "pending" %}Đang chờ
+              {% elif item.status == "running" %}Đang chạy (có thể mất vài phút)...
+              {% elif item.status == "done" %}Xong
+              {% elif item.status == "failed" %}Lỗi
+              {% else %}{{ item.status }}{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
           <p><strong>Quy trình nâng cấp:</strong></p>
           <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
           {% if procedure_document and procedure_document.summary_text %}
@@ -216,7 +243,12 @@
         {% elif upgrade_progress %}
           {% if upgrade_progress.in_progress %}
           <p><strong>Đang nâng cấp lên:</strong> <code>{{ upgrade_progress.target_image or "—" }}</code></p>
-          <p><strong>Tiến độ:</strong> {{ upgrade_progress.progress or "—" }}</p>
+          <p><strong>Tiến độ:</strong> {{ upgrade_progress.progress or "—" }}{% if upgrade_progress.progress_percent is not none %} ({{ "%.0f"|format(upgrade_progress.progress_percent) }}%){% endif %}</p>
+          {% if upgrade_progress.progress_percent is not none %}
+          <div class="progress-bar" role="progressbar" aria-valuenow="{{ "%.0f"|format(upgrade_progress.progress_percent) }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar-fill" style="width: {{ upgrade_progress.progress_percent }}%;"></div>
+          </div>
+          {% endif %}
           {% if upgrade_progress.message %}<p class="hint">{{ upgrade_progress.message }}</p>{% endif %}
           {% if upgrade_progress.services_complete %}
           <p><strong>Đã hoàn tất:</strong> {{ upgrade_progress.services_complete|join(", ") }}</p>
@@ -242,6 +274,9 @@
     </section>
     {% endif %}
     {% endif %}
+    </div>
+    </div>
+    </div>
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>

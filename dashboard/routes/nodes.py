@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes as _configured_nodes
@@ -31,7 +32,13 @@ async def nodes_page(request: Request, user: str = Depends(require_login)):
     return templates.TemplateResponse(
         request,
         "nodes.html",
-        {"user": user, "nodes": nodes, "selected_host": selected_host, "selected_node": selected_node},
+        {
+            "user": user,
+            "is_admin": auth.is_admin_user(user),
+            "nodes": nodes,
+            "selected_host": selected_host,
+            "selected_node": selected_node,
+        },
     )
 
 

@@ -17,8 +17,10 @@ from dashboard.routes import (
     incidents,
     maintenance,
     nodes,
+    patch,
     settings as settings_routes,
     upgrade,
+    users,
 )
 from dashboard.ws import router as ws_router
 
@@ -52,6 +54,8 @@ def create_app() -> FastAPI:
     application.include_router(actions.router)
     application.include_router(chat.router)
     application.include_router(upgrade.router)
+    application.include_router(patch.router)
+    application.include_router(users.router)
     application.include_router(ws_router)
     return application
 

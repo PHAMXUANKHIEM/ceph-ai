@@ -84,6 +84,7 @@ def test_action_has_required_columns():
         "rationale",
         "target_nodes",
         "action_params",
+        "execution_progress",
         "executed_at",
         "created_at",
         "updated_at",

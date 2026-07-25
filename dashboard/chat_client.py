@@ -50,12 +50,12 @@ TOOL_GET_NODE_METRICS = "get_node_metrics"
 TOOL_PROPOSE_ACTION = "propose_action"
 
 # Shown as the assistant's message content (never raised as a generic error)
-# when 9router isn't configured — dashboard/routes/chat.py checks for this
-# exact string to decide whether to render the frontend's clickable
-# "[Vào Cài đặt →]" link (dashboard/static/chat_widget.js), since the
-# persisted ChatMessage.content itself stays plain text (no HTML/markup is
-# ever put in a chat bubble — every bubble is rendered via textContent).
-MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối 9router. Vào Cài đặt để kết nối."
+# when the API AI connection isn't configured — dashboard/routes/chat.py
+# checks for this exact string to decide whether to render the frontend's
+# clickable "[Vào Cài đặt →]" link (dashboard/static/chat_widget.js), since
+# the persisted ChatMessage.content itself stays plain text (no HTML/markup
+# is ever put in a chat bubble — every bubble is rendered via textContent).
+MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối API AI. Vào Cài đặt để kết nối."
 
 # AD-5's "action_id/command_id đóng từ structured output, không parse free
 # text" applies here exactly as it does to worker/llm/router_client.py's

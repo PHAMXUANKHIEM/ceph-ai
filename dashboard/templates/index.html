@@ -31,7 +31,9 @@
         <a href="/" class="nav-link active">Dashboard</a>
         <a href="/nodes" class="nav-link">Metrics Cluster</a>
         <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
         <a href="/settings" class="nav-link">Cài đặt</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
@@ -81,8 +83,14 @@
       <p class="hint">Suy từ dữ liệu Incident đã ghi nhận — trạng thái có thể trễ tối đa vài giây so với cluster thật (theo chu kỳ poll của Watcher). Đây là tình trạng CỦA CLUSTER (vd HEALTH_WARN/HEALTH_ERR thật), khác với việc Watcher có kết nối được tới cụm hay không (xem section phía trên).</p>
     </section>
 
-    {% if pending_actions %}
-    <section class="card">
+    <div class="tabbed-page">
+    <nav class="tabbed-sidebar">
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'pending' %}active{% endif %}" data-section="pending">Chờ duyệt{% if pending_actions %} ({{ pending_actions|length }}){% endif %}</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'incidents' %}active{% endif %}" data-section="incidents">Incident Feed</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'audit' %}active{% endif %}" data-section="audit">Audit Trail</button>
+    </nav>
+    <div class="tabbed-content">
+    <section class="card tabbed-panel" data-panel="pending" {% if active_tab != 'pending' %}hidden{% endif %}>
       <div class="card-header"><h2>Chờ duyệt — Risky Action</h2></div>
       <div class="card-body pending-actions">
         {% for action, incident in pending_actions %}
@@ -118,12 +126,13 @@
           </div>
           {% endif %}
         </article>
+        {% else %}
+        <p class="hint">Không có hành động nào đang chờ duyệt.</p>
         {% endfor %}
       </div>
     </section>
-    {% endif %}
 
-    <section class="card">
+    <section class="card tabbed-panel" data-panel="incidents" {% if active_tab != 'incidents' %}hidden{% endif %}>
       <div class="card-header"><h2>Incident Feed</h2></div>
       <div class="card-body table-wrap">
         <table id="incident-feed">
@@ -144,7 +153,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card tabbed-panel" data-panel="audit" {% if active_tab != 'audit' %}hidden{% endif %}>
       <div class="card-body">
         <form method="get" action="/" class="audit-filters">
           <label>Incident ID
@@ -162,7 +171,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card tabbed-panel" data-panel="audit" {% if active_tab != 'audit' %}hidden{% endif %}>
       <div class="card-header"><h2>Audit Trail</h2></div>
       <div class="card-body table-wrap">
         <table id="audit-feed">
@@ -185,6 +194,8 @@
         </table>
       </div>
     </section>
+    </div>
+    </div>
   </main>
 
   <aside class="chat-panel" id="chat-panel">

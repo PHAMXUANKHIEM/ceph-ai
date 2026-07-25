@@ -90,6 +90,36 @@ code {
 .error { color: var(--critical); font-size: 0.87rem; margin: 0 0 var(--space-3); }
 .success { color: var(--healthy); font-size: 0.87rem; margin: 0 0 var(--space-3); }
 
+/* ===== Generic completion progress bar (e.g. cluster upgrade progress) ===== */
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin: var(--space-2) 0;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  transition: width 0.3s ease;
+}
+/* Pulses the fill so a bar parked at a capped estimate (e.g. the database
+   migration bar, which never claims 100% until the real page navigates)
+   still reads as "actively working", not frozen/stuck. */
+.progress-bar-fill.is-active { animation: pill-pulse 1.4s ease-in-out infinite; }
+
+/* ===== Per-host progress list (package-based cluster upgrade — no
+   orchestrator to poll, so this is the only "where is it right now" signal) ===== */
+.package-upgrade-progress { list-style: none; margin: var(--space-2) 0; padding: 0; }
+.progress-item { padding: var(--space-1) 0; font-size: 0.9rem; }
+.progress-item-pending { color: var(--text-muted); }
+.progress-item-running { color: var(--accent); }
+.progress-item-done { color: var(--healthy); }
+.progress-item-failed { color: var(--critical); }
+
 /* ===== Mini cluster status bar (very top strip) ===== */
 .mon-strip {
   background: var(--bg-surface-2);
@@ -224,6 +254,55 @@ code {
 }
 .card-footer-link { color: var(--accent); font-size: 0.82rem; font-weight: 600; text-decoration: none; }
 .card-footer-link:hover { text-decoration: underline; }
+
+/* ===== Sidebar + single-panel page layout (Settings, Dashboard, Metrics
+   Cluster, Upgrade Cluster, Vá lỗi Ceph) — a left nav lists section/node
+   names, one panel is visible at a time. `.settings-*` names are kept as
+   aliases (settings.html already shipped using them) so nothing there
+   needs renaming; every OTHER page uses the `.tabbed-*` names directly. */
+.tabbed-page, .settings-page { flex-direction: row; align-items: flex-start; gap: var(--space-5); }
+.tabbed-sidebar, .settings-sidebar {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: var(--space-5);
+}
+.tabbed-nav-item, .settings-nav-item {
+  display: block;
+  text-align: left;
+  text-decoration: none;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+.tabbed-nav-item:hover, .settings-nav-item:hover { background: var(--bg-surface-hover); color: var(--text); text-decoration: none; }
+.tabbed-nav-item.active, .settings-nav-item.active { background: var(--accent-bg); color: var(--text); font-weight: 600; border-color: var(--accent); }
+.tabbed-content, .settings-content { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--space-4); }
+
+/* ===== Metrics Cluster's node sidebar — a .tabbed-sidebar variant whose
+   items are real <a> nav links (full page reload via ?host=), not JS-toggled
+   panels like the other tabbed pages. */
+.node-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-2);
+}
+.node-sidebar-item { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.node-sidebar-item.is-loading { animation: pill-pulse 1.4s ease-in-out infinite; }
+
+@media (max-width: 640px) {
+  .tabbed-page, .settings-page { flex-direction: column; }
+  .tabbed-sidebar, .settings-sidebar { flex-direction: row; flex-wrap: wrap; position: static; flex: 0 0 auto; }
+}
 
 /* ===== Status pill (cluster health) — small badge, not a big tinted card ===== */
 .status-strip {
@@ -473,6 +552,13 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .ai-test-result { font-size: 0.85rem; font-weight: 600; }
 .ai-test-result.ai-test-ok { color: var(--healthy); }
 .ai-test-result.ai-test-fail { color: var(--critical); }
+
+/* ===== API AI connection-type picker (Claude/Codex/OpenRouter/9router) ===== */
+.ai-provider-field { display: flex; flex-direction: column; gap: var(--space-1); }
+.ai-provider-field-label { font-size: 0.84rem; font-weight: 500; color: var(--text-muted); }
+.ai-provider-options { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.ai-provider-option { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); font-size: 0.84rem; font-weight: 500; color: var(--text-muted); }
+.ai-provider-option input[type="radio"] { width: auto; }
 
 /* ===== Login page ===== */
 .login-page {
@@ -739,7 +825,7 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 @keyframes chart-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .node-chip.is-loading, .header-spinner, .shimmer-bar, .metrics-status.is-stale .dot, .metric-chart-wrap canvas.is-drawing-in {
+  .node-chip.is-loading, .header-spinner, .shimmer-bar, .metrics-status.is-stale .dot, .metric-chart-wrap canvas.is-drawing-in, .progress-bar-fill.is-active {
     animation: none !important;
   }
 }

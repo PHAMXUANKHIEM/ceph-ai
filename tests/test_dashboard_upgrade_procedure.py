@@ -37,7 +37,10 @@ def test_upload_saves_document_and_ai_summary(dashboard_client, monkeypatch):
     response = _upload(dashboard_client)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/upgrade"
+    # 2026-07-24: lands on the "Tài liệu quy trình" sidebar tab specifically
+    # (settings-style tabbed layout) rather than whatever the page's default
+    # tab is, so the just-uploaded doc/summary is immediately visible.
+    assert response.headers["location"] == "/upgrade?tab=docs"
 
     with db_module.SessionLocal() as session:
         doc = session.get(UpgradeProcedureDocument, 1)
@@ -93,7 +96,7 @@ def test_upload_rejects_undecodable_content(dashboard_client, monkeypatch):
 
 
 def test_upload_succeeds_even_when_ai_summary_fails(dashboard_client, monkeypatch):
-    _stub_summarize(monkeypatch, error="Chưa cấu hình 9router (API key/Base URL) — vào Cài đặt để kết nối.")
+    _stub_summarize(monkeypatch, error="Chưa cấu hình API AI (API key/Base URL) — vào Cài đặt để kết nối.")
     _login(dashboard_client)
 
     response = _upload(dashboard_client)
@@ -103,7 +106,7 @@ def test_upload_succeeds_even_when_ai_summary_fails(dashboard_client, monkeypatc
         doc = session.get(UpgradeProcedureDocument, 1)
     assert doc is not None
     assert doc.summary_text is None
-    assert "9router" in doc.summary_error
+    assert "API AI" in doc.summary_error
 
     page = dashboard_client.get("/upgrade")
     assert "Tóm tắt bằng AI thất bại" in page.text
