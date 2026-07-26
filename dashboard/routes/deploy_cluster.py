@@ -71,8 +71,12 @@ def _is_valid_ip(ip: str) -> bool:
 
 def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
     """Returns (normalized_nodes, error_message) — error_message is None on
-    success. Normalizes each node to {"ip": str, "roles": [str, ...]}
-    (roles deduped, restricted to _VALID_ROLES, order-stable)."""
+    success. Normalizes each node to {"ip": str, "roles": [str, ...],
+    "osd_disk": str | None} (roles deduped, restricted to _VALID_ROLES,
+    order-stable). `osd_disk` is PER NODE (not one cluster-wide value) so
+    nodes with different device naming (e.g. node1 /dev/vdc, node2
+    /dev/vdb) can each use their own — required and validated only for a
+    node with the "osd" role; omitted (None) otherwise."""
     if not isinstance(nodes_raw, list) or not nodes_raw:
         return [], "Cần ít nhất 1 node"
 
@@ -92,7 +96,9 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
         if not isinstance(roles_raw, list) or any(r not in _VALID_ROLES for r in roles_raw):
             return [], f"Vai trò không hợp lệ cho node {ip}"
         roles = [r for r in _VALID_ROLES if r in roles_raw]
-        normalized.append({"ip": ip, "roles": roles})
+
+        osd_disk = str(entry.get("osd_disk", "")).strip() if "osd" in roles else None
+        normalized.append({"ip": ip, "roles": roles, "osd_disk": osd_disk})
 
     mon_count = sum(1 for n in normalized if "mon" in n["roles"])
     mgr_count = sum(1 for n in normalized if "mgr" in n["roles"])
@@ -103,6 +109,14 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
         return [], "Cần ít nhất 1 node MGR"
     if osd_count < 1:
         return [], "Cần ít nhất 1 node OSD"
+
+    # Per-node disk validation runs LAST, only once the node/role shape
+    # itself is already known-valid — a structurally incomplete submission
+    # (e.g. missing a MON node entirely) should surface THAT error, not an
+    # unrelated disk-path complaint about a node that was never the problem.
+    for n in normalized:
+        if "osd" in n["roles"] and not _RPM_PATH_RE.match(n["osd_disk"] or ""):
+            return [], f"Đĩa OSD không hợp lệ cho node {n['ip']} (vd /dev/vdc)"
 
     return normalized, None
 
@@ -133,7 +147,10 @@ tiên nên được operator theo dõi sát, không nên để chạy không gi�
 def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: str | None = None) -> str:
     mon = [n["ip"] for n in nodes if "mon" in n["roles"]]
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
-    osd = [n["ip"] for n in nodes if "osd" in n["roles"]]
+    # Per-node disk (vd node1 /dev/vdc, node2 /dev/vdb) shown explicitly here
+    # so the operator can double check EACH node's disk assignment before
+    # Duyệt, not just that osd_disk is set at all.
+    osd = [f"{n['ip']} ({n.get('osd_disk')})" for n in nodes if "osd" in n["roles"]]
     node_summary = f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}"
 
     if method == "cephadm":
@@ -277,10 +294,6 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
     if nodes_error:
         raise HTTPException(status_code=400, detail=nodes_error)
 
-    osd_disk = str(body.get("osd_disk", "")).strip()
-    if not osd_disk.startswith("/"):
-        raise HTTPException(status_code=400, detail="Đường dẫn đĩa OSD không hợp lệ (vd /dev/vdc)")
-
     rpm_path = str(body.get("rpm_path", "")).strip()
     if method == "rpm-local" and not _RPM_PATH_RE.match(rpm_path):
         raise HTTPException(
@@ -302,7 +315,6 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
         "version": version,
         "method": method,
         "nodes": nodes,
-        "osd_disk": osd_disk,
         "public_network": public_network,
         "cluster_network": cluster_network,
         "osd_pool_default_size": osd_pool_default_size,

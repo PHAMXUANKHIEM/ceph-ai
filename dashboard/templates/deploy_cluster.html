@@ -100,6 +100,7 @@
                   <tr>
                     <th>IP Address</th>
                     <th>MON</th><th>MGR</th><th>OSD</th><th>MDS</th>
+                    <th>Đĩa OSD</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -108,6 +109,7 @@
             </div>
             <button type="button" class="btn btn-sm" id="df-add-node">+ Thêm node</button>
             <p class="hint" id="df-node-warning"></p>
+            <p class="hint">Mỗi node OSD tự chọn tên đĩa riêng (vd node1 /dev/vdc, node2 /dev/vdb) — chỉ cần điền khi đã tick OSD cho node đó.</p>
 
             <label>
               Public Network
@@ -117,11 +119,6 @@
               Cluster Network
               <input type="text" id="df-cluster-network" name="cluster_network" placeholder="(giống Public Network nếu để trống)">
             </label>
-            <label>
-              Disk OSD trên các node
-              <input type="text" id="df-osd-disk" name="osd_disk" placeholder="/dev/vdc" required>
-            </label>
-            <p class="hint">Tên disk phải giống nhau trên tất cả node OSD.</p>
 
             <details>
               <summary>Tùy chọn nâng cao</summary>

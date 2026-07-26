@@ -33,11 +33,18 @@
       '<td><input type="text" class="node-ip" placeholder="10.20.1.112" value="' + (ip || "") + '"></td>' +
       '<td><input type="checkbox" class="node-role" value="mon"></td>' +
       '<td><input type="checkbox" class="node-role" value="mgr"></td>' +
-      '<td><input type="checkbox" class="node-role" value="osd"></td>' +
+      '<td><input type="checkbox" class="node-role node-role-osd" value="osd"></td>' +
       '<td><input type="checkbox" class="node-role" value="mds"></td>' +
+      '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc" disabled></td>' +
       '<td><button type="button" class="btn btn-sm btn-ghost node-remove">×</button></td>';
     row.querySelector(".node-remove").addEventListener("click", function () {
       row.remove();
+    });
+    var osdCheckbox = row.querySelector(".node-role-osd");
+    var osdDiskInput = row.querySelector(".node-osd-disk");
+    osdCheckbox.addEventListener("change", function () {
+      osdDiskInput.disabled = !osdCheckbox.checked;
+      if (!osdCheckbox.checked) osdDiskInput.value = "";
     });
     nodeRowsEl.appendChild(row);
   }
@@ -61,7 +68,12 @@
       Array.prototype.forEach.call(row.querySelectorAll(".node-role:checked"), function (cb) {
         roles.push(cb.value);
       });
-      nodes.push({ ip: ip, roles: roles });
+      var node = { ip: ip, roles: roles };
+      if (roles.indexOf("osd") !== -1) {
+        var diskInput = row.querySelector(".node-osd-disk");
+        node.osd_disk = diskInput ? diskInput.value.trim() : "";
+      }
+      nodes.push(node);
     });
     return nodes;
   }
@@ -118,7 +130,6 @@
         nodes: collectNodes(),
         public_network: document.getElementById("df-public-network").value.trim(),
         cluster_network: document.getElementById("df-cluster-network").value.trim(),
-        osd_disk: document.getElementById("df-osd-disk").value.trim(),
         osd_pool_default_size: parseInt(document.getElementById("df-pool-size").value, 10) || 3,
         osd_pool_default_min_size: parseInt(document.getElementById("df-pool-min-size").value, 10) || 2
       };

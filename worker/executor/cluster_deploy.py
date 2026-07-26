@@ -167,7 +167,6 @@ def _phase_ssh_check(nodes: list[dict], action_params: dict, on_host_update) -> 
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
 
-    osd_disk = action_params.get("osd_disk")
     hostnames: dict[str, str] = {}
 
     for i, node in enumerate(nodes):
@@ -191,7 +190,7 @@ def _phase_ssh_check(nodes: list[dict], action_params: dict, on_host_update) -> 
 
         if "osd" in (node.get("roles") or []):
             try:
-                _check_osd_disk_safe(host, osd_disk)
+                _check_osd_disk_safe(host, node.get("osd_disk"))
             except DeployPhaseError:
                 host_status[i]["status"] = "failed"
                 on_host_update(list(host_status))
@@ -415,7 +414,6 @@ def _phase_cephadm_orch_apply_mgr(nodes: list[dict], action_params: dict, on_hos
 def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_host_update) -> None:
     first_mon = _first_mon_ip(nodes)
     hostnames: dict[str, str] = action_params.get("_node_hostnames", {})
-    osd_disk = action_params.get("osd_disk")
     osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
     if not osd_nodes:
         raise DeployPhaseError("Không có node OSD nào trong cấu hình")
@@ -426,6 +424,17 @@ def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_hos
     for i, node in enumerate(osd_nodes):
         ip = node["ip"]
         hostname = hostnames.get(ip, ip)
+        # Per-node disk (AC: mỗi node OSD có thể dùng tên đĩa khác nhau, vd
+        # node1 /dev/vdc, node2 /dev/vdb) — already validated non-empty at
+        # propose time, but the ssh_check phase's read-only safety check is
+        # what actually proved THIS disk safe-to-use on THIS host, so re-
+        # reading it fresh from `node` here (not a single cluster-wide
+        # value) is what keeps that guarantee meaningful per-host.
+        osd_disk = node.get("osd_disk")
+        if not osd_disk:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD (osd_disk)")
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
@@ -886,7 +895,6 @@ def _phase_ceph_deploy_osd_create(nodes: list[dict], action_params: dict, on_hos
     osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
     if not osd_nodes:
         raise DeployPhaseError("Không có node OSD nào trong cấu hình")
-    osd_disk = action_params.get("osd_disk")
     ceph_conf = action_params.get("_ceph_conf")
     bootstrap_osd_keyring_b64 = action_params.get("_bootstrap_osd_keyring_b64")
     if not ceph_conf or not bootstrap_osd_keyring_b64:
@@ -899,6 +907,14 @@ def _phase_ceph_deploy_osd_create(nodes: list[dict], action_params: dict, on_hos
 
     for i, node in enumerate(osd_nodes):
         ip = node["ip"]
+        # Per-node disk (vd node1 /dev/vdc, node2 /dev/vdb) — see the cephadm
+        # phase's own osd_disk comment for why this is read fresh per node
+        # rather than one cluster-wide value.
+        osd_disk = node.get("osd_disk")
+        if not osd_disk:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD (osd_disk)")
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:

@@ -14,13 +14,15 @@ _UNSUPPORTED_OS_RELEASE = 'ID="alpine"\nVERSION_ID="3.19"\nPRETTY_NAME="Alpine L
 
 _NODES = [
     {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
-    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"]},
-    {"ip": "10.20.1.21", "roles": ["mon", "osd"]},
+    # Different disk names per node (node1 /dev/vdc, node2 /dev/vdb) — the
+    # whole point of per-node osd_disk instead of one cluster-wide value.
+    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
+    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
 ]
 
 
 def _cephadm_params(**overrides):
-    params = {"version": "18.2.8", "osd_disk": "/dev/vdc", "nodes": copy.deepcopy(_NODES)}
+    params = {"version": "18.2.8", "nodes": copy.deepcopy(_NODES)}
     params.update(overrides)
     return params
 
@@ -606,7 +608,10 @@ def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
 
     assert not any("--all-available-devices" in cmd for cmd in seen_commands)
+    # Each OSD node uses its OWN disk (10.20.1.95 -> /dev/vdc, 10.20.1.21 ->
+    # /dev/vdb) — proves osd_disk is read per node, not one cluster-wide value.
     assert any("orch daemon add osd" in cmd and "/dev/vdc" in cmd for cmd in seen_commands)
+    assert any("orch daemon add osd" in cmd and "/dev/vdb" in cmd for cmd in seen_commands)
 
 
 # --- ceph-deploy method (Story 8.2) ----------------------------------------
