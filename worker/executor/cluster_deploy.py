@@ -343,11 +343,42 @@ def _phase_cephadm_orch_host_add(nodes: list[dict], action_params: dict, on_host
     host_status = [{"host": n["ip"], "status": "pending"} for n in remaining]
     on_host_update(list(host_status))
 
+    # cephadm's own orchestrator SSHes from first_mon to every OTHER host
+    # using a DEDICATED keypair it generates during bootstrap
+    # (/etc/ceph/ceph.pub) — verified live, 2026-07-26: `ceph orch host add`
+    # failed with "Permission denied" for the first non-first-mon host,
+    # because that key had never been authorized there. Same step official
+    # Ceph docs describe as `ssh-copy-id -f -i /etc/ceph/ceph.pub
+    # root@<host>` — done here via the Worker's OWN already-proven SSH
+    # access to each node (the exact same access ssh_check already used),
+    # not by shelling out to ssh-copy-id.
+    try:
+        cephadm_pubkey = execute_command(first_mon, "cat /etc/ceph/ceph.pub").strip()
+    except ExecutorError as exc:
+        raise DeployPhaseError(
+            f"{first_mon}: không đọc được khoá SSH của cephadm (/etc/ceph/ceph.pub): {exc}"
+        ) from exc
+
     for i, node in enumerate(remaining):
         ip = node["ip"]
         hostname = hostnames.get(ip, ip)
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
+        try:
+            quoted_key = shlex.quote(cephadm_pubkey)
+            execute_command(
+                ip,
+                "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+                f"(grep -qxF {quoted_key} /root/.ssh/authorized_keys 2>/dev/null || "
+                f"echo {quoted_key} >> /root/.ssh/authorized_keys) && "
+                "chmod 600 /root/.ssh/authorized_keys",
+            )
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(
+                f"{ip}: không thêm được khoá SSH của cephadm vào authorized_keys: {exc}"
+            ) from exc
         try:
             execute_command(
                 first_mon, f"ceph orch host add {shlex.quote(hostname)} {shlex.quote(ip)}"

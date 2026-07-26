@@ -531,6 +531,45 @@ def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
     assert not any("cephadm install ceph-common" in cmd for cmd in seen_commands)
 
 
+def test_cephadm_orch_host_add_authorizes_cephadm_pubkey_before_adding_each_host(monkeypatch):
+    """Regression (live-verified 2026-07-26): `ceph orch host add` failed
+    with "Permission denied" for the first non-first-mon host — cephadm's
+    own orchestrator SSHes from first_mon to every other host using a
+    DEDICATED keypair it generates during bootstrap (/etc/ceph/ceph.pub),
+    which had never been authorized on that host. Must read that pubkey
+    from first_mon and push it into EACH other host's
+    /root/.ssh/authorized_keys (via the Worker's own already-proven SSH
+    access to that host) BEFORE calling `ceph orch host add` for it."""
+    cephadm_pubkey = "ssh-ed25519 AAAAC3Nz-fake-cephadm-key cephadm"
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append((host, command))
+        if command == "cat /etc/ceph/ceph.pub":
+            return cephadm_pubkey + "\n"
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    # 10.20.1.112 is first_mon (per _NODES) — only the other two hosts get
+    # the pubkey pushed to them, each BEFORE their own `orch host add` call.
+    for ip in ("10.20.1.95", "10.20.1.21"):
+        authorize_index = next(
+            i
+            for i, (host, cmd) in enumerate(seen_commands)
+            if host == ip and cephadm_pubkey in cmd and "authorized_keys" in cmd
+        )
+        host_add_index = next(
+            i
+            for i, (host, cmd) in enumerate(seen_commands)
+            if host == "10.20.1.112" and "ceph orch host add" in cmd and ip in cmd
+        )
+        assert authorize_index < host_add_index
+
+
 def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     seen_commands = []
 
