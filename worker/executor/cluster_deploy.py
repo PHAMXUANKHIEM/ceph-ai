@@ -228,6 +228,18 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     host_status = [{"host": first_mon, "status": "running"}]
     on_host_update(list(host_status))
 
+    # The downloaded `cephadm` script itself is a `#!/usr/bin/python3` file —
+    # a bare/minimal node (verified live, 2026-07-26: a fresh node had no
+    # /usr/bin/python3 at all) fails with exit 126 "bad interpreter" on the
+    # VERY FIRST invocation (`add-repo`), before cephadm's own `install`
+    # subcommand ever gets a chance to pull in its real dependencies. Must
+    # ensure python3 exists as a separate step first.
+    ensure_python3 = _package_manager_branch(
+        {
+            "apt": "command -v python3 >/dev/null 2>&1 || apt-get install -y python3",
+            "rpm": "command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)",
+        }
+    )
     install_cephadm = (
         "command -v cephadm >/dev/null 2>&1 || "
         f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
@@ -237,6 +249,7 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     bootstrap = f"cephadm bootstrap --mon-ip {shlex.quote(first_mon)} --skip-monitoring-stack"
 
     try:
+        execute_command(first_mon, ensure_python3)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"

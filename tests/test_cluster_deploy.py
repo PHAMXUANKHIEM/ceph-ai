@@ -324,6 +324,35 @@ def test_env_write_failure_does_not_turn_a_successful_deploy_into_a_failure(monk
     assert all(step["status"] == "done" for step in calls[-1][1])
 
 
+def test_cephadm_bootstrap_ensures_python3_before_invoking_cephadm(monkeypatch):
+    """Regression (live-verified 2026-07-26): the downloaded `cephadm`
+    script is itself a `#!/usr/bin/python3` file — a node with no
+    /usr/bin/python3 made the very first cephadm invocation fail with exit
+    126 "bad interpreter", before cephadm's own `install` subcommand ever
+    ran. A python3-ensuring command must be sent, and BEFORE the cephadm
+    install/bootstrap command, not after."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    python3_ensure_index = next(
+        i for i, cmd in enumerate(seen_commands) if "python3" in cmd
+    )
+    cephadm_install_index = next(
+        i for i, cmd in enumerate(seen_commands) if "cephadm add-repo" in cmd
+    )
+    assert python3_ensure_index < cephadm_install_index
+    assert "apt-get install -y python3" in seen_commands[python3_ensure_index]
+    assert "dnf install -y python3" in seen_commands[python3_ensure_index]
+
+
 def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     seen_commands = []
 
