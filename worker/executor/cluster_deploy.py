@@ -240,11 +240,25 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
             "rpm": "command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)",
         }
     )
+    # `add-repo --version {version}` (NOT `--release {codename}`) — same fix
+    # already made live for `_phase_ceph_deploy_repo`/commands.py's own
+    # upgrade-path repo builder: the codename's rolling alias (e.g.
+    # `rpm-quincy/`) only ever carries the OS point-release the LATEST point
+    # release of that codename still supports, so cephadm's own internal
+    # `add-repo --release` silently configured a repo with no `ceph-common`
+    # metadata for THIS node's still-supported-but-older OS point release —
+    # verified live, 2026-07-26: "No match for argument: ceph-common" at the
+    # install_ceph_common step below, right after bootstrap itself succeeded
+    # (bootstrap runs entirely in containers, never touches this repo).
+    # `codename_for_version` above is still called purely to validate the
+    # version is recognized before touching any node — the curl fetch of
+    # the cephadm SCRIPT ITSELF (one static file, no repo-metadata
+    # resolution involved) is unaffected and keeps using the release name.
     install_cephadm = (
         "command -v cephadm >/dev/null 2>&1 || "
         f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
         "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm && "
-        f"/usr/local/bin/cephadm add-repo --release {codename} && /usr/local/bin/cephadm install)"
+        f"/usr/local/bin/cephadm add-repo --version {version} && /usr/local/bin/cephadm install)"
     )
     # A MON container left running from an EARLIER, partially-failed deploy
     # attempt on this same node still holds the MSGR v2 port — verified

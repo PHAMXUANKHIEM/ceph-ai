@@ -476,6 +476,34 @@ def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
     assert bootstrap_index < ceph_common_index
 
 
+def test_cephadm_add_repo_uses_exact_version_not_release_codename(monkeypatch):
+    """Regression (live-verified 2026-07-26): cephadm's OWN internal
+    `add-repo --release <codename>` command hit the exact same rolling-
+    alias bug already fixed for _phase_ceph_deploy_repo — the codename's
+    `rpm-quincy/el9/` alias only carries the OS point-release the LATEST
+    point release of that codename still supports, so it silently
+    configured a repo missing `ceph-common` metadata for this node's
+    still-supported-but-older OS point release ("No match for argument:
+    ceph-common" at the install_ceph_common step, right after bootstrap
+    itself had already succeeded). Must use `--version <exact version>`
+    instead — the same fix already applied to commands.py's own upgrade-
+    path repo builder."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    add_repo_cmd = next(cmd for cmd in seen_commands if "cephadm add-repo" in cmd)
+    assert "add-repo --version 18.2.8" in add_repo_cmd
+    assert "--release" not in add_repo_cmd
+
+
 def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     seen_commands = []
 
