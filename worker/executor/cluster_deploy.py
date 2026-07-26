@@ -240,16 +240,15 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
             "rpm": "command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)",
         }
     )
-    # `add-repo --version {version}` (NOT `--release {codename}`) — same fix
-    # already made live for `_phase_ceph_deploy_repo`/commands.py's own
-    # upgrade-path repo builder: the codename's rolling alias (e.g.
-    # `rpm-quincy/`) only ever carries the OS point-release the LATEST point
-    # release of that codename still supports, so cephadm's own internal
-    # `add-repo --release` silently configured a repo with no `ceph-common`
-    # metadata for THIS node's still-supported-but-older OS point release —
-    # verified live, 2026-07-26: "No match for argument: ceph-common" at the
-    # install_ceph_common step below, right after bootstrap itself succeeded
-    # (bootstrap runs entirely in containers, never touches this repo).
+    # This bare `cephadm install` (no package args) only needs the
+    # `cephadm` package itself, which has worked fine via cephadm's own
+    # `add-repo` in every live run so far — unlike `ceph-common` below,
+    # there's no evidence this part is broken, so it's left as cephadm's
+    # own responsibility. Switched `--release {codename}` to
+    # `--version {version}` anyway (matching the fix already made for
+    # `_phase_ceph_deploy_repo`) since the codename's rolling alias is a
+    # real, verified bug class in general — harmless here even though it
+    # didn't turn out to be what broke ceph-common (see that step below).
     # `codename_for_version` above is still called purely to validate the
     # version is recognized before touching any node — the curl fetch of
     # the cephadm SCRIPT ITSELF (one static file, no repo-metadata
@@ -305,16 +304,28 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     # every later phase in this method (orch_host_add/orch_apply_mgr/
     # orch_apply_osd/verify) calls `ceph ...` directly on `first_mon`
     # (verified live, 2026-07-26: "ceph: command not found", exit 127,
-    # right after a successful bootstrap). `cephadm install ceph-common`
-    # installs the real ceph-common package (via the repo `install_cephadm`
-    # already added above) so the plain `ceph` binary exists on the host.
-    install_ceph_common = "command -v ceph >/dev/null 2>&1 || /usr/local/bin/cephadm install ceph-common"
+    # right after a successful bootstrap). Deliberately does NOT use
+    # `cephadm install ceph-common` for this — verified live (2026-07-26)
+    # that it left ceph-common unfindable via yum twice in a row, even after
+    # switching cephadm's own `add-repo` from `--release` to `--version`
+    # above; rather than keep guessing at cephadm's internal repo-URL logic,
+    # this uses OUR OWN already-verified repo command
+    # (`_build_ceph_package_repo_command`, same one `_phase_ceph_deploy_repo`
+    # uses) plus a plain named-package install.
+    ensure_ceph_repo = _build_ceph_package_repo_command(version)
+    ensure_ceph_common = _package_manager_branch(
+        {
+            "apt": "command -v ceph >/dev/null 2>&1 || apt-get install -y ceph-common",
+            "rpm": "command -v ceph >/dev/null 2>&1 || (dnf install -y ceph-common || yum install -y ceph-common)",
+        }
+    )
 
     try:
         execute_command(first_mon, ensure_python3)
         execute_command(first_mon, cleanup_previous_attempt)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
-        execute_command(first_mon, install_ceph_common)
+        execute_command(first_mon, ensure_ceph_repo)
+        execute_command(first_mon, ensure_ceph_common)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -545,25 +556,27 @@ def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_h
         on_host_update(list(host_status))
 
 
-def _phase_ceph_deploy_repo(nodes: list[dict], action_params: dict, on_host_update) -> None:
-    """Adds the official Ceph package repo for `version` on every node.
+def _build_ceph_package_repo_command(version: str) -> str:
+    """Shared by `_phase_ceph_deploy_repo` (ceph-deploy method, all nodes)
+    and `_phase_cephadm_bootstrap` (cephadm method, first MON only, for
+    `ceph-common`) — our OWN repo setup, deliberately NOT delegated to
+    cephadm's own `add-repo` subcommand: verified live, 2026-07-26, that
+    `cephadm add-repo` (tried with both `--release <codename>` and
+    `--version <exact version>`) left `ceph-common` unfindable via yum on a
+    real node twice in a row, for reasons this codebase doesn't control or
+    fully understand. This snippet detects the RHEL major version and arch
+    AT RUNTIME on the target node (`rpm -E %rhel`, `uname -m`) rather than
+    hardcoding one el version — unlike cephadm's own internal logic here,
+    this is fully within our control and can be debugged/fixed directly if
+    it's ever wrong for a given node.
 
     Uses the exact VERSION (not the release codename's rolling alias) to
     build the repo URL — same fix `commands.py::_upgrade_ceph_cluster_package_download_command`
     already made (2026-07-24, verified live): the codename alias (e.g.
     rpm-quincy/) only ever carries the OS versions the LATEST point release
     of that codename still supports, silently becoming an empty/404 repo for
-    an older-but-still-supported OS. `codename_for_version` is still called
-    below, purely to reject an unrecognized target_version before building
-    any URL at all — the story file's own text names it as "the single
-    source of truth this codebase uses for release names", which remains
-    true for that validation role even though the URL itself no longer uses
-    the codename directly.
+    an older-but-still-supported OS.
     """
-    version = action_params.get("version", "")
-    if codename_for_version(version) is None:
-        raise DeployPhaseError(f"Không tìm thấy mã tên release Ceph cho phiên bản {version!r}")
-
     apt_snippet = (
         "wget -q -O- https://download.ceph.com/keys/release.asc "
         "| gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg "
@@ -584,7 +597,22 @@ def _phase_ceph_deploy_repo(nodes: list[dict], action_params: dict, on_host_upda
         "|| yum-config-manager --add-repo "
         f"https://download.ceph.com/rpm-{version}/el$(rpm -E %rhel)/noarch/)"
     )
-    repo_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+    return _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+
+
+def _phase_ceph_deploy_repo(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Adds the official Ceph package repo for `version` on every node.
+    `codename_for_version` is called below purely to reject an unrecognized
+    target_version before building any URL at all — the story file's own
+    text names it as "the single source of truth this codebase uses for
+    release names", which remains true for that validation role even
+    though the URL itself doesn't use the codename directly (see
+    `_build_ceph_package_repo_command`)."""
+    version = action_params.get("version", "")
+    if codename_for_version(version) is None:
+        raise DeployPhaseError(f"Không tìm thấy mã tên release Ceph cho phiên bản {version!r}")
+
+    repo_command = _build_ceph_package_repo_command(version)
 
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))

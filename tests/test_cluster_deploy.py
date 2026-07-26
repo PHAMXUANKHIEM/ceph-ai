@@ -477,17 +477,13 @@ def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
 
 
 def test_cephadm_add_repo_uses_exact_version_not_release_codename(monkeypatch):
-    """Regression (live-verified 2026-07-26): cephadm's OWN internal
-    `add-repo --release <codename>` command hit the exact same rolling-
-    alias bug already fixed for _phase_ceph_deploy_repo — the codename's
-    `rpm-quincy/el9/` alias only carries the OS point-release the LATEST
-    point release of that codename still supports, so it silently
-    configured a repo missing `ceph-common` metadata for this node's
-    still-supported-but-older OS point release ("No match for argument:
-    ceph-common" at the install_ceph_common step, right after bootstrap
-    itself had already succeeded). Must use `--version <exact version>`
-    instead — the same fix already applied to commands.py's own upgrade-
-    path repo builder."""
+    """cephadm's OWN internal `add-repo --release <codename>` command (used
+    to install the `cephadm` package itself) uses `--version <exact
+    version>` instead, matching the fix already applied to
+    _phase_ceph_deploy_repo's rolling-alias bug in general — even though
+    this specific swap did NOT turn out to fix ceph-common's own
+    availability (see test_cephadm_ensures_ceph_common_via_own_repo_command
+    below for what did)."""
     seen_commands = []
 
     def fake(host, command):
@@ -502,6 +498,37 @@ def test_cephadm_add_repo_uses_exact_version_not_release_codename(monkeypatch):
     add_repo_cmd = next(cmd for cmd in seen_commands if "cephadm add-repo" in cmd)
     assert "add-repo --version 18.2.8" in add_repo_cmd
     assert "--release" not in add_repo_cmd
+
+
+def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
+    """Regression (live-verified 2026-07-26): `cephadm install ceph-common`
+    left `ceph-common` unfindable via yum TWICE in a row — once with
+    cephadm's own `add-repo --release <codename>`, and again after
+    switching that to `--version <exact version>` (previous test above).
+    Rather than keep guessing at cephadm's internal repo-URL logic, this
+    method now sets up the repo itself via `_build_ceph_package_repo_command`
+    (the SAME already-written command `_phase_ceph_deploy_repo` uses, which
+    detects the RHEL major version and arch AT RUNTIME via `rpm -E %rhel`/
+    `uname -m` rather than hardcoding one) and installs ceph-common by
+    plain `dnf/yum install -y ceph-common`, run AFTER bootstrap succeeds."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
+    repo_index = next(i for i, cmd in enumerate(seen_commands) if "rpm -E %rhel" in cmd)
+    ceph_common_index = next(
+        i for i, cmd in enumerate(seen_commands) if "install -y ceph-common" in cmd
+    )
+    assert bootstrap_index < repo_index < ceph_common_index
+    assert not any("cephadm install ceph-common" in cmd for cmd in seen_commands)
 
 
 def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
