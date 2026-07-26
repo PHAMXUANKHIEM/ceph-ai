@@ -74,7 +74,7 @@
             <label>Phương thức</label>
             <div class="deploy-method-options">
               <label class="checkbox-label"><input type="radio" name="method" value="cephadm" checked> cephadm — khuyến nghị cho bản mới</label>
-              <label class="checkbox-label"><input type="radio" name="method" value="ceph-deploy"> ceph-deploy — cho bản cũ (≤15){% if "ceph-deploy" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
+              <label class="checkbox-label"><input type="radio" name="method" value="ceph-deploy"> ceph-deploy — cài gói truyền thống (mọi version, cần gói có sẵn trên download.ceph.com){% if "ceph-deploy" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
               <label class="checkbox-label"><input type="radio" name="method" value="rpm-local"> RPM local — đã có sẵn gói cài trên node{% if "rpm-local" in not_yet_supported_methods %} (chưa hỗ trợ){% endif %}</label>
             </div>
 
