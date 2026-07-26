@@ -261,10 +261,15 @@ def test_stops_at_first_phase_failure_does_not_run_later_phases(monkeypatch):
     )
 
     assert result is False
-    final_progress = calls[-1][1]
-    assert final_progress[0]["status"] == "done"  # ssh_check succeeded
-    assert final_progress[1]["status"] == "failed"  # bootstrap failed
-    assert all(step["status"] == "pending" for step in final_progress[2:])
+    steps_by_key = {s["step"]: s for s in calls[-1][1]}
+    assert steps_by_key["ssh_check"]["status"] == "done"
+    assert steps_by_key["dependencies"]["status"] == "done"
+    assert steps_by_key["bootstrap"]["status"] == "failed"
+    assert all(
+        step["status"] == "pending"
+        for key, step in steps_by_key.items()
+        if key not in ("ssh_check", "dependencies", "bootstrap")
+    )
 
 
 def test_verify_phase_fails_on_health_err(monkeypatch):
@@ -351,6 +356,52 @@ def test_cephadm_bootstrap_ensures_python3_before_invoking_cephadm(monkeypatch):
     assert python3_ensure_index < cephadm_install_index
     assert "apt-get install -y python3" in seen_commands[python3_ensure_index]
     assert "dnf install -y python3" in seen_commands[python3_ensure_index]
+
+
+def test_cephadm_bootstrap_passes_allow_fqdn_hostname_flag(monkeypatch):
+    """Regression (live-verified 2026-07-26): cephadm bootstrap hard-refuses
+    (exit 1, "hostname is a fully qualified domain name") on a node whose
+    `hostname` command returns an FQDN (common on OpenStack-provisioned
+    VMs) unless --allow-fqdn-hostname is passed."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    bootstrap_cmd = next(cmd for cmd in seen_commands if "cephadm bootstrap --mon-ip" in cmd)
+    assert "--allow-fqdn-hostname" in bootstrap_cmd
+
+
+def test_cephadm_deploy_installs_and_starts_chrony_before_bootstrap(monkeypatch):
+    """Regression (live-verified 2026-07-26): cephadm bootstrap's own
+    preflight check ("No time sync service is running") failed on a fresh
+    node even after chrony was installed, because the dependencies phase
+    only installed the package without ever starting its service — the
+    cephadm method didn't even run the dependencies phase at all before
+    this fix. Must run before `bootstrap`, and must explicitly enable+start
+    the service (not just install the package)."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    chrony_index = next(i for i, cmd in enumerate(seen_commands) if "chrony" in cmd)
+    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
+    assert chrony_index < bootstrap_index
+    assert "systemctl enable --now chrony" in seen_commands[chrony_index]
+    assert "systemctl enable --now chronyd" in seen_commands[chrony_index]
 
 
 def test_no_command_sent_with_all_available_devices_flag(monkeypatch):

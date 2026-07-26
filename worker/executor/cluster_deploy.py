@@ -246,7 +246,16 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
         "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm && "
         f"/usr/local/bin/cephadm add-repo --release {codename} && /usr/local/bin/cephadm install)"
     )
-    bootstrap = f"cephadm bootstrap --mon-ip {shlex.quote(first_mon)} --skip-monitoring-stack"
+    # --allow-fqdn-hostname: cephadm bootstrap otherwise hard-refuses to
+    # proceed (exit 1) whenever the node's `hostname` command returns an
+    # FQDN (e.g. "khiempx-ceph1.novalocal", common on cloud/OpenStack-
+    # provisioned VMs) — verified live, 2026-07-26. Unconditional rather
+    # than detected-and-conditional: harmless when the hostname is already
+    # short, so there's no reason to special-case it.
+    bootstrap = (
+        f"cephadm bootstrap --mon-ip {shlex.quote(first_mon)} --skip-monitoring-stack "
+        "--allow-fqdn-hostname"
+    )
 
     try:
         execute_command(first_mon, ensure_python3)
@@ -441,19 +450,26 @@ def _mkfs_and_start_mon_command(hostname: str) -> str:
 def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """Per node: stop firewalld, disable SELinux enforcement if present,
     install chrony (+ epel-release on the RPM family only — Debian/Ubuntu
-    has no equivalent extra repo to enable), then step the clock so a
-    freshly-installed lab VM with a badly drifted clock doesn't fail cephx
-    auth later (same reasoning as COMMANDS["resync_ntp"])."""
+    has no equivalent extra repo to enable), explicitly enable+start its
+    service (package install alone doesn't reliably do this on every distro
+    — verified live, 2026-07-26: cephadm bootstrap's own preflight check
+    ("No time sync service is running") failed on a fresh node even after
+    `apt-get install chrony` succeeded, because the service was installed
+    but never started), then step the clock so a freshly-installed lab VM
+    with a badly drifted clock doesn't fail cephx auth later (same
+    reasoning as COMMANDS["resync_ntp"])."""
     apt_snippet = (
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
         "apt-get update -y && apt-get install -y chrony && "
+        "systemctl enable --now chrony && "
         "(chronyc makestep || true)"
     )
     rpm_snippet = (
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
         "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "
+        "systemctl enable --now chronyd && "
         "(chronyc makestep || true)"
     )
     install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
@@ -889,6 +905,7 @@ def _phase_ceph_deploy_repo_local(nodes: list[dict], action_params: dict, on_hos
 _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
     "deploy_cluster_cephadm": [
         ("ssh_check", "Kiểm tra kết nối SSH & hệ thống", 10, _phase_ssh_check),
+        ("dependencies", "Cài đặt phụ thuộc (chrony, tắt firewalld/SELinux)", 15, _phase_ceph_deploy_dependencies),
         ("bootstrap", "cephadm bootstrap", 55, _phase_cephadm_bootstrap),
         ("orch_host_add", "Thêm node vào cụm (orch host add)", 65, _phase_cephadm_orch_host_add),
         ("orch_apply_mgr", "Tạo MGR (orch apply mgr)", 70, _phase_cephadm_orch_apply_mgr),
