@@ -8,6 +8,7 @@ import bcrypt
 
 from config.settings import settings
 from shared import db as db_module
+from shared import env_config
 from shared.db import Base, make_engine
 
 # Fixed test credentials — the fixture pins Settings to these values so tests
@@ -84,6 +85,21 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     """
     test_ssh_key_path = tmp_path / "ceph_lab_watcher_test_key"
     test_ssh_key_path.write_text("fake test-only private key, never used for a real SSH connection\n")
+
+    # 2026-07-26 fix, verified live: real production incident — several
+    # worker/executor/cluster_deploy.py tests exercise a FULL successful
+    # run() (deploy or delete) without individually monkeypatching
+    # env_config.update_env_file_batch (they only care about the SSH
+    # commands sent), which let the code's own real _write_cluster_config/
+    # _clear_cluster_config reach the REAL env_config.update_env_file_batch
+    # — and because this suite runs on the SAME checkout as the live
+    # Dashboard/Worker (not an isolated CI runner), that real function
+    # wrote test-fixture node data straight into the ACTUAL project .env,
+    # corrupting the real cluster's CEPH_MON_NODES/CEPH_OSD_NODES/etc. This
+    # must be impossible regardless of whether any individual test author
+    # remembers to mock the write function — redirecting ENV_PATH here,
+    # autouse for the WHOLE suite, is the one place that guarantees it.
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / "test_dot_env")
 
     monkeypatch.setattr(settings, "router_api_key", TEST_ROUTER_API_KEY)
     monkeypatch.setattr(settings, "router_model", TEST_ROUTER_MODEL)
