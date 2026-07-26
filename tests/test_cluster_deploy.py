@@ -378,6 +378,27 @@ def test_cephadm_bootstrap_passes_allow_fqdn_hostname_flag(monkeypatch):
     assert "--allow-fqdn-hostname" in bootstrap_cmd
 
 
+def test_cephadm_bootstrap_passes_allow_overwrite_flag(monkeypatch):
+    """Regression (live-verified 2026-07-26): cephadm bootstrap hard-refuses
+    (exit 1, "/etc/ceph/ceph.conf already exists") if a PREVIOUS deploy
+    attempt on the same node got as far as writing that file before failing
+    later — expected during iterative testing/retries against the same
+    lab node, not just a one-off fluke."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    bootstrap_cmd = next(cmd for cmd in seen_commands if "cephadm bootstrap --mon-ip" in cmd)
+    assert "--allow-overwrite" in bootstrap_cmd
+
+
 def test_cephadm_deploy_installs_and_starts_chrony_before_bootstrap(monkeypatch):
     """Regression (live-verified 2026-07-26): cephadm bootstrap's own
     preflight check ("No time sync service is running") failed on a fresh

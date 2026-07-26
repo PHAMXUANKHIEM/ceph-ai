@@ -252,9 +252,19 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     # provisioned VMs) — verified live, 2026-07-26. Unconditional rather
     # than detected-and-conditional: harmless when the hostname is already
     # short, so there's no reason to special-case it.
+    # --allow-overwrite: cephadm bootstrap also hard-refuses (exit 1) if
+    # /etc/ceph/ceph.conf already exists — verified live, 2026-07-26, left
+    # behind on this node by an earlier deploy attempt that got this far
+    # before failing on a LATER phase (e.g. this session's own FQDN-hostname
+    # and time-sync fixes). Safe to pass unconditionally here specifically
+    # because this whole feature only ever runs against nodes the operator
+    # is deliberately bootstrapping a BRAND-NEW cluster on (the ssh_check
+    # phase's read-only OSD-disk check already enforces "must be empty" —
+    # a node with a real, already-running production cluster wouldn't pass
+    # that check in the first place).
     bootstrap = (
         f"cephadm bootstrap --mon-ip {shlex.quote(first_mon)} --skip-monitoring-stack "
-        "--allow-fqdn-hostname"
+        "--allow-fqdn-hostname --allow-overwrite"
     )
     # `cephadm bootstrap` on its own leaves the `ceph` CLI reachable only
     # via the containerized `cephadm shell` wrapper, not directly on PATH —
