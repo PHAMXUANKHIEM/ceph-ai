@@ -68,7 +68,7 @@ def test_delete_cephadm_appends_zap_osds_flag_when_wipe_requested(monkeypatch):
     seen_commands = []
 
     def fake(host, command):
-        seen_commands.append(command)
+        seen_commands.append((host, command))
         if command == "true":
             return ""
         return "Da xoa cum cephadm"
@@ -85,15 +85,16 @@ def test_delete_cephadm_appends_zap_osds_flag_when_wipe_requested(monkeypatch):
         _never_blocked,
     )
 
-    rm_cluster_cmd = next(cmd for cmd in seen_commands if "rm-cluster" in cmd)
-    assert "--zap-osds" in rm_cluster_cmd
+    rm_cluster_cmds = [cmd for _host, cmd in seen_commands if "rm-cluster" in cmd]
+    assert rm_cluster_cmds  # at least one was actually sent
+    assert all("--zap-osds" in cmd for cmd in rm_cluster_cmds)
 
 
 def test_delete_cephadm_omits_zap_osds_flag_when_not_requested(monkeypatch):
     seen_commands = []
 
     def fake(host, command):
-        seen_commands.append(command)
+        seen_commands.append((host, command))
         if command == "true":
             return ""
         return "Da xoa cum cephadm"
@@ -103,8 +104,38 @@ def test_delete_cephadm_omits_zap_osds_flag_when_not_requested(monkeypatch):
 
     run("action-1", "delete_cluster_cephadm", _delete_params(), "incident-1", write_progress, _never_blocked)
 
-    rm_cluster_cmd = next(cmd for cmd in seen_commands if "rm-cluster" in cmd)
-    assert "--zap-osds" not in rm_cluster_cmd
+    rm_cluster_cmds = [cmd for _host, cmd in seen_commands if "rm-cluster" in cmd]
+    assert rm_cluster_cmds
+    assert all("--zap-osds" not in cmd for cmd in rm_cluster_cmds)
+
+
+def test_delete_cephadm_runs_rm_cluster_on_every_node_not_just_first_mon(monkeypatch):
+    """Regression (live-verified 2026-07-26): `cephadm rm-cluster` is
+    HOST-LOCAL despite taking a cluster-wide fsid — running it only on
+    first_mon left the other 2 nodes' OSD disks completely untouched even
+    with wipe_osd_disks=True. Must be sent to EVERY configured node."""
+    hosts_with_rm_cluster = set()
+
+    def fake(host, command):
+        if command == "true":
+            return ""
+        if "rm-cluster" in command:
+            hosts_with_rm_cluster.add(host)
+        return "Da xoa cum cephadm"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run(
+        "action-1",
+        "delete_cluster_cephadm",
+        _delete_params(wipe_osd_disks=True),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    assert hosts_with_rm_cluster == {"10.20.1.112", "10.20.1.95", "10.20.1.21"}
 
 
 def test_delete_cephadm_fails_when_rm_cluster_fails(monkeypatch):

@@ -999,17 +999,22 @@ def _phase_delete_ssh_check(nodes: list[dict], action_params: dict, on_host_upda
 
 
 def _phase_delete_cephadm_cluster(nodes: list[dict], action_params: dict, on_host_update) -> None:
-    """Runs on the first MON node only — cephadm's orchestrator is
-    host-agnostic once bootstrapped, so any node with the `cephadm` CLI
-    works; first_mon matches the convention _phase_cephadm_bootstrap
-    already uses. `--zap-osds` is appended ONLY when the operator opted
-    into wiping OSD disk data (AC per this feature's design discussion) —
-    cephadm's own flag handles that destructively-but-correctly in the
-    SAME command, no separate disk-wipe phase needed for this method."""
-    first_mon = _first_mon_ip(nodes)
+    """`cephadm rm-cluster` is HOST-LOCAL despite taking a cluster-wide
+    fsid — it only removes daemons/data and (with --zap-osds) wipes OSD
+    disk data on the host it actually runs on, NOT cluster-wide (verified
+    live, 2026-07-26: running it only on first_mon left the other 2 nodes'
+    OSD disks completely untouched even with wipe_osd_disks requested).
+    Must run on EVERY configured node, not just first_mon — cephadm's own
+    orchestrator installs its agent on every host it manages (during
+    `ceph orch host add`, using the same pubkey-authorized SSH access
+    _phase_cephadm_orch_host_add set up), so `cephadm`/`cephadm ls` are
+    expected to exist on all of them post-deploy; a MISSING cephadm binary
+    on a configured node is treated as a real failure (not silently
+    skipped) precisely BECAUSE silently skipping is the failure mode this
+    fix addresses."""
     zap_flag = " --zap-osds" if action_params.get("wipe_osd_disks") else ""
 
-    host_status = [{"host": first_mon, "status": "running"}]
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
 
     command = (
@@ -1021,19 +1026,23 @@ def _phase_delete_cephadm_cluster(nodes: list[dict], action_params: dict, on_hos
         "for fsid in $fsids; do "
         f"cephadm rm-cluster --fsid \"$fsid\" --force{zap_flag} || exit 1; "
         "done; "
-        "echo 'Da xoa cum cephadm'"
+        "echo 'Da xoa cum cephadm tren node nay'"
     )
-    try:
-        output = execute_command(first_mon, command)
-    except ExecutorError as exc:
-        host_status[0]["status"] = "failed"
-        on_host_update(list(host_status))
-        raise DeployPhaseError(f"Xoá cụm cephadm thất bại trên {first_mon}: {exc}") from exc
 
-    host_status[0]["status"] = "done"
-    last_line = output.strip().splitlines()[-1] if output.strip() else None
-    host_status[0]["message"] = last_line
-    on_host_update(list(host_status))
+    for i, node in enumerate(nodes):
+        host = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            output = execute_command(host, command)
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"Xoá cụm cephadm thất bại trên {host}: {exc}") from exc
+        host_status[i]["status"] = "done"
+        last_line = output.strip().splitlines()[-1] if output.strip() else None
+        host_status[i]["message"] = last_line
+        on_host_update(list(host_status))
 
 
 def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on_host_update) -> None:
