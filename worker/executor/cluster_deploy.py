@@ -256,10 +256,20 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
         f"cephadm bootstrap --mon-ip {shlex.quote(first_mon)} --skip-monitoring-stack "
         "--allow-fqdn-hostname"
     )
+    # `cephadm bootstrap` on its own leaves the `ceph` CLI reachable only
+    # via the containerized `cephadm shell` wrapper, not directly on PATH —
+    # every later phase in this method (orch_host_add/orch_apply_mgr/
+    # orch_apply_osd/verify) calls `ceph ...` directly on `first_mon`
+    # (verified live, 2026-07-26: "ceph: command not found", exit 127,
+    # right after a successful bootstrap). `cephadm install ceph-common`
+    # installs the real ceph-common package (via the repo `install_cephadm`
+    # already added above) so the plain `ceph` binary exists on the host.
+    install_ceph_common = "command -v ceph >/dev/null 2>&1 || /usr/local/bin/cephadm install ceph-common"
 
     try:
         execute_command(first_mon, ensure_python3)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
+        execute_command(first_mon, install_ceph_common)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))

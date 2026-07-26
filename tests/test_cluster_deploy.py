@@ -404,6 +404,31 @@ def test_cephadm_deploy_installs_and_starts_chrony_before_bootstrap(monkeypatch)
     assert "systemctl enable --now chronyd" in seen_commands[chrony_index]
 
 
+def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
+    """Regression (live-verified 2026-07-26): `cephadm bootstrap` alone
+    leaves `ceph` reachable only via the containerized `cephadm shell`
+    wrapper, not directly on PATH — every later phase (orch_host_add/
+    orch_apply_mgr/orch_apply_osd/verify) calls `ceph ...` directly and
+    failed with "ceph: command not found" (exit 127) right after a
+    successful bootstrap. Must install ceph-common AFTER bootstrap
+    succeeds, not before (the repo it installs from is only added as part
+    of the bootstrap command itself)."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
+    ceph_common_index = next(i for i, cmd in enumerate(seen_commands) if "ceph-common" in cmd)
+    assert bootstrap_index < ceph_common_index
+
+
 def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     seen_commands = []
 
