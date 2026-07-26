@@ -71,23 +71,22 @@ def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -
         else "KHÔNG xoá — dữ liệu trên đĩa OSD được giữ nguyên (chỉ dừng daemon và xoá cấu hình Ceph)."
     )
 
-    if exec_mode == "cephadm":
-        steps = (
-            f"Các bước sẽ thực hiện, LẦN LƯỢT, sau khi Duyệt:\n"
-            f"1. Kiểm tra kết nối SSH tới từng node.\n"
-            f"2. `cephadm rm-cluster --force{'--zap-osds' if wipe_osd_disks else ''}` cho từng "
-            f"fsid tìm thấy trên node MON đầu tiên — dừng/xoá toàn bộ daemon, container, "
-            f"/etc/ceph, /var/lib/ceph/<fsid>{' và ZAP luôn đĩa OSD' if wipe_osd_disks else ''}.\n"
-        )
-    else:
-        steps = (
-            f"Các bước sẽ thực hiện, LẦN LƯỢT, sau khi Duyệt:\n"
-            f"1. Kiểm tra kết nối SSH tới từng node.\n"
-            f"2. Dừng & vô hiệu hoá mọi daemon Ceph (systemctl stop/disable) trên từng node.\n"
-            f"3. Xoá /etc/ceph và /var/lib/ceph trên từng node.\n"
-            f"4. {'Xoá dữ liệu đĩa OSD bằng `ceph-volume lvm zap --destroy`' if wipe_osd_disks else 'KHÔNG đụng tới đĩa OSD'} "
-            f"trên từng node OSD.\n"
-        )
+    # Same steps regardless of exec_mode — verified live, 2026-07-27:
+    # `cephadm rm-cluster` (the cephadm method's original approach) is
+    # unreliable as a cluster-wide teardown even on a genuinely
+    # cephadm-deployed cluster (the `cephadm` binary isn't reliably present
+    # outside the first MON node, and even there it left mon/mgr containers
+    # running). The systemctl-discovery + rm -rf + ceph-volume-zap approach
+    # needs no per-host cephadm binary and works the same way regardless of
+    # how the cluster was originally deployed.
+    steps = (
+        f"Các bước sẽ thực hiện, LẦN LƯỢT, sau khi Duyệt:\n"
+        f"1. Kiểm tra kết nối SSH tới từng node.\n"
+        f"2. Dừng & vô hiệu hoá mọi daemon Ceph (systemctl stop/disable) trên từng node.\n"
+        f"3. Xoá /etc/ceph và /var/lib/ceph trên từng node.\n"
+        f"4. {'Xoá dữ liệu đĩa OSD bằng `ceph-volume lvm zap --destroy`' if wipe_osd_disks else 'KHÔNG đụng tới đĩa OSD'} "
+        f"trên từng node OSD.\n"
+    )
 
     return (
         f"XOÁ CỤM CEPH đang cấu hình (phương thức hiện tại: {exec_mode}) — {len(nodes)} node.\n"

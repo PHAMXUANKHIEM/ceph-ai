@@ -628,17 +628,14 @@ def test_has_command_true_for_all_deploy_cluster_action_ids():
     assert commands_module.has_command("deploy_cluster_rpm_local") is True
 
 
-def test_delete_cluster_cephadm_preview_mentions_zap_flag_only_when_requested():
-    command = get_command("delete_cluster_cephadm", None, {"wipe_osd_disks": True})
-    assert "--zap-osds" in command
-    command = get_command("delete_cluster_cephadm", None, {"wipe_osd_disks": False})
-    assert "--zap-osds" not in command
-
-
-def test_delete_cluster_manual_preview_mentions_wipe_choice():
-    command = get_command("delete_cluster_manual", None, {"wipe_osd_disks": True})
+@pytest.mark.parametrize("action_id", ["delete_cluster_cephadm", "delete_cluster_manual"])
+def test_delete_cluster_preview_mentions_wipe_choice(action_id):
+    # Both action_ids share the same preview builder — verified live,
+    # 2026-07-27: the teardown mechanism is identical regardless of
+    # exec_mode (cephadm's own rm-cluster turned out unreliable).
+    command = get_command(action_id, None, {"wipe_osd_disks": True})
     assert "ceph-volume lvm zap" in command
-    command = get_command("delete_cluster_manual", None, {"wipe_osd_disks": False})
+    command = get_command(action_id, None, {"wipe_osd_disks": False})
     assert "không xoá dữ liệu đĩa OSD" in command
 
 

@@ -34,17 +34,24 @@ def _never_blocked(incident_id):
 
 
 # --- delete_cluster_cephadm --------------------------------------------------
+#
+# Regression (live-verified 2026-07-27): the original implementation ran
+# `cephadm rm-cluster` only on first_mon, relying on it to tear down the
+# WHOLE cluster. Two real problems found live: (1) `cephadm` binary is only
+# reliably present on first_mon — every other host's daemons are managed by
+# a transient SSH-delivered agent, never leaving a permanently-installed
+# CLI a plain SSH session can find, so `command -v cephadm` genuinely fails
+# there; (2) even on first_mon itself, `cephadm rm-cluster --force
+# --zap-osds` zapped the local OSD disk but left mon/mgr/crash containers
+# running — it did not tear down everything. delete_cluster_cephadm now
+# shares the EXACT SAME phase list as delete_cluster_manual below (a
+# hand-verified-live systemctl-discovery + rm -rf + ceph-volume-zap
+# teardown that needs no per-host cephadm binary at all) — see
+# _PHASES_BY_ACTION_ID's own comment for the full story.
 
 
-def test_delete_cephadm_happy_path_clears_env(monkeypatch):
-    def fake(host, command):
-        if command == "true":
-            return ""
-        if "fsids=$(cephadm ls" in command:
-            return "Da xoa cum cephadm"
-        return ""
-
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+def test_delete_cephadm_uses_same_phases_as_manual(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: "")
     write_progress, calls = _make_recording_progress_writer()
 
     written_fields = {}
@@ -55,23 +62,19 @@ def test_delete_cephadm_happy_path_clears_env(monkeypatch):
     )
 
     assert result is True
-    assert all(step["status"] == "done" for step in calls[-1][1])
-    # Delete must CLEAR the cluster config, not populate it with new nodes
-    # the way a successful deploy does.
+    steps_by_key = {s["step"]: s for s in calls[-1][1]}
+    assert set(steps_by_key) == {"ssh_check", "stop_daemons", "remove_state", "wipe_osd_disk"}
+    assert all(step["status"] == "done" for step in steps_by_key.values())
     assert written_fields["CEPH_MON_NODES"] == ""
-    assert written_fields["CEPH_MGR_NODES"] == ""
-    assert written_fields["CEPH_OSD_NODES"] == ""
     assert written_fields["CEPH_EXEC_MODE"] == "none"
 
 
-def test_delete_cephadm_appends_zap_osds_flag_when_wipe_requested(monkeypatch):
+def test_delete_cephadm_wipes_each_osd_nodes_own_disk_when_requested(monkeypatch):
     seen_commands = []
 
     def fake(host, command):
         seen_commands.append((host, command))
-        if command == "true":
-            return ""
-        return "Da xoa cum cephadm"
+        return ""
 
     monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
     write_progress, _calls = _make_recording_progress_writer()
@@ -85,78 +88,14 @@ def test_delete_cephadm_appends_zap_osds_flag_when_wipe_requested(monkeypatch):
         _never_blocked,
     )
 
-    rm_cluster_cmds = [cmd for _host, cmd in seen_commands if "rm-cluster" in cmd]
-    assert rm_cluster_cmds  # at least one was actually sent
-    assert all("--zap-osds" in cmd for cmd in rm_cluster_cmds)
+    zap_commands = {host: cmd for host, cmd in seen_commands if "ceph-volume lvm zap" in cmd}
+    assert "/dev/vdc" in zap_commands["10.20.1.95"]
+    assert "/dev/vdb" in zap_commands["10.20.1.21"]
+    # No cephadm binary required anywhere in this teardown.
+    assert not any("cephadm" in cmd for _host, cmd in seen_commands)
 
 
-def test_delete_cephadm_omits_zap_osds_flag_when_not_requested(monkeypatch):
-    seen_commands = []
-
-    def fake(host, command):
-        seen_commands.append((host, command))
-        if command == "true":
-            return ""
-        return "Da xoa cum cephadm"
-
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
-    write_progress, _calls = _make_recording_progress_writer()
-
-    run("action-1", "delete_cluster_cephadm", _delete_params(), "incident-1", write_progress, _never_blocked)
-
-    rm_cluster_cmds = [cmd for _host, cmd in seen_commands if "rm-cluster" in cmd]
-    assert rm_cluster_cmds
-    assert all("--zap-osds" not in cmd for cmd in rm_cluster_cmds)
-
-
-def test_delete_cephadm_runs_rm_cluster_on_every_node_not_just_first_mon(monkeypatch):
-    """Regression (live-verified 2026-07-26): `cephadm rm-cluster` is
-    HOST-LOCAL despite taking a cluster-wide fsid — running it only on
-    first_mon left the other 2 nodes' OSD disks completely untouched even
-    with wipe_osd_disks=True. Must be sent to EVERY configured node."""
-    hosts_with_rm_cluster = set()
-
-    def fake(host, command):
-        if command == "true":
-            return ""
-        if "rm-cluster" in command:
-            hosts_with_rm_cluster.add(host)
-        return "Da xoa cum cephadm"
-
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
-    write_progress, _calls = _make_recording_progress_writer()
-
-    run(
-        "action-1",
-        "delete_cluster_cephadm",
-        _delete_params(wipe_osd_disks=True),
-        "incident-1",
-        write_progress,
-        _never_blocked,
-    )
-
-    assert hosts_with_rm_cluster == {"10.20.1.112", "10.20.1.95", "10.20.1.21"}
-
-
-def test_delete_cephadm_fails_when_rm_cluster_fails(monkeypatch):
-    def fake(host, command):
-        if command == "true":
-            return ""
-        raise ExecutorError("rm-cluster exploded")
-
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
-    write_progress, calls = _make_recording_progress_writer()
-
-    result = run(
-        "action-1", "delete_cluster_cephadm", _delete_params(), "incident-1", write_progress, _never_blocked
-    )
-
-    assert result is False
-    steps_by_key = {s["step"]: s for s in calls[-1][1]}
-    assert steps_by_key["delete_cephadm"]["status"] == "failed"
-
-
-def test_delete_cephadm_ssh_check_failure_stops_before_deletion(monkeypatch):
+def test_delete_cephadm_ssh_check_failure_stops_before_teardown(monkeypatch):
     def fake(host, command):
         if command == "true" and host == "10.20.1.95":
             raise ExecutorError("connection refused")
@@ -172,7 +111,7 @@ def test_delete_cephadm_ssh_check_failure_stops_before_deletion(monkeypatch):
     assert result is False
     steps_by_key = {s["step"]: s for s in calls[-1][1]}
     assert steps_by_key["ssh_check"]["status"] == "failed"
-    assert steps_by_key["delete_cephadm"]["status"] == "pending"
+    assert steps_by_key["stop_daemons"]["status"] == "pending"
 
 
 # --- delete_cluster_manual ---------------------------------------------------

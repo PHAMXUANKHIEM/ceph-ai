@@ -998,53 +998,6 @@ def _phase_delete_ssh_check(nodes: list[dict], action_params: dict, on_host_upda
         on_host_update(list(host_status))
 
 
-def _phase_delete_cephadm_cluster(nodes: list[dict], action_params: dict, on_host_update) -> None:
-    """`cephadm rm-cluster` is HOST-LOCAL despite taking a cluster-wide
-    fsid — it only removes daemons/data and (with --zap-osds) wipes OSD
-    disk data on the host it actually runs on, NOT cluster-wide (verified
-    live, 2026-07-26: running it only on first_mon left the other 2 nodes'
-    OSD disks completely untouched even with wipe_osd_disks requested).
-    Must run on EVERY configured node, not just first_mon — cephadm's own
-    orchestrator installs its agent on every host it manages (during
-    `ceph orch host add`, using the same pubkey-authorized SSH access
-    _phase_cephadm_orch_host_add set up), so `cephadm`/`cephadm ls` are
-    expected to exist on all of them post-deploy; a MISSING cephadm binary
-    on a configured node is treated as a real failure (not silently
-    skipped) precisely BECAUSE silently skipping is the failure mode this
-    fix addresses."""
-    zap_flag = " --zap-osds" if action_params.get("wipe_osd_disks") else ""
-
-    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
-    on_host_update(list(host_status))
-
-    command = (
-        "command -v cephadm >/dev/null 2>&1 || "
-        "{ echo 'cephadm khong co tren node nay' >&2; exit 1; }; "
-        "fsids=$(cephadm ls 2>/dev/null | grep -o '\"fsid\": *\"[^\"]*\"' | "
-        "sed -E 's/.*\"([a-f0-9-]+)\"$/\\1/' | sort -u); "
-        "if [ -z \"$fsids\" ]; then echo 'Khong tim thay cum cephadm nao tren node nay'; exit 0; fi; "
-        "for fsid in $fsids; do "
-        f"cephadm rm-cluster --fsid \"$fsid\" --force{zap_flag} || exit 1; "
-        "done; "
-        "echo 'Da xoa cum cephadm tren node nay'"
-    )
-
-    for i, node in enumerate(nodes):
-        host = node["ip"]
-        host_status[i]["status"] = "running"
-        on_host_update(list(host_status))
-        try:
-            output = execute_command(host, command)
-        except ExecutorError as exc:
-            host_status[i]["status"] = "failed"
-            on_host_update(list(host_status))
-            raise DeployPhaseError(f"Xoá cụm cephadm thất bại trên {host}: {exc}") from exc
-        host_status[i]["status"] = "done"
-        last_line = output.strip().splitlines()[-1] if output.strip() else None
-        host_status[i]["message"] = last_line
-        on_host_update(list(host_status))
-
-
 def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """Discovers and stops+disables every Ceph systemd unit on every node,
     in ONE remote shell invocation per host (a plain `systemctl list-units
@@ -1266,9 +1219,35 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("osd_create", "Tạo OSD (ceph-volume lvm create)", 80, _phase_ceph_deploy_osd_create),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),
     ],
+    # Same phase list as delete_cluster_manual below — verified live,
+    # 2026-07-27: `cephadm rm-cluster` (the original implementation here)
+    # is unreliable as a cluster-wide teardown even on a genuinely
+    # cephadm-deployed cluster. Two real, separate problems found: (1) the
+    # `cephadm` binary is only reliably present on first_mon (curl-installed
+    # there directly) — on every OTHER host, cephadm's own orchestrator
+    # manages daemons via a transient SSH-delivered agent, never leaving a
+    # permanently-installed `cephadm` CLI a plain SSH session can find
+    # afterward, so `command -v cephadm` genuinely fails there; (2) even ON
+    # first_mon itself, `cephadm rm-cluster --force --zap-osds` zapped the
+    # local OSD disk correctly but left the mon/mgr/crash containers
+    # running — it did NOT tear down everything the docs suggest. The
+    # generic systemctl-discovery + rm -rf + ceph-volume-zap approach
+    # already proven for the manual/ceph-deploy method needs no per-host
+    # `cephadm` binary at all and was hand-verified to fully clean a real
+    # 3-node cephadm cluster (containers, systemd units, /etc/ceph,
+    # /var/lib/ceph, and — with wipe_osd_disks — the LVM structures on
+    # every node), so it's reused here unchanged rather than trying to fix
+    # cephadm's own rm-cluster further.
     "delete_cluster_cephadm": [
-        ("ssh_check", "Kiểm tra kết nối SSH", 20, _phase_delete_ssh_check),
-        ("delete_cephadm", "Xoá cụm cephadm (cephadm rm-cluster)", 90, _phase_delete_cephadm_cluster),
+        ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),
+        ("stop_daemons", "Dừng daemon Ceph trên từng node", 40, _phase_delete_manual_stop_daemons),
+        (
+            "remove_state",
+            "Xoá cấu hình & dữ liệu Ceph (/etc/ceph, /var/lib/ceph)",
+            70,
+            _phase_delete_manual_remove_state,
+        ),
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 90, _phase_delete_manual_wipe_osd_disk),
     ],
     "delete_cluster_manual": [
         ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),

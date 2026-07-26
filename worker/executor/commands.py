@@ -667,12 +667,13 @@ def _deploy_cluster_rpm_local_preview_command(host: str | None, params: dict) ->
     )
 
 
-def _delete_cluster_cephadm_preview_command(host: str | None, params: dict) -> str:
-    zap = " --zap-osds" if params.get("wipe_osd_disks") else ""
-    return f"cephadm rm-cluster --fsid <fsid> --force{zap} trên node MON đầu tiên — xem đầy đủ khi bắt đầu xoá"
-
-
-def _delete_cluster_manual_preview_command(host: str | None, params: dict) -> str:
+def _delete_cluster_preview_command(host: str | None, params: dict) -> str:
+    """Shared by both delete_cluster_cephadm and delete_cluster_manual —
+    verified live, 2026-07-27: the systemctl-discovery + rm -rf +
+    ceph-volume-zap teardown works the same way regardless of how the
+    cluster was originally deployed (cephadm's own `rm-cluster` turned out
+    to be unreliable as a cluster-wide teardown — see
+    cluster_deploy.py::_PHASES_BY_ACTION_ID's own comment)."""
     wipe_note = (
         ", rồi ceph-volume lvm zap --destroy trên từng đĩa OSD"
         if params.get("wipe_osd_disks")
@@ -688,8 +689,8 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
     "deploy_cluster_rpm_local": _deploy_cluster_rpm_local_preview_command,
-    "delete_cluster_cephadm": _delete_cluster_cephadm_preview_command,
-    "delete_cluster_manual": _delete_cluster_manual_preview_command,
+    "delete_cluster_cephadm": _delete_cluster_preview_command,
+    "delete_cluster_manual": _delete_cluster_preview_command,
 }
 
 
