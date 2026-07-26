@@ -399,6 +399,32 @@ def test_cephadm_bootstrap_passes_allow_overwrite_flag(monkeypatch):
     assert "--allow-overwrite" in bootstrap_cmd
 
 
+def test_cephadm_bootstrap_cleans_up_previous_attempt_before_rebootstrapping(monkeypatch):
+    """Regression (live-verified 2026-07-26): a MON container left running
+    from an earlier, partially-failed deploy attempt on the same node still
+    held the MSGR v2 port ("Cannot bind to IP ... port 3300: Address
+    already in use") even after --allow-overwrite fixed the ceph.conf-
+    exists error. Must run `cephadm rm-cluster --force` for any existing
+    fsid BEFORE the bootstrap command — and must never pass --zap-osds
+    (that would destructively touch the OSD disk, out of scope for this
+    cleanup)."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    cleanup_index = next(i for i, cmd in enumerate(seen_commands) if "rm-cluster" in cmd)
+    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
+    assert cleanup_index < bootstrap_index
+    assert "--zap-osds" not in seen_commands[cleanup_index]
+
+
 def test_cephadm_deploy_installs_and_starts_chrony_before_bootstrap(monkeypatch):
     """Regression (live-verified 2026-07-26): cephadm bootstrap's own
     preflight check ("No time sync service is running") failed on a fresh

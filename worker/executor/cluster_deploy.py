@@ -246,6 +246,26 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
         "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm && "
         f"/usr/local/bin/cephadm add-repo --release {codename} && /usr/local/bin/cephadm install)"
     )
+    # A MON container left running from an EARLIER, partially-failed deploy
+    # attempt on this same node still holds the MSGR v2 port — verified
+    # live, 2026-07-26: "Cannot bind to IP ... port 3300: Address already in
+    # use", right after --allow-overwrite fixed the ceph.conf-exists error.
+    # `cephadm rm-cluster --force` is the documented full teardown for a
+    # previous cephadm cluster on a node (stops/removes every daemon +
+    # /etc/ceph + /var/lib/ceph/<fsid> for that fsid) — grep/sed rather than
+    # a JSON parser since `cephadm ls`'s fsid field is a simple flat string,
+    # no nested structure to justify the extra dependency. Deliberately
+    # does NOT pass --zap-osds — this must never touch the OSD block device
+    # itself, only cephadm's own container/systemd state (`command -v
+    # cephadm` guards a truly first-time node, where `cephadm ls` would
+    # otherwise fail as "no such command yet").
+    cleanup_previous_attempt = (
+        "command -v cephadm >/dev/null 2>&1 && "
+        "for fsid in $(cephadm ls 2>/dev/null | grep -o '\"fsid\": *\"[^\"]*\"' | "
+        "sed -E 's/.*\"([a-f0-9-]+)\"$/\\1/' | sort -u); do "
+        "cephadm rm-cluster --fsid \"$fsid\" --force; done; "
+        "true"
+    )
     # --allow-fqdn-hostname: cephadm bootstrap otherwise hard-refuses to
     # proceed (exit 1) whenever the node's `hostname` command returns an
     # FQDN (e.g. "khiempx-ceph1.novalocal", common on cloud/OpenStack-
@@ -278,6 +298,7 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
 
     try:
         execute_command(first_mon, ensure_python3)
+        execute_command(first_mon, cleanup_previous_attempt)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
         execute_command(first_mon, install_ceph_common)
     except ExecutorError as exc:
