@@ -232,14 +232,14 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     # a bare/minimal node (verified live, 2026-07-26: a fresh node had no
     # /usr/bin/python3 at all) fails with exit 126 "bad interpreter" on the
     # VERY FIRST invocation (`add-repo`), before cephadm's own `install`
-    # subcommand ever gets a chance to pull in its real dependencies. Must
-    # ensure python3 exists as a separate step first.
-    ensure_python3 = _package_manager_branch(
-        {
-            "apt": "command -v python3 >/dev/null 2>&1 || apt-get install -y python3",
-            "rpm": "command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)",
-        }
-    )
+    # subcommand ever gets a chance to pull in its real dependencies. python3
+    # is ensured by the `dependencies` phase now (runs on EVERY node, before
+    # this one) — originally this phase ran its own separate python3 check
+    # here, but that only ever covered first_mon: `ceph orch host add` later
+    # failed with "no python3 in ..." on the SECOND node added, because
+    # cephadm's per-host management agent is itself a python3 script the
+    # orchestrator runs via SSH on every host it manages, not just first_mon
+    # (verified live, 2026-07-26).
     # This bare `cephadm install` (no package args) only needs the
     # `cephadm` package itself, which has worked fine via cephadm's own
     # `add-repo` in every live run so far — unlike `ceph-common` below,
@@ -321,7 +321,6 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     )
 
     try:
-        execute_command(first_mon, ensure_python3)
         execute_command(first_mon, cleanup_previous_attempt)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
         execute_command(first_mon, ensure_ceph_repo)
@@ -545,17 +544,23 @@ def _mkfs_and_start_mon_command(hostname: str) -> str:
 
 
 def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_host_update) -> None:
-    """Per node: stop firewalld, disable SELinux enforcement if present,
-    install chrony (+ epel-release on the RPM family only — Debian/Ubuntu
-    has no equivalent extra repo to enable), explicitly enable+start its
-    service (package install alone doesn't reliably do this on every distro
-    — verified live, 2026-07-26: cephadm bootstrap's own preflight check
-    ("No time sync service is running") failed on a fresh node even after
-    `apt-get install chrony` succeeded, because the service was installed
-    but never started), then step the clock so a freshly-installed lab VM
-    with a badly drifted clock doesn't fail cephx auth later (same
-    reasoning as COMMANDS["resync_ntp"])."""
+    """Per node: ensure python3 (cephadm's own per-host management agent is
+    itself a python3 script the ORCHESTRATOR runs via SSH on EVERY host it
+    manages — not just first_mon — verified live, 2026-07-26: `ceph orch
+    host add` failed with "no python3 in ..." for the SECOND node added,
+    even though first_mon itself had python3 from _phase_cephadm_bootstrap's
+    own now-redundant check), stop firewalld, disable SELinux enforcement
+    if present, install chrony (+ epel-release on the RPM family only —
+    Debian/Ubuntu has no equivalent extra repo to enable), explicitly
+    enable+start its service (package install alone doesn't reliably do
+    this on every distro — verified live, 2026-07-26: cephadm bootstrap's
+    own preflight check ("No time sync service is running") failed on a
+    fresh node even after `apt-get install chrony` succeeded, because the
+    service was installed but never started), then step the clock so a
+    freshly-installed lab VM with a badly drifted clock doesn't fail cephx
+    auth later (same reasoning as COMMANDS["resync_ntp"])."""
     apt_snippet = (
+        "(command -v python3 >/dev/null 2>&1 || apt-get install -y python3) && "
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
         "apt-get update -y && apt-get install -y chrony && "
@@ -563,6 +568,7 @@ def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_h
         "(chronyc makestep || true)"
     )
     rpm_snippet = (
+        "(command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)) && "
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
         "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "

@@ -355,7 +355,30 @@ def test_cephadm_bootstrap_ensures_python3_before_invoking_cephadm(monkeypatch):
     )
     assert python3_ensure_index < cephadm_install_index
     assert "apt-get install -y python3" in seen_commands[python3_ensure_index]
-    assert "dnf install -y python3" in seen_commands[python3_ensure_index]
+
+
+def test_cephadm_ensures_python3_on_every_node_not_just_first_mon(monkeypatch):
+    """Regression (live-verified 2026-07-26): `ceph orch host add` failed
+    with "no python3 in (...)" for the SECOND node added, even though
+    first_mon itself already had python3 — cephadm's per-host management
+    agent is itself a python3 script the ORCHESTRATOR runs via SSH on
+    EVERY host it manages, not just first_mon. The python3-ensuring
+    command used to live only inside _phase_cephadm_bootstrap (first_mon
+    only) — it must be sent to every node, via the shared `dependencies`
+    phase which already loops over all of them."""
+    hosts_with_python3_ensure = set()
+
+    def fake(host, command):
+        if "python3" in command:
+            hosts_with_python3_ensure.add(host)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    assert hosts_with_python3_ensure == {"10.20.1.112", "10.20.1.95", "10.20.1.21"}
 
 
 def test_cephadm_bootstrap_passes_allow_fqdn_hostname_flag(monkeypatch):
