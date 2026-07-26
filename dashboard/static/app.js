@@ -96,3 +96,43 @@
     });
   }
 })();
+
+(function () {
+  // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
+  // show/hide toggle, no change to approval/kill-switch behavior. Persisted
+  // in localStorage since this page's WebSocket auto-reloads on every
+  // Incident/Action change (dashboard/ws.py) — without persistence the
+  // card would silently re-expand on the very next reload.
+  var STORAGE_KEY = "pendingActionsCollapsed";
+  var toggleBtn = document.getElementById("pending-actions-toggle");
+  var bodyEl = document.getElementById("pending-actions-body");
+  if (!toggleBtn || !bodyEl) {
+    return; // not on the Dashboard home page
+  }
+
+  function setCollapsed(collapsed) {
+    bodyEl.hidden = collapsed;
+    toggleBtn.innerHTML = collapsed ? "&#43;" : "&#8722;";
+    var label = collapsed ? "Hiện danh sách" : "Ẩn danh sách";
+    toggleBtn.setAttribute("aria-label", label);
+    toggleBtn.title = label;
+    try {
+      localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
+    } catch (e) {
+      // localStorage unavailable (private mode, quota) — state just won't
+      // persist across reloads, not worth failing the toggle over.
+    }
+  }
+
+  toggleBtn.addEventListener("click", function () {
+    setCollapsed(!bodyEl.hidden);
+  });
+
+  var storedCollapsed = false;
+  try {
+    storedCollapsed = localStorage.getItem(STORAGE_KEY) === "1";
+  } catch (e) {
+    // ignore — default expanded
+  }
+  setCollapsed(storedCollapsed);
+})();

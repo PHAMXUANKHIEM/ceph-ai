@@ -92,8 +92,11 @@
     </nav>
     <div class="tabbed-content">
     <section class="card tabbed-panel" data-panel="pending" {% if active_tab != 'pending' %}hidden{% endif %}>
-      <div class="card-header"><h2>Chờ duyệt — Risky Action</h2></div>
-      <div class="card-body pending-actions">
+      <div class="card-header">
+        <h2>Chờ duyệt — Risky Action</h2>
+        <button type="button" class="card-toggle-btn" id="pending-actions-toggle" aria-label="Ẩn danh sách" title="Ẩn danh sách">&#8722;</button>
+      </div>
+      <div class="card-body pending-actions" id="pending-actions-body">
         {% for action, incident in pending_actions %}
         <article class="pending-action-card">
           <p><strong>Nguồn:</strong>
