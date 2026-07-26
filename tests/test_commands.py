@@ -626,3 +626,22 @@ def test_has_command_true_for_all_deploy_cluster_action_ids():
     assert commands_module.has_command("deploy_cluster_cephadm") is True
     assert commands_module.has_command("deploy_cluster_ceph_deploy") is True
     assert commands_module.has_command("deploy_cluster_rpm_local") is True
+
+
+def test_delete_cluster_cephadm_preview_mentions_zap_flag_only_when_requested():
+    command = get_command("delete_cluster_cephadm", None, {"wipe_osd_disks": True})
+    assert "--zap-osds" in command
+    command = get_command("delete_cluster_cephadm", None, {"wipe_osd_disks": False})
+    assert "--zap-osds" not in command
+
+
+def test_delete_cluster_manual_preview_mentions_wipe_choice():
+    command = get_command("delete_cluster_manual", None, {"wipe_osd_disks": True})
+    assert "ceph-volume lvm zap" in command
+    command = get_command("delete_cluster_manual", None, {"wipe_osd_disks": False})
+    assert "không xoá dữ liệu đĩa OSD" in command
+
+
+def test_has_command_true_for_all_delete_cluster_action_ids():
+    assert commands_module.has_command("delete_cluster_cephadm") is True
+    assert commands_module.has_command("delete_cluster_manual") is True

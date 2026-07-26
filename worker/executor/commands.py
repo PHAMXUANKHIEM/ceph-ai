@@ -667,10 +667,29 @@ def _deploy_cluster_rpm_local_preview_command(host: str | None, params: dict) ->
     )
 
 
+def _delete_cluster_cephadm_preview_command(host: str | None, params: dict) -> str:
+    zap = " --zap-osds" if params.get("wipe_osd_disks") else ""
+    return f"cephadm rm-cluster --fsid <fsid> --force{zap} trên node MON đầu tiên — xem đầy đủ khi bắt đầu xoá"
+
+
+def _delete_cluster_manual_preview_command(host: str | None, params: dict) -> str:
+    wipe_note = (
+        ", rồi ceph-volume lvm zap --destroy trên từng đĩa OSD"
+        if params.get("wipe_osd_disks")
+        else " (không xoá dữ liệu đĩa OSD)"
+    )
+    return (
+        f"Dừng mọi daemon Ceph (systemctl stop/disable) trên từng node, xoá /etc/ceph + "
+        f"/var/lib/ceph{wipe_note} — xem đầy đủ khi bắt đầu xoá"
+    )
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
     "deploy_cluster_rpm_local": _deploy_cluster_rpm_local_preview_command,
+    "delete_cluster_cephadm": _delete_cluster_cephadm_preview_command,
+    "delete_cluster_manual": _delete_cluster_manual_preview_command,
 }
 
 

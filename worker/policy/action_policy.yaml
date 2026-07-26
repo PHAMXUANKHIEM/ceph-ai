@@ -82,10 +82,21 @@ patch_action_ids:
 # VALID_CLUSTER_DEPLOY_ACTION_IDS. One id per install method (Story 8.1 only
 # wires up real execution for deploy_cluster_cephadm; the other two are
 # registered now so Stories 8.2/8.3 need zero policy-layer changes).
+# 2026-07-26: Xóa cụm Ceph (dashboard/routes/delete_cluster.py) added to
+# this SAME family (not a new one) — it shares worker/executor/
+# cluster_deploy.py's phase-runner, dispatch check, and policy-loading with
+# the deploy action_ids above (this yaml key's name is now slightly
+# imprecise — "cluster lifecycle" would be more accurate — but renaming it
+# would touch gate.py/tests/comments for no functional gain). One id per
+# how the cluster currently reports itself as run (CEPH_EXEC_MODE), decided
+# automatically by the route, not chosen by the operator the way deploy's
+# 3 install methods are.
 cluster_deploy_action_ids:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
   - deploy_cluster_rpm_local
+  - delete_cluster_cephadm
+  - delete_cluster_manual
 
 safe:
   - resync_ntp
@@ -140,3 +151,9 @@ risky:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
   - deploy_cluster_rpm_local
+  # 2026-07-26: irreversibly tears down a real, currently-monitored
+  # cluster (and, if the operator opts in, wipes OSD disk data) — the
+  # single most destructive action_id family in this codebase, always
+  # requires explicit approval, no exceptions.
+  - delete_cluster_cephadm
+  - delete_cluster_manual

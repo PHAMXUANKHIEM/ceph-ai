@@ -14,6 +14,7 @@ from dashboard.routes import (
     actions,
     auth,
     chat,
+    delete_cluster,
     deploy_cluster,
     incidents,
     maintenance,
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     application.include_router(chat.router)
     application.include_router(upgrade.router)
     application.include_router(deploy_cluster.router)
+    application.include_router(delete_cluster.router)
     application.include_router(patch.router)
     application.include_router(users.router)
     application.include_router(ws_router)

@@ -960,6 +960,193 @@ def _phase_verify(nodes: list[dict], action_params: dict, on_host_update) -> Non
     on_host_update(list(host_status))
 
 
+# --- Xóa cụm Ceph (2026-07-26) -----------------------------------------------
+#
+# dashboard/routes/delete_cluster.py-only — tears down the CURRENTLY
+# CONFIGURED cluster (nodes come from shared/cluster_nodes.py::configured_nodes(),
+# NOT operator-entered like Dựng cụm's own form — deleting the wrong
+# cluster because of a typo in a freshly-typed node list would be a far
+# worse failure mode here than reusing what Settings already has
+# configured). Two action_ids depending on how the cluster reports itself
+# as currently run (CEPH_EXEC_MODE): cephadm's own `rm-cluster` handles
+# daemons/containers/config and (optionally) OSD disks in ONE command; a
+# manually/package-deployed cluster (ceph-deploy or rpm-local method, both
+# land in CEPH_EXEC_MODE=none) has no such tool, so this stops every
+# discovered systemd unit itself and, only if the operator opted in,
+# wipes each OSD disk via `ceph-volume lvm zap --destroy`.
+
+
+def _phase_delete_ssh_check(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Lightweight connectivity-only check — unlike Dựng cụm's ssh_check,
+    there is no "disk must be empty" requirement here (the whole point of
+    THIS feature is a cluster that's NOT empty); this only confirms every
+    configured node is reachable before any teardown command is sent to
+    any of them."""
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    for i, node in enumerate(nodes):
+        host = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(host, "true")
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"Không kết nối được SSH tới {host}: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _phase_delete_cephadm_cluster(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Runs on the first MON node only — cephadm's orchestrator is
+    host-agnostic once bootstrapped, so any node with the `cephadm` CLI
+    works; first_mon matches the convention _phase_cephadm_bootstrap
+    already uses. `--zap-osds` is appended ONLY when the operator opted
+    into wiping OSD disk data (AC per this feature's design discussion) —
+    cephadm's own flag handles that destructively-but-correctly in the
+    SAME command, no separate disk-wipe phase needed for this method."""
+    first_mon = _first_mon_ip(nodes)
+    zap_flag = " --zap-osds" if action_params.get("wipe_osd_disks") else ""
+
+    host_status = [{"host": first_mon, "status": "running"}]
+    on_host_update(list(host_status))
+
+    command = (
+        "command -v cephadm >/dev/null 2>&1 || "
+        "{ echo 'cephadm khong co tren node nay' >&2; exit 1; }; "
+        "fsids=$(cephadm ls 2>/dev/null | grep -o '\"fsid\": *\"[^\"]*\"' | "
+        "sed -E 's/.*\"([a-f0-9-]+)\"$/\\1/' | sort -u); "
+        "if [ -z \"$fsids\" ]; then echo 'Khong tim thay cum cephadm nao tren node nay'; exit 0; fi; "
+        "for fsid in $fsids; do "
+        f"cephadm rm-cluster --fsid \"$fsid\" --force{zap_flag} || exit 1; "
+        "done; "
+        "echo 'Da xoa cum cephadm'"
+    )
+    try:
+        output = execute_command(first_mon, command)
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"Xoá cụm cephadm thất bại trên {first_mon}: {exc}") from exc
+
+    host_status[0]["status"] = "done"
+    last_line = output.strip().splitlines()[-1] if output.strip() else None
+    host_status[0]["message"] = last_line
+    on_host_update(list(host_status))
+
+
+def _phase_delete_manual_stop_daemons(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Discovers and stops+disables every Ceph systemd unit on every node,
+    in ONE remote shell invocation per host (a plain `systemctl list-units
+    'ceph-*'` glob rather than reusing commands.py's
+    _discover_ceph_units — that helper calls execute_command itself from
+    commands.py's own module-level reference, which tests monkeypatching
+    THIS module's execute_command wouldn't intercept; a self-contained
+    shell one-liner keeps this phase testable the same way every other
+    phase in this module already is)."""
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    command = (
+        "units=$(systemctl list-units --all --plain --no-legend 'ceph-*' 2>/dev/null | awk '{print $1}'); "
+        "if [ -z \"$units\" ]; then echo 'Khong tim thay daemon Ceph nao tren node nay'; exit 0; fi; "
+        "for u in $units; do systemctl stop \"$u\" 2>/dev/null; systemctl disable \"$u\" 2>/dev/null; done; "
+        "echo \"Da dung: $units\""
+    )
+    for i, node in enumerate(nodes):
+        host = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            output = execute_command(host, command)
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{host}: dừng daemon Ceph thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        last_line = output.strip().splitlines()[-1] if output.strip() else None
+        host_status[i]["message"] = last_line
+        on_host_update(list(host_status))
+
+
+def _phase_delete_manual_remove_state(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Removes Ceph's own software state (/etc/ceph, /var/lib/ceph) on
+    every node — config, keyrings, mon/mgr data dirs. Deliberately ALWAYS
+    runs regardless of the wipe_osd_disks choice: this is Ceph's software
+    footprint, not the raw OSD block device's data (a ceph-volume lvm OSD's
+    /var/lib/ceph/osd/ceph-<id> is a tmpfs-backed activation mountpoint,
+    not where the real data lives — see _phase_delete_manual_wipe_osd_disk
+    for what actually touches the disk)."""
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    for i, node in enumerate(nodes):
+        host = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(host, "rm -rf /etc/ceph /var/lib/ceph")
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{host}: xoá /etc/ceph, /var/lib/ceph thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Only touches a disk if the operator explicitly opted into
+    wipe_osd_disks — otherwise every host is marked done immediately
+    without a single command sent, so this phase's presence in the fixed
+    phase list is harmless for an operator who chose NOT to wipe anything.
+    `ceph-volume lvm zap --destroy` (not a bare wipefs) — the same tool
+    _phase_ceph_deploy_osd_create used to CREATE the OSD, so it correctly
+    tears down the LVM structures ceph-volume itself created, not just the
+    device's leading bytes."""
+    osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
+    host_status = [{"host": n["ip"], "status": "pending"} for n in osd_nodes]
+    on_host_update(list(host_status))
+
+    if not action_params.get("wipe_osd_disks"):
+        for i, node in enumerate(osd_nodes):
+            host_status[i]["status"] = "done"
+            host_status[i]["message"] = "Bỏ qua — không yêu cầu xoá dữ liệu đĩa"
+        on_host_update(list(host_status))
+        return
+
+    for i, node in enumerate(osd_nodes):
+        ip = node["ip"]
+        osd_disk = node.get("osd_disk")
+        if not osd_disk:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD cần xoá (osd_disk)")
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(ip, f"ceph-volume lvm zap --destroy {shlex.quote(osd_disk)}")
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"Xoá dữ liệu đĩa {osd_disk} trên {ip} thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _clear_cluster_config() -> None:
+    """Inverse of _write_cluster_config — after a successful cluster
+    deletion, the Dashboard must stop trying to monitor a cluster that no
+    longer exists. Same "must not turn a successful deletion into a
+    reported FAILURE" posture run() already applies to _write_cluster_config
+    below (see run()'s own comment)."""
+    fields = {
+        env_config.CLUSTER_ENV_NAMES["ceph_mon_nodes"]: "",
+        env_config.CLUSTER_ENV_NAMES["ceph_mgr_nodes"]: "",
+        env_config.CLUSTER_ENV_NAMES["ceph_osd_nodes"]: "",
+        env_config.CLUSTER_ENV_NAMES["ceph_exec_mode"]: "none",
+    }
+    env_config.update_env_file_batch(fields)
+
+
 # --- rpm-local-specific phase (Story 8.3) -----------------------------------
 #
 # The ONLY phase that differs from Story 8.2's ceph-deploy method (see the
@@ -1070,7 +1257,27 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("osd_create", "Tạo OSD (ceph-volume lvm create)", 80, _phase_ceph_deploy_osd_create),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),
     ],
+    "delete_cluster_cephadm": [
+        ("ssh_check", "Kiểm tra kết nối SSH", 20, _phase_delete_ssh_check),
+        ("delete_cephadm", "Xoá cụm cephadm (cephadm rm-cluster)", 90, _phase_delete_cephadm_cluster),
+    ],
+    "delete_cluster_manual": [
+        ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),
+        ("stop_daemons", "Dừng daemon Ceph trên từng node", 40, _phase_delete_manual_stop_daemons),
+        (
+            "remove_state",
+            "Xoá cấu hình & dữ liệu Ceph (/etc/ceph, /var/lib/ceph)",
+            70,
+            _phase_delete_manual_remove_state,
+        ),
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 90, _phase_delete_manual_wipe_osd_disk),
+    ],
 }
+
+# Deploy vs delete post-phase env-config writes go opposite directions
+# (populate vs clear) — this set is how run() tells them apart without a
+# separate parameter threaded through every call site.
+_DELETE_CLUSTER_ACTION_IDS = frozenset({"delete_cluster_cephadm", "delete_cluster_manual"})
 
 
 def _make_step(step_key: str, label: str, pct: int) -> dict:
@@ -1159,14 +1366,22 @@ def run(
         write_progress(action_pk, progress)
 
     try:
-        _write_cluster_config(action_params, action_id)
+        if action_id in _DELETE_CLUSTER_ACTION_IDS:
+            _clear_cluster_config()
+        else:
+            _write_cluster_config(action_params, action_id)
     except Exception:
         # The cluster itself is up and healthy (verify already passed) —
         # a failure writing the convenience .env shortcut must not turn a
         # successful deploy into a reported FAILURE; the operator can add
-        # the cluster manually via Cài đặt afterward.
+        # the cluster manually via Cài đặt afterward. Same posture applies
+        # in reverse for a successful DELETE: the cluster is genuinely gone
+        # (every phase above already succeeded) — failing to clear the
+        # .env shortcut afterward must not turn that into a reported
+        # FAILURE either; the operator can clear Cài đặt manually.
         logger.exception(
-            "cluster_deploy.run: deploy succeeded but writing .env config failed for action %s",
+            "cluster_deploy.run: action succeeded but writing/clearing .env config failed for "
+            "action %s",
             action_pk,
         )
 

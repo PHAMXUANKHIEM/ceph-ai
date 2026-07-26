@@ -120,6 +120,8 @@ def test_cluster_deploy_action_ids_loaded_from_policy_yaml():
         "deploy_cluster_cephadm",
         "deploy_cluster_ceph_deploy",
         "deploy_cluster_rpm_local",
+        "delete_cluster_cephadm",
+        "delete_cluster_manual",
     }
 
 
@@ -130,6 +132,10 @@ def test_deploy_cluster_action_ids_are_classified_risky():
     assert classify_action("deploy_cluster_cephadm") == ActionClassification.RISKY
     assert classify_action("deploy_cluster_ceph_deploy") == ActionClassification.RISKY
     assert classify_action("deploy_cluster_rpm_local") == ActionClassification.RISKY
+    # 2026-07-26: same reasoning, even more so — tearing down a real
+    # cluster (and optionally wiping OSD disk data) must never be Safe.
+    assert classify_action("delete_cluster_cephadm") == ActionClassification.RISKY
+    assert classify_action("delete_cluster_manual") == ActionClassification.RISKY
 
 
 def test_cluster_deploy_action_ids_disjoint_from_other_families():
