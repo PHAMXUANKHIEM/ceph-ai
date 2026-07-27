@@ -1038,15 +1038,30 @@ def _phase_delete_manual_remove_state(nodes: list[dict], action_params: dict, on
     footprint, not the raw OSD block device's data (a ceph-volume lvm OSD's
     /var/lib/ceph/osd/ceph-<id> is a tmpfs-backed activation mountpoint,
     not where the real data lives — see _phase_delete_manual_wipe_osd_disk
-    for what actually touches the disk)."""
+    for what actually touches the disk).
+
+    Verified live, 2026-07-27: stopping the ceph-osd systemd unit (previous
+    phase) does NOT unmount that tmpfs activation mountpoint — it stays
+    mounted independently of the daemon's own lifecycle, so a bare `rm -rf
+    /var/lib/ceph` fails with "Device or resource busy" on
+    /var/lib/ceph/osd/ceph-<id> every time an OSD was ever activated on that
+    node. Unmount every /var/lib/ceph/... mountpoint first (a plain `umount`
+    is enough now that the daemon is already stopped; `umount -l` is a
+    fallback only, not the primary path, in case anything else still has a
+    file open under it)."""
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
+    unmount_then_remove = (
+        "for m in $(awk '$2 ~ /^\\/var\\/lib\\/ceph\\// {print $2}' /proc/mounts); do "
+        "umount \"$m\" 2>/dev/null || umount -l \"$m\" 2>/dev/null; done; "
+        "rm -rf /etc/ceph /var/lib/ceph"
+    )
     for i, node in enumerate(nodes):
         host = node["ip"]
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
-            execute_command(host, "rm -rf /etc/ceph /var/lib/ceph")
+            execute_command(host, unmount_then_remove)
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
