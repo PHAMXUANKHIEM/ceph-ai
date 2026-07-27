@@ -186,15 +186,21 @@ def test_package_download_builds_expected_command_and_restarts_discovered_units(
     assert "rpm-19.2.0/el$(rpm -E %rhel)/noarch/" in command
 
 
-def test_package_download_nautilus_uses_codename_repo_path_not_exact_version(monkeypatch):
+def test_package_download_nautilus_uses_codename_repo_path_but_pins_exact_version(monkeypatch):
     """Regression, 2026-07-27: verified live against download.ceph.com —
     unlike every later release, Nautilus (14.x) was NEVER published under a
-    per-exact-version directory (rpm-14.2.22/el8/ -> 404) — only the
-    rpm-nautilus/debian-nautilus codename alias exists, which is safe to use
-    forever since Nautilus is long EOL (no future point release could ever
-    change what that alias points to). Every other release keeps using the
-    exact version (see test_package_download_builds_expected_command_and_
-    restarts_discovered_units above)."""
+    per-exact-version REPO PATH (rpm-14.2.22/el8/ -> 404) — only the
+    rpm-nautilus/debian-nautilus codename alias exists, safe to use forever
+    since Nautilus is long EOL. But that alias repo physically hosts EVERY
+    Nautilus point release's RPMs side by side (14.2.10 through 14.2.22) and
+    advertises all of them in its metadata — a bare `dnf install ceph`
+    against it silently resolves to whichever is numerically newest
+    (14.2.22), regardless of target_version. So the exact version MUST
+    still be pinned in the PACKAGE NAME (`ceph-14.2.22`) even though the
+    repo PATH uses the codename. Every other release keeps using the exact
+    version for both (see
+    test_package_download_builds_expected_command_and_restarts_discovered_units
+    above) since its repo is already scoped to one version."""
     monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
     monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
 
@@ -205,7 +211,8 @@ def test_package_download_nautilus_uses_codename_repo_path_not_exact_version(mon
     assert "debian-nautilus/" in command
     assert "rpm-nautilus/el$(rpm -E %rhel)/$(uname -m)/" in command
     assert "rpm-nautilus/el$(rpm -E %rhel)/noarch/" in command
-    assert "14.2.22" not in command
+    assert "dnf install -y ceph-14.2.22 || yum install -y ceph-14.2.22" in command
+    assert "rpm-14.2.22" not in command
 
 
 def test_package_download_with_no_discovered_units_skips_restart(monkeypatch):

@@ -476,6 +476,36 @@ def test_cephadm_deploy_installs_and_starts_chrony_before_bootstrap(monkeypatch)
     assert "systemctl enable --now chronyd" in seen_commands[chrony_index]
 
 
+def test_ceph_deploy_dependencies_clears_stale_ceph_repo_before_installing_chrony(monkeypatch):
+    """Regression, 2026-07-27 (live-verified): `dependencies` runs BEFORE
+    `repo` in every method's phase list — on a retry after a previous
+    attempt's `repo` phase already added a download.ceph.com_rpm-*.repo
+    file that later turned out broken (e.g. a 404 for an unrecognized/typo'd
+    version), that stale file is STILL enabled here, and dnf/yum refuse to
+    do anything (even installing chrony, completely unrelated) while any
+    enabled repo fails metadata refresh. Must clear it before attempting
+    dnf/yum install, same defensive rm -f the `repo` phase's own command
+    already does. Calls the phase function directly (not the full run()
+    pipeline) — later phases (mon_init/wait_quorum/...) need real quorum
+    responses this test doesn't care about providing."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    cluster_deploy_module._phase_ceph_deploy_dependencies(
+        copy.deepcopy(_NODES), {}, lambda status: None
+    )
+
+    command = next(cmd for cmd in seen_commands if "chrony" in cmd)
+    cleanup_pos = command.index("rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo")
+    install_pos = command.index("dnf install -y chrony")
+    assert cleanup_pos < install_pos
+
+
 def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
     """Regression (live-verified 2026-07-26): `cephadm bootstrap` alone
     leaves `ceph` reachable only via the containerized `cephadm shell`
@@ -678,6 +708,90 @@ def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(m
 
     assert written_fields["CEPH_EXEC_MODE"] == "none"
     assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95,10.20.1.21"
+
+
+def test_ceph_deploy_mon_init_clears_stale_scratch_files_before_generating(monkeypatch):
+    """Regression, 2026-07-27 (live-verified): monmaptool --create refuses
+    to overwrite an existing /tmp/ceph-aiops.monmap ("--clobber to
+    overwrite") — these /tmp scratch files are only ever used transiently
+    within this phase and were never cleaned up afterward, so a retry of a
+    failed/aborted deploy attempt always hit this on the SAME node, even
+    one "Xoá cụm" had already torn down (that feature only ever cleaned
+    real Ceph state, /etc/ceph and /var/lib/ceph, never these transient
+    generation-time files). Must clean its own scratch files first so this
+    phase is idempotent across retries."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _ceph_deploy_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    cluster_deploy_module._phase_ceph_deploy_mon_init(
+        copy.deepcopy(_NODES), _cephadm_params(), lambda status: None
+    )
+
+    keygen_command = next(cmd for cmd in seen_commands if "monmaptool --create" in cmd)
+    rm_pos = keygen_command.index("rm -f")
+    monmaptool_pos = keygen_command.index("monmaptool --create")
+    assert rm_pos < monmaptool_pos
+    assert "ceph-aiops-mon.keyring" in keygen_command[rm_pos:monmaptool_pos]
+    assert "ceph-aiops.monmap" in keygen_command[rm_pos:monmaptool_pos]
+
+
+def test_ceph_deploy_packages_pins_exact_version_for_nautilus(monkeypatch):
+    """Regression, 2026-07-27 (verified live): rpm-nautilus/ (the codename
+    alias _build_ceph_package_repo_command falls back to for Nautilus, see
+    that function's docstring) physically hosts EVERY Nautilus point
+    release side by side and advertises all of them in its repodata — a
+    bare `dnf install ceph-mon` there silently resolves to whichever is
+    numerically newest, regardless of which point release was actually
+    requested. Must pin the exact version in the package name for RPM
+    installs whenever that fallback kicked in. Calls the phase function
+    directly — same reasoning as the dependencies-phase regression test
+    above, no need to drive the whole run() pipeline through quorum/mgr/osd
+    just to check one install command's package names."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    nodes = [{"ip": "10.20.1.112", "roles": ["mon", "mgr", "osd"]}]
+    cluster_deploy_module._phase_ceph_deploy_packages(
+        nodes, {"version": "14.2.22"}, lambda status: None
+    )
+
+    command = seen_commands[0]
+    assert "dnf install -y ceph-mgr-14.2.22 ceph-mon-14.2.22 ceph-osd-14.2.22" in command
+    assert "apt-get install -y ceph-mgr ceph-mon ceph-osd" in command  # apt never pins — no ambiguity there
+
+
+def test_ceph_deploy_packages_does_not_pin_version_for_normal_releases(monkeypatch):
+    """Every release except Nautilus already has a repo scoped to exactly
+    one version (see _build_ceph_package_repo_command) — a bare package
+    name there already resolves unambiguously, so pinning is unnecessary
+    (and would be one more way to get the exact NEVRA string wrong for no
+    benefit)."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    nodes = [{"ip": "10.20.1.112", "roles": ["mon"]}]
+    cluster_deploy_module._phase_ceph_deploy_packages(
+        nodes, {"version": "18.2.8"}, lambda status: None
+    )
+
+    command = seen_commands[0]
+    assert "(dnf install -y ceph-mon || yum install -y ceph-mon)" in command
+    assert "18.2.8" not in command
 
 
 def test_ceph_deploy_quorum_timeout_fails(monkeypatch):

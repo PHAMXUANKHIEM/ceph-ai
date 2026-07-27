@@ -450,6 +450,20 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     # (verified live: "nothing provides ceph-mgr-modules-core..." — the
     # package genuinely exists on download.ceph.com, just in the noarch
     # repo this command wasn't enabling). Both repos must be added.
+    # 2026-07-27 fix: `dnf install ceph` (bare, no version) trivially
+    # resolves to the correct version for every release except Nautilus —
+    # everywhere else the repo is scoped to exactly one version (see
+    # `repo_path`'s own note above). rpm-nautilus/ physically hosts EVERY
+    # Nautilus point release side by side and its repodata advertises all
+    # of them as separate installable NEVRAs (verified live), so a bare
+    # `dnf install ceph` there silently resolves to whatever is numerically
+    # newest (currently 14.2.22) regardless of target_version. Pin the
+    # exact version in the package name whenever repo_path had to fall back
+    # to the codename, so an operator targeting an older Nautilus point
+    # release actually gets that version. apt is unaffected — verified
+    # live that debian-nautilus/dists/*/Packages only ever lists the
+    # latest version per suite, no equivalent ambiguity there.
+    rpm_package = f"ceph-{target_version}" if repo_path != target_version else "ceph"
     rpm_snippet = (
         "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo "
         "&& rpm --import https://download.ceph.com/keys/release.asc "
@@ -461,7 +475,7 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
         f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/ 2>/dev/null "
         "|| yum-config-manager --add-repo "
         f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/) "
-        "&& (dnf install -y ceph || yum install -y ceph)"
+        f"&& (dnf install -y {rpm_package} || yum install -y {rpm_package})"
     )
     install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
 
@@ -688,7 +702,8 @@ def _delete_cluster_preview_command(host: str | None, params: dict) -> str:
     )
     return (
         f"Dừng mọi daemon Ceph (systemctl stop/disable) trên từng node, xoá /etc/ceph + "
-        f"/var/lib/ceph{wipe_note} — xem đầy đủ khi bắt đầu xoá"
+        f"/var/lib/ceph, gỡ cài đặt gói Ceph khỏi hệ điều hành (dnf/apt remove ceph*/librados*/"
+        f"librbd*/libcephfs*){wipe_note} — xem đầy đủ khi bắt đầu xoá"
     )
 
 

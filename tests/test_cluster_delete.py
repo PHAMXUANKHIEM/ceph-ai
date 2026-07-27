@@ -63,7 +63,13 @@ def test_delete_cephadm_uses_same_phases_as_manual(monkeypatch):
 
     assert result is True
     steps_by_key = {s["step"]: s for s in calls[-1][1]}
-    assert set(steps_by_key) == {"ssh_check", "stop_daemons", "remove_state", "wipe_osd_disk"}
+    assert set(steps_by_key) == {
+        "ssh_check",
+        "stop_daemons",
+        "remove_state",
+        "remove_packages",
+        "wipe_osd_disk",
+    }
     assert all(step["status"] == "done" for step in steps_by_key.values())
     assert written_fields["CEPH_MON_NODES"] == ""
     assert written_fields["CEPH_EXEC_MODE"] == "none"
@@ -142,6 +148,7 @@ def test_delete_manual_happy_path_stops_daemons_and_removes_state_but_keeps_disk
     steps_by_key = {s["step"]: s for s in calls[-1][1]}
     assert steps_by_key["stop_daemons"]["status"] == "done"
     assert steps_by_key["remove_state"]["status"] == "done"
+    assert steps_by_key["remove_packages"]["status"] == "done"
     assert steps_by_key["wipe_osd_disk"]["status"] == "done"
 
     # wipe_osd_disks=False -> ceph-volume must NEVER be invoked.
@@ -149,9 +156,52 @@ def test_delete_manual_happy_path_stops_daemons_and_removes_state_but_keeps_disk
     # /etc/ceph, /var/lib/ceph removal must ALWAYS run regardless of the
     # disk-wipe choice — this is Ceph's own software state, not raw disk data.
     assert any("rm -rf /etc/ceph /var/lib/ceph" in cmd for _host, cmd in seen_commands)
+    # Package removal must ALWAYS run too — same reasoning, plus (2026-07-27
+    # regression) a node still carrying an earlier cluster's packages blocks
+    # a later "Dựng cụm" at a different major version outright.
+    assert any("dnf remove -y" in cmd for _host, cmd in seen_commands)
+    # "xoá cho kĩ", 2026-07-27: /tmp scratch generation files (a STALE one
+    # of these made a later deploy attempt's monmaptool fail outright) and
+    # this app's own added Ceph repo files must also be cleaned, so a node
+    # is genuinely reusable for a fresh "Dựng cụm" afterward.
+    assert any("/tmp/ceph-aiops*" in cmd for _host, cmd in seen_commands)
+    assert any("download.ceph.com_rpm-*.repo" in cmd for _host, cmd in seen_commands)
 
     assert written_fields["CEPH_MON_NODES"] == ""
     assert written_fields["CEPH_EXEC_MODE"] == "none"
+
+
+def test_delete_manual_remove_packages_uses_globs_and_tolerates_nothing_installed(monkeypatch):
+    """Regression, 2026-07-27 (verified live): a node still carrying an
+    earlier cluster's Ceph packages (e.g. Quincy 17.2.7, left behind by a
+    prior deploy that was later "Xoá cụm"-ed — _phase_delete_manual_remove_state
+    only ever removed /etc/ceph, /var/lib/ceph, never the packages
+    themselves) makes a LATER "Dựng cụm" at a DIFFERENT major version fail
+    with a dnf NEVRA conflict ("cannot install both ceph-mgr-2:14.2.22...
+    and ceph-mgr-2:17.2.7... from @System"). This phase must actually
+    uninstall the Ceph package family so "Xoá cụm" really does leave the
+    node clean, and must tolerate a node with nothing Ceph-related
+    installed at all (glob matches nothing -> dnf would otherwise exit
+    non-zero)."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return "no packages installed matching pattern"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    nodes = [{"ip": "10.20.1.112", "roles": ["mon", "mgr", "osd"]}]
+    cluster_deploy_module._phase_delete_manual_remove_packages(nodes, {}, lambda status: None)
+
+    command = seen_commands[0]
+    assert "dnf remove -y 'ceph*'" in command
+    assert "librados*" in command
+    assert "libcephfs*" in command
+    assert "librbd*" in command
+    assert "|| true)" in command  # nothing installed to remove must not fail this phase
+    # Never touch epel-release — general-purpose repo, not Ceph-specific.
+    assert "epel-release" not in command
 
 
 def test_delete_manual_wipes_each_osd_nodes_own_disk_when_requested(monkeypatch):

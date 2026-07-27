@@ -567,7 +567,20 @@ def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_h
     fresh node even after `apt-get install chrony` succeeded, because the
     service was installed but never started), then step the clock so a
     freshly-installed lab VM with a badly drifted clock doesn't fail cephx
-    auth later (same reasoning as COMMANDS["resync_ntp"])."""
+    auth later (same reasoning as COMMANDS["resync_ntp"]).
+
+    2026-07-27 fix (verified live): this phase runs BEFORE `repo`/
+    `repo_local` in every method's phase list (see _PHASES_BY_ACTION_ID
+    below), so on a RETRY after a previous attempt failed partway through
+    (e.g. an unrecognized target_version, or download.ceph.com being
+    temporarily unreachable), any `download.ceph.com_rpm-*.repo` file that
+    previous attempt's `repo` phase already added is still sitting there,
+    still enabled — dnf/yum refuse to do ANYTHING (even installing chrony,
+    completely unrelated) while any enabled repo fails to refresh, so a
+    stale broken Ceph repo blocks this phase too, not just `repo` itself.
+    Same defensive `rm -f` the `repo` phase's own command already does,
+    just also done here first.
+    """
     apt_snippet = (
         "(command -v python3 >/dev/null 2>&1 || apt-get install -y python3) && "
         "(systemctl stop firewalld 2>/dev/null || true) && "
@@ -580,6 +593,7 @@ def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_h
         "(command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)) && "
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
+        "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo && "
         "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "
         "systemctl enable --now chronyd && "
         "(chronyc makestep || true)"
@@ -688,7 +702,29 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
     command depends on that host's OWN role — a node with multiple roles
     (e.g. mon+osd) gets multiple packages in one install command. Plain
     per-host branch inside this phase function, not a new generic capability
-    in commands.py's dispatch tables (see this story's Dev Notes)."""
+    in commands.py's dispatch tables (see this story's Dev Notes).
+
+    2026-07-27 fix (verified live): for every release EXCEPT Nautilus, the
+    repo this phase installs from is scoped to exactly ONE version (see
+    `_build_ceph_package_repo_command`'s docstring — `rpm-<version>/` is a
+    frozen per-release archive), so a bare `dnf install ceph-mon` (no
+    version pin) trivially always resolves to the one version present.
+    Nautilus is the exception: `rpm-nautilus/` physically hosts EVERY
+    Nautilus point release's RPMs side by side (14.2.10 through 14.2.22 as
+    of this fix), and its repodata genuinely advertises all of them as
+    separate installable NEVRAs — `dnf install ceph-mon` there silently
+    resolves to whichever is numerically newest (currently 14.2.22),
+    REGARDLESS of which Nautilus point release the operator actually
+    picked. Pin the exact version in the package name for RPM installs
+    whenever `repo_path_version()` had to fall back to the codename, so an
+    operator picking an older-but-still-Nautilus point release (e.g.
+    14.2.15) actually gets that version, not silently 14.2.22. apt/dpkg is
+    unaffected — debian-nautilus/dists/*/Packages only ever lists the
+    latest version per suite (verified live), so there is no equivalent
+    ambiguity to pin against there."""
+    version = action_params.get("version", "")
+    pin_exact_version = repo_path_version(version) != version
+
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
 
@@ -706,8 +742,9 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         package_list = " ".join(packages)
+        rpm_package_list = " ".join(f"{pkg}-{version}" for pkg in packages) if pin_exact_version else package_list
         apt_snippet = f"apt-get install -y {package_list}"
-        rpm_snippet = f"(dnf install -y {package_list} || yum install -y {package_list})"
+        rpm_snippet = f"(dnf install -y {rpm_package_list} || yum install -y {rpm_package_list})"
         install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
         try:
             execute_command(host, install_command)
@@ -756,6 +793,17 @@ def _phase_ceph_deploy_mon_init(nodes: list[dict], action_params: dict, on_host_
             for n in mon_nodes
         )
         keygen_command = (
+            # 2026-07-27 fix (verified live): monmaptool --create refuses to
+            # overwrite an existing /tmp/ceph-aiops.monmap ("--clobber to
+            # overwrite") — these /tmp scratch files (see _REMOTE_MON_KEYRING_PATH/
+            # _REMOTE_MONMAP_PATH) are never cleaned up after use, so a
+            # RETRY of a failed/aborted deploy attempt always hit this,
+            # even on a node "Xoá cụm" had already fully torn down (that
+            # feature only ever cleaned /etc/ceph, /var/lib/ceph — real
+            # Ceph state — never these transient generation-time scratch
+            # files under /tmp). Clean them first so this phase is
+            # idempotent across retries.
+            f"rm -f {shlex.quote(_REMOTE_MON_KEYRING_PATH)} {shlex.quote(_REMOTE_MONMAP_PATH)} && "
             f"ceph-authtool --create-keyring {shlex.quote(_REMOTE_MON_KEYRING_PATH)} "
             f"--gen-key -n mon. --cap mon 'allow *' && "
             f"ceph-authtool --create-keyring {shlex.quote(_REMOTE_ADMIN_KEYRING_PATH)} "
@@ -1055,13 +1103,32 @@ def _phase_delete_manual_remove_state(nodes: list[dict], action_params: dict, on
     node. Unmount every /var/lib/ceph/... mountpoint first (a plain `umount`
     is enough now that the daemon is already stopped; `umount -l` is a
     fallback only, not the primary path, in case anything else still has a
-    file open under it)."""
+    file open under it).
+
+    2026-07-27, "xoá cho kĩ": also removes every OTHER trace this app's own
+    Deploy phases leave on a node, so a later "Dựng cụm" on the SAME node
+    starts genuinely clean instead of tripping over leftovers from the
+    cluster just deleted — (1) /tmp/ceph-aiops* scratch files
+    (_phase_ceph_deploy_mon_init's fsid/monmap/keyring generation scratch
+    space, never cleaned up after use — verified live: a STALE one of these
+    is exactly what made monmaptool refuse a later deploy attempt with
+    "--clobber to overwrite"), and (2) the Ceph package repo files this
+    app's own install phases add (download.ceph.com_rpm-*.repo,
+    ceph.list, and rpm-local's own ceph-aiops-local.repo/.list) — belt and
+    suspenders alongside the dependencies phase's own defensive cleanup of
+    the same files, since a node could otherwise sit with a now-pointless
+    enabled repo indefinitely between one cluster's deletion and the next
+    deploy. Never touches an operator's own repo files (different names) or
+    anything under /etc/ceph, /var/lib/ceph beyond what's already covered
+    above."""
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
     unmount_then_remove = (
         "for m in $(awk '$2 ~ /^\\/var\\/lib\\/ceph\\// {print $2}' /proc/mounts); do "
         "umount \"$m\" 2>/dev/null || umount -l \"$m\" 2>/dev/null; done; "
-        "rm -rf /etc/ceph /var/lib/ceph"
+        "rm -rf /etc/ceph /var/lib/ceph /tmp/ceph-aiops*; "
+        "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo /etc/yum.repos.d/ceph-aiops-local.repo "
+        "/etc/apt/sources.list.d/ceph.list /etc/apt/sources.list.d/ceph-aiops-local.list"
     )
     for i, node in enumerate(nodes):
         host = node["ip"]
@@ -1073,6 +1140,60 @@ def _phase_delete_manual_remove_state(nodes: list[dict], action_params: dict, on
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
             raise DeployPhaseError(f"{host}: xoá /etc/ceph, /var/lib/ceph thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _phase_delete_manual_remove_packages(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Uninstalls the Ceph OS packages themselves (ceph/ceph-mon/ceph-mgr/
+    ceph-osd/cephadm/librados2/librbd1/libcephfs2/python3-ceph*/...) —
+    _phase_delete_manual_remove_state above only ever removed Ceph's own
+    software STATE (/etc/ceph, /var/lib/ceph), never the packages, so a
+    node that was ever part of a cluster kept them installed indefinitely
+    even after "Xoá cụm".
+
+    Verified live, 2026-07-27: a node still carrying an earlier cluster's
+    packages (e.g. Quincy 17.2.7, left behind by a prior cephadm deploy
+    that was later "Xoá cụm"-ed) makes a LATER "Dựng cụm" attempt at a
+    different major version (e.g. Nautilus 14.2.22) fail outright —
+    ceph-mgr/ceph-osd/librados2 etc. all require an EXACT matching version
+    of each other, so dnf refuses to have both 14.2.22 and 17.2.7 sets
+    installed side by side ("cannot install both ceph-mgr-2:14.2.22... and
+    ceph-mgr-2:17.2.7... from @System"). "Xoá cụm" deleting a cluster
+    should mean the node is actually clean again, able to host a
+    differently-versioned cluster next time — not just have its config
+    wiped while the old package set silently lingers.
+
+    Glob-based removal (`ceph*`/`librados*`/...) so this doesn't need its
+    own hardcoded package list to keep in sync with every install phase —
+    deliberately does NOT touch epel-release (a general-purpose repo the
+    dependencies phase enables, not Ceph-specific — removing it could
+    affect other things an operator installed via EPEL unrelated to Ceph).
+    Every command is wrapped in `|| true`: a node with nothing Ceph-related
+    installed (e.g. never had OSD/MGR roles) has nothing to remove, and
+    that must never fail this phase."""
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    package_globs = "'ceph*' 'libcephfs*' 'librados*' 'librbd*' 'python3-ceph*' 'python3-rados' 'python3-rbd'"
+    apt_snippet = (
+        f"(apt-get purge -y {package_globs} 2>/dev/null || true) && "
+        "(apt-get autoremove -y 2>/dev/null || true)"
+    )
+    rpm_snippet = (
+        f"(dnf remove -y {package_globs} 2>/dev/null "
+        f"|| yum remove -y {package_globs} 2>/dev/null || true)"
+    )
+    remove_packages_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+    for i, node in enumerate(nodes):
+        host = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(host, remove_packages_command)
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{host}: gỡ cài đặt gói Ceph thất bại: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
 
@@ -1262,25 +1383,27 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
     # cephadm's own rm-cluster further.
     "delete_cluster_cephadm": [
         ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),
-        ("stop_daemons", "Dừng daemon Ceph trên từng node", 40, _phase_delete_manual_stop_daemons),
+        ("stop_daemons", "Dừng daemon Ceph trên từng node", 35, _phase_delete_manual_stop_daemons),
         (
             "remove_state",
             "Xoá cấu hình & dữ liệu Ceph (/etc/ceph, /var/lib/ceph)",
-            70,
+            60,
             _phase_delete_manual_remove_state,
         ),
-        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 90, _phase_delete_manual_wipe_osd_disk),
+        ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 80, _phase_delete_manual_remove_packages),
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 95, _phase_delete_manual_wipe_osd_disk),
     ],
     "delete_cluster_manual": [
         ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),
-        ("stop_daemons", "Dừng daemon Ceph trên từng node", 40, _phase_delete_manual_stop_daemons),
+        ("stop_daemons", "Dừng daemon Ceph trên từng node", 35, _phase_delete_manual_stop_daemons),
         (
             "remove_state",
             "Xoá cấu hình & dữ liệu Ceph (/etc/ceph, /var/lib/ceph)",
-            70,
+            60,
             _phase_delete_manual_remove_state,
         ),
-        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 90, _phase_delete_manual_wipe_osd_disk),
+        ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 80, _phase_delete_manual_remove_packages),
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 95, _phase_delete_manual_wipe_osd_disk),
     ],
 }
 
