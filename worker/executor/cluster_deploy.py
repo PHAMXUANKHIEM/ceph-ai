@@ -898,6 +898,50 @@ def _phase_ceph_deploy_wait_quorum(nodes: list[dict], action_params: dict, on_ho
     raise DeployPhaseError(f"Không đạt quorum MON sau {timeout}s{detail}")
 
 
+def _phase_ceph_deploy_mon_security(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Runs right after MON quorum is established — enables msgr2 (the v2
+    wire protocol) and disables the legacy insecure-global-id-reclaim
+    allowance, via the first MON node (any mon that reached quorum can run
+    these against the whole cluster, same reasoning as wait_quorum's own
+    query above).
+
+    Verified live, 2026-07-27: _phase_ceph_deploy_mon_init generates its
+    monmap via a plain `monmaptool --add <hostname> <ip>` (no explicit
+    v1:/v2: address), which binds each mon to v1 ONLY — every cluster built
+    via this method (ceph-deploy or rpm-local, both share this same mon_init
+    phase) started already reporting MON_MSGR2_NOT_ENABLED +
+    AUTH_INSECURE_GLOBAL_ID_RECLAIM_ALLOWED health warnings out of the box,
+    exactly the pair this app's OWN Watcher flagged as investigate_manually
+    incidents against a real cluster built this way this session — an
+    operator had to fix both by hand after every single deploy. Both
+    commands are idempotent/non-disruptive (verified live: `ceph mon
+    enable-msgr2` briefly drops the mon it's run through out of quorum
+    while it rebinds, self-recovers within seconds; `ceph config set` is
+    just a config write) — safe to always run, not gated behind any
+    operator choice."""
+    mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
+    if not mon_nodes:
+        raise DeployPhaseError("Không có node MON nào trong cấu hình")
+    first_mon_ip = mon_nodes[0]["ip"]
+
+    host_status = [{"host": first_mon_ip, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        execute_command(
+            first_mon_ip,
+            "ceph mon enable-msgr2 && "
+            "ceph config set mon auth_allow_insecure_global_id_reclaim false",
+        )
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"{first_mon_ip}: bật msgr2 / tắt insecure global-id-reclaim thất bại: {exc}"
+        ) from exc
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
 def _phase_ceph_deploy_mgr_create(nodes: list[dict], action_params: dict, on_host_update) -> None:
     mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
     if not mon_nodes:
@@ -1347,6 +1391,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("packages", "Cài gói Ceph theo vai trò từng node", 40, _phase_ceph_deploy_packages),
         ("mon_init", "Khởi tạo MON (fsid, monmap, keyring, mkfs)", 55, _phase_ceph_deploy_mon_init),
         ("wait_quorum", "Chờ MON đạt quorum", 60, _phase_ceph_deploy_wait_quorum),
+        ("mon_security", "Bật msgr2, tắt insecure global-id-reclaim", 62, _phase_ceph_deploy_mon_security),
         ("mgr_create", "Tạo MGR", 65, _phase_ceph_deploy_mgr_create),
         ("osd_create", "Tạo OSD (ceph-volume lvm create)", 80, _phase_ceph_deploy_osd_create),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),
@@ -1358,6 +1403,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("packages", "Cài gói Ceph theo vai trò từng node", 40, _phase_ceph_deploy_packages),
         ("mon_init", "Khởi tạo MON (fsid, monmap, keyring, mkfs)", 55, _phase_ceph_deploy_mon_init),
         ("wait_quorum", "Chờ MON đạt quorum", 60, _phase_ceph_deploy_wait_quorum),
+        ("mon_security", "Bật msgr2, tắt insecure global-id-reclaim", 62, _phase_ceph_deploy_mon_security),
         ("mgr_create", "Tạo MGR", 65, _phase_ceph_deploy_mgr_create),
         ("osd_create", "Tạo OSD (ceph-volume lvm create)", 80, _phase_ceph_deploy_osd_create),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),

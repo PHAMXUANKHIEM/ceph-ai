@@ -740,6 +740,51 @@ def test_ceph_deploy_mon_init_clears_stale_scratch_files_before_generating(monke
     assert "ceph-aiops.monmap" in keygen_command[rm_pos:monmaptool_pos]
 
 
+def test_ceph_deploy_mon_security_enables_msgr2_and_disables_insecure_reclaim(monkeypatch):
+    """2026-07-27, operator request after seeing these on a real deployed
+    cluster: _phase_ceph_deploy_mon_init's monmaptool generates a v1-only
+    monmap, so every cluster built via ceph-deploy/rpm-local previously
+    started already reporting MON_MSGR2_NOT_ENABLED +
+    AUTH_INSECURE_GLOBAL_ID_RECLAIM_ALLOWED health warnings — this app's own
+    Watcher flagged both as investigate_manually incidents (verified live)
+    against a real cluster built this way, requiring manual `ceph mon
+    enable-msgr2` + `ceph config set ...` after every single deploy. Now
+    run automatically, right after quorum, via the first MON node."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append((host, command))
+        return _ceph_deploy_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    cluster_deploy_module._phase_ceph_deploy_mon_security(
+        copy.deepcopy(_NODES), {}, lambda status: None
+    )
+
+    first_mon_ip = _NODES[0]["ip"]
+    host, command = next(
+        (h, c) for h, c in seen_commands if "enable-msgr2" in c
+    )
+    assert host == first_mon_ip
+    assert "ceph mon enable-msgr2" in command
+    assert "ceph config set mon auth_allow_insecure_global_id_reclaim false" in command
+
+
+def test_ceph_deploy_mon_security_failure_raises_deploy_phase_error(monkeypatch):
+    def fake(host, command):
+        if "enable-msgr2" in command:
+            raise ExecutorError(f"{host}: boom")
+        return _ceph_deploy_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    with pytest.raises(DeployPhaseError, match="msgr2"):
+        cluster_deploy_module._phase_ceph_deploy_mon_security(
+            copy.deepcopy(_NODES), {}, lambda status: None
+        )
+
+
 def test_ceph_deploy_packages_pins_exact_version_for_nautilus(monkeypatch):
     """Regression, 2026-07-27 (verified live): rpm-nautilus/ (the codename
     alias _build_ceph_package_repo_command falls back to for Nautilus, see
