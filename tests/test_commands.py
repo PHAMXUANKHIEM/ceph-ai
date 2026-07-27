@@ -186,6 +186,28 @@ def test_package_download_builds_expected_command_and_restarts_discovered_units(
     assert "rpm-19.2.0/el$(rpm -E %rhel)/noarch/" in command
 
 
+def test_package_download_nautilus_uses_codename_repo_path_not_exact_version(monkeypatch):
+    """Regression, 2026-07-27: verified live against download.ceph.com —
+    unlike every later release, Nautilus (14.x) was NEVER published under a
+    per-exact-version directory (rpm-14.2.22/el8/ -> 404) — only the
+    rpm-nautilus/debian-nautilus codename alias exists, which is safe to use
+    forever since Nautilus is long EOL (no future point release could ever
+    change what that alias points to). Every other release keeps using the
+    exact version (see test_package_download_builds_expected_command_and_
+    restarts_discovered_units above)."""
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "14.2.22"}
+    )
+
+    assert "debian-nautilus/" in command
+    assert "rpm-nautilus/el$(rpm -E %rhel)/$(uname -m)/" in command
+    assert "rpm-nautilus/el$(rpm -E %rhel)/noarch/" in command
+    assert "14.2.22" not in command
+
+
 def test_package_download_with_no_discovered_units_skips_restart(monkeypatch):
     monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
     monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: "")

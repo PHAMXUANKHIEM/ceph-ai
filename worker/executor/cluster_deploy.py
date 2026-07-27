@@ -23,7 +23,7 @@ import time
 import uuid
 
 from shared import env_config
-from shared.ceph_releases import codename_for_version
+from shared.ceph_releases import codename_for_version, repo_path_version
 from worker.executor.commands import _package_manager_branch
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy.gate import VALID_CLUSTER_DEPLOY_ACTION_IDS
@@ -621,13 +621,20 @@ def _build_ceph_package_repo_command(version: str) -> str:
     already made (2026-07-24, verified live): the codename alias (e.g.
     rpm-quincy/) only ever carries the OS versions the LATEST point release
     of that codename still supports, silently becoming an empty/404 repo for
-    an older-but-still-supported OS.
+    an older-but-still-supported OS. EXCEPT Nautilus (see
+    `shared/ceph_releases.py::repo_path_version`'s docstring, verified live
+    2026-07-27): download.ceph.com never published a per-exact-version
+    directory for Nautilus at all, only the codename alias — which, unlike
+    every later release, is now frozen forever since Nautilus is EOL.
+    `repo_path_version()` returns the codename instead of the raw version
+    for that one case; every other release still gets the exact version.
     """
+    repo_path = repo_path_version(version)
     apt_snippet = (
         "wget -q -O- https://download.ceph.com/keys/release.asc "
         "| gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg "
         f"&& echo \"deb [signed-by=/usr/share/keyrings/ceph-archive-keyring.gpg] "
-        f"https://download.ceph.com/debian-{version}/ $(lsb_release -sc) main\" "
+        f"https://download.ceph.com/debian-{repo_path}/ $(lsb_release -sc) main\" "
         "> /etc/apt/sources.list.d/ceph.list "
         "&& apt-get update -y"
     )
@@ -635,13 +642,13 @@ def _build_ceph_package_repo_command(version: str) -> str:
         "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo "
         "&& rpm --import https://download.ceph.com/keys/release.asc "
         "&& (dnf config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{version}/el$(rpm -E %rhel)/$(uname -m)/ 2>/dev/null "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/$(uname -m)/ 2>/dev/null "
         "|| yum-config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{version}/el$(rpm -E %rhel)/$(uname -m)/) "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/$(uname -m)/) "
         "&& (dnf config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{version}/el$(rpm -E %rhel)/noarch/ 2>/dev/null "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/ 2>/dev/null "
         "|| yum-config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{version}/el$(rpm -E %rhel)/noarch/)"
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/)"
     )
     return _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
 

@@ -525,6 +525,21 @@ def test_cephadm_add_repo_uses_exact_version_not_release_codename(monkeypatch):
     assert "--release" not in add_repo_cmd
 
 
+def test_build_ceph_package_repo_command_nautilus_uses_codename_not_exact_version():
+    """Regression, 2026-07-27: verified live against download.ceph.com —
+    unlike every later release (which this command correctly targets by
+    exact version — see test_cephadm_add_repo_uses_exact_version_not_release_codename
+    above), Nautilus (14.x) was NEVER published under a per-exact-version
+    directory at all (rpm-14.2.22/el8/ -> 404) — only the
+    rpm-nautilus/debian-nautilus codename alias exists, safe to use forever
+    since Nautilus is long EOL."""
+    command = cluster_deploy_module._build_ceph_package_repo_command("14.2.22")
+
+    assert "debian-nautilus/" in command
+    assert "rpm-nautilus/el$(rpm -E %rhel)/" in command
+    assert "14.2.22" not in command
+
+
 def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
     """Regression (live-verified 2026-07-26): `cephadm install ceph-common`
     left `ceph-common` unfindable via yum TWICE in a row — once with

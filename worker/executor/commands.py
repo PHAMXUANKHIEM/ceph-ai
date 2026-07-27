@@ -389,7 +389,7 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
             "Ceph systemd unit(s) and detect its package manager — no host given"
         )
     target_version = _require_target_version(params)
-    from shared.ceph_releases import codename_for_version
+    from shared.ceph_releases import codename_for_version, repo_path_version
 
     # codename is no longer used to build the repo PATH below (see
     # 2026-07-24 note) — this lookup only remains as a sanity check that
@@ -411,11 +411,18 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     # specific point release originally shipped) — using target_version
     # instead of codename here is what actually makes an upgrade to an
     # older still-supported-on-your-OS point release possible at all.
+    # 2026-07-27 fix: EXCEPT Nautilus, where download.ceph.com never
+    # published a per-exact-version directory at all (verified live) — only
+    # the codename alias, which is safe to use forever for Nautilus
+    # specifically since it's long EOL and will never get another point
+    # release. repo_path_version() returns the codename only for that one
+    # case; every other release still gets target_version unchanged.
+    repo_path = repo_path_version(target_version)
     apt_snippet = (
         "wget -q -O- https://download.ceph.com/keys/release.asc "
         "| gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg "
         f"&& echo \"deb [signed-by=/usr/share/keyrings/ceph-archive-keyring.gpg] "
-        f"https://download.ceph.com/debian-{target_version}/ $(lsb_release -sc) main\" "
+        f"https://download.ceph.com/debian-{repo_path}/ $(lsb_release -sc) main\" "
         "> /etc/apt/sources.list.d/ceph.list "
         "&& apt-get update -y && apt-get install -y ceph"
     )
@@ -447,13 +454,13 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
         "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo "
         "&& rpm --import https://download.ceph.com/keys/release.asc "
         "&& (dnf config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{target_version}/el$(rpm -E %rhel)/$(uname -m)/ 2>/dev/null "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/$(uname -m)/ 2>/dev/null "
         "|| yum-config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{target_version}/el$(rpm -E %rhel)/$(uname -m)/) "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/$(uname -m)/) "
         "&& (dnf config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{target_version}/el$(rpm -E %rhel)/noarch/ 2>/dev/null "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/ 2>/dev/null "
         "|| yum-config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{target_version}/el$(rpm -E %rhel)/noarch/) "
+        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/) "
         "&& (dnf install -y ceph || yum install -y ceph)"
     )
     install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})

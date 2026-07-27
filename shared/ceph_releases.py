@@ -24,10 +24,27 @@ caller can type any x.y.z into directly (e.g. a very new point release
 this list hasn't been extended for yet, or an internal-only build)."""
 
 RELEASES: dict[int, dict[str, str]] = {
+    # `repo_path_uses_codename`: verified live against download.ceph.com,
+    # 2026-07-27 — Nautilus is the ONE release in this table that was NEVER
+    # published under a per-exact-version directory at all (rpm-14.2.22/el8/
+    # -> 404, debian-14.2.22/ -> 404 too); only the rolling
+    # rpm-nautilus/debian-nautilus codename alias ever existed for it (both
+    # confirmed 200 on el7/el8). Every later release (Octopus+) DOES have
+    # real per-version directories, which repo_path_version() below prefers
+    # for them (see worker/executor/cluster_deploy.py's
+    # _build_ceph_package_repo_command docstring for why: the codename alias
+    # is a ROLLING pointer that can silently drop an older OS's packages
+    # once a later point release stops shipping them). Nautilus has no such
+    # risk going forward — it EOL'd 2021-06-29 (per download.ceph.com's own
+    # debian-nautilus/dists/ listing) and will never get another point
+    # release, so its codename alias is permanently frozen at 14.2.22 and
+    # safe to reference by codename forever. Every other entry below omits
+    # this key (defaults to False via `.get()`).
     14: {
         "codename": "nautilus",
         "next_min_version": "15.2.0",
         "versions": [f"14.2.{p}" for p in range(0, 23)],
+        "repo_path_uses_codename": True,
     },
     15: {
         "codename": "octopus",
@@ -110,3 +127,23 @@ def codename_for_version(version: str) -> str | None:
         return None
     release = RELEASES.get(major)
     return release["codename"] if release else None
+
+
+def repo_path_version(version: str) -> str:
+    """The path segment (`rpm-<this>/`, `debian-<this>/`) to actually use
+    when building a download.ceph.com repo URL for `version`. Normally just
+    `version` itself unchanged — every caller building these URLs already
+    deliberately prefers the exact-version path over the codename's rolling
+    alias for that reason (see worker/executor/cluster_deploy.py's
+    `_build_ceph_package_repo_command` docstring). Nautilus is the one
+    release where that per-version path never existed at all (see this
+    module's `repo_path_uses_codename` comment above) — for it, and only
+    it, this returns the codename instead. Callers must still call
+    `codename_for_version(version) is None` themselves first to reject an
+    unrecognized version — this function has no such guard and just
+    echoes `version` back unchanged for anything not in RELEASES."""
+    major = major_version(version)
+    release = RELEASES.get(major) if major is not None else None
+    if release is not None and release.get("repo_path_uses_codename"):
+        return release["codename"]
+    return version
