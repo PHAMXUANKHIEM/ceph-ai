@@ -242,6 +242,24 @@ def _start_process(module: str, log_path: Path, env: dict) -> int:
     return proc.pid
 
 
+def _sync_cluster_settings_from_env() -> None:
+    """Cluster node config can be written to .env by a process OTHER than
+    this Dashboard one — worker/executor/cluster_deploy.py runs inside the
+    Worker process and writes CLUSTER_ENV_NAMES fields directly to .env right
+    after a successful "Dựng cụm" (build cluster) deploy. This Dashboard
+    process's own `settings` singleton loaded .env once at import time and
+    has no way to notice that write on its own, so without this, the
+    "Khởi động lại Worker/Watcher" buttons on the deploy-cluster page would
+    restart fresh processes with the explicit CLUSTER_ENV_NAMES override
+    below still pointing at whatever cluster was configured when THIS
+    Dashboard process last started — not the cluster that was just deployed.
+    Called right before _start_worker()/_start_watcher() build child_env."""
+    fresh = env_config.read_env_values(list(CLUSTER_ENV_NAMES.values()))
+    for field, env_name in CLUSTER_ENV_NAMES.items():
+        if env_name in fresh:
+            setattr(settings, field, fresh[env_name])
+
+
 def _start_worker() -> int:
     # Explicit env= override: the freshly-saved key/model must always win
     # over whatever the Dashboard process's own os.environ happens to hold
@@ -257,6 +275,7 @@ def _start_worker() -> int:
     # too — a Worker restarted here (e.g. right after saving new patch
     # settings) must see the CURRENT cluster node list, not a stale one
     # from whenever it originally started.
+    _sync_cluster_settings_from_env()
     child_env = {
         **os.environ,
         ROUTER_API_KEY_ENV_NAME: settings.router_api_key,
@@ -305,6 +324,7 @@ def _start_watcher() -> int:
     # docker env — would otherwise silently override the freshly saved
     # `.env` values for the new Watcher process, violating AC #3's "apply
     # immediately" guarantee).
+    _sync_cluster_settings_from_env()
     child_env = {
         **os.environ,
         **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},

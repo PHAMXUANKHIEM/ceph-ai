@@ -73,6 +73,24 @@ def write_env_lines(new_lines: list[str]) -> None:
     os.replace(tmp_path, ENV_PATH)
 
 
+def read_env_values(names: list[str]) -> dict[str, str]:
+    """Parse the CURRENT .env file's raw text for the given NAME=value keys.
+    Used to detect changes written to .env by a DIFFERENT process than the
+    one calling this — e.g. worker/executor/cluster_deploy.py runs inside the
+    Worker process and calls update_env_file_batch() directly after a
+    successful "Dựng cụm" deploy; the Dashboard's own `settings` singleton
+    (config/settings.py, pydantic-settings) only ever loads .env once at
+    import time and has no way to notice that write on its own."""
+    if not ENV_PATH.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in ENV_PATH.read_text().splitlines():
+        for name in names:
+            if line.startswith(f"{name}="):
+                values[name] = line[len(name) + 1 :]
+    return values
+
+
 def update_env_file(env_var_name: str, value: str) -> None:
     """Replace the line `env_var_name=...` in .env if present, else append it."""
     existing_lines = ENV_PATH.read_text().splitlines() if ENV_PATH.exists() else []
