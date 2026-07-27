@@ -988,10 +988,18 @@ def test_execute_approved_action_persists_execution_progress_per_host(
         action = session.get(Action, action_pk)
         progress = json.loads(action.execution_progress)
 
-    assert progress == [
+    # 2026-07-27: progress entries also carry command/started_at/finished_at
+    # (used to render a per-step Markdown log on the Upgrade page) — check
+    # the fields this test actually cares about rather than exact equality,
+    # so it doesn't have to be updated every time a new field is added.
+    assert [{"host": p["host"], "status": p["status"]} for p in progress] == [
         {"host": "10.20.1.112", "status": "done"},
         {"host": "10.20.1.95", "status": "done"},
     ]
+    for p in progress:
+        assert p["command"]
+        assert p["started_at"]
+        assert p["finished_at"]
 
 
 def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monkeypatch):
@@ -1016,7 +1024,12 @@ def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monk
         action = session.get(Action, action_pk)
         progress = json.loads(action.execution_progress)
 
-    assert progress == [{"host": "10.20.1.83", "status": "failed"}]
+    assert [{"host": p["host"], "status": p["status"]} for p in progress] == [
+        {"host": "10.20.1.83", "status": "failed"}
+    ]
+    assert progress[0]["error"] == "10.20.1.83: boom"
+    assert progress[0]["started_at"]
+    assert progress[0]["finished_at"]
 
 
 def test_execute_approved_action_logs_start_and_completion_per_host(

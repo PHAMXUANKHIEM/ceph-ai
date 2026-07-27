@@ -111,7 +111,9 @@
               {% elif item.status == "running" %}Đang chạy (có thể mất vài phút)...
               {% elif item.status == "done" %}Xong
               {% elif item.status == "failed" %}Lỗi
+              {% elif item.status == "skipped" %}Bỏ qua
               {% else %}{{ item.status }}{% endif %}
+              {% if item.error %}<br><span class="error">{{ item.error }}</span>{% endif %}
             </li>
             {% endfor %}
           </ul>
@@ -234,6 +236,21 @@
       </div>
     </section>
     {% endif %}
+    {% endif %}
+
+    {% if upgrade_log_markdown %}
+    <section class="card">
+      <div class="card-header"><h2>Nhật ký nâng cấp gần nhất</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          Ghi lại toàn bộ các bước và lỗi (nếu có) của lần nâng cấp gần nhất, dạng Markdown.
+        </p>
+        <pre class="upgrade-plan-text">{{ upgrade_log_markdown }}</pre>
+        <div class="pending-action-buttons">
+          <a href="/upgrade/log.md" class="btn btn-sm" download>Tải nhật ký (.md)</a>
+        </div>
+      </div>
+    </section>
     {% endif %}
 
     {% if supports_cephadm %}

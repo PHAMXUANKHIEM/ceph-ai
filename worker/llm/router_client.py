@@ -810,13 +810,20 @@ def _execute_approved_action(action_pk: str) -> None:
                     incident_id,
                 )
                 all_succeeded = False
+                # Remaining nodes never ran — record why, so the step log
+                # doesn't just show them stuck at "pending" forever with no
+                # explanation.
+                for later in progress[node_index - 1 :]:
+                    later["status"] = "skipped"
+                    later["error"] = "Bị chặn bởi kill-switch giữa chừng — chưa chạy trên node này"
+                _write_action_progress(action_pk, progress)
             else:
                 blocked_before_start = True
             break
 
         try:
             command = commands.get_command(action_id_str, host, action_params)
-        except ExecutorError:
+        except ExecutorError as exc:
             logger.warning(
                 "_execute_approved_action: no Command for action_id=%s on host=%s "
                 "(action %s, incident %s) — marking this node failed",
@@ -827,6 +834,7 @@ def _execute_approved_action(action_pk: str) -> None:
             )
             all_succeeded = False
             progress[node_index - 1]["status"] = "failed"
+            progress[node_index - 1]["error"] = str(exc)
             _write_action_progress(action_pk, progress)
             continue
         last_command = command
@@ -846,13 +854,21 @@ def _execute_approved_action(action_pk: str) -> None:
             total_nodes,
             action_pk,
         )
+        # 2026-07-27: started_at/command/finished_at/error added so
+        # dashboard/routes/upgrade.py can render a per-step markdown log
+        # (Cluster Upgrade's "ghi lại từng bước, từng lỗi" requirement) —
+        # execution_progress is the only record of what actually ran on
+        # each host once this Action resolves; before this, a failed node's
+        # real error text only ever reached worker.log, never the Dashboard.
         progress[node_index - 1]["status"] = "running"
+        progress[node_index - 1]["command"] = command
+        progress[node_index - 1]["started_at"] = datetime.utcnow().isoformat()
         _write_action_progress(action_pk, progress)
 
         try:
             execute_command(host, command)
             executed_any = True
-        except ExecutorError:
+        except ExecutorError as exc:
             logger.exception(
                 "_execute_approved_action: execution of action_id=%s failed on node %s "
                 "(action %s)",
@@ -863,6 +879,8 @@ def _execute_approved_action(action_pk: str) -> None:
             all_succeeded = False
             executed_any = True
             progress[node_index - 1]["status"] = "failed"
+            progress[node_index - 1]["error"] = str(exc)
+            progress[node_index - 1]["finished_at"] = datetime.utcnow().isoformat()
             _write_action_progress(action_pk, progress)
             # Keep trying remaining nodes, same rationale as
             # _maybe_execute_safe_action: the log should show exactly which
@@ -870,6 +888,7 @@ def _execute_approved_action(action_pk: str) -> None:
             continue
 
         progress[node_index - 1]["status"] = "done"
+        progress[node_index - 1]["finished_at"] = datetime.utcnow().isoformat()
         _write_action_progress(action_pk, progress)
 
         logger.info(

@@ -6,7 +6,7 @@ from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from openai import APIError, APIConnectionError, AuthenticationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,6 +14,7 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
+from dashboard.vntime import format_vn
 from shared import audit, db
 from shared.ceph_releases import codename_for_version
 from shared.cluster_nodes import configured_nodes
@@ -59,6 +60,31 @@ _TARGET_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _PACKAGE_DIR_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+
+# Same 3 labels upgrade.html's method display already hardcodes per
+# action_id — factored out here too so the generated markdown log (below)
+# uses the exact same wording instead of drifting from the page.
+_ACTION_ID_LABELS = {
+    CLUSTER_UPGRADE_ACTION_ID: "cephadm (ceph orch upgrade)",
+    PACKAGE_DOWNLOAD_ACTION_ID: "ceph-deploy — tải từ download.ceph.com",
+    PACKAGE_LOCAL_ACTION_ID: "ceph-deploy — gói cục bộ trên node",
+}
+
+_ACTION_STATUS_LABELS = {
+    ActionStatus.PENDING_APPROVAL.value: "Chờ duyệt",
+    ActionStatus.APPROVED.value: "Đã duyệt — đang chờ Worker thực thi",
+    ActionStatus.EXECUTED.value: "Thành công",
+    ActionStatus.FAILED.value: "Thất bại",
+    ActionStatus.REJECTED.value: "Đã từ chối",
+}
+
+_STEP_STATUS_LABELS = {
+    "pending": "Đang chờ",
+    "running": "Đang chạy",
+    "done": "✅ Xong",
+    "failed": "❌ Lỗi",
+    "skipped": "⏭️ Bỏ qua",
+}
 
 _CEPHADM_PLAN_TEMPLATE = """\
 Lệnh sẽ gửi tới cụm: `ceph orch upgrade start --ceph-version {target_version}`
@@ -344,6 +370,125 @@ def _latest_upgrade_action(session) -> tuple[Action | None, Incident | None]:
     return action, session.get(Incident, action.incident_id)
 
 
+def _format_step_timestamp(value: str | None) -> str:
+    """Progress entries store timestamps as plain UTC ISO strings (JSON
+    can't hold a datetime) — parse back to a real datetime just long enough
+    to reuse the same dd/mm/YYYY HH:MM:SS Vietnam-local rendering every
+    other *_at column on this Dashboard already uses (dashboard/vntime.py).
+    """
+    if not value:
+        return "—"
+    try:
+        return format_vn(datetime.fromisoformat(value))
+    except ValueError:
+        return value
+
+
+def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str:
+    """Renders the FULL record of one Cluster Upgrade attempt as Markdown —
+    proposal text, per-node steps (with start/end time, the exact command
+    run, and the real error text on failure), and — for the cephadm method
+    only — a live snapshot of `ceph orch upgrade status` at the moment this
+    is generated (cephadm has no per-node steps of ITS OWN in this
+    codebase: the Worker sends exactly one `ceph orch upgrade start`
+    command and the orchestrator inside Ceph's own mgr does the rest,
+    outside this process entirely — see this module's `_CEPHADM_PLAN_TEMPLATE`).
+
+    Used both by the /upgrade page's inline "Nhật ký nâng cấp" card and by
+    GET /upgrade/log.md's downloadable file — same function, so the two
+    never drift apart.
+    """
+    method_label = _ACTION_ID_LABELS.get(action.action_id, action.action_id)
+    status_label = _ACTION_STATUS_LABELS.get(action.status, action.status)
+
+    try:
+        action_params = json.loads(action.action_params) if action.action_params else {}
+    except (TypeError, ValueError):
+        action_params = {}
+
+    try:
+        steps = json.loads(action.execution_progress) if action.execution_progress else []
+    except (TypeError, ValueError):
+        steps = []
+
+    lines = [
+        "# Nhật ký nâng cấp cụm Ceph",
+        "",
+        f"- **Phương thức:** {method_label}",
+    ]
+    if action_params.get("target_version"):
+        lines.append(f"- **Phiên bản đích:** {action_params['target_version']}")
+    if action_params.get("package_dir"):
+        lines.append(f"- **Thư mục gói:** {action_params['package_dir']}")
+    lines.append(f"- **Trạng thái:** {status_label}")
+    lines.append(f"- **Đề xuất lúc:** {format_vn(action.created_at)}")
+    lines.append(f"- **Cập nhật lần cuối:** {format_vn(action.updated_at)}")
+    if incident is not None and incident.log_excerpt:
+        lines.append(f"- **Đề xuất bởi:** {incident.log_excerpt}")
+    lines.append("")
+
+    if action.rationale:
+        lines += ["## Quy trình dự kiến", "", "```", action.rationale, "```", ""]
+
+    if steps:
+        lines.append("## Các bước thực hiện theo từng node")
+        lines.append("")
+        for i, step in enumerate(steps, start=1):
+            step_status = step.get("status", "pending")
+            status_text = _STEP_STATUS_LABELS.get(step_status, step_status)
+            lines.append(f"{i}. **{step.get('host', '?')}** — {status_text}")
+            started = step.get("started_at")
+            finished = step.get("finished_at")
+            if started or finished:
+                lines.append(
+                    f"   - Thời gian: {_format_step_timestamp(started)} → {_format_step_timestamp(finished)}"
+                )
+            if step.get("command"):
+                lines.append(f"   - Lệnh: `{step['command']}`")
+            if step.get("error"):
+                lines.append(f"   - Lỗi: `{step['error']}`")
+        lines.append("")
+
+    if action.action_id == CLUSTER_UPGRADE_ACTION_ID and action.status == ActionStatus.EXECUTED.value:
+        lines.append("## Trạng thái cephadm tại thời điểm tải nhật ký này")
+        lines.append("")
+        try:
+            live_status = get_upgrade_status()
+        except CephQueryError as exc:
+            lines.append(f"Không lấy được trạng thái trực tiếp từ cụm: {exc}")
+        else:
+            if live_status.get("in_progress"):
+                lines.append(f"- Đang nâng cấp lên: `{live_status.get('target_image') or '—'}`")
+                lines.append(f"- Tiến độ: {live_status.get('progress') or '—'}")
+                if live_status.get("message"):
+                    lines.append(f"- Thông báo: {live_status['message']}")
+                if live_status.get("services_complete"):
+                    lines.append(f"- Đã hoàn tất: {', '.join(live_status['services_complete'])}")
+            else:
+                lines.append("Không có tiến trình nâng cấp nào đang chạy trên cụm hiện tại.")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@router.get("/upgrade/log.md")
+async def download_upgrade_log(user: str = Depends(require_login)):
+    """Downloadable .md counterpart to the inline "Nhật ký nâng cấp" card on
+    /upgrade — same build_upgrade_log_markdown() output, just served as a
+    file instead of rendered in the page."""
+    with db.SessionLocal() as session:
+        action, incident = _latest_upgrade_action(session)
+        if action is None:
+            raise HTTPException(status_code=404, detail="Chưa có lần nâng cấp cụm nào được đề xuất.")
+        markdown = build_upgrade_log_markdown(action, incident)
+
+    return PlainTextResponse(
+        markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="nhat-ky-nang-cap-cum.md"'},
+    )
+
+
 def _reject_duplicate_proposal(session) -> None:
     existing, _ = _latest_upgrade_action(session)
     if existing is not None and existing.status in _IN_FLIGHT_ACTION_STATUSES:
@@ -387,13 +532,29 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
     # this is worker/llm/router_client.py::_execute_approved_action's own
     # per-host progress trail (Action.execution_progress), the only signal
     # available while a real `dnf/apt install` is running (can take minutes
-    # per host with nothing else visible in between).
+    # per host with nothing else visible in between). Read off `last_action`
+    # rather than `pending_action` (2026-07-27) so this same list keeps
+    # rendering after the Action resolves to EXECUTED/FAILED too, not just
+    # while still PENDING_APPROVAL/APPROVED — pending_action is the exact
+    # same row while in-flight, so this is a no-op for that case.
     package_upgrade_progress = None
-    if pending_action is not None and pending_action.execution_progress:
+    if last_action is not None and last_action.execution_progress:
         try:
-            package_upgrade_progress = json.loads(pending_action.execution_progress)
+            package_upgrade_progress = json.loads(last_action.execution_progress)
         except (TypeError, ValueError):
             package_upgrade_progress = None
+
+    # 2026-07-27: full Markdown step log ("ghi lại từng bước, từng lỗi
+    # trong quá trình cài đặt") — only once the Action has actually
+    # resolved (EXECUTED/FAILED), same build_upgrade_log_markdown() the
+    # downloadable GET /upgrade/log.md route uses, so the inline preview
+    # and the downloaded file are always identical.
+    upgrade_log_markdown = None
+    if last_action is not None and last_action.status in (
+        ActionStatus.EXECUTED.value,
+        ActionStatus.FAILED.value,
+    ):
+        upgrade_log_markdown = build_upgrade_log_markdown(last_action, last_incident)
 
     current_versions = None
     versions_error = None
@@ -438,6 +599,7 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             "last_action": last_action,
             "last_action_target_version": last_action_params.get("target_version"),
             "last_action_package_dir": last_action_params.get("package_dir"),
+            "upgrade_log_markdown": upgrade_log_markdown,
             "package_nodes": package_nodes,
             "procedure_document": procedure_document,
         },

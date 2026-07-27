@@ -579,3 +579,149 @@ def test_approved_package_download_action_shows_per_host_progress(
     # way for an operator watching the page to see progress land without
     # manually reloading, since a real install can take minutes per host.
     assert 'http-equiv="refresh"' in response.text
+
+
+# --- Nhật ký nâng cấp (Markdown step log) ------------------------------
+
+
+def _resolved_package_action(session, status, host_results):
+    """Creates an already-resolved (EXECUTED/FAILED) Cluster Upgrade Action
+    with a rich execution_progress list — same shape
+    worker/llm/router_client.py::_execute_approved_action now writes
+    (command/started_at/finished_at/error alongside host/status)."""
+    incident = Incident(
+        ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+        status=IncidentStatus.RESOLVED.value if status == "EXECUTED" else IncidentStatus.FAILED.value,
+        log_excerpt="Đề xuất nâng cấp cụm (ceph-deploy, tải từ download.ceph.com) lên 19.2.0 bởi admin",
+        detected_at=datetime.utcnow(),
+    )
+    session.add(incident)
+    session.flush()
+    action = Action(
+        incident_id=incident.id,
+        action_id="upgrade_ceph_cluster_package_download",
+        classification="RISKY",
+        status=status,
+        rationale="Quy trình mẫu — bước 1, bước 2.",
+        action_params=json.dumps({"target_version": "19.2.0"}),
+        execution_progress=json.dumps(host_results),
+    )
+    session.add(action)
+    session.commit()
+    return action
+
+
+def test_upgrade_page_shows_markdown_log_after_resolved_action(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        _resolved_package_action(
+            session,
+            "FAILED",
+            [
+                {
+                    "host": "10.20.1.112",
+                    "status": "done",
+                    "command": "apt-get install -y ceph",
+                    "started_at": "2026-07-27T09:24:18",
+                    "finished_at": "2026-07-27T09:26:05",
+                },
+                {
+                    "host": "10.20.1.95",
+                    "status": "failed",
+                    "command": "apt-get install -y ceph",
+                    "started_at": "2026-07-27T09:26:05",
+                    "finished_at": "2026-07-27T09:26:10",
+                    "error": "10.20.1.95: command exited 1: E: Unable to locate package ceph",
+                },
+            ],
+        )
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Nhật ký nâng cấp gần nhất" in response.text
+    assert "10.20.1.112" in response.text
+    assert "10.20.1.95" in response.text
+    assert "E: Unable to locate package ceph" in response.text
+    assert "/upgrade/log.md" in response.text
+
+
+def test_upgrade_page_hides_markdown_log_while_pending(dashboard_client, monkeypatch):
+    """The log card is only meaningful once the Action has actually
+    resolved — while PENDING_APPROVAL/APPROVED, execution_progress is
+    either empty or still changing, and the per-node list already visible
+    above (test_approved_package_download_action_shows_per_host_progress)
+    covers that case."""
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.APPROVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id="upgrade_ceph_cluster_package_download",
+                classification="RISKY",
+                status=ActionStatus.APPROVED.value,
+                action_params=json.dumps({"target_version": "19.2.0"}),
+                execution_progress=json.dumps([{"host": "10.20.1.112", "status": "running"}]),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Nhật ký nâng cấp gần nhất" not in response.text
+
+
+def test_download_upgrade_log_returns_markdown_file(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        _resolved_package_action(
+            session,
+            "EXECUTED",
+            [
+                {
+                    "host": "10.20.1.112",
+                    "status": "done",
+                    "command": "apt-get install -y ceph",
+                    "started_at": "2026-07-27T09:24:18",
+                    "finished_at": "2026-07-27T09:26:05",
+                }
+            ],
+        )
+
+    response = dashboard_client.get("/upgrade/log.md")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert 'attachment; filename="nhat-ky-nang-cap-cum.md"' in response.headers["content-disposition"]
+    assert "# Nhật ký nâng cấp cụm Ceph" in response.text
+    assert "10.20.1.112" in response.text
+    assert "apt-get install -y ceph" in response.text
+
+
+def test_download_upgrade_log_404_when_no_action_ever_proposed(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/upgrade/log.md")
+
+    assert response.status_code == 404
+
+
+def test_unauthenticated_download_upgrade_log_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/upgrade/log.md", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
