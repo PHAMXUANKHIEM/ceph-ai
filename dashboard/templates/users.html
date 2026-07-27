@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Người dùng — Ceph AIOps</title>
+  <title>Users — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -11,24 +11,24 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Metrics Cluster</a>
-        <a href="/deploy-cluster" class="nav-link">Dựng cụm</a>
-        <a href="/delete-cluster" class="nav-link">Xoá cụm</a>
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
         <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
-        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
-        <a href="/settings" class="nav-link">Cài đặt</a>
-        <a href="/users" class="nav-link active">Người dùng</a>
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        <a href="/users" class="nav-link active">Users</a>
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>
   </header>
 
   <main class="page">
     <section class="card">
-      <div class="card-header"><h2>Người dùng</h2></div>
+      <div class="card-header"><h2>Users</h2></div>
       <div class="card-body">
         {% if user_create_error %}
           <p class="error">{{ user_create_error }}</p>
@@ -108,7 +108,7 @@
           </label>
           <label class="checkbox-label">
             <input type="checkbox" name="new_is_admin">
-            Là admin (thấy được cả Tiến trình hệ thống / Kết nối Database / Người dùng)
+            Là admin (thấy được cả Tiến trình hệ thống / Kết nối Database / Users)
           </label>
           <button type="submit" class="btn btn-primary btn-sm">Tạo user</button>
         </form>

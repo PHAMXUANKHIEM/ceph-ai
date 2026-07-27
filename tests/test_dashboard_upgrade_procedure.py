@@ -96,7 +96,7 @@ def test_upload_rejects_undecodable_content(dashboard_client, monkeypatch):
 
 
 def test_upload_succeeds_even_when_ai_summary_fails(dashboard_client, monkeypatch):
-    _stub_summarize(monkeypatch, error="Chưa cấu hình API AI (API key/Base URL) — vào Cài đặt để kết nối.")
+    _stub_summarize(monkeypatch, error="Chưa cấu hình API AI (API key/Base URL) — vào Settings để kết nối.")
     _login(dashboard_client)
 
     response = _upload(dashboard_client)

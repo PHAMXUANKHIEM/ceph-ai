@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Dựng cụm — Ceph AIOps</title>
+  <title>Deploy Cluster — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -11,17 +11,17 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Metrics Cluster</a>
-        <a href="/deploy-cluster" class="nav-link">Dựng cụm</a>
-        <a href="/delete-cluster" class="nav-link">Xoá cụm</a>
-        <a href="/upgrade" class="nav-link">Nâng cấp cụm</a>
-        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
-        <a href="/settings" class="nav-link">Cài đặt</a>
-        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>
   </header>
@@ -92,7 +92,7 @@
               SSH Key Path
               <input type="text" id="df-ssh-key-path" value="{{ default_ssh_key_path }}" disabled>
             </label>
-            <p class="hint">SSH User/Key Path lấy từ <a href="/settings">Cài đặt</a> — sửa tại đó nếu cần đổi.</p>
+            <p class="hint">SSH User/Key Path lấy từ <a href="/settings">Settings</a> — sửa tại đó nếu cần đổi.</p>
 
             <label>Nodes trong cụm</label>
             <div class="table-wrap">

@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Vá lỗi Ceph — Ceph AIOps</title>
+  <title>Patch Ceph — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -11,17 +11,17 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Metrics Cluster</a>
-        <a href="/deploy-cluster" class="nav-link">Dựng cụm</a>
-        <a href="/delete-cluster" class="nav-link">Xoá cụm</a>
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
         <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
-        <a href="/patch" class="nav-link active">Vá lỗi Ceph</a>
-        <a href="/settings" class="nav-link">Cài đặt</a>
-        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+        <a href="/patch" class="nav-link active">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>
   </header>
@@ -31,7 +31,7 @@
     <nav class="tabbed-sidebar">
       <button type="button" class="tabbed-nav-item {% if active_tab == 'upload' %}active{% endif %}" data-section="upload">Patch nguồn Ceph</button>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'build' %}active{% endif %}" data-section="build">Bước 1 — Build &amp; Copy</button>
-      <button type="button" class="tabbed-nav-item {% if active_tab == 'install' %}active{% endif %}" data-section="install">Bước 2 — Cài đặt</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'install' %}active{% endif %}" data-section="install">Bước 2 — Settings</button>
     </nav>
     <div class="tabbed-content">
     <section class="card tabbed-panel" data-panel="upload" {% if active_tab != 'upload' %}hidden{% endif %}>
@@ -40,7 +40,7 @@
         <p class="hint">
           Upload file patch (.patch/.diff) — bấm "Đề xuất Build &amp; Copy" để build server tự
           áp patch, build RPM, rồi tự copy sang từng node Ceph đã cấu hình. Sau khi build xong,
-          bấm "Đề xuất Cài đặt" để cài các RPM đó lên cụm thật.
+          bấm "Đề xuất Settings" để cài các RPM đó lên cụm thật.
         </p>
         {% if patch_document %}
         <p class="hint">
@@ -65,7 +65,7 @@
         <article class="pending-action-card">
           <p><strong>Bước:</strong>
             {% if pending_action.action_id == "patch_build_and_stage" %}Build &amp; Copy
-            {% elif pending_action.action_id == "patch_install" %}Cài đặt
+            {% elif pending_action.action_id == "patch_install" %}Settings
             {% else %}{{ pending_action.action_id }}{% endif %}
           </p>
           <p><strong>Trạng thái:</strong>
@@ -126,7 +126,7 @@
         <article class="pending-action-card">
           <p><strong>Bước:</strong>
             {% if pending_action.action_id == "patch_build_and_stage" %}Build &amp; Copy
-            {% elif pending_action.action_id == "patch_install" %}Cài đặt
+            {% elif pending_action.action_id == "patch_install" %}Settings
             {% else %}{{ pending_action.action_id }}{% endif %}
           </p>
           <p><strong>Trạng thái:</strong>
@@ -156,7 +156,7 @@
     {% endif %}
 
     <section class="card">
-      <div class="card-header"><h2>Bước 2 — Cài đặt lên cụm</h2></div>
+      <div class="card-header"><h2>Bước 2 — Settings lên cụm</h2></div>
       <div class="card-body">
         {% if install_action %}
         <p class="hint">
@@ -164,11 +164,11 @@
           {{ install_action.created_at|vntime }}
         </p>
         {% else %}
-        <p class="hint">Chưa từng đề xuất Cài đặt lần nào.</p>
+        <p class="hint">Chưa từng đề xuất Settings lần nào.</p>
         {% endif %}
         <form method="post" action="/patch/propose-install" class="inline-form">
           <button type="submit" class="btn btn-kill-switch-on" {% if not can_propose_install %}disabled{% endif %}>
-            Đề xuất Cài đặt
+            Đề xuất Settings
           </button>
         </form>
         {% if not can_propose_install %}

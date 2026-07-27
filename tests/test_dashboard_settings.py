@@ -1299,7 +1299,7 @@ def test_restart_dashboard_launches_watchdog_with_request_host_and_port(dashboar
     response = dashboard_client.post("/settings/restart-dashboard")
 
     assert response.status_code == 200
-    assert "Đang khởi động lại" in response.text
+    assert "Restarting" in response.text
     assert len(captured) == 1
     host, port = captured[0]
     # TestClient's default base URL is http://testserver — confirms host/port
@@ -1370,7 +1370,7 @@ def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
     assert response.status_code == 200
     assert "Tiến trình hệ thống" not in response.text
     assert "Kết nối Database" not in response.text
-    assert "Người dùng" not in response.text
+    assert 'href="/users"' not in response.text
     assert 'action="/settings/restart-worker"' not in response.text
     assert 'action="/settings/restart-dashboard"' not in response.text
 
@@ -1553,7 +1553,7 @@ def test_unauthenticated_patch_pipeline_settings_submit_redirects_to_login(dashb
     assert response.headers["location"] == "/login"
 
 
-# Note: user-management ("Người dùng") tests live in test_dashboard_users.py —
+# Note: user-management ("Users") tests live in test_dashboard_users.py —
 # that feature is its own standalone page (/users), not a Settings card,
 # as of 2026-07-24.
 

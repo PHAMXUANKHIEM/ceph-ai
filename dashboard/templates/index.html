@@ -29,17 +29,17 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link active">Dashboard</a>
-        <a href="/nodes" class="nav-link">Metrics Cluster</a>
-        <a href="/deploy-cluster" class="nav-link">Dựng cụm</a>
-        <a href="/delete-cluster" class="nav-link">Xoá cụm</a>
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
         <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
-        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
-        <a href="/settings" class="nav-link">Cài đặt</a>
-        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>
   </header>
@@ -76,7 +76,7 @@
         <p class="hint">MON node trả lời gần nhất: <code>{{ heartbeat.mon_node }}</code> — lúc {{ heartbeat.polled_at|vntime }}.</p>
       {% endif %}
       <p class="hint">
-        Cụm đang theo dõi: MON nodes <code>{{ cluster_mon_nodes }}</code>{% if cluster_exec_mode in ("none", "cephadm") %}, không dùng tên container cố định ({{ cluster_exec_mode }}){% else %}, container <code>{{ cluster_container_name }}</code> ({{ cluster_exec_mode }}){% endif %} (chỉnh tại <a href="/settings">Cài đặt</a>).
+        Cụm đang theo dõi: MON nodes <code>{{ cluster_mon_nodes }}</code>{% if cluster_exec_mode in ("none", "cephadm") %}, không dùng tên container cố định ({{ cluster_exec_mode }}){% else %}, container <code>{{ cluster_container_name }}</code> ({{ cluster_exec_mode }}){% endif %} (chỉnh tại <a href="/settings">Settings</a>).
       </p>
     </section>
 

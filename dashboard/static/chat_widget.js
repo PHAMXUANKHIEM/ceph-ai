@@ -33,7 +33,7 @@
   // — the backend sends this as plain text (chat bubbles never carry HTML),
   // so the frontend detects this exact known sentinel to render an actual
   // clickable Settings link instead of just the raw text.
-  var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối API AI. Vào Cài đặt để kết nối.";
+  var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối API AI. Vào Settings để kết nối.";
   var NETWORK_ERROR_MESSAGE = "Không thể kết nối server. Thử lại sau.";
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
@@ -155,7 +155,7 @@
     p.appendChild(document.createTextNode("⚙️ Chưa kết nối API AI. "));
     var link = document.createElement("a");
     link.href = "/settings";
-    link.textContent = "Vào Cài đặt →";
+    link.textContent = "Vào Settings →";
     p.appendChild(link);
     return p;
   }

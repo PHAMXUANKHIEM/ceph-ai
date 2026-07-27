@@ -55,7 +55,7 @@ TOOL_PROPOSE_ACTION = "propose_action"
 # clickable "[Vào Cài đặt →]" link (dashboard/static/chat_widget.js), since
 # the persisted ChatMessage.content itself stays plain text (no HTML/markup
 # is ever put in a chat bubble — every bubble is rendered via textContent).
-MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối API AI. Vào Cài đặt để kết nối."
+MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối API AI. Vào Settings để kết nối."
 
 # AD-5's "action_id/command_id đóng từ structured output, không parse free
 # text" applies here exactly as it does to worker/llm/router_client.py's

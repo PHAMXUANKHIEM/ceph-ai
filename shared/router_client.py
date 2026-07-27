@@ -20,7 +20,7 @@ def readable_exception_message(exc: BaseException) -> str:
 def _require_config(api_key: str, base_url: str) -> None:
     if not base_url or not api_key:
         raise RouterNotConfiguredError(
-            "Chưa cấu hình API AI (API key/Base URL) — vào Cài đặt để kết nối."
+            "Chưa cấu hình API AI (API key/Base URL) — vào Settings để kết nối."
         )
 
 

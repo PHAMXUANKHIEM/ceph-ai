@@ -43,7 +43,7 @@ def test_get_users_page_for_admin(dashboard_client):
     response = dashboard_client.get("/users")
 
     assert response.status_code == 200
-    assert "Người dùng" in response.text
+    assert "Users" in response.text
     assert 'action="/users/create"' in response.text
 
 
@@ -65,7 +65,7 @@ def test_nav_shows_users_link_for_admin_on_other_pages(dashboard_client):
 
     for path in ("/", "/nodes", "/upgrade", "/settings"):
         response = dashboard_client.get(path)
-        assert 'href="/users"' in response.text, f"missing Người dùng nav link on {path}"
+        assert 'href="/users"' in response.text, f"missing Users nav link on {path}"
 
 
 def test_nav_hides_users_link_for_non_admin_on_other_pages(dashboard_client):
@@ -74,7 +74,7 @@ def test_nav_hides_users_link_for_non_admin_on_other_pages(dashboard_client):
 
     for path in ("/", "/nodes", "/upgrade", "/settings"):
         response = dashboard_client.get(path)
-        assert 'href="/users"' not in response.text, f"Người dùng nav link leaked on {path}"
+        assert 'href="/users"' not in response.text, f"Users nav link leaked on {path}"
 
 
 # --- Create user -------------------------------------------------------

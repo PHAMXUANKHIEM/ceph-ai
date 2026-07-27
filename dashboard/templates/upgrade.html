@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Nâng cấp cụm — Ceph AIOps</title>
+  <title>Upgrade Cluster — Ceph AIOps</title>
   {% if pending_action and pending_action.status == "APPROVED" %}
   <meta http-equiv="refresh" content="5;url=/upgrade?tab=upgrade">
   {% endif %}
@@ -14,17 +14,17 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Metrics Cluster</a>
-        <a href="/deploy-cluster" class="nav-link">Dựng cụm</a>
-        <a href="/delete-cluster" class="nav-link">Xoá cụm</a>
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
         <a href="/upgrade" class="nav-link active">Upgrade Cluster</a>
-        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
-        <a href="/settings" class="nav-link">Cài đặt</a>
-        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>
   </header>
@@ -33,7 +33,7 @@
     <div class="tabbed-page">
     <nav class="tabbed-sidebar">
       <button type="button" class="tabbed-nav-item {% if active_tab == 'docs' %}active{% endif %}" data-section="docs">Tài liệu quy trình</button>
-      <button type="button" class="tabbed-nav-item {% if active_tab == 'upgrade' %}active{% endif %}" data-section="upgrade">Nâng cấp cụm</button>
+      <button type="button" class="tabbed-nav-item {% if active_tab == 'upgrade' %}active{% endif %}" data-section="upgrade">Upgrade Cluster</button>
     </nav>
     <div class="tabbed-content">
     <section class="card tabbed-panel" data-panel="docs" {% if active_tab != 'docs' %}hidden{% endif %}>
@@ -70,14 +70,14 @@
     <div class="tabbed-panel" data-panel="upgrade" {% if active_tab != 'upgrade' %}hidden{% endif %}>
     {% if upgrade_unsupported %}
     <section class="card">
-      <div class="card-header"><h2>Nâng cấp cụm</h2></div>
+      <div class="card-header"><h2>Upgrade Cluster</h2></div>
       <div class="card-body">
         <p class="error">
           Tính năng này chỉ hỗ trợ cụm dùng <code>ceph_exec_mode=cephadm</code> (nâng cấp qua
           orchestrator) hoặc <code>ceph_exec_mode=none</code> (ceph-deploy/gói cài đặt trực tiếp) —
           cụm hiện tại đang cấu hình <code>{{ ceph_exec_mode }}</code>.
         </p>
-        <p class="hint">Đổi kiểu triển khai tại <a href="/settings">Cài đặt</a> nếu cần.</p>
+        <p class="hint">Đổi kiểu triển khai tại <a href="/settings">Settings</a> nếu cần.</p>
       </div>
     </section>
 

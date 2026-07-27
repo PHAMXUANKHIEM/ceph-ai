@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Xoá cụm — Ceph AIOps</title>
+  <title>Delete Cluster — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -11,17 +11,17 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Metrics Cluster</a>
-        <a href="/deploy-cluster" class="nav-link">Dựng cụm</a>
-        <a href="/delete-cluster" class="nav-link active">Xoá cụm</a>
-        <a href="/upgrade" class="nav-link">Nâng cấp cụm</a>
-        <a href="/patch" class="nav-link">Vá lỗi Ceph</a>
-        <a href="/settings" class="nav-link">Cài đặt</a>
-        {% if is_admin %}<a href="/users" class="nav-link">Người dùng</a>{% endif %}
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link active">Delete Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Đăng xuất</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>
   </header>
@@ -32,7 +32,7 @@
       <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Đã xoá cụm gần nhất thành công{% else %}❌ Lần xoá cụm gần nhất thất bại{% endif %}</h2></div>
       <div class="card-body">
         {% if last_action.status == "EXECUTED" %}
-        <p class="hint">Cấu hình cụm trong .env đã được xoá — Dashboard không còn theo dõi cụm này. Vào <a href="/deploy-cluster">Dựng cụm</a> nếu muốn dựng cụm mới.</p>
+        <p class="hint">Cấu hình cụm trong .env đã được xoá — Dashboard không còn theo dõi cụm này. Vào <a href="/deploy-cluster">Deploy Cluster</a> nếu muốn dựng cụm mới.</p>
         {% endif %}
       </div>
     </section>
@@ -42,7 +42,7 @@
     <section class="card">
       <div class="card-header"><h2>Chưa có cụm nào được cấu hình</h2></div>
       <div class="card-body">
-        <p class="hint">Chưa có node MON/MGR/OSD nào được cấu hình trong <a href="/settings">Cài đặt</a> — không có gì để xoá.</p>
+        <p class="hint">Chưa có node MON/MGR/OSD nào được cấu hình trong <a href="/settings">Settings</a> — không có gì để xoá.</p>
       </div>
     </section>
     {% else %}
