@@ -63,14 +63,25 @@
           {% else %}
           <form id="deploy-form" class="login-box">
             <label>
+              Dòng release
+              <select id="df-codename">
+                <option value="">— Chọn dòng release —</option>
+                {% for codename, label in codenames %}
+                <option value="{{ codename }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Phiên bản
+              <select id="df-version-select" disabled>
+                <option value="">— Chọn dòng release trước —</option>
+              </select>
+            </label>
+            <label>
               Phiên bản Ceph
               <input type="text" id="df-version" name="version" placeholder="17.2.6" pattern="\d+\.\d+\.\d+" required>
             </label>
-            <div class="version-chips">
-              {% for chip in version_chips %}
-              <button type="button" class="btn btn-sm btn-ghost version-chip" data-version="{{ chip }}">{{ chip }}</button>
-              {% endfor %}
-            </div>
+            <p class="hint">Chọn dòng release rồi chọn phiên bản ở trên, hoặc tự nhập trực tiếp vào ô trên nếu là phiên bản chưa có trong danh sách.</p>
 
             <label>Phương thức</label>
             <div class="deploy-method-options">
@@ -185,6 +196,9 @@
 
   <script type="application/json" id="deploy-initial-state">
     {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress, "not_yet_supported_methods": not_yet_supported_methods}|tojson }}
+  </script>
+  <script type="application/json" id="versions-by-codename-data">
+    {{ versions_by_codename|tojson }}
   </script>
   <script src="/static/deploy_cluster.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>

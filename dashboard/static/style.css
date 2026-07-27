@@ -1245,9 +1245,6 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   .deploy-cluster-grid { grid-template-columns: 1fr; }
 }
 
-.version-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: -0.4rem; }
-.version-chip { font-family: var(--font-mono); }
-
 .deploy-method-options { display: flex; flex-direction: column; gap: var(--space-1); }
 
 .deploy-log-card .card-header { display: flex; align-items: center; justify-content: space-between; }

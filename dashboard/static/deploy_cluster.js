@@ -98,14 +98,48 @@
   });
   onMethodChange();
 
-  // --- Version quick-pick chips ----------------------------------------
+  // --- Version picker: chọn dòng release rồi chọn phiên bản -------------
+  // Two dependent <select>s that just FILL df-version (the real, still
+  // directly-editable text input the form submits) — same "convenience
+  // filler, never the only way in" role the old flat version-chip buttons
+  // had, now organized by release line (nautilus/octopus/.../reef/...)
+  // instead of one flat hardcoded list of 4.
 
   var versionInput = document.getElementById("df-version");
-  Array.prototype.forEach.call(document.querySelectorAll(".version-chip"), function (chip) {
-    chip.addEventListener("click", function () {
-      if (versionInput) versionInput.value = chip.dataset.version;
+  var codenameSelect = document.getElementById("df-codename");
+  var versionSelect = document.getElementById("df-version-select");
+  var versionsByCodenameEl = document.getElementById("versions-by-codename-data");
+
+  if (codenameSelect && versionSelect && versionsByCodenameEl) {
+    var versionsByCodename = JSON.parse(versionsByCodenameEl.textContent || "{}");
+
+    codenameSelect.addEventListener("change", function () {
+      var versions = versionsByCodename[codenameSelect.value] || [];
+      versionSelect.innerHTML = "";
+      if (!codenameSelect.value || versions.length === 0) {
+        versionSelect.disabled = true;
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "— Chọn dòng release trước —";
+        versionSelect.appendChild(placeholder);
+        return;
+      }
+      versionSelect.disabled = false;
+      // Newest point release of the line first — that's almost always
+      // what an operator deploying/upgrading actually wants.
+      for (var i = versions.length - 1; i >= 0; i--) {
+        var option = document.createElement("option");
+        option.value = versions[i];
+        option.textContent = versions[i];
+        versionSelect.appendChild(option);
+      }
+      if (versionInput) versionInput.value = versions[versions.length - 1];
     });
-  });
+
+    versionSelect.addEventListener("change", function () {
+      if (versionInput && versionSelect.value) versionInput.value = versionSelect.value;
+    });
+  }
 
   // --- Propose submit ---------------------------------------------------
 

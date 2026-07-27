@@ -16,7 +16,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, db
-from shared.ceph_releases import codename_for_version
+from shared.ceph_releases import codename_for_version, codenames_oldest_first, versions_by_codename
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus, UpgradeProcedureDocument
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
@@ -602,6 +602,8 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             "upgrade_log_markdown": upgrade_log_markdown,
             "package_nodes": package_nodes,
             "procedure_document": procedure_document,
+            "codenames": codenames_oldest_first(),
+            "versions_by_codename": versions_by_codename(),
         },
     )
 

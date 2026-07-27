@@ -183,10 +183,25 @@
           Nhập phiên bản Ceph muốn nâng cấp lên (định dạng x.y.z, vd 19.2.0). Hệ thống sẽ hiển thị
           quy trình nâng cấp trước khi thực hiện — chỉ tự động gửi lệnh sau khi bạn bấm "Duyệt".
         </p>
-        <form method="post" action="/upgrade/propose" class="login-box">
+        <form method="post" action="/upgrade/propose" class="login-box version-picker-form">
+          <label>
+            Dòng release
+            <select class="version-picker-codename">
+              <option value="">— Chọn dòng release —</option>
+              {% for codename, label in codenames %}
+              <option value="{{ codename }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Phiên bản
+            <select class="version-picker-version" disabled>
+              <option value="">— Chọn dòng release trước —</option>
+            </select>
+          </label>
           <label>
             Phiên bản đích
-            <input type="text" name="target_version" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
+            <input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
           </label>
           <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
         </form>
@@ -209,10 +224,25 @@
           <div class="upgrade-method">
             <h3>Tải từ download.ceph.com</h3>
             <p class="hint">Tự thêm repo Ceph chính thức theo phiên bản nhập, rồi cài/nâng cấp gói trên từng node.</p>
-            <form method="post" action="/upgrade/propose-package-download" class="login-box">
+            <form method="post" action="/upgrade/propose-package-download" class="login-box version-picker-form">
+              <label>
+                Dòng release
+                <select class="version-picker-codename">
+                  <option value="">— Chọn dòng release —</option>
+                  {% for codename, label in codenames %}
+                  <option value="{{ codename }}">{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                Phiên bản
+                <select class="version-picker-version" disabled>
+                  <option value="">— Chọn dòng release trước —</option>
+                </select>
+              </label>
               <label>
                 Phiên bản đích
-                <input type="text" name="target_version" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
+                <input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
               </label>
               <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
             </form>
@@ -298,6 +328,10 @@
     </div>
   </main>
 
+  <script type="application/json" id="versions-by-codename-data">
+    {{ versions_by_codename|tojson }}
+  </script>
+  <script src="/static/upgrade.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

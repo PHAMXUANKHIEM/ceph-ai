@@ -12,6 +12,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import audit, db
+from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -53,8 +54,6 @@ _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RPM_PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 _VALID_ROLES = ("mon", "mgr", "osd", "mds")
-
-VERSION_CHIPS = ["15.2.17", "17.2.6", "17.2.9", "18.2.8"]
 
 
 def _is_valid_ip(ip: str) -> bool:
@@ -258,7 +257,8 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
         {
             "user": user,
             "is_admin": auth.is_admin_user(user),
-            "version_chips": VERSION_CHIPS,
+            "codenames": codenames_oldest_first(),
+            "versions_by_codename": versions_by_codename(),
             "default_ssh_user": settings.ssh_user,
             "default_ssh_key_path": settings.ssh_key_path,
             "not_yet_supported_methods": sorted(_NOT_YET_SUPPORTED_METHODS),
