@@ -29,6 +29,13 @@ def test_codename_for_version_known_major():
     assert codename_for_version("18.2.4") == "reef"
     assert codename_for_version("19.2.0") == "squid"
     assert codename_for_version("17.2.7") == "quincy"
+    # Nautilus (14) — added 2026-07-27: this table originally started at
+    # Octopus (15), so any 14.2.x version (e.g. the real final Nautilus
+    # point release, 14.2.22) was rejected as "unrecognized" before ever
+    # reaching the repo-URL-building code, even though that code already
+    # builds the repo URL from the exact version string (not the codename)
+    # and works for any release download.ceph.com still hosts.
+    assert codename_for_version("14.2.22") == "nautilus"
 
 
 def test_codename_for_version_unknown_major_returns_none():

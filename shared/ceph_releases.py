@@ -10,16 +10,75 @@ watcher/ceph_client.py::VALID_EXEC_MODES already being process-agnostic data.
 
 Not auto-updated from upstream (no internet access assumed) — extend
 RELEASES as new Ceph releases ship.
-"""
+
+2026-07-27: added `versions` (known x.y.z point releases, oldest first) to
+each entry — powers the Deploy/Upgrade pages' "chọn dòng release rồi chọn
+phiên bản" two-step picker (dashboard/routes/deploy_cluster.py,
+dashboard/routes/upgrade.py). Same "not auto-updated, extend by hand"
+posture as the table itself: each list is only as complete as it was when
+last edited, NOT queried live from download.ceph.com — a point release
+shipped after this was last updated just won't show up as a dropdown
+option yet. This is a convenience picker only, never the sole way to enter
+a version: every version input this feeds also stays a free-text field a
+caller can type any x.y.z into directly (e.g. a very new point release
+this list hasn't been extended for yet, or an internal-only build)."""
 
 RELEASES: dict[int, dict[str, str]] = {
-    15: {"codename": "octopus", "next_min_version": "16.2.0"},
-    16: {"codename": "pacific", "next_min_version": "17.2.0"},
-    17: {"codename": "quincy", "next_min_version": "18.2.0"},
-    18: {"codename": "reef", "next_min_version": "19.2.0"},
-    19: {"codename": "squid", "next_min_version": "20.2.0"},
-    20: {"codename": "tentacle", "next_min_version": None},
+    14: {
+        "codename": "nautilus",
+        "next_min_version": "15.2.0",
+        "versions": [f"14.2.{p}" for p in range(0, 23)],
+    },
+    15: {
+        "codename": "octopus",
+        "next_min_version": "16.2.0",
+        "versions": [f"15.2.{p}" for p in range(0, 18)],
+    },
+    16: {
+        "codename": "pacific",
+        "next_min_version": "17.2.0",
+        "versions": [f"16.2.{p}" for p in range(0, 16)],
+    },
+    17: {
+        "codename": "quincy",
+        "next_min_version": "18.2.0",
+        "versions": [f"17.2.{p}" for p in range(0, 9)],
+    },
+    18: {
+        "codename": "reef",
+        "next_min_version": "19.2.0",
+        "versions": [f"18.2.{p}" for p in range(0, 9)],
+    },
+    19: {
+        "codename": "squid",
+        "next_min_version": "20.2.0",
+        "versions": ["19.2.0", "19.2.1", "19.2.2"],
+    },
+    20: {
+        "codename": "tentacle",
+        "next_min_version": None,
+        "versions": ["20.2.0"],
+    },
 }
+
+
+def codenames_oldest_first() -> list[tuple[str, str]]:
+    """[(codename, "codename (major)")] for every known release, oldest
+    major version first — feeds the Deploy/Upgrade pages' release-line
+    dropdown (step 1 of the two-step version picker)."""
+    return [
+        (release["codename"], f"{release['codename'].capitalize()} ({major}.x)")
+        for major, release in sorted(RELEASES.items())
+    ]
+
+
+def versions_by_codename() -> dict[str, list[str]]:
+    """{codename: [known point releases, oldest first]} for every known
+    release — feeds step 2 of the picker once a codename is chosen in step
+    1. A plain dict (not filtered to one codename) so the whole thing can
+    be embedded once as JSON in the page and switched between client-side
+    with no extra request per codename picked."""
+    return {release["codename"]: release["versions"] for release in RELEASES.values()}
 
 
 def major_version(version: str) -> int | None:
