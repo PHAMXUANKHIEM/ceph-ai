@@ -35,14 +35,34 @@ def _stub_package_command_preview(monkeypatch):
 
 def _stub_no_versions_or_progress(monkeypatch):
     """Avoids the route's real SSH calls (summarize_cluster_versions/
-    get_upgrade_status) in tests that don't care about their content —
-    every dashboard-level test monkeypatches watcher.ceph_client functions
-    at the name they were imported under in dashboard/routes/upgrade.py."""
+    get_upgrade_status/run_ceph_json_command) in tests that don't care
+    about their content — every dashboard-level test monkeypatches
+    watcher.ceph_client functions at the name they were imported under in
+    dashboard/routes/upgrade.py. run_ceph_json_command added 2026-07-27
+    (build_upgrade_log_markdown's post-upgrade "ceph -s" summary) — without
+    it, any test exercising an EXECUTED action's markdown log makes a REAL
+    SSH attempt against whatever settings.ceph_mon_nodes happens to be
+    (this project's real .env, verified live: took 6+ seconds and depended
+    on real lab-cluster reachability)."""
     monkeypatch.setattr(upgrade_route, "summarize_cluster_versions", lambda: {
         "raw": {}, "per_type": {}, "distinct_versions": [], "is_mixed": False, "current_version": "18.2.4",
     })
     monkeypatch.setattr(upgrade_route, "propose_next_version", lambda v: "19.2.0")
     monkeypatch.setattr(upgrade_route, "get_upgrade_status", lambda: {"in_progress": False})
+    monkeypatch.setattr(
+        upgrade_route,
+        "run_ceph_json_command",
+        lambda inner_command: (
+            "10.20.1.112",
+            {
+                "health": {"status": "HEALTH_OK"},
+                "monmap": {"mons": [{"name": "a"}, {"name": "b"}, {"name": "c"}]},
+                "mgrmap": {"active_name": "a", "standbys": [{"name": "b"}]},
+                "osdmap": {"num_osds": 3, "num_up_osds": 3, "num_in_osds": 3},
+                "pgmap": {"bytes_used": 900 * 1024**2, "bytes_total": 60 * 1024**3},
+            },
+        ),
+    )
 
 
 def test_unauthenticated_get_upgrade_redirects_to_login(dashboard_client):
@@ -686,6 +706,7 @@ def test_upgrade_page_hides_markdown_log_while_pending(dashboard_client, monkeyp
 
 
 def test_download_upgrade_log_returns_markdown_file(dashboard_client, monkeypatch):
+    _stub_no_versions_or_progress(monkeypatch)
     _login(dashboard_client)
 
     with db_module.SessionLocal() as session:
@@ -711,6 +732,34 @@ def test_download_upgrade_log_returns_markdown_file(dashboard_client, monkeypatc
     assert "# Nhật ký nâng cấp cụm Ceph" in response.text
     assert "10.20.1.112" in response.text
     assert "apt-get install -y ceph" in response.text
+    # 2026-07-27: post-upgrade summary section (operator request) — only
+    # for a resolved EXECUTED action, live "ceph -s" snapshot + duration.
+    assert "## Tóm tắt cụm sau nâng cấp" in response.text
+    assert "Ceph 18.2.4" in response.text  # current_version from the stub
+    assert "HEALTH_OK" in response.text
+    assert "MON:** 3 node" in response.text
+    assert "active `a`, standby: b" in response.text
+    assert "3 osd, 3 up, 3 in" in response.text
+    assert "0.9 GiB / 60.0 GiB" in response.text
+    assert "phút" in response.text and "giây" in response.text
+
+
+def test_upgrade_summary_omitted_for_non_executed_actions(dashboard_client, monkeypatch):
+    """The post-upgrade summary only makes sense once the upgrade actually
+    finished — a PENDING/APPROVED/FAILED action has no "after" state to
+    summarize, and querying live cluster status for a FAILED upgrade could
+    misleadingly look like a success report."""
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        _resolved_package_action(session, "FAILED", [{"host": "10.20.1.112", "status": "failed"}])
+
+    response = dashboard_client.get("/upgrade/log.md")
+
+    assert response.status_code == 200
+    assert "## Tóm tắt cụm sau nâng cấp" not in response.text
 
 
 def test_download_upgrade_log_404_when_no_action_ever_proposed(dashboard_client):

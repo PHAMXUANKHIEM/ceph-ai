@@ -26,6 +26,7 @@ from watcher.ceph_client import (
     pause_upgrade,
     propose_next_version,
     resume_upgrade,
+    run_ceph_json_command,
     summarize_cluster_versions,
 )
 from worker.executor import commands as executor_commands
@@ -384,6 +385,67 @@ def _format_step_timestamp(value: str | None) -> str:
         return value
 
 
+def _format_gib(bytes_value: object) -> str:
+    """Bytes -> "N GiB" (1 decimal place) for the post-upgrade summary's
+    capacity line — pgmap's bytes_total/bytes_used are raw byte counts, not
+    human-readable on their own."""
+    if not isinstance(bytes_value, (int, float)):
+        return "—"
+    return f"{bytes_value / (1024 ** 3):.1f} GiB"
+
+
+def _format_duration(start: datetime, end: datetime) -> str:
+    """created_at -> updated_at as "X phút Y giây" — updated_at is the last
+    write to this Action row, which for a resolved (EXECUTED/FAILED) action
+    is the exact moment _record_approved_execution_result finished, so this
+    is the real wall-clock duration of the whole attempt, not just one
+    phase."""
+    total_seconds = max(0, int((end - start).total_seconds()))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes} phút {seconds} giây"
+
+
+def _build_post_upgrade_summary_lines() -> list[str]:
+    """Live `ceph -s` snapshot (verified against a real cephadm/quincy
+    cluster) — best-effort: the upgrade itself already succeeded by the
+    time this is called (only invoked for an EXECUTED action), so a
+    transient query failure here must not make the whole log look like a
+    failure, just skip the summary with a clear note."""
+    try:
+        _host, status = run_ceph_json_command("ceph -s")
+    except CephQueryError as exc:
+        return [f"Không lấy được trạng thái trực tiếp từ cụm: {exc}", ""]
+    if not isinstance(status, dict):
+        return ["Không lấy được trạng thái trực tiếp từ cụm (phản hồi không đúng định dạng).", ""]
+
+    health = (status.get("health") or {}).get("status", "—")
+    monmap = status.get("monmap") or {}
+    mon_count = len(monmap.get("mons") or [])
+    mgrmap = status.get("mgrmap") or {}
+    active_mgr = mgrmap.get("active_name") or "—"
+    standby_mgrs = [s.get("name") for s in (mgrmap.get("standbys") or []) if s.get("name")]
+    osdmap = status.get("osdmap") or {}
+    pgmap = status.get("pgmap") or {}
+
+    lines = [
+        f"- **Sức khoẻ cụm:** {health}",
+        f"- **MON:** {mon_count} node",
+        f"- **MGR:** active `{active_mgr}`"
+        + (f", standby: {', '.join(standby_mgrs)}" if standby_mgrs else " (không có standby)"),
+        f"- **OSD:** {osdmap.get('num_osds', '—')} osd, "
+        f"{osdmap.get('num_up_osds', '—')} up, {osdmap.get('num_in_osds', '—')} in",
+        f"- **Dung lượng:** {_format_gib(pgmap.get('bytes_used'))} / {_format_gib(pgmap.get('bytes_total'))} đã dùng",
+        "",
+    ]
+    try:
+        current_version = summarize_cluster_versions().get("current_version")
+    except CephQueryError:
+        current_version = None
+    if current_version:
+        lines.insert(0, f"- **Phiên bản đạt được:** Ceph {current_version}")
+    return lines
+
+
 def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str:
     """Renders the FULL record of one Cluster Upgrade attempt as Markdown —
     proposal text, per-node steps (with start/end time, the exact command
@@ -426,6 +488,12 @@ def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str
     if incident is not None and incident.log_excerpt:
         lines.append(f"- **Đề xuất bởi:** {incident.log_excerpt}")
     lines.append("")
+
+    if action.status == ActionStatus.EXECUTED.value:
+        lines.append("## Tóm tắt cụm sau nâng cấp")
+        lines.append("")
+        lines.append(f"- **Thời gian nâng cấp:** {_format_duration(action.created_at, action.updated_at)}")
+        lines += _build_post_upgrade_summary_lines()
 
     if action.rationale:
         lines += ["## Quy trình dự kiến", "", "```", action.rationale, "```", ""]
