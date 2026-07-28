@@ -40,7 +40,7 @@ from collections import deque
 from datetime import datetime
 
 from shared import audit, db
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Incident, IncidentStatus, VolumeMetric
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from worker.policy import gate
@@ -98,6 +98,18 @@ class _VolumeState:
 # (watcher/ceph_client.py::last_successful_mon_node).
 _state: dict[tuple[str, str], _VolumeState] = {}
 
+# Overwritten (not appended to) on every check_volumes() call — this
+# process's most recent poll's full sample set (every image from every
+# pool, not just the ones that ended up in check_volumes()'s own returned
+# saturated dict), read by persist_last_poll_metrics() below. Kept as its
+# own module-level variable rather than folded into check_volumes()'s
+# return value on purpose: check_volumes()'s existing large test suite
+# exercises the saturation heuristic without wiring up a DB, and changing
+# its return shape would force every one of those tests to also care about
+# persistence. watcher/main.py's poll loop is the only real caller of
+# either function, and always calls both, once per poll, in order.
+_last_poll_samples: list[dict] = []
+
 
 def _looks_saturated(state: _VolumeState, iops: float, latency_ms: float) -> bool:
     """True if THIS SINGLE sample looks saturated — the window must already
@@ -123,6 +135,7 @@ def check_volumes() -> dict[str, dict]:
     simply retried next poll — never raises, matching every other
     best-effort per-poll check in watcher/main.py's loop."""
     saturated: dict[str, dict] = {}
+    _last_poll_samples.clear()
     for pool in ceph_client.configured_rbd_pools():
         try:
             samples = ceph_client.query_rbd_iostat(pool)
@@ -143,7 +156,19 @@ def check_volumes() -> dict[str, dict]:
             state.iops_window.append(sample["iops"])
             state.latency_window.append(latency_ms)
 
-            if state.consecutive_saturated_polls >= CONSECUTIVE_POLLS_REQUIRED:
+            is_saturated_now = state.consecutive_saturated_polls >= CONSECUTIVE_POLLS_REQUIRED
+            _last_poll_samples.append(
+                {
+                    "pool": sample["pool"],
+                    "image": sample["image"],
+                    "iops": sample["iops"],
+                    "read_latency_ms": sample["read_latency_ms"],
+                    "write_latency_ms": sample["write_latency_ms"],
+                    "saturated": is_saturated_now,
+                }
+            )
+
+            if is_saturated_now:
                 saturated[ceph_code_for(*key)] = {
                     "pool": sample["pool"],
                     "image": sample["image"],
@@ -152,6 +177,35 @@ def check_volumes() -> dict[str, dict]:
                     "consecutive_polls": state.consecutive_saturated_polls,
                 }
     return saturated
+
+
+def persist_last_poll_metrics() -> None:
+    """Writes one VolumeMetric row per sample check_volumes() saw on its
+    most recent call — the persisted, queryable history that this module's
+    own in-memory rolling window (see this module's docstring) deliberately
+    doesn't provide on its own. A no-op if check_volumes() found nothing to
+    poll this cycle (no pools configured/discovered, or every pool query
+    failed) — same "next poll just retries" posture as check_volumes()
+    itself. Deliberately a separate call from check_volumes() (see
+    _last_poll_samples' own comment for why) — watcher/main.py's poll loop
+    calls both, every poll."""
+    if not _last_poll_samples:
+        return
+    polled_at = datetime.utcnow()
+    with db.SessionLocal() as session:
+        session.add_all(
+            VolumeMetric(
+                pool=sample["pool"],
+                image=sample["image"],
+                iops=sample["iops"],
+                read_latency_ms=sample["read_latency_ms"],
+                write_latency_ms=sample["write_latency_ms"],
+                saturated=sample["saturated"],
+                polled_at=polled_at,
+            )
+            for sample in _last_poll_samples
+        )
+        session.commit()
 
 
 def _rationale_for(detail: dict) -> str:

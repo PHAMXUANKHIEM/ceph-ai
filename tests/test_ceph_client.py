@@ -6,6 +6,7 @@ import watcher.ceph_client as ceph_client
 from watcher.ceph_client import (
     CephQueryError,
     configured_rbd_pools,
+    discover_rbd_pools,
     get_mon_nodes,
     get_upgrade_status,
     pause_upgrade,
@@ -754,9 +755,58 @@ def test_configured_rbd_pools_parses_settings(monkeypatch):
     assert configured_rbd_pools() == ["vms", "volumes", "backups"]
 
 
-def test_configured_rbd_pools_empty_by_default(monkeypatch):
+def test_configured_rbd_pools_manual_setting_wins_over_auto_discovery(monkeypatch):
+    # Manual CEPH_RBD_POOLS is an explicit scoping knob — it must be used
+    # as-is, never merged with or overridden by whatever discover_rbd_pools
+    # would have found.
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "vms")
+    monkeypatch.setattr(ceph_client, "discover_rbd_pools", lambda: (_ for _ in ()).throw(AssertionError("must not be called")))
+    assert configured_rbd_pools() == ["vms"]
+
+
+def test_configured_rbd_pools_auto_discovers_when_unset(monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "")
-    assert configured_rbd_pools() == []
+    monkeypatch.setattr(ceph_client, "discover_rbd_pools", lambda: ["backups", "vms"])
+    assert configured_rbd_pools() == ["backups", "vms"]
+
+
+def test_configured_rbd_pools_returns_empty_when_discovery_fails(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "")
+
+    def failing_discover():
+        raise CephQueryError("all MON nodes unreachable")
+
+    monkeypatch.setattr(ceph_client, "discover_rbd_pools", failing_discover)
+    assert configured_rbd_pools() == []  # must not raise
+
+
+def test_discover_rbd_pools_filters_by_rbd_application_metadata(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {"pool_name": "vms", "application_metadata": {"rbd": {}}},
+            {"pool_name": ".mgr", "application_metadata": {"mgr": {}}},
+            {"pool_name": "backups", "application_metadata": {"rbd": {}}},
+            {"pool_name": "no-app", "application_metadata": {}},
+        ]
+    }
+
+    assert discover_rbd_pools() == ["backups", "vms"]  # sorted, non-rbd pools excluded
+
+
+def test_discover_rbd_pools_returns_empty_for_unexpected_shape(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": {"unexpected": "shape"}}
+
+    assert discover_rbd_pools() == []  # must not raise
+
+
+def test_discover_rbd_pools_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": "unreachable"}
+
+    with pytest.raises(CephQueryError):
+        discover_rbd_pools()
 
 
 def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):

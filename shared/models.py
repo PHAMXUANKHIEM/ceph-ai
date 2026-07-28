@@ -2,7 +2,18 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.db import Base
@@ -354,3 +365,50 @@ class PatchDocument(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     uploaded_by: Mapped[str] = mapped_column(String(64), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VolumeMetric(Base):
+    """One row per (pool, image) per Watcher poll — the persisted,
+    queryable counterpart to watcher/volume_monitor.py's in-memory-only
+    rolling window (that module's own docstring explains why THAT state
+    stays in-memory: it only needs a few minutes of history to drive the
+    saturation heuristic). This table exists for the opposite need —
+    keeping every sample so an operator can actually see a volume's history
+    (recent peak IOPS, when latency started climbing, etc.) instead of only
+    whatever the live iostat tab happens to show right now.
+
+    Written by watcher/volume_monitor.py::persist_last_poll_metrics(),
+    called once per Watcher poll for EVERY sample from EVERY auto-discovered/
+    configured pool that poll returned — not only volumes that looked
+    saturated. `saturated` here mirrors the in-memory streak state
+    (consecutive_saturated_polls >= CONSECUTIVE_POLLS_REQUIRED) at the
+    moment of this exact sample, which is a close but not always
+    literally-identical proxy for "has an OPEN VOLUME_SATURATED: Incident
+    right now" (dashboard/routes/volumes.py's iostat API cross-references
+    the Incident table directly for that, rather than trusting this column,
+    to stay authoritative) — recording the streak-based flag here avoids an
+    extra DB round trip inside the per-poll SSH-query hot path.
+
+    Append-only, no automatic pruning (this codebase has no background
+    cleanup job for ANY table) — purged the same manual way as every other
+    timestamped table, via the Settings page's "Xóa dữ liệu cũ" form
+    (dashboard/routes/maintenance.py::purge_old_records), keyed off
+    polled_at like NodeDiagnosticRun.created_at. At the default 15s poll
+    interval this is genuinely high-volume (pools x images-per-pool rows
+    every poll) — an operator monitoring many volumes should expect this
+    table to be the fastest-growing one and prune it on a real schedule.
+    """
+
+    __tablename__ = "volume_metrics"
+    __table_args__ = (
+        Index("ix_volume_metrics_pool_image_polled_at", "pool", "image", "polled_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    iops: Mapped[float] = mapped_column(Float, nullable=False)
+    read_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    write_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    saturated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

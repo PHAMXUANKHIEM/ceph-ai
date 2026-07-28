@@ -8,7 +8,15 @@ from sqlalchemy.pool import StaticPool
 import watcher.volume_monitor as vm
 from shared import db as db_module
 from shared.db import Base
-from shared.models import Action, ActionClassification, ActionStatus, AuditEntry, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionClassification,
+    ActionStatus,
+    AuditEntry,
+    Incident,
+    IncidentStatus,
+    VolumeMetric,
+)
 from watcher.ceph_client import CephQueryError
 
 
@@ -27,12 +35,16 @@ def isolated_db(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_module_state():
-    # vm._state is process-lifetime module state (by design — see
-    # volume_monitor.py's own docstring), which would otherwise leak a
-    # volume's rolling window across unrelated test functions.
+    # vm._state/_last_poll_samples are process-lifetime module state (by
+    # design — see volume_monitor.py's own docstring), which would
+    # otherwise leak a volume's rolling window / last-poll samples across
+    # unrelated test functions (including into other test files, since
+    # this is a plain module-level variable, not per-test).
     vm._state.clear()
+    vm._last_poll_samples.clear()
     yield
     vm._state.clear()
+    vm._last_poll_samples.clear()
 
 
 def _sample(pool="vms", image="disk-1", iops=100.0, read_latency_ms=1.0, write_latency_ms=1.0):
@@ -222,3 +234,65 @@ def test_create_or_resolve_only_touches_its_own_ceph_code_family(isolated_db):
 
     with db_module.SessionLocal() as session:
         assert session.get(Incident, unrelated_id).status == IncidentStatus.FAILED.value
+
+
+# --- persist_last_poll_metrics() ---------------------------------------
+
+
+def test_persist_last_poll_metrics_writes_a_row_per_sample_from_the_last_check_volumes_call(
+    isolated_db, monkeypatch
+):
+    monkeypatch.setattr(vm.ceph_client, "configured_rbd_pools", lambda: ["vms"])
+    monkeypatch.setattr(
+        vm.ceph_client,
+        "query_rbd_iostat",
+        lambda pool: [
+            _sample(image="disk-1", iops=100.0, read_latency_ms=1.0, write_latency_ms=1.5),
+            _sample(image="disk-2", iops=50.0, read_latency_ms=0.5, write_latency_ms=0.5),
+        ],
+    )
+
+    vm.check_volumes()
+    vm.persist_last_poll_metrics()
+
+    with db_module.SessionLocal() as session:
+        rows = session.query(VolumeMetric).order_by(VolumeMetric.image).all()
+        assert [r.image for r in rows] == ["disk-1", "disk-2"]
+        assert rows[0].pool == "vms"
+        assert rows[0].iops == 100.0
+        assert rows[0].read_latency_ms == 1.0
+        assert rows[0].write_latency_ms == 1.5
+        assert rows[0].saturated is False  # window not full yet on the first poll
+
+
+def test_persist_last_poll_metrics_marks_saturated_flag_once_streak_is_reached(isolated_db, monkeypatch):
+    monkeypatch.setattr(vm.ceph_client, "configured_rbd_pools", lambda: ["vms"])
+    steady = [_sample(iops=100.0, read_latency_ms=1.0, write_latency_ms=1.0)] * vm.ROLLING_WINDOW_SIZE
+    it = iter(steady)
+    monkeypatch.setattr(vm.ceph_client, "query_rbd_iostat", lambda pool: [next(it)])
+    for _ in range(vm.ROLLING_WINDOW_SIZE):
+        vm.check_volumes()
+
+    saturated_sample = _sample(iops=95.0, read_latency_ms=10.0, write_latency_ms=10.0)
+    monkeypatch.setattr(vm.ceph_client, "query_rbd_iostat", lambda pool: [saturated_sample])
+    for _ in range(vm.CONSECUTIVE_POLLS_REQUIRED):
+        vm.check_volumes()
+    vm.persist_last_poll_metrics()
+
+    with db_module.SessionLocal() as session:
+        # Only the FINAL poll's samples are persisted here (each
+        # check_volumes() call overwrites _last_poll_samples) — this test
+        # only calls persist_last_poll_metrics() once, after the streak
+        # already reached CONSECUTIVE_POLLS_REQUIRED.
+        row = session.query(VolumeMetric).one()
+        assert row.saturated is True
+
+
+def test_persist_last_poll_metrics_is_a_noop_when_nothing_was_polled(isolated_db, monkeypatch):
+    monkeypatch.setattr(vm.ceph_client, "configured_rbd_pools", lambda: [])
+
+    vm.check_volumes()
+    vm.persist_last_poll_metrics()
+
+    with db_module.SessionLocal() as session:
+        assert session.query(VolumeMetric).count() == 0

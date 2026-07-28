@@ -12,6 +12,7 @@ from shared.models import (
     Incident,
     IncidentStatus,
     NodeDiagnosticRun,
+    VolumeMetric,
 )
 
 
@@ -61,6 +62,22 @@ def _seed_diagnostic_run(created_at: datetime) -> None:
         session.commit()
 
 
+def _seed_volume_metric(polled_at: datetime) -> None:
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumeMetric(
+                pool="vms",
+                image="disk-1",
+                iops=100.0,
+                read_latency_ms=1.0,
+                write_latency_ms=1.0,
+                saturated=False,
+                polled_at=polled_at,
+            )
+        )
+        session.commit()
+
+
 def test_unauthenticated_post_cleanup_redirects_to_login(dashboard_client):
     response = dashboard_client.post("/settings/cleanup", data={}, follow_redirects=False)
     assert response.status_code == 303
@@ -92,6 +109,8 @@ def test_cleanup_db_with_cutoff_deletes_old_and_keeps_new(dashboard_client):
     _seed_incident_with_action_and_audit(new_id, datetime(2026, 7, 1))
     _seed_diagnostic_run(datetime(2026, 1, 1))
     _seed_diagnostic_run(datetime(2026, 7, 1))
+    _seed_volume_metric(datetime(2026, 1, 1))
+    _seed_volume_metric(datetime(2026, 7, 1))
 
     _login(dashboard_client)
     response = dashboard_client.post(
@@ -109,11 +128,14 @@ def test_cleanup_db_with_cutoff_deletes_old_and_keeps_new(dashboard_client):
         assert session.query(AuditEntry).filter_by(incident_id=new_id).count() == 1
         assert session.query(NodeDiagnosticRun).count() == 1
         assert session.query(NodeDiagnosticRun).first().created_at == datetime(2026, 7, 1)
+        assert session.query(VolumeMetric).count() == 1
+        assert session.query(VolumeMetric).first().polled_at == datetime(2026, 7, 1)
 
 
 def test_cleanup_db_blank_cutoff_deletes_everything(dashboard_client):
     _seed_incident_with_action_and_audit("incident-a", datetime(2026, 7, 1))
     _seed_diagnostic_run(datetime(2026, 7, 1))
+    _seed_volume_metric(datetime(2026, 7, 1))
 
     _login(dashboard_client)
     response = dashboard_client.post("/settings/cleanup", data={"target_db": "on", "cutoff_date": ""})
@@ -124,6 +146,7 @@ def test_cleanup_db_blank_cutoff_deletes_everything(dashboard_client):
         assert session.query(Action).count() == 0
         assert session.query(AuditEntry).count() == 0
         assert session.query(NodeDiagnosticRun).count() == 0
+        assert session.query(VolumeMetric).count() == 0
 
 
 def test_purge_old_records_dereferences_chat_message_pointing_at_deleted_incident(monkeypatch):

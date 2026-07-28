@@ -81,14 +81,30 @@ def test_volumes_page_rejects_pool_not_in_configured_list(dashboard_client, monk
     assert response.status_code == 404
 
 
-def test_volumes_page_shows_hint_when_no_pools_configured(dashboard_client, monkeypatch):
+def test_volumes_page_shows_hint_when_no_pools_configured_and_none_discovered(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "ceph_rbd_pools", "")
+    # CEPH_RBD_POOLS blank now means "auto-discover" (watcher/ceph_client.py
+    # ::configured_rbd_pools), not "disabled" — mock discovery itself
+    # finding nothing rather than letting this test attempt a real SSH call.
+    monkeypatch.setattr(volumes_route.ceph_client, "discover_rbd_pools", lambda: [])
     _login(dashboard_client)
 
     response = dashboard_client.get("/volumes")
 
     assert response.status_code == 200
     assert "CEPH_RBD_POOLS" in response.text
+
+
+def test_volumes_page_lists_auto_discovered_pools_when_none_configured(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "ceph_rbd_pools", "")
+    monkeypatch.setattr(volumes_route.ceph_client, "discover_rbd_pools", lambda: ["backups", "vms"])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volumes")
+
+    assert response.status_code == 200
+    assert "vms" in response.text
+    assert "backups" in response.text
 
 
 def test_iostat_api_returns_samples_for_configured_pool(dashboard_client, monkeypatch):

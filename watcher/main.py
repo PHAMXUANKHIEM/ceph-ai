@@ -281,11 +281,17 @@ def run(
         # independent try/except, OUTSIDE the cluster-health try block
         # above, on purpose: it queries `rbd perf image iostat`, not `ceph
         # health detail`, so a MON being briefly unreachable for one must
-        # not also skip the other, and vice versa. A no-op (empty loop,
-        # effectively free) when settings.ceph_rbd_pools is unconfigured —
-        # see watcher/ceph_client.py::configured_rbd_pools.
+        # not also skip the other, and vice versa. Auto-discovers every
+        # RBD-application pool by default (see
+        # watcher/ceph_client.py::configured_rbd_pools) — only a no-op if
+        # the cluster genuinely has no RBD pools yet or is unreachable.
+        # persist_last_poll_metrics writes every sample check_volumes just
+        # saw to shared.models.VolumeMetric (see that function's own
+        # docstring) — deliberately called every poll regardless of
+        # whether anything looked saturated this cycle.
         try:
             current_saturated = volume_monitor.check_volumes()
+            volume_monitor.persist_last_poll_metrics()
             volume_monitor.create_or_resolve_volume_incidents(current_saturated)
         except Exception:
             logger.exception("run: volume saturation check failed")

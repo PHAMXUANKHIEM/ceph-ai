@@ -15,7 +15,7 @@ from dashboard.routes.settings import (
 )
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import Action, AuditEntry, ChatMessage, Incident, NodeDiagnosticRun
+from shared.models import Action, AuditEntry, ChatMessage, Incident, NodeDiagnosticRun, VolumeMetric
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +91,8 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
     deletes Incidents (+ their Actions + AuditEntries, cascaded manually —
     there is no ORM/DB cascade configured, and Action/AuditEntry's own FKs
     would reject an orphaning delete) detected before `cutoff`, and
-    NodeDiagnosticRuns created before `cutoff` (unrelated table, no FK to
-    Incident).
+    NodeDiagnosticRuns/VolumeMetrics created before `cutoff` (unrelated
+    tables, no FK to Incident).
 
     ChatMessage.proposed_incident_id also FKs to Incident (set once a chat
     proposal is confirmed, dashboard/routes/chat.py:446) but chat history
@@ -144,6 +144,17 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
             diagnostic_query = diagnostic_query.filter(NodeDiagnosticRun.created_at < cutoff)
         diagnostic_deleted = diagnostic_query.delete(synchronize_session=False)
 
+        # VolumeMetric (2026-07-28): unrelated table, no FK to Incident —
+        # same shape as the NodeDiagnosticRun purge above. By far the
+        # fastest-growing table this purge touches (one row per volume
+        # EVERY Watcher poll, not just on an Incident), so an operator
+        # running this feature should expect to actually need this cutoff
+        # regularly, not just occasionally.
+        volume_metric_query = session.query(VolumeMetric)
+        if cutoff is not None:
+            volume_metric_query = volume_metric_query.filter(VolumeMetric.polled_at < cutoff)
+        volume_metric_deleted = volume_metric_query.delete(synchronize_session=False)
+
         session.commit()
 
     return {
@@ -151,6 +162,7 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
         "actions": action_deleted,
         "audit_entries": audit_deleted,
         "diagnostic_runs": diagnostic_deleted,
+        "volume_metrics": volume_metric_deleted,
     }
 
 
@@ -194,7 +206,8 @@ async def cleanup_submit(
             counts = purge_old_records(cutoff)
             summary_parts.append(
                 f"DB: {counts['incidents']} incident, {counts['actions']} action, "
-                f"{counts['audit_entries']} audit entry, {counts['diagnostic_runs']} chẩn đoán CLI."
+                f"{counts['audit_entries']} audit entry, {counts['diagnostic_runs']} chẩn đoán CLI, "
+                f"{counts['volume_metrics']} bản ghi hiệu năng volume."
             )
         if target_files:
             freed_total = 0

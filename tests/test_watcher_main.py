@@ -159,12 +159,17 @@ def test_run_calls_volume_monitor_every_poll_iteration(monkeypatch):
 
     check_calls = {"n": 0}
     resolve_calls = []
+    persist_calls = {"n": 0}
 
     def fake_check_volumes():
         check_calls["n"] += 1
         return {"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}
 
+    def fake_persist():
+        persist_calls["n"] += 1
+
     monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", fake_check_volumes)
+    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", fake_persist)
     monkeypatch.setattr(
         watcher_main.volume_monitor, "create_or_resolve_volume_incidents", resolve_calls.append
     )
@@ -172,6 +177,7 @@ def test_run_calls_volume_monitor_every_poll_iteration(monkeypatch):
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
 
     assert check_calls["n"] == 3
+    assert persist_calls["n"] == 3
     assert resolve_calls == [{"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}] * 3
 
 

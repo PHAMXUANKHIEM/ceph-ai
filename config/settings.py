@@ -74,10 +74,13 @@ class Settings(BaseSettings):
 
     # 2026-07-28: RBD pools to poll for per-image performance (IOPS/latency)
     # and saturation detection (watcher/volume_monitor.py) — comma-separated
-    # pool names, e.g. "vms,volumes". Blank by default: this feature is
-    # entirely opt-in, unlike ceph_mon_nodes/etc. above which are required —
-    # a cluster with no RBD-backed VM volumes (or one that just doesn't want
-    # this feature) pays zero extra SSH/poll cost for it.
+    # pool names, e.g. "vms,volumes". Blank by default, and blank does NOT
+    # mean "disabled" — watcher/ceph_client.py::configured_rbd_pools() auto-
+    # discovers every pool with the RBD application enabled when this is
+    # left empty, so the feature works with zero manual setup on a normal
+    # cluster. Only set this to RESTRICT polling to an explicit subset (SSH/
+    # poll cost control, or a pool you deliberately don't want watched) —
+    # once set, it's the ONLY list used, auto-discovery is skipped entirely.
     ceph_rbd_pools: str = ""
 
     # 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py)

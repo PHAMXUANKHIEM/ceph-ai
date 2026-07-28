@@ -45,8 +45,12 @@
         {% endfor %}
       {% else %}
         <p class="hint">
-          Chưa cấu hình pool RBD nào để theo dõi — đặt <code>CEPH_RBD_POOLS</code> trong <code>.env</code>
-          (danh sách pool cách nhau bởi dấu phẩy, vd <code>vms,volumes</code>) rồi khởi động lại Watcher.
+          Không tìm thấy pool RBD nào (đã bật application "rbd") trên cluster — hệ thống tự động quét
+          cluster để tìm pool, không cần cấu hình thủ công. Có thể do cluster chưa tạo pool RBD nào,
+          hoặc chưa kết nối được tới cluster (kiểm tra <code>CEPH_MON_NODES</code> ở trang Cài đặt).
+          Muốn chỉ theo dõi một số pool cụ thể thay vì tất cả? Đặt <code>CEPH_RBD_POOLS</code> trong
+          <code>.env</code> (danh sách pool cách nhau bởi dấu phẩy, vd <code>vms,volumes</code>) rồi
+          khởi động lại Watcher.
         </p>
       {% endif %}
     </nav>

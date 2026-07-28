@@ -93,11 +93,65 @@ def get_mon_nodes() -> list[str]:
     return [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
 
 
+def discover_rbd_pools() -> list[str]:
+    """Auto-detects which pools have the RBD application enabled (the same
+    `application_metadata` flag `rbd pool init`/`ceph osd pool application
+    enable <pool> rbd` sets, and the same signal `rbd`'s own tooling uses to
+    decide "this is an RBD pool") via `ceph osd pool ls detail --format
+    json`. The bare-list response shape for this exact command is already
+    verified against a real cephadm/reef cluster (see
+    run_ceph_json_command's own docstring) — only the per-pool
+    `application_metadata` key name here follows Ceph's documented (not
+    independently re-verified this session) JSON schema, so this carries
+    less risk than query_rbd_iostat/query_rbd_trash's fully-unverified
+    schemas below.
+
+    configured_rbd_pools() below is the only caller — this just answers
+    "which pools currently look RBD-backed," it doesn't decide what an
+    empty result or a query failure means to a caller.
+    """
+    _, payload = run_ceph_json_command("ceph osd pool ls detail")
+    raw_pools = payload if isinstance(payload, list) else payload.get("pools") if isinstance(payload, dict) else None
+    if not isinstance(raw_pools, list):
+        logger.warning(
+            "discover_rbd_pools: unexpected response shape from 'ceph osd pool ls detail' "
+            "— treating as no pools found"
+        )
+        return []
+
+    pools: list[str] = []
+    for entry in raw_pools:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("pool_name")
+        applications = entry.get("application_metadata")
+        if name and isinstance(applications, dict) and "rbd" in applications:
+            pools.append(str(name))
+    return sorted(pools)
+
+
 def configured_rbd_pools() -> list[str]:
-    """Pools watcher/volume_monitor.py polls for per-image RBD performance —
-    empty by default (feature is entirely opt-in, see settings.ceph_rbd_pools'
-    own docstring)."""
-    return [p.strip() for p in settings.ceph_rbd_pools.split(",") if p.strip()]
+    """Pools watcher/volume_monitor.py polls for per-image RBD performance.
+
+    settings.ceph_rbd_pools (comma-separated in .env) ALWAYS wins when set
+    — an explicit operator opt-in/scoping knob (restrict polling to a
+    subset, e.g. for SSH-call cost control, or exclude a pool on purpose).
+    Left blank (the default), this auto-discovers every RBD-application
+    pool via discover_rbd_pools() above instead of requiring manual setup
+    — a cluster query failure (no MON reachable yet, nothing configured at
+    all) degrades to an empty list, logged rather than raised, same
+    best-effort posture as every other live query in this codebase, so
+    callers (Dashboard route handlers, the Watcher poll loop) never need
+    their own try/except just to call this.
+    """
+    manual = [p.strip() for p in settings.ceph_rbd_pools.split(",") if p.strip()]
+    if manual:
+        return manual
+    try:
+        return discover_rbd_pools()
+    except CephQueryError as exc:
+        logger.warning("configured_rbd_pools: auto-discovery failed: %s", exc)
+        return []
 
 
 # 2026-07-28: NOT verified against a real cluster yet (no RBD-backed pool
