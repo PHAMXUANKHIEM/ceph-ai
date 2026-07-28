@@ -1455,6 +1455,11 @@ def test_convert_enable_orchestrator_runs_on_first_mon(monkeypatch):
 
     assert calls[0][0] == "10.20.1.112"
     assert "ceph orch set backend cephadm" in calls[0][1]
+    # 2026-07-28 regression: without --force, this failed live right after
+    # adopt_mgrs with "all mgr daemons do not support module 'cephadm'"
+    # (the mon's capability cache for the just-restarted mgr hadn't caught
+    # up yet) — Ceph's own error message names --force as the fix.
+    assert "ceph mgr module enable cephadm --force" in calls[0][1]
 
 
 def test_convert_cluster_happy_path_all_phases_succeed_and_writes_env(monkeypatch):

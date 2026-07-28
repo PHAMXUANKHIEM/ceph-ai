@@ -1564,14 +1564,24 @@ def _phase_convert_enable_orchestrator(nodes: list[dict], action_params: dict, o
     ensures the orchestrator's own dedicated SSH keypair exists (bootstrap
     generates one automatically as part of its own setup; adoption never
     calls bootstrap, so this is the equivalent explicit step) — harmless if
-    a key already exists."""
+    a key already exists.
+
+    2026-07-28 fix (verified live): `ceph mgr module enable cephadm`
+    (no flags) failed right after adopt_mgrs with "Error ENOENT: all mgr
+    daemons do not support module 'cephadm', pass --force to force
+    enablement" — the mon's module-capability cache for the just-adopted/
+    just-restarted mgr daemon hadn't caught up yet, a known, Ceph-
+    documented race (the error message itself names the workaround).
+    `--force` is exactly what Ceph's own error suggests here, not a risky
+    workaround invented for this codebase — safe specifically because we
+    just adopted this exact mgr ourselves and know it's the real thing."""
     first_mon = _first_mon_ip(nodes)
     host_status = [{"host": first_mon, "status": "running"}]
     on_host_update(list(host_status))
     try:
         execute_command(
             first_mon,
-            "ceph mgr module enable cephadm && ceph orch set backend cephadm && "
+            "ceph mgr module enable cephadm --force && ceph orch set backend cephadm && "
             "(ceph cephadm generate-key || true)",
         )
     except ExecutorError as exc:
