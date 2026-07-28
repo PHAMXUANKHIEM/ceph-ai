@@ -108,6 +108,51 @@ def test_run_survives_query_failures_without_crashing(monkeypatch):
     assert call_count["n"] == 3
 
 
+def test_run_logs_unconfigured_cluster_quietly_not_as_an_error(monkeypatch, caplog):
+    # Regression, 2026-07-28 (found on a real first-time install): a fresh
+    # install with no CEPH_MON_NODES configured yet logged a full
+    # ERROR + traceback every single poll for what is actually expected,
+    # harmless "nothing configured yet" state — confusing enough that an
+    # operator following the README Ctrl-C'd out of Watcher, mistaking it
+    # for something broken. Must log at INFO with no traceback for THIS
+    # specific reason, while a real connectivity failure (a different
+    # CephQueryError message) must still log loudly.
+    from watcher.ceph_client import CephQueryError
+
+    monkeypatch.setattr(
+        watcher_main,
+        "query_cluster_health",
+        lambda: (_ for _ in ()).throw(
+            CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
+        ),
+    )
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    with caplog.at_level("INFO"):
+        watcher_main.run(on_transition=lambda *_: None, max_iterations=1)
+
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
+    assert any(
+        r.levelname == "INFO" and "CEPH_MON_NODES" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_run_still_logs_a_real_connectivity_failure_loudly(monkeypatch, caplog):
+    from watcher.ceph_client import CephQueryError
+
+    monkeypatch.setattr(
+        watcher_main,
+        "query_cluster_health",
+        lambda: (_ for _ in ()).throw(CephQueryError("all MON nodes unreachable")),
+    )
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    with caplog.at_level("INFO"):
+        watcher_main.run(on_transition=lambda *_: None, max_iterations=1)
+
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+
+
 def test_run_calls_volume_monitor_every_poll_iteration(monkeypatch):
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)

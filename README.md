@@ -200,6 +200,14 @@ lần chạy đầu. Không thấy lỗi nào in ra là thành công.
 Mở 3 terminal (hoặc dùng `nohup ... & disown` để chạy nền), đều từ thư mục
 gốc repo với venv đã activate:
 
+> Chưa cấu hình `CEPH_MON_NODES` ở bước 6 (vd chưa có cụm)? Watcher log dòng
+> `run: no MON nodes configured (...) — cấu hình CEPH_MON_NODES (.env hoặc
+> trang Cài đặt) để bắt đầu giám sát` lặp lại mỗi
+> `WATCHER_POLL_INTERVAL_SECONDS` giây — **đây là bình thường, không phải
+> lỗi**, không cần Ctrl-C. Cứ để nó chạy, tiếp tục sang Worker/Dashboard,
+> quay lại cấu hình cụm qua trang Cài đặt sau (mục 9) — hệ thống tự khởi
+> động lại Watcher cho bạn ngay khi lưu, không cần tự tay restart.
+
 ```bash
 # Terminal 1 — Watcher (polling + phát hiện incident)
 python -m watcher.main

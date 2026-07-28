@@ -252,7 +252,21 @@ def run(
                 last_checks = current_checks
         except CephQueryError as exc:
             _record_heartbeat_safe(False, None, str(exc))
-            logger.exception("run: failed to query cluster health from any MON node")
+            if "no MON nodes configured" in str(exc):
+                # 2026-07-28 (found on a real first-time install): expected,
+                # quiet state before the operator has configured a cluster
+                # yet (via .env or the Settings page) — Watcher keeps
+                # retrying forever regardless (see this function's own
+                # docstring), so this is NOT a failure worth an ERROR +
+                # full traceback every poll. A real install hit exactly
+                # this and Ctrl-C'd out of Watcher, mistaking normal
+                # "nothing configured yet" for something broken.
+                logger.info(
+                    "run: %s — cấu hình CEPH_MON_NODES (.env hoặc trang Cài đặt) để bắt đầu giám sát",
+                    exc,
+                )
+            else:
+                logger.exception("run: failed to query cluster health from any MON node")
         except Exception as exc:
             # A bug in on_transition (or anything else unexpected) must not
             # permanently kill monitoring — that would defeat the entire
