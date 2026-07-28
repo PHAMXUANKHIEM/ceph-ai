@@ -109,7 +109,19 @@
       var glyph = STATUS_GLYPH[step.status] || "•";
       var line = document.createElement("p");
       line.className = "deploy-log-line status-" + step.status;
-      var timeSpan = "<span class=\"deploy-log-time\">[" + nowClock() + "]</span> ";
+      // 2026-07-28 fix: same bug/fix as dashboard/static/deploy_cluster.js
+      // ::renderProgress — this used to be nowClock() unconditionally,
+      // which rewrote EVERY line's timestamp to "now" on every poll tick
+      // (this function rebuilds the whole log box from scratch each
+      // call), so an already-finished step's displayed time never
+      // actually froze. finished_at_display is computed server-side
+      // (dashboard/routes/delete_cluster.py) from that step's own real,
+      // frozen finished_at — only the step CURRENTLY running still ticks
+      // live.
+      var clockText = step.status === "running"
+        ? nowClock()
+        : (step.status === "done" || step.status === "failed") ? step.finished_at_display : null;
+      var timeSpan = clockText ? "<span class=\"deploy-log-time\">[" + clockText + "]</span> " : "";
       line.innerHTML = timeSpan + glyph + " " + escapeHtml(step.label || step.step);
       if (step.message) {
         line.innerHTML += " — " + escapeHtml(step.message);

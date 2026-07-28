@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from dashboard.vntime import format_vn, to_utc_iso
+from dashboard.vntime import format_vn, format_vn_clock, to_utc_iso
 
 
 def test_to_utc_iso_appends_z_for_naive_datetime():
@@ -33,3 +33,21 @@ def test_format_vn_wraps_past_midnight_correctly():
 
 def test_format_vn_returns_placeholder_for_none():
     assert format_vn(None) == "—"
+
+
+def test_format_vn_clock_converts_naive_utc_to_vietnam_local_time():
+    dt = datetime(2026, 7, 23, 3, 29, 30)
+    assert format_vn_clock(dt) == "10:29:30"
+
+
+def test_format_vn_clock_wraps_past_midnight_correctly():
+    dt = datetime(2026, 7, 22, 20, 0, 0)
+    assert format_vn_clock(dt) == "03:00:00"
+
+
+def test_format_vn_clock_returns_none_for_none():
+    # Deliberately None, not "—" like format_vn — the Deploy Cluster live
+    # log (dashboard/routes/deploy_cluster.py) uses this to decide whether
+    # to print a time prefix at all for a step that hasn't happened yet,
+    # not to print a placeholder that reads like a real timestamp.
+    assert format_vn_clock(None) is None

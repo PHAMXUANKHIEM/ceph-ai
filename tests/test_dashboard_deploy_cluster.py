@@ -309,7 +309,60 @@ def test_progress_endpoint_returns_latest_action_status_and_progress(dashboard_c
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "APPROVED"
-    assert body["progress"] == [{"step": "ssh_check", "status": "running", "pct": 10}]
+    # 2026-07-28: the route now also annotates each step with
+    # started_at_display/finished_at_display (deploy_cluster.py::
+    # _with_step_display_times) — None here since this step dict has no
+    # real started_at/finished_at (it was written directly by the test,
+    # not by cluster_deploy.py's run()).
+    assert body["progress"] == [
+        {
+            "step": "ssh_check",
+            "status": "running",
+            "pct": 10,
+            "started_at_display": None,
+            "finished_at_display": None,
+        }
+    ]
+
+
+def test_progress_endpoint_formats_real_timestamps_as_vietnam_local_clock(dashboard_client):
+    # 2026-07-28 regression test for the "time keeps changing after a step
+    # finished" bug — a step with a REAL frozen finished_at (as
+    # worker/executor/cluster_deploy.py's run() now writes) must come back
+    # as a fixed HH:MM:SS, not recomputed from "now" on every poll.
+    _login(dashboard_client)
+    propose = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload())
+    action_pk = propose.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        action.status = ActionStatus.APPROVED.value
+        action.execution_progress = json.dumps(
+            [
+                {
+                    "step": "ssh_check",
+                    "status": "done",
+                    "pct": 10,
+                    "started_at": "2026-07-28T03:29:30",
+                    "finished_at": "2026-07-28T03:29:45",
+                },
+                {"step": "dependencies", "status": "pending", "pct": 20},
+            ]
+        )
+        session.commit()
+
+    first = dashboard_client.get("/deploy-cluster/progress").json()
+    second = dashboard_client.get("/deploy-cluster/progress").json()
+
+    for body in (first, second):
+        done_step = body["progress"][0]
+        assert done_step["started_at_display"] == "10:29:30"  # 03:29 UTC -> 10:29 ICT
+        assert done_step["finished_at_display"] == "10:29:45"
+        pending_step = body["progress"][1]
+        assert pending_step["started_at_display"] is None
+        assert pending_step["finished_at_display"] is None
+    # Never recomputed from "now" between polls — same finished_at_display
+    # both times, regardless of how much wall-clock time passed in between.
+    assert first["progress"][0]["finished_at_display"] == second["progress"][0]["finished_at_display"]
 
 
 def test_get_deploy_cluster_shows_pending_approval_plan(dashboard_client):

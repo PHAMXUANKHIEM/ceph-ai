@@ -11,6 +11,7 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
+from dashboard.vntime import format_vn_clock
 from shared import audit, db
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
@@ -216,6 +217,32 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
     )
 
 
+def _step_clock(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return format_vn_clock(datetime.fromisoformat(value))
+    except ValueError:
+        return None
+
+
+def _with_step_display_times(progress: list) -> list:
+    """Adds started_at_display/finished_at_display (Vietnam-local HH:MM:SS,
+    or None if that step hasn't reached that point yet) to each step dict
+    from worker/executor/cluster_deploy.py's progress list — called from
+    BOTH the initial page load below and the polling endpoint further down,
+    so the live log's per-line time prefix is identical whichever one fed
+    it. Fixes a real bug: deploy_cluster.js used to stamp EVERY line with
+    the browser's current clock on every single poll tick, so an
+    already-`done`/`failed` step's displayed time kept drifting to "now"
+    forever instead of freezing at when that step actually finished."""
+    for step in progress:
+        if isinstance(step, dict):
+            step["started_at_display"] = _step_clock(step.get("started_at"))
+            step["finished_at_display"] = _step_clock(step.get("finished_at"))
+    return progress
+
+
 @router.get("/deploy-cluster", response_class=HTMLResponse)
 async def deploy_cluster_page(request: Request, user: str = Depends(require_login)):
     try:
@@ -250,6 +277,7 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
             progress = json.loads(last_action.execution_progress) or []
         except (TypeError, ValueError):
             progress = []
+    progress = _with_step_display_times(progress)
 
     return templates.TemplateResponse(
         request,
@@ -394,4 +422,5 @@ async def deploy_cluster_progress(user: str = Depends(require_login)):
             progress = json.loads(action.execution_progress) if action.execution_progress else []
         except (TypeError, ValueError):
             progress = []
+        progress = _with_step_display_times(progress)
         return JSONResponse({"status": action.status, "progress": progress})

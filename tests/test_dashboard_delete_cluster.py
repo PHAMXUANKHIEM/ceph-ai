@@ -134,3 +134,43 @@ def test_progress_endpoint_returns_null_status_with_no_action(dashboard_client):
     response = dashboard_client.get("/delete-cluster/progress")
     assert response.status_code == 200
     assert response.json() == {"status": None, "progress": []}
+
+
+def test_progress_endpoint_formats_real_timestamps_as_vietnam_local_clock(dashboard_client, monkeypatch):
+    # 2026-07-28 regression test — same "time keeps changing after a step
+    # finished" fix as Deploy Cluster's identical bug (delete_cluster.js
+    # shared the same JS, and delete_cluster.py's progress comes from the
+    # same worker/executor/cluster_deploy.py::run()). A step with a real
+    # frozen finished_at must come back as a fixed HH:MM:SS on every poll.
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+    _login(dashboard_client)
+    propose = dashboard_client.post("/delete-cluster/propose", json={"wipe_osd_disks": False})
+    action_pk = propose.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        action.status = ActionStatus.APPROVED.value
+        action.execution_progress = json.dumps(
+            [
+                {
+                    "step": "ssh_check",
+                    "status": "done",
+                    "pct": 10,
+                    "started_at": "2026-07-28T03:29:30",
+                    "finished_at": "2026-07-28T03:29:45",
+                },
+                {"step": "stop_daemons", "status": "pending", "pct": 35},
+            ]
+        )
+        session.commit()
+
+    first = dashboard_client.get("/delete-cluster/progress").json()
+    second = dashboard_client.get("/delete-cluster/progress").json()
+
+    for body in (first, second):
+        done_step = body["progress"][0]
+        assert done_step["started_at_display"] == "10:29:30"  # 03:29 UTC -> 10:29 ICT
+        assert done_step["finished_at_display"] == "10:29:45"
+        pending_step = body["progress"][1]
+        assert pending_step["started_at_display"] is None
+        assert pending_step["finished_at_display"] is None
+    assert first["progress"][0]["finished_at_display"] == second["progress"][0]["finished_at_display"]

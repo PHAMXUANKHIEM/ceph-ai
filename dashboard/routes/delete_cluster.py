@@ -11,6 +11,7 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
+from dashboard.vntime import format_vn_clock
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
@@ -99,6 +100,31 @@ def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -
     )
 
 
+def _step_clock(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return format_vn_clock(datetime.fromisoformat(value))
+    except ValueError:
+        return None
+
+
+def _with_step_display_times(progress: list) -> list:
+    """Same fix, same reason as dashboard/routes/deploy_cluster.py's
+    identical helper (own copy, not a cross-import — this codebase's own
+    established posture for this exact kind of small per-route helper,
+    e.g. _require_admin_privilege) — delete_cluster.js shares the same
+    "stamp every line with the browser's current clock on every poll tick"
+    bug deploy_cluster.js had, and delete_cluster.py's progress comes from
+    the SAME worker/executor/cluster_deploy.py::run() (delete_cluster_*
+    action_ids run through the same phase-list orchestrator as deploy)."""
+    for step in progress:
+        if isinstance(step, dict):
+            step["started_at_display"] = _step_clock(step.get("started_at"))
+            step["finished_at_display"] = _step_clock(step.get("finished_at"))
+    return progress
+
+
 @router.get("/delete-cluster", response_class=HTMLResponse)
 async def delete_cluster_page(request: Request, user: str = Depends(require_login)):
     try:
@@ -126,6 +152,7 @@ async def delete_cluster_page(request: Request, user: str = Depends(require_logi
             progress = json.loads(last_action.execution_progress) or []
         except (TypeError, ValueError):
             progress = []
+    progress = _with_step_display_times(progress)
 
     nodes = _normalize_configured_nodes()
     osd_nodes = [n for n in nodes if "osd" in n["roles"]]
@@ -247,4 +274,5 @@ async def delete_cluster_progress(user: str = Depends(require_login)):
             progress = json.loads(action.execution_progress) if action.execution_progress else []
         except (TypeError, ValueError):
             progress = []
+        progress = _with_step_display_times(progress)
         return JSONResponse({"status": action.status, "progress": progress})

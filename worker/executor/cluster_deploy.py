@@ -21,6 +21,7 @@ import os
 import shlex
 import time
 import uuid
+from datetime import datetime
 
 from shared import env_config
 from shared.ceph_releases import codename_for_version, repo_path_version
@@ -1493,7 +1494,25 @@ _DELETE_CLUSTER_ACTION_IDS = frozenset({"delete_cluster_cephadm", "delete_cluste
 
 
 def _make_step(step_key: str, label: str, pct: int) -> dict:
-    return {"step": step_key, "label": label, "pct": pct, "status": "pending", "hosts": [], "message": None}
+    # started_at/finished_at (2026-07-28): plain UTC ISO strings, same "JSON
+    # can't hold a datetime" posture as worker/llm/router_client.py's own
+    # per-host progress dicts — set ONCE each (running/terminal transition
+    # in run() below) and never touched again, so dashboard/routes/
+    # deploy_cluster.py's live log can freeze a finished step's displayed
+    # time instead of it drifting to "now" on every poll tick (that drift
+    # was the actual bug: the frontend used to stamp EVERY line with the
+    # browser's current clock on every render, regardless of that step's
+    # real status).
+    return {
+        "step": step_key,
+        "label": label,
+        "pct": pct,
+        "status": "pending",
+        "hosts": [],
+        "message": None,
+        "started_at": None,
+        "finished_at": None,
+    }
 
 
 def _write_cluster_config(action_params: dict, action_id: str) -> None:
@@ -1540,6 +1559,7 @@ def run(
         if check_kill_switch(incident_id):
             progress[index]["status"] = "failed"
             progress[index]["message"] = "Kill-switch đang bật — dừng lại trước bước này"
+            progress[index]["finished_at"] = datetime.utcnow().isoformat()
             write_progress(action_pk, progress)
             logger.warning(
                 "cluster_deploy.run: kill-switch ON before phase %s, stopping action %s",
@@ -1549,6 +1569,7 @@ def run(
             return False
 
         progress[index]["status"] = "running"
+        progress[index]["started_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
 
         def _on_host_update(host_status, _index=index):
@@ -1560,6 +1581,7 @@ def run(
         except DeployPhaseError as exc:
             progress[index]["status"] = "failed"
             progress[index]["message"] = str(exc)
+            progress[index]["finished_at"] = datetime.utcnow().isoformat()
             write_progress(action_pk, progress)
             logger.warning(
                 "cluster_deploy.run: phase %s failed for action %s: %s", step_key, action_pk, exc
@@ -1568,6 +1590,7 @@ def run(
         except Exception as exc:
             progress[index]["status"] = "failed"
             progress[index]["message"] = f"Lỗi không mong đợi: {exc}"
+            progress[index]["finished_at"] = datetime.utcnow().isoformat()
             write_progress(action_pk, progress)
             logger.exception(
                 "cluster_deploy.run: unexpected error in phase %s for action %s", step_key, action_pk
@@ -1575,6 +1598,7 @@ def run(
             return False
 
         progress[index]["status"] = "done"
+        progress[index]["finished_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
 
     try:

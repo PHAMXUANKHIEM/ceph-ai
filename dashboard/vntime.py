@@ -41,3 +41,16 @@ def format_vn(value: datetime | None) -> str:
     if value is None:
         return "—"
     return _as_utc(value).astimezone(VN_TZ).strftime("%d/%m/%Y %H:%M:%S")
+
+
+def format_vn_clock(value: datetime | None) -> str | None:
+    """Same Vietnam-local conversion as format_vn, but `HH:MM:SS` only —
+    for the Deploy Cluster live log's per-line time prefix (dashboard/
+    routes/deploy_cluster.py), which already shows same-day steps and has
+    no room for a full date. Returns None (not "—") for a step that hasn't
+    happened yet — the caller (deploy_cluster.js) uses that to omit the
+    time prefix entirely for a still-`pending` step, rather than printing
+    a placeholder that reads like a real timestamp."""
+    if value is None:
+        return None
+    return _as_utc(value).astimezone(VN_TZ).strftime("%H:%M:%S")

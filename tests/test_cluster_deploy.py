@@ -314,6 +314,63 @@ def test_cephadm_happy_path_all_phases_succeed_and_writes_env(monkeypatch):
     assert written_fields["CEPH_EXEC_MODE"] == "cephadm"
 
 
+def test_completed_steps_get_frozen_started_and_finished_timestamps(monkeypatch):
+    # 2026-07-28 regression test: dashboard/static/deploy_cluster.js used to
+    # stamp EVERY step line with the browser's current clock on every poll
+    # tick, so an already-finished step's displayed time kept drifting
+    # forever — the actual fix is that cluster_deploy.py now writes each
+    # step's OWN real started_at/finished_at once, which must never change
+    # again after being set.
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
+    write_progress, calls = _make_recording_progress_writer()
+
+    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
+
+    final_progress = calls[-1][1]
+    assert len(final_progress) > 1  # need at least 2 steps to prove "frozen", not just "set once"
+
+    for step in final_progress:
+        assert step["status"] == "done"
+        assert step["started_at"] is not None
+        assert step["finished_at"] is not None
+        assert step["started_at"] <= step["finished_at"]
+
+    # Once a step's write_progress call recorded it as "done", no LATER
+    # write_progress call (for a subsequent step) may have changed its
+    # timestamps — reconstruct each step's OWN first-seen "done" snapshot
+    # and compare against the truly final one.
+    first_seen_done = {}
+    for _pk, snapshot in calls:
+        for step in snapshot:
+            key = step["step"]
+            if step["status"] == "done" and key not in first_seen_done:
+                first_seen_done[key] = (step["started_at"], step["finished_at"])
+
+    for step in final_progress:
+        assert first_seen_done[step["step"]] == (step["started_at"], step["finished_at"])
+
+
+def test_pending_steps_have_no_timestamps_yet(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
+    write_progress, calls = _make_recording_progress_writer()
+
+    run(
+        "action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, lambda inc: True
+    )
+
+    # kill-switch blocks before the very first phase — the first step is
+    # "failed" (with a finished_at, never started), every step after it is
+    # still untouched "pending" with neither timestamp set.
+    final_progress = calls[-1][1]
+    assert final_progress[0]["status"] == "failed"
+    assert final_progress[0]["started_at"] is None
+    assert final_progress[0]["finished_at"] is not None
+    for step in final_progress[1:]:
+        assert step["status"] == "pending"
+        assert step["started_at"] is None
+        assert step["finished_at"] is None
+
+
 def test_env_write_failure_does_not_turn_a_successful_deploy_into_a_failure(monkeypatch):
     monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
     write_progress, calls = _make_recording_progress_writer()
