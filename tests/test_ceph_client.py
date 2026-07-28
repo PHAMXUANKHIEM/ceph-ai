@@ -13,6 +13,7 @@ from watcher.ceph_client import (
     query_cluster_health,
     query_cluster_health_with,
     query_rbd_iostat,
+    query_rbd_trash,
     read_public_key,
     resume_upgrade,
     run_ceph_json_command,
@@ -830,3 +831,63 @@ def test_query_rbd_iostat_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
 
     with pytest.raises(CephQueryError):
         query_rbd_iostat("vms")
+
+
+# --- query_rbd_trash (2026-07-28, Volume Trash — dashboard/routes/volumes.py.
+# Same "NOT verified against a real cluster's actual `rbd trash ls
+# --format json` output" caveat as query_rbd_iostat above.) -------------
+
+
+def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {
+                "id": "1234567890ab",
+                "name": "old-disk",
+                "deletion_time": "2026-07-28 10:00:00",
+                "status": "expired",
+            }
+        ]
+    }
+
+    entries = query_rbd_trash("vms")
+
+    assert entries == [
+        {
+            "id": "1234567890ab",
+            "name": "old-disk",
+            "deletion_time": "2026-07-28 10:00:00",
+            "status": "expired",
+        }
+    ]
+
+
+def test_query_rbd_trash_returns_empty_list_for_unexpected_shape(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": {"unexpected": "shape"}}
+
+    assert query_rbd_trash("vms") == []  # must not raise
+
+
+def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {"name": "no-id-entry"},  # no "id" key
+            {"id": "abc123", "name": "real-entry", "deletion_time": "x", "status": "y"},
+        ]
+    }
+
+    entries = query_rbd_trash("vms")
+
+    assert len(entries) == 1
+    assert entries[0]["id"] == "abc123"
+
+
+def test_query_rbd_trash_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": "unreachable"}
+
+    with pytest.raises(CephQueryError):
+        query_rbd_trash("vms")

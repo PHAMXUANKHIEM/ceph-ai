@@ -126,6 +126,21 @@ _POOL_SIZE_RANGE = (1, 10)
 _OSD_ID_RANGE = (0, 9999)
 
 
+# RBD trash entry ids are hex-ish tokens `rbd trash ls` itself generates
+# (e.g. "1234567890ab") — same "must start with alnum, reject anything that
+# could parse as a CLI flag" reasoning as _POOL_NAME_RE above (a bare
+# `[A-Za-z0-9_-]` class alone would still accept "--force", since every one
+# of those characters is individually allowed).
+_TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _require_trash_id(params: dict) -> str:
+    trash_id = params.get("trash_id")
+    if not isinstance(trash_id, str) or not _TRASH_ID_RE.match(trash_id):
+        raise ExecutorError(f"invalid or missing trash_id: {trash_id!r}")
+    return trash_id
+
+
 def _require_pool_name(params: dict) -> str:
     pool_name = params.get("pool_name")
     if not isinstance(pool_name, str) or not _POOL_NAME_RE.match(pool_name):
@@ -225,6 +240,19 @@ def _enable_pool_application_command(params: dict) -> str:
     )
 
 
+def _rbd_trash_remove_command(params: dict) -> str:
+    """Permanently deletes an RBD image an operator already soft-deleted
+    into a pool's trash (dashboard/routes/volumes.py's "Xoá" button on the
+    /volumes page's Trash section — watcher/ceph_client.py::query_rbd_trash
+    lists what's in there). Deliberately a bare `rbd trash rm`, no `--force`
+    — an image trash still has an active watcher (e.g. a VM still has it
+    mapped) refuses to remove with a clear error rather than this command
+    silently forcing it out from under a running VM."""
+    pool_name = _require_pool_name(params)
+    trash_id = _require_trash_id(params)
+    return f"rbd trash rm {shlex.quote(pool_name)}/{shlex.quote(trash_id)}"
+
+
 _MANAGEMENT_COMMAND_BUILDERS = {
     "create_pool": _create_pool_command,
     "delete_pool": _delete_pool_command,
@@ -234,6 +262,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "mark_osd_in": lambda params: _mark_osd_command("in", params),
     "mark_osd_down": lambda params: _mark_osd_command("down", params),
     "enable_pool_application": _enable_pool_application_command,
+    "rbd_trash_remove": _rbd_trash_remove_command,
 }
 
 

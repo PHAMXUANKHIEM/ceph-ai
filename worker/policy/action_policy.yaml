@@ -31,6 +31,15 @@ management_action_ids:
   - mark_osd_in
   - mark_osd_down
   - enable_pool_application
+  # 2026-07-28: Dashboard "Volumes" page's Trash section
+  # (dashboard/routes/volumes.py) — permanently purges an RBD image an
+  # operator already soft-deleted into a pool's trash. Proposed via a
+  # dedicated Dashboard button (its own propose route, same pattern as
+  # cluster_deploy_action_ids/cluster_upgrade_action_ids below), NOT via
+  # Chat-with-AI — reuses this family only because the pool_name-based
+  # command-builder validation is identical, not because it goes through
+  # dashboard/routes/chat.py's confirm flow.
+  - rbd_trash_remove
 
 # v1 (Story 3.1): Safe/Risky classification (AD-5). Anything NOT in `safe`
 # defaults to RISKY — including action_ids present in `action_ids` above but
@@ -157,3 +166,10 @@ risky:
   # requires explicit approval, no exceptions.
   - delete_cluster_cephadm
   - delete_cluster_manual
+  # 2026-07-28: unlike delete_pool above (deliberately kept SAFE per an
+  # explicit earlier operator request, only for the Chat-with-AI flow's own
+  # extra safeguards), rbd_trash_remove PERMANENTLY destroys data with no
+  # equivalent per-click safeguard on the Volumes page — conservative
+  # default (AD-5) applies here, always requires explicit Dashboard
+  # approval.
+  - rbd_trash_remove

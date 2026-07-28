@@ -58,6 +58,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
         "mark_osd_in",
         "mark_osd_down",
         "enable_pool_application",
+        "rbd_trash_remove",
     }
 
 
@@ -73,6 +74,16 @@ def test_management_action_ids_are_classified_safe():
         "enable_pool_application",
     ]:
         assert classify_action(action_id) == ActionClassification.SAFE
+
+
+def test_rbd_trash_remove_is_classified_risky():
+    # 2026-07-28: unlike every other management_action_ids member above
+    # (deliberately kept SAFE per an explicit earlier operator request, only
+    # for Chat-with-AI's own extra safeguards), rbd_trash_remove
+    # permanently destroys data with no equivalent per-click safeguard on
+    # the Volumes page — AD-5's conservative default applies, must always
+    # require explicit Dashboard approval.
+    assert classify_action("rbd_trash_remove") == ActionClassification.RISKY
 
 
 def test_management_action_ids_disjoint_from_incident_diagnosis_action_ids():

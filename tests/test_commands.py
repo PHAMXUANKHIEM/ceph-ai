@@ -465,11 +465,36 @@ def test_get_command_enable_pool_application_requires_pool_name():
         get_command("enable_pool_application", params={"app_name": "rbd"})
 
 
+def test_get_command_rbd_trash_remove_builds_expected_command():
+    command = get_command(
+        "rbd_trash_remove", params={"pool_name": "vms", "trash_id": "1234567890ab"}
+    )
+    assert command == "rbd trash rm vms/1234567890ab"
+
+
+def test_get_command_rbd_trash_remove_rejects_trash_id_that_looks_like_a_flag():
+    with pytest.raises(ExecutorError, match="invalid or missing trash_id"):
+        get_command("rbd_trash_remove", params={"pool_name": "vms", "trash_id": "--force"})
+
+
+def test_get_command_rbd_trash_remove_rejects_trash_id_with_shell_metacharacters():
+    with pytest.raises(ExecutorError, match="invalid or missing trash_id"):
+        get_command(
+            "rbd_trash_remove", params={"pool_name": "vms", "trash_id": "abc; rm -rf /"}
+        )
+
+
+def test_get_command_rbd_trash_remove_requires_pool_name():
+    with pytest.raises(ExecutorError, match="invalid or missing pool_name"):
+        get_command("rbd_trash_remove", params={"trash_id": "1234567890ab"})
+
+
 def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("resync_ntp") is True
     assert commands_module.has_command("restart_osd_daemon") is True
     assert commands_module.has_command("create_pool") is True
     assert commands_module.has_command("enable_pool_application") is True
+    assert commands_module.has_command("rbd_trash_remove") is True
 
 
 def test_has_command_false_for_action_ids_with_no_automated_remediation():

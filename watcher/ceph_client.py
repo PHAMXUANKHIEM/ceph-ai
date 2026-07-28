@@ -174,6 +174,56 @@ def _as_float(value: object) -> float:
         return 0.0
 
 
+# 2026-07-28: NOT verified against a real cluster yet — same caveat as
+# query_rbd_iostat above (no RBD-backed pool with a real trashed image was
+# ever available to test against this session). `rbd trash ls --format
+# json`'s exact key names are a best-effort guess (snake_case, matching
+# every other Ceph JSON command's convention), isolated in this one
+# function so fixing it against real output later only touches this place.
+class TrashEntry(TypedDict):
+    id: str
+    name: str
+    deletion_time: str
+    status: str
+
+
+def query_rbd_trash(pool: str) -> list[TrashEntry]:
+    """Runs `rbd trash ls <pool> --format json` — lists RBD images an
+    operator already soft-deleted (`rbd trash mv`) in this pool, which Ceph
+    keeps recoverable (`rbd trash restore`) until explicitly purged
+    (`rbd trash rm` — see worker/executor/commands.py's
+    `_rbd_trash_remove_command`, the only thing that actually deletes the
+    underlying data). Same multi-MON-fallback/exec-mode-wrapping
+    `run_ceph_json_command` every other live Ceph query in this codebase
+    goes through. Returns an empty list (not an error) on an
+    unexpected-shape response, same defensive posture as
+    query_rbd_iostat."""
+    _, payload = run_ceph_json_command(f"rbd trash ls {shlex.quote(pool)}")
+    if not isinstance(payload, list):
+        logger.warning(
+            "query_rbd_trash: unexpected response shape for pool %r — treating as no data",
+            pool,
+        )
+        return []
+
+    entries: list[TrashEntry] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        trash_id = entry.get("id")
+        if not trash_id:
+            continue
+        entries.append(
+            TrashEntry(
+                id=str(trash_id),
+                name=str(entry.get("name") or "?"),
+                deletion_time=str(entry.get("deletion_time") or ""),
+                status=str(entry.get("status") or ""),
+            )
+        )
+    return entries
+
+
 def ssh_key_path_error(ssh_key_path: str) -> str | None:
     """Story 5.1: checked by the Dashboard's cluster-connection form BEFORE
     attempting an SSH connection, so a bad path fails with a clear message
