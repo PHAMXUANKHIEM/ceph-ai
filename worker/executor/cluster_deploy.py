@@ -1837,6 +1837,49 @@ def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_up
         on_host_update(list(host_status))
 
 
+def _phase_convert_verify(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Same `ceph -s` HEALTH_ERR check as _phase_verify, PLUS (2026-07-28,
+    added after the legacy-vs-cephadm:v1 style bug reached production) a
+    genuine per-daemon completeness check. That bug let every adopt phase
+    report "already converted" for a daemon that was actually still
+    native, so the whole action finished with status="done" on every
+    step — and run() unconditionally flips CEPH_EXEC_MODE to "cephadm"
+    right after this phase passes. Once written, that wrong config makes
+    every LATER Convert-to-Cephadm attempt refuse outright ("cụm hiện tại
+    đã chạy cephadm rồi"), even though some daemons genuinely still
+    aren't adopted — a config-level lie that's awkward to unwind (the
+    operator has to go flip CEPH_EXEC_MODE back via Cài đặt just to retry).
+    This phase re-derives ground truth independently right before that
+    write happens, so a future regression of the same shape fails loudly
+    here instead of writing a config that contradicts reality."""
+    _phase_verify(nodes, action_params, on_host_update)
+
+    for node in nodes:
+        ip = node["ip"]
+        roles = node.get("roles") or []
+        if "mon" in roles and not _cephadm_managed_daemon_ids(ip, "mon"):
+            raise DeployPhaseError(f"{ip}: MON vẫn chưa được cephadm quản lý sau khi chuyển đổi")
+        if "mgr" in roles and not _cephadm_managed_daemon_ids(ip, "mgr"):
+            raise DeployPhaseError(f"{ip}: MGR vẫn chưa được cephadm quản lý sau khi chuyển đổi")
+        if "osd" not in roles:
+            continue
+        try:
+            output = execute_command(ip, "ceph-volume lvm list --format json")
+        except ExecutorError:
+            continue
+        try:
+            osd_map = json.loads(output) if output.strip() else {}
+        except (TypeError, ValueError):
+            osd_map = {}
+        if not isinstance(osd_map, dict) or not osd_map:
+            continue
+        missing = set(osd_map.keys()) - _cephadm_managed_daemon_ids(ip, "osd")
+        if missing:
+            raise DeployPhaseError(
+                f"{ip}: OSD {', '.join(sorted(missing))} vẫn chưa được cephadm quản lý sau khi chuyển đổi"
+            )
+
+
 def _clear_cluster_config() -> None:
     """Inverse of _write_cluster_config — after a successful cluster
     deletion, the Dashboard must stop trying to monitor a cluster that no
@@ -2045,7 +2088,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ),
         ("register_hosts", "Đăng ký từng node với orchestrator", 80, _phase_convert_register_hosts),
         ("adopt_osds", "Chuyển đổi từng OSD sang cephadm", 95, _phase_convert_adopt_osds),
-        ("verify", "Kiểm tra cụm sau khi chuyển đổi", 100, _phase_verify),
+        ("verify", "Kiểm tra cụm sau khi chuyển đổi", 100, _phase_convert_verify),
     ],
 }
 

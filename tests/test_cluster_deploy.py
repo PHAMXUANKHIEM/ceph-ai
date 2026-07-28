@@ -1600,7 +1600,26 @@ def test_convert_enable_orchestrator_runs_on_first_mon(monkeypatch):
 
 
 def test_convert_cluster_happy_path_all_phases_succeed_and_writes_env(monkeypatch):
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", _convert_fake_execute)
+    # Stateful per-host `cephadm ls` fake (2026-07-28, added alongside
+    # _phase_convert_verify): the final verify phase independently
+    # re-queries `cephadm ls` on every host, so the fake must actually
+    # reflect each `adopt --style legacy --name X` command this same run
+    # already sent — a fake that always reports "nothing adopted" (like
+    # the plain _convert_fake_execute default) would make the new verify
+    # phase correctly fail even on this genuinely-successful run.
+    adopted_by_host: dict[str, set[str]] = {}
+
+    def fake_execute(host, command):
+        if "adopt --style legacy" in command:
+            name = command.split("--name", 1)[1].strip().split()[0]
+            adopted_by_host.setdefault(host, set()).add(name)
+            return _convert_fake_execute(host, command)
+        if "cephadm ls" in command:
+            entries = [{"name": n, "style": "cephadm:v1"} for n in adopted_by_host.get(host, set())]
+            return json.dumps(entries)
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
     write_progress, calls = _make_recording_progress_writer()
 
     written_fields = {}
@@ -1624,6 +1643,74 @@ def test_convert_cluster_happy_path_all_phases_succeed_and_writes_env(monkeypatc
     assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95"
     assert written_fields["CEPH_MGR_NODES"] == "10.20.1.112"
     assert written_fields["CEPH_OSD_NODES"] == "10.20.1.95"
+
+
+def test_convert_verify_fails_when_osd_still_legacy_despite_healthy_cluster(monkeypatch):
+    """Regression, 2026-07-28: the exact real-world shape of the bug this
+    phase exists to catch — `ceph -s` reports HEALTH_OK (mon/mgr already
+    adopted) but the OSD host's `cephadm ls` still lists its OSD with
+    style="legacy" (never actually adopted). Must raise, not report done,
+    even though the generic health check alone would have passed."""
+
+    def fake_execute(host, command):
+        if "ceph -s --format json" in command:
+            return json.dumps({"health": {"status": "HEALTH_OK"}})
+        if "cephadm ls" in command:
+            if host == "10.20.1.112":
+                return json.dumps(
+                    [
+                        {"name": "mon.nodeA", "style": "cephadm:v1"},
+                        {"name": "mgr.nodeA", "style": "cephadm:v1"},
+                    ]
+                )
+            if host == "10.20.1.95":
+                return json.dumps(
+                    [
+                        {"name": "mon.nodeB", "style": "cephadm:v1"},
+                        {"name": "osd.0", "style": "legacy"},
+                        {"name": "osd.1", "style": "legacy"},
+                    ]
+                )
+            return "[]"
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    with pytest.raises(DeployPhaseError, match="OSD.*chưa được cephadm quản lý"):
+        cluster_deploy_module._phase_convert_verify(
+            copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+        )
+
+
+def test_convert_verify_passes_when_every_daemon_is_cephadm_managed(monkeypatch):
+    def fake_execute(host, command):
+        if "ceph -s --format json" in command:
+            return json.dumps({"health": {"status": "HEALTH_OK"}})
+        if "cephadm ls" in command:
+            if host == "10.20.1.112":
+                return json.dumps(
+                    [
+                        {"name": "mon.nodeA", "style": "cephadm:v1"},
+                        {"name": "mgr.nodeA", "style": "cephadm:v1"},
+                    ]
+                )
+            if host == "10.20.1.95":
+                return json.dumps(
+                    [
+                        {"name": "mon.nodeB", "style": "cephadm:v1"},
+                        {"name": "osd.0", "style": "cephadm:v1"},
+                        {"name": "osd.1", "style": "cephadm:v1"},
+                    ]
+                )
+            return "[]"
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    # Must not raise.
+    cluster_deploy_module._phase_convert_verify(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
 
 
 def test_convert_cluster_stops_at_health_precheck_when_already_health_err(monkeypatch):
