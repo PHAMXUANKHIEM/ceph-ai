@@ -97,8 +97,71 @@ def test_delete_cephadm_wipes_each_osd_nodes_own_disk_when_requested(monkeypatch
     zap_commands = {host: cmd for host, cmd in seen_commands if "ceph-volume lvm zap" in cmd}
     assert "/dev/vdc" in zap_commands["10.20.1.95"]
     assert "/dev/vdb" in zap_commands["10.20.1.21"]
-    # No cephadm binary required anywhere in this teardown.
-    assert not any("cephadm" in cmd for _host, cmd in seen_commands)
+    # 2026-07-28 fix: the wipe command DOES now reference "cephadm" (a
+    # fallback branch for when native ceph-volume isn't installed — see
+    # test_delete_cephadm_wipe_falls_back_to_cephadm_ceph_volume below) —
+    # this codebase previously asserted the opposite here, which was only
+    # ever true because the fallback didn't exist yet, not because
+    # `cephadm` involvement was undesirable.
+    assert any("cephadm ceph-volume" in cmd for host, cmd in zap_commands.items())
+
+
+def test_delete_cephadm_wipe_uses_native_ceph_volume_when_present(monkeypatch):
+    """When native ceph-volume IS on PATH (e.g. a cephadm cluster where the
+    operator also happens to have ceph-osd installed), the wipe command
+    must prefer it over the cephadm fallback — both work, but native is
+    simpler/faster and doesn't depend on cephadm auto-detecting the fsid."""
+
+    def fake(host, command):
+        if "command -v ceph-volume" in command:
+            return ""  # exit 0 == found, handled by the shell `if` itself
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, calls = _make_recording_progress_writer()
+
+    run(
+        "action-1",
+        "delete_cluster_cephadm",
+        _delete_params(wipe_osd_disks=True),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    final = calls[-1][1]
+    steps_by_key = {s["step"]: s for s in final}
+    assert steps_by_key["wipe_osd_disk"]["status"] == "done"
+
+
+def test_delete_cephadm_wipe_runs_before_remove_state(monkeypatch):
+    """2026-07-28 fix: unlike delete_cluster_manual, delete_cluster_cephadm
+    must wipe OSD disks BEFORE remove_state — the cephadm fallback
+    (`cephadm ceph-volume -- ...`) auto-detects the cluster's fsid from
+    `/var/lib/ceph/<fsid>`, which remove_state deletes."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run(
+        "action-1",
+        "delete_cluster_cephadm",
+        _delete_params(wipe_osd_disks=True),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    zap_index = next(i for i, cmd in enumerate(seen_commands) if "ceph-volume lvm zap" in cmd)
+    remove_state_index = next(
+        i for i, cmd in enumerate(seen_commands) if "rm -rf /etc/ceph /var/lib/ceph" in cmd
+    )
+    assert zap_index < remove_state_index
 
 
 def test_delete_cephadm_ssh_check_failure_stops_before_teardown(monkeypatch):

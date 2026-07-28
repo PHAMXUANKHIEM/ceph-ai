@@ -1286,7 +1286,24 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
     `ceph-volume lvm zap --destroy` (not a bare wipefs) — the same tool
     _phase_ceph_deploy_osd_create used to CREATE the OSD, so it correctly
     tears down the LVM structures ceph-volume itself created, not just the
-    device's leading bytes."""
+    device's leading bytes.
+
+    2026-07-28 fix (verified live): for a cephadm-deployed cluster, native
+    `ceph-volume` is NEVER installed on ANY host by this codebase (OSDs are
+    created via `ceph orch apply osd` entirely inside containers cephadm
+    manages, and even first_mon's own ceph-common install doesn't provide
+    it — confirmed live: "ceph-volume: command not found" on first_mon
+    itself, not just an OSD-only host) — this module's own earlier "hand-
+    verified to fully clean a real 3-node cephadm cluster" claim for THIS
+    exact command was wrong (or from a since-changed code path). Now tries
+    native `ceph-volume` first (still the right, unchanged path for the
+    manual/ceph-deploy method, where it genuinely is installed), falling
+    back to `cephadm ceph-volume --` (runs it inside a container cephadm
+    spins up using the local `/var/lib/ceph/<fsid>` state it auto-detects
+    — which is why `delete_cluster_cephadm`'s phase list now runs this
+    BEFORE remove_state, unlike delete_cluster_manual: remove_state
+    deletes that exact directory, and cephadm needs it to still be there).
+    """
     osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
     host_status = [{"host": n["ip"], "status": "pending"} for n in osd_nodes]
     on_host_update(list(host_status))
@@ -1307,8 +1324,16 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
             raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD cần xoá (osd_disk)")
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
+        quoted_disk = shlex.quote(osd_disk)
+        zap_command = (
+            "if command -v ceph-volume >/dev/null 2>&1; then "
+            f"ceph-volume lvm zap --destroy {quoted_disk}; "
+            "elif command -v cephadm >/dev/null 2>&1; then "
+            f"cephadm ceph-volume -- lvm zap --destroy {quoted_disk}; "
+            "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi"
+        )
         try:
-            execute_command(ip, f"ceph-volume lvm zap --destroy {shlex.quote(osd_disk)}")
+            execute_command(ip, zap_command)
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
@@ -1807,29 +1832,33 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
     # local OSD disk correctly but left the mon/mgr/crash containers
     # running — it did NOT tear down everything the docs suggest. The
     # generic systemctl-discovery + rm -rf + ceph-volume-zap approach
-    # already proven for the manual/ceph-deploy method needs no per-host
-    # `cephadm` binary at all and was hand-verified to fully clean a real
-    # 3-node cephadm cluster (containers, systemd units, /etc/ceph,
-    # /var/lib/ceph, and — with wipe_osd_disks — the LVM structures on
-    # every node), so it's reused here unchanged rather than trying to fix
-    # cephadm's own rm-cluster further.
+    # already proven for the manual/ceph-deploy method was reused here —
+    # containers/systemd units/`/etc/ceph`/`/var/lib/ceph` teardown all
+    # hand-verified fine on a real 3-node cephadm cluster. The
+    # wipe_osd_disks=True case specifically was NOT actually exercised in
+    # that verification despite this comment previously claiming otherwise
+    # — a real run found native `ceph-volume` genuinely absent everywhere
+    # on a cephadm cluster (not just OSD-only hosts — first_mon too), fixed
+    # 2026-07-28 in _phase_delete_manual_wipe_osd_disk's own comment.
+    # 2026-07-28 fix (verified live): wipe_osd_disk runs BEFORE remove_state
+    # here — unlike delete_cluster_manual below — because
+    # _phase_delete_manual_wipe_osd_disk's cephadm fallback
+    # (`cephadm ceph-volume -- ...`, needed since native ceph-volume is
+    # never installed anywhere in a cephadm deployment — see that
+    # function's own comment) auto-detects the cluster's fsid from the
+    # local `/var/lib/ceph/<fsid>` directory, which remove_state deletes.
+    # Running wipe first means that directory (and /etc/ceph) still exist
+    # when cephadm needs them.
     "delete_cluster_cephadm": [
         ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),
         ("stop_daemons", "Dừng daemon Ceph trên từng node", 35, _phase_delete_manual_stop_daemons),
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 55, _phase_delete_manual_wipe_osd_disk),
         (
             "remove_state",
             "Xoá cấu hình & dữ liệu Ceph (/etc/ceph, /var/lib/ceph)",
-            60,
+            80,
             _phase_delete_manual_remove_state,
         ),
-        # 2026-07-28 fix (verified live): wipe_osd_disk MUST run before
-        # remove_packages, not after — `ceph-volume lvm zap --destroy` is
-        # provided by the very packages remove_packages uninstalls
-        # (verified live: "bash: ceph-volume: command not found" once
-        # remove_packages had already run first). Wiping the disk while the
-        # tool that does it is still installed, then removing packages
-        # last, is the only order that works.
-        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 80, _phase_delete_manual_wipe_osd_disk),
         ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 95, _phase_delete_manual_remove_packages),
     ],
     "delete_cluster_manual": [
