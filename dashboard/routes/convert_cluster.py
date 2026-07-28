@@ -188,15 +188,31 @@ async def propose_convert(request: Request, user: str = Depends(require_login)):
         versions = await asyncio.to_thread(ceph_client.summarize_cluster_versions)
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không lấy được phiên bản cụm hiện tại: {exc}")
-    if not versions["current_version"]:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Không xác định được một phiên bản Ceph duy nhất đang chạy trên toàn cụm "
-                "(cụm có thể đang chạy lẫn nhiều phiên bản) — không thể chuyển đổi an toàn."
-            ),
-        )
     version = versions["current_version"]
+    if not version:
+        # 2026-07-28: a mixed cluster isn't automatically unsafe to
+        # (re)propose against — a real, live-verified scenario is a
+        # PARTIALLY-completed earlier conversion (mon/mgr already adopted
+        # at whichever version cephadm picked, OSD not yet touched), which
+        # is resumable (see cluster_deploy.py's _cephadm_managed_daemon_ids),
+        # not a genuinely inconsistent cluster. MON is adopted FIRST in
+        # this flow, so by the time anything else is mixed, MON's version
+        # already IS the de facto target everything else needs to
+        # converge to — trust it whenever mon itself agrees on exactly
+        # one version. Only refuse outright when even MON disagrees with
+        # itself (genuinely unclear which version is "the" cluster
+        # version — not something this feature has ever seen live).
+        mon_versions = versions["per_type"].get("mon") or []
+        if len(mon_versions) == 1:
+            version = mon_versions[0]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Không xác định được một phiên bản Ceph duy nhất đang chạy trên toàn cụm "
+                    "(cụm có thể đang chạy lẫn nhiều phiên bản) — không thể chuyển đổi an toàn."
+                ),
+            )
 
     action_params = {"nodes": nodes, "version": version}
     target_nodes = [n["ip"] for n in nodes]

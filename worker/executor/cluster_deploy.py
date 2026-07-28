@@ -1512,15 +1512,52 @@ def _cephadm_image_for_version(version: str) -> str:
     return f"quay.io/ceph/ceph:v{version}"
 
 
-def _adopt_daemon_on_host(ip: str, service_prefix: str, daemon_type: str, image: str) -> str:
-    """Shared by adopt_mons/adopt_mgrs below — discovers the real daemon id
-    running on `ip` (via _discover_systemd_daemon_id) and runs
-    `cephadm --image <image> adopt --style legacy --name <daemon_type>.<id>`
-    there (see _cephadm_image_for_version's own comment for why `--image`
-    is pinned explicitly, not left to cephadm's own default). Returns the
-    id (for the caller's own status message). Raises DeployPhaseError if
-    no matching systemd unit is found at all, or if the adopt command
-    itself fails."""
+def _cephadm_managed_daemon_ids(ip: str, daemon_type: str) -> set[str]:
+    """Queries `cephadm ls --format json` on `ip` (a LOCAL, per-host
+    listing of what cephadm itself already manages there — not a
+    cluster-wide query) for every `daemon_type` daemon already adopted.
+    Makes adoption resumable: a real, live-verified scenario is a
+    conversion that adopted mon+mgr, then failed at a LATER phase
+    (enable_orchestrator) — an operator who finishes those later steps by
+    hand and then re-runs this feature must not have mon/mgr adoption
+    re-attempted, since there's no native systemd unit left to discover
+    for them anymore (already renamed by the first adoption) — that used
+    to fail with a confusing "systemd unit not found" instead of
+    recognizing the step is already done. Returns an empty set (not an
+    error) if cephadm isn't installed yet or the command fails — the
+    correct/safe assumption for a genuinely fresh conversion attempt."""
+    try:
+        output = execute_command(ip, "cephadm ls --format json 2>/dev/null")
+    except ExecutorError:
+        return set()
+    try:
+        entries = json.loads(output) if output.strip() else []
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(entries, list):
+        return set()
+    prefix = daemon_type + "."
+    ids: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"].startswith(prefix):
+            ids.add(entry["name"][len(prefix) :])
+    return ids
+
+
+def _adopt_daemon_on_host(ip: str, service_prefix: str, daemon_type: str, image: str) -> tuple[str, bool]:
+    """Shared by adopt_mons/adopt_mgrs below. Returns (daemon_id,
+    already_adopted) — already_adopted=True means _cephadm_managed_daemon_ids
+    found this daemon type ALREADY cephadm-managed on `ip` (a resumed
+    conversion, see that function's own comment), so NOTHING was sent to
+    this host this call. Otherwise discovers the real daemon id via
+    _discover_systemd_daemon_id and runs `cephadm --image <image> adopt
+    --style legacy --name <daemon_type>.<id>` (see
+    _cephadm_image_for_version's own comment for why `--image` is pinned
+    explicitly). Raises DeployPhaseError if no matching systemd unit is
+    found at all, or if the adopt command itself fails."""
+    already = _cephadm_managed_daemon_ids(ip, daemon_type)
+    if already:
+        return sorted(already)[0], True
     daemon_id = _discover_systemd_daemon_id(ip, service_prefix)
     if not daemon_id:
         raise DeployPhaseError(f"{ip}: không tìm thấy systemd unit {service_prefix}@* đang chạy")
@@ -1532,7 +1569,7 @@ def _adopt_daemon_on_host(ip: str, service_prefix: str, daemon_type: str, image:
         )
     except ExecutorError as exc:
         raise DeployPhaseError(f"{ip}: chuyển đổi {daemon_type}.{daemon_id} thất bại: {exc}") from exc
-    return daemon_id
+    return daemon_id, False
 
 
 def _phase_convert_adopt_mons(nodes: list[dict], action_params: dict, on_host_update) -> None:
@@ -1547,13 +1584,13 @@ def _phase_convert_adopt_mons(nodes: list[dict], action_params: dict, on_host_up
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
-            mon_id = _adopt_daemon_on_host(ip, "ceph-mon", "mon", image)
+            mon_id, already_adopted = _adopt_daemon_on_host(ip, "ceph-mon", "mon", image)
         except DeployPhaseError:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
             raise
         host_status[i]["status"] = "done"
-        host_status[i]["message"] = f"mon.{mon_id}"
+        host_status[i]["message"] = f"mon.{mon_id}" + (" (đã chuyển đổi từ trước)" if already_adopted else "")
         on_host_update(list(host_status))
 
 
@@ -1569,13 +1606,13 @@ def _phase_convert_adopt_mgrs(nodes: list[dict], action_params: dict, on_host_up
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
-            mgr_id = _adopt_daemon_on_host(ip, "ceph-mgr", "mgr", image)
+            mgr_id, already_adopted = _adopt_daemon_on_host(ip, "ceph-mgr", "mgr", image)
         except DeployPhaseError:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
             raise
         host_status[i]["status"] = "done"
-        host_status[i]["message"] = f"mgr.{mgr_id}"
+        host_status[i]["message"] = f"mgr.{mgr_id}" + (" (đã chuyển đổi từ trước)" if already_adopted else "")
         on_host_update(list(host_status))
 
 
@@ -1698,7 +1735,10 @@ def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_up
     mon/mgr). Runs LAST among the 3 daemon types (after mon+mgr, per
     Ceph's own documented adoption order) — deliberately never invents/
     reassigns an OSD id, only adopts whatever ids ceph-volume already
-    reports live on that host."""
+    reports live on that host. Resumable, same _cephadm_managed_daemon_ids
+    check as _adopt_daemon_on_host — an id already cephadm-managed on this
+    host (e.g. a previous partial run, or manual cleanup by the operator)
+    is skipped rather than re-adopted."""
     image = _cephadm_image_for_version(action_params.get("version", ""))
     osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
     host_status = [{"host": n["ip"], "status": "pending"} for n in osd_nodes]
@@ -1730,7 +1770,13 @@ def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_up
             on_host_update(list(host_status))
             continue
 
-        for osd_id in osd_ids:
+        # 2026-07-28: resumable, same reasoning as _adopt_daemon_on_host's
+        # own comment — a resumed conversion must not re-attempt adopting
+        # an OSD id cephadm already manages on this host.
+        already_adopted_ids = _cephadm_managed_daemon_ids(ip, "osd")
+        ids_to_adopt = [osd_id for osd_id in osd_ids if osd_id not in already_adopted_ids]
+
+        for osd_id in ids_to_adopt:
             try:
                 execute_command(
                     ip,
@@ -1742,7 +1788,14 @@ def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_up
                 on_host_update(list(host_status))
                 raise DeployPhaseError(f"{ip}: chuyển đổi osd.{osd_id} thất bại: {exc}") from exc
         host_status[i]["status"] = "done"
-        host_status[i]["message"] = f"Đã chuyển đổi {len(osd_ids)} OSD: {', '.join(osd_ids)}"
+        skipped_count = len(osd_ids) - len(ids_to_adopt)
+        if ids_to_adopt:
+            message = f"Đã chuyển đổi {len(ids_to_adopt)} OSD: {', '.join(ids_to_adopt)}"
+            if skipped_count:
+                message += f" (bỏ qua {skipped_count} OSD đã chuyển đổi từ trước)"
+        else:
+            message = f"Tất cả {len(osd_ids)} OSD đã được chuyển đổi từ trước"
+        host_status[i]["message"] = message
         on_host_update(list(host_status))
 
 

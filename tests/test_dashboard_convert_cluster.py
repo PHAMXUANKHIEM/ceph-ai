@@ -20,13 +20,13 @@ def _configure_mgr(monkeypatch):
     monkeypatch.setattr(settings, "ceph_mgr_nodes", "10.20.1.150")
 
 
-def _stub_version(monkeypatch, version="18.2.8", is_mixed=False):
+def _stub_version(monkeypatch, version="18.2.8", is_mixed=False, per_type=None):
     monkeypatch.setattr(
         convert_cluster_route.ceph_client,
         "summarize_cluster_versions",
         lambda: {
             "raw": {},
-            "per_type": {},
+            "per_type": per_type or {},
             "distinct_versions": [version] if not is_mixed else [version, "17.2.8"],
             "is_mixed": is_mixed,
             "current_version": None if is_mixed else version,
@@ -116,15 +116,43 @@ def test_propose_rejects_when_no_cluster_configured(dashboard_client, monkeypatc
     assert response.status_code == 400
 
 
-def test_propose_rejects_when_version_is_mixed(dashboard_client, monkeypatch):
+def test_propose_rejects_when_version_is_mixed_and_mon_itself_disagrees(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "ceph_exec_mode", "none")
     _configure_mgr(monkeypatch)
+    # per_type left empty (default) -> mon itself has no single agreed
+    # version either -> genuinely refuse, same as before.
     _stub_version(monkeypatch, is_mixed=True)
     _login(dashboard_client)
 
     response = dashboard_client.post("/convert-cluster/propose", json={})
     assert response.status_code == 400
     assert "phiên bản" in response.json()["detail"]
+
+
+def test_propose_uses_mon_version_when_mixed_but_mon_agrees(dashboard_client, monkeypatch):
+    # 2026-07-28: a real, live scenario — a PARTIALLY-completed earlier
+    # conversion left mon+mgr adopted at 17.2.8 while OSD stayed native
+    # 17.2.5 (`ceph versions` genuinely mixed), which is resumable, not a
+    # dangerous inconsistency. MON itself agrees on exactly one version
+    # (17.2.8) — that must be trusted as the conversion target instead of
+    # refusing outright.
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+    _configure_mgr(monkeypatch)
+    _stub_version(
+        monkeypatch,
+        is_mixed=True,
+        per_type={"mon": ["17.2.8"], "mgr": ["17.2.8"], "osd": ["17.2.5"]},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/convert-cluster/propose", json={})
+
+    assert response.status_code == 201
+    action_pk = response.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        params = json.loads(action.action_params)
+        assert params["version"] == "17.2.8"
 
 
 def test_propose_rejects_when_version_query_fails(dashboard_client, monkeypatch):

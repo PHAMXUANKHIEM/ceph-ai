@@ -1313,6 +1313,58 @@ def test_convert_adopt_mons_uses_discovered_daemon_id(monkeypatch):
     assert all("--image quay.io/ceph/ceph:v18.2.8" in c for c in adopt_commands)
 
 
+def test_cephadm_managed_daemon_ids_parses_cephadm_ls(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "execute_command",
+        lambda ip, cmd: json.dumps(
+            [
+                {"name": "mon.nodeA", "style": "cephadm:v1"},
+                {"name": "mgr.nodeA", "style": "cephadm:v1"},
+                {"name": "osd.0", "style": "cephadm:v1"},
+            ]
+        ),
+    )
+    assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "mon") == {"nodeA"}
+    assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "osd") == {"0"}
+    assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "mds") == set()
+
+
+def test_cephadm_managed_daemon_ids_returns_empty_set_when_cephadm_not_installed(monkeypatch):
+    def fake(ip, cmd):
+        raise ExecutorError("cephadm: command not found")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "mon") == set()
+
+
+def test_convert_adopt_mons_skips_already_cephadm_managed_daemon(monkeypatch):
+    """2026-07-28 regression: a real conversion adopted mon+mgr, then
+    failed at a LATER phase (enable_orchestrator) — an operator who
+    finishes the remaining steps by hand and re-runs this feature must not
+    have mon adoption re-attempted (no native ceph-mon@* unit is left to
+    discover for it anymore, already renamed by the first adoption)."""
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        if "cephadm ls --format json" in command:
+            return json.dumps([{"name": "mon.nodeA", "style": "cephadm:v1"}])
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    host_updates = []
+
+    cluster_deploy_module._phase_convert_adopt_mons(
+        [{"ip": "10.20.1.112", "roles": ["mon"]}], _convert_params(), host_updates.append
+    )
+
+    assert not any("adopt --style legacy" in c for _h, c in calls)
+    final_status = host_updates[-1][0]
+    assert final_status["status"] == "done"
+    assert "đã chuyển đổi từ trước" in final_status["message"]
+
+
 def test_convert_adopt_mons_fails_when_no_mon_configured():
     with pytest.raises(DeployPhaseError):
         cluster_deploy_module._phase_convert_adopt_mons(
@@ -1438,6 +1490,31 @@ def test_convert_adopt_osds_discovers_and_adopts_every_id(monkeypatch):
     assert any("osd.0" in c for c in adopt_commands)
     assert any("osd.1" in c for c in adopt_commands)
     assert all("--image quay.io/ceph/ceph:v18.2.8" in c for c in adopt_commands)
+
+
+def test_convert_adopt_osds_skips_already_cephadm_managed_ids(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        if "cephadm ls --format json" in command:
+            return json.dumps([{"name": "osd.0", "style": "cephadm:v1"}])
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    host_updates = []
+
+    cluster_deploy_module._phase_convert_adopt_osds(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), host_updates.append
+    )
+
+    adopt_commands = [c for h, c in calls if h == "10.20.1.95" and "adopt --style legacy" in c]
+    # osd.0 already cephadm-managed -> must NOT be re-adopted; osd.1 is not
+    # -> must still be adopted.
+    assert not any("osd.0" in c for c in adopt_commands)
+    assert any("osd.1" in c for c in adopt_commands)
+    final_message = host_updates[-1][0]["message"]
+    assert "đã chuyển đổi từ trước" in final_message
 
 
 def test_convert_adopt_osds_skips_host_with_no_osds(monkeypatch):
