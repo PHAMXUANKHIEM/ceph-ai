@@ -611,6 +611,20 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             package_upgrade_progress = json.loads(last_action.execution_progress)
         except (TypeError, ValueError):
             package_upgrade_progress = None
+        else:
+            # 2026-07-28: the live list on this page (upgrade.html's
+            # "Tiến trình theo từng node") only ever rendered host/status/
+            # error — started_at/finished_at have been recorded here since
+            # 2026-07-27 (see worker/llm/router_client.py) but only ever
+            # surfaced in the post-completion Markdown log below, never
+            # while the upgrade is actually running. Reusing
+            # _format_step_timestamp (same Vietnam-local rendering as the
+            # Markdown log) so an operator watching a multi-minute package
+            # install has some indication it's progressing, not just stuck
+            # on "Đang chạy" with no clock reference at all.
+            for item in package_upgrade_progress:
+                item["started_at_display"] = _format_step_timestamp(item.get("started_at"))
+                item["finished_at_display"] = _format_step_timestamp(item.get("finished_at"))
 
     # 2026-07-27: full Markdown step log ("ghi lại từng bước, từng lỗi
     # trong quá trình cài đặt") — only once the Action has actually

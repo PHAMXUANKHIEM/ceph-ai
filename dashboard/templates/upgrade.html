@@ -114,6 +114,12 @@
               {% elif item.status == "failed" %}Lỗi
               {% elif item.status == "skipped" %}Bỏ qua
               {% else %}{{ item.status }}{% endif %}
+              {% if item.started_at_display and item.started_at_display != "—" %}
+              <br><span class="hint">
+                Bắt đầu lúc {{ item.started_at_display }}
+                {% if item.finished_at_display and item.finished_at_display != "—" %} — hoàn tất lúc {{ item.finished_at_display }}{% endif %}
+              </span>
+              {% endif %}
               {% if item.error %}<br><span class="error">{{ item.error }}</span>{% endif %}
             </li>
             {% endfor %}
