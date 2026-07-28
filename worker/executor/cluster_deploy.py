@@ -1436,8 +1436,15 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
             60,
             _phase_delete_manual_remove_state,
         ),
-        ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 80, _phase_delete_manual_remove_packages),
-        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 95, _phase_delete_manual_wipe_osd_disk),
+        # 2026-07-28 fix (verified live): wipe_osd_disk MUST run before
+        # remove_packages, not after — `ceph-volume lvm zap --destroy` is
+        # provided by the very packages remove_packages uninstalls
+        # (verified live: "bash: ceph-volume: command not found" once
+        # remove_packages had already run first). Wiping the disk while the
+        # tool that does it is still installed, then removing packages
+        # last, is the only order that works.
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 80, _phase_delete_manual_wipe_osd_disk),
+        ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 95, _phase_delete_manual_remove_packages),
     ],
     "delete_cluster_manual": [
         ("ssh_check", "Kiểm tra kết nối SSH", 10, _phase_delete_ssh_check),
@@ -1448,8 +1455,15 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
             60,
             _phase_delete_manual_remove_state,
         ),
-        ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 80, _phase_delete_manual_remove_packages),
-        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 95, _phase_delete_manual_wipe_osd_disk),
+        # 2026-07-28 fix (verified live): wipe_osd_disk MUST run before
+        # remove_packages, not after — `ceph-volume lvm zap --destroy` is
+        # provided by the very packages remove_packages uninstalls
+        # (verified live: "bash: ceph-volume: command not found" once
+        # remove_packages had already run first). Wiping the disk while the
+        # tool that does it is still installed, then removing packages
+        # last, is the only order that works.
+        ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 80, _phase_delete_manual_wipe_osd_disk),
+        ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 95, _phase_delete_manual_remove_packages),
     ],
 }
 

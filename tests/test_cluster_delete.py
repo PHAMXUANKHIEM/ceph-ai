@@ -228,6 +228,36 @@ def test_delete_manual_wipes_each_osd_nodes_own_disk_when_requested(monkeypatch)
     assert "/dev/vdb" in zap_commands["10.20.1.21"]
 
 
+def test_delete_manual_wipes_osd_disk_before_removing_packages(monkeypatch):
+    """Regression, 2026-07-28 (live-verified): wipe_osd_disk was originally
+    ordered AFTER remove_packages — `ceph-volume lvm zap --destroy` is
+    provided by the very packages remove_packages uninstalls, so by the
+    time wipe_osd_disk ran, the tool it needs was already gone
+    ("bash: ceph-volume: command not found"). wipe_osd_disk must run while
+    ceph-volume is still installed; remove_packages goes last."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    run(
+        "action-1",
+        "delete_cluster_manual",
+        _delete_params(wipe_osd_disks=True),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    zap_index = next(i for i, cmd in enumerate(seen_commands) if "ceph-volume lvm zap" in cmd)
+    remove_packages_index = next(i for i, cmd in enumerate(seen_commands) if "dnf remove -y" in cmd)
+    assert zap_index < remove_packages_index
+
+
 def test_delete_manual_wipe_fails_when_osd_disk_missing_on_a_node(monkeypatch):
     monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, cmd: "")
     write_progress, calls = _make_recording_progress_writer()
