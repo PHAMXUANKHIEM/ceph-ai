@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shlex
+from typing import TypedDict
 
 import paramiko
 
@@ -90,6 +91,87 @@ class CephQueryError(Exception):
 
 def get_mon_nodes() -> list[str]:
     return [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+
+
+def configured_rbd_pools() -> list[str]:
+    """Pools watcher/volume_monitor.py polls for per-image RBD performance —
+    empty by default (feature is entirely opt-in, see settings.ceph_rbd_pools'
+    own docstring)."""
+    return [p.strip() for p in settings.ceph_rbd_pools.split(",") if p.strip()]
+
+
+# 2026-07-28: NOT verified against a real cluster yet (no RBD-backed pool
+# was ever created in this project's own lab cluster) — `rbd perf image
+# iostat --format json`'s exact key names below are a best-effort guess
+# based on how every other Ceph JSON command in this codebase names things
+# (snake_case, nested per-metric dicts with read/write/read_bytes/
+# write_bytes/read_latency/write_latency), NOT a confirmed schema. Kept
+# isolated in this one function so fixing it against real output later
+# only ever touches this one place — every caller (watcher/volume_monitor.py)
+# only sees the already-normalized list[VolumeIoSample] shape below, never
+# the raw payload.
+class VolumeIoSample(TypedDict):
+    pool: str
+    image: str
+    iops: float
+    read_latency_ms: float
+    write_latency_ms: float
+
+
+def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
+    """Runs `rbd perf image iostat <pool> --format json` against a MON node
+    (same multi-MON-fallback/exec-mode-wrapping `run_ceph_json_command`
+    every other live Ceph query in this codebase already goes through —
+    `rbd` accepts the same `--format json`/exec-mode-wrapping shape `ceph`
+    does). Requires the mgr `rbd_support` module to be enabled on the
+    cluster (`ceph mgr module enable rbd_support`) — NOT verified live.
+
+    Returns one entry per RBD image that had recent I/O activity in this
+    pool — an image with zero I/O simply doesn't appear (this is `rbd perf
+    image iostat`'s own behavior, not something this function filters).
+    Raises CephQueryError (from run_ceph_json_command) if every MON node
+    failed; returns an empty list (not an error) if the response parses but
+    doesn't look like the expected shape, so an unexpected-schema surprise
+    degrades to "no data this poll" rather than crashing the Watcher loop.
+    """
+    _, payload = run_ceph_json_command(f"rbd perf image iostat {shlex.quote(pool)}")
+    raw_entries = payload if isinstance(payload, list) else payload.get("images") if isinstance(payload, dict) else None
+    if not isinstance(raw_entries, list):
+        logger.warning(
+            "query_rbd_iostat: unexpected response shape for pool %r (rbd_support module "
+            "enabled? verified schema?) — treating as no data this poll",
+            pool,
+        )
+        return []
+
+    samples: list[VolumeIoSample] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        image = entry.get("image") or entry.get("name")
+        if not image:
+            continue
+        read_ops = _as_float(entry.get("read_ops") or entry.get("read_iops"))
+        write_ops = _as_float(entry.get("write_ops") or entry.get("write_iops"))
+        read_latency_ms = _as_float(entry.get("read_latency_ms") or entry.get("read_latency"))
+        write_latency_ms = _as_float(entry.get("write_latency_ms") or entry.get("write_latency"))
+        samples.append(
+            VolumeIoSample(
+                pool=pool,
+                image=image,
+                iops=read_ops + write_ops,
+                read_latency_ms=read_latency_ms,
+                write_latency_ms=write_latency_ms,
+            )
+        )
+    return samples
+
+
+def _as_float(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def ssh_key_path_error(ssh_key_path: str) -> str | None:

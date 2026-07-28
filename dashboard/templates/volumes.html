@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Volume Performance — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/volumes" class="nav-link active">Volumes</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="tabbed-page">
+    <nav class="tabbed-sidebar" id="pool-selector">
+      <div class="node-sidebar-header">
+        <span class="hint">Chọn pool</span>
+      </div>
+      {% if pools %}
+        {% for pool in pools %}
+        <a
+          href="/volumes?pool={{ pool }}"
+          class="tabbed-nav-item {% if pool == selected_pool %}active{% endif %}"
+          data-pool="{{ pool }}"
+        >
+          <span class="node-chip-ip">{{ pool }}</span>
+        </a>
+        {% endfor %}
+      {% else %}
+        <p class="hint">
+          Chưa cấu hình pool RBD nào để theo dõi — đặt <code>CEPH_RBD_POOLS</code> trong <code>.env</code>
+          (danh sách pool cách nhau bởi dấu phẩy, vd <code>vms,volumes</code>) rồi khởi động lại Watcher.
+        </p>
+      {% endif %}
+    </nav>
+
+    <div class="tabbed-content">
+    {% if selected_pool %}
+    <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
+      <div class="card-header">
+        <div class="metrics-panel-title">
+          <span class="node-ip">{{ selected_pool }}</span>
+          <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
+        </div>
+        <p class="hint metrics-panel-desc">
+          IOPS / độ trễ theo từng RBD image (Volume) trong pool này — đọc trực tiếp qua
+          <code>rbd perf image iostat</code> mỗi vài giây. Nhãn "⚠ Bão hoà" khớp với Incident hệ
+          thống đã tự phát hiện (xem <a href="/">Dashboard</a>/Audit Trail để duyệt xử lý).
+        </p>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Volume (image)</th>
+                <th>IOPS</th>
+                <th>Read latency</th>
+                <th>Write latency</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="volumes-table-body">
+              <tr class="empty-row"><td colspan="5" class="empty-state">Đang tải...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="metrics-error-footer" id="volumes-error-footer" hidden>
+          <p class="metrics-error-timestamp" id="volumes-error-timestamp"></p>
+          <button type="button" class="btn btn-primary btn-sm" id="volumes-retry-btn">Thử lại</button>
+        </div>
+      </div>
+    </section>
+    {% else %}
+    <section class="empty-node-state">
+      <span class="empty-node-icon" aria-hidden="true">&#128421;</span>
+      <p class="empty-node-text">Chọn một pool để xem hiệu năng Volume</p>
+    </section>
+    {% endif %}
+    </div>
+    </div>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/volumes.js?v={{ static_version }}"></script>
+</body>
+</html>

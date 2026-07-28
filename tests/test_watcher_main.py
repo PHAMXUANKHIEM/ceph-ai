@@ -108,6 +108,47 @@ def test_run_survives_query_failures_without_crashing(monkeypatch):
     assert call_count["n"] == 3
 
 
+def test_run_calls_volume_monitor_every_poll_iteration(monkeypatch):
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    check_calls = {"n": 0}
+    resolve_calls = []
+
+    def fake_check_volumes():
+        check_calls["n"] += 1
+        return {"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}
+
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", fake_check_volumes)
+    monkeypatch.setattr(
+        watcher_main.volume_monitor, "create_or_resolve_volume_incidents", resolve_calls.append
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 3
+    assert resolve_calls == [{"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}] * 3
+
+
+def test_run_survives_volume_monitor_raising(monkeypatch):
+    # A bug in the volume-saturation check must not permanently stop
+    # cluster-health monitoring — same posture as
+    # test_run_survives_on_transition_callback_raising below for
+    # on_transition.
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    def broken_check_volumes():
+        raise RuntimeError("bug in volume_monitor")
+
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", broken_check_volumes)
+
+    transitions = []
+    watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)
+
+    assert len(transitions) == 1  # HEALTH_OK on_transition still fired once, on the first poll
+
+
 def test_poll_interval_is_within_ac1_bound():
     # NOTE: this only checks the static config *default* — it does NOT verify
     # actual worst-case end-to-end detection latency under a degraded

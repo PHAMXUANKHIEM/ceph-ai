@@ -23,6 +23,7 @@ from dashboard.routes import (
     settings as settings_routes,
     upgrade,
     users,
+    volumes,
 )
 from dashboard.ws import router as ws_router
 
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
     application.include_router(delete_cluster.router)
     application.include_router(patch.router)
     application.include_router(users.router)
+    application.include_router(volumes.router)
     application.include_router(ws_router)
     return application
 

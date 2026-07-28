@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     ceph_rgw_nodes: str = ""
     ceph_rgw_container_name: str = ""
 
+    # 2026-07-28: RBD pools to poll for per-image performance (IOPS/latency)
+    # and saturation detection (watcher/volume_monitor.py) — comma-separated
+    # pool names, e.g. "vms,volumes". Blank by default: this feature is
+    # entirely opt-in, unlike ceph_mon_nodes/etc. above which are required —
+    # a cluster with no RBD-backed VM volumes (or one that just doesn't want
+    # this feature) pays zero extra SSH/poll cost for it.
+    ceph_rbd_pools: str = ""
+
     # 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py)
     # — a separate build server, NOT a Ceph cluster node, so deliberately not
     # part of the ceph_mon/osd/mgr/rgw_nodes family above or

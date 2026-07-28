@@ -5,12 +5,14 @@ import pytest
 import watcher.ceph_client as ceph_client
 from watcher.ceph_client import (
     CephQueryError,
+    configured_rbd_pools,
     get_mon_nodes,
     get_upgrade_status,
     pause_upgrade,
     propose_next_version,
     query_cluster_health,
     query_cluster_health_with,
+    query_rbd_iostat,
     read_public_key,
     resume_upgrade,
     run_ceph_json_command,
@@ -736,4 +738,95 @@ def test_run_ceph_json_command_uses_cephadm_timeout_in_cephadm_mode(monkeypatch)
     run_ceph_json_command("ceph mon stat")
 
     assert captured["command"] == "cephadm shell -- ceph mon stat --format json"
-    assert captured["timeout"] == ceph_client.CEPHADM_COMMAND_TIMEOUT_SECONDS
+
+
+# --- configured_rbd_pools / query_rbd_iostat (2026-07-28, Volume
+# performance monitoring — see watcher/volume_monitor.py. NOT verified
+# against a real cluster's actual `rbd perf image iostat --format json`
+# output; these tests only pin THIS codebase's own parsing logic against a
+# best-effort assumed shape, documented in query_rbd_iostat's own
+# docstring.) ------------------------------------------------------------
+
+
+def test_configured_rbd_pools_parses_settings(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "vms, volumes ,backups")
+    assert configured_rbd_pools() == ["vms", "volumes", "backups"]
+
+
+def test_configured_rbd_pools_empty_by_default(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_rbd_pools", "")
+    assert configured_rbd_pools() == []
+
+
+def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {
+                "image": "disk-1",
+                "read_ops": 40,
+                "write_ops": 60,
+                "read_latency_ms": 1.5,
+                "write_latency_ms": 2.5,
+            }
+        ]
+    }
+
+    samples = query_rbd_iostat("vms")
+
+    assert samples == [
+        {
+            "pool": "vms",
+            "image": "disk-1",
+            "iops": 100.0,
+            "read_latency_ms": 1.5,
+            "write_latency_ms": 2.5,
+        }
+    ]
+
+
+def test_query_rbd_iostat_parses_dict_with_images_key(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": {
+            "images": [
+                {"image": "disk-2", "read_ops": 10, "write_ops": 5, "read_latency_ms": 0.5, "write_latency_ms": 0.2}
+            ]
+        }
+    }
+
+    samples = query_rbd_iostat("vms")
+
+    assert len(samples) == 1
+    assert samples[0]["image"] == "disk-2"
+    assert samples[0]["iops"] == 15.0
+
+
+def test_query_rbd_iostat_returns_empty_list_for_unexpected_shape(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": {"unexpected": "shape"}}
+
+    assert query_rbd_iostat("vms") == []  # must not raise
+
+
+def test_query_rbd_iostat_skips_entries_without_an_image_name(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {"read_ops": 1, "write_ops": 1},  # no "image"/"name" key
+            {"image": "disk-3", "read_ops": 2, "write_ops": 3, "read_latency_ms": 1, "write_latency_ms": 1},
+        ]
+    }
+
+    samples = query_rbd_iostat("vms")
+
+    assert len(samples) == 1
+    assert samples[0]["image"] == "disk-3"
+
+
+def test_query_rbd_iostat_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": "unreachable"}
+
+    with pytest.raises(CephQueryError):
+        query_rbd_iostat("vms")

@@ -5,8 +5,9 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from config.settings import settings
-from watcher import ceph_client, collector, publisher
+from watcher import ceph_client, collector, publisher, volume_monitor
 from watcher.ceph_client import CephQueryError, query_cluster_health
+from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat
 from shared.models import Incident, IncidentStatus
 
@@ -100,6 +101,16 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
                 # FAILED/PENDING_APPROVAL/APPROVED action got silently
                 # overwritten to RESOLVED on Watcher's very next poll,
                 # hiding the real outcome from the incident history.
+                continue
+            if incident.ceph_code.startswith(VOLUME_SATURATED_PREFIX):
+                # 2026-07-28: same reasoning as the CHAT_REQUEST/
+                # CLUSTER_UPGRADE guard above — a Volume-saturation
+                # Incident's ceph_code (watcher/volume_monitor.py) can never
+                # appear in a real `ceph health detail` check list either.
+                # That module owns this ceph_code family's own create/
+                # resolve lifecycle entirely (its own rolling-window
+                # saturated-set, not this function's current_codes), so it
+                # must be left alone here.
                 continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
@@ -251,6 +262,20 @@ def run(
             if not heartbeat_recorded:
                 _record_heartbeat_safe(False, None, str(exc))
             logger.exception("run: unexpected error during poll iteration")
+
+        # 2026-07-28: Volume (RBD) performance/saturation check — its own
+        # independent try/except, OUTSIDE the cluster-health try block
+        # above, on purpose: it queries `rbd perf image iostat`, not `ceph
+        # health detail`, so a MON being briefly unreachable for one must
+        # not also skip the other, and vice versa. A no-op (empty loop,
+        # effectively free) when settings.ceph_rbd_pools is unconfigured —
+        # see watcher/ceph_client.py::configured_rbd_pools.
+        try:
+            current_saturated = volume_monitor.check_volumes()
+            volume_monitor.create_or_resolve_volume_incidents(current_saturated)
+        except Exception:
+            logger.exception("run: volume saturation check failed")
+
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))
 

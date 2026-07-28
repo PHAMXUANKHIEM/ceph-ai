@@ -151,6 +151,31 @@ def test_cluster_upgrade_incident_is_never_auto_resolved_by_recovery(isolated_db
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_volume_saturated_incident_is_never_auto_resolved_by_recovery(isolated_db):
+    # 2026-07-28: same bug class as CHAT_REQUEST/CLUSTER_UPGRADE above —
+    # watcher/volume_monitor.py's synthetic Incidents (ceph_code prefixed
+    # "VOLUME_SATURATED:") never match any real `ceph health detail` check
+    # code either. That module owns this ceph_code family's own create/
+    # resolve lifecycle (its own rolling-window saturated-set); without this
+    # guard, _resolve_recovered_incidents would incorrectly "recover" every
+    # open volume Incident on every single poll regardless of whether the
+    # volume is actually still saturated.
+    failed_volume_id = _seed_incident("VOLUME_SATURATED:vms/disk-1", IncidentStatus.FAILED.value)
+    pending_volume_id = _seed_incident(
+        "VOLUME_SATURATED:vms/disk-2", IncidentStatus.PENDING_APPROVAL.value
+    )
+    real_failed_id = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, failed_volume_id).status == IncidentStatus.FAILED.value
+        assert (
+            session.get(Incident, pending_volume_id).status == IncidentStatus.PENDING_APPROVAL.value
+        )
+        assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
+
+
 def test_already_terminal_incidents_are_never_touched_by_recovery(isolated_db):
     resolved_id = _seed_incident("OSD_DOWN", IncidentStatus.RESOLVED.value)
     auto_fixed_id = _seed_incident("MON_CLOCK_SKEW", IncidentStatus.AUTO_FIXED.value)
