@@ -544,7 +544,26 @@ def _mkfs_and_start_mon_command(hostname: str) -> str:
     data_dir = shlex.quote(_mon_data_dir(hostname))
     quoted_hostname = shlex.quote(hostname)
     return (
-        f"mkdir -p {data_dir} && "
+        # 2026-07-28 fix (verified live): `ceph-mon --mkfs` against a data
+        # dir that ALREADY has a valid store from an earlier attempt does
+        # NOT reinitialize it — it silently keeps the OLD store (old fsid,
+        # old monmap) and ignores the --monmap/--keyring passed THIS time.
+        # A retried "Dựng cụm" (e.g. after an earlier attempt got past
+        # mon_init but failed at a LATER phase, and the operator clicked
+        # "Dựng cụm" again without an intervening "Xoá cụm") silently ended
+        # up with a mon whose real fsid didn't match the freshly-written
+        # /etc/ceph/ceph.conf, and every `ceph` CLI call against it failed
+        # with the deeply misleading "[errno 1] error connecting to the
+        # cluster" — the mon itself was actually healthy and in quorum
+        # (confirmed via `ceph daemon mon.<name> mon_status`, which talks
+        # to the local admin socket directly, bypassing the network client
+        # entirely), just answering to a DIFFERENT fsid than any client
+        # reading the current ceph.conf would ever try. Stop any running
+        # mon for this hostname and wipe its data dir first so mkfs always
+        # starts genuinely clean, regardless of what a previous attempt
+        # left behind.
+        f"systemctl stop ceph-mon@{quoted_hostname} 2>/dev/null; "
+        f"rm -rf {data_dir} && mkdir -p {data_dir} && "
         f"ceph-mon --mkfs -i {quoted_hostname} --monmap {shlex.quote(_REMOTE_MONMAP_PATH)} "
         f"--keyring {shlex.quote(_REMOTE_MON_KEYRING_PATH)} && "
         f"(chown -R ceph:ceph {data_dir} 2>/dev/null || true) && "

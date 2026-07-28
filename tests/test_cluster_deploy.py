@@ -740,6 +740,30 @@ def test_ceph_deploy_mon_init_clears_stale_scratch_files_before_generating(monke
     assert "ceph-aiops.monmap" in keygen_command[rm_pos:monmaptool_pos]
 
 
+def test_mkfs_and_start_mon_command_wipes_data_dir_before_mkfs():
+    """Regression, 2026-07-28 (live-verified on a real deploy): `ceph-mon
+    --mkfs` against a data dir that already has a valid store from an
+    earlier attempt does NOT reinitialize it — it silently keeps the OLD
+    store (old fsid, old monmap) and ignores the --monmap/--keyring passed
+    this time. A retried "Dựng cụm" (an earlier attempt got past mon_init
+    but failed at a later phase, then the operator retried without an
+    intervening "Xoá cụm") silently produced a mon whose real fsid didn't
+    match the freshly-written /etc/ceph/ceph.conf — every `ceph` CLI call
+    against it then failed with the deeply misleading "[errno 1] error
+    connecting to the cluster", even though the mon itself was healthy and
+    in quorum (confirmed via the admin socket, which bypasses the network
+    client entirely). Must stop any running mon and wipe its data dir
+    before mkfs, every time, so a retry can never reuse stale state."""
+    command = cluster_deploy_module._mkfs_and_start_mon_command("khiempx-ceph1.novalocal")
+
+    stop_pos = command.index("systemctl stop ceph-mon@")
+    rm_pos = command.index("rm -rf")
+    mkdir_pos = command.index("mkdir -p")
+    mkfs_pos = command.index("ceph-mon --mkfs")
+    assert stop_pos < rm_pos < mkdir_pos < mkfs_pos
+    assert "/var/lib/ceph/mon/ceph-khiempx-ceph1.novalocal" in command[rm_pos:mkdir_pos]
+
+
 def test_ceph_deploy_mon_security_enables_msgr2_and_disables_insecure_reclaim(monkeypatch):
     """2026-07-27, operator request after seeing these on a real deployed
     cluster: _phase_ceph_deploy_mon_init's monmaptool generates a v1-only
