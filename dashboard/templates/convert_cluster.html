@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Convert to Cephadm — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/nodes" class="nav-link">Cluster Metrics</a>
+        <a href="/volumes" class="nav-link">Volumes</a>
+        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
+        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
+        <a href="/convert-cluster" class="nav-link active">Convert to Cephadm</a>
+        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
+        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    {% if last_action and last_action.status in ("EXECUTED", "FAILED") and not pending_action %}
+    <section class="card">
+      <div class="card-header"><h2>{% if last_action.status == "EXECUTED" %}✅ Lần chuyển đổi gần nhất thành công{% else %}❌ Lần chuyển đổi gần nhất thất bại{% endif %}</h2></div>
+      <div class="card-body">
+        {% if last_action.status == "EXECUTED" %}
+        <p class="hint">Cụm hiện đã được cephadm quản lý — cấu hình exec_mode trong .env đã tự cập nhật.</p>
+        {% else %}
+        <p class="hint">Kiểm tra Log Server (Settings) hoặc log Worker để biết chi tiết lỗi trước khi thử lại — một số bước có thể đã đổi trạng thái daemon trên cụm thật.</p>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if not pending_action %}
+    <section class="card">
+      <div class="card-header"><h2>⚠ Đọc kỹ trước khi chuyển đổi</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          Tính năng này dùng quy trình <code>cephadm adopt --style legacy</code> CHÍNH THỨC của Ceph để
+          chuyển từng daemon MON/MGR/OSD từ systemd sang cephadm quản lý, TẠI CHỖ — không xoá dữ liệu,
+          không tạo lại daemon. Chỉ hỗ trợ MỘT CHIỀU (systemd → cephadm); Ceph không có quy trình chính
+          thức cho chiều ngược lại nên tính năng này không hỗ trợ chiều đó.
+        </p>
+        <p class="hint">
+          <strong>CHƯA được kiểm chứng trên một cụm systemd thật</strong> — khác với Deploy/Delete Cluster
+          (đã sửa qua nhiều lần chạy thật), đây là lần triển khai đầu tiên theo đúng tài liệu Ceph. Khuyến
+          nghị thử trên cụm không quan trọng trước khi dùng cho cụm production.
+        </p>
+        <p class="hint">
+          Node RGW/MDS (nếu có) sẽ KHÔNG được chuyển đổi — chỉ MON/MGR/OSD.
+        </p>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if not eligible and not pending_action %}
+    <section class="card">
+      <div class="card-header"><h2>Không đủ điều kiện chuyển đổi</h2></div>
+      <div class="card-body">
+        {% if not configured_nodes %}
+        <p class="hint">Chưa có node MON/MGR/OSD nào được cấu hình trong <a href="/settings">Settings</a>.</p>
+        {% elif exec_mode == "cephadm" %}
+        <p class="hint">Cụm hiện tại đã chạy cephadm rồi — không cần chuyển đổi.</p>
+        {% else %}
+        <p class="hint">
+          Chỉ hỗ trợ chuyển đổi từ cụm đang chạy systemd thuần (CEPH_EXEC_MODE=none) — cụm hiện tại đang
+          ở exec_mode=<code>{{ exec_mode }}</code>.
+        </p>
+        {% endif %}
+      </div>
+    </section>
+    {% else %}
+    <div class="deploy-cluster-grid">
+      <section class="card">
+        <div class="card-header"><h2>Cụm đang cấu hình</h2></div>
+        <div class="card-body">
+          {% if pending_action %}
+          <p class="hint">Đã có một đề xuất chuyển đổi đang chờ xử lý — xem chi tiết bên phải.</p>
+          {% else %}
+          <p><strong>Phương thức hiện tại:</strong> {{ exec_mode }}</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>IP</th><th>Vai trò</th></tr></thead>
+              <tbody>
+                {% for node in configured_nodes %}
+                <tr><td>{{ node.ip }}</td><td>{{ node.roles|join(', ')|upper }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <form id="convert-form" class="login-box">
+            <p class="error" id="cc-error" hidden></p>
+            <button type="submit" class="btn btn-reject">Đề xuất chuyển đổi sang cephadm</button>
+          </form>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="card deploy-log-card">
+        <div class="card-header">
+          <h2 id="cc-log-title">
+            {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}Chờ duyệt
+            {% elif pending_action and pending_action.status == "APPROVED" %}● ĐANG CHUYỂN ĐỔI...
+            {% elif last_action %}Nhật ký lần gần nhất
+            {% else %}Nhật ký tiến trình{% endif %}
+          </h2>
+          <div class="deploy-log-actions">
+            <button type="button" class="btn btn-sm btn-ghost" id="cc-log-clear">Clear</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="cc-log-copy">Copy</button>
+          </div>
+        </div>
+        <div class="card-body">
+          {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
+          <p><strong>Quy trình sẽ thực hiện:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.rationale }}</pre>
+          {% if pending_action.proposed_command %}
+          <p><strong>Xem trước lệnh:</strong></p>
+          <pre class="upgrade-plan-text">{{ pending_action.proposed_command }}</pre>
+          {% endif %}
+          <label>
+            Gõ chính xác <code>{{ confirm_text }}</code> để xác nhận
+            <input type="text" id="cc-confirm-input" autocomplete="off">
+          </label>
+          <div class="pending-action-buttons">
+            <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+              <button type="submit" class="btn btn-reject" id="cc-approve-btn" disabled>Duyệt — chuyển đổi ngay</button>
+            </form>
+            <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
+              <button type="submit" class="btn btn-approve">Từ chối</button>
+            </form>
+          </div>
+          {% else %}
+          <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="cc-progress-bar">
+            <div class="progress-bar-fill" id="cc-progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <p class="hint" id="cc-progress-label">&nbsp;</p>
+          <div class="deploy-log-box" id="cc-log-box">
+            <p class="hint">Chưa có tiến trình nào.</p>
+          </div>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+    {% endif %}
+  </main>
+
+  <script type="application/json" id="convert-initial-state">
+    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress, "confirm_text": confirm_text}|tojson }}
+  </script>
+  <script src="/static/convert_cluster.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

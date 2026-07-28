@@ -696,3 +696,14 @@ def test_delete_cluster_preview_mentions_wipe_choice(action_id):
 def test_has_command_true_for_all_delete_cluster_action_ids():
     assert commands_module.has_command("delete_cluster_cephadm") is True
     assert commands_module.has_command("delete_cluster_manual") is True
+
+
+def test_convert_cluster_to_cephadm_preview_mentions_version_and_first_mon():
+    command = get_command("convert_cluster_to_cephadm", None, _DEPLOY_PARAMS)
+    assert "18.2.8" in command
+    assert "10.20.1.112" in command
+    assert "cephadm adopt" in command
+
+
+def test_has_command_true_for_convert_cluster_to_cephadm():
+    assert commands_module.has_command("convert_cluster_to_cephadm") is True

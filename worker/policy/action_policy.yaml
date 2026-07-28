@@ -100,12 +100,24 @@ patch_action_ids:
 # how the cluster currently reports itself as run (CEPH_EXEC_MODE), decided
 # automatically by the route, not chosen by the operator the way deploy's
 # 3 install methods are.
+# 2026-07-28: Chuyển đổi cụm đang chạy systemd sang cephadm
+# (dashboard/routes/convert_cluster.py) — same family, same reasoning:
+# shares worker/executor/cluster_deploy.py's phase-runner/dispatch-check/
+# policy-loading. Deliberately one-directional (systemd -> cephadm only,
+# via Ceph's own documented `cephadm adopt --style legacy` procedure) —
+# the reverse (cephadm -> systemd) has no equivalent official Ceph
+# command and was explicitly scoped OUT per an operator decision when
+# this feature was requested (higher risk, no upstream-documented
+# procedure to follow). NOT verified against a real running systemd
+# cluster this session (see cluster_deploy.py's own phase docstrings) —
+# test against a non-critical cluster first.
 cluster_deploy_action_ids:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
   - deploy_cluster_rpm_local
   - delete_cluster_cephadm
   - delete_cluster_manual
+  - convert_cluster_to_cephadm
 
 safe:
   - resync_ntp
@@ -166,6 +178,11 @@ risky:
   # requires explicit approval, no exceptions.
   - delete_cluster_cephadm
   - delete_cluster_manual
+  # 2026-07-28: converts every daemon's management style in place on a
+  # LIVE cluster (real data, real running VMs on top of it) — always
+  # requires explicit approval, no exceptions, same as the rest of this
+  # family.
+  - convert_cluster_to_cephadm
   # 2026-07-28: unlike delete_pool above (deliberately kept SAFE per an
   # explicit earlier operator request, only for the Chat-with-AI flow's own
   # extra safeguards), rbd_trash_remove PERMANENTLY destroys data with no

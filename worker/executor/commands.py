@@ -736,12 +736,24 @@ def _delete_cluster_preview_command(host: str | None, params: dict) -> str:
     )
 
 
+def _convert_cluster_to_cephadm_preview_command(host: str | None, params: dict) -> str:
+    version = params.get("version", "?")
+    first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
+    return (
+        f"Cài cephadm (bản {version}) trên từng node, 'cephadm adopt --style legacy' lần lượt cho "
+        f"từng MON rồi từng MGR (bắt đầu từ {first_mon}), bật cephadm orchestrator, 'ceph orch host "
+        f"add' cho mọi node, rồi 'cephadm adopt' cho từng OSD — KHÔNG xoá dữ liệu OSD, chỉ đổi cách "
+        f"daemon được quản lý — xem đầy đủ các pha khi bắt đầu chuyển đổi"
+    )
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
     "deploy_cluster_rpm_local": _deploy_cluster_rpm_local_preview_command,
     "delete_cluster_cephadm": _delete_cluster_preview_command,
     "delete_cluster_manual": _delete_cluster_preview_command,
+    "convert_cluster_to_cephadm": _convert_cluster_to_cephadm_preview_command,
 }
 
 

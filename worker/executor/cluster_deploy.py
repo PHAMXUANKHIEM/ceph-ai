@@ -1301,6 +1301,354 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
         on_host_update(list(host_status))
 
 
+# --- Chuyển đổi cụm systemd -> cephadm (2026-07-28) -------------------------
+#
+# dashboard/routes/convert_cluster.py-only — adopts every MON/MGR/OSD daemon
+# of the CURRENTLY CONFIGURED cluster (same "nodes come from
+# shared/cluster_nodes.py::configured_nodes(), never operator-typed" posture
+# as Xóa cụm above) into cephadm management IN PLACE, following Ceph's own
+# documented `cephadm adopt --style legacy` procedure — no daemon is
+# recreated, no OSD data is touched, only how each daemon is started/managed
+# changes (native systemd unit -> cephadm-managed container). Deliberately
+# ONE-DIRECTION only (systemd -> cephadm): the reverse has no equivalent
+# official Ceph command, and was explicitly scoped out per an operator
+# decision when this feature was requested (see action_policy.yaml's
+# `convert_cluster_to_cephadm` comment).
+#
+# NOT verified against a real running systemd cluster this session — unlike
+# every phase above (each has its own "verified live, 2026-07-2x" fixes from
+# iterating against a real lab cluster), this is a first-pass implementation
+# of the documented adoption procedure. Test against a non-critical cluster
+# before trusting this against real production data.
+#
+# Scope: MON/MGR/OSD only, matching every other phase list in this module
+# (none of them handle MDS/RGW daemons either) — an existing RGW/MDS daemon
+# on a converted cluster is left running under systemd, untouched, and will
+# NOT show up under `ceph orch ps` afterward. `_delete_manual_stop_daemons`
+# above works around this same gap differently (a broad `ceph-*` systemd
+# glob catches RGW/MDS too, since it only ever STOPS units, never needs to
+# know their exact adopted name) — adoption can't take that shortcut, since
+# `cephadm adopt --name` needs the EXACT daemon type+id.
+
+
+def _discover_systemd_daemon_id(host: str, service_prefix: str) -> str | None:
+    """Finds the running `<service_prefix>@<id>` systemd unit on `host` and
+    returns just the `<id>` part (e.g. service_prefix="ceph-mon" finding
+    "ceph-mon@node1.service" running returns "node1") — this is the REAL id
+    Ceph already knows this daemon by, needed for `cephadm adopt --name
+    mon.<id>`/`mgr.<id>` below. Deliberately discovered fresh from the
+    live system rather than assumed to equal this host's current `hostname`
+    output (which happens to be true for a cluster THIS app's own
+    ceph-deploy/rpm-local method built, but adoption must also work
+    correctly against a pre-existing systemd cluster this app never built).
+    Returns None if no matching unit is found (that role isn't actually
+    running on this host — caller decides whether that's an error)."""
+    try:
+        output = execute_command(
+            host,
+            f"systemctl list-units --all --plain --no-legend {shlex.quote(service_prefix + '@*')} "
+            "2>/dev/null | awk '{print $1}'",
+        )
+    except ExecutorError as exc:
+        raise DeployPhaseError(
+            f"{host}: không liệt kê được systemd unit {service_prefix}@*: {exc}"
+        ) from exc
+    units = [u.strip() for u in output.splitlines() if u.strip()]
+    if not units:
+        return None
+    # A host running more than one instance of the same daemon TYPE (e.g.
+    # two mons) would be unusual for mon/mgr specifically — take the first
+    # rather than fail outright.
+    unit = units[0]
+    if "@" not in unit:
+        return None
+    daemon_id = unit.split("@", 1)[1]
+    return daemon_id[: -len(".service")] if daemon_id.endswith(".service") else daemon_id
+
+
+def _phase_convert_ssh_check(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Same connectivity-only check as _phase_delete_ssh_check (no "disk
+    must be empty" requirement — this cluster's OSD disks are expected to
+    already hold real data), plus hostname discovery for
+    `ceph orch host add`'s label later (register_hosts phase) — that label
+    is just an orchestrator-internal identifier, unrelated to the mon/mgr
+    daemon's OWN id (see _discover_systemd_daemon_id above for that)."""
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    hostnames: dict[str, str] = {}
+    for i, node in enumerate(nodes):
+        host = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(host, "true")
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"Không kết nối được SSH tới {host}: {exc}") from exc
+        try:
+            hostname_output = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
+        hostnames[host] = hostname_output or host
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+    action_params["_node_hostnames"] = hostnames
+
+
+def _phase_convert_install_cephadm(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Ensures the `cephadm` binary itself is present on EVERY node (needed
+    locally by every later `cephadm adopt` call, on whichever host runs
+    that daemon) — same install snippet _phase_cephadm_bootstrap uses for
+    first_mon only, applied here to every node instead. Deliberately does
+    NOT install a container runtime (docker/podman) — same assumption every
+    OTHER phase in this module already makes (cephadm bootstrap itself
+    requires one pre-installed; this codebase has never automated that
+    installation, see this module's own docstring). Inherits that same
+    snippet's RPM/EL9-only download URL — a known, pre-existing scope limit
+    of this codebase's cephadm support, not something new to this feature.
+    """
+    version = action_params.get("version", "")
+    codename = codename_for_version(version)
+    if codename is None:
+        raise DeployPhaseError(f"Không tìm thấy mã tên release Ceph cho phiên bản {version!r}")
+
+    install_cephadm = (
+        "command -v cephadm >/dev/null 2>&1 || "
+        f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
+        "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm && "
+        f"/usr/local/bin/cephadm add-repo --version {version} && /usr/local/bin/cephadm install)"
+    )
+
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    for i, node in enumerate(nodes):
+        ip = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(ip, install_cephadm)
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{ip}: cài đặt cephadm thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _adopt_daemon_on_host(ip: str, service_prefix: str, daemon_type: str) -> str:
+    """Shared by adopt_mons/adopt_mgrs below — discovers the real daemon id
+    running on `ip` (via _discover_systemd_daemon_id) and runs
+    `cephadm adopt --style legacy --name <daemon_type>.<id>` there. Returns
+    the id (for the caller's own status message). Raises DeployPhaseError
+    if no matching systemd unit is found at all, or if the adopt command
+    itself fails."""
+    daemon_id = _discover_systemd_daemon_id(ip, service_prefix)
+    if not daemon_id:
+        raise DeployPhaseError(f"{ip}: không tìm thấy systemd unit {service_prefix}@* đang chạy")
+    try:
+        execute_command(
+            ip, f"cephadm adopt --style legacy --name {shlex.quote(daemon_type + '.' + daemon_id)}"
+        )
+    except ExecutorError as exc:
+        raise DeployPhaseError(f"{ip}: chuyển đổi {daemon_type}.{daemon_id} thất bại: {exc}") from exc
+    return daemon_id
+
+
+def _phase_convert_adopt_mons(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
+    if not mon_nodes:
+        raise DeployPhaseError("Không có node MON nào trong cấu hình")
+    host_status = [{"host": n["ip"], "status": "pending"} for n in mon_nodes]
+    on_host_update(list(host_status))
+    for i, node in enumerate(mon_nodes):
+        ip = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            mon_id = _adopt_daemon_on_host(ip, "ceph-mon", "mon")
+        except DeployPhaseError:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise
+        host_status[i]["status"] = "done"
+        host_status[i]["message"] = f"mon.{mon_id}"
+        on_host_update(list(host_status))
+
+
+def _phase_convert_adopt_mgrs(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    mgr_nodes = [n for n in nodes if "mgr" in (n.get("roles") or [])]
+    if not mgr_nodes:
+        raise DeployPhaseError("Không có node MGR nào trong cấu hình")
+    host_status = [{"host": n["ip"], "status": "pending"} for n in mgr_nodes]
+    on_host_update(list(host_status))
+    for i, node in enumerate(mgr_nodes):
+        ip = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            mgr_id = _adopt_daemon_on_host(ip, "ceph-mgr", "mgr")
+        except DeployPhaseError:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise
+        host_status[i]["status"] = "done"
+        host_status[i]["message"] = f"mgr.{mgr_id}"
+        on_host_update(list(host_status))
+
+
+def _phase_convert_enable_orchestrator(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Enables the cephadm mgr module + routes the orchestrator to it, on
+    the just-adopted MGR's host — needed before `ceph orch host add`/`ceph
+    orch ps` (later phases) mean anything. `ceph cephadm generate-key`
+    ensures the orchestrator's own dedicated SSH keypair exists (bootstrap
+    generates one automatically as part of its own setup; adoption never
+    calls bootstrap, so this is the equivalent explicit step) — harmless if
+    a key already exists."""
+    first_mon = _first_mon_ip(nodes)
+    host_status = [{"host": first_mon, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        execute_command(
+            first_mon,
+            "ceph mgr module enable cephadm && ceph orch set backend cephadm && "
+            "(ceph cephadm generate-key || true)",
+        )
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"Bật cephadm orchestrator trên {first_mon} thất bại: {exc}") from exc
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_convert_distribute_ssh_key(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Same SSH-key-distribution step _phase_cephadm_orch_host_add does for
+    a brand-new bootstrap, adapted for adoption: the key comes from
+    `ceph cephadm get-pub-key` (a live `ceph` CLI query against the
+    orchestrator module enabled in the previous phase) rather than reading
+    a local `/etc/ceph/ceph.pub` file — that file is only ever written as a
+    SIDE EFFECT of `cephadm bootstrap` itself, which adoption never runs."""
+    first_mon = _first_mon_ip(nodes)
+    other_nodes = [n for n in nodes if n["ip"] != first_mon]
+    host_status = [{"host": n["ip"], "status": "pending"} for n in other_nodes]
+    on_host_update(list(host_status))
+
+    try:
+        cephadm_pubkey = execute_command(first_mon, "ceph cephadm get-pub-key").strip()
+    except ExecutorError as exc:
+        raise DeployPhaseError(
+            f"{first_mon}: không lấy được khoá SSH của cephadm (ceph cephadm get-pub-key): {exc}"
+        ) from exc
+    if not cephadm_pubkey:
+        raise DeployPhaseError(f"{first_mon}: ceph cephadm get-pub-key trả về rỗng")
+
+    for i, node in enumerate(other_nodes):
+        ip = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            quoted_key = shlex.quote(cephadm_pubkey)
+            execute_command(
+                ip,
+                "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+                f"(grep -qxF {quoted_key} /root/.ssh/authorized_keys 2>/dev/null || "
+                f"echo {quoted_key} >> /root/.ssh/authorized_keys) && "
+                "chmod 600 /root/.ssh/authorized_keys",
+            )
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(
+                f"{ip}: không thêm được khoá SSH của cephadm vào authorized_keys: {exc}"
+            ) from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _phase_convert_register_hosts(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """`ceph orch host add <label> <ip>` for EVERY node (including
+    first_mon itself — unlike a fresh bootstrap, which auto-registers its
+    own host, adoption never implicitly registers anything). `<label>` is
+    just the orchestrator's own display name for the host (shown in `ceph
+    orch host ls`) — unrelated to the mon/mgr daemon id
+    _discover_systemd_daemon_id found."""
+    first_mon = _first_mon_ip(nodes)
+    hostnames: dict[str, str] = action_params.get("_node_hostnames", {})
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
+    on_host_update(list(host_status))
+    for i, node in enumerate(nodes):
+        ip = node["ip"]
+        hostname = hostnames.get(ip, ip)
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            execute_command(
+                first_mon, f"ceph orch host add {shlex.quote(hostname)} {shlex.quote(ip)}"
+            )
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"ceph orch host add {hostname} ({ip}) thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Per OSD host: discovers which OSD ids actually live there via
+    `ceph-volume lvm list --format json` (its top-level keys are OSD ids —
+    self-contained per-host discovery, no need to cross-reference `ceph osd
+    tree`'s hostname strings against this app's own node list), then
+    `cephadm adopt --style legacy --name osd.<id>` for each one found. Runs
+    LAST among the 3 daemon types (after mon+mgr, per Ceph's own documented
+    adoption order) — deliberately never invents/reassigns an OSD id, only
+    adopts whatever ids ceph-volume already reports live on that host."""
+    osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
+    host_status = [{"host": n["ip"], "status": "pending"} for n in osd_nodes]
+    on_host_update(list(host_status))
+
+    for i, node in enumerate(osd_nodes):
+        ip = node["ip"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            output = execute_command(ip, "ceph-volume lvm list --format json")
+        except ExecutorError as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(
+                f"{ip}: không liệt kê được OSD cục bộ (ceph-volume lvm list): {exc}"
+            ) from exc
+        try:
+            osd_map = json.loads(output) if output.strip() else {}
+        except (TypeError, ValueError):
+            osd_map = {}
+        if not isinstance(osd_map, dict):
+            osd_map = {}
+        osd_ids = sorted(osd_map.keys(), key=lambda x: int(x) if x.isdigit() else x)
+
+        if not osd_ids:
+            host_status[i]["status"] = "done"
+            host_status[i]["message"] = "Không có OSD nào trên node này"
+            on_host_update(list(host_status))
+            continue
+
+        for osd_id in osd_ids:
+            try:
+                execute_command(
+                    ip, f"cephadm adopt --style legacy --name {shlex.quote('osd.' + osd_id)}"
+                )
+            except ExecutorError as exc:
+                host_status[i]["status"] = "failed"
+                on_host_update(list(host_status))
+                raise DeployPhaseError(f"{ip}: chuyển đổi osd.{osd_id} thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        host_status[i]["message"] = f"Đã chuyển đổi {len(osd_ids)} OSD: {', '.join(osd_ids)}"
+        on_host_update(list(host_status))
+
+
 def _clear_cluster_config() -> None:
     """Inverse of _write_cluster_config — after a successful cluster
     deletion, the Dashboard must stop trying to monitor a cluster that no
@@ -1485,6 +1833,28 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("wipe_osd_disk", "Xoá dữ liệu đĩa OSD (nếu được chọn)", 80, _phase_delete_manual_wipe_osd_disk),
         ("remove_packages", "Gỡ cài đặt gói Ceph khỏi hệ điều hành", 95, _phase_delete_manual_remove_packages),
     ],
+    # Order matches Ceph's own documented adoption procedure: verify health
+    # -> cephadm binary on every node -> adopt MON -> adopt MGR -> enable
+    # orchestrator (needs a running, adopted MGR) -> distribute its SSH key
+    # -> register every host -> adopt OSD (last, and only once the
+    # orchestrator/host inventory is in place) -> final verify.
+    "convert_cluster_to_cephadm": [
+        ("ssh_check", "Kiểm tra kết nối SSH tới từng node", 5, _phase_convert_ssh_check),
+        ("health_precheck", "Kiểm tra sức khoẻ cụm trước khi chuyển đổi", 10, _phase_verify),
+        ("install_cephadm", "Cài đặt cephadm trên từng node", 25, _phase_convert_install_cephadm),
+        ("adopt_mons", "Chuyển đổi từng MON sang cephadm", 40, _phase_convert_adopt_mons),
+        ("adopt_mgrs", "Chuyển đổi từng MGR sang cephadm", 50, _phase_convert_adopt_mgrs),
+        ("enable_orchestrator", "Bật cephadm orchestrator", 60, _phase_convert_enable_orchestrator),
+        (
+            "distribute_ssh_key",
+            "Phân phối khoá SSH của cephadm tới từng node",
+            70,
+            _phase_convert_distribute_ssh_key,
+        ),
+        ("register_hosts", "Đăng ký từng node với orchestrator", 80, _phase_convert_register_hosts),
+        ("adopt_osds", "Chuyển đổi từng OSD sang cephadm", 95, _phase_convert_adopt_osds),
+        ("verify", "Kiểm tra cụm sau khi chuyển đổi", 100, _phase_verify),
+    ],
 }
 
 # Deploy vs delete post-phase env-config writes go opposite directions
@@ -1517,7 +1887,10 @@ def _make_step(step_key: str, label: str, pct: int) -> dict:
 
 def _write_cluster_config(action_params: dict, action_id: str) -> None:
     nodes = action_params.get("nodes") or []
-    exec_mode = "cephadm" if action_id == "deploy_cluster_cephadm" else "none"
+    # convert_cluster_to_cephadm (2026-07-28): same node list as before
+    # (mon/mgr/osd unchanged — this doesn't add/remove any node), only
+    # CEPH_EXEC_MODE actually changes, from "none" to "cephadm".
+    exec_mode = "cephadm" if action_id in ("deploy_cluster_cephadm", "convert_cluster_to_cephadm") else "none"
     fields = {
         env_config.CLUSTER_ENV_NAMES["ceph_mon_nodes"]: ",".join(_node_ips_with_role(nodes, "mon")),
         env_config.CLUSTER_ENV_NAMES["ceph_mgr_nodes"]: ",".join(_node_ips_with_role(nodes, "mgr")),

@@ -1109,3 +1109,329 @@ def test_cluster_deploy_action_ids_match_policy_layer():
 def test_deploy_phase_error_is_a_plain_exception():
     with pytest.raises(DeployPhaseError):
         raise DeployPhaseError("something specific")
+
+
+# --- Chuyển đổi systemd -> cephadm (2026-07-28) -----------------------------
+
+_CONVERT_NODES = [
+    {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
+    {"ip": "10.20.1.95", "roles": ["mon", "osd"]},
+]
+
+_CONVERT_MON_IDS = {"10.20.1.112": "nodeA", "10.20.1.95": "nodeB"}
+_CONVERT_MGR_IDS = {"10.20.1.112": "nodeA"}
+_CONVERT_OSD_IDS = {"10.20.1.95": ["0", "1"]}
+
+
+def _convert_params(**overrides):
+    params = {"version": "18.2.8", "nodes": copy.deepcopy(_CONVERT_NODES)}
+    params.update(overrides)
+    return params
+
+
+def _convert_fake_execute(host, command):
+    if command == "true":
+        return ""
+    if "hostname -f" in command:
+        return host.replace(".", "-") + ".lab"
+    if "command -v cephadm" in command:
+        return ""
+    if "systemctl list-units" in command and "ceph-mon@" in command:
+        mon_id = _CONVERT_MON_IDS.get(host)
+        return f"ceph-mon@{mon_id}.service" if mon_id else ""
+    if "systemctl list-units" in command and "ceph-mgr@" in command:
+        mgr_id = _CONVERT_MGR_IDS.get(host)
+        return f"ceph-mgr@{mgr_id}.service" if mgr_id else ""
+    if "cephadm adopt" in command:
+        return ""
+    if "ceph mgr module enable cephadm" in command:
+        return ""
+    if command == "ceph cephadm get-pub-key":
+        return "ssh-ed25519 AAAAFAKEKEY cephadm\n"
+    if "authorized_keys" in command:
+        return ""
+    if "ceph orch host add" in command:
+        return ""
+    if "ceph-volume lvm list --format json" in command:
+        ids = _CONVERT_OSD_IDS.get(host, [])
+        return json.dumps({i: [{"tags": {"ceph.osd_id": i}}] for i in ids})
+    if "ceph -s --format json" in command:
+        return json.dumps({"health": {"status": "HEALTH_OK"}})
+    return ""
+
+
+def test_convert_action_id_registered_in_phases_and_policy():
+    from worker.policy.gate import VALID_CLUSTER_DEPLOY_ACTION_IDS
+
+    assert "convert_cluster_to_cephadm" in cluster_deploy_module._PHASES_BY_ACTION_ID
+    assert "convert_cluster_to_cephadm" in VALID_CLUSTER_DEPLOY_ACTION_IDS
+
+
+def test_discover_systemd_daemon_id_extracts_id_from_unit_name(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "execute_command",
+        lambda host, command: "ceph-mon@nodeA.service",
+    )
+    daemon_id = cluster_deploy_module._discover_systemd_daemon_id("10.20.1.112", "ceph-mon")
+    assert daemon_id == "nodeA"
+
+
+def test_discover_systemd_daemon_id_returns_none_when_no_unit_found(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, command: "")
+    assert cluster_deploy_module._discover_systemd_daemon_id("10.20.1.112", "ceph-mon") is None
+
+
+def test_discover_systemd_daemon_id_raises_on_ssh_failure(monkeypatch):
+    def broken(host, command):
+        raise ExecutorError("no route to host")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", broken)
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._discover_systemd_daemon_id("10.20.1.112", "ceph-mon")
+
+
+def test_convert_adopt_mons_uses_discovered_daemon_id(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    cluster_deploy_module._phase_convert_adopt_mons(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
+
+    adopt_commands = [c for _h, c in calls if "cephadm adopt" in c]
+    assert any("mon.nodeA" in c for c in adopt_commands)
+    assert any("mon.nodeB" in c for c in adopt_commands)
+
+
+def test_convert_adopt_mons_fails_when_no_mon_configured():
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_convert_adopt_mons(
+            [{"ip": "10.20.1.1", "roles": ["osd"]}], _convert_params(), lambda hosts: None
+        )
+
+
+def test_convert_adopt_mons_fails_when_no_systemd_unit_running(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, command: "")
+    with pytest.raises(DeployPhaseError, match="ceph-mon@"):
+        cluster_deploy_module._phase_convert_adopt_mons(
+            copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+        )
+
+
+def test_convert_adopt_mgrs_uses_discovered_daemon_id(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    cluster_deploy_module._phase_convert_adopt_mgrs(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
+
+    adopt_commands = [c for _h, c in calls if "cephadm adopt" in c]
+    assert any("mgr.nodeA" in c for c in adopt_commands)
+
+
+def test_convert_install_cephadm_runs_on_every_node(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "execute_command",
+        lambda host, command: calls.append(host) or "",
+    )
+
+    cluster_deploy_module._phase_convert_install_cephadm(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
+
+    assert set(calls) == {"10.20.1.112", "10.20.1.95"}
+
+
+def test_convert_install_cephadm_fails_for_unrecognized_version(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda host, command: "")
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_convert_install_cephadm(
+            copy.deepcopy(_CONVERT_NODES), _convert_params(version="99.9.9"), lambda hosts: None
+        )
+
+
+def test_convert_distribute_ssh_key_appends_key_to_other_nodes(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    cluster_deploy_module._phase_convert_distribute_ssh_key(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
+
+    # first_mon (10.20.1.112) is never sent its OWN key over SSH — only
+    # queried for the key itself.
+    key_appends = [h for h, c in calls if "authorized_keys" in c]
+    assert key_appends == ["10.20.1.95"]
+
+
+def test_convert_distribute_ssh_key_fails_when_pub_key_empty(monkeypatch):
+    def fake_execute(host, command):
+        if command == "ceph cephadm get-pub-key":
+            return ""
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_convert_distribute_ssh_key(
+            copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+        )
+
+
+def test_convert_register_hosts_adds_every_node(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    params = _convert_params()
+    params["_node_hostnames"] = {"10.20.1.112": "nodeA.lab", "10.20.1.95": "nodeB.lab"}
+
+    cluster_deploy_module._phase_convert_register_hosts(
+        copy.deepcopy(_CONVERT_NODES), params, lambda hosts: None
+    )
+
+    host_add_commands = [c for _h, c in calls if "ceph orch host add" in c]
+    assert any("nodeA.lab" in c and "10.20.1.112" in c for c in host_add_commands)
+    assert any("nodeB.lab" in c and "10.20.1.95" in c for c in host_add_commands)
+
+
+def test_convert_adopt_osds_discovers_and_adopts_every_id(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    cluster_deploy_module._phase_convert_adopt_osds(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
+
+    adopt_commands = [c for h, c in calls if h == "10.20.1.95" and "cephadm adopt" in c]
+    assert any("osd.0" in c for c in adopt_commands)
+    assert any("osd.1" in c for c in adopt_commands)
+
+
+def test_convert_adopt_osds_skips_host_with_no_osds(monkeypatch):
+    write_progress, calls = _make_recording_progress_writer()
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _convert_fake_execute)
+
+    nodes = [{"ip": "10.20.1.200", "roles": ["osd"]}]  # not in _CONVERT_OSD_IDS
+    host_updates = []
+    cluster_deploy_module._phase_convert_adopt_osds(nodes, _convert_params(), host_updates.append)
+
+    assert host_updates[-1][0]["status"] == "done"
+    assert "Không có OSD" in host_updates[-1][0]["message"]
+
+
+def test_convert_enable_orchestrator_runs_on_first_mon(monkeypatch):
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    cluster_deploy_module._phase_convert_enable_orchestrator(
+        copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
+    )
+
+    assert calls[0][0] == "10.20.1.112"
+    assert "ceph orch set backend cephadm" in calls[0][1]
+
+
+def test_convert_cluster_happy_path_all_phases_succeed_and_writes_env(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _convert_fake_execute)
+    write_progress, calls = _make_recording_progress_writer()
+
+    written_fields = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", written_fields.update)
+
+    result = run(
+        "action-1",
+        "convert_cluster_to_cephadm",
+        _convert_params(),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    assert result is True
+    assert all(step["status"] == "done" for step in calls[-1][1])
+    assert written_fields["CEPH_EXEC_MODE"] == "cephadm"
+    # mon/mgr/osd node lists must stay the SAME as before — this is a
+    # conversion, not a re-deploy, nothing about which nodes serve which
+    # role should change.
+    assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95"
+    assert written_fields["CEPH_MGR_NODES"] == "10.20.1.112"
+    assert written_fields["CEPH_OSD_NODES"] == "10.20.1.95"
+
+
+def test_convert_cluster_stops_at_health_precheck_when_already_health_err(monkeypatch):
+    def fake_execute(host, command):
+        if "ceph -s --format json" in command:
+            return json.dumps({"health": {"status": "HEALTH_ERR"}})
+        return _convert_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run(
+        "action-1",
+        "convert_cluster_to_cephadm",
+        _convert_params(),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    assert result is False
+    final = calls[-1][1]
+    steps_by_key = {s["step"]: s for s in final}
+    assert steps_by_key["ssh_check"]["status"] == "done"
+    assert steps_by_key["health_precheck"]["status"] == "failed"
+    # every LATER step must never have been touched
+    assert steps_by_key["install_cephadm"]["status"] == "pending"
+
+
+def test_convert_cluster_stops_on_kill_switch_before_any_phase(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _convert_fake_execute)
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run(
+        "action-1",
+        "convert_cluster_to_cephadm",
+        _convert_params(),
+        "incident-1",
+        write_progress,
+        lambda inc: True,
+    )
+
+    assert result is False
+    final = calls[-1][1]
+    assert final[0]["status"] == "failed"
+    assert all(step["status"] == "pending" for step in final[1:])
