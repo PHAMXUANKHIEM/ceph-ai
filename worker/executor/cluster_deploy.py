@@ -1538,7 +1538,18 @@ def _cephadm_managed_daemon_ids(ip: str, daemon_type: str) -> set[str]:
 
     Returns an empty set (not an error) if cephadm isn't installed yet or
     the command genuinely fails — the correct/safe assumption for a
-    genuinely fresh conversion attempt."""
+    genuinely fresh conversion attempt.
+
+    2026-07-28 fix (verified live): `cephadm ls` lists EVERY Ceph daemon
+    it can discover on the host, including ones it does NOT manage yet —
+    a still-native, not-yet-adopted OSD shows up with `"style": "legacy"`
+    and its real `"name": "osd.<id>"` right there alongside genuinely
+    cephadm-managed daemons (`"style": "cephadm:v1"`). This function used
+    to match on `name` alone, so it treated a legacy (unadopted) OSD as
+    "already converted" and skipped adopting it — the whole OSD-adoption
+    phase silently no-opped, reporting success, while `ceph versions`
+    stayed mixed. Only `style == "cephadm:v1"` counts as actually
+    adopted."""
     try:
         output = execute_command(ip, "cephadm ls --no-detail 2>/dev/null")
     except ExecutorError:
@@ -1552,7 +1563,12 @@ def _cephadm_managed_daemon_ids(ip: str, daemon_type: str) -> set[str]:
     prefix = daemon_type + "."
     ids: set[str] = set()
     for entry in entries:
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"].startswith(prefix):
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("name"), str)
+            and entry["name"].startswith(prefix)
+            and entry.get("style") == "cephadm:v1"
+        ):
             ids.add(entry["name"][len(prefix) :])
     return ids
 

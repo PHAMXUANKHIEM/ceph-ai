@@ -1351,6 +1351,30 @@ def test_cephadm_managed_daemon_ids_uses_no_detail_flag_not_format_json(monkeypa
     assert "--no-detail" in seen_commands[0]
 
 
+def test_cephadm_managed_daemon_ids_excludes_legacy_style_entries(monkeypatch):
+    """Regression, 2026-07-28 (verified live): `cephadm ls` lists EVERY
+    Ceph daemon it can discover on the host, including ones it does NOT
+    manage yet — a real, still-native OSD showed up with `"name": "osd.0"`
+    and `"style": "legacy"` right alongside genuinely-adopted mon/mgr
+    entries (`"style": "cephadm:v1"`). Matching on `name` alone (the
+    original bug) treated that legacy OSD as "already converted" and
+    skipped adopting it entirely — the OSD-adoption phase silently
+    no-opped and reported success while `ceph versions` stayed mixed."""
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "execute_command",
+        lambda ip, cmd: json.dumps(
+            [
+                {"name": "mon.nodeA", "style": "cephadm:v1"},
+                {"name": "mgr.nodeA", "style": "cephadm:v1"},
+                {"name": "osd.0", "style": "legacy", "systemd_unit": "ceph-osd@0"},
+            ]
+        ),
+    )
+    assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "mon") == {"nodeA"}
+    assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "osd") == set()
+
+
 def test_cephadm_managed_daemon_ids_returns_empty_set_when_cephadm_not_installed(monkeypatch):
     def fake(ip, cmd):
         raise ExecutorError("cephadm: command not found")
