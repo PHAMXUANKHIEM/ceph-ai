@@ -278,6 +278,73 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
     return entries
 
 
+class TrashPurgeResult(TypedDict):
+    id: str
+    name: str
+    error: str | None
+
+
+# `rbd trash rm --force` on a real image has to delete every RADOS object
+# backing it — genuinely slow for a large image, unlike every other command
+# in this module (status/health/pool-list queries). Not the 30-minute
+# ceiling worker/executor/ssh_executor.py's package-install commands get
+# (this codebase's longest precedent), but well past every other timeout
+# here — a judgment call, not a measured value (no real large-image trash
+# purge was timed this session).
+RBD_TRASH_PURGE_TIMEOUT_SECONDS = 600
+
+
+def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
+    """Force-removes EVERY entry currently in `pool`'s RBD trash — one
+    `rbd trash rm <pool>/<id> --force` per id returned by query_rbd_trash
+    above, run against a single MON node (same "management command, no
+    multi-host fan-out" posture dashboard/chat_client.py documents for
+    other mutating commands — this only ever needs to run once).
+
+    Deliberately `--force`, unlike the single-item "Xoá" button's Command
+    (worker/executor/commands.py::_rbd_trash_remove_command): that one
+    stays bare specifically so an image some running VM still has mapped
+    refuses to remove instead of being silently forced out from under it.
+    This function exists ONLY for the Volumes page's "Xoá tất cả trash"
+    button — an explicit, deliberate operator request to skip both that
+    per-image safeguard AND the propose/approve workflow every other
+    RISKY action in this codebase requires (worker/policy/action_policy.yaml
+    even calls rbd_trash_remove out as "always requires explicit approval,
+    no exceptions" — this button is that one exception, by explicit request).
+
+    Continues past a single item's failure (a stubborn still-in-use image,
+    a mid-loop SSH hiccup) rather than aborting the whole batch — mirrors
+    the operator's own shell loop, which has no `set -e` either. Returns
+    one result per attempted id so a partial failure is visible per-image,
+    not just as one opaque "batch failed" outcome.
+
+    Raises CephQueryError (propagated from query_rbd_trash/get_mon_nodes)
+    if the trash listing itself can't be fetched at all — nothing was
+    attempted in that case, so there's nothing per-item to report.
+    """
+    entries = query_rbd_trash(pool)
+    mon_nodes = get_mon_nodes()
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
+    host = mon_nodes[0]
+
+    results: list[TrashPurgeResult] = []
+    for entry in entries:
+        trash_id = entry["id"]
+        inner_command = f"rbd trash rm {shlex.quote(pool)}/{shlex.quote(trash_id)} --force"
+        command = build_exec_command(settings.ceph_exec_mode, settings.ceph_container_name, inner_command)
+        error: str | None = None
+        try:
+            _run_remote_command(host, command, RBD_TRASH_PURGE_TIMEOUT_SECONDS)
+        except Exception as exc:
+            logger.warning(
+                "force_purge_rbd_trash: failed to remove %s/%s: %s", pool, trash_id, exc
+            )
+            error = str(exc)
+        results.append(TrashPurgeResult(id=trash_id, name=entry["name"], error=error))
+    return results
+
+
 def ssh_key_path_error(ssh_key_path: str) -> str | None:
     """Story 5.1: checked by the Dashboard's cluster-connection form BEFORE
     attempting an SSH connection, so a bad path fails with a clear message

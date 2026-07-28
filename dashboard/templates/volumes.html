@@ -94,13 +94,32 @@
     </section>
 
     <section class="card">
-      <div class="card-header"><h2>Trash</h2></div>
+      <div class="card-header">
+        <h2>Trash</h2>
+        {% if is_admin and trash_entries %}
+        <form
+          method="post"
+          action="/volumes/{{ selected_pool }}/trash/purge-all"
+          class="inline-form"
+          onsubmit="return confirm('Xoá VĨNH VIỄN toàn bộ {{ trash_entries|length }} volume trong trash của pool {{ selected_pool }}? Dùng --force (bỏ qua kiểm tra image còn đang được VM dùng), KHÔNG qua duyệt, KHÔNG thể hoàn tác.');"
+        >
+          <button type="submit" class="btn btn-reject btn-sm">Xoá tất cả trash (force, không qua duyệt)</button>
+        </form>
+        {% endif %}
+      </div>
       <div class="card-body">
         <p class="hint metrics-panel-desc">
           Các volume đã bị xoá mềm (<code>rbd trash mv</code>) trong pool này, Ceph vẫn giữ lại chờ
-          khôi phục. Bấm "Xoá" để xoá vĩnh viễn — <strong>không thể hoàn tác</strong>, cần duyệt
-          riêng trước khi thực thi thật.
+          khôi phục. Bấm "Xoá" trên từng dòng để xoá vĩnh viễn một volume — <strong>không thể hoàn
+          tác</strong>, cần duyệt riêng trước khi thực thi thật. Nút "Xoá tất cả trash" phía trên
+          (chỉ admin thấy) xoá NGAY toàn bộ, không cần duyệt, và dùng <code>--force</code>.
         </p>
+        {% if purge_error %}
+        <p class="error">{{ purge_error }}</p>
+        {% endif %}
+        {% if purge_success %}
+        <p class="success">{{ purge_success }}</p>
+        {% endif %}
         {% if trash_error %}
         <p class="error">Không lấy được danh sách trash: {{ trash_error }}</p>
         {% elif trash_entries %}

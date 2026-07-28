@@ -1,15 +1,36 @@
+import json
 from datetime import datetime
+
+import bcrypt
 
 import dashboard.routes.volumes as volumes_route
 from config.settings import settings
 from shared import db as db_module
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Incident, IncidentStatus, User
 from watcher.ceph_client import CephQueryError
 
 
 def _login(client):
     # dashboard_client fixture (conftest.py) pins these credentials.
     client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def _create_user(username, password, *, is_admin=False):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username=username,
+                password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+                is_admin=is_admin,
+                is_active=True,
+                created_by="admin",
+            )
+        )
+        session.commit()
+
+
+def _login_as(client, username, password):
+    client.post("/login", data={"username": username, "password": password})
 
 
 def _configure_pools(monkeypatch):
@@ -366,3 +387,136 @@ def test_propose_trash_remove_allows_different_trash_id_after_existing_proposal(
         "/volumes/vms/trash/other-id/propose", follow_redirects=False
     )
     assert response.status_code == 303  # a different trash_id is not a duplicate
+
+
+def test_propose_trash_remove_sets_target_nodes_to_a_single_mon_node(dashboard_client, monkeypatch):
+    # 2026-07-28 regression test: this used to be target_nodes=[], which
+    # worker/llm/router_client.py::_execute_approved_action treats as
+    # missing/malformed and marks FAILED without ever attempting the
+    # command — approving this Action always silently failed.
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    dashboard_client.post("/volumes/vms/trash/1234567890ab/propose")
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
+        target_nodes = json.loads(action.target_nodes)
+        assert target_nodes == ["10.20.1.150"]  # TEST_CEPH_MON_NODES' first entry
+
+
+# --- POST /volumes/{pool}/trash/purge-all ("Xoá tất cả trash", 2026-07-28) -
+
+
+def test_unauthenticated_purge_all_trash_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_purge_all_trash_rejects_non_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+
+    assert response.status_code == 403
+
+
+def test_purge_all_trash_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/unknown-pool/trash/purge-all")
+
+    assert response.status_code == 404
+
+
+def test_purge_all_trash_success_records_executed_action_and_audit_entry(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "force_purge_rbd_trash",
+        lambda pool: [
+            {"id": "id-1", "name": "disk-1", "error": None},
+            {"id": "id-2", "name": "disk-2", "error": None},
+        ],
+    )
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+
+    assert response.status_code == 200
+    assert "Đã xoá 2/2 volume" in response.text
+
+    with db_module.SessionLocal() as session:
+        action = (
+            session.query(Action)
+            .filter_by(action_id="rbd_trash_remove", status=ActionStatus.EXECUTED.value)
+            .one()
+        )
+        assert action.classification == "RISKY"
+        params = json.loads(action.action_params)
+        assert params["bulk"] is True
+        assert params["force"] is True
+        assert set(params["trash_ids"]) == {"id-1", "id-2"}
+
+        incident = session.get(Incident, action.incident_id)
+        assert incident.ceph_code == "RBD_TRASH_PURGE_ALL"
+        assert incident.status == IncidentStatus.RESOLVED.value
+
+
+def test_purge_all_trash_reports_partial_failure(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "force_purge_rbd_trash",
+        lambda pool: [
+            {"id": "id-1", "name": "disk-1", "error": None},
+            {"id": "id-2", "name": "disk-2", "error": "still in use"},
+        ],
+    )
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+
+    assert response.status_code == 200
+    assert "Đã xoá 1/2 volume" in response.text
+    assert "still in use" in response.text
+
+
+def test_purge_all_trash_empty_trash_reports_nothing_to_delete(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "force_purge_rbd_trash", lambda pool: [])
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+
+    assert response.status_code == 200
+    assert "đang trống" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(action_id="rbd_trash_remove").count() == 0
+
+
+def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+
+    def broken(pool):
+        raise CephQueryError("all MON nodes unreachable")
+
+    monkeypatch.setattr(volumes_route.ceph_client, "force_purge_rbd_trash", broken)
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+
+    assert response.status_code == 200
+    assert "Không lấy được danh sách trash" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(action_id="rbd_trash_remove").count() == 0

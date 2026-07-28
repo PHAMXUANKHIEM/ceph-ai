@@ -935,6 +935,85 @@ def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
     assert entries[0]["id"] == "abc123"
 
 
+# --- force_purge_rbd_trash (2026-07-28, "Xoá tất cả trash" button — bulk,
+# --force, no-approval purge of a pool's entire RBD trash). -----------------
+
+
+def test_force_purge_rbd_trash_removes_every_entry(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150,10.20.1.249")
+    monkeypatch.setattr(
+        ceph_client,
+        "query_rbd_trash",
+        lambda pool: [
+            {"id": "id-1", "name": "disk-1", "deletion_time": "", "status": ""},
+            {"id": "id-2", "name": "disk-2", "deletion_time": "", "status": ""},
+        ],
+    )
+    calls = []
+
+    def fake_run(host, command, timeout):
+        calls.append((host, command))
+        return ""
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run)
+
+    results = ceph_client.force_purge_rbd_trash("vms")
+
+    assert results == [
+        {"id": "id-1", "name": "disk-1", "error": None},
+        {"id": "id-2", "name": "disk-2", "error": None},
+    ]
+    # exactly one MON node used — no fan-out across every configured node
+    # (this is a single global command, same posture as create_pool/
+    # delete_pool, not a per-host restart-style command).
+    assert {host for host, _ in calls} == {"10.20.1.150"}
+    assert "rbd trash rm vms/id-1 --force" in calls[0][1]
+    assert "rbd trash rm vms/id-2 --force" in calls[1][1]
+
+
+def test_force_purge_rbd_trash_continues_past_a_single_failure(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    monkeypatch.setattr(
+        ceph_client,
+        "query_rbd_trash",
+        lambda pool: [
+            {"id": "id-1", "name": "disk-1", "deletion_time": "", "status": ""},
+            {"id": "id-2", "name": "disk-2", "deletion_time": "", "status": ""},
+        ],
+    )
+
+    def fake_run(host, command, timeout):
+        if "id-1" in command:
+            raise CephQueryError("still in use")
+        return ""
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run)
+
+    results = ceph_client.force_purge_rbd_trash("vms")
+
+    assert results == [
+        {"id": "id-1", "name": "disk-1", "error": "still in use"},
+        {"id": "id-2", "name": "disk-2", "error": None},  # 2nd item still attempted
+    ]
+
+
+def test_force_purge_rbd_trash_returns_empty_list_when_trash_is_empty(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    monkeypatch.setattr(ceph_client, "query_rbd_trash", lambda pool: [])
+
+    assert ceph_client.force_purge_rbd_trash("vms") == []
+
+
+def test_force_purge_rbd_trash_raises_when_no_mon_nodes_configured(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "")
+    monkeypatch.setattr(
+        ceph_client, "query_rbd_trash", lambda pool: [{"id": "id-1", "name": "disk-1"}]
+    )
+
+    with pytest.raises(CephQueryError):
+        ceph_client.force_purge_rbd_trash("vms")
+
+
 def test_query_rbd_trash_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     fake_ssh.behavior = {"10.20.1.150": "unreachable"}
