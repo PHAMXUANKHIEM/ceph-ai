@@ -636,7 +636,7 @@ def _build_ceph_package_repo_command(version: str) -> str:
     this is fully within our control and can be debugged/fixed directly if
     it's ever wrong for a given node.
 
-    Uses the exact VERSION (not the release codename's rolling alias) to
+    Prefers the exact VERSION over the release codename's rolling alias to
     build the repo URL — same fix `commands.py::_upgrade_ceph_cluster_package_download_command`
     already made (2026-07-24, verified live): the codename alias (e.g.
     rpm-quincy/) only ever carries the OS versions the LATEST point release
@@ -644,12 +644,25 @@ def _build_ceph_package_repo_command(version: str) -> str:
     an older-but-still-supported OS. EXCEPT Nautilus (see
     `shared/ceph_releases.py::repo_path_version`'s docstring, verified live
     2026-07-27): download.ceph.com never published a per-exact-version
-    directory for Nautilus at all, only the codename alias — which, unlike
-    every later release, is now frozen forever since Nautilus is EOL.
-    `repo_path_version()` returns the codename instead of the raw version
-    for that one case; every other release still gets the exact version.
+    directory for Nautilus at all, only the codename alias.
+
+    2026-07-28 fix (verified live): the reverse gap also happens — a real
+    CentOS Stream 8 node hit a 404 fetching `rpm-18.2.8/el8/noarch/
+    repodata/repomd.xml` (dnf then refuses to do ANYTHING while any
+    enabled repo fails metadata refresh, not just the Ceph install this
+    was for — a later Ceph point release can drop support for an OS an
+    EARLIER point release of that same codename still built for, the
+    opposite direction from the "codename alias only has the latest OS
+    set" problem the exact-version preference above already solves). The
+    RPM branch now probes the exact-version noarch repodata URL first and
+    falls back to the codename alias if that 404s, rather than trusting
+    either blindly — never adds a repo it hasn't confirmed actually
+    resolves, and fails loudly with a clear reason if NEITHER does (e.g.
+    genuinely no build exists for this OS at all, a real "pick a different
+    version or OS" situation, not something to keep guessing at).
     """
     repo_path = repo_path_version(version)
+    codename = codename_for_version(version)
     apt_snippet = (
         "wget -q -O- https://download.ceph.com/keys/release.asc "
         "| gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg "
@@ -661,14 +674,30 @@ def _build_ceph_package_repo_command(version: str) -> str:
     rpm_snippet = (
         "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo "
         "&& rpm --import https://download.ceph.com/keys/release.asc "
+        "&& rhel_ver=$(rpm -E %rhel) "
+        f"&& ceph_repo_path='' "
+        f"&& for candidate in {shlex.quote(repo_path)} {shlex.quote(codename or repo_path)}; do "
+        "curl -fsSL -o /dev/null "
+        "\"https://download.ceph.com/rpm-$candidate/el$rhel_ver/noarch/repodata/repomd.xml\" "
+        "&& ceph_repo_path=\"$candidate\" && break; done; "
+        # ";" not "&&" before this `if` on purpose: the `for` loop's own
+        # exit status is whatever its LAST iteration's command returned —
+        # when EVERY candidate 404s, that's curl's failure code, which
+        # would otherwise short-circuit this whole check via && and skip
+        # straight to the raw curl error, hiding the actually useful
+        # message below (verified: without this fix, "both candidates
+        # failed" surfaced as a bare `curl` exit code, never this echo).
+        "if [ -z \"$ceph_repo_path\" ]; then "
+        f"echo \"No Ceph RPM repo found for el$rhel_ver at version {shlex.quote(repo_path)} or "
+        f"codename {shlex.quote(codename or repo_path)}\" >&2; exit 1; fi "
         "&& (dnf config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/$(uname -m)/ 2>/dev/null "
+        "\"https://download.ceph.com/rpm-$ceph_repo_path/el$rhel_ver/$(uname -m)/\" 2>/dev/null "
         "|| yum-config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/$(uname -m)/) "
+        "\"https://download.ceph.com/rpm-$ceph_repo_path/el$rhel_ver/$(uname -m)/\") "
         "&& (dnf config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/ 2>/dev/null "
+        "\"https://download.ceph.com/rpm-$ceph_repo_path/el$rhel_ver/noarch/\" 2>/dev/null "
         "|| yum-config-manager --add-repo "
-        f"https://download.ceph.com/rpm-{repo_path}/el$(rpm -E %rhel)/noarch/)"
+        "\"https://download.ceph.com/rpm-$ceph_repo_path/el$rhel_ver/noarch/\")"
     )
     return _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
 

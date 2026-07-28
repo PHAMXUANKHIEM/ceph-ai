@@ -1,6 +1,9 @@
 import base64
 import copy
 import json
+import shutil
+import stat
+import subprocess
 
 import pytest
 
@@ -590,17 +593,113 @@ def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
 
 def test_build_ceph_package_repo_command_nautilus_uses_codename_not_exact_version():
     """Regression, 2026-07-27: verified live against download.ceph.com —
-    unlike every later release (which this command correctly targets by
-    exact version — see test_cephadm_add_repo_uses_exact_version_not_release_codename
-    above), Nautilus (14.x) was NEVER published under a per-exact-version
-    directory at all (rpm-14.2.22/el8/ -> 404) — only the
-    rpm-nautilus/debian-nautilus codename alias exists, safe to use forever
-    since Nautilus is long EOL."""
+    unlike every later release (which this command tries by exact version
+    FIRST, falling back to the codename if that 404s — see the
+    fallback-behavior tests below), Nautilus (14.x) was NEVER published
+    under a per-exact-version directory at all (rpm-14.2.22/el8/ -> 404) —
+    only the rpm-nautilus/debian-nautilus codename alias exists, safe to
+    use forever since Nautilus is long EOL. repo_path_version() returns
+    "nautilus" for BOTH repo_path and codename here, so the for-loop's two
+    candidates collapse to the same (harmless) value."""
     command = cluster_deploy_module._build_ceph_package_repo_command("14.2.22")
 
     assert "debian-nautilus/" in command
-    assert "rpm-nautilus/el$(rpm -E %rhel)/" in command
+    assert "for candidate in nautilus nautilus" in command
     assert "14.2.22" not in command
+
+
+def test_build_ceph_package_repo_command_tries_exact_version_before_codename():
+    command = cluster_deploy_module._build_ceph_package_repo_command("18.2.8")
+
+    assert "for candidate in 18.2.8 reef" in command
+    assert "rpm-$candidate/el$rhel_ver/noarch/repodata/repomd.xml" in command
+
+
+def _run_repo_command_in_sandbox(tmp_path, command, *, exact_version_curl_ok, codename_curl_ok):
+    """Actually EXECUTES the generated rpm branch in a real (but hermetic)
+    bash subprocess with stubbed curl/rpm/dnf — every other test in this
+    file only ever inspects the command STRING, but the exact-version ->
+    codename fallback here is `&&`/`;`-chained shell logic subtle enough
+    that a real regression (found while writing this fix: a bare `&&`
+    before the "neither worked" error check let the FOR LOOP's own exit
+    status — non-zero, from the last failed curl — silently skip that
+    check and surface curl's raw exit code instead) would NOT have been
+    caught by string inspection alone."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+
+    curl_script = (
+        "#!/bin/bash\n"
+        "for arg in \"$@\"; do\n"
+        f"  if [[ \"$arg\" == *rpm-18.2.8* ]]; then {'exit 0' if exact_version_curl_ok else 'exit 22'}; fi\n"
+        f"  if [[ \"$arg\" == *rpm-reef* ]]; then {'exit 0' if codename_curl_ok else 'exit 22'}; fi\n"
+        "done\n"
+        "exit 1\n"
+    )
+    (bindir / "curl").write_text(curl_script)
+    (bindir / "rpm").write_text(
+        "#!/bin/bash\nif [[ \"$1\" == \"-E\" ]]; then echo 8; exit 0; fi\nexit 0\n"
+    )
+    dnf_log = tmp_path / "dnf_calls.log"
+    (bindir / "dnf").write_text(f"#!/bin/bash\necho \"$*\" >> {dnf_log}\nexit 0\n")
+    for name in ("curl", "rpm", "dnf"):
+        path = bindir / name
+        path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    for real_tool in ("rm", "uname"):
+        shutil.copy(f"/bin/{real_tool}", bindir / real_tool)
+
+    # Only the rpm branch matters here — since there's no apt-get on PATH
+    # (env below sets PATH to ONLY our stub bindir), `if command -v
+    # apt-get` fails and the elif (rpm) branch runs, matching a real
+    # RPM-family node.
+    result = subprocess.run(
+        ["/bin/bash", "-c", command],
+        env={"PATH": str(bindir)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    calls = dnf_log.read_text().splitlines() if dnf_log.exists() else []
+    return result.returncode, calls, result.stderr
+
+
+def test_repo_command_falls_back_to_codename_when_exact_version_404s(tmp_path):
+    command = cluster_deploy_module._build_ceph_package_repo_command("18.2.8")
+
+    returncode, calls, _stderr = _run_repo_command_in_sandbox(
+        tmp_path, command, exact_version_curl_ok=False, codename_curl_ok=True
+    )
+
+    assert returncode == 0
+    assert any("rpm-reef/el8" in c for c in calls)
+    assert not any("rpm-18.2.8" in c for c in calls)
+
+
+def test_repo_command_uses_exact_version_when_it_works(tmp_path):
+    command = cluster_deploy_module._build_ceph_package_repo_command("18.2.8")
+
+    returncode, calls, _stderr = _run_repo_command_in_sandbox(
+        tmp_path, command, exact_version_curl_ok=True, codename_curl_ok=True
+    )
+
+    assert returncode == 0
+    assert any("rpm-18.2.8/el8" in c for c in calls)
+
+
+def test_repo_command_fails_loudly_when_neither_candidate_works(tmp_path):
+    # Regression for the exact bug found while building this fix: this
+    # used to surface as a bare, unhelpful `curl` exit code (22) instead of
+    # the clear message below, because the `&&` right before the
+    # "neither worked" check was gated on the FOR LOOP's own exit status.
+    command = cluster_deploy_module._build_ceph_package_repo_command("18.2.8")
+
+    returncode, calls, stderr = _run_repo_command_in_sandbox(
+        tmp_path, command, exact_version_curl_ok=False, codename_curl_ok=False
+    )
+
+    assert returncode == 1
+    assert calls == []
+    assert "No Ceph RPM repo found" in stderr
 
 
 def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
