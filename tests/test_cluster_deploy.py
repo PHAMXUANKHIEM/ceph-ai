@@ -1442,7 +1442,7 @@ def test_convert_install_cephadm_fails_for_unrecognized_version(monkeypatch):
         )
 
 
-def test_convert_distribute_ssh_key_appends_key_to_other_nodes(monkeypatch):
+def test_convert_distribute_ssh_key_appends_key_to_every_node_including_first_mon(monkeypatch):
     calls = []
 
     def fake_execute(host, command):
@@ -1455,10 +1455,13 @@ def test_convert_distribute_ssh_key_appends_key_to_other_nodes(monkeypatch):
         copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
     )
 
-    # first_mon (10.20.1.112) is never sent its OWN key over SSH — only
-    # queried for the key itself.
-    key_appends = [h for h, c in calls if "authorized_keys" in c]
-    assert key_appends == ["10.20.1.95"]
+    # 2026-07-28 regression: first_mon (10.20.1.112) used to be skipped
+    # (wrongly assuming `cephadm adopt` self-authorizes its own host the
+    # way `cephadm bootstrap` does) — failed live with "ceph orch host
+    # add" unable to SSH back to first_mon itself, "Permission denied".
+    # Every node, including first_mon, must get the key appended.
+    key_appends = {h for h, c in calls if "authorized_keys" in c}
+    assert key_appends == {"10.20.1.112", "10.20.1.95"}
 
 
 def test_convert_distribute_ssh_key_fails_when_pub_key_empty(monkeypatch):

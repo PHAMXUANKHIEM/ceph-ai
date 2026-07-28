@@ -1670,10 +1670,19 @@ def _phase_convert_distribute_ssh_key(nodes: list[dict], action_params: dict, on
     `ceph cephadm get-pub-key` (a live `ceph` CLI query against the
     orchestrator module enabled in the previous phase) rather than reading
     a local `/etc/ceph/ceph.pub` file — that file is only ever written as a
-    SIDE EFFECT of `cephadm bootstrap` itself, which adoption never runs."""
+    SIDE EFFECT of `cephadm bootstrap` itself, which adoption never runs.
+
+    2026-07-28 fix (verified live): this used to SKIP first_mon itself,
+    on the (wrong) assumption that `cephadm bootstrap` self-authorizes its
+    own host the same way — it does, but adoption never runs bootstrap at
+    all, so nothing had ever added cephadm's key to first_mon's OWN
+    authorized_keys. The very next phase (`ceph orch host add`) runs
+    INSIDE the orchestrator's own container on first_mon and needs to SSH
+    back out to EVERY host it manages, including itself — failed with
+    "Error EINVAL: Failed to connect to <first_mon> ... Permission
+    denied" until first_mon got the same treatment as every other host."""
     first_mon = _first_mon_ip(nodes)
-    other_nodes = [n for n in nodes if n["ip"] != first_mon]
-    host_status = [{"host": n["ip"], "status": "pending"} for n in other_nodes]
+    host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
 
     try:
@@ -1685,7 +1694,7 @@ def _phase_convert_distribute_ssh_key(nodes: list[dict], action_params: dict, on
     if not cephadm_pubkey:
         raise DeployPhaseError(f"{first_mon}: ceph cephadm get-pub-key trả về rỗng")
 
-    for i, node in enumerate(other_nodes):
+    for i, node in enumerate(nodes):
         ip = node["ip"]
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
