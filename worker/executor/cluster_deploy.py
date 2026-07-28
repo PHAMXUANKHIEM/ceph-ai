@@ -1513,21 +1513,34 @@ def _cephadm_image_for_version(version: str) -> str:
 
 
 def _cephadm_managed_daemon_ids(ip: str, daemon_type: str) -> set[str]:
-    """Queries `cephadm ls --format json` on `ip` (a LOCAL, per-host
-    listing of what cephadm itself already manages there — not a
-    cluster-wide query) for every `daemon_type` daemon already adopted.
-    Makes adoption resumable: a real, live-verified scenario is a
-    conversion that adopted mon+mgr, then failed at a LATER phase
-    (enable_orchestrator) — an operator who finishes those later steps by
-    hand and then re-runs this feature must not have mon/mgr adoption
-    re-attempted, since there's no native systemd unit left to discover
-    for them anymore (already renamed by the first adoption) — that used
-    to fail with a confusing "systemd unit not found" instead of
-    recognizing the step is already done. Returns an empty set (not an
-    error) if cephadm isn't installed yet or the command fails — the
-    correct/safe assumption for a genuinely fresh conversion attempt."""
+    """Queries `cephadm ls` on `ip` (a LOCAL, per-host listing of what
+    cephadm itself already manages there — not a cluster-wide query) for
+    every `daemon_type` daemon already adopted. Makes adoption resumable:
+    a real, live-verified scenario is a conversion that adopted mon+mgr,
+    then failed at a LATER phase (enable_orchestrator) — an operator who
+    finishes those later steps by hand and then re-runs this feature must
+    not have mon/mgr adoption re-attempted, since there's no native
+    systemd unit left to discover for them anymore (already renamed by
+    the first adoption) — that used to fail with a confusing "systemd
+    unit not found" instead of recognizing the step is already done.
+
+    2026-07-28 fix (verified live): this used to pass `--format json` —
+    `cephadm ls` doesn't accept that flag at all ("error: unrecognized
+    arguments: --format json") and always prints JSON regardless. The
+    broken flag made every call fail, which the `except ExecutorError:
+    return set()` below swallowed silently — so this always reported
+    "nothing adopted yet", even when it plainly was, defeating the whole
+    point of this function. Now uses `--no-detail` instead (same flag
+    watcher/collector.py and commands.py already use for the identical
+    reason: it returns exactly name/fsid/style/systemd_unit per daemon —
+    all this function reads — skipping the heavier per-daemon container/
+    memory stats `cephadm ls` includes by default).
+
+    Returns an empty set (not an error) if cephadm isn't installed yet or
+    the command genuinely fails — the correct/safe assumption for a
+    genuinely fresh conversion attempt."""
     try:
-        output = execute_command(ip, "cephadm ls --format json 2>/dev/null")
+        output = execute_command(ip, "cephadm ls --no-detail 2>/dev/null")
     except ExecutorError:
         return set()
     try:

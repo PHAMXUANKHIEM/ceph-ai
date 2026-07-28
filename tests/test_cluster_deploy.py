@@ -1330,6 +1330,27 @@ def test_cephadm_managed_daemon_ids_parses_cephadm_ls(monkeypatch):
     assert cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "mds") == set()
 
 
+def test_cephadm_managed_daemon_ids_uses_no_detail_flag_not_format_json(monkeypatch):
+    """Regression, 2026-07-28 (verified live): `cephadm ls --format json`
+    fails outright ("error: unrecognized arguments: --format json") —
+    `cephadm ls` accepts no such flag and always prints JSON regardless.
+    That failure used to be swallowed silently by this function's own
+    `except ExecutorError: return set()`, so it always reported "nothing
+    adopted yet" even when something plainly was, defeating the whole
+    point of checking in the first place."""
+    seen_commands = []
+
+    def fake(ip, cmd):
+        seen_commands.append(cmd)
+        return "[]"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    cluster_deploy_module._cephadm_managed_daemon_ids("10.20.1.112", "mon")
+
+    assert "--format json" not in seen_commands[0]
+    assert "--no-detail" in seen_commands[0]
+
+
 def test_cephadm_managed_daemon_ids_returns_empty_set_when_cephadm_not_installed(monkeypatch):
     def fake(ip, cmd):
         raise ExecutorError("cephadm: command not found")
@@ -1348,7 +1369,7 @@ def test_convert_adopt_mons_skips_already_cephadm_managed_daemon(monkeypatch):
 
     def fake_execute(host, command):
         calls.append((host, command))
-        if "cephadm ls --format json" in command:
+        if "cephadm ls" in command:
             return json.dumps([{"name": "mon.nodeA", "style": "cephadm:v1"}])
         return _convert_fake_execute(host, command)
 
@@ -1497,7 +1518,7 @@ def test_convert_adopt_osds_skips_already_cephadm_managed_ids(monkeypatch):
 
     def fake_execute(host, command):
         calls.append((host, command))
-        if "cephadm ls --format json" in command:
+        if "cephadm ls" in command:
             return json.dumps([{"name": "osd.0", "style": "cephadm:v1"}])
         return _convert_fake_execute(host, command)
 
