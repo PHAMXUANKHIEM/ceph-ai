@@ -23,23 +23,66 @@ Ba tiến trình độc lập, cùng đọc/ghi một database (SQLite mặc đ�
 Dashboard **không bao giờ** thực thi lệnh trực tiếp lên cụm — chỉ đổi
 trạng thái trong DB; Worker mới là nơi thực sự SSH vào cụm.
 
+Hướng dẫn dưới đây viết cho một máy **chưa cài gì cả** (Ubuntu/Debian sạch)
+— làm theo đúng thứ tự, mỗi bước đều có lệnh kiểm tra để biết đã đúng chưa
+trước khi sang bước tiếp theo.
+
 ## 1. Yêu cầu hệ thống
 
-- Python **3.11+**
-- RabbitMQ (broker cho hàng đợi Incident giữa Watcher và Worker)
-- Một cặp SSH keypair (không passphrase) có quyền SSH vào các node MON/OSD
-  của cụm Ceph cần giám sát
-- Cụm Ceph đã deploy sẵn (hỗ trợ cephadm, docker/podman exec, hoặc cài đặt
-  package thuần — xem `CEPH_EXEC_MODE` bên dưới)
-- (Tuỳ chọn) Một API key cho tính năng chẩn đoán AI / Chat-with-AI — Claude
-  (Anthropic), Codex (OpenAI), OpenRouter, hoặc một endpoint 9router tự
-  triển khai (proxy OpenAI-compatible); chọn loại kết nối ở trang Cài đặt
+Cần có trên **máy chạy ứng dụng này** (không phải node Ceph — node Ceph là
+máy khác, không cần cài gì cả, chỉ cần cho phép SSH vào là đủ):
 
-### Cài RabbitMQ nhanh bằng Docker
+- Python **3.11+**
+- Git
+- RabbitMQ (broker cho hàng đợi Incident giữa Watcher và Worker)
+
+Không bắt buộc phải có sẵn cụm Ceph để cài xong ứng dụng — ứng dụng khởi
+động và chạy được ngay cả khi chưa cấu hình cụm nào; phần "cụm Ceph để
+giám sát" cấu hình ở bước 6, có thể làm sau và sửa lại bất cứ lúc nào qua
+trang Cài đặt.
+
+### 1.1. Cài gói hệ thống (Ubuntu/Debian)
 
 ```bash
-docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv git
 ```
+
+Kiểm tra lại:
+
+```bash
+python3.11 --version   # phải in ra Python 3.11.x trở lên
+git --version
+```
+
+> Máy dùng bản Linux khác (RHEL/CentOS/Rocky)? Cài `python3.11`, `git` bằng
+> trình quản lý gói tương ứng (`dnf install python3.11 git`) — phần còn lại
+> của hướng dẫn giống hệt nhau.
+
+### 1.2. Cài RabbitMQ
+
+Cách nhanh nhất — chạy bằng Docker (không cần cài Docker sẵn thì xem
+[hướng dẫn cài Docker chính thức](https://docs.docker.com/engine/install/)):
+
+```bash
+docker run -d --name rabbitmq --restart unless-stopped \
+  -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management
+```
+
+Không dùng Docker thì cài trực tiếp:
+
+```bash
+sudo apt install -y rabbitmq-server
+sudo systemctl enable --now rabbitmq-server
+```
+
+Kiểm tra RabbitMQ đã chạy (dù cách nào ở trên):
+
+```bash
+curl -s -u guest:guest http://localhost:15672/api/overview | head -c 100
+```
+
+Có in ra JSON (không phải "Connection refused") là RabbitMQ đã sẵn sàng.
 
 ## 2. Clone code
 
@@ -48,91 +91,111 @@ git clone git@github.com:PHAMXUANKHIEM/ceph-ai.git
 cd ceph-ai
 ```
 
+(Nếu chưa có SSH key trên GitHub thì dùng link HTTPS thay thế:
+`git clone https://github.com/PHAMXUANKHIEM/ceph-ai.git`)
+
 ## 3. Tạo virtualenv và cài dependency
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .[dev]
 ```
 
-## 4. Cấu hình `.env`
+Kiểm tra:
 
-Tạo file `.env` ở thư mục gốc (đã có sẵn trong `.gitignore`, không bao giờ
-commit file này). Toàn bộ biến đọc từ `config/settings.py`:
-
-```dotenv
-# --- Database & message queue ---
-DATABASE_URL=sqlite:///./ceph_aiops.db
-RABBITMQ_URL=amqp://guest:guest@localhost/
-
-# --- Đăng nhập Dashboard (BẮT BUỘC đổi trước khi public ra ngoài) ---
-DASHBOARD_USERNAME=admin
-DASHBOARD_PASSWORD_HASH=<xem cách tạo bên dưới>
-SESSION_SECRET_KEY=<chuỗi random dài, xem cách tạo bên dưới>
-
-# --- SSH tới cụm Ceph (dùng chung cho Watcher lẫn Worker) ---
-SSH_KEY_PATH=/root/.ssh/ceph_lab_watcher
-SSH_USER=root
-CEPH_MON_NODES=10.20.1.150,10.20.1.249,10.20.1.253
-CEPH_MON_HOSTNAMES=mon1,mon2,mon3
-CEPH_EXEC_MODE=cephadm
-CEPH_CONTAINER_NAME=
-WATCHER_POLL_INTERVAL_SECONDS=15
-
-# --- Tuỳ chọn: node OSD/MGR/RGW (để lấy log/CLI riêng, có thể để trống) ---
-CEPH_OSD_NODES=
-CEPH_OSD_CONTAINER_NAME=
-CEPH_MGR_NODES=
-CEPH_RGW_NODES=
-CEPH_RGW_CONTAINER_NAME=
-
-# --- Worker ---
-WORKER_MAX_RETRIES=3
-WORKER_APPROVAL_POLL_INTERVAL_SECONDS=5
-
-# --- API AI (Claude/Codex/OpenRouter/9router) — để trống nếu chưa dùng tính năng AI ---
-ROUTER_PROVIDER=9router
-ROUTER_API_KEY=
-ROUTER_BASE_URL=
-ROUTER_MODEL=
-ROUTER_ENABLED=false
+```bash
+python -c "import fastapi, sqlalchemy, paramiko; print('OK — cài đủ dependency')"
 ```
 
-Giải thích các mục quan trọng:
+> **Lỗi `ensurepip is not available`** khi chạy `python3.11 -m venv`? Thiếu
+> gói `python3.11-venv` — quay lại bước 1.1 cài lại.
+>
+> Từ giờ về sau, **mọi lệnh `python`/`pip`/`alembic`/`pytest` trong hướng
+> dẫn này đều giả định venv đã activate** (`source .venv/bin/activate`,
+> dấu nhắc dòng lệnh có tiền tố `(.venv)`). Mở terminal mới thì phải
+> activate lại — quên bước này là nguyên nhân phổ biến nhất của lỗi
+> "ModuleNotFoundError" khi chạy lệnh.
 
-- **`CEPH_EXEC_MODE`** — cách chạy lệnh `ceph ...` trên node:
-  - `cephadm` — cụm deploy bằng cephadm (khuyến nghị nếu dùng cephadm/reef trở lên), không cần `CEPH_CONTAINER_NAME`
-  - `docker` / `podman` — cụm chạy container thủ công với tên container cố định, cần set `CEPH_CONTAINER_NAME`
-  - `none` — `ceph` binary cài thẳng trên host (package install)
-- **SSH key** — tạo riêng một keypair không passphrase cho service này, và
-  deploy public key vào `authorized_keys` của **tất cả** node MON/OSD cần
-  SSH tới:
-  ```bash
-  ssh-keygen -t ed25519 -f ~/.ssh/ceph_lab_watcher -N "" -C "ceph-aiops"
-  ssh-copy-id -i ~/.ssh/ceph_lab_watcher.pub root@<mon-node-ip>
-  ```
-- **`DASHBOARD_PASSWORD_HASH`** — hash bcrypt của mật khẩu đăng nhập, tạo bằng:
-  ```bash
-  python -c "import bcrypt; print(bcrypt.hashpw(b'MAT_KHAU_THAT', bcrypt.gensalt()).decode())"
-  ```
-- **`SESSION_SECRET_KEY`** — chuỗi random bất kỳ, tạo bằng:
-  ```bash
-  python -c "import secrets; print(secrets.token_hex(32))"
-  ```
-  Nếu không set, hệ thống vẫn chạy được nhưng sẽ log cảnh báo dùng giá trị
-  dev mặc định — **không an toàn nếu Dashboard public ra internet**.
+## 4. Tạo file `.env`
 
-## 5. Khởi tạo database
+```bash
+cp .env.example .env
+```
+
+`.env` đã nằm sẵn trong `.gitignore` — không bao giờ commit file này (chứa
+mật khẩu/API key thật). `.env.example` đã liệt kê đủ mọi biến ứng dụng đọc
+từ `config/settings.py`, để trống là được — hầu hết đều tuỳ chọn, cấu hình
+sau qua trang Cài đặt cũng được, không bắt buộc điền hết ngay từ đầu.
+
+Riêng phần **đăng nhập Dashboard** thì bắt buộc điền trước khi chạy thật
+(mục dưới) — mọi mục còn lại (cụm Ceph, API AI) có thể để trống, làm ở
+bước 6/7 hoặc sau khi đã đăng nhập vào Dashboard.
+
+## 5. Tạo mật khẩu đăng nhập Dashboard
+
+Mở `.env` vừa tạo, điền 2 dòng sau (bỏ trống thì ứng dụng vẫn chạy được
+nhưng dùng mật khẩu mặc định `admin`/`admin` — **chỉ chấp nhận được khi
+test trên localhost**, không bao giờ để vậy nếu Dashboard mở ra mạng
+ngoài):
+
+```bash
+# Sinh hash bcrypt cho mật khẩu thật của bạn — thay MAT_KHAU_THAT
+python -c "import bcrypt; print(bcrypt.hashpw(b'MAT_KHAU_THAT', bcrypt.gensalt()).decode())"
+
+# Sinh session secret ngẫu nhiên
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Dán 2 kết quả trên vào `.env`:
+
+```dotenv
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD_HASH=<kết quả lệnh bcrypt ở trên>
+SESSION_SECRET_KEY=<kết quả lệnh secrets ở trên>
+```
+
+## 6. (Tuỳ chọn) Cấu hình cụm Ceph cần giám sát
+
+Bỏ qua bước này nếu chưa có cụm, hoặc muốn cấu hình sau qua trang Cài đặt
+(mục 9 bên dưới) — ứng dụng chạy bình thường không cần cụm nào cấu hình
+sẵn.
+
+Nếu đã có cụm Ceph và muốn điền luôn vào `.env`:
+
+- **SSH key riêng cho ứng dụng** (không dùng chung key cá nhân) — tạo một
+  keypair không passphrase (Watcher/Worker chạy nền, không ai ngồi gõ
+  passphrase), rồi deploy public key vào **từng node MON/OSD** cần SSH tới:
+  ```bash
+  ssh-keygen -t ed25519 -f ~/.ssh/ceph_aiops_watcher -N "" -C "ceph-aiops"
+  ssh-copy-id -i ~/.ssh/ceph_aiops_watcher.pub root@<ip-node-mon>
+  ```
+  Điền `SSH_KEY_PATH=` trỏ tới file **private** key vừa tạo (không phải
+  `.pub`), và `CEPH_MON_NODES=` là danh sách IP các MON node, cách nhau
+  bởi dấu phẩy.
+- **`CEPH_EXEC_MODE`** — cách chạy lệnh `ceph ...` trên node, tuỳ cụm được
+  deploy kiểu gì:
+  - `cephadm` — cụm deploy bằng cephadm (khuyến nghị cho bản Ceph mới),
+    không cần điền `CEPH_CONTAINER_NAME`
+  - `docker` / `podman` — cụm chạy container thủ công với tên container cố
+    định, cần điền `CEPH_CONTAINER_NAME`
+  - `none` — `ceph` binary cài thẳng trên host (ceph-deploy / cài package)
+
+Mọi mục còn lại (`CEPH_OSD_NODES`, `CEPH_MGR_NODES`, `CEPH_RGW_NODES`,
+`CEPH_RBD_POOLS`, ...) đều tuỳ chọn — xem chú thích ngay trong
+`.env.example`, để trống nếu không dùng tính năng tương ứng.
+
+## 7. Khởi tạo database
 
 ```bash
 alembic upgrade head
 ```
 
 File SQLite (`ceph_aiops.db`, theo `DATABASE_URL`) sẽ được tạo tự động ở
-lần chạy đầu.
+lần chạy đầu. Không thấy lỗi nào in ra là thành công.
 
-## 6. Chạy 3 tiến trình
+## 8. Chạy 3 tiến trình
 
 Mở 3 terminal (hoặc dùng `nohup ... & disown` để chạy nền), đều từ thư mục
 gốc repo với venv đã activate:
@@ -158,8 +221,15 @@ nohup python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 8000 \
 ```
 
 Truy cập Dashboard tại `http://<ip-máy>:8000`, đăng nhập bằng
-`DASHBOARD_USERNAME`/mật khẩu đã tạo hash ở bước 4.
+`DASHBOARD_USERNAME`/mật khẩu đã tạo hash ở bước 5. Đăng nhập thành công là
+coi như cài đặt xong — mọi cấu hình còn lại (cụm Ceph, API AI) làm được
+ngay trong Dashboard, không cần SSH vào server nữa (xem bước 9).
 
+> Không mở được trang / "connection refused"? Kiểm tra tiến trình dashboard
+> thật sự đang chạy (`pgrep -fa "uvicorn dashboard.app"`), và firewall của
+> máy có cho phép cổng 8000 không (`sudo ufw allow 8000` trên
+> Ubuntu nếu có bật ufw).
+>
 > Repo không dùng systemd unit — cả 3 tiến trình đều là background process
 > thuần. Muốn restart, `pkill -f "python -m watcher.main"` (tương tự cho
 > `worker.main` / `uvicorn dashboard.app`) rồi chạy lại lệnh `nohup` ở
@@ -167,7 +237,7 @@ Truy cập Dashboard tại `http://<ip-máy>:8000`, đăng nhập bằng
 > trình này (pull code mới nhất + migrate + restart) — dùng lại được cho
 > máy mới nếu muốn.
 
-## 7. Cấu hình cụm Ceph / AI qua Dashboard (thay vì `.env`)
+## 9. Cấu hình cụm Ceph / AI qua Dashboard (thay vì `.env`)
 
 Sau khi đăng nhập, vào trang **Cài đặt** để cấu hình/chỉnh lại kết nối cụm
 Ceph và API AI mà không cần SSH vào server:
@@ -182,13 +252,13 @@ Ceph và API AI mà không cần SSH vào server:
   chính tiến trình Dashboard (cần thiết vì nó không thể tự restart giữa
   chừng một request như Worker/Watcher).
 
-Nói cách khác: sau lần chạy tay ban đầu (bước 6), **hầu hết các thay đổi
+Nói cách khác: sau lần chạy tay ban đầu (bước 8), **hầu hết các thay đổi
 cấu hình sau này không cần SSH/`nohup` thủ công nữa** — chỉ cần vào Cài đặt
-và lưu. Bước 6 vẫn cần thiết cho lần khởi động đầu tiên trên máy mới, và
+và lưu. Bước 8 vẫn cần thiết cho lần khởi động đầu tiên trên máy mới, và
 cho các thay đổi CODE (không phải cấu hình) — khi đó dùng lại
 `scripts/deploy/restart_services.sh` hoặc lệnh `nohup` thủ công.
 
-## 8. Kiểm tra hoạt động
+## 10. Kiểm tra hoạt động
 
 ```bash
 pytest
@@ -201,7 +271,7 @@ thật — chỉ chạy tay khi có sẵn cụm lab thật để test):
 pytest -m live   # chỉ chạy khi thật sự có cụm/API AI để test
 ```
 
-## 9. CI/CD (tuỳ chọn)
+## 11. CI/CD (tuỳ chọn)
 
 Repo có sẵn `.github/workflows/ci-cd.yml`: tự động chạy test trên mọi
 push/PR, và tự động SSH vào server để deploy lại khi push lên `main`. Xem
@@ -210,8 +280,19 @@ máy chủ mới.
 
 ## Xử lý sự cố thường gặp
 
+- **`ensurepip is not available`** khi chạy `python3.11 -m venv .venv` →
+  thiếu gói `python3.11-venv` (`sudo apt install python3.11-venv`).
+- **`ModuleNotFoundError` khi chạy `python -m watcher.main`/`pytest`/...**
+  → quên activate venv (`source .venv/bin/activate`) ở terminal đó, hoặc
+  cài dependency vào nhầm Python khác `.venv`.
+- **`extra fields not permitted` / lỗi validate `Settings`** khi khởi động
+  bất kỳ tiến trình nào → `.env` có biến thừa không có trong
+  `config/settings.py` (thường do gõ nhầm tên biến) — đối chiếu lại với
+  `.env.example`.
 - **`Không kết nối được database — đã chạy alembic upgrade head chưa?`**
-  trên Dashboard → chưa chạy bước 5.
+  trên Dashboard → chưa chạy bước 7.
+- **RabbitMQ: `Connection refused` khi Watcher/Worker khởi động** → kiểm
+  tra RabbitMQ đã chạy (bước 1.2) và `RABBITMQ_URL` trong `.env` đúng.
 - **Watcher báo "mất kết nối cụm"** → kiểm tra `SSH_KEY_PATH` đã deploy
   đúng public key lên node MON, và `CEPH_MON_NODES`/`SSH_USER` đúng.
 - **`xóa pool` báo lỗi `EPERM: pool deletion is disabled`** → cụm Ceph mặc
