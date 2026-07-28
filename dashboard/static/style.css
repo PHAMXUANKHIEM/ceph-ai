@@ -316,6 +316,18 @@ code {
 .node-sidebar-item { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .node-sidebar-item.is-loading { animation: pill-pulse 1.4s ease-in-out infinite; }
 
+/* Dashboard home page only — lets an operator opt out of the WebSocket-
+   triggered full-page reload (dashboard/static/app.js) always yanking them
+   back to the "Chờ duyệt" tab mid-task. */
+.pending-tab-autoswitch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-3) var(--space-2);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
 @media (max-width: 640px) {
   .tabbed-page, .settings-page { flex-direction: column; }
   .tabbed-sidebar, .settings-sidebar { flex-direction: row; flex-wrap: wrap; position: static; flex: 0 0 auto; }

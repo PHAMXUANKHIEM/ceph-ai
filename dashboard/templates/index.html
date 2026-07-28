@@ -88,6 +88,10 @@
 
     <div class="tabbed-page">
     <nav class="tabbed-sidebar">
+      <label class="pending-tab-autoswitch" title="Khi tắt, trang sẽ nhớ tab bạn đang xem thay vì tự nhảy về Chờ duyệt mỗi lần có Incident/Action mới">
+        <input type="checkbox" id="pending-tab-autoswitch" checked>
+        Tự động mở tab này khi có Risky Action mới
+      </label>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'pending' %}active{% endif %}" data-section="pending">Chờ duyệt{% if pending_actions %} ({{ pending_actions|length }}){% endif %}</button>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'incidents' %}active{% endif %}" data-section="incidents">Incident Feed</button>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'audit' %}active{% endif %}" data-section="audit">Audit Trail</button>

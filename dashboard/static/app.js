@@ -98,6 +98,76 @@
 })();
 
 (function () {
+  // "Tự động mở tab này khi có Risky Action mới" checkbox (Dashboard home
+  // page only, 2026-07-28). dashboard/routes/incidents.py::index always
+  // defaults active_tab to "pending" on a plain GET / — combined with the
+  // WebSocket handler above, which does a full window.location.reload() on
+  // EVERY Incident/Action change system-wide (not just ones the operator
+  // is looking at), this meant the page kept yanking an operator back to
+  // the "Chờ duyệt" tab mid-task any time they'd manually switched to
+  // Incident Feed/Audit Trail to look at something unrelated. Turning this
+  // off remembers whichever tab was last clicked and restores THAT instead
+  // of the server's "pending" default on the next reload — same
+  // localStorage-persistence posture as the collapse toggle below (this
+  // page's own reload defeats any purely in-memory state).
+  var pendingTabBtn = document.querySelector('.tabbed-nav-item[data-section="pending"]');
+  var autoSwitchCheckbox = document.getElementById("pending-tab-autoswitch");
+  if (pendingTabBtn && autoSwitchCheckbox) {
+    var AUTO_SWITCH_KEY = "pendingTabAutoSwitch";
+    var LAST_TAB_KEY = "dashboardLastActiveTab";
+    var tabNavItems = Array.prototype.slice.call(document.querySelectorAll(".tabbed-nav-item"));
+    var tabPanels = Array.prototype.slice.call(document.querySelectorAll(".tabbed-panel"));
+
+    var activateTab = function (section) {
+      tabNavItems.forEach(function (item) {
+        item.classList.toggle("active", item.getAttribute("data-section") === section);
+      });
+      tabPanels.forEach(function (panel) {
+        panel.hidden = panel.getAttribute("data-panel") !== section;
+      });
+    };
+
+    var autoSwitch = true;
+    try {
+      autoSwitch = localStorage.getItem(AUTO_SWITCH_KEY) !== "0";
+    } catch (e) {
+      // localStorage unavailable — default to current (always-on) behavior
+    }
+    autoSwitchCheckbox.checked = autoSwitch;
+
+    if (!autoSwitch) {
+      var lastTab = null;
+      try {
+        lastTab = localStorage.getItem(LAST_TAB_KEY);
+      } catch (e) {
+        // ignore — falls back to whichever tab the server rendered active
+      }
+      if (lastTab) {
+        activateTab(lastTab);
+      }
+    }
+
+    tabNavItems.forEach(function (item) {
+      item.addEventListener("click", function () {
+        try {
+          localStorage.setItem(LAST_TAB_KEY, item.getAttribute("data-section"));
+        } catch (e) {
+          // ignore — just won't be restored after the next reload
+        }
+      });
+    });
+
+    autoSwitchCheckbox.addEventListener("change", function () {
+      try {
+        localStorage.setItem(AUTO_SWITCH_KEY, autoSwitchCheckbox.checked ? "1" : "0");
+      } catch (e) {
+        // ignore — preference just won't survive a reload
+      }
+    });
+  }
+})();
+
+(function () {
   // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
   // show/hide toggle, no change to approval/kill-switch behavior. Persisted
   // in localStorage since this page's WebSocket auto-reloads on every
