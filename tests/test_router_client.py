@@ -1002,6 +1002,128 @@ def test_execute_approved_action_persists_execution_progress_per_host(
         assert p["finished_at"]
 
 
+# --- Package upgrade "require-osd-release" finalization (2026-07-28) -------
+# ceph-deploy/package upgrades (unlike cephadm's `ceph orch upgrade`, which
+# does this itself) never bump require_osd_release on their own — left
+# alone, the cluster sits in permanent HEALTH_WARN (OSD_UPGRADE_FINISHED)
+# even though every node's packages/daemons genuinely finished upgrading.
+# See worker/llm/router_client.py's _PACKAGE_UPGRADE_ACTION_IDS comment.
+
+
+def test_execute_approved_action_package_upgrade_runs_require_osd_release_finalize(
+    isolated_db, monkeypatch
+):
+    executed = []
+
+    def fake_execute(host, command):
+        executed.append((host, command))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112,10.20.1.95")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-finalize")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-finalize",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=["10.20.1.112"],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert ("10.20.1.112", "ceph osd require-osd-release octopus") in executed
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    finalize_step = progress[-1]
+    assert finalize_step["command"] == "ceph osd require-osd-release octopus"
+    assert finalize_step["status"] == "done"
+    assert finalize_step["started_at"]
+    assert finalize_step["finished_at"]
+
+
+def test_execute_approved_action_package_upgrade_finalize_failure_does_not_fail_action(
+    isolated_db, monkeypatch
+):
+    """The per-node installs are the real work — a hiccup running the
+    finalize command afterwards must not retroactively turn an otherwise-
+    successful multi-node upgrade into FAILED."""
+    from worker.executor.ssh_executor import ExecutorError
+
+    def fake_execute(host, command):
+        if command.startswith("ceph osd require-osd-release"):
+            raise ExecutorError("mon unreachable")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-finalize-fail")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-finalize-fail",
+            action_id="upgrade_ceph_cluster_package_local",
+            nodes=["10.20.1.112"],
+        )
+        action.action_params = json.dumps(
+            {"target_version": "15.2.17", "package_dir": "/opt/ceph-packages"}
+        )
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    finalize_step = progress[-1]
+    assert finalize_step["status"] == "failed"
+    assert finalize_step["error"] == "mon unreachable"
+
+
+def test_execute_approved_action_non_package_action_skips_finalize(isolated_db, monkeypatch):
+    """restart_osd_daemon (and every other non-upgrade action_id) must not
+    trigger the require-osd-release finalization step."""
+    executed = []
+
+    def fake_execute(host, command):
+        if command == "systemctl | grep ceph || true":
+            return "  ceph-fsid@osd.3.service   loaded active running   x\n"
+        executed.append((host, command))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+
+    _create_incident("incident-no-finalize")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(session, "incident-no-finalize", nodes=["10.20.1.112"])
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert not any("require-osd-release" in cmd for _host, cmd in executed)
+
+
 def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monkeypatch):
     from worker.executor.ssh_executor import ExecutorError
 

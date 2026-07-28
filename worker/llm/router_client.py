@@ -12,6 +12,7 @@ from config.settings import settings
 from shared import audit, db
 from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.ceph_releases import codename_for_version
 from shared.router_client import build_router_client
 from worker.executor import cluster_deploy, commands
 from worker.executor.ssh_executor import ExecutorError, execute_command
@@ -560,6 +561,85 @@ _DISRUPTIVE_CLUSTER_OPERATION_ACTION_IDS = (
     gate.VALID_CLUSTER_UPGRADE_ACTION_IDS | gate.VALID_PATCH_ACTION_IDS
 )
 
+# 2026-07-28: the two ceph-deploy/package-based upgrade action_ids (see
+# dashboard/routes/upgrade.py's PACKAGE_DOWNLOAD_ACTION_ID/PACKAGE_LOCAL_ACTION_ID)
+# have no orchestrator behind them — unlike `ceph orch upgrade` (cephadm),
+# which automatically runs `ceph osd require-osd-release <codename>` as its
+# own last step once every OSD reports the new version, installing/
+# restarting packages node-by-node never bumps that flag on its own. Left
+# alone, the cluster is left permanently sitting in HEALTH_WARN
+# (OSD_UPGRADE_FINISHED: "all OSDs are running <release> or later but
+# require_osd_release < <release>") even though the upgrade itself fully
+# succeeded — verified live against a real ceph-deploy Nautilus->Octopus
+# upgrade this session. Idempotent, metadata-only, no daemon restart — same
+# "safe to always run, not gated behind operator choice" posture as
+# cluster_deploy.py's own _phase_ceph_deploy_mon_security.
+_PACKAGE_UPGRADE_ACTION_IDS = frozenset(
+    {"upgrade_ceph_cluster_package_download", "upgrade_ceph_cluster_package_local"}
+)
+
+
+def _finalize_package_upgrade_osd_release(
+    action_pk: str, action_params: dict, progress: list[dict]
+) -> None:
+    """Runs `ceph osd require-osd-release <codename>` once, via the first
+    configured MON node, after every target node's install+restart step
+    above has already been attempted — see _PACKAGE_UPGRADE_ACTION_IDS'
+    comment for why this is needed at all. Best-effort: a failure here
+    (e.g. this one MON temporarily unreachable) must not retroactively mark
+    an otherwise-successful multi-node package upgrade as FAILED — the real
+    daemons are already upgraded either way; only appended to `progress` (so
+    it's visible on the Upgrade page / Markdown log) and logged.
+    """
+    target_version = (action_params or {}).get("target_version")
+    codename = codename_for_version(target_version) if target_version else None
+    if not codename:
+        logger.warning(
+            "_finalize_package_upgrade_osd_release: no codename for target_version=%r "
+            "(action %s) — skipping require-osd-release finalization",
+            target_version,
+            action_pk,
+        )
+        return
+
+    mon_nodes = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+    if not mon_nodes:
+        logger.warning(
+            "_finalize_package_upgrade_osd_release: no MON node configured — skipping "
+            "require-osd-release finalization for action %s",
+            action_pk,
+        )
+        return
+    mon_host = mon_nodes[0]
+
+    command = f"ceph osd require-osd-release {codename}"
+    step = {
+        "host": mon_host,
+        "status": "running",
+        "command": command,
+        "started_at": datetime.utcnow().isoformat(),
+    }
+    progress.append(step)
+    _write_action_progress(action_pk, progress)
+
+    try:
+        execute_command(mon_host, command)
+    except ExecutorError as exc:
+        logger.warning(
+            "_finalize_package_upgrade_osd_release: %s failed on %s (action %s) — cluster "
+            "will keep reporting OSD_UPGRADE_FINISHED until run manually: %s",
+            command,
+            mon_host,
+            action_pk,
+            exc,
+        )
+        step["status"] = "failed"
+        step["error"] = str(exc)
+    else:
+        step["status"] = "done"
+    step["finished_at"] = datetime.utcnow().isoformat()
+    _write_action_progress(action_pk, progress)
+
 
 def _is_disruptive_cluster_operation_in_flight() -> bool:
     """True while a cluster-upgrade or patch-install Action is proposed but
@@ -904,6 +984,9 @@ def _execute_approved_action(action_pk: str) -> None:
     if blocked_before_start:
         _revert_approved_action_to_pending(incident_id, action_pk)
         return
+
+    if action_id_str in _PACKAGE_UPGRADE_ACTION_IDS and executed_any:
+        _finalize_package_upgrade_osd_release(action_pk, action_params, progress)
 
     _record_approved_execution_result(
         action_pk, command=last_command, succeeded=all_succeeded and executed_any
