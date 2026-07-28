@@ -410,7 +410,7 @@ def test_cephadm_bootstrap_ensures_python3_before_invoking_cephadm(monkeypatch):
         i for i, cmd in enumerate(seen_commands) if "python3" in cmd
     )
     cephadm_install_index = next(
-        i for i, cmd in enumerate(seen_commands) if "cephadm add-repo" in cmd
+        i for i, cmd in enumerate(seen_commands) if "install -y cephadm" in cmd
     )
     assert python3_ensure_index < cephadm_install_index
     assert "apt-get install -y python3" in seen_commands[python3_ensure_index]
@@ -588,30 +588,6 @@ def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
     assert bootstrap_index < ceph_common_index
 
 
-def test_cephadm_add_repo_uses_exact_version_not_release_codename(monkeypatch):
-    """cephadm's OWN internal `add-repo --release <codename>` command (used
-    to install the `cephadm` package itself) uses `--version <exact
-    version>` instead, matching the fix already applied to
-    _phase_ceph_deploy_repo's rolling-alias bug in general — even though
-    this specific swap did NOT turn out to fix ceph-common's own
-    availability (see test_cephadm_ensures_ceph_common_via_own_repo_command
-    below for what did)."""
-    seen_commands = []
-
-    def fake(host, command):
-        seen_commands.append(command)
-        return _default_fake_execute(host, command)
-
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
-    write_progress, _calls = _make_recording_progress_writer()
-
-    run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
-
-    add_repo_cmd = next(cmd for cmd in seen_commands if "cephadm add-repo" in cmd)
-    assert "add-repo --version 18.2.8" in add_repo_cmd
-    assert "--release" not in add_repo_cmd
-
-
 def test_build_ceph_package_repo_command_nautilus_uses_codename_not_exact_version():
     """Regression, 2026-07-27: verified live against download.ceph.com —
     unlike every later release (which this command correctly targets by
@@ -631,13 +607,19 @@ def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
     """Regression (live-verified 2026-07-26): `cephadm install ceph-common`
     left `ceph-common` unfindable via yum TWICE in a row — once with
     cephadm's own `add-repo --release <codename>`, and again after
-    switching that to `--version <exact version>` (previous test above).
-    Rather than keep guessing at cephadm's internal repo-URL logic, this
-    method now sets up the repo itself via `_build_ceph_package_repo_command`
-    (the SAME already-written command `_phase_ceph_deploy_repo` uses, which
-    detects the RHEL major version and arch AT RUNTIME via `rpm -E %rhel`/
+    switching that to `--version <exact version>`. Rather than keep
+    guessing at cephadm's internal repo-URL logic, this method sets up the
+    repo itself via `_build_ceph_package_repo_command` (the SAME
+    already-written command `_phase_ceph_deploy_repo` uses, which detects
+    the RHEL major version and arch AT RUNTIME via `rpm -E %rhel`/
     `uname -m` rather than hardcoding one) and installs ceph-common by
-    plain `dnf/yum install -y ceph-common`, run AFTER bootstrap succeeds."""
+    plain `dnf/yum install -y ceph-common`, run AFTER bootstrap succeeds.
+
+    2026-07-28 fix: the repo command now also runs BEFORE bootstrap (a
+    later fix found cephadm's own add-repo unreliable for installing the
+    `cephadm` package itself too, not just ceph-common — see
+    _phase_cephadm_bootstrap's own comment) — only ONE repo-setup call
+    total now, shared by both the cephadm package install and ceph-common."""
     seen_commands = []
 
     def fake(host, command):
@@ -649,13 +631,17 @@ def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
 
     run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
 
-    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
     repo_index = next(i for i, cmd in enumerate(seen_commands) if "rpm -E %rhel" in cmd)
+    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
     ceph_common_index = next(
         i for i, cmd in enumerate(seen_commands) if "install -y ceph-common" in cmd
     )
-    assert bootstrap_index < repo_index < ceph_common_index
+    assert repo_index < bootstrap_index < ceph_common_index
     assert not any("cephadm install ceph-common" in cmd for cmd in seen_commands)
+    assert not any("cephadm add-repo" in cmd for cmd in seen_commands)
+    # Only ONE repo-setup call now — install_cephadm and ensure_ceph_common
+    # share the same already-configured repo, no redundant second setup.
+    assert sum(1 for cmd in seen_commands if "rpm -E %rhel" in cmd) == 1
 
 
 def test_cephadm_orch_host_add_authorizes_cephadm_pubkey_before_adding_each_host(monkeypatch):

@@ -228,36 +228,27 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     host_status = [{"host": first_mon, "status": "running"}]
     on_host_update(list(host_status))
 
-    # The downloaded `cephadm` script itself is a `#!/usr/bin/python3` file —
-    # a bare/minimal node (verified live, 2026-07-26: a fresh node had no
-    # /usr/bin/python3 at all) fails with exit 126 "bad interpreter" on the
-    # VERY FIRST invocation (`add-repo`), before cephadm's own `install`
-    # subcommand ever gets a chance to pull in its real dependencies. python3
-    # is ensured by the `dependencies` phase now (runs on EVERY node, before
-    # this one) — originally this phase ran its own separate python3 check
-    # here, but that only ever covered first_mon: `ceph orch host add` later
-    # failed with "no python3 in ..." on the SECOND node added, because
-    # cephadm's per-host management agent is itself a python3 script the
-    # orchestrator runs via SSH on every host it manages, not just first_mon
-    # (verified live, 2026-07-26).
-    # This bare `cephadm install` (no package args) only needs the
-    # `cephadm` package itself, which has worked fine via cephadm's own
-    # `add-repo` in every live run so far — unlike `ceph-common` below,
-    # there's no evidence this part is broken, so it's left as cephadm's
-    # own responsibility. Switched `--release {codename}` to
-    # `--version {version}` anyway (matching the fix already made for
-    # `_phase_ceph_deploy_repo`) since the codename's rolling alias is a
-    # real, verified bug class in general — harmless here even though it
-    # didn't turn out to be what broke ceph-common (see that step below).
-    # `codename_for_version` above is still called purely to validate the
-    # version is recognized before touching any node — the curl fetch of
-    # the cephadm SCRIPT ITSELF (one static file, no repo-metadata
-    # resolution involved) is unaffected and keeps using the release name.
-    install_cephadm = (
-        "command -v cephadm >/dev/null 2>&1 || "
-        f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
-        "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm && "
-        f"/usr/local/bin/cephadm add-repo --version {version} && /usr/local/bin/cephadm install)"
+    # 2026-07-28 fix (verified live): this used to curl-fetch the cephadm
+    # SCRIPT from a hardcoded `rpm-{codename}/el9/noarch/cephadm` URL, then
+    # rely on cephadm's OWN internal `add-repo --version {version} &&
+    # install` to actually install the `cephadm` package — failed on a real
+    # CentOS Stream 8 (el8) node with "unable to fetch repo metadata:
+    # <HTTPError 404: 'Not Found'>", the exact same class of bug
+    # `_build_ceph_package_repo_command`'s docstring already documents
+    # cephadm's own repo-URL logic having for `ceph-common` (verified
+    # 2026-07-26) — evidently this bare `cephadm install` path was never
+    # actually reliable either, the earlier comment here saying otherwise
+    # was wrong. Now uses that SAME already-proven repo command (detects
+    # the real RHEL major version/arch AT RUNTIME via `rpm -E %rhel`/
+    # `uname -m`, not a hardcoded el9) and installs `cephadm` as a normal
+    # package via dnf/apt — cephadm's own add-repo/install subcommands and
+    # the curl-fetched script are no longer used at all.
+    ensure_ceph_repo = _build_ceph_package_repo_command(version)
+    install_cephadm = _package_manager_branch(
+        {
+            "apt": "command -v cephadm >/dev/null 2>&1 || apt-get install -y cephadm",
+            "rpm": "command -v cephadm >/dev/null 2>&1 || (dnf install -y cephadm || yum install -y cephadm)",
+        }
     )
     # A MON container left running from an EARLIER, partially-failed deploy
     # attempt on this same node still holds the MSGR v2 port — verified
@@ -304,15 +295,10 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     # every later phase in this method (orch_host_add/orch_apply_mgr/
     # orch_apply_osd/verify) calls `ceph ...` directly on `first_mon`
     # (verified live, 2026-07-26: "ceph: command not found", exit 127,
-    # right after a successful bootstrap). Deliberately does NOT use
-    # `cephadm install ceph-common` for this — verified live (2026-07-26)
-    # that it left ceph-common unfindable via yum twice in a row, even after
-    # switching cephadm's own `add-repo` from `--release` to `--version`
-    # above; rather than keep guessing at cephadm's internal repo-URL logic,
-    # this uses OUR OWN already-verified repo command
-    # (`_build_ceph_package_repo_command`, same one `_phase_ceph_deploy_repo`
-    # uses) plus a plain named-package install.
-    ensure_ceph_repo = _build_ceph_package_repo_command(version)
+    # right after a successful bootstrap). `ensure_ceph_repo` already ran
+    # above (install_cephadm needed it too) so this is just the plain
+    # named-package install against that same already-configured repo —
+    # no separate repo setup needed here anymore.
     ensure_ceph_common = _package_manager_branch(
         {
             "apt": "command -v ceph >/dev/null 2>&1 || apt-get install -y ceph-common",
@@ -322,8 +308,8 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
 
     try:
         execute_command(first_mon, cleanup_previous_attempt)
-        execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
         execute_command(first_mon, ensure_ceph_repo)
+        execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
         execute_command(first_mon, ensure_ceph_common)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
@@ -1401,25 +1387,26 @@ def _phase_convert_ssh_check(nodes: list[dict], action_params: dict, on_host_upd
 def _phase_convert_install_cephadm(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """Ensures the `cephadm` binary itself is present on EVERY node (needed
     locally by every later `cephadm adopt` call, on whichever host runs
-    that daemon) — same install snippet _phase_cephadm_bootstrap uses for
-    first_mon only, applied here to every node instead. Deliberately does
-    NOT install a container runtime (docker/podman) — same assumption every
+    that daemon) — same repo command + plain package-manager install
+    `_phase_cephadm_bootstrap` uses for first_mon (see that function's own
+    2026-07-28 fix comment for why: cephadm's own internal `add-repo`
+    subcommand is unreliable — verified live 404s on a real CentOS Stream 8
+    node), applied here to every node instead. Deliberately does NOT
+    install a container runtime (docker/podman) — same assumption every
     OTHER phase in this module already makes (cephadm bootstrap itself
     requires one pre-installed; this codebase has never automated that
-    installation, see this module's own docstring). Inherits that same
-    snippet's RPM/EL9-only download URL — a known, pre-existing scope limit
-    of this codebase's cephadm support, not something new to this feature.
-    """
+    installation, see this module's own docstring)."""
     version = action_params.get("version", "")
     codename = codename_for_version(version)
     if codename is None:
         raise DeployPhaseError(f"Không tìm thấy mã tên release Ceph cho phiên bản {version!r}")
 
-    install_cephadm = (
-        "command -v cephadm >/dev/null 2>&1 || "
-        f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
-        "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm && "
-        f"/usr/local/bin/cephadm add-repo --version {version} && /usr/local/bin/cephadm install)"
+    ensure_ceph_repo = _build_ceph_package_repo_command(version)
+    install_cephadm = _package_manager_branch(
+        {
+            "apt": "command -v cephadm >/dev/null 2>&1 || apt-get install -y cephadm",
+            "rpm": "command -v cephadm >/dev/null 2>&1 || (dnf install -y cephadm || yum install -y cephadm)",
+        }
     )
 
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
@@ -1429,6 +1416,7 @@ def _phase_convert_install_cephadm(nodes: list[dict], action_params: dict, on_ho
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
+            execute_command(ip, ensure_ceph_repo)
             execute_command(ip, install_cephadm)
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
