@@ -1235,7 +1235,7 @@ def _convert_fake_execute(host, command):
     if "systemctl list-units" in command and "ceph-mgr@" in command:
         mgr_id = _CONVERT_MGR_IDS.get(host)
         return f"ceph-mgr@{mgr_id}.service" if mgr_id else ""
-    if "cephadm adopt" in command:
+    if "adopt --style legacy" in command:
         return ""
     if "ceph mgr module enable cephadm" in command:
         return ""
@@ -1284,6 +1284,10 @@ def test_discover_systemd_daemon_id_raises_on_ssh_failure(monkeypatch):
         cluster_deploy_module._discover_systemd_daemon_id("10.20.1.112", "ceph-mon")
 
 
+def test_cephadm_image_for_version_builds_quay_tag():
+    assert cluster_deploy_module._cephadm_image_for_version("17.2.5") == "quay.io/ceph/ceph:v17.2.5"
+
+
 def test_convert_adopt_mons_uses_discovered_daemon_id(monkeypatch):
     calls = []
 
@@ -1298,9 +1302,15 @@ def test_convert_adopt_mons_uses_discovered_daemon_id(monkeypatch):
         copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
     )
 
-    adopt_commands = [c for _h, c in calls if "cephadm adopt" in c]
+    adopt_commands = [c for _h, c in calls if "adopt --style legacy" in c]
     assert any("mon.nodeA" in c for c in adopt_commands)
     assert any("mon.nodeB" in c for c in adopt_commands)
+    # 2026-07-28 regression: without an explicit --image pin, cephadm adopt
+    # defaults to whatever the LATEST build for that codename currently is
+    # on quay.io — verified live to silently diverge from the exact
+    # version actually running on the not-yet-adopted daemons, leaving
+    # `ceph versions` permanently mixed.
+    assert all("--image quay.io/ceph/ceph:v18.2.8" in c for c in adopt_commands)
 
 
 def test_convert_adopt_mons_fails_when_no_mon_configured():
@@ -1331,8 +1341,9 @@ def test_convert_adopt_mgrs_uses_discovered_daemon_id(monkeypatch):
         copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
     )
 
-    adopt_commands = [c for _h, c in calls if "cephadm adopt" in c]
+    adopt_commands = [c for _h, c in calls if "adopt --style legacy" in c]
     assert any("mgr.nodeA" in c for c in adopt_commands)
+    assert all("--image quay.io/ceph/ceph:v18.2.8" in c for c in adopt_commands)
 
 
 def test_convert_install_cephadm_runs_on_every_node(monkeypatch):
@@ -1423,9 +1434,10 @@ def test_convert_adopt_osds_discovers_and_adopts_every_id(monkeypatch):
         copy.deepcopy(_CONVERT_NODES), _convert_params(), lambda hosts: None
     )
 
-    adopt_commands = [c for h, c in calls if h == "10.20.1.95" and "cephadm adopt" in c]
+    adopt_commands = [c for h, c in calls if h == "10.20.1.95" and "adopt --style legacy" in c]
     assert any("osd.0" in c for c in adopt_commands)
     assert any("osd.1" in c for c in adopt_commands)
+    assert all("--image quay.io/ceph/ceph:v18.2.8" in c for c in adopt_commands)
 
 
 def test_convert_adopt_osds_skips_host_with_no_osds(monkeypatch):

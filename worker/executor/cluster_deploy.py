@@ -1496,19 +1496,39 @@ def _phase_convert_install_cephadm(nodes: list[dict], action_params: dict, on_ho
         on_host_update(list(host_status))
 
 
-def _adopt_daemon_on_host(ip: str, service_prefix: str, daemon_type: str) -> str:
+def _cephadm_image_for_version(version: str) -> str:
+    """The container image `cephadm adopt`/`cephadm ceph-volume` should be
+    pinned to via `cephadm --image <this> ...` — WITHOUT this, cephadm
+    silently defaults to whatever the LATEST build tagged for that
+    codename currently is on quay.io, which can be (and, verified live,
+    WAS) newer than the exact version actually running natively on the
+    not-yet-adopted daemons: a real conversion adopted mon+mgr onto
+    17.2.8 while OSDs stayed native 17.2.5, leaving `ceph versions`
+    permanently mixed with no way to converge except upgrading the OSDs
+    afterward. Pinning here means every daemon this conversion adopts
+    ends up on the EXACT SAME version already running, matching the
+    detected `action_params["version"]` this whole conversion is
+    predicated on (see convert_cluster.py's propose route)."""
+    return f"quay.io/ceph/ceph:v{version}"
+
+
+def _adopt_daemon_on_host(ip: str, service_prefix: str, daemon_type: str, image: str) -> str:
     """Shared by adopt_mons/adopt_mgrs below — discovers the real daemon id
     running on `ip` (via _discover_systemd_daemon_id) and runs
-    `cephadm adopt --style legacy --name <daemon_type>.<id>` there. Returns
-    the id (for the caller's own status message). Raises DeployPhaseError
-    if no matching systemd unit is found at all, or if the adopt command
+    `cephadm --image <image> adopt --style legacy --name <daemon_type>.<id>`
+    there (see _cephadm_image_for_version's own comment for why `--image`
+    is pinned explicitly, not left to cephadm's own default). Returns the
+    id (for the caller's own status message). Raises DeployPhaseError if
+    no matching systemd unit is found at all, or if the adopt command
     itself fails."""
     daemon_id = _discover_systemd_daemon_id(ip, service_prefix)
     if not daemon_id:
         raise DeployPhaseError(f"{ip}: không tìm thấy systemd unit {service_prefix}@* đang chạy")
     try:
         execute_command(
-            ip, f"cephadm adopt --style legacy --name {shlex.quote(daemon_type + '.' + daemon_id)}"
+            ip,
+            f"cephadm --image {shlex.quote(image)} adopt --style legacy "
+            f"--name {shlex.quote(daemon_type + '.' + daemon_id)}",
         )
     except ExecutorError as exc:
         raise DeployPhaseError(f"{ip}: chuyển đổi {daemon_type}.{daemon_id} thất bại: {exc}") from exc
@@ -1519,6 +1539,7 @@ def _phase_convert_adopt_mons(nodes: list[dict], action_params: dict, on_host_up
     mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
     if not mon_nodes:
         raise DeployPhaseError("Không có node MON nào trong cấu hình")
+    image = _cephadm_image_for_version(action_params.get("version", ""))
     host_status = [{"host": n["ip"], "status": "pending"} for n in mon_nodes]
     on_host_update(list(host_status))
     for i, node in enumerate(mon_nodes):
@@ -1526,7 +1547,7 @@ def _phase_convert_adopt_mons(nodes: list[dict], action_params: dict, on_host_up
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
-            mon_id = _adopt_daemon_on_host(ip, "ceph-mon", "mon")
+            mon_id = _adopt_daemon_on_host(ip, "ceph-mon", "mon", image)
         except DeployPhaseError:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
@@ -1540,6 +1561,7 @@ def _phase_convert_adopt_mgrs(nodes: list[dict], action_params: dict, on_host_up
     mgr_nodes = [n for n in nodes if "mgr" in (n.get("roles") or [])]
     if not mgr_nodes:
         raise DeployPhaseError("Không có node MGR nào trong cấu hình")
+    image = _cephadm_image_for_version(action_params.get("version", ""))
     host_status = [{"host": n["ip"], "status": "pending"} for n in mgr_nodes]
     on_host_update(list(host_status))
     for i, node in enumerate(mgr_nodes):
@@ -1547,7 +1569,7 @@ def _phase_convert_adopt_mgrs(nodes: list[dict], action_params: dict, on_host_up
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
-            mgr_id = _adopt_daemon_on_host(ip, "ceph-mgr", "mgr")
+            mgr_id = _adopt_daemon_on_host(ip, "ceph-mgr", "mgr", image)
         except DeployPhaseError:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
@@ -1669,10 +1691,15 @@ def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_up
     `ceph-volume lvm list --format json` (its top-level keys are OSD ids —
     self-contained per-host discovery, no need to cross-reference `ceph osd
     tree`'s hostname strings against this app's own node list), then
-    `cephadm adopt --style legacy --name osd.<id>` for each one found. Runs
-    LAST among the 3 daemon types (after mon+mgr, per Ceph's own documented
-    adoption order) — deliberately never invents/reassigns an OSD id, only
-    adopts whatever ids ceph-volume already reports live on that host."""
+    `cephadm --image <pinned> adopt --style legacy --name osd.<id>` for
+    each one found (see _cephadm_image_for_version's own comment for why
+    the image is pinned to the detected cluster version explicitly, not
+    left to cephadm's own default — same reasoning applies to OSDs as to
+    mon/mgr). Runs LAST among the 3 daemon types (after mon+mgr, per
+    Ceph's own documented adoption order) — deliberately never invents/
+    reassigns an OSD id, only adopts whatever ids ceph-volume already
+    reports live on that host."""
+    image = _cephadm_image_for_version(action_params.get("version", ""))
     osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
     host_status = [{"host": n["ip"], "status": "pending"} for n in osd_nodes]
     on_host_update(list(host_status))
@@ -1706,7 +1733,9 @@ def _phase_convert_adopt_osds(nodes: list[dict], action_params: dict, on_host_up
         for osd_id in osd_ids:
             try:
                 execute_command(
-                    ip, f"cephadm adopt --style legacy --name {shlex.quote('osd.' + osd_id)}"
+                    ip,
+                    f"cephadm --image {shlex.quote(image)} adopt --style legacy "
+                    f"--name {shlex.quote('osd.' + osd_id)}",
                 )
             except ExecutorError as exc:
                 host_status[i]["status"] = "failed"
