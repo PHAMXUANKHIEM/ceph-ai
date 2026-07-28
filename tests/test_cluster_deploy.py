@@ -413,7 +413,7 @@ def test_cephadm_bootstrap_ensures_python3_before_invoking_cephadm(monkeypatch):
         i for i, cmd in enumerate(seen_commands) if "python3" in cmd
     )
     cephadm_install_index = next(
-        i for i, cmd in enumerate(seen_commands) if "install -y cephadm" in cmd
+        i for i, cmd in enumerate(seen_commands) if "-o /usr/local/bin/cephadm" in cmd
     )
     assert python3_ensure_index < cephadm_install_index
     assert "apt-get install -y python3" in seen_commands[python3_ensure_index]
@@ -702,23 +702,20 @@ def test_repo_command_fails_loudly_when_neither_candidate_works(tmp_path):
     assert "No Ceph RPM repo found" in stderr
 
 
-def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
+def test_cephadm_ensures_ceph_common_via_plain_install_after_bootstrap(monkeypatch):
     """Regression (live-verified 2026-07-26): `cephadm install ceph-common`
-    left `ceph-common` unfindable via yum TWICE in a row — once with
-    cephadm's own `add-repo --release <codename>`, and again after
-    switching that to `--version <exact version>`. Rather than keep
-    guessing at cephadm's internal repo-URL logic, this method sets up the
-    repo itself via `_build_ceph_package_repo_command` (the SAME
-    already-written command `_phase_ceph_deploy_repo` uses, which detects
-    the RHEL major version and arch AT RUNTIME via `rpm -E %rhel`/
-    `uname -m` rather than hardcoding one) and installs ceph-common by
-    plain `dnf/yum install -y ceph-common`, run AFTER bootstrap succeeds.
-
-    2026-07-28 fix: the repo command now also runs BEFORE bootstrap (a
-    later fix found cephadm's own add-repo unreliable for installing the
-    `cephadm` package itself too, not just ceph-common — see
-    _phase_cephadm_bootstrap's own comment) — only ONE repo-setup call
-    total now, shared by both the cephadm package install and ceph-common."""
+    left `ceph-common` unfindable via yum TWICE in a row. An intermediate
+    fix (2026-07-28) tried forcing a same-version Ceph.com repo via
+    `_build_ceph_package_repo_command` instead — which itself broke live
+    against a real CentOS Stream 8 node targeting reef (Ceph never
+    published el8 packages for reef at all, confirmed against the real
+    download.ceph.com directory listing) — so this installs ceph-common
+    PLAINLY (`dnf/yum install -y ceph-common`, no forced repo setup),
+    relying on whatever repos are already configured, confirmed fine by
+    the operator: this CLI only needs to talk to the orchestrator over
+    Ceph's own cross-version-compatible protocol, never needs to exactly
+    match the containerized daemons' real version. Still run AFTER
+    bootstrap succeeds (bootstrap itself doesn't need `ceph` on PATH)."""
     seen_commands = []
 
     def fake(host, command):
@@ -730,17 +727,15 @@ def test_cephadm_ensures_ceph_common_via_own_repo_command(monkeypatch):
 
     run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
 
-    repo_index = next(i for i, cmd in enumerate(seen_commands) if "rpm -E %rhel" in cmd)
     bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
     ceph_common_index = next(
         i for i, cmd in enumerate(seen_commands) if "install -y ceph-common" in cmd
     )
-    assert repo_index < bootstrap_index < ceph_common_index
+    assert bootstrap_index < ceph_common_index
     assert not any("cephadm install ceph-common" in cmd for cmd in seen_commands)
     assert not any("cephadm add-repo" in cmd for cmd in seen_commands)
-    # Only ONE repo-setup call now — install_cephadm and ensure_ceph_common
-    # share the same already-configured repo, no redundant second setup.
-    assert sum(1 for cmd in seen_commands if "rpm -E %rhel" in cmd) == 1
+    # No forced same-version repo setup anywhere in this phase anymore.
+    assert not any("rpm -E %rhel" in cmd for cmd in seen_commands)
 
 
 def test_cephadm_orch_host_add_authorizes_cephadm_pubkey_before_adding_each_host(monkeypatch):

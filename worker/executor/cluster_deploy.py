@@ -228,27 +228,25 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     host_status = [{"host": first_mon, "status": "running"}]
     on_host_update(list(host_status))
 
-    # 2026-07-28 fix (verified live): this used to curl-fetch the cephadm
-    # SCRIPT from a hardcoded `rpm-{codename}/el9/noarch/cephadm` URL, then
-    # rely on cephadm's OWN internal `add-repo --version {version} &&
-    # install` to actually install the `cephadm` package — failed on a real
-    # CentOS Stream 8 (el8) node with "unable to fetch repo metadata:
-    # <HTTPError 404: 'Not Found'>", the exact same class of bug
-    # `_build_ceph_package_repo_command`'s docstring already documents
-    # cephadm's own repo-URL logic having for `ceph-common` (verified
-    # 2026-07-26) — evidently this bare `cephadm install` path was never
-    # actually reliable either, the earlier comment here saying otherwise
-    # was wrong. Now uses that SAME already-proven repo command (detects
-    # the real RHEL major version/arch AT RUNTIME via `rpm -E %rhel`/
-    # `uname -m`, not a hardcoded el9) and installs `cephadm` as a normal
-    # package via dnf/apt — cephadm's own add-repo/install subcommands and
-    # the curl-fetched script are no longer used at all.
-    ensure_ceph_repo = _build_ceph_package_repo_command(version)
-    install_cephadm = _package_manager_branch(
-        {
-            "apt": "command -v cephadm >/dev/null 2>&1 || apt-get install -y cephadm",
-            "rpm": "command -v cephadm >/dev/null 2>&1 || (dnf install -y cephadm || yum install -y cephadm)",
-        }
+    # 2026-07-28 (verified live against download.ceph.com, twice): the
+    # intermediate fix here — installing `cephadm` as a normal dnf/apt
+    # package via our own repo command — turned out to depend on
+    # download.ceph.com actually publishing THIS version for THIS node's
+    # OS, which it may not: a real CentOS Stream 8 node targeting reef
+    # (18.2.8) hit a 404 for BOTH the exact-version AND the codename-alias
+    # el8 path — Ceph simply never built reef (or quincy) for el8 at all,
+    # confirmed by checking the real directory listings, not something a
+    # smarter repo-URL fallback can work around. Back to curl-fetching the
+    # standalone `cephadm` SCRIPT (one static, OS/arch-agnostic Python
+    # file — its own fixed el9/noarch download path works regardless of
+    # the TARGET node's actual OS, since nothing about that path involves
+    # installing anything ON el8) and using it directly — no `cephadm
+    # add-repo`/`cephadm install` step at all, which is what actually
+    # needed a same-version-and-OS package repo to exist.
+    install_cephadm = (
+        "command -v cephadm >/dev/null 2>&1 || "
+        f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
+        "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm)"
     )
     # A MON container left running from an EARLIER, partially-failed deploy
     # attempt on this same node still holds the MSGR v2 port — verified
@@ -295,10 +293,14 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
     # every later phase in this method (orch_host_add/orch_apply_mgr/
     # orch_apply_osd/verify) calls `ceph ...` directly on `first_mon`
     # (verified live, 2026-07-26: "ceph: command not found", exit 127,
-    # right after a successful bootstrap). `ensure_ceph_repo` already ran
-    # above (install_cephadm needed it too) so this is just the plain
-    # named-package install against that same already-configured repo —
-    # no separate repo setup needed here anymore.
+    # right after a successful bootstrap). Deliberately a PLAIN install —
+    # no forced same-version Ceph.com repo (see install_cephadm's own
+    # 2026-07-28 comment for why that broke on a real el8 node targeting
+    # reef) — whatever `ceph-common` version the node's ALREADY-configured
+    # repos resolve (confirmed fine by the operator: this CLI only ever
+    # talks to the orchestrator/cluster over RADOS's own cross-version
+    # protocol for `ceph -s`/`ceph orch ...`, it never needs to exactly
+    # match the containerized daemons' real version).
     ensure_ceph_common = _package_manager_branch(
         {
             "apt": "command -v ceph >/dev/null 2>&1 || apt-get install -y ceph-common",
@@ -308,7 +310,6 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
 
     try:
         execute_command(first_mon, cleanup_previous_attempt)
-        execute_command(first_mon, ensure_ceph_repo)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
         execute_command(first_mon, ensure_ceph_common)
     except ExecutorError as exc:
@@ -1416,26 +1417,27 @@ def _phase_convert_ssh_check(nodes: list[dict], action_params: dict, on_host_upd
 def _phase_convert_install_cephadm(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """Ensures the `cephadm` binary itself is present on EVERY node (needed
     locally by every later `cephadm adopt` call, on whichever host runs
-    that daemon) — same repo command + plain package-manager install
-    `_phase_cephadm_bootstrap` uses for first_mon (see that function's own
-    2026-07-28 fix comment for why: cephadm's own internal `add-repo`
-    subcommand is unreliable — verified live 404s on a real CentOS Stream 8
-    node), applied here to every node instead. Deliberately does NOT
-    install a container runtime (docker/podman) — same assumption every
-    OTHER phase in this module already makes (cephadm bootstrap itself
-    requires one pre-installed; this codebase has never automated that
-    installation, see this module's own docstring)."""
+    that daemon) — same curl-fetched standalone script
+    _phase_cephadm_bootstrap uses for first_mon (see that function's own
+    2026-07-28 comment for why: installing cephadm as an OS package
+    requires download.ceph.com to publish THIS exact version for THIS
+    node's OS, which a real CentOS Stream 8 node targeting reef proved
+    false — the curl-fetched script is one static, OS/arch-agnostic Python
+    file, sidestepping that entirely), applied here to every node instead.
+    Deliberately does NOT install a container runtime (docker/podman) —
+    same assumption every OTHER phase in this module already makes
+    (cephadm bootstrap itself requires one pre-installed; this codebase
+    has never automated that installation, see this module's own
+    docstring)."""
     version = action_params.get("version", "")
     codename = codename_for_version(version)
     if codename is None:
         raise DeployPhaseError(f"Không tìm thấy mã tên release Ceph cho phiên bản {version!r}")
 
-    ensure_ceph_repo = _build_ceph_package_repo_command(version)
-    install_cephadm = _package_manager_branch(
-        {
-            "apt": "command -v cephadm >/dev/null 2>&1 || apt-get install -y cephadm",
-            "rpm": "command -v cephadm >/dev/null 2>&1 || (dnf install -y cephadm || yum install -y cephadm)",
-        }
+    install_cephadm = (
+        "command -v cephadm >/dev/null 2>&1 || "
+        f"(curl -fsSL https://download.ceph.com/rpm-{codename}/el9/noarch/cephadm "
+        "-o /usr/local/bin/cephadm && chmod +x /usr/local/bin/cephadm)"
     )
 
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
@@ -1445,7 +1447,6 @@ def _phase_convert_install_cephadm(nodes: list[dict], action_params: dict, on_ho
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
         try:
-            execute_command(ip, ensure_ceph_repo)
             execute_command(ip, install_cephadm)
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
