@@ -657,6 +657,8 @@ def _settings_context(
     database_values: dict | None = None,
     database_reset_error: str | None = None,
     database_reset_success: str | None = None,
+    database_migrate_error: str | None = None,
+    database_migrate_success: str | None = None,
     patch_pipeline_error: str | None = None,
     patch_pipeline_success: str | None = None,
     patch_pipeline_values: dict | None = None,
@@ -721,6 +723,8 @@ def _settings_context(
         "database_success": database_success,
         "database_reset_error": database_reset_error,
         "database_reset_success": database_reset_success,
+        "database_migrate_error": database_migrate_error,
+        "database_migrate_success": database_migrate_success,
         "current_database_display": _current_database_display(),
         "patch_pipeline_error": patch_pipeline_error,
         "patch_pipeline_success": patch_pipeline_success,
@@ -764,7 +768,14 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "restart-controls"
     if any(
         context.get(k)
-        for k in ("database_error", "database_success", "database_reset_error", "database_reset_success")
+        for k in (
+            "database_error",
+            "database_success",
+            "database_reset_error",
+            "database_reset_success",
+            "database_migrate_error",
+            "database_migrate_success",
+        )
     ):
         return "database"
     if any(context.get(k) for k in ("error", "success", "worker_restart_error")):
@@ -1396,6 +1407,50 @@ async def settings_reset_database_connection(request: Request, user: str = Depen
         request,
         "settings.html",
         _settings_context(user, database_reset_success="Đã khởi động lại kết nối tới database hiện tại."),
+    )
+
+
+@router.post("/settings/database/migrate", response_class=HTMLResponse)
+async def settings_run_migrations(request: Request, user: str = Depends(require_login)):
+    """Admin-only "Chạy migration (alembic upgrade head)" button — lets an
+    admin bring the CURRENT database's schema up to date with whatever
+    this deployment's code now expects (e.g. a table a newer code update
+    added, like shared/models.py::VolumeMetric) without needing SSH/
+    terminal access to run `alembic upgrade head` by hand. A real,
+    recurring gap: this app has never auto-run migrations on startup (by
+    design — a schema change should be a deliberate, visible admin action,
+    not something that silently happens on every process restart), so a
+    `git pull` alone leaves an old deployment's DB missing whatever new
+    table/column the new code references — that has already broken this
+    exact page's own cleanup form once in practice.
+
+    Unlike settings_save_database above, this does NOT switch which
+    database is configured (same url before and after, from
+    settings.database_url — _run_alembic_upgrade_head's re-assignment of
+    it below is a same-value no-op), so it never needs to restart Worker/
+    Watcher/Dashboard the way a real switch does (those restarts exist
+    specifically because a SWITCH leaves other processes pointed at the
+    OLD db; nothing here changes which db anyone is pointed at)."""
+    _require_admin_privilege(user)
+    try:
+        url = make_url(settings.database_url)
+        await asyncio.to_thread(_run_alembic_upgrade_head, url)
+    except Exception as exc:
+        logger.exception("settings_run_migrations: alembic upgrade head failed")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user, database_migrate_error=f"Chạy migration thất bại: {readable_exception_message(exc)}"
+            ),
+        )
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            database_migrate_success="Đã chạy migration thành công — schema database đã cập nhật mới nhất.",
+        ),
     )
 
 

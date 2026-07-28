@@ -108,24 +108,47 @@
         {% if database_reset_success %}
           <p class="success">{{ database_reset_success }}</p>
         {% endif %}
+        {% if database_migrate_error %}
+          <p class="error">{{ database_migrate_error }}</p>
+        {% endif %}
+        {% if database_migrate_success %}
+          <p class="success">{{ database_migrate_success }}</p>
+        {% endif %}
         <p class="hint">
           Chỉ hỗ trợ PostgreSQL — schema hệ thống (Incident/Action/Audit Trail...) dùng khoá ngoại và
           check constraint, không hợp với MongoDB; giữa MySQL/Postgres thì Postgres hỗ trợ tốt hơn.
         </p>
         <p class="hint">Đang dùng: <code>{{ current_database_display }}</code></p>
-        <form
-          method="post"
-          action="/settings/database/reset-connection"
-          class="inline-form"
-          onsubmit="return confirm('Khởi động lại kết nối tới database hiện tại? Các câu lệnh đang chạy dở trên kết nối cũ sẽ bị huỷ ngang.');"
-        >
-          <button type="submit" class="btn btn-sm">Khởi động lại kết nối DB</button>
-        </form>
-        <p class="hint">
-          Chỉ reset connection pool của Dashboard (hữu ích khi kết nối bị treo, vd DB phía dưới bị
-          đứng I/O) — không đổi database, không restart Worker/Watcher. Nếu Worker/Watcher cũng cần
-          reset kết nối, dùng nút khởi động lại từng tiến trình ở mục "Tiến trình hệ thống" phía trên.
-        </p>
+        <div class="restart-controls-row">
+          <div class="restart-control">
+            <p class="hint">
+              Chỉ reset connection pool của Dashboard (hữu ích khi kết nối bị treo, vd DB phía dưới bị
+              đứng I/O) — không đổi database, không restart Worker/Watcher.
+            </p>
+            <form
+              method="post"
+              action="/settings/database/reset-connection"
+              onsubmit="return confirm('Khởi động lại kết nối tới database hiện tại? Các câu lệnh đang chạy dở trên kết nối cũ sẽ bị huỷ ngang.');"
+            >
+              <button type="submit" class="btn btn-sm">Khởi động lại kết nối DB</button>
+            </form>
+          </div>
+
+          <div class="restart-control">
+            <p class="hint">
+              Chạy <code>alembic upgrade head</code> trên database ĐANG dùng (không đổi database) —
+              dùng khi code mới thêm bảng/cột mà database hiện tại chưa có (vd sau khi
+              <code>git pull</code> mà chưa tự tay chạy migration), thay vì phải SSH vào server.
+            </p>
+            <form
+              method="post"
+              action="/settings/database/migrate"
+              onsubmit="return confirm('Chạy alembic upgrade head trên database hiện tại?');"
+            >
+              <button type="submit" class="btn btn-sm">Chạy migration (upgrade head)</button>
+            </form>
+          </div>
+        </div>
         <p class="hint">
           Lưu sẽ: kiểm tra kết nối → chạy migration (tạo schema mới, KHÔNG copy dữ liệu từ database cũ) →
           khởi động lại Worker, Watcher và Dashboard. Gây gián đoạn vài giây cho tất cả người đang dùng.

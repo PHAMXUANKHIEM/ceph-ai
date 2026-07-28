@@ -1464,6 +1464,94 @@ def test_unauthenticated_reset_database_connection_redirects_to_login(dashboard_
     assert response.headers["location"] == "/login"
 
 
+# --- Run migrations / "Chạy migration (upgrade head)" (2026-07-28) ---------
+# Real end-to-end regression test for the exact bug this button exists to
+# fix: an old deployment's database missing a table newer code already
+# references (shared/models.py::VolumeMetric, added after code was pulled
+# without also running `alembic upgrade head` by hand) — cleanup_submit
+# crashed with psycopg.errors.UndefinedTable against a real production DB
+# from exactly this gap.
+
+
+def test_migrate_database_route_adds_missing_table(dashboard_client, monkeypatch, tmp_path):
+    import sqlite3
+
+    from alembic import command as alembic_command
+    from alembic.config import Config as AlembicConfig
+
+    db_path = tmp_path / "migrate_test.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{db_path}")
+
+    # Build the file DB at the revision BEFORE volume_metrics existed —
+    # simulates "code got updated, database didn't" exactly.
+    cfg = AlembicConfig(str(settings_route.ALEMBIC_INI_PATH))
+    cfg.set_main_option("script_location", str(settings_route.ALEMBIC_SCRIPT_LOCATION))
+    alembic_command.upgrade(cfg, "9f1c2a7d5e3b")
+
+    con = sqlite3.connect(db_path)
+    tables_before = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert "volume_metrics" not in tables_before
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/database/migrate")
+
+    assert response.status_code == 200
+    assert "Đã chạy migration thành công" in response.text
+
+    con = sqlite3.connect(db_path)
+    tables_after = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert "volume_metrics" in tables_after
+
+
+def test_migrate_database_route_does_not_switch_database_url(dashboard_client, monkeypatch, tmp_path):
+    # Same url before and after — this button must never behave like
+    # settings_save_database's actual database SWITCH.
+    db_path = tmp_path / "migrate_test.db"
+    file_url = f"sqlite:///{db_path}"
+    monkeypatch.setattr(settings, "database_url", file_url)
+    from sqlalchemy import create_engine
+
+    from shared.db import Base
+
+    Base.metadata.create_all(create_engine(file_url))
+
+    _login(dashboard_client)
+    dashboard_client.post("/settings/database/migrate")
+
+    assert settings.database_url == file_url
+
+
+def test_migrate_database_route_reports_error_on_failure(dashboard_client, monkeypatch):
+    def broken_upgrade(url):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(settings_route, "_run_alembic_upgrade_head", broken_upgrade)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/database/migrate")
+
+    assert response.status_code == 200
+    assert "Chạy migration thất bại" in response.text
+
+
+def test_migrate_database_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/settings/database/migrate")
+
+    assert response.status_code == 403
+
+
+def test_unauthenticated_migrate_database_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/settings/database/migrate", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
 # --- Patch pipeline settings (2026-07-24) -----------------------------------
 
 
