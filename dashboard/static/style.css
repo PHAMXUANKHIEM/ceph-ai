@@ -946,7 +946,10 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .cli-result-ok { color: var(--healthy); font-weight: 600; }
 .cli-result-error { color: var(--critical); font-weight: 600; }
 
-/* ===== "Log RGW" panel — live-tailed radosgw daemon log, per node ===== */
+/* ===== "Log RGW" panel — live-tailed radosgw daemon log, per node.
+   Reused as-is (same class names) by the Settings page's "Log Server"
+   panel below — both are "filterable tailed log in a <pre> box", the
+   class names just predate the second feature. ===== */
 .rgw-log-controls { display: flex; align-items: center; gap: var(--space-3); }
 .rgw-log-status { font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: var(--space-2); }
 .rgw-log-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px var(--healthy-bg); }
@@ -984,6 +987,18 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .rgw-log-line { white-space: pre-wrap; word-break: break-word; }
 .rgw-log-line mark { background: rgba(240, 167, 46, 0.35); color: inherit; border-radius: 2px; }
 .rgw-log-empty { color: var(--text-faint); }
+
+/* Log Server panel's own log-name picker (Dashboard/Watcher/Worker) — the
+   RGW log viewer has no equivalent since it's always exactly one log per
+   node. */
+.log-viewer-select {
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-2);
+  color: var(--text);
+  font-size: 0.85rem;
+}
 
 /* ===== App body layout — main dashboard content (flex:1) + chat panel
    (fixed width) side by side. The chat panel is a normal flex item, not a

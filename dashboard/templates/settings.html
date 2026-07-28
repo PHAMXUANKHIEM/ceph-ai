@@ -33,6 +33,7 @@
       <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
       <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
       <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch Ceph</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
       {% endif %}
       <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
       <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Kết nối cụm Ceph</button>
@@ -227,6 +228,43 @@
           </label>
           <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
         </form>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="server-log" {% if active_section != 'server-log' %}hidden{% endif %}>
+      <div class="card-header">
+        <h2>Log Server</h2>
+        <div class="rgw-log-controls">
+          <span class="rgw-log-status" id="server-log-status">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="server-log-status-text">—</span>
+          </span>
+          <button type="button" class="btn btn-sm" id="server-log-live-toggle">Theo dõi trực tiếp</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="hint">
+          Chỉ tài khoản admin thấy mục này — đọc trực tiếp log tiến trình trên chính server này, không
+          cần quyền truy cập SSH/terminal. Hiển thị tối đa 500 dòng cuối mỗi lần tải.
+        </p>
+        <div class="rgw-log-filter-bar">
+          <select id="server-log-name" class="log-viewer-select">
+            <option value="dashboard">Dashboard</option>
+            <option value="watcher">Watcher</option>
+            <option value="worker">Worker</option>
+          </select>
+          <input
+            type="text"
+            id="server-log-filter"
+            class="rgw-log-filter-input"
+            placeholder="Lọc theo từ khoá (VD: ERROR, Traceback, volume_metrics...)"
+            autocomplete="off"
+          >
+          <button type="button" class="btn btn-ghost btn-sm" id="server-log-filter-clear">Xoá lọc</button>
+        </div>
+        <pre class="rgw-log-body" id="server-log-body"><span class="rgw-log-empty">Đang tải log...</span></pre>
       </div>
     </section>
     {% endif %}
@@ -462,5 +500,6 @@
     </div>
   </main>
   <script src="/static/settings.js?v={{ static_version }}"></script>
+  <script src="/static/settings_logs.js?v={{ static_version }}"></script>
 </body>
 </html>

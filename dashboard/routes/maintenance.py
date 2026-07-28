@@ -1,11 +1,13 @@
 import logging
 import re
+from collections import deque
 from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import (
     DASHBOARD_LOG_PATH,
@@ -27,6 +29,26 @@ LOG_PATHS = {
     "watcher": WATCHER_LOG_PATH,
     "worker": WORKER_LOG_PATH,
 }
+
+# 2026-07-28: same "own copy, not a cross-import" posture as
+# dashboard/routes/users.py's identical helper — auth.is_admin_user is the
+# single source of truth either copy defers to.
+def _require_admin_privilege(user: str) -> None:
+    if not auth.is_admin_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ tài khoản admin mới được phép thực hiện thao tác này",
+        )
+
+
+# Every OTHER error message in this app just says "xem log server để biết
+# chi tiết" (go check the server log yourself, over SSH/terminal) — this
+# is the first place that log is actually reachable from the browser.
+# Bounded to the last N lines (not the whole file) for the same reason
+# maintenance's own log purge treats these as unbounded-growth,
+# append-forever files: reading one in full on every request would only
+# get slower as the deployment ages.
+MAX_SERVER_LOG_LINES = 500
 
 # Matches the "%(asctime)s ..." prefix watcher/main.py and worker/main.py's
 # logging.basicConfig() now write (default asctime format: "YYYY-MM-DD
@@ -84,6 +106,34 @@ def _purge_log_file(path: Path, cutoff: datetime | None) -> int:
     with path.open("w") as f:
         f.write(new_text)
     return original_size - len(new_text.encode())
+
+
+def _tail_log_lines(path: Path, term: str = "") -> list[str]:
+    """At most the last MAX_SERVER_LOG_LINES lines of `path`, optionally
+    restricted to lines containing `term` (case-insensitive substring, same
+    matching posture as watcher/rgw_log.py's own filter) — filtered BEFORE
+    truncating to the line cap, so a specific search term (e.g. an error
+    code) still finds its match even if it scrolled past the last 500 raw
+    lines. A `deque(maxlen=...)` keeps memory bounded to the cap regardless
+    of how large the underlying file has grown, at the cost of still
+    reading the whole file once per request — acceptable for an
+    admin-only, on-demand view, not a live high-frequency poll.
+
+    Missing file (process hasn't logged anything yet) returns an empty
+    list, not an error — same "no data yet, not broken" posture as
+    query_rbd_iostat's own missing-data case.
+    """
+    if not path.exists():
+        return []
+    term_lower = term.lower()
+    kept: deque[str] = deque(maxlen=MAX_SERVER_LOG_LINES)
+    with path.open(errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if term_lower and term_lower not in line.lower():
+                continue
+            kept.append(line)
+    return list(kept)
 
 
 def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
@@ -229,3 +279,22 @@ async def cleanup_submit(
         "settings.html",
         _settings_context(user, cleanup_success="Đã xóa xong. " + " ".join(summary_parts)),
     )
+
+
+@router.get("/api/settings/server-log")
+async def server_log_api(name: str, filter: str = "", user: str = Depends(require_login)):
+    """Backs the Settings page's "Log Server" panel — reads the Dashboard/
+    Watcher/Worker process log straight from the browser instead of
+    requiring SSH/terminal access to the box the Dashboard runs on (every
+    OTHER failure message in this app just says "xem log server để biết
+    chi tiết" without actually offering a way to see it). Admin-only,
+    unlike the Nodes page's read-only CLI diagnostics (any logged-in user
+    can run those): a full process log can contain more than an admin
+    would want a regular operator to see (full tracebacks, SSH command
+    lines, internal paths).
+    """
+    _require_admin_privilege(user)
+    if name not in LOG_PATHS:
+        raise HTTPException(status_code=404, detail="Không rõ log nào được yêu cầu")
+    lines = _tail_log_lines(LOG_PATHS[name], filter)
+    return {"name": name, "filter": filter, "lines": lines}

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+import bcrypt
+
 import dashboard.routes.maintenance as maintenance_route
 from shared import db as db_module
 from shared.db import Base, make_engine
@@ -12,12 +14,31 @@ from shared.models import (
     Incident,
     IncidentStatus,
     NodeDiagnosticRun,
+    User,
     VolumeMetric,
 )
 
 
 def _login(client):
     client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def _create_user(username, password, *, is_admin=False):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username=username,
+                password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+                is_admin=is_admin,
+                is_active=True,
+                created_by="admin",
+            )
+        )
+        session.commit()
+
+
+def _login_as(client, username, password):
+    client.post("/login", data={"username": username, "password": password})
 
 
 def _seed_incident_with_action_and_audit(incident_id: str, detected_at: datetime) -> None:
@@ -286,3 +307,85 @@ def test_cleanup_both_targets_reports_both_in_success_message(dashboard_client, 
     assert response.status_code == 200
     assert "DB:" in response.text
     assert "File log:" in response.text
+
+
+# --- GET /api/settings/server-log (2026-07-28, admin-only in-browser log
+# viewer — every other error message in this app says "xem log server để
+# biết chi tiết" without offering a way to actually do that). ------------
+
+
+def test_unauthenticated_server_log_api_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/api/settings/server-log?name=dashboard", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_server_log_api_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/api/settings/server-log?name=dashboard")
+
+    assert response.status_code == 403
+
+
+def test_server_log_api_rejects_unknown_log_name(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/settings/server-log?name=not-a-real-log")
+    assert response.status_code == 404
+
+
+def test_server_log_api_returns_tail_of_requested_log(dashboard_client, monkeypatch, tmp_path):
+    log_path = tmp_path / "watcher.log"
+    log_path.write_text(
+        "2026-01-01 00:00:00 INFO:x:line one\n"
+        "2026-01-01 00:00:01 ERROR:x:line two\n"
+    )
+    monkeypatch.setitem(maintenance_route.LOG_PATHS, "watcher", log_path)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/settings/server-log?name=watcher")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "watcher"
+    assert body["lines"] == [
+        "2026-01-01 00:00:00 INFO:x:line one",
+        "2026-01-01 00:00:01 ERROR:x:line two",
+    ]
+
+
+def test_server_log_api_filters_by_term_case_insensitively(dashboard_client, monkeypatch, tmp_path):
+    log_path = tmp_path / "watcher.log"
+    log_path.write_text(
+        "2026-01-01 00:00:00 INFO:x:all good here\n"
+        "2026-01-01 00:00:01 ERROR:x:something broke\n"
+    )
+    monkeypatch.setitem(maintenance_route.LOG_PATHS, "watcher", log_path)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/settings/server-log?name=watcher&filter=error")
+
+    assert response.status_code == 200
+    assert response.json()["lines"] == ["2026-01-01 00:00:01 ERROR:x:something broke"]
+
+
+def test_server_log_api_returns_empty_list_for_missing_log_file(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setitem(maintenance_route.LOG_PATHS, "watcher", tmp_path / "does-not-exist.log")
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/settings/server-log?name=watcher")
+
+    assert response.status_code == 200
+    assert response.json()["lines"] == []
+
+
+def test_tail_log_lines_caps_at_max_lines(tmp_path):
+    log_path = tmp_path / "big.log"
+    log_path.write_text("".join(f"line {i}\n" for i in range(maintenance_route.MAX_SERVER_LOG_LINES + 50)))
+
+    lines = maintenance_route._tail_log_lines(log_path)
+
+    assert len(lines) == maintenance_route.MAX_SERVER_LOG_LINES
+    assert lines[0] == f"line {50}"  # oldest 50 lines dropped, tail kept
+    assert lines[-1] == f"line {maintenance_route.MAX_SERVER_LOG_LINES + 49}"
