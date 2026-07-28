@@ -47,7 +47,18 @@ _REMOTE_MONMAP_PATH = "/tmp/ceph-aiops.monmap"
 _REMOTE_ADMIN_KEYRING_PATH = "/etc/ceph/ceph.client.admin.keyring"
 _REMOTE_BOOTSTRAP_OSD_KEYRING_PATH = "/var/lib/ceph/bootstrap-osd/ceph.keyring"
 
-_ROLE_TO_PACKAGE = {"mon": "ceph-mon", "mgr": "ceph-mgr", "osd": "ceph-osd"}
+# 2026-07-28 fix (verified live): `ceph-volume` (needed for
+# `_phase_ceph_deploy_osd_create`'s `ceph-volume lvm create`, and this
+# module's own OSD-disk-wipe fallback) is its OWN separate RPM sub-package
+# — NOT bundled inside `ceph-osd`, and NOT reliably pulled in as an
+# automatic dependency either (confirmed live: a real Quincy 17.2.5/el8
+# host had `ceph-osd` installed with `ceph-volume` nowhere on the
+# filesystem at all — verified against Fedora's own package listing,
+# which shows "ceph-volume" as a sibling subpackage of `ceph`, not
+# something `ceph-osd`'s own spec pulls in for this build). The "osd"
+# role now installs both explicitly, same "own copy, don't guess"
+# reliability posture as pinning the exact version below.
+_ROLE_TO_PACKAGES = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd", "ceph-volume")}
 
 logger = logging.getLogger(__name__)
 
@@ -767,7 +778,11 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
     for i, node in enumerate(nodes):
         host = node["ip"]
         packages = sorted(
-            {_ROLE_TO_PACKAGE[r] for r in (node.get("roles") or []) if r in _ROLE_TO_PACKAGE}
+            {
+                pkg
+                for role in (node.get("roles") or [])
+                for pkg in _ROLE_TO_PACKAGES.get(role, ())
+            }
         )
         if not packages:
             host_status[i]["status"] = "done"

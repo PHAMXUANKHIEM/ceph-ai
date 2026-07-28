@@ -842,6 +842,14 @@ def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(m
     assert "ceph-mgr" in seen_install_commands["10.20.1.112"][0]
     assert "ceph-osd" not in seen_install_commands["10.20.1.112"][0]
     assert all(pkg in seen_install_commands["10.20.1.95"][0] for pkg in ("ceph-mon", "ceph-mgr", "ceph-osd"))
+    # 2026-07-28 regression: ceph-volume is its OWN separate RPM
+    # sub-package (verified live — a real Quincy/el8 host had ceph-osd
+    # installed with no ceph-volume anywhere on disk), not bundled inside
+    # ceph-osd — must be installed alongside it for every OSD-role node,
+    # or `ceph-volume lvm create` (the very next phase) fails with
+    # "command not found".
+    assert "ceph-volume" in seen_install_commands["10.20.1.95"][0]
+    assert "ceph-volume" not in seen_install_commands["10.20.1.112"][0]  # no osd role there
 
     assert written_fields["CEPH_EXEC_MODE"] == "none"
     assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95,10.20.1.21"
@@ -972,8 +980,13 @@ def test_ceph_deploy_packages_pins_exact_version_for_nautilus(monkeypatch):
     )
 
     command = seen_commands[0]
-    assert "dnf install -y ceph-mgr-14.2.22 ceph-mon-14.2.22 ceph-osd-14.2.22" in command
-    assert "apt-get install -y ceph-mgr ceph-mon ceph-osd" in command  # apt never pins — no ambiguity there
+    assert (
+        "dnf install -y ceph-mgr-14.2.22 ceph-mon-14.2.22 ceph-osd-14.2.22 ceph-volume-14.2.22"
+        in command
+    )
+    assert (
+        "apt-get install -y ceph-mgr ceph-mon ceph-osd ceph-volume" in command
+    )  # apt never pins — no ambiguity there
 
 
 def test_ceph_deploy_packages_does_not_pin_version_for_normal_releases(monkeypatch):
