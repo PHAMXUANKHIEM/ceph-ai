@@ -15,6 +15,7 @@
   var searchForm = document.getElementById("volume-search-form");
   var searchInput = document.getElementById("volume-search-input");
   var datalist = document.getElementById("volume-datalist");
+  var suggestionsEl = document.getElementById("volume-suggestions");
   var emptyState = document.getElementById("volume-chart-empty");
   var chartStack = document.getElementById("volume-chart-stack");
   var spinner = document.getElementById("header-spinner");
@@ -114,6 +115,7 @@
   /* ---------- App state ---------- */
   var App = {
     currentImage: null,
+    knownImages: [],
     timestamps: [],
     buffers: {}, // field -> [values]
     peak: {},
@@ -132,8 +134,51 @@
     emptyState.hidden = true;
     chartStack.hidden = false;
     METRICS.forEach(function (cfg) { sections[cfg.key].hasDrawnOnce = false; });
+    renderSuggestions(searchInput.value);
     fetchHistory();
     App.pollTimer = setInterval(fetchHistory, REFRESH_INTERVAL_MS);
+  }
+
+  // 2026-07-29: the search box's <datalist> alone turned out to be too
+  // easy to miss (its suggestions only show up once the operator clicks
+  // into the field, and on some browsers only after typing a first
+  // character) — this app already persists every volume name it has ever
+  // seen (VolumeMetric), so there's no reason to hide that list behind
+  // typing. Renders every known name as a clickable chip, live-filtered
+  // by whatever's currently in the search box; the box itself still works
+  // for typing an exact name directly (e.g. one not seen yet).
+  function renderSuggestions(filterText) {
+    if (!suggestionsEl) return;
+    var q = (filterText || "").trim().toLowerCase();
+    suggestionsEl.innerHTML = "";
+    if (!App.knownImages.length) {
+      var hint = document.createElement("span");
+      hint.className = "hint";
+      hint.textContent = "Chưa có Volume nào được ghi nhận trong pool này.";
+      suggestionsEl.appendChild(hint);
+      return;
+    }
+    var matches = App.knownImages.filter(function (name) {
+      return !q || name.toLowerCase().indexOf(q) !== -1;
+    });
+    if (!matches.length) {
+      var none = document.createElement("span");
+      none.className = "hint";
+      none.textContent = "Không khớp tên nào.";
+      suggestionsEl.appendChild(none);
+      return;
+    }
+    matches.forEach(function (name) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-sm " + (name === App.currentImage ? "btn-primary" : "btn-ghost");
+      btn.textContent = name;
+      btn.addEventListener("click", function () {
+        searchInput.value = name;
+        selectImage(name);
+      });
+      suggestionsEl.appendChild(btn);
+    });
   }
 
   function fetchHistory() {
@@ -203,19 +248,27 @@
     });
   }
 
+  if (searchInput) {
+    searchInput.addEventListener("input", function () { renderSuggestions(searchInput.value); });
+  }
+
   function loadKnownImages() {
     fetch("/api/volumes/" + encodeURIComponent(pool) + "/images", { credentials: "same-origin" })
       .then(function (response) { return response.ok ? response.json() : null; })
       .then(function (data) {
-        if (!data || !datalist) return;
-        datalist.innerHTML = "";
-        (data.images || []).forEach(function (image) {
-          var option = document.createElement("option");
-          option.value = image;
-          datalist.appendChild(option);
-        });
+        if (!data) return;
+        App.knownImages = data.images || [];
+        renderSuggestions(searchInput.value);
+        if (datalist) {
+          datalist.innerHTML = "";
+          App.knownImages.forEach(function (image) {
+            var option = document.createElement("option");
+            option.value = image;
+            datalist.appendChild(option);
+          });
+        }
       })
-      .catch(function () { /* autocomplete is a convenience, not required */ });
+      .catch(function () { /* suggestions are a convenience, not required */ });
   }
 
   /* ---------- drawing ---------- */
