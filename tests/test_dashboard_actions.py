@@ -164,6 +164,47 @@ def test_approve_action_with_no_command_pg_repair_force_also_closes_out(dashboar
         assert action.status == ActionStatus.EXECUTED.value
 
 
+def test_approve_volume_perf_sweep_sets_approved_not_executed(dashboard_client):
+    # Regression, 2026-07-29 (verified live via a real user report): before
+    # worker/executor/commands.py registered a preview builder for
+    # volume_perf_sweep, has_command("volume_perf_sweep") was False —
+    # approve_action took the SAME "no command, nothing to execute" branch
+    # as investigate_manually/pg_repair_force above, silently marking the
+    # Action EXECUTED with the sweep never actually run. Symptom the
+    # operator saw: clicking "Duyệt" just redirected back to "/" with
+    # nothing else happening — no error, no progress, no sweep.
+    with db_module.SessionLocal() as session:
+        session.add(
+            Incident(
+                id="inc-perf-sweep",
+                ceph_code="VOLUME_PERF_SWEEP",
+                status=IncidentStatus.PENDING_APPROVAL.value,
+                detected_at=datetime.utcnow(),
+            )
+        )
+        action = Action(
+            incident_id="inc-perf-sweep",
+            action_id="volume_perf_sweep",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            target_nodes='["10.20.1.112"]',
+            action_params='{"pool": "vms", "mon_ip": "10.20.1.112"}',
+        )
+        session.add(action)
+        session.commit()
+        action_id = action.id
+
+    _login(dashboard_client)
+    response = dashboard_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.status == ActionStatus.APPROVED.value
+        incident = session.get(Incident, "inc-perf-sweep")
+        assert incident.status == IncidentStatus.APPROVED.value
+
+
 def test_approve_already_approved_action_is_a_no_op(dashboard_client):
     action_id = _pending_action("inc-double")
     _login(dashboard_client)

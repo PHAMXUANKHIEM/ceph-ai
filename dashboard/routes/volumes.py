@@ -403,6 +403,12 @@ async def propose_volume_perf_sweep(pool: str, user: str = Depends(require_login
         "osd_ips": osd_ips,
         "requested_by": user,
     }
+    try:
+        preview_command = executor_commands.get_command(
+            VOLUME_PERF_SWEEP_ACTION_ID, mon_nodes[0], action_params
+        )
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
 
     with db.SessionLocal() as session:
         incident = Incident(
@@ -429,6 +435,7 @@ async def propose_volume_perf_sweep(pool: str, user: str = Depends(require_login
             ),
             target_nodes=json.dumps([mon_nodes[0]]),
             action_params=json.dumps(action_params),
+            proposed_command=preview_command,
         )
         session.add(action)
         session.flush()

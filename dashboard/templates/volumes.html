@@ -120,6 +120,9 @@
         </p>
 
         {% if perf_sweep_action and perf_sweep_action.status == "PENDING_APPROVAL" %}
+        {% if perf_sweep_action.proposed_command %}
+        <pre class="upgrade-plan-text">{{ perf_sweep_action.proposed_command }}</pre>
+        {% endif %}
         <div class="pending-action-buttons">
           <span class="hint">Chờ duyệt — sẽ tạo tải I/O thật lên cluster trong vài phút khi bắt đầu.</span>
           <form method="post" action="/actions/{{ perf_sweep_action.id }}/approve" class="inline-form">

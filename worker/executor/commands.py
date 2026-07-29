@@ -757,6 +757,32 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
 }
 
 
+def _volume_perf_sweep_preview_command(host: str | None, params: dict) -> str:
+    pool = params.get("pool", "?")
+    mon_ip = params.get("mon_ip") or host or "<mon-node>"
+    return (
+        f"Quét tải fio tăng dần (iodepth 1→256) trên scratch image riêng của pool {pool}, chạy từ "
+        f"{mon_ip} — tìm điểm bão hoà hiệu năng, KHÔNG đụng volume thật — xem đầy đủ các bước khi "
+        f"bắt đầu đo"
+    )
+
+
+# 2026-07-29 fix (verified live): dashboard/routes/actions.py::approve_action
+# checks has_command(action_id) BEFORE ever setting Action.status=APPROVED —
+# without an entry here, has_command("volume_perf_sweep") returned False
+# (same "own multi-step orchestrator, no per-host Command" shape as the
+# cluster-deploy family above, but that family's own preview builders are
+# what actually makes has_command() see them). approve_action's "no Command
+# -> nothing to execute" branch then marked the Action EXECUTED immediately
+# on approval, WITHOUT ever setting APPROVED — worker/llm/router_client.py's
+# poll_approved_actions only ever queries status=APPROVED, so it never even
+# saw this action. Symptom, exactly as reported: clicking "Duyệt" just
+# silently redirected to "/" with no sweep ever starting.
+_VOLUME_PERF_COMMAND_BUILDERS = {
+    "volume_perf_sweep": _volume_perf_sweep_preview_command,
+}
+
+
 def get_command(action_id: str, host: str | None = None, params: dict | None = None) -> str:
     """No command defined -> ExecutorError, never a silent no-op or a guess
     at what to run — an unrecognized action_id must never execute anything.
@@ -783,6 +809,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _PATCH_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS:
         return _CLUSTER_DEPLOY_COMMAND_BUILDERS[action_id](host, params or {})
+    if action_id in _VOLUME_PERF_COMMAND_BUILDERS:
+        return _VOLUME_PERF_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id not in COMMANDS:
         raise ExecutorError(f"no Command defined for action_id={action_id!r}")
     return COMMANDS[action_id]
@@ -809,5 +837,6 @@ def has_command(action_id: str) -> bool:
         or action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS
         or action_id in _PATCH_COMMAND_BUILDERS
         or action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS
+        or action_id in _VOLUME_PERF_COMMAND_BUILDERS
         or action_id in COMMANDS
     )

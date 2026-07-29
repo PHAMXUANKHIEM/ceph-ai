@@ -707,3 +707,29 @@ def test_convert_cluster_to_cephadm_preview_mentions_version_and_first_mon():
 
 def test_has_command_true_for_convert_cluster_to_cephadm():
     assert commands_module.has_command("convert_cluster_to_cephadm") is True
+
+
+# --- Volumes "Đo hiệu năng tối đa" (preview builder only — real execution
+# is worker/executor/volume_perf.py, not this module) -----------------------
+
+
+def test_volume_perf_sweep_preview_mentions_pool_and_mon_ip():
+    command = get_command("volume_perf_sweep", None, {"pool": "vms", "mon_ip": "10.20.1.112"})
+    assert "vms" in command
+    assert "10.20.1.112" in command
+    assert "fio" in command
+
+
+def test_volume_perf_sweep_preview_falls_back_to_host_when_no_mon_ip_in_params():
+    command = get_command("volume_perf_sweep", "10.20.1.200", {"pool": "vms"})
+    assert "10.20.1.200" in command
+
+
+def test_has_command_true_for_volume_perf_sweep():
+    # Regression, 2026-07-29 (verified live): dashboard/routes/actions.py::
+    # approve_action checks has_command() BEFORE ever setting
+    # Action.status=APPROVED — without an entry here, approving a
+    # volume_perf_sweep proposal silently marked it EXECUTED with nothing
+    # ever run (worker/llm/router_client.py's poll only ever looks at
+    # status=APPROVED), and just redirected to "/" with no visible error.
+    assert commands_module.has_command("volume_perf_sweep") is True

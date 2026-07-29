@@ -138,6 +138,7 @@ def test_volumes_page_shows_approve_reject_when_perf_sweep_pending(dashboard_cli
     assert f'action="/actions/{action_id}/approve"' in response.text
     assert f'action="/actions/{action_id}/reject"' in response.text
     assert 'id="perf-sweep-run-btn"' not in response.text
+    assert "fio" in response.text  # proposed_command preview shown before approval
 
 
 def test_volumes_page_shows_running_indicator_when_perf_sweep_approved(dashboard_client, monkeypatch):
@@ -490,6 +491,14 @@ def test_propose_perf_sweep_creates_pending_approval_action(dashboard_client, mo
         assert params["mon_ip"] == "10.20.1.150"
         assert params["osd_ips"] == ["10.20.1.83", "10.20.1.78", "10.20.1.1"]
         assert params["requested_by"] == "admin"
+        # 2026-07-29 regression: without a proposed_command, has_command()
+        # returns False for this action_id and approving it silently
+        # closes it out as EXECUTED without ever running anything (see
+        # tests/test_dashboard_actions.py's own regression test for the
+        # approve-side half of this).
+        assert action.proposed_command
+        assert "vms" in action.proposed_command
+        assert "fio" in action.proposed_command
 
         incident = session.get(Incident, action.incident_id)
         assert incident.ceph_code == "VOLUME_PERF_SWEEP"
