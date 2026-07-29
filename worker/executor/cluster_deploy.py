@@ -1227,17 +1227,38 @@ def _phase_delete_manual_remove_state(nodes: list[dict], action_params: dict, on
     suspenders alongside the dependencies phase's own defensive cleanup of
     the same files, since a node could otherwise sit with a now-pointless
     enabled repo indefinitely between one cluster's deletion and the next
-    deploy. Never touches an operator's own repo files (different names) or
-    anything under /etc/ceph, /var/lib/ceph beyond what's already covered
-    above."""
+    deploy.
+
+    2026-07-29, "xoá mọi thứ liên quan tới Ceph" (operator request): three
+    more categories of leftover this app's own phases create, none of them
+    under /etc/ceph or /var/lib/ceph so the rm above never touched them —
+    (3) /usr/local/bin/cephadm — a plain curl-downloaded script
+    (_phase_cephadm_bootstrap/_phase_convert_install_cephadm), never
+    package-managed, so remove_packages' `dnf/apt remove ceph*` below can
+    never touch it either; left behind, `command -v cephadm` keeps
+    succeeding on a node this app just called "deleted". (4) /var/log/ceph
+    — daemon logs, not covered by any of the above. (5) cephadm's own
+    generated systemd unit FILES (`ceph-<fsid>@.service` template,
+    `ceph-<fsid>.target`, and their .wants symlinks) — the stop_daemons
+    phase before this one only stops+disables units it can already find
+    via `systemctl`, which drops the enablement symlink but leaves the
+    unit FILE itself in /etc/systemd/system, so it keeps showing up in
+    `systemctl list-units` indefinitely; `systemctl daemon-reload`
+    afterward makes systemd actually forget them immediately instead of
+    only at next boot. Still never touches an operator's own repo files
+    (different names), any other systemd unit, or anything under
+    /etc/ceph, /var/lib/ceph beyond what's already covered above."""
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
     unmount_then_remove = (
         "for m in $(awk '$2 ~ /^\\/var\\/lib\\/ceph\\// {print $2}' /proc/mounts); do "
         "umount \"$m\" 2>/dev/null || umount -l \"$m\" 2>/dev/null; done; "
-        "rm -rf /etc/ceph /var/lib/ceph /tmp/ceph-aiops*; "
+        "rm -rf /etc/ceph /var/lib/ceph /var/log/ceph /tmp/ceph-aiops* /usr/local/bin/cephadm; "
         "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo /etc/yum.repos.d/ceph-aiops-local.repo "
-        "/etc/apt/sources.list.d/ceph.list /etc/apt/sources.list.d/ceph-aiops-local.list"
+        "/etc/apt/sources.list.d/ceph.list /etc/apt/sources.list.d/ceph-aiops-local.list; "
+        "rm -rf /etc/systemd/system/ceph-*.target /etc/systemd/system/ceph-*.target.wants "
+        "/etc/systemd/system/ceph-*@*.service* /etc/systemd/system/multi-user.target.wants/ceph-*; "
+        "systemctl daemon-reload 2>/dev/null || true"
     )
     for i, node in enumerate(nodes):
         host = node["ip"]

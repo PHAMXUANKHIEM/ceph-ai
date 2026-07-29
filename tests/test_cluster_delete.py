@@ -229,6 +229,16 @@ def test_delete_manual_happy_path_stops_daemons_and_removes_state_but_keeps_disk
     # is genuinely reusable for a fresh "Dựng cụm" afterward.
     assert any("/tmp/ceph-aiops*" in cmd for _host, cmd in seen_commands)
     assert any("download.ceph.com_rpm-*.repo" in cmd for _host, cmd in seen_commands)
+    # 2026-07-29, "xoá mọi thứ liên quan tới Ceph": /usr/local/bin/cephadm
+    # (a curl-downloaded script, never package-managed, so remove_packages'
+    # dnf/apt glob can never touch it), /var/log/ceph, and cephadm's own
+    # leftover systemd unit FILES + a daemon-reload so systemd actually
+    # forgets them immediately.
+    assert any("/usr/local/bin/cephadm" in cmd for _host, cmd in seen_commands)
+    assert any("/var/log/ceph" in cmd for _host, cmd in seen_commands)
+    assert any("/etc/systemd/system/ceph-*.target" in cmd for _host, cmd in seen_commands)
+    assert any("/etc/systemd/system/ceph-*@*.service*" in cmd for _host, cmd in seen_commands)
+    assert any("systemctl daemon-reload" in cmd for _host, cmd in seen_commands)
 
     assert written_fields["CEPH_MON_NODES"] == ""
     assert written_fields["CEPH_EXEC_MODE"] == "none"
