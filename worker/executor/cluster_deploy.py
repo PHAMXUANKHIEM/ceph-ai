@@ -47,18 +47,30 @@ _REMOTE_MONMAP_PATH = "/tmp/ceph-aiops.monmap"
 _REMOTE_ADMIN_KEYRING_PATH = "/etc/ceph/ceph.client.admin.keyring"
 _REMOTE_BOOTSTRAP_OSD_KEYRING_PATH = "/var/lib/ceph/bootstrap-osd/ceph.keyring"
 
-# 2026-07-28 fix (verified live): `ceph-volume` (needed for
-# `_phase_ceph_deploy_osd_create`'s `ceph-volume lvm create`, and this
-# module's own OSD-disk-wipe fallback) is its OWN separate RPM sub-package
-# — NOT bundled inside `ceph-osd`, and NOT reliably pulled in as an
-# automatic dependency either (confirmed live: a real Quincy 17.2.5/el8
-# host had `ceph-osd` installed with `ceph-volume` nowhere on the
-# filesystem at all — verified against Fedora's own package listing,
-# which shows "ceph-volume" as a sibling subpackage of `ceph`, not
-# something `ceph-osd`'s own spec pulls in for this build). The "osd"
-# role now installs both explicitly, same "own copy, don't guess"
-# reliability posture as pinning the exact version below.
-_ROLE_TO_PACKAGES = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd", "ceph-volume")}
+# 2026-07-29 fix (verified live + against the actual repo this app
+# installs from): the 2026-07-28 version of this table added "ceph-volume"
+# as its own separate package for BOTH package managers, based on Fedora
+# Project's own package listing — but Fedora's own dnf repos are a
+# DIFFERENT build/spec than download.ceph.com (the repo
+# _build_ceph_package_repo_command below actually configures, and the only
+# one this codebase ever installs from). Directly checked
+# download.ceph.com's real directory listings for three major versions
+# (rpm-nautilus/el8, rpm-quincy/el9, rpm-18.2.8/el9) — NONE of them ship a
+# standalone `ceph-volume*.rpm` at all; `ceph-volume` is bundled inside
+# `ceph-osd`'s own RPM there, for every version. Pinning
+# "ceph-volume-<version>" for an RPM install therefore 404s ALWAYS ("Error:
+# Unable to find a match: ceph-volume-14.2.22" — confirmed live on
+# el8/Nautilus), not just for some versions.
+#
+# debian-quincy's own pool DOES ship a separate `ceph-volume_*.deb`
+# distinct from `ceph-osd_*.deb`, though — genuinely a packaging
+# difference between the two distros' upstream builds, not the same fact
+# misapplied. Two separate tables below, one per package manager, instead
+# of one shared list — RPM installs never request ceph-volume at all now
+# (relies on ceph-osd's RPM providing it), APT installs still request it
+# explicitly.
+_ROLE_TO_PACKAGES_RPM = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd",)}
+_ROLE_TO_PACKAGES_APT = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd", "ceph-volume")}
 
 logger = logging.getLogger(__name__)
 
@@ -777,14 +789,10 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
 
     for i, node in enumerate(nodes):
         host = node["ip"]
-        packages = sorted(
-            {
-                pkg
-                for role in (node.get("roles") or [])
-                for pkg in _ROLE_TO_PACKAGES.get(role, ())
-            }
-        )
-        if not packages:
+        roles = node.get("roles") or []
+        apt_packages = sorted({pkg for role in roles for pkg in _ROLE_TO_PACKAGES_APT.get(role, ())})
+        rpm_packages = sorted({pkg for role in roles for pkg in _ROLE_TO_PACKAGES_RPM.get(role, ())})
+        if not apt_packages and not rpm_packages:
             host_status[i]["status"] = "done"
             host_status[i]["message"] = "không có vai trò mon/mgr/osd — bỏ qua"
             on_host_update(list(host_status))
@@ -792,11 +800,17 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
 
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
-        package_list = " ".join(packages)
-        rpm_package_list = " ".join(f"{pkg}-{version}" for pkg in packages) if pin_exact_version else package_list
-        apt_snippet = f"apt-get install -y {package_list}"
+        apt_package_list = " ".join(apt_packages)
+        rpm_package_list = (
+            " ".join(f"{pkg}-{version}" for pkg in rpm_packages) if pin_exact_version else " ".join(rpm_packages)
+        )
+        apt_snippet = f"apt-get install -y {apt_package_list}"
         rpm_snippet = f"(dnf install -y {rpm_package_list} || yum install -y {rpm_package_list})"
         install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+        # Only used for progress display text — the ACTUAL install command
+        # correctly differs per package manager above (apt_package_list
+        # includes ceph-volume, rpm_package_list never does).
+        package_list = " ".join(sorted(set(apt_packages) | set(rpm_packages)))
         try:
             execute_command(host, install_command)
         except ExecutorError as exc:

@@ -842,13 +842,24 @@ def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(m
     assert "ceph-mgr" in seen_install_commands["10.20.1.112"][0]
     assert "ceph-osd" not in seen_install_commands["10.20.1.112"][0]
     assert all(pkg in seen_install_commands["10.20.1.95"][0] for pkg in ("ceph-mon", "ceph-mgr", "ceph-osd"))
-    # 2026-07-28 regression: ceph-volume is its OWN separate RPM
-    # sub-package (verified live — a real Quincy/el8 host had ceph-osd
-    # installed with no ceph-volume anywhere on disk), not bundled inside
-    # ceph-osd — must be installed alongside it for every OSD-role node,
-    # or `ceph-volume lvm create` (the very next phase) fails with
-    # "command not found".
-    assert "ceph-volume" in seen_install_commands["10.20.1.95"][0]
+    # 2026-07-29 regression (supersedes a 2026-07-28 fix that got this
+    # backwards): download.ceph.com's own RPM repos (checked directly —
+    # rpm-nautilus/el8, rpm-quincy/el9, rpm-18.2.8/el9) never ship a
+    # standalone ceph-volume RPM for ANY version; it's bundled inside
+    # ceph-osd there. The 2026-07-28 fix added "ceph-volume" to the RPM
+    # install command based on Fedora Project's OWN package listing — a
+    # different build/repo than this app ever installs from — which made
+    # every RPM install request a package NEVRA that has never existed
+    # ("Unable to find a match: ceph-volume-14.2.22", confirmed live).
+    # _package_manager_branch's generated command carries BOTH the apt AND
+    # rpm branches inline in one string (only one runs at execution time,
+    # decided live on the host) — the apt branch legitimately keeps
+    # "ceph-volume", so a plain substring check against the whole command
+    # would pass even with the old, wrong RPM behavior. Check the actual
+    # dnf/yum install list text specifically instead.
+    assert "dnf install -y ceph-mgr ceph-mon ceph-osd || yum install -y ceph-mgr ceph-mon ceph-osd" in (
+        seen_install_commands["10.20.1.95"][0]
+    )
     assert "ceph-volume" not in seen_install_commands["10.20.1.112"][0]  # no osd role there
 
     assert written_fields["CEPH_EXEC_MODE"] == "none"
@@ -965,7 +976,14 @@ def test_ceph_deploy_packages_pins_exact_version_for_nautilus(monkeypatch):
     installs whenever that fallback kicked in. Calls the phase function
     directly — same reasoning as the dependencies-phase regression test
     above, no need to drive the whole run() pipeline through quorum/mgr/osd
-    just to check one install command's package names."""
+    just to check one install command's package names.
+
+    2026-07-29: also the exact real-world failure this pinning interacted
+    badly with — pinning "ceph-volume-14.2.22" specifically always 404s
+    ("Unable to find a match"), since download.ceph.com's RPM repos never
+    ship a standalone ceph-volume package for any version (see
+    _ROLE_TO_PACKAGES_RPM's own comment). RPM must not request ceph-volume
+    at all; apt still does (a genuine, confirmed packaging difference)."""
     seen_commands = []
 
     def fake(host, command):
@@ -980,13 +998,11 @@ def test_ceph_deploy_packages_pins_exact_version_for_nautilus(monkeypatch):
     )
 
     command = seen_commands[0]
-    assert (
-        "dnf install -y ceph-mgr-14.2.22 ceph-mon-14.2.22 ceph-osd-14.2.22 ceph-volume-14.2.22"
-        in command
-    )
+    assert "dnf install -y ceph-mgr-14.2.22 ceph-mon-14.2.22 ceph-osd-14.2.22" in command
+    assert "ceph-volume-14.2.22" not in command
     assert (
         "apt-get install -y ceph-mgr ceph-mon ceph-osd ceph-volume" in command
-    )  # apt never pins — no ambiguity there
+    )  # apt never pins — no ambiguity there; and DOES include ceph-volume
 
 
 def test_ceph_deploy_packages_does_not_pin_version_for_normal_releases(monkeypatch):
