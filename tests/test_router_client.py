@@ -1449,6 +1449,96 @@ def test_execute_approved_action_cluster_deploy_malformed_action_params_marks_fa
         assert session.get(Action, action_pk).status == ActionStatus.FAILED.value
 
 
+# --- Volumes "Đo hiệu năng tối đa" delegates to volume_perf.run() --------
+# (volume_perf.run()'s own sweep/knee-detection logic is covered
+# exhaustively in tests/test_volume_perf.py — these tests only cover the
+# dispatch/status-recording wiring in _execute_approved_action itself,
+# same split as the cluster-deploy family above.)
+
+
+def _approved_volume_perf_action(session, incident_id: str, action_params: dict | None) -> Action:
+    import json as _json
+
+    action = Action(
+        incident_id=incident_id,
+        action_id="volume_perf_sweep",
+        classification=ActionClassification.RISKY.value,
+        status=ActionStatus.APPROVED.value,
+        target_nodes=_json.dumps(["10.20.1.112"]),
+        action_params=_json.dumps(action_params) if action_params is not None else None,
+    )
+    session.add(action)
+    session.commit()
+    return action
+
+
+def test_execute_approved_action_delegates_to_volume_perf_for_volume_perf_sweep(
+    isolated_db, monkeypatch
+):
+    monkeypatch.setattr(
+        router_client, "execute_command", lambda host, cmd: pytest.fail("must not use the generic loop")
+    )
+    run_calls = []
+
+    def fake_run(action_pk, action_params, incident_id, write_progress, check_kill_switch):
+        run_calls.append((action_pk, action_params, incident_id))
+        return True
+
+    monkeypatch.setattr(router_client.volume_perf, "run", fake_run)
+
+    _create_incident("incident-9a")
+    with db_module.SessionLocal() as session:
+        action = _approved_volume_perf_action(session, "incident-9a", {"pool": "vms", "mon_ip": "10.20.1.112"})
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert len(run_calls) == 1
+    assert run_calls[0][0] == action_pk
+    assert run_calls[0][1] == {"pool": "vms", "mon_ip": "10.20.1.112"}
+    assert run_calls[0][2] == "incident-9a"
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        incident = session.get(Incident, "incident-9a")
+        assert incident.status == IncidentStatus.RESOLVED.value
+
+
+def test_execute_approved_action_volume_perf_failure_marks_failed(isolated_db, monkeypatch):
+    monkeypatch.setattr(router_client.volume_perf, "run", lambda *a, **kw: False)
+
+    _create_incident("incident-9b")
+    with db_module.SessionLocal() as session:
+        action = _approved_volume_perf_action(session, "incident-9b", {"pool": "vms", "mon_ip": "10.20.1.112"})
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+        incident = session.get(Incident, "incident-9b")
+        assert incident.status == IncidentStatus.FAILED.value
+
+
+def test_execute_approved_action_volume_perf_malformed_action_params_marks_failed(
+    isolated_db, monkeypatch
+):
+    monkeypatch.setattr(
+        router_client.volume_perf, "run", lambda *a, **kw: pytest.fail("must not be called")
+    )
+
+    _create_incident("incident-9c")
+    with db_module.SessionLocal() as session:
+        action = _approved_volume_perf_action(session, "incident-9c", action_params=None)
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.FAILED.value
+
+
 def test_poll_approved_actions_processes_pending_approved_rows_then_stops(isolated_db, monkeypatch):
     execute_calls = []
 

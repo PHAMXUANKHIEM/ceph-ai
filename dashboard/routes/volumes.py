@@ -4,12 +4,14 @@ import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.incidents import OPEN_STATUSES
 from dashboard.templating import make_templates
+from dashboard.vntime import format_vn_clock
 from shared import audit, db
 from shared.models import (
     Action,
@@ -18,6 +20,7 @@ from shared.models import (
     Incident,
     IncidentStatus,
     VolumeMetric,
+    VolumePerfSweep,
 )
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
@@ -57,6 +60,14 @@ RBD_TRASH_REMOVE_ACTION_ID = "rbd_trash_remove"
 # ever look at RBD_TRASH_REMOVE_ACTION_ID rows, but keeping the ceph_code
 # distinct too makes the Incident list/Audit Trail unambiguous at a glance).
 RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
+
+# 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
+# incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
+# action with no detected Incident behind it). Executed by
+# worker/executor/volume_perf.py, dispatched via worker/policy/gate.py's
+# own `volume_perf_action_ids` family (see that yaml's own comment).
+VOLUME_PERF_SWEEP_CEPH_CODE = "VOLUME_PERF_SWEEP"
+VOLUME_PERF_SWEEP_ACTION_ID = "volume_perf_sweep"
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 
@@ -112,6 +123,7 @@ def _volumes_page_context(
     trash_entries: list[dict] = []
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
+    perf_sweep_action: Action | None = None
     if pool:
         try:
             trash_entries = ceph_client.query_rbd_trash(pool)
@@ -119,6 +131,7 @@ def _volumes_page_context(
             logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", pool, exc)
             trash_error = str(exc)
         trash_pending = _in_flight_trash_actions(pool)
+        perf_sweep_action = _latest_perf_sweep_action(pool)
 
     return {
         "user": user,
@@ -128,6 +141,7 @@ def _volumes_page_context(
         "trash_entries": trash_entries,
         "trash_error": trash_error,
         "trash_pending": trash_pending,
+        "perf_sweep_action": perf_sweep_action,
         "purge_error": purge_error,
         "purge_success": purge_success,
     }
@@ -306,6 +320,193 @@ async def volume_history_api(
         "peak": peak,
         "saturated": saturated_now,
     }
+
+
+# --- "Đo hiệu năng tối đa" load sweep (2026-07-29) ------------------------
+
+
+def _latest_perf_sweep_action(pool: str) -> Action | None:
+    """Most recent volume_perf_sweep Action for `pool`, regardless of
+    status — same "load every row of a small table, filter action_params
+    in Python" posture as _in_flight_trash_actions above (no portable
+    cross-DB JSON-field query in this codebase)."""
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(Action)
+            .filter(Action.action_id == VOLUME_PERF_SWEEP_ACTION_ID)
+            .order_by(Action.created_at.desc())
+            .all()
+        )
+        for action in rows:
+            try:
+                params = json.loads(action.action_params) if action.action_params else {}
+            except (TypeError, ValueError):
+                continue
+            if params.get("pool") == pool:
+                return action
+    return None
+
+
+def _step_clock(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return format_vn_clock(datetime.fromisoformat(value))
+    except ValueError:
+        return None
+
+
+def _with_step_display_times(progress: list) -> list:
+    """Same fix, same reason as dashboard/routes/convert_cluster.py's
+    identical helper — freezes a finished step's displayed time instead of
+    letting the frontend drift it to "now" on every poll."""
+    for step in progress:
+        if isinstance(step, dict):
+            step["started_at_display"] = _step_clock(step.get("started_at"))
+            step["finished_at_display"] = _step_clock(step.get("finished_at"))
+    return progress
+
+
+@router.post("/volumes/{pool}/perf-sweep/propose")
+async def propose_volume_perf_sweep(pool: str, user: str = Depends(require_login)):
+    """"Đo hiệu năng tối đa (Load sweep)" button — admin-gated (same
+    posture as purge_all_rbd_trash below): unlike the per-image Trash
+    "Xoá" button, this WRITES REAL I/O LOAD to the cluster for several
+    minutes once approved, so the bar for who can even propose it is
+    higher than this app's usual "any logged-in operator" default for a
+    propose-then-approve action.
+
+    Always targets a dedicated scratch image (see worker/executor/
+    volume_perf.py's own module docstring) — never accepts an `image`
+    parameter from the request, so there is no way to point this at a
+    real volume even by a crafted request."""
+    _require_admin_privilege(user)
+    allowed_pools = set(ceph_client.configured_rbd_pools())
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+
+    existing = _latest_perf_sweep_action(pool)
+    if existing is not None and existing.status in _IN_FLIGHT_ACTION_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Đã có một lượt đo hiệu năng đang chờ duyệt hoặc đang chạy cho pool này.",
+        )
+
+    mon_nodes = ceph_client.get_mon_nodes()
+    if not mon_nodes:
+        raise HTTPException(status_code=400, detail="Chưa cấu hình CEPH_MON_NODES")
+    osd_ips = [h.strip() for h in settings.ceph_osd_nodes.split(",") if h.strip()]
+
+    action_params = {
+        "pool": pool,
+        "mon_ip": mon_nodes[0],
+        "osd_ips": osd_ips,
+        "requested_by": user,
+    }
+
+    with db.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=VOLUME_PERF_SWEEP_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=(
+                f"Đề xuất đo hiệu năng tối đa (load sweep) cho pool {pool} bởi {user} — dùng "
+                f"scratch image riêng, không đụng volume thật."
+            ),
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+
+        action = Action(
+            incident_id=incident.id,
+            action_id=VOLUME_PERF_SWEEP_ACTION_ID,
+            classification=gate.classify_action(VOLUME_PERF_SWEEP_ACTION_ID).value,  # always RISKY (AD-5)
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=(
+                f"Quét tải fio tăng dần (iodepth 1→256) trên scratch image riêng trong pool {pool} "
+                f"để tìm điểm bão hoà hiệu năng thực tế — không đụng tới volume thật, nhưng tạo tải "
+                f"I/O thật lên cluster trong vài phút khi chạy."
+            ),
+            target_nodes=json.dumps([mon_nodes[0]]),
+            action_params=json.dumps(action_params),
+        )
+        session.add(action)
+        session.flush()
+
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+            actor=user,
+        )
+        session.commit()
+        action_pk = action.id
+
+    return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.get("/api/volumes/{pool}/perf-sweep/progress")
+async def volume_perf_sweep_progress_api(pool: str, user: str = Depends(require_login)):
+    action = _latest_perf_sweep_action(pool)
+    if action is None:
+        return {"status": None, "progress": []}
+    try:
+        progress = json.loads(action.execution_progress) if action.execution_progress else []
+    except (TypeError, ValueError):
+        progress = []
+    progress = _with_step_display_times(progress)
+    return {"status": action.status, "progress": progress}
+
+
+@router.get("/api/volumes/{pool}/perf-sweep/latest")
+async def volume_perf_sweep_latest_api(pool: str, user: str = Depends(require_login)):
+    """Latest COMPLETED sweep result for `pool`, regardless of which
+    Action produced it — the Volumes page's summary panel reads this
+    directly rather than re-deriving it from Action.execution_progress
+    (that JSON is the LIVE view of a run in progress; this table is the
+    durable result left behind afterward, see VolumePerfSweep's own
+    docstring)."""
+    allowed_pools = set(ceph_client.configured_rbd_pools())
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+
+    with db.SessionLocal() as session:
+        row = (
+            session.query(VolumePerfSweep)
+            .filter(VolumePerfSweep.pool == pool)
+            .order_by(VolumePerfSweep.created_at.desc())
+            .first()
+        )
+        if row is None:
+            return {"pool": pool, "sweep": None}
+        try:
+            steps = json.loads(row.steps_json) if row.steps_json else []
+        except (TypeError, ValueError):
+            steps = []
+        knee = None
+        if row.knee_iodepth is not None:
+            knee = {
+                "iodepth": row.knee_iodepth,
+                "iops": row.knee_iops,
+                "latency_avg_ms": row.knee_latency_avg_ms,
+                "latency_p99_ms": row.knee_latency_p99_ms,
+            }
+        return {
+            "pool": pool,
+            "sweep": {
+                "status": row.status,
+                "scratch_image": row.scratch_image,
+                "requested_by": row.requested_by,
+                "steps": steps,
+                "knee": knee,
+                "qos_notes": row.qos_notes,
+                "bottleneck_notes": row.bottleneck_notes,
+                "error_message": row.error_message,
+                "created_at": row.created_at.isoformat() + "Z",
+                "finished_at": (row.finished_at.isoformat() + "Z") if row.finished_at else None,
+            },
+        }
 
 
 @router.post("/volumes/{pool}/trash/{trash_id}/propose")

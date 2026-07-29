@@ -119,6 +119,19 @@ cluster_deploy_action_ids:
   - delete_cluster_manual
   - convert_cluster_to_cephadm
 
+# 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) button
+# (dashboard/routes/volumes.py) — a SEVENTH family, same reasoning as
+# cluster_deploy_action_ids above: worker/executor/volume_perf.py is its
+# own multi-step orchestrator (sweeps fio iodepth 1->256, not a single
+# per-host command), so worker/llm/router_client.py dispatches it
+# separately, same as the cluster-deploy family. Deliberately scoped to a
+# dedicated SCRATCH image only, never the operator's real volume — an
+# explicit operator decision when this feature was requested (confirmed
+# via AskUserQuestion), specifically to keep this from ever contending
+# with real traffic on real data.
+volume_perf_action_ids:
+  - volume_perf_sweep
+
 safe:
   - resync_ntp
   # 2026-07-23: operator explicitly requested every management action
@@ -190,3 +203,7 @@ risky:
   # default (AD-5) applies here, always requires explicit Dashboard
   # approval.
   - rbd_trash_remove
+  # 2026-07-29: writes real (if scratch-only) I/O load to the cluster for
+  # several minutes — always requires explicit approval, no exceptions,
+  # same conservative default as the rest of this file.
+  - volume_perf_sweep

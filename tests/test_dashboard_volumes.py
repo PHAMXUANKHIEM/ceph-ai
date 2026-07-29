@@ -6,7 +6,15 @@ import bcrypt
 import dashboard.routes.volumes as volumes_route
 from config.settings import settings
 from shared import db as db_module
-from shared.models import Action, ActionStatus, Incident, IncidentStatus, User, VolumeMetric
+from shared.models import (
+    Action,
+    ActionStatus,
+    Incident,
+    IncidentStatus,
+    User,
+    VolumeMetric,
+    VolumePerfSweep,
+)
 from watcher.ceph_client import CephQueryError
 
 
@@ -91,6 +99,63 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     assert response.status_code == 200
     assert 'id="volumes-panel"' in response.text
     assert 'data-pool="vms"' in response.text
+
+
+def test_volumes_page_shows_perf_sweep_button_for_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volumes?pool=vms")
+
+    assert response.status_code == 200
+    assert 'id="perf-sweep-run-btn"' in response.text
+
+
+def test_volumes_page_hides_perf_sweep_button_for_non_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_no_trash(monkeypatch)
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/volumes?pool=vms")
+
+    assert response.status_code == 200
+    assert 'id="perf-sweep-run-btn"' not in response.text
+
+
+def test_volumes_page_shows_approve_reject_when_perf_sweep_pending(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    propose = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+    action_id = propose.json()["action_id"]
+
+    response = dashboard_client.get("/volumes?pool=vms")
+
+    assert response.status_code == 200
+    assert f'action="/actions/{action_id}/approve"' in response.text
+    assert f'action="/actions/{action_id}/reject"' in response.text
+    assert 'id="perf-sweep-run-btn"' not in response.text
+
+
+def test_volumes_page_shows_running_indicator_when_perf_sweep_approved(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    propose = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+    action_id = propose.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        session.get(Action, action_id).status = ActionStatus.APPROVED.value
+        session.commit()
+
+    response = dashboard_client.get("/volumes?pool=vms")
+
+    assert response.status_code == 200
+    assert "Đang đo hiệu năng" in response.text
+    assert 'data-status="APPROVED"' in response.text
 
 
 def test_volumes_page_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
@@ -375,6 +440,214 @@ def test_history_api_returns_none_peak_when_volume_never_seen(dashboard_client, 
     body = response.json()
     assert body["samples"] == []
     assert body["peak"] == {"iops": None, "read_latency_ms": None, "write_latency_ms": None}
+
+
+# --- "Đo hiệu năng tối đa" load sweep (2026-07-29) -----------------------
+
+
+def test_unauthenticated_propose_perf_sweep_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/volumes/vms/perf-sweep/propose", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_propose_perf_sweep_rejects_non_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+
+    assert response.status_code == 403
+
+
+def test_propose_perf_sweep_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/unknown-pool/perf-sweep/propose")
+
+    assert response.status_code == 404
+
+
+def test_propose_perf_sweep_creates_pending_approval_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+
+    assert response.status_code == 201
+    action_pk = response.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.action_id == "volume_perf_sweep"
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.classification == "RISKY"
+        # TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES (conftest.py's autouse fixture).
+        assert json.loads(action.target_nodes) == ["10.20.1.150"]
+        params = json.loads(action.action_params)
+        assert params["pool"] == "vms"
+        assert params["mon_ip"] == "10.20.1.150"
+        assert params["osd_ips"] == ["10.20.1.83", "10.20.1.78", "10.20.1.1"]
+        assert params["requested_by"] == "admin"
+
+        incident = session.get(Incident, action.incident_id)
+        assert incident.ceph_code == "VOLUME_PERF_SWEEP"
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+
+
+def test_propose_perf_sweep_rejects_when_no_mon_nodes_configured(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+
+    assert response.status_code == 400
+
+
+def test_propose_perf_sweep_rejects_second_proposal_while_one_pending(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    first = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+    assert first.status_code == 201
+
+    second = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+    assert second.status_code == 409
+
+
+def test_propose_perf_sweep_allows_new_proposal_for_a_different_pool(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    dashboard_client.post("/volumes/vms/perf-sweep/propose")
+
+    response = dashboard_client.post("/volumes/backups/perf-sweep/propose")
+    assert response.status_code == 201
+
+
+def test_perf_sweep_progress_api_returns_null_status_with_no_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/perf-sweep/progress")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": None, "progress": []}
+
+
+def test_perf_sweep_progress_api_formats_timestamps_as_vietnam_local_clock(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    propose = dashboard_client.post("/volumes/vms/perf-sweep/propose")
+    action_pk = propose.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        action.status = ActionStatus.APPROVED.value
+        action.execution_progress = json.dumps(
+            [
+                {
+                    "step": "prepare",
+                    "status": "done",
+                    "pct": 10,
+                    "started_at": "2026-07-29T03:29:30",
+                    "finished_at": "2026-07-29T03:29:45",
+                },
+                {"step": "sweep", "status": "running", "pct": 90, "hosts": [{"host": "iodepth=1", "status": "done"}]},
+            ]
+        )
+        session.commit()
+
+    response = dashboard_client.get("/api/volumes/vms/perf-sweep/progress").json()
+
+    assert response["status"] == "APPROVED"
+    done_step = response["progress"][0]
+    assert done_step["started_at_display"] == "10:29:30"  # 03:29 UTC -> 10:29 ICT
+    assert done_step["finished_at_display"] == "10:29:45"
+    assert response["progress"][1]["hosts"][0]["status"] == "done"
+
+
+def test_perf_sweep_latest_api_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/unknown-pool/perf-sweep/latest")
+
+    assert response.status_code == 404
+
+
+def test_perf_sweep_latest_api_returns_none_when_no_sweep_yet(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/perf-sweep/latest")
+
+    assert response.status_code == 200
+    assert response.json() == {"pool": "vms", "sweep": None}
+
+
+def test_perf_sweep_latest_api_returns_most_recent_done_sweep_with_knee(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumePerfSweep(
+                id="sweep-1",
+                action_id="action-1",
+                pool="vms",
+                scratch_image="_ceph_aiops_perf_probe",
+                requested_by="admin",
+                status="DONE",
+                steps_json=json.dumps([{"iodepth": 16, "iops": 16000, "latency_avg_ms": 1.0, "latency_p99_ms": 1.8}]),
+                knee_iodepth=16,
+                knee_iops=16000.0,
+                knee_latency_avg_ms=1.0,
+                knee_latency_p99_ms=1.8,
+                qos_notes="Không có giới hạn QoS nào được đặt trên scratch image.",
+                bottleneck_notes="ceph osd perf:\nosd.0 1 2",
+                created_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/api/volumes/vms/perf-sweep/latest")
+
+    assert response.status_code == 200
+    body = response.json()["sweep"]
+    assert body["status"] == "DONE"
+    assert body["knee"] == {"iodepth": 16, "iops": 16000.0, "latency_avg_ms": 1.0, "latency_p99_ms": 1.8}
+    assert body["qos_notes"].startswith("Không có giới hạn QoS")
+    assert len(body["steps"]) == 1
+
+
+def test_perf_sweep_latest_api_returns_failed_sweep_with_error_message(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumePerfSweep(
+                id="sweep-2",
+                action_id="action-2",
+                pool="vms",
+                scratch_image="_ceph_aiops_perf_probe",
+                requested_by="admin",
+                status="FAILED",
+                steps_json="[]",
+                error_message="10.20.1.150: chưa cài fio",
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/api/volumes/vms/perf-sweep/latest")
+
+    assert response.status_code == 200
+    body = response.json()["sweep"]
+    assert body["status"] == "FAILED"
+    assert body["knee"] is None
+    assert body["error_message"] == "10.20.1.150: chưa cài fio"
 
 
 # --- Trash (2026-07-28) -------------------------------------------------

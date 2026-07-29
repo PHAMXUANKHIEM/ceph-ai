@@ -161,3 +161,27 @@ def test_cluster_deploy_action_ids_disjoint_from_other_families():
     assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
     assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
     assert gate.VALID_CLUSTER_DEPLOY_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
+
+
+def test_volume_perf_action_ids_loaded_from_policy_yaml():
+    import worker.policy.gate as gate
+
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS == {"volume_perf_sweep"}
+
+
+def test_volume_perf_sweep_is_classified_risky():
+    # 2026-07-29: writes real (scratch-only) I/O load to the cluster for
+    # several minutes — must never be Safe, same conservative default as
+    # every other action_id family in this file.
+    assert classify_action("volume_perf_sweep") == ActionClassification.RISKY
+
+
+def test_volume_perf_action_ids_disjoint_from_other_families():
+    import worker.policy.gate as gate
+    from worker.llm.router_client import VALID_ACTION_IDS
+
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS)

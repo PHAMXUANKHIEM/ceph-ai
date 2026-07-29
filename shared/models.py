@@ -412,3 +412,58 @@ class VolumeMetric(Base):
     write_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
     saturated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class VolumePerfSweep(Base):
+    """Result of an on-demand "Đo hiệu năng tối đa" (load sweep) benchmark
+    — dashboard/routes/volumes.py's propose route, worker/executor/
+    volume_perf.py's `run()`. The operator-requested, ACTIVE-load
+    counterpart to VolumeMetric above: VolumeMetric's own "peak" is only
+    the highest sample a real workload happened to produce, which says
+    more about that workload than about the volume's actual ceiling. This
+    table instead stores the real SATURATION POINT — found by sweeping
+    fio iodepth 1->256 and locating the knee where IOPS growth stalls
+    while latency spikes — against a dedicated SCRATCH image in the pool,
+    never the operator's real volume (an explicit, confirmed scope
+    decision: this must never contend with real traffic on real data).
+
+    One row per completed (or failed) sweep run, most-recent-first per
+    (pool, scratch_image) is what the Volumes page's chart actually
+    queries — Action.execution_progress (same mechanism every other
+    multi-step worker action already uses) covers the LIVE view of a
+    sweep while it's still running; this table is the durable result
+    left behind afterward.
+    """
+
+    __tablename__ = "volume_perf_sweeps"
+    __table_args__ = (
+        Index("ix_volume_perf_sweeps_pool_scratch_image_created_at", "pool", "scratch_image", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    action_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    scratch_image: Mapped[str] = mapped_column(String(128), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # RUNNING/DONE/FAILED
+    # JSON list[{"iodepth", "iops", "latency_avg_ms", "latency_p99_ms"}] —
+    # every step actually run, in order; the source _detect_knee derived
+    # knee_* below from, kept alongside it so the operator can see the
+    # whole curve, not just the single point this table highlights.
+    steps_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # NULL knee_* together means the sweep never saturated within the
+    # tested iodepth range (steps_json's last entry is a lower-bound
+    # floor, not a ceiling) — see volume_perf.py::_detect_knee.
+    knee_iodepth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    knee_iops: Mapped[float | None] = mapped_column(Float, nullable=True)
+    knee_latency_avg_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    knee_latency_p99_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Best-effort supplementary evidence (raw text, not parsed/interpreted)
+    # for the operator to read alongside the knee — same "surface the
+    # signal, don't overclaim a diagnosis" posture as the rest of this
+    # app's read-only diagnostic tooling (NodeDiagnosticRun above).
+    qos_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bottleneck_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

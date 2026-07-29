@@ -54,11 +54,21 @@ def _load_cluster_deploy_action_ids() -> frozenset[str]:
     return frozenset(policy.get("cluster_deploy_action_ids") or [])
 
 
+def _load_volume_perf_action_ids() -> frozenset[str]:
+    """Volumes page "Đo hiệu năng tối đa" (load sweep) feature's own closed
+    action_id enum (dashboard/routes/volumes.py) — see action_policy.yaml's
+    `volume_perf_action_ids:` comment for why this is a seventh family."""
+    with open(_POLICY_PATH) as f:
+        policy = yaml.safe_load(f)
+    return frozenset(policy.get("volume_perf_action_ids") or [])
+
+
 SAFE_ACTION_IDS, RISKY_ACTION_IDS = _load_action_id_lists()
 VALID_MANAGEMENT_ACTION_IDS = _load_management_action_ids()
 VALID_CLUSTER_UPGRADE_ACTION_IDS = _load_cluster_upgrade_action_ids()
 VALID_PATCH_ACTION_IDS = _load_patch_action_ids()
 VALID_CLUSTER_DEPLOY_ACTION_IDS = _load_cluster_deploy_action_ids()
+VALID_VOLUME_PERF_ACTION_IDS = _load_volume_perf_action_ids()
 
 _CONFLICTING_ACTION_IDS = SAFE_ACTION_IDS & RISKY_ACTION_IDS
 if _CONFLICTING_ACTION_IDS:

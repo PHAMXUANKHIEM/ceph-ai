@@ -14,7 +14,7 @@ from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from shared.ceph_releases import codename_for_version
 from shared.router_client import build_router_client
-from worker.executor import cluster_deploy, commands
+from worker.executor import cluster_deploy, commands, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.redaction import default_redactor
@@ -859,6 +859,31 @@ def _execute_approved_action(action_pk: str) -> None:
         succeeded = cluster_deploy.run(
             action_pk,
             action_id_str,
+            action_params,
+            incident_id,
+            _write_action_progress,
+            _check_kill_switch_safe,
+        )
+        _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
+        return
+
+    # 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) — same
+    # reasoning as the cluster-deploy branch just above: this is its own
+    # multi-step orchestrator (sweeps fio iodepth 1->256, checking the
+    # kill-switch before each step), not a single command fanned out to
+    # target_nodes.
+    if action_id_str in volume_perf.VOLUME_PERF_ACTION_IDS:
+        if not isinstance(action_params, dict):
+            logger.warning(
+                "_execute_approved_action: missing/malformed action_params for volume-perf "
+                "action %s (incident %s) — marking FAILED instead of guessing",
+                action_pk,
+                incident_id,
+            )
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        succeeded = volume_perf.run(
+            action_pk,
             action_params,
             incident_id,
             _write_action_progress,

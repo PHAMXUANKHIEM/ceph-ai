@@ -102,6 +102,45 @@
       </div>
     </section>
 
+    <section
+      class="card"
+      id="perf-sweep-panel"
+      data-pool="{{ selected_pool }}"
+      data-status="{{ perf_sweep_action.status if perf_sweep_action else '' }}"
+    >
+      <div class="card-header">
+        <h2>Hiệu năng tối đa (Load Sweep)</h2>
+      </div>
+      <div class="card-body">
+        <p class="hint metrics-panel-desc">
+          Quét tải fio tăng dần (iodepth 1→256) trên 1 scratch image riêng của pool này (KHÔNG đụng
+          volume thật) để tìm điểm bão hoà hiệu năng — nơi tăng thêm tải chỉ được thêm chút IOPS
+          nhưng đổi lại độ trễ tăng vọt. Tạo tải I/O thật lên cluster trong vài phút khi chạy, cần
+          duyệt trước khi thực thi (chỉ admin đề xuất được).
+        </p>
+
+        {% if perf_sweep_action and perf_sweep_action.status == "PENDING_APPROVAL" %}
+        <div class="pending-action-buttons">
+          <span class="hint">Chờ duyệt — sẽ tạo tải I/O thật lên cluster trong vài phút khi bắt đầu.</span>
+          <form method="post" action="/actions/{{ perf_sweep_action.id }}/approve" class="inline-form">
+            <button type="submit" class="btn btn-approve btn-sm">Duyệt — bắt đầu đo</button>
+          </form>
+          <form method="post" action="/actions/{{ perf_sweep_action.id }}/reject" class="inline-form">
+            <button type="submit" class="btn btn-reject btn-sm">Từ chối</button>
+          </form>
+        </div>
+        {% elif perf_sweep_action and perf_sweep_action.status == "APPROVED" %}
+        <p class="hint">● Đang đo hiệu năng — xem tiến độ bên dưới...</p>
+        {% elif is_admin %}
+        <button type="button" class="btn btn-primary btn-sm" id="perf-sweep-run-btn">Đo hiệu năng tối đa</button>
+        {% endif %}
+
+        <p class="error" id="perf-sweep-error" hidden></p>
+        <div id="perf-sweep-progress" hidden></div>
+        <div id="perf-sweep-result"></div>
+      </div>
+    </section>
+
     <section class="card">
       <div class="card-header">
         <h2>Trash</h2>
@@ -194,5 +233,6 @@
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/volumes.js?v={{ static_version }}"></script>
+  <script src="/static/volume_perf_sweep.js?v={{ static_version }}"></script>
 </body>
 </html>
