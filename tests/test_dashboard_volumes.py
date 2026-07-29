@@ -629,6 +629,43 @@ def test_perf_sweep_latest_api_returns_most_recent_done_sweep_with_knee(dashboar
     assert body["knee"] == {"iodepth": 16, "iops": 16000.0, "latency_avg_ms": 1.0, "latency_p99_ms": 1.8}
     assert body["qos_notes"].startswith("Không có giới hạn QoS")
     assert len(body["steps"]) == 1
+    assert body["ai_conclusion"] is None
+    assert body["ai_analyzed_at"] is None
+
+
+def test_perf_sweep_latest_api_includes_ai_conclusion_when_present(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    conclusion = {
+        "max_iops": 16000,
+        "max_iops_basis": "saturation_knee",
+        "confidence": "high",
+        "conclusion_vi": "Hiệu năng tối đa khoảng 16000 IOPS.",
+        "caveats_vi": "Nút thắt có thể ở OSD.",
+    }
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumePerfSweep(
+                id="sweep-ai",
+                action_id="action-1",
+                pool="vms",
+                scratch_image="_ceph_aiops_perf_probe",
+                requested_by="admin",
+                status="DONE",
+                steps_json="[]",
+                ai_conclusion=json.dumps(conclusion),
+                ai_analyzed_at=datetime.utcnow(),
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/api/volumes/vms/perf-sweep/latest")
+
+    assert response.status_code == 200
+    body = response.json()["sweep"]
+    assert body["ai_conclusion"] == conclusion
+    assert body["ai_analyzed_at"] is not None
 
 
 def test_perf_sweep_latest_api_returns_failed_sweep_with_error_message(dashboard_client, monkeypatch):
@@ -657,6 +694,128 @@ def test_perf_sweep_latest_api_returns_failed_sweep_with_error_message(dashboard
     assert body["status"] == "FAILED"
     assert body["knee"] is None
     assert body["error_message"] == "10.20.1.150: chưa cài fio"
+
+
+# --- "Phân tích bằng AI" (2026-07-29) -------------------------------------
+
+_AI_CONCLUSION = {
+    "max_iops": 16000,
+    "max_iops_basis": "saturation_knee",
+    "confidence": "high",
+    "conclusion_vi": "Hiệu năng tối đa khoảng 16000 IOPS.",
+    "caveats_vi": "Nút thắt có thể ở OSD.",
+}
+
+
+def test_analyze_perf_sweep_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/unknown-pool/perf-sweep/analyze")
+
+    assert response.status_code == 404
+
+
+def test_analyze_perf_sweep_rejects_when_no_done_sweep_exists(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/perf-sweep/analyze")
+
+    assert response.status_code == 400
+
+
+def test_analyze_perf_sweep_rejects_when_latest_sweep_is_running(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumePerfSweep(
+                id="sweep-running",
+                action_id="action-1",
+                pool="vms",
+                scratch_image="_ceph_aiops_perf_probe",
+                requested_by="admin",
+                status="RUNNING",
+                steps_json="[]",
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.post("/api/volumes/vms/perf-sweep/analyze")
+
+    assert response.status_code == 400
+
+
+def test_analyze_perf_sweep_persists_conclusion_and_returns_it(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumePerfSweep(
+                id="sweep-done",
+                action_id="action-1",
+                pool="vms",
+                scratch_image="_ceph_aiops_perf_probe",
+                requested_by="admin",
+                status="DONE",
+                steps_json=json.dumps([{"iodepth": 16, "iops": 16000, "latency_avg_ms": 1.0, "latency_p99_ms": 1.8}]),
+                knee_iodepth=16,
+                knee_iops=16000.0,
+                knee_latency_avg_ms=1.0,
+                knee_latency_p99_ms=1.8,
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    async def fake_analyze(sweep):
+        assert sweep["pool"] == "vms"
+        assert sweep["knee"]["iodepth"] == 16
+        return _AI_CONCLUSION
+
+    monkeypatch.setattr(volumes_route.volume_perf_analysis, "analyze_volume_perf_sweep", fake_analyze)
+
+    response = dashboard_client.post("/api/volumes/vms/perf-sweep/analyze")
+
+    assert response.status_code == 200
+    assert response.json()["conclusion"] == _AI_CONCLUSION
+    with db_module.SessionLocal() as session:
+        row = session.get(VolumePerfSweep, "sweep-done")
+        assert json.loads(row.ai_conclusion) == _AI_CONCLUSION
+        assert row.ai_analyzed_at is not None
+
+
+def test_analyze_perf_sweep_returns_502_when_analysis_fails(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumePerfSweep(
+                id="sweep-done-2",
+                action_id="action-1",
+                pool="vms",
+                scratch_image="_ceph_aiops_perf_probe",
+                requested_by="admin",
+                status="DONE",
+                steps_json="[]",
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    async def broken_analyze(sweep):
+        raise volumes_route.volume_perf_analysis.VolumePerfAnalysisError("Chưa cấu hình API AI")
+
+    monkeypatch.setattr(volumes_route.volume_perf_analysis, "analyze_volume_perf_sweep", broken_analyze)
+
+    response = dashboard_client.post("/api/volumes/vms/perf-sweep/analyze")
+
+    assert response.status_code == 502
+    with db_module.SessionLocal() as session:
+        row = session.get(VolumePerfSweep, "sweep-done-2")
+        assert row.ai_conclusion is None
 
 
 # --- Trash (2026-07-28) -------------------------------------------------

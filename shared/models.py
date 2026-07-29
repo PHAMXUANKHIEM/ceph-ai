@@ -465,5 +465,19 @@ class VolumePerfSweep(Base):
     qos_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     bottleneck_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 2026-07-29: on-demand "Phân tích bằng AI" (dashboard/volume_perf_
+    # analysis.py) — the knee_* columns above are a fixed heuristic
+    # (_detect_knee's own growth-ratio thresholds); this is an operator-
+    # requested SECOND read of the same steps_json/qos_notes/
+    # bottleneck_notes evidence, via the app's configured router (same one
+    # Chat-with-AI/Incident-diagnosis use), producing a plain-language
+    # final conclusion. NULL until an operator actually clicks that
+    # button — never computed automatically, since the app never calls
+    # any AI provider without the operator's own configured router
+    # (shared/router_client.py::RouterNotConfiguredError's own docstring).
+    # JSON dict: {"max_iops", "max_iops_basis", "confidence",
+    # "conclusion_vi", "caveats_vi"} — see that module's _tool_schema.
+    ai_conclusion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -113,6 +113,28 @@
 
   /* ---------- latest completed result ---------- */
 
+  var CONFIDENCE_LABEL = { high: "Cao", medium: "Trung bình", low: "Thấp" };
+
+  function renderAiConclusion(sweep) {
+    var btnLabel = sweep.ai_conclusion ? "Phân tích lại bằng AI" : "Phân tích bằng AI";
+    var html =
+      '<div class="ai-conclusion-block">' +
+        '<button type="button" class="btn btn-sm" id="perf-sweep-ai-btn">' + btnLabel + "</button>";
+    if (sweep.ai_conclusion) {
+      var c = sweep.ai_conclusion;
+      var basisText = c.max_iops_basis === "saturation_knee" ? "điểm bão hoà" : "chưa bão hoà — mức sàn";
+      html +=
+        '<div class="ai-conclusion-box">' +
+          "<p><strong>Kết luận AI — hiệu năng tối đa: ~" + fmt(c.max_iops, 0) + " IOPS</strong> (" +
+          basisText + ", độ tin cậy: " + (CONFIDENCE_LABEL[c.confidence] || c.confidence) + ")</p>" +
+          "<p>" + escapeHtml(c.conclusion_vi) + "</p>" +
+          (c.caveats_vi ? '<p class="hint">Lưu ý: ' + escapeHtml(c.caveats_vi) + "</p>" : "") +
+        "</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+
   function renderResult(sweep) {
     if (!resultEl) return;
     if (!sweep) {
@@ -163,11 +185,50 @@
         "<pre>" + escapeHtml(sweep.bottleneck_notes) + "</pre></details>";
     }
 
+    html += renderAiConclusion(sweep);
+
     resultEl.innerHTML = html;
   }
 
-  fetch("/api/volumes/" + encodeURIComponent(pool) + "/perf-sweep/latest", { credentials: "same-origin" })
-    .then(function (response) { return response.ok ? response.json() : null; })
-    .then(function (data) { if (data) renderResult(data.sweep); })
-    .catch(function () { /* result panel is a convenience, not required */ });
+  function loadLatestResult() {
+    return fetch("/api/volumes/" + encodeURIComponent(pool) + "/perf-sweep/latest", { credentials: "same-origin" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) { if (data) renderResult(data.sweep); })
+      .catch(function () { /* result panel is a convenience, not required */ });
+  }
+
+  // Event delegation (2026-07-29): the AI button is rebuilt into resultEl's
+  // innerHTML on every renderResult() call, so a listener bound directly to
+  // it would be lost each time — bind once to the stable parent instead.
+  if (resultEl) {
+    resultEl.addEventListener("click", function (e) {
+      if (e.target && e.target.id === "perf-sweep-ai-btn") {
+        var btn = e.target;
+        btn.disabled = true;
+        var originalLabel = btn.textContent;
+        btn.textContent = "Đang phân tích...";
+        setError(null);
+        fetch("/api/volumes/" + encodeURIComponent(pool) + "/perf-sweep/analyze", {
+          method: "POST",
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            if (!response.ok) {
+              return response.json().then(function (body) {
+                throw new Error(body.detail || "HTTP " + response.status);
+              });
+            }
+            return response.json();
+          })
+          .then(function () { loadLatestResult(); })
+          .catch(function (err) {
+            btn.disabled = false;
+            btn.textContent = originalLabel;
+            setError(err.message);
+          });
+      }
+    });
+  }
+
+  loadLatestResult();
 })();

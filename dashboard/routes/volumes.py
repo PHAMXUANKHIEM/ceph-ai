@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from config.settings import settings
+from dashboard import volume_perf_analysis
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.incidents import OPEN_STATUSES
@@ -466,6 +467,41 @@ async def volume_perf_sweep_progress_api(pool: str, user: str = Depends(require_
     return {"status": action.status, "progress": progress}
 
 
+def _serialize_perf_sweep(row: VolumePerfSweep) -> dict:
+    try:
+        steps = json.loads(row.steps_json) if row.steps_json else []
+    except (TypeError, ValueError):
+        steps = []
+    knee = None
+    if row.knee_iodepth is not None:
+        knee = {
+            "iodepth": row.knee_iodepth,
+            "iops": row.knee_iops,
+            "latency_avg_ms": row.knee_latency_avg_ms,
+            "latency_p99_ms": row.knee_latency_p99_ms,
+        }
+    ai_conclusion = None
+    if row.ai_conclusion:
+        try:
+            ai_conclusion = json.loads(row.ai_conclusion)
+        except (TypeError, ValueError):
+            ai_conclusion = None
+    return {
+        "status": row.status,
+        "scratch_image": row.scratch_image,
+        "requested_by": row.requested_by,
+        "steps": steps,
+        "knee": knee,
+        "qos_notes": row.qos_notes,
+        "bottleneck_notes": row.bottleneck_notes,
+        "error_message": row.error_message,
+        "created_at": row.created_at.isoformat() + "Z",
+        "finished_at": (row.finished_at.isoformat() + "Z") if row.finished_at else None,
+        "ai_conclusion": ai_conclusion,
+        "ai_analyzed_at": (row.ai_analyzed_at.isoformat() + "Z") if row.ai_analyzed_at else None,
+    }
+
+
 @router.get("/api/volumes/{pool}/perf-sweep/latest")
 async def volume_perf_sweep_latest_api(pool: str, user: str = Depends(require_login)):
     """Latest COMPLETED sweep result for `pool`, regardless of which
@@ -487,33 +523,51 @@ async def volume_perf_sweep_latest_api(pool: str, user: str = Depends(require_lo
         )
         if row is None:
             return {"pool": pool, "sweep": None}
-        try:
-            steps = json.loads(row.steps_json) if row.steps_json else []
-        except (TypeError, ValueError):
-            steps = []
-        knee = None
-        if row.knee_iodepth is not None:
-            knee = {
-                "iodepth": row.knee_iodepth,
-                "iops": row.knee_iops,
-                "latency_avg_ms": row.knee_latency_avg_ms,
-                "latency_p99_ms": row.knee_latency_p99_ms,
-            }
-        return {
-            "pool": pool,
-            "sweep": {
-                "status": row.status,
-                "scratch_image": row.scratch_image,
-                "requested_by": row.requested_by,
-                "steps": steps,
-                "knee": knee,
-                "qos_notes": row.qos_notes,
-                "bottleneck_notes": row.bottleneck_notes,
-                "error_message": row.error_message,
-                "created_at": row.created_at.isoformat() + "Z",
-                "finished_at": (row.finished_at.isoformat() + "Z") if row.finished_at else None,
-            },
-        }
+        return {"pool": pool, "sweep": _serialize_perf_sweep(row)}
+
+
+@router.post("/api/volumes/{pool}/perf-sweep/analyze")
+async def volume_perf_sweep_analyze_api(pool: str, user: str = Depends(require_login)):
+    """"Phân tích bằng AI" button — sends the latest COMPLETED sweep's
+    evidence (steps/knee/QoS/bottleneck notes) to the operator's configured
+    router (dashboard/volume_perf_analysis.py) for a plain-language final
+    conclusion, augmenting (not replacing) _detect_knee's own algorithmic
+    result. Not admin-gated, unlike the propose route above — this is
+    read-only analysis of already-collected data (no SSH, no cluster
+    mutation), same accessibility as Chat-with-AI."""
+    allowed_pools = set(ceph_client.configured_rbd_pools())
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+
+    with db.SessionLocal() as session:
+        row = (
+            session.query(VolumePerfSweep)
+            .filter(VolumePerfSweep.pool == pool)
+            .order_by(VolumePerfSweep.created_at.desc())
+            .first()
+        )
+        if row is None or row.status != "DONE":
+            raise HTTPException(
+                status_code=400,
+                detail="Chưa có kết quả đo hiệu năng nào hoàn tất cho pool này để phân tích.",
+            )
+        sweep_payload = _serialize_perf_sweep(row)
+        sweep_payload["pool"] = pool
+        row_id = row.id
+
+    try:
+        conclusion = await volume_perf_analysis.analyze_volume_perf_sweep(sweep_payload)
+    except volume_perf_analysis.VolumePerfAnalysisError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    with db.SessionLocal() as session:
+        row = session.get(VolumePerfSweep, row_id)
+        if row is not None:
+            row.ai_conclusion = json.dumps(conclusion)
+            row.ai_analyzed_at = datetime.utcnow()
+            session.commit()
+
+    return {"pool": pool, "conclusion": conclusion}
 
 
 @router.post("/volumes/{pool}/trash/{trash_id}/propose")

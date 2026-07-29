@@ -927,6 +927,18 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   word-break: break-word;
 }
 
+/* Volumes page's "Phân tích bằng AI" result (dashboard/static/volume_perf_sweep.js) */
+.ai-conclusion-block { margin-top: var(--space-3); }
+.ai-conclusion-box {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius, 6px);
+  border: 1px solid var(--accent);
+  background: var(--accent-bg);
+}
+.ai-conclusion-box p { margin: 0 0 var(--space-2); }
+.ai-conclusion-box p:last-child { margin-bottom: 0; }
+
 /* ceph-deploy/package-based upgrade — two side-by-side sub-methods
    (dashboard/templates/upgrade.html). */
 .upgrade-method-grid {
