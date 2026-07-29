@@ -65,28 +65,34 @@
           <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
         </div>
         <p class="hint metrics-panel-desc">
-          IOPS / độ trễ theo từng RBD image (Volume) trong pool này — đọc trực tiếp qua
-          <code>rbd perf image iostat</code> mỗi vài giây. Nhãn "⚠ Bão hoà" khớp với Incident hệ
+          Tìm một Volume (RBD image) trong pool này theo ID/tên để xem biểu đồ IOPS / độ trễ theo
+          thời gian, kèm hiệu năng tối đa từng đạt được — dữ liệu lấy từ lịch sử Watcher đã ghi lại
+          (<code>rbd perf image iostat</code> mỗi vài giây). Nhãn "⚠ Bão hoà" khớp với Incident hệ
           thống đã tự phát hiện (xem <a href="/">Dashboard</a>/Audit Trail để duyệt xử lý).
         </p>
       </div>
       <div class="card-body">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Volume (image)</th>
-                <th>IOPS</th>
-                <th>Read latency</th>
-                <th>Write latency</th>
-                <th>Trạng thái</th>
-              </tr>
-            </thead>
-            <tbody id="volumes-table-body">
-              <tr class="empty-row"><td colspan="5" class="empty-state">Đang tải...</td></tr>
-            </tbody>
-          </table>
+        <form class="audit-filters" id="volume-search-form">
+          <label>ID / tên Volume
+            <input
+              type="text"
+              id="volume-search-input"
+              list="volume-datalist"
+              placeholder="vd: vm-disk-01"
+              autocomplete="off"
+            >
+          </label>
+          <datalist id="volume-datalist"></datalist>
+          <button type="submit" class="btn btn-primary btn-sm">Xem hiệu năng</button>
+        </form>
+
+        <div class="empty-node-state" id="volume-chart-empty">
+          <span class="empty-node-icon" aria-hidden="true">&#128200;</span>
+          <p class="empty-node-text">Nhập ID Volume rồi bấm "Xem hiệu năng" để xem biểu đồ.</p>
         </div>
+
+        <div class="metrics-stack" id="volume-chart-stack" hidden></div>
+
         <div class="metrics-error-footer" id="volumes-error-footer" hidden>
           <p class="metrics-error-timestamp" id="volumes-error-timestamp"></p>
           <button type="button" class="btn btn-primary btn-sm" id="volumes-retry-btn">Thử lại</button>

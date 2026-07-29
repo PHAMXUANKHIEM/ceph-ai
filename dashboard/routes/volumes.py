@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -11,7 +11,14 @@ from dashboard.routes.auth import require_login
 from dashboard.routes.incidents import OPEN_STATUSES
 from dashboard.templating import make_templates
 from shared import audit, db
-from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionClassification,
+    ActionStatus,
+    Incident,
+    IncidentStatus,
+    VolumeMetric,
+)
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from watcher.volume_monitor import ceph_code_for
@@ -20,6 +27,17 @@ from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
+
+# 2026-07-29: bounds for /api/volumes/{pool}/{image}/history's own `hours`
+# query param — VolumeMetric is this app's fastest-growing table (see that
+# model's own docstring: one row per pool x image EVERY poll, no automatic
+# pruning), so an unbounded "give me everything" window is a real footgun
+# for an operator with a long-lived, never-purged install. The PEAK value
+# itself is still computed over the table's ENTIRE retained history
+# regardless of this window (see volume_history_api below) — only the
+# plotted time-series is bounded.
+_DEFAULT_HISTORY_HOURS = 6
+_MAX_HISTORY_HOURS = 168
 
 router = APIRouter()
 templates = make_templates()
@@ -168,6 +186,126 @@ async def volume_iostat_api(pool: str, user: str = Depends(require_login)):
         for sample in samples
     ]
     return {"pool": pool, "images": images}
+
+
+@router.get("/api/volumes/{pool}/images")
+async def volume_known_images_api(pool: str, user: str = Depends(require_login)):
+    """Backs the volume-search box's autocomplete on the Volumes page —
+    2026-07-29: that page used to list every volume's numbers directly, a
+    live `rbd perf image iostat` table; it now asks the operator to search
+    for one Volume by id/name instead, so this exists purely to suggest
+    valid ids as they type. Combines TWO sources rather than either alone:
+    VolumeMetric's distinct (pool, image) history (an image with zero
+    recent I/O may not appear in a live iostat sample at all, but was
+    still seen at some point and its history is still worth finding) UNION
+    the current live iostat sample (a brand-new image that hasn't been
+    through a Watcher poll yet — persist_last_poll_metrics only writes
+    AFTER a poll completes — would otherwise be invisible here on its very
+    first few seconds of life). Best-effort on the live half: a transient
+    SSH failure here must not block finding a volume that already has
+    plenty of persisted history."""
+    allowed_pools = set(ceph_client.configured_rbd_pools())
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+
+    images: set[str] = set()
+    with db.SessionLocal() as session:
+        rows = session.query(VolumeMetric.image).filter(VolumeMetric.pool == pool).distinct().all()
+        images.update(row[0] for row in rows)
+
+    try:
+        samples = ceph_client.query_rbd_iostat(pool)
+    except CephQueryError as exc:
+        logger.warning("volume_known_images_api: live iostat failed, using history only: %s", exc)
+    else:
+        images.update(sample["image"] for sample in samples)
+
+    return {"pool": pool, "images": sorted(images)}
+
+
+@router.get("/api/volumes/{pool}/{image}/history")
+async def volume_history_api(
+    pool: str, image: str, hours: int = _DEFAULT_HISTORY_HOURS, user: str = Depends(require_login)
+):
+    """Powers the performance chart on the Volumes page — persisted
+    VolumeMetric history for exactly one (pool, image), not a live SSH
+    query (see VolumeMetric's own docstring: it's written once per Watcher
+    poll for every sample, independent of whatever the dashboard is doing).
+    `hours` bounds only the plotted time-series (clamped to
+    _MAX_HISTORY_HOURS — see that constant's own comment); `peak` below is
+    deliberately computed over the table's ENTIRE retained history for this
+    volume regardless of `hours`, since "hiệu năng tối đa từng đạt được"
+    (peak performance ever achieved) must survive collapsing/scrolling the
+    visible chart window."""
+    allowed_pools = set(ceph_client.configured_rbd_pools())
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    hours = max(1, min(hours, _MAX_HISTORY_HOURS))
+    since = datetime.utcnow() - timedelta(hours=hours)
+
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(VolumeMetric)
+            .filter(VolumeMetric.pool == pool, VolumeMetric.image == image)
+            .filter(VolumeMetric.polled_at >= since)
+            .order_by(VolumeMetric.polled_at.asc())
+            .all()
+        )
+        samples = [
+            {
+                # "Z" appended (2026-07-29): polled_at is stored naive-UTC
+                # (datetime.utcnow(), same convention as every other
+                # timestamped table in this app) — without an explicit UTC
+                # marker, JS `new Date(isoString)` parses a bare
+                # "YYYY-MM-DDTHH:MM:SS" as LOCAL time instead, silently
+                # shifting every point on the chart by the browser's UTC
+                # offset.
+                "polled_at": row.polled_at.isoformat() + "Z",
+                "iops": row.iops,
+                "read_latency_ms": row.read_latency_ms,
+                "write_latency_ms": row.write_latency_ms,
+                "saturated": row.saturated,
+            }
+            for row in rows
+        ]
+
+        def _peak(field: str) -> dict | None:
+            row = (
+                session.query(VolumeMetric)
+                .filter(VolumeMetric.pool == pool, VolumeMetric.image == image)
+                .order_by(getattr(VolumeMetric, field).desc())
+                .first()
+            )
+            if row is None:
+                return None
+            return {"value": getattr(row, field), "at": row.polled_at.isoformat() + "Z"}
+
+        peak = {
+            "iops": _peak("iops"),
+            "read_latency_ms": _peak("read_latency_ms"),
+            "write_latency_ms": _peak("write_latency_ms"),
+        }
+
+        # Same authoritative-Incident-table posture as volume_iostat_api
+        # above, rather than trusting the last sample's own `saturated`
+        # column (see VolumeMetric's own docstring for why that column is
+        # a close-but-not-authoritative proxy).
+        saturated_now = (
+            session.query(Incident)
+            .filter(Incident.ceph_code == ceph_code_for(pool, image))
+            .filter(Incident.status.in_(OPEN_STATUSES))
+            .first()
+            is not None
+        )
+
+    return {
+        "pool": pool,
+        "image": image,
+        "hours": hours,
+        "samples": samples,
+        "peak": peak,
+        "saturated": saturated_now,
+    }
 
 
 @router.post("/volumes/{pool}/trash/{trash_id}/propose")

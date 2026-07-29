@@ -1,12 +1,12 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import bcrypt
 
 import dashboard.routes.volumes as volumes_route
 from config.settings import settings
 from shared import db as db_module
-from shared.models import Action, ActionStatus, Incident, IncidentStatus, User
+from shared.models import Action, ActionStatus, Incident, IncidentStatus, User, VolumeMetric
 from watcher.ceph_client import CephQueryError
 
 
@@ -230,6 +230,151 @@ def test_iostat_api_does_not_mark_saturated_when_incident_already_resolved(dashb
 
     assert response.status_code == 200
     assert response.json()["images"][0]["saturated"] is False
+
+
+# --- Volume search + history chart (2026-07-29) -------------------------
+
+
+def _add_metric(pool, image, *, iops, read_ms, write_ms, polled_at, saturated=False):
+    with db_module.SessionLocal() as session:
+        session.add(
+            VolumeMetric(
+                pool=pool,
+                image=image,
+                iops=iops,
+                read_latency_ms=read_ms,
+                write_latency_ms=write_ms,
+                saturated=saturated,
+                polled_at=polled_at,
+            )
+        )
+        session.commit()
+
+
+def test_known_images_api_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/unknown-pool/images")
+
+    assert response.status_code == 404
+
+
+def test_known_images_api_combines_history_and_live_iostat(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    _add_metric("vms", "disk-idle", iops=0, read_ms=0, write_ms=0, polled_at=datetime.utcnow())
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_iostat",
+        lambda pool: [{"image": "disk-live", "iops": 5, "read_latency_ms": 1, "write_latency_ms": 1}],
+    )
+
+    response = dashboard_client.get("/api/volumes/vms/images")
+
+    assert response.status_code == 200
+    assert response.json()["images"] == ["disk-idle", "disk-live"]
+
+
+def test_known_images_api_falls_back_to_history_when_live_query_fails(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    _add_metric("vms", "disk-idle", iops=0, read_ms=0, write_ms=0, polled_at=datetime.utcnow())
+
+    def broken(pool):
+        raise CephQueryError("all MON nodes unreachable")
+
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_iostat", broken)
+
+    response = dashboard_client.get("/api/volumes/vms/images")
+
+    assert response.status_code == 200
+    assert response.json()["images"] == ["disk-idle"]
+
+
+def test_history_api_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/unknown-pool/disk-1/history")
+
+    assert response.status_code == 404
+
+
+def test_history_api_returns_samples_within_window_ordered_by_time(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    now = datetime.utcnow()
+    _add_metric("vms", "disk-1", iops=100, read_ms=1, write_ms=1, polled_at=now - timedelta(hours=1))
+    _add_metric("vms", "disk-1", iops=200, read_ms=2, write_ms=2, polled_at=now - timedelta(minutes=30))
+    # Outside the default 6h window entirely — must not appear in samples.
+    _add_metric("vms", "disk-1", iops=50, read_ms=0.5, write_ms=0.5, polled_at=now - timedelta(days=2))
+
+    response = dashboard_client.get("/api/volumes/vms/disk-1/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [s["iops"] for s in body["samples"]] == [100, 200]
+
+
+def test_history_api_computes_peak_over_full_history_not_just_window(dashboard_client, monkeypatch):
+    # The whole point of this endpoint per the operator's own request: the
+    # all-time best a volume has done must still show up even if it fell
+    # out of the plotted (bounded) time window long ago.
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    now = datetime.utcnow()
+    _add_metric("vms", "disk-1", iops=900, read_ms=9, write_ms=9, polled_at=now - timedelta(days=10))
+    _add_metric("vms", "disk-1", iops=100, read_ms=1, write_ms=1, polled_at=now - timedelta(minutes=5))
+
+    response = dashboard_client.get("/api/volumes/vms/disk-1/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["peak"]["iops"]["value"] == 900
+    assert [s["iops"] for s in body["samples"]] == [100]  # only the in-window sample plotted
+
+
+def test_history_api_clamps_hours_to_max(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/disk-1/history?hours=999999")
+
+    assert response.status_code == 200
+    assert response.json()["hours"] == volumes_route._MAX_HISTORY_HOURS
+
+
+def test_history_api_marks_saturated_when_incident_open(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+    _add_metric("vms", "disk-1", iops=100, read_ms=1, write_ms=1, polled_at=datetime.utcnow())
+    with db_module.SessionLocal() as session:
+        session.add(
+            Incident(
+                ceph_code="VOLUME_SATURATED:vms/disk-1",
+                status=IncidentStatus.PENDING_APPROVAL.value,
+                detected_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/api/volumes/vms/disk-1/history")
+
+    assert response.status_code == 200
+    assert response.json()["saturated"] is True
+
+
+def test_history_api_returns_none_peak_when_volume_never_seen(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/never-seen/history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["samples"] == []
+    assert body["peak"] == {"iops": None, "read_latency_ms": None, "write_latency_ms": None}
 
 
 # --- Trash (2026-07-28) -------------------------------------------------
