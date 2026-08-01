@@ -15,7 +15,7 @@ from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgra
 from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
-from shared.models import Action, ActionStatus, AuditEntry, Incident, IncidentStatus, WatcherHeartbeat
+from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Incident, IncidentStatus, WatcherHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +142,31 @@ def is_heartbeat_stale(latest_heartbeat: WatcherHeartbeat | None) -> bool:
     return age > timedelta(seconds=HEARTBEAT_STALE_MULTIPLIER * settings.watcher_poll_interval_seconds)
 
 
+# Epic 9, Story 9.4 (AC #2): how far back a FAILED BackupJob still counts
+# as an active alert — an old failure that's since been superseded by a
+# later success shouldn't keep the banner lit forever.
+BACKUP_ALERT_LOOKBACK_HOURS = 24
+
+
+def _recent_backup_failure(session) -> BackupJob | None:
+    """Simple, self-contained Dashboard signal (AC #2) — deliberately does
+    NOT read worker/policy/backup_policy.yaml's tracked_images (AD-3:
+    dashboard/ must not import worker/backup/ execution code, and
+    policy_config.py exists purely to serve that code); just asks "is
+    there any BackupJob that failed recently". The fuller, policy-aware
+    "never backed up"/"overdue past RPO" check that also fires the
+    outbound webhook lives in worker/backup/alerting.py's periodic job —
+    this is only the at-a-glance Dashboard banner, same scope as
+    is_heartbeat_stale()'s single-condition check above."""
+    cutoff = datetime.utcnow() - timedelta(hours=BACKUP_ALERT_LOOKBACK_HOURS)
+    return (
+        session.query(BackupJob)
+        .filter(BackupJob.status == "FAILED", BackupJob.created_at >= cutoff)
+        .order_by(BackupJob.created_at.desc())
+        .first()
+    )
+
+
 def _parse_datetime_filter(raw: str) -> datetime | None:
     """Accepts the value an HTML <input type="datetime-local"> submits
     (`YYYY-MM-DDTHH:MM`). Returns None for blank/unparseable input rather
@@ -171,7 +196,13 @@ def _query_audit_entries(
 def _fetch_dashboard_data(
     incident_id: str, since_dt: datetime | None, until_dt: datetime | None
 ) -> tuple[
-    list[Incident], WatcherHeartbeat | None, bool, list[Action], list[AuditEntry], bool
+    list[Incident],
+    WatcherHeartbeat | None,
+    bool,
+    list[Action],
+    list[AuditEntry],
+    bool,
+    BackupJob | None,
 ]:
     with db.SessionLocal() as session:
         incidents = session.query(Incident).order_by(Incident.detected_at.desc()).all()
@@ -206,6 +237,8 @@ def _fetch_dashboard_data(
         # Audit Trail (filters + full history) now lives directly on the
         # Dashboard — there is no separate /audit page anymore.
         audit_entries = _query_audit_entries(session, incident_id, since_dt, until_dt)
+        # Epic 9, Story 9.4 (AC #2) — see _recent_backup_failure's docstring.
+        backup_alert = _recent_backup_failure(session)
     return (
         incidents,
         latest_heartbeat,
@@ -213,6 +246,7 @@ def _fetch_dashboard_data(
         pending_actions,
         audit_entries,
         upgrade_blocks_other_actions,
+        backup_alert,
     )
 
 
@@ -235,6 +269,7 @@ async def index(
             pending_actions,
             audit_entries,
             upgrade_blocks_other_actions,
+            backup_alert,
         ) = _fetch_dashboard_data(incident_id, since_dt, until_dt)
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
@@ -283,6 +318,7 @@ async def index(
             "filter_since": since,
             "filter_until": until,
             "upgrade_blocks_other_actions": upgrade_blocks_other_actions,
+            "backup_alert": backup_alert,
             # Sidebar tab (2026-07-24) — lands on Audit Trail if the operator
             # just used its filter form (a GET with query params, unlike
             # Settings' POST-result sections), otherwise defaults to Chờ

@@ -206,3 +206,32 @@
   }
   setCollapsed(storedCollapsed);
 })();
+
+(function () {
+  // Top nav "Cluster" dropdown — click to open/close (not hover, unreliable
+  // on touch), closes on an outside click or Escape. Loaded on every page
+  // that shows the top nav (added to backups.html/settings.html, which
+  // don't otherwise load app.js, specifically for this).
+  var dropdowns = Array.prototype.slice.call(document.querySelectorAll(".nav-dropdown"));
+  if (!dropdowns.length) return;
+
+  function closeAll() {
+    dropdowns.forEach(function (d) { d.classList.remove("is-open"); });
+  }
+
+  dropdowns.forEach(function (dropdown) {
+    var toggle = dropdown.querySelector(".nav-dropdown-toggle");
+    if (!toggle) return;
+    toggle.addEventListener("click", function (event) {
+      event.stopPropagation();
+      var wasOpen = dropdown.classList.contains("is-open");
+      closeAll();
+      if (!wasOpen) dropdown.classList.add("is-open");
+    });
+  });
+
+  document.addEventListener("click", closeAll);
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closeAll();
+  });
+})();

@@ -195,13 +195,22 @@ async def run(
 
 
 async def _main() -> None:
+    from worker.backup import scheduler as backup_scheduler
     from worker.llm.router_client import diagnose_incident, poll_approved_actions
 
     # Story 4.3: the approved-RISKY-action poller runs alongside the
     # RabbitMQ consumer in the same process/event loop — only the Worker
     # holds SSH executor credentials (AD-3), and an approval isn't a queue
     # message that run() would ever see on its own.
-    await asyncio.gather(run(process_incident=diagnose_incident), poll_approved_actions())
+    # Epic 9, Story 9.1: the Backup Scheduler is a THIRD coroutine here,
+    # same reasoning — it creates its own synthetic Incident/Action and
+    # calls straight into _execute_approved_action(), no separate queue or
+    # poll loop of its own (see worker/backup/scheduler.py's docstring).
+    await asyncio.gather(
+        run(process_incident=diagnose_incident),
+        poll_approved_actions(),
+        backup_scheduler.run(),
+    )
 
 
 if __name__ == "__main__":

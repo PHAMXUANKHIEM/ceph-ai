@@ -503,6 +503,43 @@ def test_has_command_false_for_action_ids_with_no_automated_remediation():
     assert commands_module.has_command("this_action_id_does_not_exist") is False
 
 
+def test_has_command_true_for_restore_cluster_from_backup():
+    # Story 9.7: without an entry, approve_action's has_command() gate
+    # would silently mark this Action EXECUTED without ever reaching
+    # cluster_deploy.run() — same bug class the 2026-07-29 fix (see
+    # _VOLUME_PERF_COMMAND_BUILDERS's own comment) fixed for volume_perf_sweep.
+    assert commands_module.has_command("restore_cluster_from_backup") is True
+
+
+def test_get_command_restore_cluster_from_backup_builds_preview_text():
+    preview = commands_module.get_command(
+        "restore_cluster_from_backup",
+        None,
+        {"version": "18.2.8", "nodes": [{"ip": "10.20.1.112", "roles": ["mon"]}]},
+    )
+    assert "18.2.8" in preview
+    assert "10.20.1.112" in preview
+
+
+def test_has_command_true_for_restore_rbd_image_to_production():
+    assert commands_module.has_command("restore_rbd_image_to_production") is True
+
+
+def test_get_command_restore_rbd_image_to_production_builds_preview_text():
+    preview = commands_module.get_command(
+        "restore_rbd_image_to_production", None, {"pool": "vms", "image": "web01"}
+    )
+    assert "vms/web01" in preview
+
+
+def test_has_command_false_for_backup_delete_manual_not_yet_implemented():
+    # backup_delete_manual is registered in the policy enum (Story 9.1) but
+    # has no engine.py execution and no preview builder yet — has_command()
+    # correctly still reports False for it (same not-yet-wired posture as
+    # any other registered-but-unimplemented action_id).
+    assert commands_module.has_command("backup_delete_manual") is False
+
+
 def test_discover_ceph_units_classifies_osd_mon_mgr_and_ignores_sidecar_units(monkeypatch):
     monkeypatch.setattr(commands_module, "execute_command", lambda host, command: CEPHADM_SYSTEMCTL_OUTPUT)
 

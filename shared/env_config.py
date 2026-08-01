@@ -39,6 +39,36 @@ CLUSTER_ENV_NAMES: dict[str, str] = {
 }
 
 
+# Epic 9 (Story 9.2/9.7): field-name suffixes shared by BOTH backup target
+# slots (a/b, config/settings.py) — pydantic-settings maps
+# `backup_target_<slot>_<suffix>` to the env var `BACKUP_TARGET_<SLOT>_<SUFFIX>`
+# by default (no custom aliasing), so this is just the suffix list once,
+# not two near-duplicate dicts.
+_BACKUP_TARGET_FIELD_SUFFIXES = (
+    "transport",
+    "label",
+    "ssh_host",
+    "ssh_user",
+    "ssh_key_path",
+    "ssh_landing_dir",
+    "s3_endpoint",
+    "s3_access_key",
+    "s3_secret_key",
+    "s3_bucket",
+    "immutable_lock_days",
+)
+
+
+def backup_target_env_names(slot: str) -> dict[str, str]:
+    """`config/settings.py` field name -> .env variable name for backup
+    target `slot` ("a" or "b") — same role as `CLUSTER_ENV_NAMES` above, for
+    `dashboard/routes/settings.py`'s "Lưu trữ Backup" form."""
+    return {
+        f"backup_target_{slot}_{suffix}": f"BACKUP_TARGET_{slot.upper()}_{suffix.upper()}"
+        for suffix in _BACKUP_TARGET_FIELD_SUFFIXES
+    }
+
+
 def apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:
     for name, value in fields.items():
         # Review Story 5.1: an unchecked embedded newline in a submitted

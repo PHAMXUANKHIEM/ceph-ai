@@ -620,6 +620,31 @@ def _cluster_form_values() -> dict:
     }
 
 
+def _backup_target_form_values() -> dict:
+    """Epic 9 (Story 9.2/9.7 UI): non-secret current values for both backup
+    target slots — s3_secret_key is deliberately NOT included here (same
+    "leave blank in the form, blank-on-submit means keep the saved value"
+    posture as router_api_key above), so a GET never leaks it back into the
+    rendered HTML."""
+    values = {}
+    for slot in ("a", "b"):
+        for suffix in (
+            "transport",
+            "label",
+            "ssh_host",
+            "ssh_user",
+            "ssh_key_path",
+            "ssh_landing_dir",
+            "s3_endpoint",
+            "s3_access_key",
+            "s3_bucket",
+            "immutable_lock_days",
+        ):
+            field = f"backup_target_{slot}_{suffix}"
+            values[field] = getattr(settings, field)
+    return values
+
+
 def _patch_pipeline_form_values() -> dict:
     return {
         "ceph_patch_build_node": settings.ceph_patch_build_node,
@@ -662,6 +687,9 @@ def _settings_context(
     patch_pipeline_error: str | None = None,
     patch_pipeline_success: str | None = None,
     patch_pipeline_values: dict | None = None,
+    backup_target_error: str | None = None,
+    backup_target_success: str | None = None,
+    backup_target_values: dict | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -728,11 +756,16 @@ def _settings_context(
         "current_database_display": _current_database_display(),
         "patch_pipeline_error": patch_pipeline_error,
         "patch_pipeline_success": patch_pipeline_success,
+        "backup_target_error": backup_target_error,
+        "backup_target_success": backup_target_success,
     }
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
     context.update(
         patch_pipeline_values if patch_pipeline_values is not None else _patch_pipeline_form_values()
+    )
+    context.update(
+        backup_target_values if backup_target_values is not None else _backup_target_form_values()
     )
     # ssh_key_path is no longer an editable field on the cluster form (see
     # CLUSTER_ENV_NAMES) — always show the actual configured value here,
@@ -789,6 +822,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "cleanup"
     if any(context.get(k) for k in ("patch_pipeline_error", "patch_pipeline_success")):
         return "patch-pipeline"
+    if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
+        return "backup-targets"
     # Fresh GET /settings, nothing to react to yet — land on the first
     # section this account can actually see.
     return "restart-controls" if is_admin else "router"
@@ -1513,6 +1548,163 @@ async def patch_pipeline_settings_submit(
         _settings_context(
             user,
             patch_pipeline_success="Đã lưu cấu hình — Worker đã khởi động lại để áp dụng ngay.",
+        ),
+    )
+
+
+def _validate_backup_target_slot(slot: str, submitted: dict) -> str | None:
+    """Returns an error message, or None if `slot`'s submitted fields are
+    internally consistent for its chosen transport. transport="" (chưa
+    dùng) skips validation entirely — leaving a slot unconfigured is valid
+    (PRD FR-5 only requires 2 copies once an operator actually sets both
+    up, not that both must be configured immediately)."""
+    label = submitted[f"backup_target_{slot}_label"] or f"Slot {slot.upper()}"
+    transport = submitted[f"backup_target_{slot}_transport"]
+    if transport not in ("", "ssh", "s3"):
+        return f"{label}: kiểu kết nối không hợp lệ ({transport!r})"
+    if transport == "ssh":
+        required = ("ssh_host", "ssh_user", "ssh_key_path", "ssh_landing_dir")
+        if any(not submitted[f"backup_target_{slot}_{f}"] for f in required):
+            return f"{label}: cần điền đủ Host, User, SSH key path, Thư mục lưu trữ (SSH)"
+    elif transport == "s3":
+        required = ("s3_access_key", "s3_secret_key", "s3_bucket")
+        if any(not submitted[f"backup_target_{slot}_{f}"] for f in required):
+            return f"{label}: cần điền đủ Access key, Secret key, Bucket (S3)"
+    return None
+
+
+@router.post("/settings/backup-targets", response_class=HTMLResponse)
+async def backup_targets_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    backup_target_a_transport: str = Form(""),
+    backup_target_a_label: str = Form(""),
+    backup_target_a_ssh_host: str = Form(""),
+    backup_target_a_ssh_user: str = Form(""),
+    backup_target_a_ssh_key_path: str = Form(""),
+    backup_target_a_ssh_landing_dir: str = Form(""),
+    backup_target_a_s3_endpoint: str = Form(""),
+    backup_target_a_s3_access_key: str = Form(""),
+    backup_target_a_s3_secret_key: str = Form(""),
+    backup_target_a_s3_bucket: str = Form(""),
+    backup_target_a_immutable_lock_days: str = Form("7"),
+    backup_target_b_transport: str = Form(""),
+    backup_target_b_label: str = Form(""),
+    backup_target_b_ssh_host: str = Form(""),
+    backup_target_b_ssh_user: str = Form(""),
+    backup_target_b_ssh_key_path: str = Form(""),
+    backup_target_b_ssh_landing_dir: str = Form(""),
+    backup_target_b_s3_endpoint: str = Form(""),
+    backup_target_b_s3_access_key: str = Form(""),
+    backup_target_b_s3_secret_key: str = Form(""),
+    backup_target_b_s3_bucket: str = Form(""),
+    backup_target_b_immutable_lock_days: str = Form("7"),
+):
+    """Epic 9 (Story 9.2's backend, never wired to a Settings UI until now)
+    — where each of the 2 fixed backup target slots actually sends backup
+    data (`worker/backup/storage/factory.py::get_backend()` reads these
+    same `settings.backup_target_<slot>_*` fields). Deliberately separate
+    from "Kết nối cụm Ceph" — these credentials must never share network
+    access with the SOURCE cluster's admin path (PRD FR-4, see
+    config/settings.py's own comment on these fields).
+
+    No live connection test here (same posture as "Build & Copy Patch Ceph"
+    above) — `worker/backup/storage/ssh_backend.py`/`s3_backend.py` already
+    fail loudly, not silently, the next time a real backup/restore actually
+    runs against a bad destination; this form's job is only to get the
+    values saved correctly.
+
+    s3_secret_key follows the same "blank submit = keep the currently
+    saved value" convention as router_api_key above — the rendered form
+    never carries the real secret back into HTML (see
+    `_backup_target_form_values()`), so a blank field here does NOT mean
+    "clear the secret", it means "unchanged"."""
+    _require_admin_privilege(user)
+
+    raw = {
+        "backup_target_a_transport": backup_target_a_transport.strip(),
+        "backup_target_a_label": backup_target_a_label.strip(),
+        "backup_target_a_ssh_host": backup_target_a_ssh_host.strip(),
+        "backup_target_a_ssh_user": backup_target_a_ssh_user.strip(),
+        "backup_target_a_ssh_key_path": backup_target_a_ssh_key_path.strip(),
+        "backup_target_a_ssh_landing_dir": backup_target_a_ssh_landing_dir.strip(),
+        "backup_target_a_s3_endpoint": backup_target_a_s3_endpoint.strip(),
+        "backup_target_a_s3_access_key": backup_target_a_s3_access_key.strip(),
+        "backup_target_a_s3_secret_key": backup_target_a_s3_secret_key.strip()
+        or settings.backup_target_a_s3_secret_key,
+        "backup_target_a_s3_bucket": backup_target_a_s3_bucket.strip(),
+        "backup_target_b_transport": backup_target_b_transport.strip(),
+        "backup_target_b_label": backup_target_b_label.strip(),
+        "backup_target_b_ssh_host": backup_target_b_ssh_host.strip(),
+        "backup_target_b_ssh_user": backup_target_b_ssh_user.strip(),
+        "backup_target_b_ssh_key_path": backup_target_b_ssh_key_path.strip(),
+        "backup_target_b_ssh_landing_dir": backup_target_b_ssh_landing_dir.strip(),
+        "backup_target_b_s3_endpoint": backup_target_b_s3_endpoint.strip(),
+        "backup_target_b_s3_access_key": backup_target_b_s3_access_key.strip(),
+        "backup_target_b_s3_secret_key": backup_target_b_s3_secret_key.strip()
+        or settings.backup_target_b_s3_secret_key,
+        "backup_target_b_s3_bucket": backup_target_b_s3_bucket.strip(),
+    }
+    # Rendered back on a validation error — must NOT include the actual
+    # secret values (same reasoning _backup_target_form_values() documents).
+    display_values = {k: v for k, v in raw.items() if not k.endswith("s3_secret_key")}
+
+    try:
+        immutable_days_a = int(backup_target_a_immutable_lock_days or 7)
+        immutable_days_b = int(backup_target_b_immutable_lock_days or 7)
+        if immutable_days_a < 1 or immutable_days_b < 1:
+            raise ValueError
+    except ValueError:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                backup_target_error="Số ngày khoá immutable phải là số nguyên >= 1",
+                backup_target_values=display_values,
+            ),
+        )
+    raw["backup_target_a_immutable_lock_days"] = immutable_days_a
+    raw["backup_target_b_immutable_lock_days"] = immutable_days_b
+
+    for slot in ("a", "b"):
+        error = _validate_backup_target_slot(slot, raw)
+        if error:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                _settings_context(user, backup_target_error=error, backup_target_values=display_values),
+            )
+
+    try:
+        env_fields: dict[str, str] = {}
+        for slot in ("a", "b"):
+            env_names = env_config.backup_target_env_names(slot)
+            for field, env_name in env_names.items():
+                env_fields[env_name] = str(raw[field])
+        _update_env_file_batch(env_fields)
+        for field in raw:
+            setattr(settings, field, raw[field])
+    except Exception:
+        logger.exception("backup_targets_settings_submit: failed to persist config to .env")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                backup_target_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
+                backup_target_values=display_values,
+            ),
+        )
+
+    await asyncio.to_thread(restart_worker)
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            backup_target_success="Đã lưu cấu hình lưu trữ Backup — Worker đã khởi động lại để áp dụng ngay.",
         ),
     )
 

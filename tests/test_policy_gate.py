@@ -134,6 +134,7 @@ def test_cluster_deploy_action_ids_loaded_from_policy_yaml():
         "delete_cluster_cephadm",
         "delete_cluster_manual",
         "convert_cluster_to_cephadm",
+        "restore_cluster_from_backup",
     }
 
 
@@ -151,6 +152,9 @@ def test_deploy_cluster_action_ids_are_classified_risky():
     # 2026-07-28: converts every daemon's management style in place on a
     # live cluster — same conservative-by-default reasoning, never Safe.
     assert classify_action("convert_cluster_to_cephadm") == ActionClassification.RISKY
+    # 2026-07-31 (Story 9.7): rebuilds a cluster from scratch AND overwrites
+    # its RBD data from backup — same conservative-by-default reasoning.
+    assert classify_action("restore_cluster_from_backup") == ActionClassification.RISKY
 
 
 def test_cluster_deploy_action_ids_disjoint_from_other_families():

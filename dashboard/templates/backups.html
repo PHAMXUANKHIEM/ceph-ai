@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Backup — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item nav-dropdown-item-active">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    {% if pending_restore_action %}
+    <section class="card">
+      <div class="card-header"><h2>{% if pending_restore_action.status == "PENDING_APPROVAL" %}Chờ duyệt — Khôi phục volume{% else %}● ĐANG KHÔI PHỤC VOLUME...{% endif %}</h2></div>
+      <div class="card-body">
+        <p><strong>Kế hoạch:</strong></p>
+        <pre class="upgrade-plan-text">{{ pending_restore_action.rationale }}</pre>
+        {% if pending_restore_action.status == "PENDING_APPROVAL" %}
+        <div class="pending-action-buttons">
+          <form method="post" action="/actions/{{ pending_restore_action.id }}/approve" class="inline-form">
+            <button type="submit" class="btn btn-approve">Duyệt — bắt đầu khôi phục</button>
+          </form>
+          <form method="post" action="/actions/{{ pending_restore_action.id }}/reject" class="inline-form">
+            <button type="submit" class="btn btn-reject">Từ chối</button>
+          </form>
+        </div>
+        {% else %}
+        <p class="hint">Xem tiến độ ở mục "Đang chạy" bên dưới.</p>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card" id="backup-progress-panel">
+      <div class="card-header"><h2>Đang chạy</h2></div>
+      <div class="card-body">
+        <p class="hint" id="backup-progress-idle">Không có job backup nào đang chạy.</p>
+        <div id="backup-progress-detail" hidden>
+          <p><strong id="backup-progress-title"></strong></p>
+          <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="backup-progress-bar">
+            <div class="progress-bar-fill" id="backup-progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <p class="hint">
+            <span id="backup-progress-pct">—</span>% ·
+            <span id="backup-progress-speed">—</span> MB/s ·
+            ETA <span id="backup-progress-eta">—</span>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Hàng đợi</h2></div>
+      <div class="card-body">
+        {% if queue %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pool/Image</th><th>Lần chạy thành công gần nhất</th><th>Trạng thái gần nhất</th><th></th></tr></thead>
+            <tbody>
+              {% for item in queue %}
+              <tr>
+                <td><code>{{ item.pool }}/{{ item.image }}</code></td>
+                <td>{% if item.last_run_at %}{{ item.last_run_at|vntime }}{% else %}<span class="hint">Chưa từng chạy</span>{% endif %}</td>
+                <td>{{ item.last_status or "—" }}</td>
+                <td>
+                  <button type="button" class="btn btn-sm btn-restore-image" data-pool="{{ item.pool }}" data-image="{{ item.image }}" {% if pending_restore_action %}disabled{% endif %}>Khôi phục</button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint">"Khôi phục" ghi ĐÈ dữ liệu hiện tại của image bằng bản backup full gần nhất + toàn bộ chain export-diff — chỉ dùng khi image đó bị hỏng/mất dữ liệu, không phải để dựng lại cả cụm (xem trang <a href="/restore-cluster">Restore Cluster</a> cho trường hợp đó).</p>
+        {% else %}
+        <p class="hint">Chưa cấu hình <code>tracked_images</code> nào trong <code>worker/policy/backup_policy.yaml</code>.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Lịch sử</h2></div>
+      <div class="card-body">
+        {% if history %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pool/Image</th><th>Loại</th><th>Thời điểm</th><th>Thời lượng</th><th>Kết quả</th></tr></thead>
+            <tbody>
+              {% for h in history %}
+              <tr class="{% if h.status == 'FAILED' %}progress-item-failed{% endif %}">
+                <td><code>{{ h.pool }}/{{ h.image }}</code></td>
+                <td>{{ h.job_type }}</td>
+                <td>{{ h.created_at|vntime if h.created_at else "—" }}</td>
+                <td>{% if h.duration_seconds %}{{ "%.1f"|format(h.duration_seconds) }}s{% else %}—{% endif %}</td>
+                <td>{{ h.status }}{% if h.error_message %} — {{ h.error_message }}{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="hint">Chưa có lịch sử backup nào.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Bất thường phát hiện</h2></div>
+      <div class="card-body">
+        {% if anomalies %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pool/Image</th><th>Loại</th><th>Mức độ</th><th>Thời điểm</th><th>Chi tiết (AI)</th></tr></thead>
+            <tbody>
+              {% for a in anomalies %}
+              <tr>
+                <td><code>{{ a.pool }}/{{ a.image }}</code></td>
+                <td>{{ a.kind }}</td>
+                <td><span class="severity-badge severity-{{ 'err' if a.severity == 'critical' else ('warn' if a.severity == 'warning' else 'info') }}">{{ a.severity }}</span></td>
+                <td>{{ a.created_at|vntime if a.created_at else "—" }}</td>
+                <td>{{ a.ai_summary or "—" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="hint">Chưa phát hiện bất thường nào.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Digest</h2></div>
+      <div class="card-body">
+        {% if digests %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Thời gian</th><th>Kỳ báo cáo</th><th>Thành công</th><th>Thất bại</th><th>Bất thường</th><th>Tóm tắt (AI)</th></tr></thead>
+            <tbody>
+              {% for d in digests %}
+              <tr>
+                <td>{{ d.created_at|vntime if d.created_at else "—" }}</td>
+                <td>{{ d.period_start|vntime if d.period_start else "—" }} &ndash; {{ d.period_end|vntime if d.period_end else "—" }}</td>
+                <td>{{ d.succeeded_count }}</td>
+                <td>{{ d.failed_count }}</td>
+                <td>{{ d.anomaly_count }}</td>
+                <td>{{ d.summary_text }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="hint">Chưa có digest nào được tạo.</p>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/backups.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

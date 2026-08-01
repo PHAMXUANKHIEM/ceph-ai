@@ -212,3 +212,61 @@ def test_index_shows_empty_state_when_no_audit_entries(dashboard_client):
 
     assert response.status_code == 200
     assert "Chưa có hoạt động nào." in response.text
+
+
+def test_index_shows_backup_alert_banner_when_recent_failure_exists(dashboard_client):
+    from shared.models import BackupJob
+
+    with db_module.SessionLocal() as session:
+        session.add(
+            BackupJob(
+                run_id="run-1",
+                pool="vms",
+                image="web01",
+                job_type="full",
+                status="FAILED",
+                error_message="disk full trên đích",
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/")
+
+    assert response.status_code == 200
+    assert "Backup thất bại" in response.text
+    assert "vms/web01" in response.text
+    assert "disk full trên đích" in response.text
+
+
+def test_index_does_not_show_backup_alert_banner_when_no_recent_failure(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.get("/")
+
+    assert response.status_code == 200
+    assert "Backup thất bại" not in response.text
+
+
+def test_index_does_not_show_backup_alert_banner_for_old_failure(dashboard_client):
+    from shared.models import BackupJob
+
+    with db_module.SessionLocal() as session:
+        session.add(
+            BackupJob(
+                run_id="run-old",
+                pool="vms",
+                image="web01",
+                job_type="full",
+                status="FAILED",
+                error_message="old failure, already superseded",
+                created_at=datetime.utcnow() - timedelta(hours=25),
+            )
+        )
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/")
+
+    assert response.status_code == 200
+    assert "Backup thất bại" not in response.text

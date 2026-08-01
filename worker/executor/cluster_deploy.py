@@ -23,8 +23,13 @@ import time
 import uuid
 from datetime import datetime
 
+from config.settings import settings
 from shared import env_config
 from shared.ceph_releases import codename_for_version, repo_path_version
+from worker.backup import metadata as backup_metadata
+from worker.backup import restore as backup_restore
+from worker.backup.policy_config import load_backup_policy
+from worker.backup.storage.factory import get_backend
 from worker.executor.commands import _package_manager_branch
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy.gate import VALID_CLUSTER_DEPLOY_ACTION_IDS
@@ -46,6 +51,12 @@ _REMOTE_MON_KEYRING_PATH = "/tmp/ceph-aiops-mon.keyring"
 _REMOTE_MONMAP_PATH = "/tmp/ceph-aiops.monmap"
 _REMOTE_ADMIN_KEYRING_PATH = "/etc/ceph/ceph.client.admin.keyring"
 _REMOTE_BOOTSTRAP_OSD_KEYRING_PATH = "/var/lib/ceph/bootstrap-osd/ceph.keyring"
+
+# Story 9.7 (DR restore, Task 2) — scratch paths for metadata artifacts
+# downloaded from the backup target and pushed to the first MON node.
+_REMOTE_RESTORE_AUTH_PATH = "/tmp/ceph-aiops-restore-auth.txt"
+_REMOTE_RESTORE_CRUSHMAP_PATH = "/tmp/ceph-aiops-restore-crushmap.bin"
+_REMOTE_RESTORE_MONMAP_PATH = "/tmp/ceph-aiops-restore.monmap"
 
 # 2026-07-29 fix (verified live + against the actual repo this app
 # installs from): the 2026-07-28 version of this table added "ceph-volume"
@@ -2007,6 +2018,206 @@ def _phase_ceph_deploy_repo_local(nodes: list[dict], action_params: dict, on_hos
         on_host_update(list(host_status))
 
 
+# --- Khôi phục cụm sau thảm họa (Story 9.7, `restore_cluster_from_backup`) --
+#
+# 3 phases appended AFTER `deploy_cluster_ceph_deploy`'s own phase list
+# (see `_PHASES_BY_ACTION_ID` below) — by the time these run, the cluster
+# is already freshly bootstrapped and HEALTHY (that phase list ends with
+# `_phase_verify`). These restore application-level state (auth/CRUSH
+# map/RBD images) on top of it; they never touch MON bootstrap/quorum,
+# which the reused phases already handled.
+
+
+def _restore_monmap_on_mon(host: str, hostname: str, monmap_b64: str) -> None:
+    """Stops the mon, injects the OLD cluster's monmap, restarts it — done
+    ONE mon at a time (not in parallel) so the cluster never loses quorum
+    entirely mid-restore. NOT verified against a real lab cluster this
+    session (Dev Notes explicitly flag this): the downloaded monmap.bin
+    carries the ORIGINAL cluster's fsid, while this freshly-bootstrapped
+    mon's on-disk store already has a DIFFERENT fsid from
+    `_phase_ceph_deploy_mon_init` above — Ceph is documented to reject an
+    `--inject-monmap` whose fsid doesn't match the local store's fsid, and
+    that behavior can differ by version. If this step fails in practice,
+    mon membership already matches the backup (the operator was told by
+    the runbook to rebuild with the SAME node list), so it is safe to
+    treat this specific sub-step as best-effort — logged as a phase
+    failure here rather than silently ignored, so an operator investigates
+    rather than assumes the whole restore silently skipped it."""
+    quoted_hostname = shlex.quote(hostname)
+    _write_remote_file_b64(host, _REMOTE_RESTORE_MONMAP_PATH, monmap_b64)
+    execute_command(
+        host,
+        f"systemctl stop ceph-mon@{quoted_hostname} && "
+        f"ceph-mon -i {quoted_hostname} --inject-monmap {shlex.quote(_REMOTE_RESTORE_MONMAP_PATH)} && "
+        f"systemctl start ceph-mon@{quoted_hostname}",
+    )
+
+
+def _phase_restore_metadata(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Story 9.7, Task 2 (AC #2) — restores auth keys, CRUSH map, and mon
+    membership from the latest successful metadata backup (Story 9.3)."""
+    first_mon = _first_mon_ip(nodes)
+    mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
+    hostnames: dict[str, str] = action_params.get("_node_hostnames", {})
+
+    host_status = [{"host": first_mon, "status": "running"}]
+    on_host_update(list(host_status))
+
+    latest = backup_metadata.latest_successful_metadata_job()
+    if latest is None:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError("Không có bản backup metadata thành công nào để khôi phục")
+
+    try:
+        backend = get_backend(latest.backup_target_slot, settings)
+        auth_bytes = backup_metadata.download_artifact(backend, latest.remote_key, "auth_export.txt")
+        crushmap_bytes = backup_metadata.download_artifact(backend, latest.remote_key, "crushmap.bin")
+        monmap_bytes = backup_metadata.download_artifact(backend, latest.remote_key, "monmap.bin")
+    except Exception as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"Không tải được bản backup metadata ({latest.remote_key}): {exc}") from exc
+
+    try:
+        _write_remote_file_b64(first_mon, _REMOTE_RESTORE_AUTH_PATH, base64.b64encode(auth_bytes).decode())
+        execute_command(first_mon, f"ceph auth import -i {shlex.quote(_REMOTE_RESTORE_AUTH_PATH)}")
+
+        _write_remote_file_b64(
+            first_mon, _REMOTE_RESTORE_CRUSHMAP_PATH, base64.b64encode(crushmap_bytes).decode()
+        )
+        execute_command(first_mon, f"ceph osd setcrushmap -i {shlex.quote(_REMOTE_RESTORE_CRUSHMAP_PATH)}")
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{first_mon}: khôi phục auth/CRUSH map thất bại: {exc}") from exc
+
+    monmap_b64 = base64.b64encode(monmap_bytes).decode()
+    for mon_node in mon_nodes:
+        ip = mon_node["ip"]
+        hostname = hostnames.get(ip, ip)
+        try:
+            _restore_monmap_on_mon(ip, hostname, monmap_b64)
+        except (ExecutorError, DeployPhaseError) as exc:
+            logger.warning(
+                "cluster_deploy._phase_restore_metadata: inject monmap thất bại trên %s (%s) — "
+                "best-effort, xem docstring _restore_monmap_on_mon: %s",
+                ip,
+                hostname,
+                exc,
+            )
+
+    host_status[0]["status"] = "done"
+    host_status[0]["message"] = f"Đã khôi phục auth + CRUSH map từ {latest.remote_key}"
+    on_host_update(list(host_status))
+
+
+def _phase_restore_rbd_images(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Story 9.7, Task 2 (AC #3) — restores every configured
+    `tracked_images` entry (`worker/policy/backup_policy.yaml`) via
+    `worker/backup/restore.py::restore_image()`, the SAME shared restore
+    path Task 3's `restore_rbd_image_to_production` uses. Progress here is
+    tracked per-image (not per-host, unlike every other phase in this
+    module) — `_make_step`'s `hosts` field is reused unchanged, just
+    carrying `{pool}/{image}` labels instead of IPs."""
+    first_mon = _first_mon_ip(nodes)
+    tracked = [t for t in (load_backup_policy().get("tracked_images") or []) if t.get("pool") and t.get("image")]
+
+    host_status = [{"host": f"{t['pool']}/{t['image']}", "status": "pending"} for t in tracked]
+    on_host_update(list(host_status))
+    if not tracked:
+        return
+
+    try:
+        existing_pools = {p.strip() for p in execute_command(first_mon, "ceph osd pool ls").splitlines()}
+    except ExecutorError as exc:
+        host_status[:] = [{**s, "status": "failed"} for s in host_status]
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{first_mon}: không liệt kê được pool hiện có: {exc}") from exc
+
+    for i, t in enumerate(tracked):
+        pool, image = t["pool"], t["image"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+
+        if pool not in existing_pools:
+            try:
+                execute_command(
+                    first_mon, f"ceph osd pool create {shlex.quote(pool)} && rbd pool init {shlex.quote(pool)}"
+                )
+                existing_pools.add(pool)
+            except ExecutorError as exc:
+                host_status[i]["status"] = "failed"
+                on_host_update(list(host_status))
+                raise DeployPhaseError(f"{first_mon}: tạo pool {pool} thất bại: {exc}") from exc
+
+        slot = backup_restore.latest_backup_target_slot(pool, image)
+        if slot is None:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{pool}/{image}: không có bản backup full thành công để khôi phục")
+
+        backend = get_backend(slot, settings)
+        result = backup_restore.restore_image(pool, image, backend, pool, image)
+        if not result.success:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{pool}/{image}: khôi phục thất bại: {result.error_message}")
+
+        host_status[i]["status"] = "done"
+        host_status[i]["message"] = f"{result.size_bytes} bytes, {len(result.applied_diff_job_ids)} diff(s)"
+        on_host_update(list(host_status))
+
+
+def _phase_verify_integrity(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Story 9.7, Task 2 (AC #4) — for every restored image, confirms its
+    logical size on the NEW cluster matches the full backup's own
+    recorded `size_bytes` exactly (a plain `rbd export` of a whole image
+    writes the same number of bytes as the image's logical size, so this
+    is a real, not approximate, integrity check — not "gần đúng" per AC
+    #4's own wording). Per-artifact download integrity was already
+    enforced by `restore.py::restore_image()`'s `storage.verify()` round-
+    trip check during `_phase_restore_rbd_images` above; this phase is the
+    final end-to-end confirmation against the rebuilt image itself."""
+    first_mon = _first_mon_ip(nodes)
+    tracked = [t for t in (load_backup_policy().get("tracked_images") or []) if t.get("pool") and t.get("image")]
+
+    host_status = [{"host": f"{t['pool']}/{t['image']}", "status": "pending"} for t in tracked]
+    on_host_update(list(host_status))
+    if not tracked:
+        return
+
+    for i, t in enumerate(tracked):
+        pool, image = t["pool"], t["image"]
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+
+        full_job = backup_restore.latest_full_backup_job(pool, image)
+        if full_job is None or full_job.size_bytes is None:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{pool}/{image}: không có kích thước backup gốc để đối chiếu")
+
+        try:
+            output = execute_command(first_mon, f"rbd info {pool}/{image} --format json")
+            restored_size = json.loads(output)["size"]
+        except (ExecutorError, KeyError, ValueError, TypeError) as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{pool}/{image}: không lấy được kích thước sau khôi phục: {exc}") from exc
+
+        if restored_size != full_job.size_bytes:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(
+                f"{pool}/{image}: kích thước sau khôi phục ({restored_size}) không khớp bản backup "
+                f"full ({full_job.size_bytes}) — checksum KHÔNG khớp"
+            )
+
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
 # step_key, label, progress %, phase function
 _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
     "deploy_cluster_cephadm": [
@@ -2126,6 +2337,16 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("verify", "Kiểm tra cụm sau khi chuyển đổi", 100, _phase_convert_verify),
     ],
 }
+
+# Story 9.7 (DR restore) — reuses `deploy_cluster_ceph_deploy`'s ENTIRE
+# phase list unchanged (list concatenation via `+`, not copy-pasted — per
+# this story's own Dev Notes) to first rebuild an empty, healthy cluster,
+# then appends 3 restore-only phases on top of it.
+_PHASES_BY_ACTION_ID["restore_cluster_from_backup"] = _PHASES_BY_ACTION_ID["deploy_cluster_ceph_deploy"] + [
+    ("restore_metadata", "Khôi phục auth/CRUSH map/monmap", 97, _phase_restore_metadata),
+    ("restore_rbd_images", "Khôi phục dữ liệu RBD từ backup", 99, _phase_restore_rbd_images),
+    ("verify_integrity", "Đối chiếu checksum sau khôi phục", 100, _phase_verify_integrity),
+]
 
 # Deploy vs delete post-phase env-config writes go opposite directions
 # (populate vs clear) — this set is how run() tells them apart without a

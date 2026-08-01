@@ -318,6 +318,25 @@
     applyExecModeVisibility();
   }
 
+  // Lưu trữ Backup: only show the SSH or S3 fields the currently-selected
+  // "Kiểu kết nối" of THAT slot needs — same data-attribute-driven toggle
+  // as the exec-mode one above, but scoped per <fieldset> since there are
+  // 2 independent selects (slot A, slot B) on the same page.
+  var backupTargetSlots = Array.prototype.slice.call(document.querySelectorAll(".backup-target-slot"));
+  backupTargetSlots.forEach(function (slot) {
+    var transportSelect = slot.querySelector(".backup-transport-select");
+    if (!transportSelect) return;
+    var transportFields = Array.prototype.slice.call(slot.querySelectorAll("[data-backup-transport]"));
+    var applyTransportVisibility = function () {
+      var transport = transportSelect.value;
+      transportFields.forEach(function (field) {
+        field.hidden = field.getAttribute("data-backup-transport") !== transport;
+      });
+    };
+    transportSelect.addEventListener("change", applyTransportVisibility);
+    applyTransportVisibility();
+  });
+
   // Settings sidebar (2026-07-24) — one section-panel visible at a time.
   // The server already picks which panel starts visible (settings.py's
   // _compute_active_section, so a form's error/success message after a

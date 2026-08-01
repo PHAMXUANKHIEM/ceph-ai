@@ -13,6 +13,7 @@ from config.settings import (
 from dashboard.routes import (
     actions,
     auth,
+    backups,
     chat,
     convert_cluster,
     delete_cluster,
@@ -21,6 +22,7 @@ from dashboard.routes import (
     maintenance,
     nodes,
     patch,
+    restore_cluster,
     settings as settings_routes,
     upgrade,
     users,
@@ -64,6 +66,8 @@ def create_app() -> FastAPI:
     application.include_router(patch.router)
     application.include_router(users.router)
     application.include_router(volumes.router)
+    application.include_router(backups.router)
+    application.include_router(restore_cluster.router)
     application.include_router(ws_router)
     return application
 

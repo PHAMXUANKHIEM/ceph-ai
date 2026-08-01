@@ -56,6 +56,13 @@ EVENT_CHAT_ACTION_REQUESTED = "chat_action_requested"
 EVENT_CLUSTER_UPGRADE_PAUSED = "cluster_upgrade_paused"
 EVENT_CLUSTER_UPGRADE_RESUMED = "cluster_upgrade_resumed"
 
+# Epic 9, Story 9.1: worker/backup/engine.py's retention sweep — fired once
+# per object actually deleted, attached to the same incident_id/action_id
+# as the backup (or manual retention_sweep_delete) Action that triggered
+# the sweep, not a None/synthetic pair (AuditEntry.incident_id is a
+# mandatory FK — AD-7 requires every write to be a real, attributable row).
+EVENT_BACKUP_RETENTION_DELETE = "backup_retention_delete"
+
 
 def record(
     session: Session, *, incident_id: str, action_id: str | None, event_type: str, actor: str

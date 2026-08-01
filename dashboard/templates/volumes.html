@@ -11,13 +11,20 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Cluster Metrics</a>
-        <a href="/volumes" class="nav-link active">Volumes</a>
-        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
-        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
-        <a href="/convert-cluster" class="nav-link">Convert to Cephadm</a>
-        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
-        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item nav-dropdown-item-active">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+          </div>
+        </div>
         <a href="/settings" class="nav-link">Settings</a>
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>

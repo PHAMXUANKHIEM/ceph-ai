@@ -11,13 +11,20 @@
       <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
       <nav class="main-nav">
         <a href="/" class="nav-link">Dashboard</a>
-        <a href="/nodes" class="nav-link">Cluster Metrics</a>
-        <a href="/volumes" class="nav-link">Volumes</a>
-        <a href="/deploy-cluster" class="nav-link">Deploy Cluster</a>
-        <a href="/delete-cluster" class="nav-link">Delete Cluster</a>
-        <a href="/convert-cluster" class="nav-link">Convert to Cephadm</a>
-        <a href="/upgrade" class="nav-link">Upgrade Cluster</a>
-        <a href="/patch" class="nav-link">Patch Ceph</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+          </div>
+        </div>
         <a href="/settings" class="nav-link active">Settings</a>
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
@@ -34,6 +41,7 @@
       <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
       <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
       <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch Ceph</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Lưu trữ Backup</button>
       <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
       {% endif %}
       <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
@@ -250,6 +258,112 @@
           <label>Thư mục tạm trên MỖI node Ceph để nhận file .rpm (trước khi cài)
             <input type="text" name="ceph_patch_node_staging_dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging">
           </label>
+          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="backup-targets" {% if active_section != 'backup-targets' %}hidden{% endif %}>
+      <div class="card-header"><h2>Lưu trữ Backup</h2></div>
+      <div class="card-body">
+        {% if backup_target_error %}
+          <p class="error">{{ backup_target_error }}</p>
+        {% endif %}
+        {% if backup_target_success %}
+          <p class="success">{{ backup_target_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Nơi backup RBD/metadata (Epic 9) thực sự được ghi tới — <strong>KHÁC</strong> cụm Ceph nguồn
+          (mục "Kết nối cụm Ceph") theo thiết kế, không dùng chung SSH user/key với cụm nguồn.
+          Cần cấu hình ít nhất 1 slot (2 slot cho đủ "3-2-1": 1 bản tại chỗ + 1 bản ngoài, một trong
+          hai nên bật immutable qua <code>worker/policy/backup_policy.yaml</code>).
+        </p>
+        <form class="login-box" method="post" action="/settings/backup-targets">
+          <fieldset class="backup-target-slot" data-slot="a">
+            <legend>Slot A</legend>
+            <label>Tên gợi nhớ (tuỳ chọn)
+              <input type="text" name="backup_target_a_label" value="{{ backup_target_a_label }}" placeholder="vd: NAS tại chỗ">
+            </label>
+            <label>Kiểu kết nối
+              <select name="backup_target_a_transport" class="backup-transport-select">
+                <option value="" {% if backup_target_a_transport == "" %}selected{% endif %}>— Chưa dùng —</option>
+                <option value="ssh" {% if backup_target_a_transport == "ssh" %}selected{% endif %}>SSH/SFTP</option>
+                <option value="s3" {% if backup_target_a_transport == "s3" %}selected{% endif %}>S3 (AWS S3 / MinIO)</option>
+              </select>
+            </label>
+            <label data-backup-transport="ssh">Host
+              <input type="text" name="backup_target_a_ssh_host" value="{{ backup_target_a_ssh_host }}" placeholder="10.20.2.50">
+            </label>
+            <label data-backup-transport="ssh">SSH User
+              <input type="text" name="backup_target_a_ssh_user" value="{{ backup_target_a_ssh_user }}" placeholder="backup">
+            </label>
+            <label data-backup-transport="ssh">SSH key path (trên server Dashboard/Worker)
+              <input type="text" name="backup_target_a_ssh_key_path" value="{{ backup_target_a_ssh_key_path }}" placeholder="/root/.ssh/backup_target_a_key">
+            </label>
+            <label data-backup-transport="ssh">Thư mục lưu trữ trên host đích
+              <input type="text" name="backup_target_a_ssh_landing_dir" value="{{ backup_target_a_ssh_landing_dir }}" placeholder="/backup/ceph-aiops">
+            </label>
+            <label data-backup-transport="s3">S3 Endpoint (để trống nếu dùng AWS S3 thật)
+              <input type="text" name="backup_target_a_s3_endpoint" value="{{ backup_target_a_s3_endpoint }}" placeholder="https://minio.example.com:9000">
+            </label>
+            <label data-backup-transport="s3">Access Key
+              <input type="text" name="backup_target_a_s3_access_key" value="{{ backup_target_a_s3_access_key }}">
+            </label>
+            <label data-backup-transport="s3">Secret Key
+              <input type="password" name="backup_target_a_s3_secret_key" autocomplete="off" placeholder="{% if backup_target_a_s3_access_key %}để trống để giữ nguyên secret hiện tại{% else %}chưa cấu hình{% endif %}">
+            </label>
+            <label data-backup-transport="s3">Bucket
+              <input type="text" name="backup_target_a_s3_bucket" value="{{ backup_target_a_s3_bucket }}">
+            </label>
+            <label>Số ngày khoá immutable
+              <input type="number" name="backup_target_a_immutable_lock_days" value="{{ backup_target_a_immutable_lock_days }}" min="1">
+            </label>
+            <p class="hint">Chỉ áp dụng nếu slot này được đánh dấu immutable trong <code>backup_policy.yaml</code>.</p>
+          </fieldset>
+
+          <fieldset class="backup-target-slot" data-slot="b">
+            <legend>Slot B</legend>
+            <label>Tên gợi nhớ (tuỳ chọn)
+              <input type="text" name="backup_target_b_label" value="{{ backup_target_b_label }}" placeholder="vd: S3 ngoài">
+            </label>
+            <label>Kiểu kết nối
+              <select name="backup_target_b_transport" class="backup-transport-select">
+                <option value="" {% if backup_target_b_transport == "" %}selected{% endif %}>— Chưa dùng —</option>
+                <option value="ssh" {% if backup_target_b_transport == "ssh" %}selected{% endif %}>SSH/SFTP</option>
+                <option value="s3" {% if backup_target_b_transport == "s3" %}selected{% endif %}>S3 (AWS S3 / MinIO)</option>
+              </select>
+            </label>
+            <label data-backup-transport="ssh">Host
+              <input type="text" name="backup_target_b_ssh_host" value="{{ backup_target_b_ssh_host }}" placeholder="10.20.2.51">
+            </label>
+            <label data-backup-transport="ssh">SSH User
+              <input type="text" name="backup_target_b_ssh_user" value="{{ backup_target_b_ssh_user }}" placeholder="backup">
+            </label>
+            <label data-backup-transport="ssh">SSH key path (trên server Dashboard/Worker)
+              <input type="text" name="backup_target_b_ssh_key_path" value="{{ backup_target_b_ssh_key_path }}" placeholder="/root/.ssh/backup_target_b_key">
+            </label>
+            <label data-backup-transport="ssh">Thư mục lưu trữ trên host đích
+              <input type="text" name="backup_target_b_ssh_landing_dir" value="{{ backup_target_b_ssh_landing_dir }}" placeholder="/backup/ceph-aiops">
+            </label>
+            <label data-backup-transport="s3">S3 Endpoint (để trống nếu dùng AWS S3 thật)
+              <input type="text" name="backup_target_b_s3_endpoint" value="{{ backup_target_b_s3_endpoint }}" placeholder="https://s3.amazonaws.com">
+            </label>
+            <label data-backup-transport="s3">Access Key
+              <input type="text" name="backup_target_b_s3_access_key" value="{{ backup_target_b_s3_access_key }}">
+            </label>
+            <label data-backup-transport="s3">Secret Key
+              <input type="password" name="backup_target_b_s3_secret_key" autocomplete="off" placeholder="{% if backup_target_b_s3_access_key %}để trống để giữ nguyên secret hiện tại{% else %}chưa cấu hình{% endif %}">
+            </label>
+            <label data-backup-transport="s3">Bucket
+              <input type="text" name="backup_target_b_s3_bucket" value="{{ backup_target_b_s3_bucket }}">
+            </label>
+            <label>Số ngày khoá immutable
+              <input type="number" name="backup_target_b_immutable_lock_days" value="{{ backup_target_b_immutable_lock_days }}" min="1">
+            </label>
+            <p class="hint">Chỉ áp dụng nếu slot này được đánh dấu immutable trong <code>backup_policy.yaml</code>.</p>
+          </fieldset>
+
+          <p class="hint">Ai được ghi vào slot nào (danh sách <code>backup_targets:</code>) và slot nào là bản immutable cấu hình tại <code>worker/policy/backup_policy.yaml</code> — không phải ở đây.</p>
           <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
         </form>
       </div>
@@ -525,5 +639,6 @@
   </main>
   <script src="/static/settings.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
+  <script src="/static/app.js?v={{ static_version }}"></script>
 </body>
 </html>

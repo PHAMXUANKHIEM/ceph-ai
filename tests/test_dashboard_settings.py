@@ -1646,6 +1646,182 @@ def test_unauthenticated_patch_pipeline_settings_submit_redirects_to_login(dashb
 # as of 2026-07-24.
 
 
+# --- Lưu trữ Backup (Epic 9, Story 9.2's backend + follow-up Settings UI) ---
+
+
+def _backup_target_payload(**overrides):
+    payload = {
+        "backup_target_a_transport": "ssh",
+        "backup_target_a_label": "NAS tại chỗ",
+        "backup_target_a_ssh_host": "10.20.2.50",
+        "backup_target_a_ssh_user": "backup",
+        "backup_target_a_ssh_key_path": "/root/.ssh/backup_a_key",
+        "backup_target_a_ssh_landing_dir": "/backup/ceph-aiops",
+        "backup_target_a_s3_endpoint": "",
+        "backup_target_a_s3_access_key": "",
+        "backup_target_a_s3_secret_key": "",
+        "backup_target_a_s3_bucket": "",
+        "backup_target_a_immutable_lock_days": "7",
+        "backup_target_b_transport": "s3",
+        "backup_target_b_label": "S3 ngoài",
+        "backup_target_b_ssh_host": "",
+        "backup_target_b_ssh_user": "",
+        "backup_target_b_ssh_key_path": "",
+        "backup_target_b_ssh_landing_dir": "",
+        "backup_target_b_s3_endpoint": "",
+        "backup_target_b_s3_access_key": "AKIAEXAMPLE",
+        "backup_target_b_s3_secret_key": "supersecret123",
+        "backup_target_b_s3_bucket": "ceph-aiops-backups",
+        "backup_target_b_immutable_lock_days": "14",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_get_settings_shows_backup_targets_tab_for_admin(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Lưu trữ Backup" in response.text
+    assert 'action="/settings/backup-targets"' in response.text
+
+
+def test_get_settings_hides_backup_targets_tab_for_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'action="/settings/backup-targets"' not in response.text
+
+
+def test_backup_targets_settings_submit_persists_both_slots_and_restarts_worker(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = []
+    monkeypatch.setattr(
+        settings_route,
+        "restart_worker",
+        lambda: restart_calls.append(1) or {"restarted": True, "new_pid": 1, "error": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/backup-targets", data=_backup_target_payload())
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình" in response.text
+    assert settings.backup_target_a_transport == "ssh"
+    assert settings.backup_target_a_ssh_host == "10.20.2.50"
+    assert settings.backup_target_b_transport == "s3"
+    assert settings.backup_target_b_s3_access_key == "AKIAEXAMPLE"
+    assert settings.backup_target_b_s3_secret_key == "supersecret123"
+    assert settings.backup_target_b_immutable_lock_days == 14
+    env_contents = tmp_env.read_text()
+    assert "BACKUP_TARGET_A_SSH_HOST=10.20.2.50" in env_contents
+    assert "BACKUP_TARGET_B_S3_BUCKET=ceph-aiops-backups" in env_contents
+    assert restart_calls == [1]
+
+
+def test_backup_targets_settings_submit_blank_secret_keeps_existing_value(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None})
+    monkeypatch.setattr(settings, "backup_target_b_s3_secret_key", "already-saved-secret", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/backup-targets", data=_backup_target_payload(backup_target_b_s3_secret_key="")
+    )
+
+    assert response.status_code == 200
+    assert settings.backup_target_b_s3_secret_key == "already-saved-secret"
+
+
+def test_backup_targets_settings_submit_rejects_incomplete_ssh_slot(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/backup-targets",
+        data=_backup_target_payload(backup_target_a_ssh_host=""),
+    )
+
+    assert response.status_code == 200
+    assert "Slot A" in response.text
+    assert "Host, User, SSH key path, Thư mục lưu trữ" in response.text
+
+
+def test_backup_targets_settings_submit_rejects_incomplete_s3_slot(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/backup-targets",
+        data=_backup_target_payload(backup_target_b_s3_bucket=""),
+    )
+
+    assert response.status_code == 200
+    assert "Access key, Secret key, Bucket" in response.text
+
+
+def test_backup_targets_settings_submit_allows_unconfigured_slot(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None})
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/backup-targets",
+        data=_backup_target_payload(
+            backup_target_b_transport="",
+            backup_target_b_s3_access_key="",
+            backup_target_b_s3_secret_key="",
+            backup_target_b_s3_bucket="",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình" in response.text
+    assert settings.backup_target_b_transport == ""
+
+
+def test_backup_targets_settings_submit_rejects_invalid_immutable_days(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/backup-targets",
+        data=_backup_target_payload(backup_target_a_immutable_lock_days="0"),
+    )
+
+    assert response.status_code == 200
+    assert "immutable" in response.text.lower()
+
+
+def test_backup_targets_settings_submit_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/settings/backup-targets", data=_backup_target_payload())
+
+    assert response.status_code == 403
+
+
+def test_unauthenticated_backup_targets_settings_submit_redirects_to_login(dashboard_client):
+    response = dashboard_client.post(
+        "/settings/backup-targets", data=_backup_target_payload(), follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
 def test_restart_worker_route_shows_success_message(dashboard_client, monkeypatch):
     monkeypatch.setattr(
         settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 4242, "error": None}

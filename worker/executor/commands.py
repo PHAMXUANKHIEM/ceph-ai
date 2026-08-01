@@ -747,6 +747,18 @@ def _convert_cluster_to_cephadm_preview_command(host: str | None, params: dict) 
     )
 
 
+def _restore_cluster_from_backup_preview_command(host: str | None, params: dict) -> str:
+    version = params.get("version", "?")
+    first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
+    return (
+        f"Dựng cụm trống bằng phương thức ceph-deploy (bản {version}, bắt đầu từ {first_mon}) — "
+        f"giống hệt deploy_cluster_ceph_deploy — rồi khôi phục auth/CRUSH map/monmap từ bản backup "
+        f"metadata gần nhất, sau đó khôi phục từng RBD image trong tracked_images (full export + "
+        f"chain export-diff qua rbd import), và đối chiếu kích thước sau khôi phục — xem đầy đủ các "
+        f"pha khi bắt đầu khôi phục"
+    )
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
@@ -754,6 +766,7 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "delete_cluster_cephadm": _delete_cluster_preview_command,
     "delete_cluster_manual": _delete_cluster_preview_command,
     "convert_cluster_to_cephadm": _convert_cluster_to_cephadm_preview_command,
+    "restore_cluster_from_backup": _restore_cluster_from_backup_preview_command,
 }
 
 
@@ -780,6 +793,30 @@ def _volume_perf_sweep_preview_command(host: str | None, params: dict) -> str:
 # silently redirected to "/" with no sweep ever starting.
 _VOLUME_PERF_COMMAND_BUILDERS = {
     "volume_perf_sweep": _volume_perf_sweep_preview_command,
+}
+
+
+def _restore_rbd_image_to_production_preview_command(host: str | None, params: dict) -> str:
+    pool = params.get("pool", "?")
+    image = params.get("image", "?")
+    return (
+        f"Khôi phục ĐÈ lên {pool}/{image} từ bản backup full gần nhất + toàn bộ chain "
+        f"export-diff (rbd import/import-diff, theo đúng thứ tự tạo) — GHI ĐÈ dữ liệu hiện tại "
+        f"của image này."
+    )
+
+
+# 2026-07-31 (Story 9.7): same reasoning as _VOLUME_PERF_COMMAND_BUILDERS above —
+# worker/backup/engine.py is its own bespoke orchestrator (see that module's
+# docstring), so approve_action's has_command() gate needs an entry here too,
+# otherwise approving restore_rbd_image_to_production would hit the EXACT
+# same silent-no-op bug the 2026-07-29 fix above describes for
+# volume_perf_sweep (Action marked EXECUTED without ever reaching Worker
+# execution). Only restore_rbd_image_to_production is listed — the other
+# backup_action_ids members are either auto-executed (Safe, never go
+# through this approve gate) or not yet implemented (backup_delete_manual).
+_BACKUP_COMMAND_BUILDERS = {
+    "restore_rbd_image_to_production": _restore_rbd_image_to_production_preview_command,
 }
 
 
@@ -811,6 +848,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _CLUSTER_DEPLOY_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id in _VOLUME_PERF_COMMAND_BUILDERS:
         return _VOLUME_PERF_COMMAND_BUILDERS[action_id](host, params or {})
+    if action_id in _BACKUP_COMMAND_BUILDERS:
+        return _BACKUP_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id not in COMMANDS:
         raise ExecutorError(f"no Command defined for action_id={action_id!r}")
     return COMMANDS[action_id]
@@ -838,5 +877,6 @@ def has_command(action_id: str) -> bool:
         or action_id in _PATCH_COMMAND_BUILDERS
         or action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS
         or action_id in _VOLUME_PERF_COMMAND_BUILDERS
+        or action_id in _BACKUP_COMMAND_BUILDERS
         or action_id in COMMANDS
     )

@@ -159,5 +159,58 @@ class Settings(BaseSettings):
     # it; the Worker has to notice it itself.
     worker_approval_poll_interval_seconds: int = 5
 
+    # Epic 9 (Story 9.2): backup destination credentials — TWO fixed slots
+    # (a/b), not a dynamic per-target scheme. `Settings.model_config` above
+    # has `extra="forbid"` on this SAME `.env` file — verified directly with
+    # pydantic-settings that ANY undeclared key present in `.env` raises
+    # ValidationError at `Settings()` construction (module import time),
+    # crashing the whole app. A dynamic `BACKUP_TARGET_<name>_*` naming
+    # scheme would violate that the moment an operator adds a target, so
+    # every field a BackupTarget could need is declared explicitly here
+    # instead. Two slots is enough for PRD FR-5's "minimum 2 copies
+    # outside the source cluster" — supporting more is Deferred (see
+    # Architecture Spine's Deferred section).
+    #
+    # Deliberately SEPARATE fields from ssh_key_path/ssh_user above (which
+    # authenticate to the SOURCE cluster) — PRD FR-4 requires the backup
+    # destination to never share credentials/network access with the
+    # source cluster's admin path.
+    backup_target_a_transport: str = ""  # "ssh" | "s3" | "" (unconfigured)
+    backup_target_a_label: str = ""
+    backup_target_a_ssh_host: str = ""
+    backup_target_a_ssh_user: str = ""
+    backup_target_a_ssh_key_path: str = ""
+    backup_target_a_ssh_landing_dir: str = ""
+    backup_target_a_s3_endpoint: str = ""
+    backup_target_a_s3_access_key: str = ""
+    backup_target_a_s3_secret_key: str = ""
+    backup_target_a_s3_bucket: str = ""
+    # Minimum days an S3 Object Lock-protected object (or, for the ssh
+    # backend, the out-of-band mechanism on the destination host) must
+    # resist deletion — see Architecture AD-10. Only meaningful when this
+    # slot is the designated immutable copy (worker/policy/backup_policy.yaml
+    # decides which slot that is, not this field itself).
+    backup_target_a_immutable_lock_days: int = 7
+
+    backup_target_b_transport: str = ""
+    backup_target_b_label: str = ""
+    backup_target_b_ssh_host: str = ""
+    backup_target_b_ssh_user: str = ""
+    backup_target_b_ssh_key_path: str = ""
+    backup_target_b_ssh_landing_dir: str = ""
+    backup_target_b_s3_endpoint: str = ""
+    backup_target_b_s3_access_key: str = ""
+    backup_target_b_s3_secret_key: str = ""
+    backup_target_b_s3_bucket: str = ""
+    backup_target_b_immutable_lock_days: int = 7
+
+    # Epic 9 (Story 9.4): outbound webhook for backup fail/overdue alerts —
+    # the FIRST such channel in this project (no Slack/SMTP/Telegram exists
+    # anywhere else in the codebase, verified before adding this). Blank
+    # (default) = disabled; worker/backup/alerting.py always logs the alert
+    # regardless, this only controls whether it ALSO POSTs a JSON payload
+    # to an external endpoint.
+    backup_alert_webhook_url: str = ""
+
 
 settings = Settings()

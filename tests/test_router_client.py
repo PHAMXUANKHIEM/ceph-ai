@@ -1624,6 +1624,7 @@ def test_diagnose_incident_malformed_nodes_field_marks_failed_instead_of_guessin
 
 
 def test_every_safe_action_id_has_a_command_defined():
+    from worker.backup.engine import BACKUP_ACTION_IDS
     from worker.executor.commands import _MANAGEMENT_COMMAND_BUILDERS, COMMANDS
     from worker.policy.gate import SAFE_ACTION_IDS
 
@@ -1631,7 +1632,17 @@ def test_every_safe_action_id_has_a_command_defined():
     # via _restart_osd_daemon_command, not the COMMANDS dict) — not
     # currently in `safe:`, but included here so this guard keeps working if
     # that ever changes, same spirit as covering the management builders.
-    defined = COMMANDS.keys() | _MANAGEMENT_COMMAND_BUILDERS.keys() | {"restart_osd_daemon"}
+    #
+    # 2026-07-30 (Epic 9, Story 9.1): rbd_backup_run/retention_sweep_delete/
+    # restore_drill_execute are the FIRST Safe action_ids dispatched via a
+    # bespoke orchestrator branch (worker/backup/engine.py) instead of the
+    # generic per-host commands.py lookup this guard checks — same
+    # "own multi-step orchestrator, not a single Command" reasoning
+    # cluster_deploy_action_ids/volume_perf_sweep already have, but those
+    # two families happen to be entirely Risky (never auto-executed), so
+    # this guard never had to account for a bespoke-dispatched SAFE id
+    # before now.
+    defined = COMMANDS.keys() | _MANAGEMENT_COMMAND_BUILDERS.keys() | {"restart_osd_daemon"} | BACKUP_ACTION_IDS
     missing = SAFE_ACTION_IDS - defined
     assert not missing, f"SAFE action_ids with no Command defined: {missing}"
 

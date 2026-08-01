@@ -111,6 +111,14 @@ patch_action_ids:
 # procedure to follow). NOT verified against a real running systemd
 # cluster this session (see cluster_deploy.py's own phase docstrings) —
 # test against a non-critical cluster first.
+#
+# 2026-07-31 (Story 9.7): `restore_cluster_from_backup` (Ceph Backup & DR
+# runbook's step 1+2+3 combined — rebuild an empty cluster then restore
+# auth/CRUSH map/RBD images onto it) added to this SAME family, same
+# reasoning: dispatches through worker/executor/cluster_deploy.py's own
+# phase-runner (`_PHASES_BY_ACTION_ID`), not backup_action_ids: below,
+# because it reuses `deploy_cluster_ceph_deploy`'s entire phase list
+# verbatim plus 3 restore-only phases appended after it.
 cluster_deploy_action_ids:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
@@ -118,6 +126,7 @@ cluster_deploy_action_ids:
   - delete_cluster_cephadm
   - delete_cluster_manual
   - convert_cluster_to_cephadm
+  - restore_cluster_from_backup
 
 # 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) button
 # (dashboard/routes/volumes.py) — a SEVENTH family, same reasoning as
@@ -131,6 +140,30 @@ cluster_deploy_action_ids:
 # with real traffic on real data.
 volume_perf_action_ids:
   - volume_perf_sweep
+
+# 2026-07-30 (Epic 9, Story 9.1): Ceph Backup & Disaster Recovery — an
+# EIGHTH family, same reasoning as cluster_deploy_action_ids/
+# volume_perf_action_ids above: worker/backup/engine.py is its own
+# bespoke orchestrator (rbd snapshot/export/retention, not a single
+# per-host command), so worker/llm/router_client.py dispatches it
+# separately. All 5 ids registered now (same "register the whole family,
+# wire real execution incrementally" precedent Story 8.1 set for
+# cluster_deploy_action_ids) even though Story 9.1 only wires real
+# execution for rbd_backup_run/retention_sweep_delete — Stories 9.4/9.7
+# need zero policy-layer changes when they land.
+# 2026-07-31 (Story 9.3): backup_metadata_run added — a 6th member, not
+# anticipated when this family was first registered (the PRD/architecture
+# only enumerated 5 backup action_ids; cluster metadata backup turned out
+# to need its own, separate from rbd_backup_run since it isn't tied to a
+# (pool, image) pair). Dispatches through worker/backup/engine.py::run()
+# same as the rest of this family, wired to worker/backup/metadata.py.
+backup_action_ids:
+  - rbd_backup_run
+  - retention_sweep_delete
+  - restore_drill_execute
+  - restore_rbd_image_to_production
+  - backup_delete_manual
+  - backup_metadata_run
 
 safe:
   - resync_ntp
@@ -158,6 +191,25 @@ safe:
   # metadata tag, not a data-affecting change, safe to auto-execute like
   # the rest of this list.
   - enable_pool_application
+  # 2026-07-30 (Epic 9, Story 9.1): rbd_backup_run is the scheduled backup
+  # itself (read-only against the source cluster — snapshot + export,
+  # never mutates anything an operator would want a chance to block) and
+  # retention_sweep_delete only removes backups already superseded by
+  # newer ones within a pre-approved keep-count (scoped, non-destructive
+  # to anything still relevant) — both auto-executed on schedule like
+  # resync_ntp above. restore_drill_execute (Story 9.4, scoped to a
+  # dedicated scratch pool/image, never real data) is Safe for the same
+  # reason volume_perf_sweep's scratch-image scoping is. Restoring over
+  # LIVE production data (restore_rbd_image_to_production) or deleting a
+  # backup outside the automatic retention schedule (backup_delete_manual)
+  # stay in risky: below instead — always need explicit approval.
+  - rbd_backup_run
+  - retention_sweep_delete
+  - restore_drill_execute
+  # 2026-07-31 (Story 9.3): read-only against the source cluster (5 `ceph
+  # ... get*`/`export`/`dump` commands, nothing mutates anything) — same
+  # reasoning as rbd_backup_run above, auto-executed on schedule.
+  - backup_metadata_run
 
 risky:
   - restart_osd_daemon
@@ -207,3 +259,17 @@ risky:
   # several minutes — always requires explicit approval, no exceptions,
   # same conservative default as the rest of this file.
   - volume_perf_sweep
+  # 2026-07-30 (Epic 9, Story 9.1/9.4): restore_rbd_image_to_production
+  # (Story 9.4, restores a backup OVER a live production image) and
+  # backup_delete_manual (deleting a backup outside the automatic
+  # retention schedule) always require explicit approval — conservative
+  # default (AD-5), same as the rest of this file. rbd_backup_run/
+  # retention_sweep_delete/restore_drill_execute are Safe instead — see
+  # the safe: list above for why.
+  - restore_rbd_image_to_production
+  - backup_delete_manual
+  # 2026-07-31 (Story 9.7): rebuilds a cluster from scratch AND overwrites
+  # its RBD data from backup — same conservative-by-default reasoning as
+  # every other cluster_deploy_action_ids member above, always requires
+  # explicit approval, no exceptions.
+  - restore_cluster_from_backup

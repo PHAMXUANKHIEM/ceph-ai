@@ -1,0 +1,88 @@
+# Epic 9 (Story 9.2): non-secret shape for backup targets — WHICH slots
+# (a/b, defined as fixed Settings fields in config/settings.py — see that
+# file's own comment for why these are NOT dynamic env vars) are used, and
+# whether a slot is the designated immutable copy. Credentials themselves
+# live in `.env`/Settings, never here (this file is meant to be reviewed
+# via git diff, same as `action_policy.yaml`).
+#
+# Story 9.1 (RBD Backup Engine) extends this SAME file with `tracked_images:`,
+# `retention:`, and `schedule:` — this story (9.2) only needs the target
+# definitions below to exist.
+backup_targets:
+  - slot: a
+    immutable: false
+  - slot: b
+    immutable: true
+
+# Story 9.1: RBD images to back up on schedule. `full_refresh_every_n_days`
+# forces a full export instead of export-diff once the last full export is
+# this old (bounds how long an incremental chain can grow) — blank/absent
+# means never force a refresh, chain grows indefinitely. `pool`/`image`
+# blank below is a documentation placeholder — CEPH_RBD_POOLS in the real
+# .env is currently blank too (no lab workload configured yet), so this
+# list starts empty until an operator adds real entries.
+tracked_images: []
+
+# keep_full_count/keep_incremental_count are PER (pool, image, job_type) —
+# see worker/backup/engine.py::_sweep_retention_after_success for why full
+# and incremental are swept with separate counts, not a combined one.
+retention:
+  keep_full_count: 3
+  keep_incremental_count: 7
+
+# APScheduler cron trigger fields (worker/backup/scheduler.py, Story 9.1) —
+# daily at 02:00 by default, comfortably inside the 24h RPO (PRD).
+#
+# metadata_cron (Story 9.3): monmap/osdmap/crushmap/auth/config dump is
+# cheap (a few KB-MB, single short SSH round-trip per artifact) compared
+# to an RBD export, so it runs more often than `cron` above on its own
+# schedule — every 6 hours by default, still comfortably bounded, not tied
+# to the (heavier) RBD backup cadence.
+schedule:
+  cron:
+    hour: 2
+    minute: 0
+  metadata_cron:
+    hour: "*/6"
+    minute: 0
+  # Story 9.4: RestoreDrill default cadence — weekly (PRD FR-10 "mặc định
+  # hàng tuần"), Monday 03:00 (after the nightly RBD backup at 02:00 has
+  # had time to finish, before working hours).
+  restore_drill_cron:
+    day_of_week: mon
+    hour: 3
+    minute: 0
+  # Story 9.4: how often worker/backup/alerting.py's fail/overdue check
+  # runs — AC #2 requires the Dashboard/webhook alert to appear "within 5
+  # minutes" of the condition existing.
+  alert_check_interval_minutes: 5
+  # Story 9.5: BackupDigest cadence — daily by default (PRD FR-14
+  # "daily/weekly"), 07:00 (start of the operator's working day, after the
+  # nightly RBD backup + metadata backups have had time to finish).
+  # period_hours is how far back the digest looks, independent of how
+  # often it runs (24h here matches the daily cron below).
+  digest_cron:
+    hour: 7
+    minute: 0
+  digest:
+    period_hours: 24
+
+# Story 9.5 (PRD FR-15): anomaly detection threshold, in standard
+# deviations from an image's own history — NOT a hardcoded absolute
+# number (Story 9.5's own Task 1 instruction). 3 stddev is a conservative
+# default (99.7% of normal variation falls within this range for a
+# roughly-normal distribution) — tune per real workload once one exists.
+anomaly_threshold_stddev: 3
+
+# Story 9.4 (PRD FR-10): the "canary" image RestoreDrill restores FROM
+# (pool/image — a real tracked image, ideally one that changes regularly
+# so an old cached backup would be noticed) and the SCRATCH destination it
+# restores INTO (scratch_pool/scratch_image — dedicated, never the
+# operator's real data, deleted after every drill). Blank below means
+# RestoreDrill is not configured yet — matches tracked_images being empty
+# (no real workload configured on the lab cluster yet).
+restore_drill:
+  pool: ""
+  image: ""
+  scratch_pool: ""
+  scratch_image: ""

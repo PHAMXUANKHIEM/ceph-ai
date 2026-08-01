@@ -203,19 +203,79 @@ code {
   font-weight: 800;
   letter-spacing: 0.02em;
 }
-.main-nav { display: flex; gap: var(--space-1); flex: 1; flex-wrap: wrap; height: 100%; }
+/* flex-wrap: nowrap (not "wrap") — .topbar-inner has a FIXED height: 52px
+   (.chat-panel's `top: 53px`/`height: calc(100vh - 53px)` depends on that
+   exact number, see its own comment below), so a wrapped second row of
+   links would overflow that fixed height and float on top of the page
+   content underneath instead of pushing it down — verified live, this is
+   exactly what happened once enough top-level links existed to not fit in
+   one row. The "Cluster" dropdown below now holds most of what used to be
+   separate top-level links, so only 4 remain (Dashboard/Cluster/Settings/
+   Users) — comfortably one row at any real viewport this internal tool
+   runs at. Deliberately NOT `overflow-x: auto` (tried first, reverted):
+   setting only one overflow axis forces the browser to compute the OTHER
+   axis as `auto` too (CSS overflow spec quirk), which clipped
+   `.nav-dropdown-menu`'s `position: absolute` panel — it needs to escape
+   this row's 52px height to render below it. */
+.main-nav { display: flex; gap: var(--space-1); flex: 1; flex-wrap: nowrap; height: 100%; }
 .nav-link {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   height: 100%;
   color: var(--text-muted);
   font-weight: 500;
   font-size: 0.85rem;
   padding: 0 var(--space-1);
   border-bottom: 2px solid transparent;
+  white-space: nowrap;
 }
 .nav-link:hover { color: var(--text); text-decoration: none; }
 .nav-link.active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* "Cluster" dropdown — groups every cluster-lifecycle page (Cluster
+   Metrics, Volumes, Deploy/Delete/Convert/Upgrade Cluster, Patch Ceph,
+   Backup, Restore Cluster) behind one top-level nav item instead of 9
+   separate ones (that's what originally overflowed .main-nav — see the
+   comment above). Click-to-toggle (app.js), not hover-to-open — hover
+   menus are unreliable on touch and easy to trigger by accident while
+   scanning the bar. */
+.nav-dropdown { position: relative; height: 100%; flex-shrink: 0; }
+.nav-dropdown-toggle {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+  gap: var(--space-1);
+}
+.nav-dropdown-caret { font-size: 0.65em; line-height: 1; transition: transform 150ms ease; }
+.nav-dropdown.is-open .nav-dropdown-caret { transform: rotate(180deg); }
+.nav-dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 1px;
+  min-width: 200px;
+  padding: var(--space-2) 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+}
+.nav-dropdown.is-open .nav-dropdown-menu { display: block; }
+.nav-dropdown-item {
+  display: block;
+  padding: var(--space-2) var(--space-4);
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.nav-dropdown-item:hover { color: var(--text); background: var(--bg-surface-2); text-decoration: none; }
+.nav-dropdown-item-active { color: var(--text); }
 
 .topbar-user { display: flex; align-items: center; gap: var(--space-3); margin: 0; }
 .user-chip { font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono); }
@@ -377,6 +437,7 @@ code {
 }
 .severity-warn { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
 .severity-err { background: var(--critical-bg); border-color: var(--critical-border); color: var(--critical); }
+.severity-info { background: var(--neutral-bg); border-color: var(--border-strong); color: var(--neutral); }
 
 /* ===== Connection status — quiet when OK, loud (pulsing left border) when lost.
    Deliberately NOT a full background fill for the lost state, per design

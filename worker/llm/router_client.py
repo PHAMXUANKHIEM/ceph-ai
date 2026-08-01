@@ -14,6 +14,7 @@ from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from shared.ceph_releases import codename_for_version
 from shared.router_client import build_router_client
+from worker.backup import engine as backup_engine
 from worker.executor import cluster_deploy, commands, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
@@ -884,6 +885,34 @@ def _execute_approved_action(action_pk: str) -> None:
             return
         succeeded = volume_perf.run(
             action_pk,
+            action_params,
+            incident_id,
+            _write_action_progress,
+            _check_kill_switch_safe,
+        )
+        _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
+        return
+
+    # 2026-07-30 (Epic 9, Story 9.1): Ceph Backup & Disaster Recovery —
+    # same reasoning as the two branches just above: worker/backup/
+    # engine.py is its own bespoke orchestrator (rbd snapshot/export/
+    # retention), not a single command fanned out to target_nodes. Unlike
+    # the other two, this family has more than one action_id needing
+    # different logic, so backup_engine.run() also takes action_id_str
+    # (same as cluster_deploy.run() above).
+    if action_id_str in backup_engine.BACKUP_ACTION_IDS:
+        if not isinstance(action_params, dict):
+            logger.warning(
+                "_execute_approved_action: missing/malformed action_params for backup "
+                "action %s (incident %s) — marking FAILED instead of guessing",
+                action_pk,
+                incident_id,
+            )
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        succeeded = backup_engine.run(
+            action_pk,
+            action_id_str,
             action_params,
             incident_id,
             _write_action_progress,

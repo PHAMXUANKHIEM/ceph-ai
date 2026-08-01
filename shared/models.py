@@ -481,3 +481,100 @@ class VolumePerfSweep(Base):
     ai_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BackupJob(Base):
+    """Durable, after-the-fact record of one RBD backup/metadata/restore-drill
+    run (Epic 9, Story 9.1) — worker/backup/engine.py. Same relationship to
+    Action.execution_progress as VolumePerfSweep above: execution_progress
+    (JSON on the Action row) is the LIVE view while a job is still running;
+    this table is what's left behind afterward, for retention (FR-2 — never
+    delete a full export an incremental chain still depends on, tracked via
+    `base_job_id`), anomaly-baseline comparison (Story 9.5 — duration/size
+    vs. this image's last ~30 rows), and history display (Story 9.6).
+
+    No separate `BackupTarget`/`RetentionPolicy` DB tables — Story 9.2
+    settled that as two fixed Settings slots (`backup_target_a_*`/
+    `backup_target_b_*`, config/settings.py) plus non-secret shape in
+    `worker/policy/backup_policy.yaml`, not dynamic DB rows (see that
+    story's Dev Notes on why `Settings.extra="forbid"` ruled out a dynamic
+    per-target scheme). `backup_target_slot` here is just which of those
+    two fixed slots this particular upload went to ("a"/"b") — a job that
+    writes to both configured targets (FR-5) gets one BackupJob row per
+    slot, linked by `run_id` (not a DB FK — just a shared UUID stamped by
+    the engine for the same logical export, so Story 9.6 can group them).
+    """
+
+    __tablename__ = "backup_jobs"
+    __table_args__ = (Index("ix_backup_jobs_pool_image_created_at", "pool", "image", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Shared by every BackupJob row produced from the same single `rbd
+    # export`/`export-diff` invocation (one per configured backup_target
+    # slot) — NOT a FK, just a grouping key.
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    pool: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    image: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # "full" | "incremental" | "metadata" | "restore_drill"
+    job_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    # "RUNNING" | "SUCCESS" | "FAILED"
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Self-FK: for an "incremental" row, the id of the "full" BackupJob its
+    # export-diff chain is based on — retention (FR-2) must never delete a
+    # full export that's still some kept incremental's base_job_id.
+    base_job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("backup_jobs.id"), nullable=True
+    )
+    backup_target_slot: Mapped[str | None] = mapped_column(String(1), nullable=True)  # "a" | "b"
+    remote_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BackupAnomaly(Base):
+    """A BackupJob that reported `SUCCESS` (exit code 0) but deviated from
+    its own image's history by more than `anomaly_threshold_stddev`
+    (Story 9.5, PRD FR-15) — `worker/backup/anomaly.py::check_anomaly()`
+    detects it, `worker/backup/ai_analysis.py` fills `ai_summary`. Exists
+    precisely because a healthy exit code alone can't catch "backup
+    finished suspiciously fast with suspiciously little data" (source data
+    silently lost/corrupted) or "backup taking 10x longer than usual"
+    (early warning of a cluster problem)."""
+
+    __tablename__ = "backup_anomalies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    backup_job_id: Mapped[str] = mapped_column(String(36), ForeignKey("backup_jobs.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # "duration" | "size"
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)  # "critical" | "warning" | "info"
+    # NULL only if AI analysis itself failed (worker/backup/ai_analysis.py
+    # falls back to a generic message in that case, still non-NULL) — never
+    # left blank by design, unlike VolumePerfSweep.ai_conclusion above
+    # which is NULL until an operator opts in; this fires automatically.
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class BackupDigestLog(Base):
+    """One row per periodic BackupDigest run (Story 9.5, PRD FR-14,
+    `worker/backup/digest.py`) — the AI-summarized natural-language digest
+    text itself, plus the raw counts it was built from. Story 9.4's Task
+    said Dashboard display for the digest could be "a new route OR extend
+    Story 9.6's dashboard/routes/backups.py" — Story 9.6 (real-time/
+    historical backup visibility) didn't exist yet when this was written,
+    so this story only persists the digest; Story 9.6 is expected to be
+    the one that queries and renders it, not this one."""
+
+    __tablename__ = "backup_digest_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    succeeded_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    anomaly_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
