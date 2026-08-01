@@ -523,6 +523,7 @@ def test_valid_action_ids_loaded_from_policy_yaml_non_empty():
     assert "restart_osd_daemon" in router_client.VALID_ACTION_IDS
     assert "pg_repair_force" in router_client.VALID_ACTION_IDS
     assert "investigate_manually" in router_client.VALID_ACTION_IDS
+    assert "crash_archive_all" in router_client.VALID_ACTION_IDS
 
 
 # --- Story 3.2: Safe Action execution ---------------------------------------

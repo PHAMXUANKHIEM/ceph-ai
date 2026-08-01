@@ -170,6 +170,59 @@ def _collect_cephadm_log_excerpt(host: str, ceph_code: str) -> str:
     return "\n".join(parts)
 
 
+# Story A (Crash-module visibility, 2026-08-01): RECENT_CRASH's own check
+# detail is just a count ("N daemons have recently crashed") — the actual
+# diagnostic substance lives in `ceph crash ls-new`, not any daemon's own
+# log. Unlike OSD_/PG_/MGR_ codes, a crash isn't tied to one specific,
+# still-relevant host (the crashed daemon has typically already restarted
+# by the time this is reported), so this bypasses identify_relevant_nodes
+# entirely and reuses `ceph_client.run_ceph_json_command` — the same
+# read-only, multi-MON-fallback primitive dashboard/ceph_tools.py's
+# Chat-with-AI tools already use — instead of the SSH-to-a-guessed-host
+# path every other ceph_code takes below.
+RECENT_CRASH_CEPH_CODE = "RECENT_CRASH"
+_CRASH_EXCERPT_MAX_ENTRIES = 10
+_CRASH_BACKTRACE_MAX_CHARS = 2000
+
+
+def _collect_recent_crash_excerpt() -> tuple[list[str], str]:
+    """Returns (nodes, log_excerpt) same shape as collect_relevant_logs —
+    `nodes` here is the single MON node `run_ceph_json_command` actually
+    reached (becomes the Incident envelope's `nodes[]`, and in turn the
+    Action's `target_nodes` — see worker/llm/router_client.py — so the
+    eventual `ceph crash archive-all` SAFE-action command runs on a MON
+    node already verified reachable, not a guess)."""
+    try:
+        host, parsed = ceph_client.run_ceph_json_command("ceph crash ls-new")
+    except ceph_client.CephQueryError as exc:
+        logger.warning("_collect_recent_crash_excerpt: crash ls-new failed: %s", exc)
+        return [], f"(unavailable: {exc})"
+
+    # A dict here means `run_ceph_json_command`'s own JSON-decode fallback
+    # kicked in (some future Ceph version's `--format json` for this
+    # subcommand stopped round-tripping) — not a crash list, nothing to
+    # format per-entry.
+    crashes = parsed if isinstance(parsed, list) else []
+    if not crashes:
+        return [host], "ceph crash ls-new returned no entries (crash may already be archived)"
+
+    parts = []
+    for crash in crashes[:_CRASH_EXCERPT_MAX_ENTRIES]:
+        crash_id = crash.get("crash_id", "?")
+        entity = crash.get("entity_name") or crash.get("process_name") or "?"
+        hostname = crash.get("utsname_hostname", "?")
+        timestamp = crash.get("timestamp") or crash.get("crash_timestamp") or "?"
+        backtrace = crash.get("backtrace")
+        backtrace_text = (
+            "\n".join(backtrace) if isinstance(backtrace, list) else str(backtrace or crash.get("assert_msg", ""))
+        )
+        parts.append(
+            f"--- crash {crash_id} ({entity} on {hostname}, {timestamp}) ---\n"
+            f"{backtrace_text[:_CRASH_BACKTRACE_MAX_CHARS]}"
+        )
+    return [host], "\n".join(parts)
+
+
 def collect_relevant_logs(ceph_code: str, check_detail: dict) -> tuple[list[str], str]:
     """Collect the daemon log from the node(s) relevant to this check, using
     whatever command shape matches settings.ceph_exec_mode.
@@ -177,6 +230,9 @@ def collect_relevant_logs(ceph_code: str, check_detail: dict) -> tuple[list[str]
     Returns (nodes, log_excerpt) — `nodes` is the list of node IPs actually
     targeted (used for the Incident envelope's `nodes[]` field).
     """
+    if ceph_code == RECENT_CRASH_CEPH_CODE:
+        return _collect_recent_crash_excerpt()
+
     nodes = identify_relevant_nodes(ceph_code, check_detail)
     excerpt_parts = []
     for host in nodes:

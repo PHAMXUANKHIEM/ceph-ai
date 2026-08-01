@@ -28,6 +28,18 @@ COMMANDS: dict[str, str] = {
         "timedatectl set-ntp true && systemctl restart systemd-timesyncd; "
         "else echo 'no supported NTP tool found' >&2; exit 1; fi"
     ),
+    # Story A (Crash-module visibility, 2026-08-01): remediates RECENT_CRASH
+    # — unlike pg_repair_force (deliberately NOT given a command, see this
+    # dict's own comment above), `ceph crash archive-all` takes NO id
+    # argument at all, so there's nothing to guess: it just acknowledges
+    # every currently-pending crash report cluster-wide. Runs bare (no
+    # container/exec-mode wrapping) same as every other COMMANDS/
+    # management-action entry here — this codebase assumes `ceph` is
+    # reachable directly via SSH on whichever host it's targeted at
+    # (watcher/collector.py::_collect_recent_crash_excerpt resolves that
+    # host to a MON node already verified reachable, same as
+    # run_ceph_json_command's other callers).
+    "crash_archive_all": "ceph crash archive-all",
 }
 
 # Matches the FIRST column of a `systemctl` list-units line (the unit name),

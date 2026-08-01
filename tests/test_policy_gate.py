@@ -6,6 +6,10 @@ def test_classify_safe_action_id_returns_safe():
     assert classify_action("resync_ntp") == ActionClassification.SAFE
 
 
+def test_classify_crash_archive_all_returns_safe():
+    assert classify_action("crash_archive_all") == ActionClassification.SAFE
+
+
 def test_classify_risky_action_id_returns_risky():
     assert classify_action("restart_osd_daemon") == ActionClassification.RISKY
     assert classify_action("pg_repair_force") == ActionClassification.RISKY

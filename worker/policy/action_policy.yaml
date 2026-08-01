@@ -10,6 +10,11 @@ action_ids:
   - resync_ntp
   - pg_repair_force
   - investigate_manually  # fallback: no automated action applies
+  # 2026-08-01 (Story A, Crash-module visibility): remediates RECENT_CRASH —
+  # `ceph crash archive-all` takes no id argument (unlike pg_repair_force's
+  # PG id, which is why THAT one still has no command — see commands.py),
+  # so this is safe to add to the closed enum the same way resync_ntp is.
+  - crash_archive_all
 
 # 2026-07-23: cluster-MANAGEMENT actions the Chat-with-AI feature
 # (dashboard/chat_client.py) can propose — deliberately a SEPARATE list from
@@ -210,6 +215,13 @@ safe:
   # ... get*`/`export`/`dump` commands, nothing mutates anything) — same
   # reasoning as rbd_backup_run above, auto-executed on schedule.
   - backup_metadata_run
+  # 2026-08-01 (Story A, Crash-module visibility): `ceph crash archive-all`
+  # only marks already-happened crash reports as acknowledged — a
+  # metadata-only change, doesn't touch cluster state/data (same posture as
+  # enable_pool_application above), so it's safe to auto-execute the moment
+  # the AI diagnosis pipeline picks it, closing the RECENT_CRASH incident
+  # loop with no operator toil for routine/known-benign crashes.
+  - crash_archive_all
 
 risky:
   - restart_osd_daemon

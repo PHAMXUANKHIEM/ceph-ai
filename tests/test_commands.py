@@ -42,6 +42,10 @@ def test_get_command_returns_resync_ntp_command():
     assert "systemd-timesyncd" in command
 
 
+def test_get_command_returns_crash_archive_all_command():
+    assert get_command("crash_archive_all") == "ceph crash archive-all"
+
+
 def test_get_command_raises_for_unknown_action_id():
     with pytest.raises(ExecutorError, match="no Command defined"):
         get_command("some_action_id_with_no_command")

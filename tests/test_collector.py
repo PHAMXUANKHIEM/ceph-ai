@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import watcher.ceph_client as ceph_client
@@ -347,6 +349,73 @@ def test_collect_relevant_logs_cephadm_mode_no_matching_daemon_reports_clearly(m
     nodes, log_excerpt = collect_relevant_logs("OSD_DOWN", OSD_CODE_DETAIL)
 
     assert "no osd.* daemon found" in log_excerpt
+
+
+# --- Story A (Crash-module visibility): RECENT_CRASH bypasses
+# identify_relevant_nodes entirely, using ceph_client.run_ceph_json_command
+# ("ceph crash ls-new") instead of an SSH daemon-log grep -----------------
+
+RECENT_CRASH_DETAIL = {
+    "severity": "HEALTH_WARN",
+    "summary": {"message": "1 daemons have recently crashed", "count": 1},
+    "detail": [{"message": "osd.3 crashed on host khiempx-data-b2 at 2026-07-30 10:00:00"}],
+}
+
+
+def test_collect_relevant_logs_for_recent_crash_uses_crash_ls_new_not_ssh_logs(fake_ssh, monkeypatch):
+    from config.settings import settings
+
+    mon_ip = settings.ceph_mon_nodes.split(",")[0]
+    fake_ssh.log_text_by_host = {
+        mon_ip: json.dumps(
+            [
+                {
+                    "crash_id": "2026-07-30_10:00:00.000000Z_abcd1234",
+                    "entity_name": "osd.3",
+                    "utsname_hostname": "khiempx-data-b2",
+                    "timestamp": "2026-07-30 10:00:00.000000",
+                    "backtrace": ["frame 1", "frame 2"],
+                }
+            ]
+        )
+    }
+
+    nodes, log_excerpt = collect_relevant_logs("RECENT_CRASH", RECENT_CRASH_DETAIL)
+
+    assert nodes == [mon_ip]
+    assert "2026-07-30_10:00:00.000000Z_abcd1234" in log_excerpt
+    assert "osd.3" in log_excerpt
+    assert "khiempx-data-b2" in log_excerpt
+    assert "frame 1\nframe 2" in log_excerpt
+    # Never touched the OSD/MON log-tail SSH path.
+    for _host, command in fake_ssh.calls:
+        assert "ceph crash ls-new" in command
+
+
+def test_collect_relevant_logs_for_recent_crash_with_no_entries(fake_ssh, monkeypatch):
+    from config.settings import settings
+
+    mon_ip = settings.ceph_mon_nodes.split(",")[0]
+    fake_ssh.log_text_by_host = {mon_ip: json.dumps([])}
+
+    nodes, log_excerpt = collect_relevant_logs("RECENT_CRASH", RECENT_CRASH_DETAIL)
+
+    assert nodes == [mon_ip]
+    assert "no entries" in log_excerpt
+
+
+def test_collect_relevant_logs_for_recent_crash_survives_all_mon_nodes_unreachable(
+    fake_ssh, monkeypatch
+):
+    def always_fail_connect(self, hostname, username, key_filename, timeout):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(fake_ssh, "connect", always_fail_connect)
+
+    nodes, log_excerpt = collect_relevant_logs("RECENT_CRASH", RECENT_CRASH_DETAIL)
+
+    assert nodes == []
+    assert "unavailable" in log_excerpt.lower()
 
 
 def test_collect_relevant_logs_cephadm_mode_survives_malformed_ls_output(monkeypatch):
