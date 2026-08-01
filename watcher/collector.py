@@ -223,6 +223,72 @@ def _collect_recent_crash_excerpt() -> tuple[list[str], str]:
     return [host], "\n".join(parts)
 
 
+# Story B (DeviceHealth visibility, 2026-08-01): covers DEVICE_HEALTH,
+# DEVICE_HEALTH_IN_USE, DEVICE_HEALTH_TOOMANY (all share this prefix — same
+# mgr/devicehealth module, same underlying prediction data, just different
+# severity/scope). Deliberately does NOT propose or wire up any
+# auto-evacuate-this-OSD action — same posture as pg_repair_force
+# (commands.py's own comment): nothing in this codebase extracts a specific
+# osd_id from a detected Incident in a way the AI diagnosis tool schema
+# could safely carry (no params field — see router_client.py::_tool_schema),
+# so guessing one would be worse than not automating it. This story is
+# CONTEXT ONLY — better diagnosis_text so the operator knows exactly which
+# device/OSD to evacuate manually via Chat-with-AI's existing mark_osd_out.
+DEVICE_HEALTH_CEPH_CODE_PREFIX = "DEVICE_HEALTH"
+_DEVICE_HEALTH_EXCERPT_MAX_ENTRIES = 20
+# life_expectancy_max of "" or the zero-timestamp sentinel both mean "no
+# prediction yet" — same two "not actually set" checks Ceph's own
+# devicehealth module applies before using this field (verified against
+# src/pybind/mgr/devicehealth/module.py::check_health).
+_NO_LIFE_EXPECTANCY_VALUES = (None, "", "0.000000")
+
+
+def _format_device_location(device: dict) -> str:
+    locations = device.get("location") or []
+    parts = [
+        f"{loc.get('host', '?')}:{loc.get('dev', '?')}" for loc in locations if isinstance(loc, dict)
+    ]
+    return ",".join(parts) if parts else "?"
+
+
+def _collect_device_health_excerpt() -> tuple[list[str], str]:
+    """DEVICE_HEALTH*'s own check detail already names the failing device(s)
+    in free text, but re-parsing that (like _MON_NAME_PATTERN does for
+    MON-related codes) is fragile for a devid string's format. Queries
+    `ceph device ls` directly instead and reports every device with a
+    life-expectancy prediction already set, using the SAME field names
+    Ceph's own devicehealth mgr module reads internally (devid/daemons/
+    location/life_expectancy_min/life_expectancy_max — verified against
+    src/pybind/mgr/devicehealth/module.py), not guessed ones."""
+    try:
+        host, parsed = ceph_client.run_ceph_json_command("ceph device ls")
+    except ceph_client.CephQueryError as exc:
+        logger.warning("_collect_device_health_excerpt: ceph device ls failed: %s", exc)
+        return [], f"(unavailable: {exc})"
+
+    devices = parsed if isinstance(parsed, list) else []
+    predicted = [
+        d
+        for d in devices
+        if isinstance(d, dict) and d.get("life_expectancy_max") not in _NO_LIFE_EXPECTANCY_VALUES
+    ]
+    if not predicted:
+        return [host], "ceph device ls returned no devices with a life-expectancy prediction set"
+
+    parts = []
+    for device in predicted[:_DEVICE_HEALTH_EXCERPT_MAX_ENTRIES]:
+        devid = device.get("devid", "?")
+        daemons = ",".join(device.get("daemons") or ["none"])
+        location = _format_device_location(device)
+        life_min = device.get("life_expectancy_min") or "unknown"
+        life_max = device.get("life_expectancy_max") or "unknown"
+        parts.append(
+            f"--- device {devid} ({location}); daemons {daemons} ---\n"
+            f"life expectancy between {life_min} and {life_max}"
+        )
+    return [host], "\n".join(parts)
+
+
 def collect_relevant_logs(ceph_code: str, check_detail: dict) -> tuple[list[str], str]:
     """Collect the daemon log from the node(s) relevant to this check, using
     whatever command shape matches settings.ceph_exec_mode.
@@ -232,6 +298,8 @@ def collect_relevant_logs(ceph_code: str, check_detail: dict) -> tuple[list[str]
     """
     if ceph_code == RECENT_CRASH_CEPH_CODE:
         return _collect_recent_crash_excerpt()
+    if ceph_code.startswith(DEVICE_HEALTH_CEPH_CODE_PREFIX):
+        return _collect_device_health_excerpt()
 
     nodes = identify_relevant_nodes(ceph_code, check_detail)
     excerpt_parts = []

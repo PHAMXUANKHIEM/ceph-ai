@@ -418,6 +418,82 @@ def test_collect_relevant_logs_for_recent_crash_survives_all_mon_nodes_unreachab
     assert "unavailable" in log_excerpt.lower()
 
 
+# --- Story B (DeviceHealth visibility): DEVICE_HEALTH* also bypasses
+# identify_relevant_nodes, using "ceph device ls" instead -------------------
+
+DEVICE_HEALTH_DETAIL = {
+    "severity": "HEALTH_WARN",
+    "summary": {"message": "1 device(s) expected to fail soon", "count": 1},
+    "detail": [{"message": "Device ... on khiempx-data-b2 is expected to fail soon"}],
+}
+
+
+def test_collect_relevant_logs_for_device_health_uses_device_ls_not_ssh_logs(fake_ssh, monkeypatch):
+    from config.settings import settings
+
+    mon_ip = settings.ceph_mon_nodes.split(",")[0]
+    fake_ssh.log_text_by_host = {
+        mon_ip: json.dumps(
+            [
+                {
+                    "devid": "SEAGATE_ST12000_ZA12345",
+                    "daemons": ["osd.7"],
+                    "location": [{"host": "khiempx-data-b2", "dev": "sda"}],
+                    "life_expectancy_min": "2026-08-10T00:00:00.000000+00:00",
+                    "life_expectancy_max": "2026-08-24T00:00:00.000000+00:00",
+                },
+                {
+                    # No prediction set yet — must be excluded from the excerpt.
+                    "devid": "SEAGATE_ST12000_OTHER",
+                    "daemons": ["osd.2"],
+                    "location": [{"host": "khiempx-data-b1", "dev": "sdb"}],
+                    "life_expectancy_min": None,
+                    "life_expectancy_max": "0.000000",
+                },
+            ]
+        )
+    }
+
+    nodes, log_excerpt = collect_relevant_logs("DEVICE_HEALTH", DEVICE_HEALTH_DETAIL)
+
+    assert nodes == [mon_ip]
+    assert "SEAGATE_ST12000_ZA12345" in log_excerpt
+    assert "osd.7" in log_excerpt
+    assert "khiempx-data-b2:sda" in log_excerpt
+    assert "2026-08-24T00:00:00.000000+00:00" in log_excerpt
+    assert "SEAGATE_ST12000_OTHER" not in log_excerpt
+    for _host, command in fake_ssh.calls:
+        assert "ceph device ls" in command
+
+
+def test_collect_relevant_logs_for_device_health_toomany_variant_also_routed(fake_ssh, monkeypatch):
+    from config.settings import settings
+
+    mon_ip = settings.ceph_mon_nodes.split(",")[0]
+    fake_ssh.log_text_by_host = {mon_ip: json.dumps([])}
+
+    nodes, log_excerpt = collect_relevant_logs(
+        "DEVICE_HEALTH_TOOMANY", {"severity": "HEALTH_ERR", "summary": {"message": "x"}, "detail": []}
+    )
+
+    assert nodes == [mon_ip]
+    assert "no devices with a life-expectancy prediction" in log_excerpt
+
+
+def test_collect_relevant_logs_for_device_health_survives_all_mon_nodes_unreachable(
+    fake_ssh, monkeypatch
+):
+    def always_fail_connect(self, hostname, username, key_filename, timeout):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(fake_ssh, "connect", always_fail_connect)
+
+    nodes, log_excerpt = collect_relevant_logs("DEVICE_HEALTH", DEVICE_HEALTH_DETAIL)
+
+    assert nodes == []
+    assert "unavailable" in log_excerpt.lower()
+
+
 def test_collect_relevant_logs_cephadm_mode_survives_malformed_ls_output(monkeypatch):
     import watcher.collector as collector
 
