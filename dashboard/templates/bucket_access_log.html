@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Bucket Access Log — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item nav-dropdown-item-active">Bucket Access Log</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>Bucket Access Log</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          Tương đương tính năng "S3 Bucket Logging" cho các phiên bản Ceph chưa có sẵn — đọc trực
+          tiếp dòng access log mà RGW (frontend Beast) đã tự ghi cho mỗi request (IP nguồn, thời
+          gian, hành động, mã trạng thái HTTP), không cần access/secret key S3 nào. Chỉ hỗ trợ
+          request path-style (<code>/bucket/key</code>) — request virtual-hosted-style (bucket nằm
+          trong Host header) sẽ không xác định được tên bucket.
+        </p>
+
+        {% if rgw_hosts %}
+        <form class="audit-filters" id="bucket-access-log-form">
+          <label>RGW node
+            <select id="bal-host">
+              {% for node in rgw_hosts %}
+              <option value="{{ node.host }}">{{ node.host }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Tên Bucket (để trống = tất cả)
+            <input type="text" id="bal-bucket" placeholder="vd: my-bucket" autocomplete="off">
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Xem log</button>
+        </form>
+
+        <p class="hint" id="bal-status"></p>
+
+        <div class="table-wrap" id="bal-table-wrap" hidden>
+          <table>
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>IP nguồn</th>
+                <th>Hành động</th>
+                <th>Method</th>
+                <th>Bucket</th>
+                <th>Object</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="bal-table-body"></tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="hint">
+          Chưa cấu hình node RGW nào — thêm <code>CEPH_RGW_NODES</code> ở trang <a href="/settings">Settings</a>.
+        </p>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/bucket_access_log.js?v={{ static_version }}"></script>
+</body>
+</html>
