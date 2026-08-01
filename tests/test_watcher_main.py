@@ -48,6 +48,28 @@ def _fast_device_health_monitor_default(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _fast_volume_monitor_default(monkeypatch):
+    """2026-08-01 pre-existing-slowness cleanup: run() calls volume_monitor.
+    check_volumes() every poll, unconditionally. Left unmocked (as most
+    tests below were, before this fixture existed), this hits the real
+    ceph_client.configured_rbd_pools() -> discover_rbd_pools() ->
+    run_ceph_json_command(), which — against this suite's fake conftest.py
+    mon IPs — takes several real seconds (paramiko's own connect timeout x
+    3 configured nodes) to fail, EVERY iteration a test runs, not just
+    once (unlike DeviceHealth's own cadence gate above). That was adding
+    real minutes to this file's total runtime for tests that don't care
+    about volume monitoring at all. Same "fast default, explicit override
+    where the behavior is actually under test" pattern as
+    _fast_device_health_monitor_default above — the two tests below that
+    actually exercise this path already monkeypatch these same names
+    explicitly within their own body, which still correctly takes
+    precedence over this fixture's patch."""
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
+    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
+
+
 def test_run_calls_on_transition_only_when_status_changes(monkeypatch):
     statuses = [
         {"status": "HEALTH_OK"},
@@ -226,14 +248,6 @@ def test_run_calls_device_health_monitor_once_within_default_scan_interval(monke
     # only, not every iteration the way the health/volume checks do.
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
-    # Not under test here — unmocked, this falls through to the REAL
-    # volume_monitor.check_volumes(), which auto-discovers RBD pools via a
-    # real SSH/`ceph osd pool ls detail` call against whatever cluster this
-    # process's real settings point at (see test_run_calls_volume_monitor_
-    # every_poll_iteration above for the same reasoning).
-    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
-    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
-    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
 
     check_calls = {"n": 0}
     resolve_calls = []
@@ -259,9 +273,6 @@ def test_run_calls_device_health_monitor_every_iteration_when_interval_is_zero(m
     monkeypatch.setattr(watcher_main.settings, "device_health_scan_interval_seconds", 0, raising=False)
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
-    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
-    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
 
     check_calls = {"n": 0}
 
@@ -282,9 +293,6 @@ def test_run_calls_device_health_monitor_every_iteration_when_interval_is_zero(m
 def test_run_survives_device_health_monitor_raising(monkeypatch):
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
-    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
-    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
 
     def broken_check():
         raise RuntimeError("bug in device_health_monitor")
