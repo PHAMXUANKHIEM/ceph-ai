@@ -47,7 +47,39 @@
           request path-style (<code>/bucket/key</code>) — request virtual-hosted-style (bucket nằm
           trong Host header) sẽ không xác định được tên bucket.
         </p>
+      </div>
+    </section>
 
+    <section class="card">
+      <div class="card-header"><h2>Cấu hình RGW</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          2 trường bên dưới dùng chung với mục "Kết nối cụm Ceph" ở trang
+          <a href="/settings">Settings</a> — lưu ở đây cũng cập nhật ở đó, và ngược lại.
+        </p>
+        {% if config_error %}<p class="error">{{ config_error }}</p>{% endif %}
+        {% if config_success %}<p class="success">{{ config_success }}</p>{% endif %}
+        <form method="post" action="/bucket-access-log/settings" class="audit-filters">
+          <label>RGW nodes (IP, phân tách dấu phẩy)
+            <input type="text" name="ceph_rgw_nodes" value="{{ ceph_rgw_nodes }}" placeholder="10.0.0.8,10.0.0.9">
+          </label>
+          {% if ceph_exec_mode in ("docker", "podman") %}
+          <label>RGW container name
+            <input type="text" name="ceph_rgw_container_name" value="{{ ceph_rgw_container_name }}" placeholder="ceph-rgw-B">
+          </label>
+          {% endif %}
+          <button type="submit" class="btn btn-primary btn-sm">Lưu cấu hình</button>
+        </form>
+        <p class="hint">
+          Kiểu deploy (exec mode) hiện tại: <code>{{ ceph_exec_mode }}</code> — đổi ở trang
+          <a href="/settings">Settings</a> nếu cần (không sửa được ở đây).
+        </p>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Xem log</h2></div>
+      <div class="card-body">
         {% if rgw_hosts %}
         <form class="audit-filters" id="bucket-access-log-form">
           <label>RGW node
@@ -82,9 +114,7 @@
           </table>
         </div>
         {% else %}
-        <p class="hint">
-          Chưa cấu hình node RGW nào — thêm <code>CEPH_RGW_NODES</code> ở trang <a href="/settings">Settings</a>.
-        </p>
+        <p class="hint">Chưa cấu hình node RGW nào — điền ở mục "Cấu hình RGW" phía trên.</p>
         {% endif %}
       </div>
     </section>

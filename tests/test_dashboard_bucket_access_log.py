@@ -1,6 +1,22 @@
 import dashboard.routes.bucket_access_log as bal_route
 from config.settings import settings
+from shared import env_config
 from watcher.rgw_access_log import RgwLogError, parse_beast_access_log
+
+_RESTARTED_OK = {"restarted": True, "new_pid": 12345, "error": None}
+
+
+def _mock_restarts(monkeypatch, watcher_ok=True, worker_ok=True):
+    monkeypatch.setattr(
+        bal_route,
+        "restart_watcher",
+        lambda: dict(_RESTARTED_OK, restarted=watcher_ok),
+    )
+    monkeypatch.setattr(
+        bal_route,
+        "restart_worker",
+        lambda: dict(_RESTARTED_OK, restarted=worker_ok),
+    )
 
 
 def _login(client):
@@ -131,3 +147,114 @@ def test_api_returns_502_when_fetch_fails(dashboard_client, monkeypatch):
     response = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90")
 
     assert response.status_code == 502
+
+
+# --- POST /bucket-access-log/settings ("Cấu hình RGW" form) ---------------
+
+
+def test_unauthenticated_settings_post_redirects_to_login(dashboard_client):
+    response = dashboard_client.post(
+        "/bucket-access-log/settings",
+        data={"ceph_rgw_nodes": "10.20.1.90"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_settings_save_persists_rgw_nodes_and_container_name(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "docker", raising=False)
+    _mock_restarts(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/bucket-access-log/settings",
+        data={"ceph_rgw_nodes": "10.20.1.90,10.20.1.91", "ceph_rgw_container_name": "ceph-rgw-B"},
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình RGW" in response.text
+    assert settings.ceph_rgw_nodes == "10.20.1.90,10.20.1.91"
+    assert settings.ceph_rgw_container_name == "ceph-rgw-B"
+    saved = tmp_env.read_text()
+    assert "CEPH_RGW_NODES=10.20.1.90,10.20.1.91" in saved
+    assert "CEPH_RGW_CONTAINER_NAME=ceph-rgw-B" in saved
+
+
+def test_settings_save_requires_container_name_when_exec_mode_needs_one(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "docker", raising=False)
+    _mock_restarts(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/bucket-access-log/settings",
+        data={"ceph_rgw_nodes": "10.20.1.90", "ceph_rgw_container_name": ""},
+    )
+
+    assert response.status_code == 200
+    assert "cần tên container RGW" in response.text
+    # Nothing written — original .env content untouched.
+    assert "CEPH_RGW_NODES" not in tmp_env.read_text()
+
+
+def test_settings_save_does_not_require_container_name_for_cephadm(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    _mock_restarts(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/bucket-access-log/settings",
+        data={"ceph_rgw_nodes": "10.20.1.90", "ceph_rgw_container_name": ""},
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình RGW" in response.text
+    assert settings.ceph_rgw_nodes == "10.20.1.90"
+
+
+def test_settings_save_allows_clearing_rgw_nodes(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "docker", raising=False)
+    _mock_restarts(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/bucket-access-log/settings",
+        data={"ceph_rgw_nodes": "", "ceph_rgw_container_name": ""},
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình RGW" in response.text
+    assert settings.ceph_rgw_nodes == ""
+
+
+def test_settings_save_warns_when_watcher_restart_fails(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    _mock_restarts(monkeypatch, watcher_ok=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/bucket-access-log/settings", data={"ceph_rgw_nodes": "10.20.1.90"}
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình RGW" in response.text
+    assert "Watcher" in response.text

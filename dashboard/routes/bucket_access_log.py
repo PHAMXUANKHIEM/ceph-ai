@@ -4,18 +4,33 @@ docstring for the full reasoning). Route-only reads, same AD-3 posture as
 dashboard/routes/nodes.py's rgw_log_api — no S3 credentials involved
 anywhere in this feature, only SSH access to an already-configured RGW
 node.
+
+Also owns a dedicated "Cấu hình RGW" save form — the 2 fields this feature
+actually needs (ceph_rgw_nodes/ceph_rgw_container_name) so an operator can
+set up bucket logging entirely from this page, without a trip to the main
+Settings page. These are the SAME underlying settings.py fields (and .env
+vars) the Settings page's "Kết nối cụm Ceph" form edits — deliberately NOT
+removed from there: shared/cluster_nodes.py::configured_nodes() (the SSH
+SSRF whitelist Chat-with-AI/deploy/upgrade/patch/convert-cluster all read)
+folds RGW nodes into the same shared node list those unrelated features
+also depend on, so this is an ADDITIONAL, more convenient entry point for
+these 2 fields, not the only one.
 """
 
+import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
+from dashboard.routes.settings import restart_watcher, restart_worker
 from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes as _configured_nodes
+from shared.env_config import CLUSTER_ENV_NAMES, update_env_file_batch
 from watcher.rgw_access_log import RgwLogError, fetch_bucket_access_log
 
 logger = logging.getLogger(__name__)
@@ -28,16 +43,92 @@ def _rgw_hosts() -> list[dict]:
     return [n for n in _configured_nodes() if "RGW" in n["roles"]]
 
 
+def _context(user: str, *, config_error: str | None = None, config_success: str | None = None) -> dict:
+    return {
+        "user": user,
+        "is_admin": auth.is_admin_user(user),
+        "rgw_hosts": _rgw_hosts(),
+        "ceph_rgw_nodes": settings.ceph_rgw_nodes,
+        "ceph_rgw_container_name": settings.ceph_rgw_container_name,
+        "ceph_exec_mode": settings.ceph_exec_mode,
+        "config_error": config_error,
+        "config_success": config_success,
+    }
+
+
 @router.get("/bucket-access-log", response_class=HTMLResponse)
 async def index(request: Request, user: str = Depends(require_login)):
+    return templates.TemplateResponse(request, "bucket_access_log.html", _context(user))
+
+
+@router.post("/bucket-access-log/settings", response_class=HTMLResponse)
+async def bucket_access_log_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    ceph_rgw_nodes: str = Form(""),
+    ceph_rgw_container_name: str = Form(""),
+):
+    """Same 2 fields, same env vars, same permission level (no admin
+    requirement — matches dashboard/routes/settings.py::
+    cluster_settings_submit, the field's other save path) as the main
+    Settings page's cluster form. Skips that form's live MON-connectivity
+    test on purpose — it tests `ceph health` against MON nodes, which says
+    nothing about RGW node reachability; this page's own "Xem log" button
+    is already the real connectivity check for THESE 2 fields (surfaces a
+    clear RgwLogError -> 502 if the saved values don't work). Still
+    restarts Watcher/Worker after saving (asyncio.to_thread, same as
+    cluster_settings_submit) — both hold their OWN in-memory settings copy
+    and depend on configured_nodes() including the current RGW node list.
+    """
+    rgw_nodes = ceph_rgw_nodes.strip()
+    rgw_container_name = ceph_rgw_container_name.strip()
+
+    container_required = settings.ceph_exec_mode not in ("none", "cephadm")
+    if rgw_nodes and container_required and not rgw_container_name:
+        return templates.TemplateResponse(
+            request,
+            "bucket_access_log.html",
+            _context(
+                user,
+                config_error=(
+                    f"Kiểu deploy hiện tại ({settings.ceph_exec_mode}) cần tên container RGW."
+                ),
+            ),
+        )
+
+    try:
+        update_env_file_batch(
+            {
+                CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: rgw_nodes,
+                CLUSTER_ENV_NAMES["ceph_rgw_container_name"]: rgw_container_name,
+            }
+        )
+        settings.ceph_rgw_nodes = rgw_nodes
+        settings.ceph_rgw_container_name = rgw_container_name
+    except Exception:
+        logger.exception("bucket_access_log_settings_submit: failed to persist config to .env")
+        return templates.TemplateResponse(
+            request,
+            "bucket_access_log.html",
+            _context(
+                user, config_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server"
+            ),
+        )
+
+    watcher_restart = await asyncio.to_thread(restart_watcher)
+    worker_restart = await asyncio.to_thread(restart_worker)
+    warnings = []
+    if not watcher_restart["restarted"]:
+        warnings.append("Không tự khởi động lại được Watcher — khởi động lại thủ công.")
+    if not worker_restart["restarted"]:
+        warnings.append("Không tự khởi động lại được Worker — khởi động lại thủ công.")
+
+    success = "Đã lưu cấu hình RGW."
+    if warnings:
+        success += " " + " ".join(warnings)
+
     return templates.TemplateResponse(
-        request,
-        "bucket_access_log.html",
-        {
-            "user": user,
-            "is_admin": auth.is_admin_user(user),
-            "rgw_hosts": _rgw_hosts(),
-        },
+        request, "bucket_access_log.html", _context(user, config_success=success)
     )
 
 
