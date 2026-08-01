@@ -774,3 +774,17 @@ def test_has_command_true_for_volume_perf_sweep():
     # ever run (worker/llm/router_client.py's poll only ever looks at
     # status=APPROVED), and just redirected to "/" with no visible error.
     assert commands_module.has_command("volume_perf_sweep") is True
+
+
+def test_get_command_evacuate_predicted_failing_osd_reuses_mark_osd_out_shape():
+    command = get_command("evacuate_predicted_failing_osd", None, {"osd_id": 7})
+    assert command == "ceph osd out 7"
+
+
+def test_get_command_evacuate_predicted_failing_osd_requires_osd_id():
+    with pytest.raises(ExecutorError, match="osd_id"):
+        get_command("evacuate_predicted_failing_osd", None, {})
+
+
+def test_has_command_true_for_evacuate_predicted_failing_osd():
+    assert commands_module.has_command("evacuate_predicted_failing_osd") is True

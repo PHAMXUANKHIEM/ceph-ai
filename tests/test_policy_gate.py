@@ -193,3 +193,29 @@ def test_volume_perf_action_ids_disjoint_from_other_families():
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
     assert gate.VALID_VOLUME_PERF_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS)
+
+
+def test_device_health_action_ids_loaded_from_policy_yaml():
+    import worker.policy.gate as gate
+
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS == {"evacuate_predicted_failing_osd"}
+
+
+def test_evacuate_predicted_failing_osd_is_classified_risky():
+    # Story C: moves real data off a live OSD, system-proposed with no
+    # operator having typed/reviewed the osd_id first — must never be Safe,
+    # even though mark_osd_out (a DIFFERENT action_id, Chat-only) is.
+    assert classify_action("evacuate_predicted_failing_osd") == ActionClassification.RISKY
+
+
+def test_device_health_action_ids_disjoint_from_other_families():
+    import worker.policy.gate as gate
+    from worker.llm.router_client import VALID_ACTION_IDS
+
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(VALID_ACTION_IDS)
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_MANAGEMENT_ACTION_IDS)
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_UPGRADE_ACTION_IDS)
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_PATCH_ACTION_IDS)
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS)
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_VOLUME_PERF_ACTION_IDS)
+    assert gate.VALID_DEVICE_HEALTH_ACTION_IDS.isdisjoint(gate.VALID_BACKUP_ACTION_IDS)

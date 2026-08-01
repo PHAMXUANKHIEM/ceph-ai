@@ -29,6 +29,25 @@ def isolated_db(monkeypatch):
     yield engine
 
 
+@pytest.fixture(autouse=True)
+def _fast_device_health_monitor_default(monkeypatch):
+    """2026-08-01 (Story C): run() now also calls device_health_monitor.
+    check_predicted_failing_osds() every poll cycle (gated to once per
+    settings.device_health_scan_interval_seconds — see that call site's own
+    comment in watcher/main.py). Left unmocked, this hits the real
+    ceph_client.run_ceph_json_command, which — against this suite's fake
+    conftest.py mon IPs — takes several real seconds (paramiko's own
+    connect timeout x 3 configured nodes) to fail, adding real wall-clock
+    time to every test in this file whether or not it cares about
+    DeviceHealth. Defaults to a fast no-op here; the tests below that
+    actually exercise this path override it explicitly within their own
+    body, which correctly takes precedence over this fixture's patch."""
+    monkeypatch.setattr(watcher_main.device_health_monitor, "check_predicted_failing_osds", lambda: {})
+    monkeypatch.setattr(
+        watcher_main.device_health_monitor, "create_or_resolve_device_health_incidents", lambda _c: None
+    )
+
+
 def test_run_calls_on_transition_only_when_status_changes(monkeypatch):
     statuses = [
         {"status": "HEALTH_OK"},
@@ -193,6 +212,84 @@ def test_run_survives_volume_monitor_raising(monkeypatch):
         raise RuntimeError("bug in volume_monitor")
 
     monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", broken_check_volumes)
+
+    transitions = []
+    watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)
+
+    assert len(transitions) == 1  # HEALTH_OK on_transition still fired once, on the first poll
+
+
+def test_run_calls_device_health_monitor_once_within_default_scan_interval(monkeypatch):
+    # settings.device_health_scan_interval_seconds defaults to 1h — across
+    # 3 fast poll iterations (real wall-clock time barely advances since
+    # time.sleep is mocked away), the scan must fire on the first iteration
+    # only, not every iteration the way the health/volume checks do.
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+    # Not under test here — unmocked, this falls through to the REAL
+    # volume_monitor.check_volumes(), which auto-discovers RBD pools via a
+    # real SSH/`ceph osd pool ls detail` call against whatever cluster this
+    # process's real settings point at (see test_run_calls_volume_monitor_
+    # every_poll_iteration above for the same reasoning).
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
+    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
+
+    check_calls = {"n": 0}
+    resolve_calls = []
+
+    def fake_check():
+        check_calls["n"] += 1
+        return {"DEVICE_HEALTH_EVACUATE:7": {"osd_id": 7}}
+
+    monkeypatch.setattr(watcher_main.device_health_monitor, "check_predicted_failing_osds", fake_check)
+    monkeypatch.setattr(
+        watcher_main.device_health_monitor,
+        "create_or_resolve_device_health_incidents",
+        resolve_calls.append,
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 1
+    assert resolve_calls == [{"DEVICE_HEALTH_EVACUATE:7": {"osd_id": 7}}]
+
+
+def test_run_calls_device_health_monitor_every_iteration_when_interval_is_zero(monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "device_health_scan_interval_seconds", 0, raising=False)
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
+    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
+
+    check_calls = {"n": 0}
+
+    def fake_check():
+        check_calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(watcher_main.device_health_monitor, "check_predicted_failing_osds", fake_check)
+    monkeypatch.setattr(
+        watcher_main.device_health_monitor, "create_or_resolve_device_health_incidents", lambda _c: None
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 3
+
+
+def test_run_survives_device_health_monitor_raising(monkeypatch):
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
+    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
+
+    def broken_check():
+        raise RuntimeError("bug in device_health_monitor")
+
+    monkeypatch.setattr(watcher_main.device_health_monitor, "check_predicted_failing_osds", broken_check)
 
     transitions = []
     watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)

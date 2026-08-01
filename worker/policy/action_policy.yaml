@@ -170,6 +170,21 @@ backup_action_ids:
   - backup_delete_manual
   - backup_metadata_run
 
+# 2026-08-01 (Story C, DeviceHealth-driven evacuation): a NINTH family, same
+# reasoning as every other family above — watcher/device_health_monitor.py
+# proposes this directly (Incident+Action created straight at
+# PENDING_APPROVAL, no Incident-diagnosis AI round trip, same posture as
+# watcher/volume_monitor.py's VOLUME_SATURATED: family), never via Chat-with-
+# AI or the automated Incident-diagnosis pipeline. Deliberately a SEPARATE
+# action_id from Chat's own `mark_osd_out` even though the resulting command
+# is identical (worker/executor/commands.py::_DEVICE_HEALTH_COMMAND_BUILDERS)
+# — so this can be classified RISKY independently of mark_osd_out's SAFE
+# classification below, which exists for Chat's own different safeguards
+# (operator types the osd_id and reviews the resolved preview before
+# confirming; nothing analogous happens for a system-generated proposal).
+device_health_action_ids:
+  - evacuate_predicted_failing_osd
+
 safe:
   - resync_ntp
   # 2026-07-23: operator explicitly requested every management action
@@ -280,6 +295,13 @@ risky:
   # the safe: list above for why.
   - restore_rbd_image_to_production
   - backup_delete_manual
+  # 2026-08-01 (Story C): moves real data off a live OSD — always requires
+  # explicit Dashboard approval, no exceptions, same conservative default as
+  # the rest of this file. Deliberately RISKY even though the resulting
+  # command is identical to mark_osd_out (SAFE, above) — see
+  # device_health_action_ids:'s own comment for why the two are separate
+  # action_ids specifically so classification can differ between them.
+  - evacuate_predicted_failing_osd
   # 2026-07-31 (Story 9.7): rebuilds a cluster from scratch AND overwrites
   # its RBD data from backup — same conservative-by-default reasoning as
   # every other cluster_deploy_action_ids member above, always requires

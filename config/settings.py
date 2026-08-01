@@ -83,6 +83,20 @@ class Settings(BaseSettings):
     # once set, it's the ONLY list used, auto-discovery is skipped entirely.
     ceph_rbd_pools: str = ""
 
+    # 2026-08-01 (Story C, DeviceHealth-driven evacuation proposals) —
+    # watcher/device_health_monitor.py's own scan cadence, deliberately
+    # separate from watcher_poll_interval_seconds above: a device's
+    # predicted life expectancy doesn't change meaningfully every 15s the
+    # way cluster health does, so running `ceph device ls`/`ceph osd dump`
+    # that often would just be wasted MON load. 1 hour by default.
+    device_health_scan_interval_seconds: int = 3600
+    # A device whose life_expectancy_min falls within this many days from
+    # now is proposed for evacuation (mark_osd_out) — see that module's own
+    # docstring for why life_expectancy_min (the EARLIEST possible failure
+    # date in Ceph's own [min, max] prediction range) is the conservative
+    # choice here, not life_expectancy_max.
+    device_health_evacuate_threshold_days: int = 7
+
     # 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py)
     # — a separate build server, NOT a Ceph cluster node, so deliberately not
     # part of the ceph_mon/osd/mgr/rgw_nodes family above or

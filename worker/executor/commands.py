@@ -277,6 +277,20 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_trash_remove": _rbd_trash_remove_command,
 }
 
+# 2026-08-01 (Story C, DeviceHealth-driven evacuation): a SEPARATE dict from
+# _MANAGEMENT_COMMAND_BUILDERS above even though the command is identical to
+# mark_osd_out's — semantic ownership matters here, not just the resulting
+# shell string: management_action_ids: is Chat-with-AI's own closed enum
+# (operator types the osd_id, sees the preview, confirms), while this one is
+# watcher/device_health_monitor.py's own family (system-proposed, osd_id
+# resolved deterministically from `ceph device ls`, always RISKY — see that
+# module's docstring for why reusing mark_osd_out's action_id directly would
+# have been wrong: it's classified SAFE for the chat flow's own reasons,
+# which must never apply to an unattended, system-generated proposal).
+_DEVICE_HEALTH_COMMAND_BUILDERS = {
+    "evacuate_predicted_failing_osd": lambda params: _mark_osd_command("out", params),
+}
+
 
 # --- Cluster Upgrade action (2026-07-23) -----------------------------------
 #
@@ -852,6 +866,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _restart_osd_daemon_command(host)
     if action_id in _MANAGEMENT_COMMAND_BUILDERS:
         return _MANAGEMENT_COMMAND_BUILDERS[action_id](params or {})
+    if action_id in _DEVICE_HEALTH_COMMAND_BUILDERS:
+        return _DEVICE_HEALTH_COMMAND_BUILDERS[action_id](params or {})
     if action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS:
         return _CLUSTER_UPGRADE_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id in _PATCH_COMMAND_BUILDERS:
@@ -885,6 +901,7 @@ def has_command(action_id: str) -> bool:
     return (
         action_id == "restart_osd_daemon"
         or action_id in _MANAGEMENT_COMMAND_BUILDERS
+        or action_id in _DEVICE_HEALTH_COMMAND_BUILDERS
         or action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS
         or action_id in _PATCH_COMMAND_BUILDERS
         or action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS

@@ -5,8 +5,9 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from config.settings import settings
-from watcher import ceph_client, collector, publisher, volume_monitor
+from watcher import ceph_client, collector, device_health_monitor, publisher, volume_monitor
 from watcher.ceph_client import CephQueryError, query_cluster_health
+from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat
 from shared.models import Incident, IncidentStatus
@@ -111,6 +112,14 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
                 # resolve lifecycle entirely (its own rolling-window
                 # saturated-set, not this function's current_codes), so it
                 # must be left alone here.
+                continue
+            if incident.ceph_code.startswith(DEVICE_HEALTH_EVACUATE_PREFIX):
+                # 2026-08-01 (Story C): same reasoning as the
+                # VOLUME_SATURATED_PREFIX guard just above —
+                # watcher/device_health_monitor.py owns this ceph_code
+                # family's own create/resolve lifecycle (its own
+                # predicted-failing-and-still-in osd_id set), never a real
+                # `ceph health detail` check code.
                 continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
@@ -227,6 +236,7 @@ def run(
     """
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
+    last_device_health_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -295,6 +305,28 @@ def run(
             volume_monitor.create_or_resolve_volume_incidents(current_saturated)
         except Exception:
             logger.exception("run: volume saturation check failed")
+
+        # 2026-08-01 (Story C): DeviceHealth-driven evacuation-proposal scan
+        # — own independent try/except (same isolation reasoning as the
+        # volume-saturation block above) and its OWN, much slower cadence
+        # (settings.device_health_scan_interval_seconds, default 1h) rather
+        # than running `ceph device ls`/`ceph osd dump` every single
+        # watcher_poll_interval_seconds tick — see that setting's own
+        # comment in config/settings.py for why.
+        now = datetime.utcnow()
+        if (
+            last_device_health_scan_at is None
+            or (now - last_device_health_scan_at).total_seconds()
+            >= settings.device_health_scan_interval_seconds
+        ):
+            try:
+                current_predicted_failing = device_health_monitor.check_predicted_failing_osds()
+                device_health_monitor.create_or_resolve_device_health_incidents(
+                    current_predicted_failing
+                )
+            except Exception:
+                logger.exception("run: device health scan failed")
+            last_device_health_scan_at = now
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))

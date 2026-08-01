@@ -72,6 +72,15 @@ def _load_backup_action_ids() -> frozenset[str]:
     return frozenset(policy.get("backup_action_ids") or [])
 
 
+def _load_device_health_action_ids() -> frozenset[str]:
+    """Story C DeviceHealth-driven evacuation's own closed action_id enum
+    (watcher/device_health_monitor.py) — see action_policy.yaml's
+    `device_health_action_ids:` comment for why this is a ninth family."""
+    with open(_POLICY_PATH) as f:
+        policy = yaml.safe_load(f)
+    return frozenset(policy.get("device_health_action_ids") or [])
+
+
 SAFE_ACTION_IDS, RISKY_ACTION_IDS = _load_action_id_lists()
 VALID_MANAGEMENT_ACTION_IDS = _load_management_action_ids()
 VALID_CLUSTER_UPGRADE_ACTION_IDS = _load_cluster_upgrade_action_ids()
@@ -79,6 +88,7 @@ VALID_PATCH_ACTION_IDS = _load_patch_action_ids()
 VALID_BACKUP_ACTION_IDS = _load_backup_action_ids()
 VALID_CLUSTER_DEPLOY_ACTION_IDS = _load_cluster_deploy_action_ids()
 VALID_VOLUME_PERF_ACTION_IDS = _load_volume_perf_action_ids()
+VALID_DEVICE_HEALTH_ACTION_IDS = _load_device_health_action_ids()
 
 _CONFLICTING_ACTION_IDS = SAFE_ACTION_IDS & RISKY_ACTION_IDS
 if _CONFLICTING_ACTION_IDS:
