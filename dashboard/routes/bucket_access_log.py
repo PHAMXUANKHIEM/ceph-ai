@@ -31,7 +31,12 @@ from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.env_config import CLUSTER_ENV_NAMES, update_env_file_batch
-from watcher.rgw_access_log import RgwLogError, fetch_bucket_access_log
+from watcher.rgw_access_log import (
+    RgwLogError,
+    fetch_bucket_access_log,
+    fetch_bucket_stats,
+    summarize_bucket_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +150,29 @@ async def bucket_access_log_api(host: str, bucket: str = "", user: str = Depends
     except RgwLogError as exc:
         logger.warning("bucket_access_log_api: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))
+
+    # Bucket metadata is a SEPARATE radosgw-admin call from the log fetch
+    # above — only attempted when a specific bucket is given (stats are
+    # per-bucket, meaningless for the "all buckets" unfiltered view), and
+    # its own failure degrades to bucket_stats=None rather than failing
+    # the whole request: the access log itself is still useful on its own
+    # even if radosgw-admin isn't reachable/installed where expected.
+    bucket_stats = None
+    if bucket:
+        try:
+            raw_stats = fetch_bucket_stats(host, bucket)
+            if raw_stats:
+                bucket_stats = summarize_bucket_stats(raw_stats)
+                bucket_stats["creation_time"] = (
+                    to_utc_iso(bucket_stats["creation_time"]) if bucket_stats["creation_time"] else None
+                )
+        except RgwLogError as exc:
+            logger.warning("bucket_access_log_api: bucket stats fetch failed: %s", exc)
+
     return {
         "host": host,
         "bucket": bucket,
+        "bucket_stats": bucket_stats,
         "records": [
             {
                 "remote_addr": r["remote_addr"],

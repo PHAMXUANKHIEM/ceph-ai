@@ -9,6 +9,20 @@
   var statusEl = document.getElementById("bal-status");
   var tableWrap = document.getElementById("bal-table-wrap");
   var tableBody = document.getElementById("bal-table-body");
+  var bucketInfoWrap = document.getElementById("bal-bucket-info-wrap");
+  var bucketInfoBody = document.getElementById("bal-bucket-info-body");
+
+  function formatBytes(bytes) {
+    if (bytes === null || bytes === undefined) return "—";
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var value = bytes;
+    var i = 0;
+    while (value >= 1024 && i < units.length - 1) {
+      value = value / 1024;
+      i += 1;
+    }
+    return value.toFixed(i === 0 ? 0 : 1) + " " + units[i];
+  }
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
   // own OS timezone — same helper/reasoning as
@@ -50,6 +64,40 @@
     return td;
   }
 
+  function infoRow(label, value) {
+    // Both <td> (not <th>) — this codebase's table CSS only styles
+    // `tbody td`/`thead th`, never a `<th>` sitting inside `<tbody>`.
+    var tr = document.createElement("tr");
+    var labelCell = document.createElement("td");
+    var strong = document.createElement("strong");
+    strong.textContent = label;
+    labelCell.appendChild(strong);
+    tr.appendChild(labelCell);
+    tr.appendChild(cell(value));
+    return tr;
+  }
+
+  function renderBucketInfo(stats) {
+    while (bucketInfoBody.firstChild) bucketInfoBody.removeChild(bucketInfoBody.firstChild);
+    if (!stats) {
+      bucketInfoWrap.hidden = true;
+      return;
+    }
+    bucketInfoBody.appendChild(infoRow("Chủ sở hữu", stats.owner || "—"));
+    bucketInfoBody.appendChild(infoRow("Ngày tạo", formatVnDateTime(stats.creation_time)));
+    bucketInfoBody.appendChild(infoRow("Số object", String(stats.num_objects)));
+    bucketInfoBody.appendChild(infoRow("Dung lượng", formatBytes(stats.size_bytes)));
+    bucketInfoBody.appendChild(
+      infoRow(
+        "Quota",
+        stats.quota_enabled
+          ? formatBytes(stats.quota_max_size_bytes) + " / " + (stats.quota_max_objects === -1 ? "không giới hạn object" : stats.quota_max_objects + " object")
+          : "Không đặt"
+      )
+    );
+    bucketInfoWrap.hidden = false;
+  }
+
   function renderRecords(records) {
     while (tableBody.firstChild) tableBody.removeChild(tableBody.firstChild);
     if (!records.length) {
@@ -77,6 +125,7 @@
     var bucket = bucketInput.value.trim();
     statusEl.textContent = "Đang tải...";
     tableWrap.hidden = true;
+    bucketInfoWrap.hidden = true;
 
     var url = "/api/bucket-access-log?host=" + encodeURIComponent(host);
     if (bucket) url += "&bucket=" + encodeURIComponent(bucket);
@@ -91,9 +140,13 @@
         }
         return response.json();
       })
-      .then(function (data) { renderRecords(data.records); })
+      .then(function (data) {
+        renderBucketInfo(data.bucket_stats);
+        renderRecords(data.records);
+      })
       .catch(function (err) {
         tableWrap.hidden = true;
+        bucketInfoWrap.hidden = true;
         statusEl.textContent = "Lỗi: " + err.message;
       });
   }

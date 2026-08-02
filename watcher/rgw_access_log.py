@@ -29,9 +29,14 @@ node mapping. Those rows come back with bucket=None rather than a guess.
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 from datetime import datetime
 
+from config.settings import settings
+from watcher import ceph_client
+from watcher.ceph_client import run_command_on_node
 from watcher.rgw_log import RgwLogError, fetch_rgw_log  # noqa: F401 — re-exported for callers
 
 _BEAST_LOG_RE = re.compile(
@@ -46,6 +51,14 @@ _BEAST_LOG_RE = re.compile(
 # "12/Jun/2024:13:10:07.404 +0000" — Apache Combined Log Format's own
 # timestamp shape.
 _TIMESTAMP_FORMAT = "%d/%b/%Y:%H:%M:%S.%f %z"
+
+# `radosgw-admin bucket stats`'s own `creation_time`/`mtime` shape, e.g.
+# "2024-01-01 00:00:00.000000" — NOT the same shape as the beast access
+# log's timestamp above (space separator, no explicit UTC offset). Always
+# UTC in practice (same "naive datetime = UTC" convention shared/models.py
+# uses throughout this codebase for its own DB columns) — NOT independently
+# verified against a real cluster this session.
+_CREATION_TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 _ACTION_VI = {
     ("GET", True): "Tải xuống",
@@ -78,6 +91,15 @@ def _parse_bucket_and_object(path: str) -> tuple[str | None, str | None]:
 def _parse_timestamp(value: str) -> datetime | None:
     try:
         return datetime.strptime(value, _TIMESTAMP_FORMAT)
+    except ValueError:
+        return None
+
+
+def _parse_creation_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, _CREATION_TIME_FORMAT)
     except ValueError:
         return None
 
@@ -134,3 +156,72 @@ def fetch_bucket_access_log(host: str, bucket: str | None = None) -> list[dict]:
     if bucket:
         records = [r for r in records if r["bucket"] == bucket]
     return records
+
+
+def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
+    """Real bucket metadata (owner, creation time, object count, size,
+    quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately
+    NOT ceph_client.run_ceph_json_command (that always wraps into
+    settings.ceph_container_name, the MON container, which has no reason
+    to ship the `radosgw-admin` binary at all — that's the RGW package).
+    Reuses ceph_client.build_exec_command with settings.ceph_rgw_container_name
+    instead, same docker/podman/cephadm/none wrapping every other exec-mode
+    branch in this codebase uses, just pointed at the RGW container.
+
+    Returns None if the bucket doesn't exist, or if `radosgw-admin`'s
+    output didn't parse as a JSON object — both treated as "nothing to
+    show" rather than an error (an empty/typo'd bucket name is a normal,
+    expected input here, not a system failure).
+
+    Raises RgwLogError if the command couldn't even be attempted (SSH
+    failure, or docker/podman mode with no RGW container name configured).
+
+    NOT verified against a real cluster this session: assumes the RGW
+    container image ships `radosgw-admin` (same package as `radosgw`
+    itself) for docker/podman mode, and that `cephadm shell --
+    radosgw-admin ...` resolves cluster-admin access without needing a
+    specific daemon `--name` (true for single-realm/zone; unverified for
+    multi-site RGW).
+    """
+    exec_mode = settings.ceph_exec_mode
+    if exec_mode not in ("cephadm", "none") and not settings.ceph_rgw_container_name:
+        raise RgwLogError(
+            "Chưa cấu hình tên container RGW — điền ở mục \"Cấu hình RGW\" phía trên."
+        )
+    inner_command = f"radosgw-admin bucket stats --bucket={shlex.quote(bucket)}"
+    command = ceph_client.build_exec_command(
+        exec_mode, settings.ceph_rgw_container_name, f"{inner_command} --format json"
+    )
+    try:
+        output = run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được thông tin bucket trên {host}: {exc}") from exc
+    try:
+        parsed = json.loads(output)
+    except (TypeError, ValueError):
+        return None  # unknown bucket -> radosgw-admin prints a plain error, not JSON
+    return parsed if isinstance(parsed, dict) else None
+
+
+def summarize_bucket_stats(raw: dict) -> dict:
+    """Picks the fields worth showing an operator out of `radosgw-admin
+    bucket stats`'s full JSON (which also carries internal/rarely-useful
+    fields like `marker`/`index_type`/`explicit_placement`) — field names
+    (`usage.rgw.main.num_objects`/`size_utilized`, `bucket_quota.*`) are
+    Ceph's own long-stable `radosgw-admin bucket stats` output shape, not
+    independently verified against a real cluster this session (same
+    caveat fetch_bucket_stats's own docstring already carries)."""
+    usage = raw.get("usage") or {}
+    main = usage.get("rgw.main") or {}
+    quota = raw.get("bucket_quota") or {}
+    return {
+        "owner": raw.get("owner"),
+        "creation_time": _parse_creation_time(raw.get("creation_time")),
+        "num_objects": main.get("num_objects", 0),
+        "size_bytes": main.get("size_utilized", main.get("size", 0)),
+        "num_shards": raw.get("num_shards"),
+        "placement_rule": raw.get("placement_rule"),
+        "quota_enabled": bool(quota.get("enabled", False)),
+        "quota_max_size_bytes": quota.get("max_size"),
+        "quota_max_objects": quota.get("max_objects"),
+    }

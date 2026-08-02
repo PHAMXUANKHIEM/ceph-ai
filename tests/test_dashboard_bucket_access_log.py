@@ -90,6 +90,68 @@ def test_api_returns_parsed_records_for_configured_rgw_host(dashboard_client, mo
     assert record["action"] == "Tải xuống"
     assert record["status"] == 200
     assert record["timestamp"] is not None
+    assert body["bucket_stats"] is None  # no bucket filter given -> stats never fetched
+
+
+def test_api_includes_bucket_stats_when_bucket_filter_given(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    monkeypatch.setattr(bal_route, "fetch_bucket_access_log", lambda host, bucket: [])
+    captured = {}
+
+    def fake_stats(host, bucket):
+        captured["host"] = host
+        captured["bucket"] = bucket
+        return {"owner": "operator", "usage": {}, "bucket_quota": {}}
+
+    monkeypatch.setattr(bal_route, "fetch_bucket_stats", fake_stats)
+
+    response = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90&bucket=my-bucket")
+
+    assert response.status_code == 200
+    assert captured == {"host": "10.20.1.90", "bucket": "my-bucket"}
+    stats = response.json()["bucket_stats"]
+    assert stats["owner"] == "operator"
+    assert stats["num_objects"] == 0
+
+
+def test_api_bucket_stats_none_for_unknown_bucket(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    monkeypatch.setattr(bal_route, "fetch_bucket_access_log", lambda host, bucket: [])
+    monkeypatch.setattr(bal_route, "fetch_bucket_stats", lambda host, bucket: None)
+
+    response = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90&bucket=no-such-bucket")
+
+    assert response.status_code == 200
+    assert response.json()["bucket_stats"] is None
+
+
+def test_api_degrades_gracefully_when_bucket_stats_fetch_fails(dashboard_client, monkeypatch):
+    # The access log itself must still come back even if radosgw-admin
+    # isn't reachable/installed where expected — a stats failure must not
+    # turn into a 502 for the whole request.
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    raw_line = (
+        '1 beast: 0x1: 10.20.1.5 - operator [12/Jun/2024:13:11:00.000 +0000] '
+        '"GET /my-bucket/photo.jpg HTTP/1.1" 200 1024 - - - latency=0.010s'
+    )
+    monkeypatch.setattr(
+        bal_route, "fetch_bucket_access_log", lambda host, bucket: parse_beast_access_log(raw_line)
+    )
+
+    def failing_stats(host, bucket):
+        raise RgwLogError("radosgw-admin: command not found")
+
+    monkeypatch.setattr(bal_route, "fetch_bucket_stats", failing_stats)
+
+    response = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90&bucket=my-bucket")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bucket_stats"] is None
+    assert len(body["records"]) == 1
 
 
 def test_api_passes_bucket_query_param_through(dashboard_client, monkeypatch):
@@ -103,6 +165,7 @@ def test_api_passes_bucket_query_param_through(dashboard_client, monkeypatch):
         return []
 
     monkeypatch.setattr(bal_route, "fetch_bucket_access_log", fake_fetch)
+    monkeypatch.setattr(bal_route, "fetch_bucket_stats", lambda host, bucket: None)
 
     response = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90&bucket=my-bucket")
 

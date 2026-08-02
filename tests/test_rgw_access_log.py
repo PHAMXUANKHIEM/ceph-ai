@@ -167,3 +167,156 @@ def test_fetch_bucket_access_log_propagates_rgw_log_error(monkeypatch):
         assert False, "expected RgwLogError"
     except ral.RgwLogError:
         pass
+
+
+# --- fetch_bucket_stats() / summarize_bucket_stats() ----------------------
+
+RADOSGW_ADMIN_BUCKET_STATS_JSON = """{
+  "bucket": "my-bucket",
+  "num_shards": 11,
+  "tenant": "",
+  "owner": "operator",
+  "placement_rule": "default-placement",
+  "id": "abc123",
+  "creation_time": "2024-01-15 08:30:00.000000",
+  "usage": {
+    "rgw.main": {
+      "size": 1048576,
+      "size_utilized": 1048576,
+      "num_objects": 42
+    }
+  },
+  "bucket_quota": {
+    "enabled": true,
+    "max_size": 10737418240,
+    "max_objects": 1000
+  }
+}"""
+
+
+def test_fetch_bucket_stats_builds_docker_exec_command_against_rgw_container(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "docker", raising=False)
+    monkeypatch.setattr(settings, "ceph_rgw_container_name", "ceph-rgw-B", raising=False)
+    captured = {}
+
+    def fake_run(host, command):
+        captured["host"] = host
+        captured["command"] = command
+        return RADOSGW_ADMIN_BUCKET_STATS_JSON
+
+    monkeypatch.setattr(ral, "run_command_on_node", fake_run)
+
+    result = ral.fetch_bucket_stats("10.20.1.90", "my-bucket")
+
+    assert captured["host"] == "10.20.1.90"
+    assert captured["command"] == (
+        "docker exec ceph-rgw-B radosgw-admin bucket stats --bucket=my-bucket --format json"
+    )
+    assert result["owner"] == "operator"
+    assert result["usage"]["rgw.main"]["num_objects"] == 42
+
+
+def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "docker", raising=False)
+    monkeypatch.setattr(settings, "ceph_rgw_container_name", "", raising=False)
+
+    try:
+        ral.fetch_bucket_stats("10.20.1.90", "my-bucket")
+        assert False, "expected RgwLogError"
+    except ral.RgwLogError as exc:
+        assert "container" in str(exc).lower()
+
+
+def test_fetch_bucket_stats_cephadm_mode_uses_shell_wrapper_no_container_needed(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    monkeypatch.setattr(settings, "ceph_rgw_container_name", "", raising=False)
+    captured = {}
+
+    def fake_run(host, command):
+        captured["command"] = command
+        return RADOSGW_ADMIN_BUCKET_STATS_JSON
+
+    monkeypatch.setattr(ral, "run_command_on_node", fake_run)
+
+    result = ral.fetch_bucket_stats("10.20.1.90", "my-bucket")
+
+    assert captured["command"] == "cephadm shell -- radosgw-admin bucket stats --bucket=my-bucket --format json"
+    assert result["owner"] == "operator"
+
+
+def test_fetch_bucket_stats_returns_none_for_unknown_bucket(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    monkeypatch.setattr(ral, "run_command_on_node", lambda host, command: "ERROR: could not fetch bucket info")
+
+    assert ral.fetch_bucket_stats("10.20.1.90", "no-such-bucket") is None
+
+
+def test_fetch_bucket_stats_raises_rgw_log_error_on_ssh_failure(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+
+    def raising(host, command):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(ral, "run_command_on_node", raising)
+
+    try:
+        ral.fetch_bucket_stats("10.20.1.90", "my-bucket")
+        assert False, "expected RgwLogError"
+    except ral.RgwLogError:
+        pass
+
+
+def test_fetch_bucket_stats_shell_quotes_bucket_name(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    captured = {}
+
+    def fake_run(host, command):
+        captured["command"] = command
+        return RADOSGW_ADMIN_BUCKET_STATS_JSON
+
+    monkeypatch.setattr(ral, "run_command_on_node", fake_run)
+
+    ral.fetch_bucket_stats("10.20.1.90", "bucket; rm -rf /")
+
+    assert "'bucket; rm -rf /'" in captured["command"]
+
+
+def test_summarize_bucket_stats_extracts_display_fields():
+    import json
+
+    raw = json.loads(RADOSGW_ADMIN_BUCKET_STATS_JSON)
+
+    summary = ral.summarize_bucket_stats(raw)
+
+    assert summary["owner"] == "operator"
+    assert summary["creation_time"].year == 2024
+    assert summary["creation_time"].month == 1
+    assert summary["creation_time"].day == 15
+    assert summary["num_objects"] == 42
+    assert summary["size_bytes"] == 1048576
+    assert summary["quota_enabled"] is True
+    assert summary["quota_max_size_bytes"] == 10737418240
+    assert summary["quota_max_objects"] == 1000
+
+
+def test_summarize_bucket_stats_handles_empty_bucket_with_no_usage_category():
+    raw = {"owner": "operator", "creation_time": None, "usage": {}, "bucket_quota": {"enabled": False}}
+
+    summary = ral.summarize_bucket_stats(raw)
+
+    assert summary["num_objects"] == 0
+    assert summary["size_bytes"] == 0
+    assert summary["creation_time"] is None
+    assert summary["quota_enabled"] is False
