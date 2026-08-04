@@ -88,6 +88,7 @@ def _config_response(config: TestRunnerConfig | None) -> dict:
         "rgw_endpoint_zone_a": config.rgw_endpoint_zone_a if config else None,
         "rgw_endpoint_zone_b": config.rgw_endpoint_zone_b if config else None,
         "rgw_endpoint_vip": config.rgw_endpoint_vip if config else None,
+        "client_host": config.client_host if config else None,
         "test_groups": json.loads(config.test_groups) if config and config.test_groups else [],
         "priorities": json.loads(config.priorities) if config and config.priorities else [],
         "baseline_files": {
@@ -122,6 +123,8 @@ async def save_test_runner_config(request: Request, user: str = Depends(require_
             config.rgw_endpoint_zone_b = payload.get("rgw_endpoint_zone_b") or None
         if "rgw_endpoint_vip" in payload:
             config.rgw_endpoint_vip = payload.get("rgw_endpoint_vip") or None
+        if "client_host" in payload:
+            config.client_host = payload.get("client_host") or None
         if "test_groups" in payload:
             config.test_groups = json.dumps(payload.get("test_groups") or [])
         if "priorities" in payload:

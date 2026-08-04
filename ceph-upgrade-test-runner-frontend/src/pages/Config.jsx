@@ -28,6 +28,7 @@ export default function Config() {
   const [rgwZoneA, setRgwZoneA] = useState('')
   const [rgwZoneB, setRgwZoneB] = useState('')
   const [rgwVip, setRgwVip] = useState('')
+  const [clientHost, setClientHost] = useState('')
   const [testGroups, setTestGroups] = useState([])
   const [priorities, setPriorities] = useState([])
 
@@ -44,6 +45,7 @@ export default function Config() {
     setRgwZoneA(data.rgw_endpoint_zone_a || '')
     setRgwZoneB(data.rgw_endpoint_zone_b || '')
     setRgwVip(data.rgw_endpoint_vip || '')
+    setClientHost(data.client_host || '')
     setTestGroups(data.test_groups || [])
     setPriorities(data.priorities || [])
   }
@@ -115,6 +117,7 @@ export default function Config() {
           rgw_endpoint_zone_a: rgwZoneA,
           rgw_endpoint_zone_b: rgwZoneB,
           rgw_endpoint_vip: rgwVip,
+          client_host: clientHost,
           test_groups: testGroups,
           priorities: priorities,
         }),
@@ -211,6 +214,26 @@ export default function Config() {
               )}
             </ul>
           )}
+        </section>
+
+        {/* Client host (Nhóm A: TC-RUN-001/010 cần 1 máy client riêng, không
+            phải node cụm Ceph -- xem docs/ceph-upgrade-test-cases.md) */}
+        <section className="bg-white rounded shadow p-4">
+          <h2 className="text-lg font-medium text-slate-800">Máy client test I/O</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            SSH host của máy client dùng cho test I/O liên tục trong lúc nâng cấp (Nhóm A) — đã map
+            sẵn RBD image, mount CephFS, cấu hình aws cli. Không phải node MON/MGR/OSD/RGW ở trên.
+          </p>
+          <label className="mt-3 block text-sm text-slate-600">
+            Client host
+            <input
+              type="text"
+              value={clientHost}
+              onChange={(e) => setClientHost(e.target.value)}
+              placeholder="client01.lab.local"
+              className="mt-1 w-full sm:w-80 rounded border border-slate-300 px-2 py-1"
+            />
+          </label>
         </section>
 
         {/* Baseline files */}

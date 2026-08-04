@@ -616,6 +616,15 @@ class TestRunnerConfig(Base):
     # path it was stored at under test_runner_baselines/ (or absent/None
     # if never uploaded) -- only the path is stored here, never file bytes.
     baseline_files: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Story 10.3 addition: SSH target for Group A's client-side I/O test
+    # cases (TC-RUN-001/010, docs/ceph-upgrade-test-cases.md) -- a machine
+    # with an already-mapped RBD device / mounted CephFS / configured aws
+    # cli, distinct from the MON/MGR/OSD/RGW cluster nodes configured_nodes()
+    # returns. Not anticipated by Story 10.2's frozen spec (which only
+    # covers cluster-node config); added here since Group A's test cases are
+    # the first to actually need it, keeping the same "extend the one
+    # singleton config row" posture rather than a new table.
+    client_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
