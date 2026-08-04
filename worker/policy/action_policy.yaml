@@ -185,6 +185,19 @@ backup_action_ids:
 device_health_action_ids:
   - evacuate_predicted_failing_osd
 
+# 2026-08-04: BlueStore per-pool omap quick-fix — a TENTH family, same
+# reasoning as every other family above. Proposed only from its own
+# dedicated Dashboard picker (dashboard/routes/nodes.py), NOT Chat-with-AI
+# free text and NOT the automated Incident-diagnosis pipeline — the
+# operator picks a real osd_id from `ceph osd tree`
+# (watcher/ceph_client.py::list_osds()) instead of typing/guessing one.
+# See worker/executor/commands.py::_bluestore_omap_quick_fix_command's own
+# comment for the full BLUESTORE_NO_PER_POOL_OMAP background and the known
+# historical ceph-bluestore-tool corruption risk that makes this always
+# RISKY, never SAFE.
+bluestore_action_ids:
+  - bluestore_omap_quick_fix
+
 safe:
   - resync_ntp
   # 2026-07-23: operator explicitly requested every management action
@@ -307,3 +320,10 @@ risky:
   # every other cluster_deploy_action_ids member above, always requires
   # explicit approval, no exceptions.
   - restore_cluster_from_backup
+  # 2026-08-04: stops a real OSD daemon and runs an admin repair-class tool
+  # against its on-disk data before restarting it — a historical
+  # ceph-bluestore-tool bug could corrupt the repair transaction or OMAP
+  # keys under specific conditions (see the command builder's own comment
+  # for the exact sources) — always requires explicit Dashboard approval,
+  # no exceptions, same conservative default as the rest of this file.
+  - bluestore_omap_quick_fix

@@ -292,6 +292,68 @@ _DEVICE_HEALTH_COMMAND_BUILDERS = {
 }
 
 
+# --- BlueStore per-pool omap quick-fix (2026-08-04) -------------------------
+#
+# Fixes the BLUESTORE_NO_PER_POOL_OMAP health warning ("OSD(s) reporting
+# legacy (not per-pool) BlueStore omap usage stats") — stop the OSD, run
+# `ceph-bluestore-tool quick-fix` against its data path, start it again.
+# Verified against Ceph's own C++ source (src/os/bluestore/bluestore_tool.cc)
+# that "quick-fix" is a real, distinct action from "repair" (calls
+# bluestore.quick_fix(), not bluestore.repair()) — commonly recommended for
+# exactly this warning in vendor/community guides, even though docs.ceph.com's
+# own health-checks page currently shows "repair" instead; both are valid.
+#
+# NOT a "safe, run it and forget" operation — a historical ceph-bluestore-
+# tool bug (multi-threaded quick-fix/repair race, ceph#41749/#41613,
+# backported to nautilus/octopus) could corrupt the repair transaction
+# batch, and a SEPARATE known issue could corrupt OMAP keys if invoked
+# during a pre-Pacific cluster's omap-format upgrade window. Always RISKY
+# (worker/policy/action_policy.yaml), never auto-executed, and — unlike
+# every other per-OSD action in this file — proposed from its own dedicated
+# Dashboard picker (dashboard/routes/nodes.py), not Chat-with-AI free text,
+# specifically so the operator picks a REAL osd_id from `ceph osd tree`
+# (watcher/ceph_client.py::list_osds()) instead of typing one that might
+# not exist.
+#
+# Only ceph_exec_mode in (cephadm, none) are supported — see the
+# ExecutorError below for why docker/podman aren't: this app tracks only a
+# FIXED container NAME for those modes, not the original `docker run`
+# volume-mount flags a temporary replacement container would need to
+# safely touch the same OSD data while the real daemon container is
+# stopped, unlike cephadm (`cephadm shell --name osd.<id>` reconstructs
+# the right mounts itself) or "none" (bare-metal, no container at all).
+def _bluestore_omap_quick_fix_command(host: str | None, params: dict) -> str:
+    if host is None:
+        raise ExecutorError("bluestore_omap_quick_fix needs a specific host")
+    osd_id = _require_int(params, "osd_id", _OSD_ID_RANGE)
+    path = f"/var/lib/ceph/osd/ceph-{osd_id}"
+    quick_fix = f"ceph-bluestore-tool quick-fix --path {shlex.quote(path)}"
+
+    if settings.ceph_exec_mode == "cephadm":
+        daemon_name = shlex.quote(f"osd.{osd_id}")
+        return " && ".join(
+            [
+                f"cephadm unit --name {daemon_name} stop",
+                f"cephadm shell --name {daemon_name} -- {quick_fix}",
+                f"cephadm unit --name {daemon_name} start",
+            ]
+        )
+    if settings.ceph_exec_mode == "none":
+        unit = shlex.quote(f"ceph-osd@{osd_id}.service")
+        return " && ".join([f"systemctl stop {unit}", quick_fix, f"systemctl start {unit}"])
+    raise ExecutorError(
+        f"bluestore_omap_quick_fix requires ceph_exec_mode=cephadm or none (currently "
+        f"{settings.ceph_exec_mode!r}) — a docker/podman deployment would need this app to "
+        "know the OSD container's original volume-mount flags to safely stop it and re-run "
+        "ceph-bluestore-tool against the same data, which it doesn't track"
+    )
+
+
+_BLUESTORE_COMMAND_BUILDERS = {
+    "bluestore_omap_quick_fix": _bluestore_omap_quick_fix_command,
+}
+
+
 # --- Cluster Upgrade action (2026-07-23) -----------------------------------
 #
 # dashboard/routes/upgrade.py-only — see action_policy.yaml's
@@ -907,6 +969,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _VOLUME_PERF_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id in _BACKUP_COMMAND_BUILDERS:
         return _BACKUP_COMMAND_BUILDERS[action_id](host, params or {})
+    if action_id in _BLUESTORE_COMMAND_BUILDERS:
+        return _BLUESTORE_COMMAND_BUILDERS[action_id](host, params or {})
     if action_id not in COMMANDS:
         raise ExecutorError(f"no Command defined for action_id={action_id!r}")
     return COMMANDS[action_id]
@@ -936,5 +1000,6 @@ def has_command(action_id: str) -> bool:
         or action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS
         or action_id in _VOLUME_PERF_COMMAND_BUILDERS
         or action_id in _BACKUP_COMMAND_BUILDERS
+        or action_id in _BLUESTORE_COMMAND_BUILDERS
         or action_id in COMMANDS
     )

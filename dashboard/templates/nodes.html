@@ -37,6 +37,47 @@
   </header>
 
   <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>BlueStore quick-fix (per-pool omap)</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          Sửa cảnh báo <code>BLUESTORE_NO_PER_POOL_OMAP</code> ("OSD(s) reporting legacy (not
+          per-pool) BlueStore omap usage stats"): dừng OSD, chạy <code>ceph-bluestore-tool
+          quick-fix</code> trên đúng đường dẫn của OSD đó, rồi khởi động lại. <strong>Luôn cần
+          duyệt thủ công</strong> — có rủi ro đã biết với phiên bản cũ của
+          <code>ceph-bluestore-tool</code> (xem chi tiết trong code), chỉ chạy khi chắc chắn
+          cluster đang khoẻ mạnh. Chỉ hỗ trợ cụm cephadm hoặc cài đặt package trực tiếp (không
+          hỗ trợ docker/podman thường — xem lý do trong code).
+        </p>
+        {% if osds_error %}
+        <p class="error">Không lấy được danh sách OSD: {{ osds_error }}</p>
+        {% elif osds %}
+        <form class="audit-filters" id="bluestore-quick-fix-form">
+          <label>OSD
+            <select id="bqf-osd-id">
+              {% for osd in osds %}
+              <option value="{{ osd.osd_id }}">
+                osd.{{ osd.osd_id }} — {{ osd.status }} — host CRUSH: {{ osd.crush_host }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Chạy trên node SSH nào (phải đúng node đang chạy osd đã chọn ở trên)
+            <select id="bqf-host">
+              {% for node in osd_nodes %}
+              <option value="{{ node.host }}">{{ node.host }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit" class="btn btn-reject btn-sm">Đề xuất quick-fix</button>
+        </form>
+        <p class="hint" id="bqf-status"></p>
+        {% else %}
+        <p class="hint">Không có OSD nào (hoặc chưa cấu hình MON node).</p>
+        {% endif %}
+      </div>
+    </section>
+
     <div class="tabbed-page">
     <nav class="tabbed-sidebar node-sidebar" id="node-selector">
       <div class="node-sidebar-header">
@@ -125,5 +166,6 @@
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/nodes.js?v={{ static_version }}"></script>
   <script src="/static/nodes_rgw_log.js?v={{ static_version }}"></script>
+  <script src="/static/nodes_bluestore_quick_fix.js?v={{ static_version }}"></script>
 </body>
 </html>

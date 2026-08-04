@@ -1,6 +1,16 @@
+import pytest
+
 import dashboard.routes.nodes as nodes_route
 from config.settings import settings
 from watcher.rgw_log import RgwLogError
+
+
+@pytest.fixture(autouse=True)
+def _fast_list_osds_default(monkeypatch):
+    """See tests/test_dashboard_nodes.py's identical fixture for why —
+    GET /nodes now also calls watcher.ceph_client.list_osds() on every
+    page load, which would otherwise hit real (slow, fake-IP) SSH here too."""
+    monkeypatch.setattr(nodes_route, "list_osds", lambda: [])
 
 
 def _login(client):

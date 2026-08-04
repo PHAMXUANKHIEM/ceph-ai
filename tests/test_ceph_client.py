@@ -648,6 +648,53 @@ def test_unset_upgrade_osd_flags_sends_expected_command(monkeypatch):
     )
 
 
+# --- list_osds() -----------------------------------------------------------
+# `ceph osd tree --format json`'s real shape: "nodes" is a FLAT list, and
+# a host/root/rack node's "children" field holds INTEGER ID REFERENCES into
+# that same flat list, not nested objects (verified against insights-core's
+# CephOsdTree parser).
+
+OSD_TREE_JSON = {
+    "nodes": [
+        {"id": -1, "name": "default", "type": "root", "type_id": 11, "children": [-3, -2]},
+        {"id": -2, "name": "host-a", "type": "host", "type_id": 1, "children": [1, 0]},
+        {"id": -3, "name": "host-b", "type": "host", "type_id": 1, "children": [2]},
+        {"id": 0, "name": "osd.0", "type": "osd", "type_id": 0, "status": "up"},
+        {"id": 1, "name": "osd.1", "type": "osd", "type_id": 0, "status": "down"},
+        {"id": 2, "name": "osd.2", "type": "osd", "type_id": 0, "status": "up"},
+    ],
+    "stray": [],
+}
+
+
+def test_list_osds_walks_flat_tree_via_integer_child_references(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": OSD_TREE_JSON}
+
+    osds = ceph_client.list_osds()
+
+    assert osds == [
+        {"osd_id": 0, "crush_host": "host-a", "status": "up"},
+        {"osd_id": 1, "crush_host": "host-a", "status": "down"},
+        {"osd_id": 2, "crush_host": "host-b", "status": "up"},
+    ]
+
+
+def test_list_osds_returns_empty_list_on_malformed_payload(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": {"unexpected": "shape"}}
+
+    assert ceph_client.list_osds() == []
+
+
+def test_list_osds_propagates_query_error_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {"10.20.1.150": "unreachable"}
+
+    with pytest.raises(CephQueryError):
+        ceph_client.list_osds()
+
+
 def test_run_diagnostic_command_wraps_via_build_exec_command_for_docker_mode(monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "docker")
     monkeypatch.setattr(ceph_client.settings, "ceph_container_name", "ceph-mon-B")

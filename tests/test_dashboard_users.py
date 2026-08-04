@@ -1,7 +1,19 @@
 import bcrypt
+import pytest
 
+import dashboard.routes.nodes as nodes_route
 from shared import db as db_module
 from shared.models import User
+
+
+@pytest.fixture(autouse=True)
+def _fast_list_osds_default(monkeypatch):
+    """2026-08-04: this file's own tests hit GET /nodes (nav-link checks),
+    which now also calls watcher.ceph_client.list_osds() on every page
+    load — see tests/test_dashboard_nodes.py's identical fixture for the
+    full reasoning (real, slow SSH against conftest.py's fake mon IPs if
+    left unmocked)."""
+    monkeypatch.setattr(nodes_route, "list_osds", lambda: [])
 
 
 def _login(client):

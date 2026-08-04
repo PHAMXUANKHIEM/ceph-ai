@@ -796,3 +796,63 @@ def test_get_command_evacuate_predicted_failing_osd_requires_osd_id():
 
 def test_has_command_true_for_evacuate_predicted_failing_osd():
     assert commands_module.has_command("evacuate_predicted_failing_osd") is True
+
+
+# --- bluestore_omap_quick_fix ------------------------------------------------
+
+
+def test_bluestore_omap_quick_fix_cephadm_command(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+
+    command = get_command("bluestore_omap_quick_fix", "10.20.1.83", {"osd_id": 7})
+
+    assert command == (
+        "cephadm unit --name osd.7 stop && "
+        "cephadm shell --name osd.7 -- ceph-bluestore-tool quick-fix "
+        "--path /var/lib/ceph/osd/ceph-7 && "
+        "cephadm unit --name osd.7 start"
+    )
+
+
+def test_bluestore_omap_quick_fix_none_mode_command(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+
+    command = get_command("bluestore_omap_quick_fix", "10.20.1.83", {"osd_id": 7})
+
+    assert command == (
+        "systemctl stop ceph-osd@7.service && "
+        "ceph-bluestore-tool quick-fix --path /var/lib/ceph/osd/ceph-7 && "
+        "systemctl start ceph-osd@7.service"
+    )
+
+
+def test_bluestore_omap_quick_fix_rejects_docker_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "docker")
+
+    with pytest.raises(ExecutorError, match="cephadm or none"):
+        get_command("bluestore_omap_quick_fix", "10.20.1.83", {"osd_id": 7})
+
+
+def test_bluestore_omap_quick_fix_rejects_podman_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "podman")
+
+    with pytest.raises(ExecutorError, match="cephadm or none"):
+        get_command("bluestore_omap_quick_fix", "10.20.1.83", {"osd_id": 7})
+
+
+def test_bluestore_omap_quick_fix_requires_host(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+
+    with pytest.raises(ExecutorError, match="needs a specific host"):
+        get_command("bluestore_omap_quick_fix", None, {"osd_id": 7})
+
+
+def test_bluestore_omap_quick_fix_requires_osd_id(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+
+    with pytest.raises(ExecutorError, match="osd_id"):
+        get_command("bluestore_omap_quick_fix", "10.20.1.83", {})
+
+
+def test_has_command_true_for_bluestore_omap_quick_fix():
+    assert commands_module.has_command("bluestore_omap_quick_fix") is True

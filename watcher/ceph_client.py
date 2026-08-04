@@ -741,3 +741,47 @@ def unset_upgrade_osd_flags() -> None:
     unset_commands = "; ".join(f"ceph osd unset {flag}" for flag in _UPGRADE_OSD_FLAGS)
     inner_command = f"bash -c {shlex.quote(unset_commands)}"
     _run_upgrade_control_command(inner_command)
+
+
+def list_osds() -> list[dict]:
+    """Every OSD in the cluster's CRUSH tree via `ceph osd tree --format
+    json` — `{"osd_id": int, "crush_host": str, "status": "up"|"down"}` per
+    entry, sorted by osd_id. Powers the BlueStore quick-fix picker
+    (dashboard/routes/nodes.py) — an operator still has to separately pick
+    which of THIS APP's own configured OSD nodes (SSH-reachable IP) to
+    actually run the fix on, since there's no hostname->IP mapping for OSD
+    nodes in this app (unlike MON's ceph_mon_hostnames/ceph_mon_nodes pair)
+    — same documented gap watcher/collector.py::identify_relevant_nodes
+    already has for OSD_/PG_ node routing, not a new one.
+
+    `ceph osd tree`'s own JSON shape (verified against a real parser,
+    insights-core's CephOsdTree — NOT independently verified against a real
+    cluster this session): `nodes` is a FLAT list; each host/root/rack node's
+    `children` field holds INTEGER ID REFERENCES into that same flat list,
+    not nested objects — this walks it accordingly rather than assuming a
+    nested-object shape.
+    """
+    _, payload = run_ceph_json_command("ceph osd tree")
+    nodes = payload.get("nodes") if isinstance(payload, dict) else None
+    if not isinstance(nodes, list):
+        return []
+
+    by_id = {n["id"]: n for n in nodes if isinstance(n, dict) and "id" in n}
+    osds = []
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "host":
+            continue
+        host_name = node.get("name", "?")
+        for child_id in node.get("children") or []:
+            child = by_id.get(child_id)
+            if not isinstance(child, dict) or child.get("type") != "osd":
+                continue
+            osds.append(
+                {
+                    "osd_id": child.get("id"),
+                    "crush_host": host_name,
+                    "status": child.get("status", "?"),
+                }
+            )
+    osds.sort(key=lambda o: o["osd_id"] if isinstance(o["osd_id"], int) else -1)
+    return osds
