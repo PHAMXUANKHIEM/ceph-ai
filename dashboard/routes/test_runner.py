@@ -1,6 +1,5 @@
 import json
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -9,6 +8,7 @@ from dashboard.routes.auth import require_login
 from shared import db
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.models import TestRunnerConfig
+from shared.test_runner_baselines import BASELINE_FILE_KEYS, BASELINE_FILES_DIR
 from worker.executor.ssh_executor import test_all_nodes
 
 logger = logging.getLogger(__name__)
@@ -35,26 +35,12 @@ async def test_runner_health():
     return {"status": "ok"}
 
 
-# The exact 7 baseline files named in the original 63-test-case document
-# (see epic-10-context.md's Cross-Story Dependencies) -- fixed allowlist,
-# not operator-extensible. Stored on disk keyed by this name (not the
-# client's original filename) specifically to avoid a client-supplied
-# filename being used to build a filesystem path (path-injection risk).
-BASELINE_FILE_KEYS = (
-    "rbd_rep.sha256",
-    "cephfs.sha256",
-    "s3_manifest.csv",
-    "osd_crush_dump_before.json",
-    "auth_list_before.txt",
-    "config_dump_before.txt",
-    "df_before.txt",
-)
-
-# ceph-aiops project root: dashboard/routes/test_runner.py -> routes ->
-# dashboard -> ceph-aiops. Same derivation dashboard/routes/settings.py's
-# PROJECT_ROOT already uses.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-BASELINE_FILES_DIR = PROJECT_ROOT / "test_runner_baselines"
+# BASELINE_FILE_KEYS/BASELINE_FILES_DIR now live in shared/test_runner_baselines.py
+# (Story 10.4) so worker/executor/test_runner/group_b.py can read the same
+# uploaded files without worker/ importing from dashboard/. Stored on disk
+# keyed by the fixed key name (not the client's original filename)
+# specifically to avoid a client-supplied filename being used to build a
+# filesystem path (path-injection risk) -- see upload_baseline_file() below.
 
 
 def _get_or_create_config(session) -> TestRunnerConfig:
