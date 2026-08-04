@@ -13,6 +13,7 @@ from shared import audit, db
 from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from shared.ceph_releases import codename_for_version
+from shared.cluster_nodes import configured_nodes
 from shared.router_client import build_router_client
 from worker.backup import engine as backup_engine
 from worker.executor import cluster_deploy, commands, volume_perf
@@ -741,6 +742,461 @@ def _unset_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]
     _write_action_progress(action_pk, progress)
 
 
+# --- Story 7.2 (2026-08-04): phased MON->MGR->OSD->MDS/RGW package upgrade -
+#
+# Package-based Cluster Upgrade (`upgrade_ceph_cluster_package_download`/
+# `_local` — see _PACKAGE_UPGRADE_ACTION_IDS above) used to run ONE combined
+# "install && restart everything this host runs" command per host, in
+# `configured_nodes()`'s host order (MON-then-MGR-then-OSD-then-RGW, but
+# with install/restart interleaved per host — e.g. a MON host's daemons
+# already restarted before an OSD host had even finished installing). The
+# operator wants explicit control instead: install the new package on
+# EVERY host first, then restart strictly MON-then-MGR-then-OSD across the
+# WHOLE cluster (not host-by-host), then any leftover MDS/RGW units
+# `_discover_ceph_units` finds. Still targets the SAME single Action row —
+# per this story's frozen intent, phasing execution must not split into
+# multiple Action rows.
+_UPGRADE_PHASE_INSTALL = "install"
+_UPGRADE_PHASE_MON = "mon"
+_UPGRADE_PHASE_MGR = "mgr"
+_UPGRADE_PHASE_OSD = "osd"
+_UPGRADE_PHASE_MDS_RGW = "mds_rgw"
+
+# (phase name, shared/cluster_nodes.py::configured_nodes() role string,
+# worker/executor/commands.py daemon-type list) — MON -> MGR -> OSD order.
+_ROLE_RESTART_PHASES = (
+    (_UPGRADE_PHASE_MON, "MON", ("mon",)),
+    (_UPGRADE_PHASE_MGR, "MGR", ("mgr",)),
+    (_UPGRADE_PHASE_OSD, "OSD", ("osd",)),
+)
+
+_KILL_SWITCH_SKIPPED_MESSAGE = "Bị chặn bởi kill-switch giữa chừng — chưa chạy trên node này"
+_NOTHING_TO_RESTART_MESSAGE = "Không tìm thấy systemd unit nào cần khởi động lại trên node này"
+# Code review fix (2026-08-04, Story 7.2): a host whose install step failed
+# must not have its later MON/MGR/OSD/MDS-RGW unit restarted — that would
+# restart a daemon against a possibly broken/partial package install.
+_INSTALL_FAILED_SKIP_MESSAGE = "Bỏ qua vì cài đặt gói thất bại trên node này"
+
+
+def _execute_package_upgrade_action(
+    action_pk: str,
+    action_id_str: str,
+    nodes: list[str],
+    action_params: dict | None,
+    incident_id: str,
+) -> None:
+    """The package-based Cluster Upgrade's 5-phase executor — install-only
+    on every configured host, then restart MON-role hosts' MON units, then
+    MGR-role hosts' MGR units, then OSD-role hosts' OSD units, then any
+    remaining host with a leftover discovered MDS/RGW unit (matches
+    `_discover_ceph_units`'s daemon-type coverage). A host with more than
+    one role (e.g. MON+OSD) installs exactly once (phase 0) and restarts
+    once per role-phase it belongs to — its MON unit in the MON phase, its
+    OSD unit in the OSD phase, never both together and never twice.
+
+    Kill-switch is re-checked fresh before EVERY step across the WHOLE
+    5-phase sequence (AD-4) — install and restart steps alike. A
+    mid-sequence trip stops immediately: every not-yet-run step (any
+    phase) is recorded `skipped`; the Action reverts to PENDING_APPROVAL
+    only if NOTHING executed anywhere yet, else ends FAILED with the
+    partial progress kept — identical semantics to the pre-7.2 per-host
+    loop (worker/llm/router_client.py's git history), just evaluated at
+    per-phase-step granularity now.
+
+    noout/noscrub/nodeep-scrub/nosnaptrim (_set_/_unset_upgrade_osd_flags)
+    bracket the ENTIRE 5-phase sequence exactly as they bracketed the old
+    single-phase per-host loop — set once before phase 0, unset once after
+    the last phase actually run (or after an early stop), never per-phase.
+    """
+    action_params = action_params or {}
+
+    # MON/MGR/OSD role membership is known purely from configured Settings
+    # (shared/cluster_nodes.py::configured_nodes(), fresh read — same
+    # "re-derive from Settings rather than trust anything cached" posture
+    # _set_upgrade_osd_flags' own mon_nodes lookup already has) — no SSH
+    # needed to PLAN these 3 phases, unlike the MDS/RGW leftover phase
+    # below, whose membership can only be learned by actually discovering
+    # each host's systemd units.
+    roles_by_host: dict[str, set[str]] = {n["host"]: set(n["roles"]) for n in configured_nodes()}
+    role_hosts = {
+        role: [h for h in nodes if role in roles_by_host.get(h, ())]
+        for _phase_name, role, _daemon_types in _ROLE_RESTART_PHASES
+    }
+
+    progress: list[dict] = [
+        {"host": host, "status": "pending", "phase": _UPGRADE_PHASE_INSTALL} for host in nodes
+    ]
+    for phase_name, role, _daemon_types in _ROLE_RESTART_PHASES:
+        progress.extend(
+            {"host": host, "status": "pending", "phase": phase_name} for host in role_hosts[role]
+        )
+    _write_action_progress(action_pk, progress)
+
+    state = {
+        "executed_any": False,
+        "all_succeeded": True,
+        "blocked_before_start": False,
+        "stopped_mid_sequence": False,
+        "last_command": None,
+        # Code review fix (2026-08-04): hosts whose install step failed —
+        # every later restart phase (MON/MGR/OSD, and the MDS/RGW dynamic
+        # phase) must skip these rather than restart a daemon against a
+        # possibly broken/partial install.
+        "failed_install_hosts": set(),
+    }
+
+    # Same bracket as the pre-7.2 code — set BEFORE phase 0, unset once
+    # after the whole sequence (or an early stop), never per-phase (see
+    # this function's own docstring / epic-7-context.md's Technical
+    # Decisions on why the bracket's scope is the full upgrade window).
+    mon_nodes_cfg = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+    upgrade_flags_mon_host: str | None = None
+    if _check_kill_switch_safe(incident_id):
+        state["blocked_before_start"] = True
+    elif mon_nodes_cfg:
+        upgrade_flags_mon_host = mon_nodes_cfg[0]
+        _set_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
+    else:
+        logger.warning(
+            "_execute_package_upgrade_action: no MON node configured — skipping "
+            "noout/noscrub/nodeep-scrub/nosnaptrim for action %s",
+            action_pk,
+        )
+
+    # Code review fix (2026-08-04): _run_install_phase/_run_restart_phase
+    # only catch ExecutorError — any OTHER exception (an unwrapped network/
+    # OS error from _discover_ceph_units or execute_command) must still
+    # guarantee _unset_upgrade_osd_flags runs before it propagates, or
+    # noout/noscrub/nodeep-scrub/nosnaptrim are left set on the live
+    # cluster indefinitely with no automatic recovery. A `finally` here is
+    # the deliberate fix — NOT widening the except clauses inside the phase
+    # functions, which would silently swallow real bugs instead.
+    try:
+        if not state["blocked_before_start"]:
+            install_entries = [p for p in progress if p.get("phase") == _UPGRADE_PHASE_INSTALL]
+            _run_install_phase(
+                action_pk, action_id_str, nodes, install_entries, action_params, progress, incident_id, state
+            )
+
+        if not state["blocked_before_start"] and not state["stopped_mid_sequence"]:
+            for phase_name, role, daemon_types in _ROLE_RESTART_PHASES:
+                if state["blocked_before_start"] or state["stopped_mid_sequence"]:
+                    break
+                phase_entries = [p for p in progress if p.get("phase") == phase_name]
+                _run_restart_phase(
+                    action_pk, action_id_str, phase_name, role_hosts[role], phase_entries,
+                    daemon_types, action_params, progress, incident_id, state,
+                )
+
+        if not state["blocked_before_start"] and not state["stopped_mid_sequence"]:
+            _run_restart_phase(
+                action_pk, action_id_str, _UPGRADE_PHASE_MDS_RGW, nodes, None,
+                ("mds", "rgw"), action_params, progress, incident_id, state,
+            )
+    finally:
+        if state["stopped_mid_sequence"]:
+            # Every step that never got a chance to run (this phase's own
+            # not-yet-visited candidates, AND every host in a phase that
+            # never even started) is still "pending" at this point — flip
+            # all of them to "skipped" in one pass, same message the
+            # pre-7.2 per-host loop already used.
+            for entry in progress:
+                if entry["status"] == "pending":
+                    entry["status"] = "skipped"
+                    entry["error"] = _KILL_SWITCH_SKIPPED_MESSAGE
+            _write_action_progress(action_pk, progress)
+
+        if upgrade_flags_mon_host is not None:
+            _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
+
+    if state["blocked_before_start"]:
+        _revert_approved_action_to_pending(incident_id, action_pk)
+        return
+
+    # Code review fix (2026-08-04): a kill-switch trip mid-sequence must
+    # also block this finalize step — without `not state["stopped_mid_
+    # sequence"]`, `ceph osd require-osd-release <codename>` could still
+    # run on the MON after the operator hit the emergency kill-switch.
+    if state["executed_any"] and not state["stopped_mid_sequence"]:
+        _finalize_package_upgrade_osd_release(action_pk, action_params, progress)
+
+    _record_approved_execution_result(
+        action_pk,
+        command=state["last_command"],
+        succeeded=state["all_succeeded"] and state["executed_any"],
+    )
+
+
+def _run_install_phase(
+    action_pk: str,
+    action_id_str: str,
+    hosts: list[str],
+    phase_entries: list[dict],
+    action_params: dict,
+    progress: list[dict],
+    incident_id: str,
+    state: dict,
+) -> None:
+    """Phase 0 — install-only on every host, positional addressing into
+    `phase_entries` (one pre-populated "pending" dict per host, same
+    order), mirroring the pre-7.2 generic per-host loop's own kill-switch/
+    failure semantics exactly (just against the install-only command
+    variant instead of "install && restart everything")."""
+    total = len(hosts)
+    for index, host in enumerate(hosts):
+        entry = phase_entries[index]
+        if _check_kill_switch_safe(incident_id):
+            if state["executed_any"]:
+                state["all_succeeded"] = False
+                state["stopped_mid_sequence"] = True
+            else:
+                state["blocked_before_start"] = True
+            return
+
+        try:
+            command = commands.get_command(
+                action_id_str, host, dict(action_params, _phase="install_only")
+            )
+        except ExecutorError as exc:
+            logger.warning(
+                "_execute_package_upgrade_action: no install Command for action_id=%s on "
+                "host=%s (action %s, incident %s) — marking this step failed",
+                action_id_str,
+                host,
+                action_pk,
+                incident_id,
+            )
+            state["all_succeeded"] = False
+            state["failed_install_hosts"].add(host)
+            entry["status"] = "failed"
+            entry["error"] = str(exc)
+            _write_action_progress(action_pk, progress)
+            continue
+        state["last_command"] = command
+
+        logger.info(
+            "_execute_package_upgrade_action: bắt đầu cài đặt trên host %s (%d/%d) (action %s)",
+            host,
+            index + 1,
+            total,
+            action_pk,
+        )
+        entry["status"] = "running"
+        entry["command"] = command
+        entry["started_at"] = datetime.utcnow().isoformat()
+        _write_action_progress(action_pk, progress)
+
+        try:
+            execute_command(host, command)
+            state["executed_any"] = True
+        except ExecutorError as exc:
+            logger.exception(
+                "_execute_package_upgrade_action: install failed on host %s (action %s)",
+                host,
+                action_pk,
+            )
+            state["all_succeeded"] = False
+            state["executed_any"] = True
+            state["failed_install_hosts"].add(host)
+            entry["status"] = "failed"
+            entry["error"] = str(exc)
+            entry["finished_at"] = datetime.utcnow().isoformat()
+            _write_action_progress(action_pk, progress)
+            continue
+
+        entry["status"] = "done"
+        entry["finished_at"] = datetime.utcnow().isoformat()
+        _write_action_progress(action_pk, progress)
+        logger.info(
+            "_execute_package_upgrade_action: hoàn tất cài đặt trên host %s (%d/%d) (action %s)",
+            host,
+            index + 1,
+            total,
+            action_pk,
+        )
+
+
+def _run_restart_phase(
+    action_pk: str,
+    action_id_str: str,
+    phase_name: str,
+    candidate_hosts: list[str],
+    phase_entries: list[dict] | None,
+    daemon_types: tuple[str, ...],
+    action_params: dict,
+    progress: list[dict],
+    incident_id: str,
+    state: dict,
+) -> None:
+    """Restarts `daemon_types`' systemd units on each host in
+    `candidate_hosts` that ACTUALLY has one discovered — a host listed for
+    this phase (by config role, for MON/MGR/OSD) with no matching unit is
+    silently left alone (no failure recorded), same "nothing found ->
+    nothing to do" contract
+    worker/executor/commands.py::_restart_units_by_type_snippet already
+    has for the un-phased command.
+
+    `phase_entries`, when given, are PRE-POPULATED "pending" placeholders
+    (one per `candidate_hosts`, same order) mutated in place — used for
+    the MON/MGR/OSD phases, whose host list is knowable from
+    configured_nodes() alone (no SSH needed to plan it). `None` means the
+    MDS/RGW leftover phase instead, whose membership can only be learned
+    by actually discovering each host — a step is appended dynamically
+    only for a host that turns out to have something to restart, so a
+    host with no leftover MDS/RGW unit never gets a progress entry at all
+    for this phase (matches the pre-7.2 command's own silent no-op when
+    nothing is discovered to restart).
+    """
+    for index, host in enumerate(candidate_hosts):
+        # Code review fix (2026-08-04): a host whose install step already
+        # failed (Fix 1) must not have its unit(s) restarted here — that
+        # would restart a daemon against a possibly broken/partial
+        # install. Checked before the kill-switch so it never consumes a
+        # kill-switch check and never blocks other hosts in this phase.
+        if host in state["failed_install_hosts"]:
+            now = datetime.utcnow().isoformat()
+            if phase_entries is not None:
+                entry = phase_entries[index]
+                entry["status"] = "skipped"
+                entry["error"] = _INSTALL_FAILED_SKIP_MESSAGE
+            else:
+                progress.append(
+                    {
+                        "host": host,
+                        "phase": phase_name,
+                        "status": "skipped",
+                        "error": _INSTALL_FAILED_SKIP_MESSAGE,
+                        "started_at": now,
+                        "finished_at": now,
+                    }
+                )
+            _write_action_progress(action_pk, progress)
+            continue
+
+        if _check_kill_switch_safe(incident_id):
+            if state["executed_any"]:
+                state["all_succeeded"] = False
+                state["stopped_mid_sequence"] = True
+            else:
+                state["blocked_before_start"] = True
+            if phase_entries is None:
+                # Code review fix (2026-08-04): the MDS/RGW phase's entries
+                # are appended dynamically, only for a host confirmed to
+                # have something to restart — without this, a host never
+                # reached because of a mid-phase kill-switch trip would
+                # vanish from the audit trail entirely instead of being
+                # recorded as skipped (the MON/MGR/OSD phases avoid this
+                # because their pre-populated "pending" placeholders already
+                # get flipped to "skipped" by the outer cleanup loop, which
+                # this dynamic phase has nothing for it to flip).
+                for later_host in candidate_hosts[index:]:
+                    progress.append(
+                        {
+                            "host": later_host,
+                            "phase": phase_name,
+                            "status": "skipped",
+                            "error": _KILL_SWITCH_SKIPPED_MESSAGE,
+                        }
+                    )
+                _write_action_progress(action_pk, progress)
+            return
+
+        try:
+            discovered = commands._discover_ceph_units(host)
+        except ExecutorError as exc:
+            state["all_succeeded"] = False
+            now = datetime.utcnow().isoformat()
+            if phase_entries is not None:
+                entry = phase_entries[index]
+                entry["status"] = "failed"
+                entry["error"] = str(exc)
+                entry["started_at"] = now
+                entry["finished_at"] = now
+            else:
+                progress.append(
+                    {
+                        "host": host,
+                        "phase": phase_name,
+                        "status": "failed",
+                        "error": str(exc),
+                        "started_at": now,
+                        "finished_at": now,
+                    }
+                )
+            _write_action_progress(action_pk, progress)
+            continue
+
+        if not any(discovered.get(daemon_type) for daemon_type in daemon_types):
+            if phase_entries is not None:
+                entry = phase_entries[index]
+                entry["status"] = "skipped"
+                entry["error"] = _NOTHING_TO_RESTART_MESSAGE
+                _write_action_progress(action_pk, progress)
+            continue  # dynamic (MDS/RGW) phase: nothing to restart here -> no entry at all
+
+        try:
+            command = commands.get_command(
+                action_id_str,
+                host,
+                dict(action_params, _phase="restart_only", _phase_daemon_types=list(daemon_types)),
+            )
+        except ExecutorError as exc:
+            state["all_succeeded"] = False
+            now = datetime.utcnow().isoformat()
+            if phase_entries is not None:
+                entry = phase_entries[index]
+                entry["status"] = "failed"
+                entry["error"] = str(exc)
+                entry["started_at"] = now
+                entry["finished_at"] = now
+            else:
+                progress.append(
+                    {
+                        "host": host,
+                        "phase": phase_name,
+                        "status": "failed",
+                        "error": str(exc),
+                        "started_at": now,
+                        "finished_at": now,
+                    }
+                )
+            _write_action_progress(action_pk, progress)
+            continue
+        state["last_command"] = command
+
+        if phase_entries is not None:
+            entry = phase_entries[index]
+            entry["status"] = "running"
+            entry["command"] = command
+            entry["started_at"] = datetime.utcnow().isoformat()
+        else:
+            entry = {
+                "host": host,
+                "phase": phase_name,
+                "status": "running",
+                "command": command,
+                "started_at": datetime.utcnow().isoformat(),
+            }
+            progress.append(entry)
+        _write_action_progress(action_pk, progress)
+
+        try:
+            execute_command(host, command)
+            state["executed_any"] = True
+        except ExecutorError as exc:
+            state["all_succeeded"] = False
+            state["executed_any"] = True
+            entry["status"] = "failed"
+            entry["error"] = str(exc)
+            entry["finished_at"] = datetime.utcnow().isoformat()
+            _write_action_progress(action_pk, progress)
+            continue
+
+        entry["status"] = "done"
+        entry["finished_at"] = datetime.utcnow().isoformat()
+        _write_action_progress(action_pk, progress)
+
+
 def _is_disruptive_cluster_operation_in_flight() -> bool:
     """True while a cluster-upgrade or patch-install Action is proposed but
     not yet resolved (PENDING_APPROVAL/APPROVED) — same in-flight window
@@ -1020,6 +1476,21 @@ def _execute_approved_action(action_pk: str) -> None:
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
 
+    # 2026-08-04 (Story 7.2): the two package-based Cluster Upgrade
+    # action_ids get a dedicated 5-phase executor (install-only on every
+    # host, then restart MON-role -> MGR-role -> OSD-role hosts' units one
+    # daemon type at a time, then any host with leftover discovered
+    # MDS/RGW units) instead of the generic "one command per host" loop
+    # below — see _execute_package_upgrade_action's own docstring for why
+    # the generic loop can't express "install everywhere first, restart in
+    # role order across the WHOLE cluster" (it fires one command per host,
+    # done). `upgrade_ceph_cluster` (cephadm) is NOT in
+    # _PACKAGE_UPGRADE_ACTION_IDS and falls through to the generic loop
+    # completely unchanged, per this story's explicit boundary.
+    if action_id_str in _PACKAGE_UPGRADE_ACTION_IDS:
+        _execute_package_upgrade_action(action_pk, action_id_str, nodes, action_params, incident_id)
+        return
+
     executed_any = False
     all_succeeded = True
     blocked_before_start = False
@@ -1031,30 +1502,6 @@ def _execute_approved_action(action_pk: str) -> None:
     total_nodes = len(nodes)
     progress = [{"host": host, "status": "pending"} for host in nodes]
     _write_action_progress(action_pk, progress)
-
-    # 2026-08-04: noout/noscrub/nodeep-scrub/nosnaptrim around the whole
-    # per-host loop for a package-based upgrade — see _set_upgrade_osd_flags'
-    # own docstring for why (no orchestrator, nothing else suppresses
-    # scrub/backfill churn while OSDs bounce one at a time). Kill-switch
-    # checked here too, BEFORE this setup step touches the cluster at all
-    # (AD-4, no exceptions) — the per-host loop below does its own fresh
-    # check per host regardless, this just also covers the flags step.
-    is_package_upgrade = action_id_str in _PACKAGE_UPGRADE_ACTION_IDS
-    upgrade_flags_mon_host: str | None = None
-    if is_package_upgrade:
-        if _check_kill_switch_safe(incident_id):
-            blocked_before_start = True
-        else:
-            mon_nodes = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
-            if mon_nodes:
-                upgrade_flags_mon_host = mon_nodes[0]
-                _set_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
-            else:
-                logger.warning(
-                    "_execute_approved_action: no MON node configured — skipping "
-                    "noout/noscrub/nodeep-scrub/nosnaptrim for action %s",
-                    action_pk,
-                )
 
     for node_index, host in enumerate(nodes, start=1):
         if blocked_before_start:
@@ -1161,20 +1608,8 @@ def _execute_approved_action(action_pk: str) -> None:
         )
 
     if blocked_before_start:
-        # Cleanup even on this early-exit path — the kill-switch could have
-        # flipped ON between _set_upgrade_osd_flags running (above) and the
-        # per-host loop's own first-iteration check, in which case the
-        # flags ARE set on the cluster even though nothing else ran.
-        if upgrade_flags_mon_host is not None:
-            _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
         _revert_approved_action_to_pending(incident_id, action_pk)
         return
-
-    if upgrade_flags_mon_host is not None:
-        _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
-
-    if action_id_str in _PACKAGE_UPGRADE_ACTION_IDS and executed_any:
-        _finalize_package_upgrade_osd_release(action_pk, action_params, progress)
 
     _record_approved_execution_result(
         action_pk, command=last_command, succeeded=all_succeeded and executed_any

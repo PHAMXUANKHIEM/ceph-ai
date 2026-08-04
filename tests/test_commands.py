@@ -293,6 +293,153 @@ def test_has_command_true_for_both_package_based_upgrade_action_ids():
     assert commands_module.has_command("upgrade_ceph_cluster_package_local") is True
 
 
+# --- Story 7.2 (2026-08-04): phased MON->MGR->OSD->MDS/RGW restart ----------
+
+
+def test_restart_units_by_type_snippet_restarts_only_requested_daemon_type(monkeypatch):
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    snippet = commands_module._restart_units_by_type_snippet("10.20.1.150", ["mon"])
+
+    assert snippet == (
+        "(systemctl reset-failed ceph-mon@a.service 2>/dev/null; "
+        "systemctl restart ceph-mon@a.service)"
+    )
+    assert "osd" not in snippet
+
+
+def test_restart_units_by_type_snippet_combines_multiple_daemon_types(monkeypatch):
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    snippet = commands_module._restart_units_by_type_snippet("10.20.1.150", ["mon", "osd"])
+
+    assert "ceph-mon@a.service" in snippet
+    assert "ceph-osd@0.service" in snippet
+
+
+def test_restart_units_by_type_snippet_returns_none_when_nothing_matches(monkeypatch):
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    assert commands_module._restart_units_by_type_snippet("10.20.1.150", ["rgw"]) is None
+
+
+def test_package_download_install_only_phase_omits_restart(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_download",
+        "10.20.1.150",
+        {"target_version": "19.2.0", "_phase": "install_only"},
+    )
+
+    assert "apt-get install -y ceph" in command
+    assert "systemctl restart" not in command
+    # install_only never even calls discovery — the whole point of the
+    # phase split is to NOT touch systemd on the install step.
+    assert "systemctl | grep ceph" not in command
+
+
+def test_package_download_restart_only_phase_returns_just_the_restart_snippet(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_download",
+        "10.20.1.150",
+        {"_phase": "restart_only", "_phase_daemon_types": ["mon"]},
+    )
+
+    assert command == (
+        "(systemctl reset-failed ceph-mon@a.service 2>/dev/null; "
+        "systemctl restart ceph-mon@a.service)"
+    )
+    # No target_version needed for a restart-only step — must not raise
+    # even though {"_phase": ..., "_phase_daemon_types": ...} has no
+    # target_version key at all.
+
+
+def test_package_download_restart_only_phase_raises_when_nothing_to_restart(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    with pytest.raises(ExecutorError, match="no matching Ceph systemd unit"):
+        get_command(
+            "upgrade_ceph_cluster_package_download",
+            "10.20.1.150",
+            {"_phase": "restart_only", "_phase_daemon_types": ["rgw"]},
+        )
+
+
+def test_package_download_no_phase_key_keeps_original_install_and_restart_everything_behavior(
+    monkeypatch,
+):
+    """Every pre-7.2 caller (dashboard/routes/upgrade.py's propose-time
+    preview, every test above this section) omits `_phase` entirely — must
+    still get the full "install && restart everything discovered" command,
+    byte-for-byte the same as before this story."""
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_download", "10.20.1.150", {"target_version": "19.2.0"}
+    )
+
+    assert "apt-get install -y ceph" in command
+    assert "ceph-mon@a.service" in command
+    assert "ceph-osd@0.service" in command
+
+
+def test_package_local_install_only_phase_omits_restart(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_local",
+        "10.20.1.150",
+        {"package_dir": "/opt/ceph-pkgs", "_phase": "install_only"},
+    )
+
+    assert "apt-get install -y /opt/ceph-pkgs/*.deb" in command
+    assert "systemctl restart" not in command
+
+
+def test_package_local_restart_only_phase_returns_just_the_restart_snippet(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(commands_module, "execute_command", lambda host, cmd: _MIXED_UNITS_OUTPUT)
+
+    command = get_command(
+        "upgrade_ceph_cluster_package_local",
+        "10.20.1.150",
+        {"_phase": "restart_only", "_phase_daemon_types": ["osd"]},
+    )
+
+    assert command == (
+        "(systemctl reset-failed ceph-osd@0.service 2>/dev/null; "
+        "systemctl restart ceph-osd@0.service)"
+    )
+
+
+def test_package_local_restart_only_phase_requires_non_cephadm_exec_mode(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
+    with pytest.raises(ExecutorError, match="ceph_exec_mode=none"):
+        get_command(
+            "upgrade_ceph_cluster_package_local",
+            "10.20.1.150",
+            {"_phase": "restart_only", "_phase_daemon_types": ["osd"]},
+        )
+
+
+def test_package_download_restart_only_phase_still_requires_host(monkeypatch):
+    monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "none")
+    with pytest.raises(ExecutorError, match="needs a specific host"):
+        get_command(
+            "upgrade_ceph_cluster_package_download",
+            None,
+            {"_phase": "restart_only", "_phase_daemon_types": ["mon"]},
+        )
+
+
 def test_discover_ceph_units_also_classifies_mds_and_rgw(monkeypatch):
     output = (
         "  ceph-mds@a.service"

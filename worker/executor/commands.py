@@ -505,6 +505,50 @@ def _restart_discovered_units_snippet(host: str) -> str | None:
     )
 
 
+# --- Story 7.2 (2026-08-04): phased MON->MGR->OSD->MDS/RGW restart --------
+#
+# worker/llm/router_client.py's package-upgrade branch now runs install
+# (all hosts) and restart (role-scoped, one daemon type at a time) as
+# SEPARATE phases instead of one "install && restart everything" command
+# per host — a colocated MON+OSD host must install once but restart its
+# MON unit in the MON phase and its OSD unit in the OSD phase separately,
+# never both together and never twice. `_restart_discovered_units_snippet`
+# above (still used by the un-phased/legacy full command, see the two
+# `_upgrade_ceph_cluster_package_*_command` builders below) restarts EVERY
+# discovered unit in one shot — this is its daemon-type-filtered sibling.
+_PHASE_INSTALL_ONLY = "install_only"
+_PHASE_RESTART_ONLY = "restart_only"
+
+
+def _restart_units_by_type_snippet(host: str, daemon_types: list[str]) -> str | None:
+    """Like _restart_discovered_units_snippet, but restarts ONLY the
+    systemd units classified under one of `daemon_types` (e.g. ["mon"]) —
+    every other discovered unit on this host (e.g. its OSD unit, if
+    colocated) is left untouched, restarted separately by a LATER phase's
+    own call to this same function with a different daemon_types list.
+    Returns None (not an empty string) if none of the requested types have
+    any discovered unit on this host, same "let the caller decide it's a
+    no-op, not an error" contract _restart_discovered_units_snippet already
+    has — a host role-tagged for a phase (e.g. configured as MON) but with
+    no ACTUAL mon systemd unit found is not an error, just nothing to do
+    for that phase on that host.
+    """
+    discovered = _discover_ceph_units(host)
+    matching_units = [
+        name for daemon_type in daemon_types for name in discovered.get(daemon_type, [])
+    ]
+    if not matching_units:
+        return None
+    # Same StartLimitBurst reset-failed fix as _restart_discovered_units_snippet
+    # above (2026-07-24) — applies identically here, same systemd behavior
+    # regardless of whether all discovered units restart together or one
+    # daemon-type slice restarts per phase.
+    return " && ".join(
+        f"(systemctl reset-failed {shlex.quote(name)} 2>/dev/null; systemctl restart {shlex.quote(name)})"
+        for name in matching_units
+    )
+
+
 def _package_manager_branch(install_snippet_by_manager: dict[str, str]) -> str:
     """Builds one `if command -v apt-get ...; elif command -v dnf/yum ...;
     else ...; fi` shell block, same inline-detection style as
@@ -527,13 +571,34 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     (download.ceph.com) and installs/upgrades the `ceph` package, then
     restarts whatever this host actually runs. See this section's module
     comment for the execution-model caveats (no orchestrator, kill-switch
-    is the only mid-sequence stop)."""
+    is the only mid-sequence stop).
+
+    Story 7.2 (2026-08-04): `params["_phase"]` optionally selects a PHASED
+    variant instead of the full "install && restart everything" command —
+    `worker/llm/router_client.py`'s package-upgrade branch calls this with
+    `_phase="install_only"` for its install phase and `_phase="restart_only"`
+    + `params["_phase_daemon_types"]` (e.g. `["mon"]`) for each of its
+    role-scoped restart phases. Omitting `_phase` entirely (every existing
+    caller — `dashboard/routes/upgrade.py`'s propose-time preview, every
+    pre-7.2 test) keeps the ORIGINAL un-phased behavior unchanged.
+    """
     _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_download")
     if host is None:
         raise ExecutorError(
             "upgrade_ceph_cluster_package_download needs a specific host to discover its "
             "Ceph systemd unit(s) and detect its package manager — no host given"
         )
+    phase = params.get("_phase")
+    if phase == _PHASE_RESTART_ONLY:
+        daemon_types = params.get("_phase_daemon_types") or []
+        restart_snippet = _restart_units_by_type_snippet(host, daemon_types)
+        if restart_snippet is None:
+            raise ExecutorError(
+                f"{host}: no matching Ceph systemd unit(s) for daemon type(s) "
+                f"{daemon_types!r} to restart"
+            )
+        return restart_snippet
+
     target_version = _require_target_version(params)
     from shared.ceph_releases import codename_for_version, repo_path_version
 
@@ -625,6 +690,9 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     )
     install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
 
+    if phase == _PHASE_INSTALL_ONLY:
+        return install_command
+
     restart_snippet = _restart_discovered_units_snippet(host)
     if restart_snippet is None:
         return install_command
@@ -635,13 +703,29 @@ def _upgrade_ceph_cluster_package_local_command(host: str | None, params: dict) 
     """Installs Ceph packages already staged in `package_dir` on this SAME
     host (no scp/copy step — the operator is responsible for having put the
     right packages there beforehand), then restarts whatever this host
-    actually runs."""
+    actually runs.
+
+    Story 7.2: same `params["_phase"]` install_only/restart_only switch as
+    `_upgrade_ceph_cluster_package_download_command` above — see its
+    docstring.
+    """
     _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_local")
     if host is None:
         raise ExecutorError(
             "upgrade_ceph_cluster_package_local needs a specific host to discover its Ceph "
             "systemd unit(s) and detect its package manager — no host given"
         )
+    phase = params.get("_phase")
+    if phase == _PHASE_RESTART_ONLY:
+        daemon_types = params.get("_phase_daemon_types") or []
+        restart_snippet = _restart_units_by_type_snippet(host, daemon_types)
+        if restart_snippet is None:
+            raise ExecutorError(
+                f"{host}: no matching Ceph systemd unit(s) for daemon type(s) "
+                f"{daemon_types!r} to restart"
+            )
+        return restart_snippet
+
     package_dir = _require_package_dir(params)
     quoted_dir = shlex.quote(package_dir)
 
@@ -651,6 +735,9 @@ def _upgrade_ceph_cluster_package_local_command(host: str | None, params: dict) 
     install_command = (
         f"{exists_check} && " + _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
     )
+
+    if phase == _PHASE_INSTALL_ONLY:
+        return install_command
 
     restart_snippet = _restart_discovered_units_snippet(host)
     if restart_snippet is None:

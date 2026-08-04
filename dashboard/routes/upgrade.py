@@ -63,6 +63,44 @@ _PACKAGE_DIR_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 
+# Story 7.2 (2026-08-04): "chạy bộ test sau nâng cấp" checkbox — package-
+# based propose forms only (see propose_package_download_upgrade/
+# propose_package_local_upgrade below), never the cephadm one. Purely a
+# flag + a link out to the SEPARATE Epic 10 React app
+# (ceph-aiops/ceph-upgrade-test-runner-frontend/, not yet wired to any real
+# backend test-execution call — Stories 10.3-10.7) — this app never makes
+# an HTTP call to it. Dev server URL per that app's own vite.config.js
+# (`npm run dev`, port 5173) — a DEFAULT/FALLBACK only, used when
+# settings.test_runner_frontend_url is unset (code review fix, 2026-08-04:
+# this used to be hardcoded with no way to override it, which is broken by
+# construction whenever the operator's browser isn't on the same machine as
+# this Dashboard backend). An operator running a real build sets
+# settings.test_runner_frontend_url (.env/Settings page) to wherever
+# they've actually deployed it.
+TEST_RUNNER_FRONTEND_URL = "http://localhost:5173"
+RUN_TEST_SUITE_PARAM_KEY = "run_test_suite"
+
+# Story 7.2: `Action.execution_progress` entries gained a `phase` key
+# (install/mon/mgr/osd/mds_rgw — see worker/llm/router_client.py's
+# _UPGRADE_PHASE_* constants). Entries written before this story shipped
+# (and the flags/finalize steps, which are deliberately NOT phase-tagged —
+# see worker/llm/router_client.py::_set_upgrade_osd_flags' own comment on
+# why) have no `phase` key at all; render those with this fallback label
+# rather than crashing or showing a blank phase.
+_PHASE_LABELS = {
+    "install": "Cài đặt",
+    "mon": "Khởi động lại MON",
+    "mgr": "Khởi động lại MGR",
+    "osd": "Khởi động lại OSD",
+    "mds_rgw": "Khởi động lại MDS/RGW",
+}
+_FALLBACK_PHASE_LABEL = "Cài đặt"
+
+
+def _phase_label(step: dict) -> str:
+    return _PHASE_LABELS.get(step.get("phase"), _FALLBACK_PHASE_LABEL)
+
+
 # Same 3 labels upgrade.html's method display already hardcodes per
 # action_id — factored out here too so the generated markdown log (below)
 # uses the exact same wording instead of drifting from the page.
@@ -117,11 +155,11 @@ không phải kill-switch (xem watcher/ceph_client.py để biết lý do)."""
 # comment on the package-based builders for the full reasoning).
 _PACKAGE_METHOD_SAFETY_NOTE = """\
 QUAN TRỌNG — khác với cephadm: KHÔNG có orchestrator tự kiểm tra sức khoẻ cụm giữa các bước.
-Nếu một node gặp lỗi, hệ thống VẪN thử tiếp node kế tiếp trong danh sách (không tự dừng lại) —
-cách duy nhất để dừng giữa chừng là bấm nút khẩn cấp (kill-switch) trên Dashboard NGAY khi phát
-hiện sự cố: kill-switch được kiểm tra lại trước MỖI node, node tiếp theo sẽ không được thử nếu
-kill-switch đang bật. Khuyến nghị theo dõi sát Audit Trail trong suốt quá trình, đặc biệt với
-cụm nhiều node.
+Nếu một bước gặp lỗi, hệ thống VẪN thử tiếp bước kế tiếp (không tự dừng lại) — cách duy nhất để
+dừng giữa chừng là bấm nút khẩn cấp (kill-switch) trên Dashboard NGAY khi phát hiện sự cố:
+kill-switch được kiểm tra lại trước MỖI bước (từng node, trong từng giai đoạn) — bước tiếp theo
+sẽ không được thử nếu kill-switch đang bật; các bước chưa chạy sẽ được ghi "Bỏ qua". Khuyến nghị
+theo dõi sát Audit Trail trong suốt quá trình, đặc biệt với cụm nhiều node.
 
 An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi chạy bước
 đầu tiên (nếu đang bật, đề xuất quay lại trạng thái chờ duyệt, chưa node nào bị đụng tới)."""
@@ -131,17 +169,36 @@ def _upgrade_plan_text(target_version: str) -> str:
     return _CEPHADM_PLAN_TEMPLATE.format(target_version=target_version)
 
 
+# Story 7.2 (2026-08-04): both package-based plan texts below now describe
+# the PHASED execution worker/llm/router_client.py::_execute_package_upgrade_action
+# actually runs — install everywhere first, then restart strictly
+# MON -> MGR -> OSD (role-scoped, one daemon type at a time) across the
+# WHOLE cluster, then any remaining host with a leftover MDS/RGW unit —
+# instead of the old "install-then-restart-everything, one host at a
+# time" description, which no longer matches what gets sent.
+_PACKAGE_PHASE_STEPS = """\
+2. **Khởi động lại MON:** trên các node có vai trò MON, chỉ khởi động lại (các) unit MON của
+   node đó.
+3. **Khởi động lại MGR:** trên các node có vai trò MGR, chỉ khởi động lại (các) unit MGR.
+4. **Khởi động lại OSD:** trên các node có vai trò OSD, chỉ khởi động lại (các) unit OSD.
+5. **Khởi động lại MDS/RGW còn lại:** node nào còn unit MDS/RGW (dò qua `systemctl`) chưa được
+   khởi động lại ở các bước trên thì khởi động lại ở bước cuối này.
+
+Một node đảm nhiều vai trò (vd MON+OSD) chỉ CÀI ĐẶT MỘT LẦN ở bước 1, nhưng được KHỞI ĐỘNG LẠI
+RIÊNG cho từng vai trò, đúng vào giai đoạn tương ứng của vai trò đó — không bao giờ khởi động
+lại cùng một unit hai lần, không bao giờ bỏ sót vai trò nào."""
+
+
 def _package_download_plan_text(target_version: str, codename: str, target_nodes: list[str]) -> str:
     return (
         f"Cụm này dùng kiểu triển khai ceph-deploy/gói cài đặt trực tiếp "
-        f"(ceph_exec_mode=none) — hệ thống sẽ tự thực hiện các bước sau, LẦN LƯỢT trên "
-        f"{len(target_nodes)} node đã cấu hình (thứ tự: {', '.join(target_nodes)}):\n"
-        f"1. Thêm/cập nhật repo gói Ceph chính thức từ download.ceph.com cho bản "
-        f"{target_version} (mã tên release: {codename}) — tự nhận diện apt (Debian/Ubuntu) "
-        f"hay yum/dnf (RHEL/CentOS) trên từng node.\n"
-        f"2. Cài đặt/nâng cấp gói `ceph` qua trình quản lý gói tương ứng trên node đó.\n"
-        f"3. Khởi động lại toàn bộ daemon Ceph đang chạy trên node đó (dò qua `systemctl`).\n"
-        f"4. Chuyển sang node tiếp theo.\n\n"
+        f"(ceph_exec_mode=none) — hệ thống sẽ tự thực hiện tuần tự 5 giai đoạn sau trên "
+        f"{len(target_nodes)} node đã cấu hình (thứ tự cài đặt: {', '.join(target_nodes)}):\n"
+        f"1. **Cài đặt (mọi node):** thêm/cập nhật repo gói Ceph chính thức từ "
+        f"download.ceph.com cho bản {target_version} (mã tên release: {codename}) rồi cài/nâng "
+        f"cấp gói `ceph` — tự nhận diện apt (Debian/Ubuntu) hay yum/dnf (RHEL/CentOS) — trên "
+        f"TẤT CẢ các node trên, KHÔNG khởi động lại daemon nào ở bước này.\n"
+        f"{_PACKAGE_PHASE_STEPS}\n\n"
         f"{_PACKAGE_METHOD_SAFETY_NOTE}"
     )
 
@@ -149,14 +206,13 @@ def _package_download_plan_text(target_version: str, codename: str, target_nodes
 def _package_local_plan_text(package_dir: str, target_nodes: list[str]) -> str:
     return (
         f"Cụm này dùng kiểu triển khai ceph-deploy/gói cài đặt trực tiếp "
-        f"(ceph_exec_mode=none) — hệ thống sẽ tự thực hiện các bước sau, LẦN LƯỢT trên "
-        f"{len(target_nodes)} node đã cấu hình (thứ tự: {', '.join(target_nodes)}):\n"
-        f"1. Kiểm tra thư mục `{package_dir}` tồn tại trên node đó.\n"
-        f"2. Cài đặt các gói .deb/.rpm có sẵn TRONG THƯ MỤC NÀY (không tải gì từ Internet) — "
-        f"gói phải đã được đặt sẵn tại CÙNG đường dẫn `{package_dir}` trên MỌI node liên quan "
-        f"từ trước.\n"
-        f"3. Khởi động lại toàn bộ daemon Ceph đang chạy trên node đó.\n"
-        f"4. Chuyển sang node tiếp theo.\n\n"
+        f"(ceph_exec_mode=none) — hệ thống sẽ tự thực hiện tuần tự 5 giai đoạn sau trên "
+        f"{len(target_nodes)} node đã cấu hình (thứ tự cài đặt: {', '.join(target_nodes)}):\n"
+        f"1. **Cài đặt (mọi node):** kiểm tra thư mục `{package_dir}` tồn tại rồi cài các gói "
+        f".deb/.rpm có sẵn TRONG THƯ MỤC NÀY (không tải gì từ Internet — gói phải đã được đặt "
+        f"sẵn tại CÙNG đường dẫn `{package_dir}` trên MỌI node liên quan từ trước) trên TẤT CẢ "
+        f"các node trên, KHÔNG khởi động lại daemon nào ở bước này.\n"
+        f"{_PACKAGE_PHASE_STEPS}\n\n"
         f"{_PACKAGE_METHOD_SAFETY_NOTE}"
     )
 
@@ -502,10 +558,20 @@ def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str
     if steps:
         lines.append("## Các bước thực hiện theo từng node")
         lines.append("")
+        # Story 7.2: steps for the 2 package-based action_ids now carry a
+        # `phase` key (install/mon/mgr/osd/mds_rgw) — shown inline per step
+        # ("giai đoạn"), so a stored Action from BEFORE this story (no
+        # `phase` key at all) still renders every field it always had, just
+        # with the same fallback label _phase_label() gives the live
+        # progress list above. cephadm's own log (action_id ==
+        # "upgrade_ceph_cluster") stays byte-for-byte unchanged — its steps
+        # never went through the phased executor, so no phase tag at all.
+        show_phase_tag = action.action_id != CLUSTER_UPGRADE_ACTION_ID
         for i, step in enumerate(steps, start=1):
             step_status = step.get("status", "pending")
             status_text = _STEP_STATUS_LABELS.get(step_status, step_status)
-            lines.append(f"{i}. **{step.get('host', '?')}** — {status_text}")
+            phase_suffix = f" ({_phase_label(step)})" if show_phase_tag else ""
+            lines.append(f"{i}. **{step.get('host', '?')}**{phase_suffix} — {status_text}")
             started = step.get("started_at")
             finished = step.get("finished_at")
             if started or finished:
@@ -626,6 +692,12 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             for item in package_upgrade_progress:
                 item["started_at_display"] = _format_step_timestamp(item.get("started_at"))
                 item["finished_at_display"] = _format_step_timestamp(item.get("finished_at"))
+                # Story 7.2: phase-grouped display — falls back to "Cài đặt"
+                # for both a genuinely-old (pre-7.2) stored Action AND this
+                # story's own flags/finalize steps (deliberately never
+                # phase-tagged — see _set_upgrade_osd_flags' own comment),
+                # so neither crashes nor renders a blank phase column.
+                item["phase_label"] = _phase_label(item)
 
     # 2026-07-27: full Markdown step log ("ghi lại từng bước, từng lỗi
     # trong quá trình cài đặt") — only once the Action has actually
@@ -682,6 +754,13 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             "last_action": last_action,
             "last_action_target_version": last_action_params.get("target_version"),
             "last_action_package_dir": last_action_params.get("package_dir"),
+            # Story 7.2: only ever True for the two package-based action_ids
+            # (the cephadm propose form has no checkbox at all — see
+            # RUN_TEST_SUITE_PARAM_KEY's own comment) — reused for both the
+            # still-pending screen (pending_action IS last_action while
+            # in-flight) and the resolved-result screen.
+            "run_test_suite_requested": bool(last_action_params.get(RUN_TEST_SUITE_PARAM_KEY)),
+            "test_runner_frontend_url": settings.test_runner_frontend_url or TEST_RUNNER_FRONTEND_URL,
             "upgrade_log_markdown": upgrade_log_markdown,
             "package_nodes": package_nodes,
             "procedure_document": procedure_document,
@@ -764,7 +843,9 @@ async def propose_upgrade(target_version: str = Form(...), user: str = Depends(r
 
 @router.post("/upgrade/propose-package-download")
 async def propose_package_download_upgrade(
-    target_version: str = Form(...), user: str = Depends(require_login)
+    target_version: str = Form(...),
+    run_test_suite: bool = Form(False),
+    user: str = Depends(require_login),
 ):
     """ceph-deploy path, option 1 — download the target release from
     download.ceph.com on each configured node (mon/mgr/osd/rgw, in that
@@ -773,6 +854,11 @@ async def propose_package_download_upgrade(
     `_upgrade_ceph_cluster_package_download_command` for the actual
     per-host command, and this module's `_PACKAGE_METHOD_SAFETY_NOTE` for
     why this has no cephadm-style orchestrator gating between nodes.
+
+    Story 7.2: `run_test_suite` is UI/flag-only (see RUN_TEST_SUITE_PARAM_KEY's
+    own comment) — stored on the Action only when checked (an unchecked box
+    omits the key entirely, keeping action_params identical to before this
+    checkbox existed), never wired to an actual test-execution call here.
     """
     target_version = target_version.strip()
     if not _TARGET_VERSION_RE.match(target_version):
@@ -800,6 +886,8 @@ async def propose_package_download_upgrade(
         preview_command = await asyncio.to_thread(
             _safe_command_preview, PACKAGE_DOWNLOAD_ACTION_ID, target_nodes[0], action_params
         )
+        if run_test_suite:
+            action_params[RUN_TEST_SUITE_PARAM_KEY] = True
 
         incident = Incident(
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
@@ -839,11 +927,16 @@ async def propose_package_download_upgrade(
 
 
 @router.post("/upgrade/propose-package-local")
-async def propose_package_local_upgrade(package_dir: str = Form(...), user: str = Depends(require_login)):
+async def propose_package_local_upgrade(
+    package_dir: str = Form(...),
+    run_test_suite: bool = Form(False),
+    user: str = Depends(require_login),
+):
     """ceph-deploy path, option 2 — install from a directory of packages
     already staged on each node (no download, no scp — the operator is
     responsible for having put the right packages at the SAME path on
-    every configured node beforehand)."""
+    every configured node beforehand). See propose_package_download_upgrade's
+    own docstring for `run_test_suite`'s Story 7.2 semantics."""
     package_dir = package_dir.strip()
     if not _PACKAGE_DIR_RE.match(package_dir):
         raise HTTPException(
@@ -867,6 +960,8 @@ async def propose_package_local_upgrade(package_dir: str = Form(...), user: str 
         preview_command = await asyncio.to_thread(
             _safe_command_preview, PACKAGE_LOCAL_ACTION_ID, target_nodes[0], action_params
         )
+        if run_test_suite:
+            action_params[RUN_TEST_SUITE_PARAM_KEY] = True
 
         incident = Incident(
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,

@@ -1179,9 +1179,12 @@ def test_execute_approved_action_package_upgrade_sets_flags_before_hosts_and_uns
     # own comment on why that would corrupt the per-host loop's positional
     # writes into `progress`) — set-flags right after the per-host
     # placeholder(s), unset-flags right before the require-osd-release
-    # finalize step at the very end.
-    set_step = next(p for p in progress if p["command"] == set_command)
-    unset_step = next(p for p in progress if p["command"] == unset_command)
+    # finalize step at the very end. Story 7.2: some phase-scoped entries
+    # (e.g. an OSD-role host with no ACTUAL osd unit discovered) never get
+    # a "command" key at all — use .get() so this lookup doesn't choke on
+    # those on its way to the flags steps, which always have one.
+    set_step = next(p for p in progress if p.get("command") == set_command)
+    unset_step = next(p for p in progress if p.get("command") == unset_command)
     assert set_step["status"] == "done"
     assert unset_step["status"] == "done"
     assert progress[-1]["command"] == "ceph osd require-osd-release octopus"
@@ -1229,7 +1232,9 @@ def test_execute_approved_action_package_upgrade_proceeds_when_set_flags_fails(
         assert action.status == ActionStatus.EXECUTED.value
         progress = json.loads(action.execution_progress)
 
-    set_step = next(p for p in progress if p["command"].startswith("ceph osd set"))
+    # Story 7.2: .get() guard, same reasoning as the sibling test above —
+    # a phase-scoped "nothing to restart here" entry has no "command" key.
+    set_step = next(p for p in progress if (p.get("command") or "").startswith("ceph osd set"))
     assert set_step["status"] == "failed"
     assert set_step["error"] == "mon busy"
 
@@ -1312,6 +1317,563 @@ def test_execute_approved_action_package_upgrade_skips_flags_when_no_mon_configu
     # cluster-wide flags step (which needs a MON) was skipped.
     assert not any("ceph osd set noout" in cmd for _host, cmd in executed)
     assert "skipping" in caplog.text.lower()
+
+
+# --- Story 7.2 (2026-08-04): phased MON->MGR->OSD->MDS/RGW restart ---------
+
+
+def _classify_mutating_call(command: str) -> str | None:
+    """Buckets a real (non-discovery) executed command into "install" or
+    "restart" for the phase-order assertions below — None for anything
+    else (the noout/noscrub flags bracket, require-osd-release finalize),
+    which those tests don't care about ordering-wise."""
+    if command == "systemctl | grep ceph || true":
+        return None
+    if "systemctl restart" in command:
+        return "restart"
+    if "apt-get install" in command or "dnf install" in command:
+        return "install"
+    return None
+
+
+def test_execute_approved_action_package_upgrade_runs_install_then_mon_then_osd_in_order(
+    isolated_db, monkeypatch
+):
+    """I/O matrix row: 3 MON + 2 separate OSD hosts — install runs on all 5
+    hosts, then MON restarts on the 3 MON hosts, then OSD restarts on the 2
+    OSD hosts, in that order (call-order assertion, not just final state)."""
+    from config.settings import settings
+
+    mon_hosts = ["10.20.1.1", "10.20.1.2", "10.20.1.3"]
+    osd_hosts = ["10.20.1.4", "10.20.1.5"]
+    nodes = mon_hosts + osd_hosts
+
+    discovery_output = {h: f"  ceph-mon@{h}.service   loaded active running   x\n" for h in mon_hosts}
+    discovery_output.update(
+        {h: f"  ceph-osd@{h}.service   loaded active running   x\n" for h in osd_hosts}
+    )
+
+    calls = []
+
+    def fake_execute(host, command):
+        calls.append((host, command))
+        if command == "systemctl | grep ceph || true":
+            return discovery_output.get(host, "")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", ",".join(mon_hosts))
+    monkeypatch.setattr(settings, "ceph_osd_nodes", ",".join(osd_hosts))
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-phase-order")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-phase-order",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=nodes,
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    sequence = [(host, kind) for host, cmd in calls if (kind := _classify_mutating_call(cmd))]
+    expected = (
+        [(h, "install") for h in nodes]
+        + [(h, "restart") for h in mon_hosts]
+        + [(h, "restart") for h in osd_hosts]
+    )
+    assert sequence == expected
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    # 5 install steps + 3 mon + 2 osd = 10 phase-tagged steps (plus the
+    # flags/finalize steps, not phase-tagged — see _set_upgrade_osd_flags).
+    phase_counts = {}
+    for step in progress:
+        phase_counts[step.get("phase")] = phase_counts.get(step.get("phase"), 0) + 1
+    assert phase_counts.get("install") == 5
+    assert phase_counts.get("mon") == 3
+    assert phase_counts.get("osd") == 2
+    assert all(step["status"] == "done" for step in progress if step.get("phase"))
+
+
+def test_execute_approved_action_package_upgrade_colocated_host_not_double_restarted(
+    isolated_db, monkeypatch
+):
+    """I/O matrix row: a MON+OSD colocated host installs once, and its MON
+    unit restarts in the MON phase while its OSD unit restarts in the OSD
+    phase — two separate progress entries, never a double-restart of the
+    same systemd unit."""
+    from config.settings import settings
+
+    host = "10.20.1.9"
+    discovery_output = "  ceph-mon@a.service   loaded active running   x\n  ceph-osd@0.service   loaded active running   x\n"
+
+    calls = []
+
+    def fake_execute(h, command):
+        calls.append((h, command))
+        if command == "systemctl | grep ceph || true":
+            return discovery_output
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", host)
+    monkeypatch.setattr(settings, "ceph_osd_nodes", host)
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-colocated")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-colocated",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=[host],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    install_calls = [c for h, c in calls if "apt-get install" in c or "dnf install" in c]
+    mon_restart_calls = [c for h, c in calls if "systemctl restart ceph-mon@a.service" in c]
+    osd_restart_calls = [c for h, c in calls if "systemctl restart ceph-osd@0.service" in c]
+    assert len(install_calls) == 1  # installed exactly once, not once per role
+    assert len(mon_restart_calls) == 1
+    assert len(osd_restart_calls) == 1
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    phase_tagged = [p for p in progress if p.get("phase") in ("install", "mon", "osd")]
+    assert [p["phase"] for p in phase_tagged] == ["install", "mon", "osd"]
+    assert all(p["host"] == host for p in phase_tagged)
+
+
+def test_execute_approved_action_package_upgrade_kill_switch_mid_phase_marks_failed_with_skips(
+    isolated_db, monkeypatch
+):
+    """I/O matrix row: kill-switch flips ON after the MON phase is done,
+    before the MGR/OSD phases run — remaining steps marked `skipped`
+    (existing Vietnamese message), Action ends FAILED (not reverted, since
+    the MON restart already ran for real)."""
+    from config.settings import settings
+
+    mon_host = "10.20.1.10"
+    mgr_host = "10.20.1.11"
+    osd_host = "10.20.1.12"
+    nodes = [mon_host, mgr_host, osd_host]
+
+    discovery_output = {
+        mon_host: "  ceph-mon@a.service   loaded active running   x\n",
+        mgr_host: "  ceph-mgr@a.service   loaded active running   x\n",
+        osd_host: "  ceph-osd@0.service   loaded active running   x\n",
+    }
+
+    def fake_execute(h, command):
+        if command == "systemctl | grep ceph || true":
+            return discovery_output.get(h, "")
+        if "systemctl restart ceph-mon" in command:
+            # Flip the kill-switch right as the MON phase's real restart
+            # runs — the fresh check ahead of the NEXT step (MGR phase)
+            # must catch it.
+            with db_module.SessionLocal() as session:
+                flag = session.get(SystemFlag, "kill_switch_enabled")
+                flag.value = True
+                session.commit()
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", mon_host)
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", mgr_host)
+    monkeypatch.setattr(settings, "ceph_osd_nodes", osd_host)
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-kill-switch-mid-phase")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-kill-switch-mid-phase",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=nodes,
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value  # not reverted — real work already ran
+        incident = session.get(Incident, "incident-kill-switch-mid-phase")
+        assert incident.status == IncidentStatus.FAILED.value
+        progress = json.loads(action.execution_progress)
+
+    mon_step = next(p for p in progress if p.get("phase") == "mon")
+    assert mon_step["status"] == "done"
+    mgr_step = next(p for p in progress if p.get("phase") == "mgr")
+    osd_step = next(p for p in progress if p.get("phase") == "osd")
+    assert mgr_step["status"] == "skipped"
+    assert osd_step["status"] == "skipped"
+    assert "kill-switch" in mgr_step["error"].lower()
+    assert "kill-switch" in osd_step["error"].lower()
+
+
+def test_execute_approved_action_package_upgrade_restarts_leftover_rgw_host_in_final_phase(
+    isolated_db, monkeypatch
+):
+    """I/O matrix row: a dedicated RGW box (no MON/MGR/OSD role at all) is
+    installed in phase 0 and restarted in the final MDS/RGW phase."""
+    from config.settings import settings
+
+    rgw_host = "10.20.1.13"
+
+    def fake_execute(h, command):
+        if command == "systemctl | grep ceph || true":
+            return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "")
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", rgw_host)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-rgw-final-phase")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-rgw-final-phase",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=[rgw_host],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    install_step = next(p for p in progress if p.get("phase") == "install")
+    assert install_step["status"] == "done"
+    rgw_step = next(p for p in progress if p.get("phase") == "mds_rgw")
+    assert rgw_step["status"] == "done"
+    assert rgw_step["host"] == rgw_host
+    assert "ceph-radosgw@rgw.a.service" in rgw_step["command"]
+    # No MON/MGR/OSD phase entries at all — this host has none of those roles.
+    assert not any(p.get("phase") in ("mon", "mgr", "osd") for p in progress)
+
+
+def test_execute_approved_action_package_upgrade_host_with_no_leftover_units_gets_no_mds_rgw_step(
+    isolated_db, monkeypatch
+):
+    """A host with nothing left to restart in the final phase gets no
+    progress entry for it at all — same silent no-op posture the pre-7.2
+    single command already had when _restart_discovered_units_snippet
+    found nothing."""
+    from config.settings import settings
+
+    host = "10.20.1.14"
+
+    def fake_execute(h, command):
+        if command == "systemctl | grep ceph || true":
+            return ""  # nothing discovered at all
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "")
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", host)
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-no-leftover-units")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-no-leftover-units",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=[host],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    assert not any(p.get("phase") == "mds_rgw" for p in progress)
+
+
+# --- Code review fixes (2026-08-04) on top of Story 7.2's phased executor --
+
+
+def test_execute_approved_action_package_upgrade_skips_restart_for_host_with_failed_install(
+    isolated_db, monkeypatch
+):
+    """Fix 1: a host whose install step failed must not have its later
+    MON/MGR/OSD restart command issued — restarting a daemon against a
+    possibly broken/partial package install is worse than leaving it
+    alone. The other (successful) host's restart must still proceed
+    normally."""
+    from worker.executor.ssh_executor import ExecutorError
+    from config.settings import settings
+
+    good_host = "10.20.1.30"
+    bad_host = "10.20.1.31"
+    nodes = [good_host, bad_host]
+
+    executed = []
+
+    def fake_execute(host, command):
+        executed.append((host, command))
+        if command == "systemctl | grep ceph || true":
+            return "  ceph-mon@a.service   loaded active running   x\n"
+        if host == bad_host and ("apt-get install" in command or "dnf install" in command):
+            raise ExecutorError("package conflict")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", ",".join(nodes))
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-install-fail-gates-restart")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-install-fail-gates-restart",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=nodes,
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    restart_calls = [(h, c) for h, c in executed if "systemctl restart" in c]
+    assert not any(h == bad_host for h, _c in restart_calls)
+    assert any(h == good_host for h, _c in restart_calls)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        # bad_host's failed install means overall progress is not a clean
+        # success — this is expected and orthogonal to the fix being tested.
+        assert action.status == ActionStatus.FAILED.value
+        progress = json.loads(action.execution_progress)
+
+    bad_mon_step = next(p for p in progress if p.get("phase") == "mon" and p["host"] == bad_host)
+    assert bad_mon_step["status"] == "skipped"
+    assert "cài đặt gói thất bại" in bad_mon_step["error"]
+
+    good_mon_step = next(p for p in progress if p.get("phase") == "mon" and p["host"] == good_host)
+    assert good_mon_step["status"] == "done"
+
+
+def test_execute_approved_action_package_upgrade_kill_switch_mid_sequence_skips_finalize(
+    isolated_db, monkeypatch
+):
+    """Fix 2: a kill-switch trip mid-sequence (stopped_mid_sequence=True)
+    must not run the require-osd-release finalize step, even though real
+    work already executed (executed_any=True) — `ceph osd require-osd-
+    release <codename>` must not run on the MON after the operator hit the
+    emergency kill-switch."""
+    from config.settings import settings
+
+    mon_host = "10.20.1.40"
+    mgr_host = "10.20.1.41"
+    nodes = [mon_host, mgr_host]
+
+    discovery_output = {
+        mon_host: "  ceph-mon@a.service   loaded active running   x\n",
+        mgr_host: "  ceph-mgr@a.service   loaded active running   x\n",
+    }
+
+    def fake_execute(h, command):
+        if command == "systemctl | grep ceph || true":
+            return discovery_output.get(h, "")
+        if "systemctl restart ceph-mon" in command:
+            with db_module.SessionLocal() as session:
+                flag = session.get(SystemFlag, "kill_switch_enabled")
+                flag.value = True
+                session.commit()
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", mon_host)
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", mgr_host)
+    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    finalize_calls = []
+    monkeypatch.setattr(
+        router_client,
+        "_finalize_package_upgrade_osd_release",
+        lambda *a, **k: finalize_calls.append((a, k)),
+    )
+
+    _create_incident("incident-kill-switch-skips-finalize")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-kill-switch-skips-finalize",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=nodes,
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert finalize_calls == []
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+
+
+def test_execute_approved_action_package_upgrade_mds_rgw_phase_kill_switch_records_skipped_not_silent(
+    isolated_db, monkeypatch
+):
+    """Fix 3: the MDS/RGW phase appends progress entries dynamically (only
+    for a host confirmed to have something to restart), unlike the
+    pre-populated MON/MGR/OSD phases — a mid-phase kill-switch trip must
+    still leave a `skipped` entry for every host it never reached, not
+    silently drop them from the audit trail."""
+    from config.settings import settings
+
+    rgw1 = "10.20.1.50"
+    rgw2 = "10.20.1.51"
+    nodes = [rgw1, rgw2]
+
+    def fake_execute(h, command):
+        if command == "systemctl | grep ceph || true":
+            return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
+        if "systemctl restart" in command and h == rgw1:
+            with db_module.SessionLocal() as session:
+                flag = session.get(SystemFlag, "kill_switch_enabled")
+                flag.value = True
+                session.commit()
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "")
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", ",".join(nodes))
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-mds-rgw-kill-switch-skip")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-mds-rgw-kill-switch-skip",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=nodes,
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+        progress = json.loads(action.execution_progress)
+
+    rgw_steps = {p["host"]: p for p in progress if p.get("phase") == "mds_rgw"}
+    assert rgw_steps[rgw1]["status"] == "done"
+    # rgw2 must still get a recorded entry — not silently missing.
+    assert rgw2 in rgw_steps
+    assert rgw_steps[rgw2]["status"] == "skipped"
+    assert "kill-switch" in rgw_steps[rgw2]["error"].lower()
+
+
+def test_execute_approved_action_package_upgrade_unexpected_exception_still_unsets_flags(
+    isolated_db, monkeypatch
+):
+    """Fix 4: an exception OTHER than ExecutorError propagating out of a
+    phase (e.g. an unwrapped network/OS error) must still guarantee
+    _unset_upgrade_osd_flags runs — otherwise noout/noscrub/nodeep-scrub/
+    nosnaptrim are left set on the live cluster indefinitely."""
+    from config.settings import settings
+
+    mon_host = "10.20.1.60"
+    executed = []
+
+    def fake_execute(host, command):
+        executed.append((host, command))
+        if command == "systemctl | grep ceph || true":
+            raise RuntimeError("ssh transport blew up")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    monkeypatch.setattr(settings, "ceph_mon_nodes", mon_host)
+    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
+    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
+    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-unexpected-exc")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-unexpected-exc",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=[mon_host],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    with pytest.raises(RuntimeError):
+        router_client._execute_approved_action(action_pk)
+
+    unset_command = (
+        "ceph osd unset noout; ceph osd unset noscrub; ceph osd unset nodeep-scrub; "
+        "ceph osd unset nosnaptrim"
+    )
+    assert (mon_host, unset_command) in executed
 
 
 def test_execute_approved_action_cephadm_upgrade_skips_router_clients_own_flags_handling(

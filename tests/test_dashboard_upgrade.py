@@ -191,6 +191,82 @@ def test_pending_upgrade_shows_plan_and_approve_reject_buttons(dashboard_client,
     assert 'action="/upgrade/propose"' not in response.text
 
 
+def test_cephadm_pending_progress_rendering_unchanged_by_story_7_2(dashboard_client, monkeypatch):
+    """Story 7.2 only phased the 2 package-based action_ids — a cephadm
+    Action's execution_progress (still one flat entry per node, written by
+    the UNTOUCHED generic per-host loop, never a `phase` key) must still
+    render with the exact pre-7.2 heading and no phase tag next to the
+    host, even though the SAME template block now also serves the
+    phase-tagged package flavors."""
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.APPROVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id=upgrade_route.CLUSTER_UPGRADE_ACTION_ID,
+                classification="RISKY",
+                status=ActionStatus.APPROVED.value,
+                action_params=json.dumps({"target_version": "19.2.0"}),
+                execution_progress=json.dumps([{"host": "10.20.1.150", "status": "running"}]),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Tiến trình theo từng node" in response.text
+    assert "Tiến trình theo từng giai đoạn" not in response.text
+    assert "phase-tag" not in response.text
+
+
+def test_cephadm_markdown_log_has_no_phase_tag(dashboard_client, monkeypatch):
+    """Same byte-for-byte guarantee as the pending-progress test above,
+    for build_upgrade_log_markdown's per-step listing."""
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.RESOLVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id=upgrade_route.CLUSTER_UPGRADE_ACTION_ID,
+                classification="RISKY",
+                status=ActionStatus.EXECUTED.value,
+                rationale="Quy trình mẫu.",
+                action_params=json.dumps({"target_version": "19.2.0"}),
+                execution_progress=json.dumps(
+                    [{"host": "10.20.1.150", "status": "done", "command": "ceph orch upgrade start"}]
+                ),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade/log.md")
+
+    assert response.status_code == 200
+    assert "**10.20.1.150** — ✅ Xong" in response.text
+    assert "Cài đặt" not in response.text
+    assert "(mon)" not in response.text
+
+
 def test_approving_pending_upgrade_via_existing_actions_route_marks_approved(dashboard_client, monkeypatch):
     """The Cluster Upgrade feature deliberately adds NO new approve/reject
     route — POST /actions/{id}/approve (Story 4.3, unchanged) is what the
@@ -474,6 +550,116 @@ def test_propose_package_download_creates_pending_action(dashboard_client, monke
     assert action.proposed_command == "STUB_PREVIEW"
 
 
+# --- Story 7.2 (2026-08-04): "chạy bộ test sau nâng cấp" checkbox ---------
+
+
+def test_propose_package_download_stores_run_test_suite_when_checked(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_package_command_preview(monkeypatch)
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/upgrade/propose-package-download",
+        data={"target_version": "19.2.0", "run_test_suite": "true"},
+        follow_redirects=False,
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(
+            action_id=upgrade_route.PACKAGE_DOWNLOAD_ACTION_ID
+        ).one()
+
+    assert json.loads(action.action_params) == {"target_version": "19.2.0", "run_test_suite": True}
+
+
+def test_propose_package_local_stores_run_test_suite_when_checked(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_package_command_preview(monkeypatch)
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/upgrade/propose-package-local",
+        data={"package_dir": "/opt/ceph-packages", "run_test_suite": "true"},
+        follow_redirects=False,
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(
+            action_id=upgrade_route.PACKAGE_LOCAL_ACTION_ID
+        ).one()
+
+    assert json.loads(action.action_params) == {
+        "package_dir": "/opt/ceph-packages",
+        "run_test_suite": True,
+    }
+
+
+def test_upgrade_page_shows_test_suite_blurb_and_link_when_requested(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_package_command_preview(monkeypatch)
+    _login(dashboard_client)
+    dashboard_client.post(
+        "/upgrade/propose-package-download",
+        data={"target_version": "19.2.0", "run_test_suite": "true"},
+    )
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Bộ test sau nâng cấp" in response.text
+    assert upgrade_route.TEST_RUNNER_FRONTEND_URL in response.text
+
+
+def test_upgrade_page_hides_test_suite_blurb_when_not_requested(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_package_command_preview(monkeypatch)
+    _login(dashboard_client)
+    dashboard_client.post(
+        "/upgrade/propose-package-download", data={"target_version": "19.2.0"}
+    )
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Bộ test sau nâng cấp" not in response.text
+
+
+def test_package_propose_forms_have_run_test_suite_checkbox(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert response.text.count('name="run_test_suite"') == 2  # both package forms, not cephadm's
+
+
+def test_cephadm_propose_form_has_no_run_test_suite_checkbox(dashboard_client, monkeypatch):
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert 'name="run_test_suite"' not in response.text
+
+
+def test_propose_upgrade_cephadm_route_has_no_run_test_suite_field(dashboard_client, monkeypatch):
+    """The cephadm propose route (POST /upgrade/propose) has no
+    `run_test_suite` Form field at all — even if a client sent it, it can
+    never reach action_params, since the route never reads it."""
+    import inspect
+
+    signature = inspect.signature(upgrade_route.propose_upgrade)
+    assert "run_test_suite" not in signature.parameters
+
+
 def test_propose_package_download_rejects_when_cephadm(dashboard_client, monkeypatch):
     _set_cephadm(monkeypatch)
     _login(dashboard_client)
@@ -647,6 +833,78 @@ def test_approved_package_download_action_shows_per_host_progress(
     # way for an operator watching the page to see progress land without
     # manually reloading, since a real install can take minutes per host.
     assert 'http-equiv="refresh"' in response.text
+
+
+def test_approved_package_download_action_renders_old_format_progress_without_phase_key(
+    dashboard_client, monkeypatch
+):
+    """Story 7.2: execution_progress entries stored by an Action from
+    BEFORE this story (no `phase` key at all) must render with a fallback
+    label instead of crashing or leaving the phase column blank."""
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.APPROVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id="upgrade_ceph_cluster_package_download",
+                classification="RISKY",
+                status=ActionStatus.APPROVED.value,
+                action_params=json.dumps({"target_version": "19.2.0"}),
+                execution_progress=json.dumps([{"host": "10.20.1.112", "status": "done"}]),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Cài đặt" in response.text  # fallback phase label
+
+
+def test_approved_package_download_action_renders_new_phase_labels(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.APPROVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id="upgrade_ceph_cluster_package_download",
+                classification="RISKY",
+                status=ActionStatus.APPROVED.value,
+                action_params=json.dumps({"target_version": "19.2.0"}),
+                execution_progress=json.dumps(
+                    [
+                        {"host": "10.20.1.112", "status": "done", "phase": "install"},
+                        {"host": "10.20.1.112", "status": "running", "phase": "mon"},
+                    ]
+                ),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Khởi động lại MON" in response.text
 
 
 # --- Nhật ký nâng cấp (Markdown step log) ------------------------------
