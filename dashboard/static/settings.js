@@ -357,5 +357,20 @@
         });
       });
     });
+
+    // 2026-08-04: lets another page (e.g. telegram_help.html's "Quay lại
+    // Settings" link) deep-link straight to one section via
+    // "/settings#<data-section>" — the server-picked panel above still
+    // wins on a plain "/settings" load (no hash), this only overrides it
+    // when a hash naming a REAL section is actually present, so a stray
+    // "#" (or one from an unrelated future feature) never blanks every
+    // panel by matching nothing.
+    var initialSection = window.location.hash.replace(/^#/, "");
+    var initialItem = settingsNavItems.filter(function (item) {
+      return item.getAttribute("data-section") === initialSection;
+    })[0];
+    if (initialItem) {
+      initialItem.click();
+    }
   }
 })();

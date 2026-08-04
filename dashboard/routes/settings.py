@@ -1738,6 +1738,18 @@ async def backup_targets_settings_submit(
     )
 
 
+@router.get("/settings/telegram/help", response_class=HTMLResponse)
+async def telegram_help(request: Request, user: str = Depends(require_login)):
+    """Standalone step-by-step guide (create a bot via @BotFather, find its
+    Chat ID via getUpdates) linked from the "Cảnh báo Telegram" card below —
+    plain reference content, no secrets rendered, so gated by login only
+    (not admin) same as any other read-only page; the card that links here
+    is itself already admin-only."""
+    return templates.TemplateResponse(
+        request, "telegram_help.html", {"user": user, "is_admin": auth.is_admin_user(user)}
+    )
+
+
 @router.post("/settings/telegram", response_class=HTMLResponse)
 async def telegram_settings_submit(
     request: Request,

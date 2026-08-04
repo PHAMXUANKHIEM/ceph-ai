@@ -1825,6 +1825,44 @@ def test_unauthenticated_backup_targets_settings_submit_redirects_to_login(dashb
 # --- Cảnh báo Telegram --------------------------------------------------
 
 
+def test_get_telegram_help_page_renders_for_logged_in_user(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings/telegram/help")
+
+    assert response.status_code == 200
+    assert "BotFather" in response.text
+    assert "getUpdates" in response.text
+
+
+def test_get_telegram_help_page_visible_to_non_admin_too(dashboard_client):
+    """Plain reference content, no secrets — gated by login only, same as
+    any other read-only page; the card that links here is itself already
+    admin-only, so a non-admin has no way to reach it from the UI anyway."""
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/settings/telegram/help")
+
+    assert response.status_code == 200
+
+
+def test_unauthenticated_telegram_help_page_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/settings/telegram/help", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_get_settings_telegram_card_links_to_help_page(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'href="/settings/telegram/help"' in response.text
+
+
 def test_get_settings_shows_telegram_tab_for_admin(dashboard_client):
     _login(dashboard_client)
 

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Hướng dẫn kết nối Telegram — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link active">Settings</a>
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header">
+        <h2>Hướng dẫn kết nối Telegram</h2>
+      </div>
+      <div class="card-body">
+        <p class="hint">
+          Làm theo 3 bước dưới đây để lấy <strong>Bot Token</strong> và <strong>Chat ID</strong>, rồi
+          quay lại <a href="/settings#telegram">Settings → Cảnh báo Telegram</a> để dán vào và bấm
+          "Gửi thử". Toàn bộ thao tác này thực hiện ngay trong app Telegram, không cần cài thêm gì.
+        </p>
+
+        <h3>Bước 1 — Tạo Bot qua @BotFather</h3>
+        <ol>
+          <li>Mở Telegram (điện thoại hoặc web), tìm tài khoản <code>@BotFather</code> (tài khoản chính
+            chủ của Telegram, có tick xanh) và bắt đầu chat.</li>
+          <li>Gõ lệnh <code>/newbot</code> và gửi.</li>
+          <li>BotFather hỏi <strong>tên hiển thị</strong> cho bot (vd: <code>Ceph AIOps Alert</code>) —
+            gõ rồi gửi.</li>
+          <li>BotFather hỏi tiếp <strong>username</strong> cho bot — phải là duy nhất trên toàn Telegram
+            và bắt buộc kết thúc bằng <code>bot</code> (vd: <code>ceph_aiops_alert_bot</code>).</li>
+          <li>BotFather trả về một đoạn xác nhận kèm dòng <strong>"Use this token to access the HTTP
+            API"</strong>, ngay dưới là <strong>Bot Token</strong> — dạng
+            <code>123456789:AAExampleTokenHere-restOfIt</code>. Copy lại chuỗi này, đây chính là giá
+            trị điền vào ô "Bot Token" trên Settings.</li>
+        </ol>
+        <p class="hint">
+          Giữ kín Bot Token — bất kỳ ai có token này đều gửi được tin nhắn nhân danh bot của bạn. Không
+          dán vào chat công khai, không commit vào git.
+        </p>
+
+        <h3>Bước 2 — Lấy Chat ID (nơi nhận cảnh báo)</h3>
+        <p>Chọn MỘT trong hai cách, tuỳ muốn cảnh báo gửi vào đâu:</p>
+        <p><strong>Cách A — Gửi thẳng vào tin nhắn riêng với bot</strong></p>
+        <ol>
+          <li>Tìm đúng bot vừa tạo (theo username ở Bước 1), bấm <strong>Start</strong> hoặc gửi một
+            tin nhắn bất kỳ (vd: "hi") cho bot.</li>
+          <li>Mở trình duyệt, truy cập địa chỉ sau (thay <code>&lt;TOKEN&gt;</code> bằng Bot Token ở
+            Bước 1):
+            <br><code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>
+          </li>
+          <li>Trong kết quả JSON trả về, tìm đoạn <code>"chat":{"id": ...}</code> — con số đó chính là
+            Chat ID (số dương, vd: <code>987654321</code>).</li>
+        </ol>
+        <p><strong>Cách B — Gửi vào một nhóm/kênh Telegram</strong></p>
+        <ol>
+          <li>Thêm bot vừa tạo vào nhóm/kênh muốn nhận cảnh báo (tìm theo username bot khi mời thành
+            viên). Với kênh (channel), phải thêm bot làm <strong>quản trị viên</strong> mới gửi tin
+            nhắn được.</li>
+          <li>Gửi một tin nhắn bất kỳ trong nhóm/kênh đó (để bot "thấy" được cuộc trò chuyện).</li>
+          <li>Mở cùng địa chỉ <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> như
+            Cách A — tìm <code>"chat":{"id": ...}</code>, lúc này là một số <strong>âm</strong> (vd:
+            <code>-1001234567890</code>) — đó là Chat ID của nhóm/kênh.</li>
+        </ol>
+        <p class="hint">
+          Không thấy kết quả nào trong <code>getUpdates</code>? Thường là do chưa gửi tin nhắn nào sau
+          khi thêm bot — gửi thêm một tin nhắn rồi tải lại địa chỉ trên.
+        </p>
+
+        <h3>Bước 3 — Cấu hình trên ceph-aiops</h3>
+        <ol>
+          <li>Vào <a href="/settings#telegram">Settings → Cảnh báo Telegram</a> (chỉ tài khoản admin
+            thấy mục này).</li>
+          <li>Dán <strong>Bot Token</strong> (Bước 1) và <strong>Chat ID</strong> (Bước 2), tick
+            "Bật gửi cảnh báo qua Telegram", bấm <strong>Lưu</strong>.</li>
+          <li>Bấm <strong>Gửi thử</strong> — nếu cấu hình đúng, một tin nhắn xác nhận sẽ xuất hiện
+            ngay trong chat/nhóm đã chọn ở Bước 2.</li>
+        </ol>
+        <p class="hint">
+          Tính năng này chỉ GỬI cảnh báo một chiều — ceph-aiops không đọc/xử lý bất kỳ tin nhắn nào gửi
+          ngược lại cho bot. Mọi hành động khắc phục vẫn phải đề xuất &amp; duyệt trên Dashboard như
+          bình thường.
+        </p>
+
+        <p><a href="/settings#telegram" class="btn btn-ghost">← Quay lại Settings</a></p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
