@@ -239,5 +239,20 @@ class Settings(BaseSettings):
     # to an external endpoint.
     backup_alert_webhook_url: str = ""
 
+    # Telegram delivery for the SAME backup alerts above (worker/backup/
+    # alerting.py::send_alert) — a second, independent channel alongside
+    # backup_alert_webhook_url, not a replacement for it (both can be
+    # configured together; either/both blank just means that channel is
+    # skipped). SEND-ONLY: this app never runs a Telegram bot that listens
+    # for incoming messages/commands (see shared/telegram_client.py's own
+    # docstring) — every remediation action still requires the normal
+    # Dashboard propose-then-approve flow, regardless of Telegram.
+    # telegram_alerts_enabled is a separate on/off switch from "is a token
+    # configured" so an admin can temporarily silence Telegram delivery
+    # without having to blank out (and later retype) the token/chat id.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_alerts_enabled: bool = False
+
 
 settings = Settings()

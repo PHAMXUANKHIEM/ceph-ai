@@ -43,6 +43,7 @@
       <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
       <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch Ceph</button>
       <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Lưu trữ Backup</button>
+      <button type="button" class="settings-nav-item {% if active_section == 'telegram' %}active{% endif %}" data-section="telegram">Cảnh báo Telegram</button>
       <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
       {% endif %}
       <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
@@ -366,6 +367,52 @@
 
           <p class="hint">Ai được ghi vào slot nào (danh sách <code>backup_targets:</code>) và slot nào là bản immutable cấu hình tại <code>worker/policy/backup_policy.yaml</code> — không phải ở đây.</p>
           <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="telegram" {% if active_section != 'telegram' %}hidden{% endif %}>
+      <div class="card-header"><h2>Cảnh báo Telegram</h2></div>
+      <div class="card-body">
+        {% if telegram_error %}
+          <p class="error">{{ telegram_error }}</p>
+        {% endif %}
+        {% if telegram_success %}
+          <p class="success">{{ telegram_success }}</p>
+        {% endif %}
+        {% if telegram_test_error %}
+          <p class="error">Gửi thử thất bại: {{ telegram_test_error }}</p>
+        {% endif %}
+        {% if telegram_test_success %}
+          <p class="success">{{ telegram_test_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Gửi CÙNG cảnh báo backup thất bại/quá hạn/bất thường mà <code>worker/backup/alerting.py</code>
+          đã gửi qua webhook, sang một chat Telegram — thêm một kênh, không thay thế webhook hiện có.
+          Chỉ gửi tin nhắn MỘT CHIỀU: ứng dụng này không chạy bot lắng nghe tin nhắn/lệnh từ Telegram —
+          mọi hành động khắc phục vẫn luôn phải qua quy trình đề xuất &amp; duyệt trên Dashboard như
+          bình thường, không có gì có thể được thực thi trực tiếp từ Telegram.
+        </p>
+        <form class="login-box" method="post" action="/settings/telegram">
+          <label>Bot Token (tạo qua @BotFather trên Telegram)
+            <input
+              type="password"
+              name="telegram_bot_token"
+              autocomplete="off"
+              placeholder="{% if masked_telegram_token %}{{ masked_telegram_token }} — để trống để giữ nguyên{% else %}vd: 123456789:AAExampleTokenHere{% endif %}"
+            >
+          </label>
+          <label>Chat ID (ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo)
+            <input type="text" name="telegram_chat_id" value="{{ telegram_chat_id }}" placeholder="vd: -1001234567890">
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="telegram_alerts_enabled" value="true" {% if telegram_alerts_enabled %}checked{% endif %}>
+            Bật gửi cảnh báo qua Telegram
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        </form>
+        <form method="post" action="/settings/telegram/test" style="margin-top: 0.75rem;">
+          <button type="submit" class="btn btn-ghost">Gửi thử</button>
         </form>
       </div>
     </section>

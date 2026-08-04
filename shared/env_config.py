@@ -69,6 +69,16 @@ def backup_target_env_names(slot: str) -> dict[str, str]:
     }
 
 
+# Telegram alert delivery (Settings page's "Cảnh báo Telegram" form) —
+# same one-dict-of-field-name-to-env-var-name role as CLUSTER_ENV_NAMES
+# above, for dashboard/routes/settings.py's telegram_settings_submit.
+TELEGRAM_ENV_NAMES: dict[str, str] = {
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id": "TELEGRAM_CHAT_ID",
+    "telegram_alerts_enabled": "TELEGRAM_ALERTS_ENABLED",
+}
+
+
 def apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:
     for name, value in fields.items():
         # Review Story 5.1: an unchecked embedded newline in a submitted

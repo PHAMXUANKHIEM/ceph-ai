@@ -27,6 +27,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db, env_config
 from shared.router_client import list_router_models, readable_exception_message
+from shared.telegram_client import TelegramSendError, send_telegram_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
     CephQueryError,
@@ -645,6 +646,19 @@ def _backup_target_form_values() -> dict:
     return values
 
 
+def _telegram_form_values() -> dict:
+    """Current Telegram alert config — `telegram_bot_token` is deliberately
+    NOT included as-is (same "leave blank in the form, blank-on-submit
+    means keep the saved value" posture as router_api_key/backup target S3
+    secrets above); the masked preview lives under a separate key so a GET
+    never leaks the real token back into rendered HTML."""
+    return {
+        "telegram_chat_id": settings.telegram_chat_id,
+        "telegram_alerts_enabled": settings.telegram_alerts_enabled,
+        "masked_telegram_token": _mask_key(settings.telegram_bot_token) if settings.telegram_bot_token else None,
+    }
+
+
 def _patch_pipeline_form_values() -> dict:
     return {
         "ceph_patch_build_node": settings.ceph_patch_build_node,
@@ -690,6 +704,11 @@ def _settings_context(
     backup_target_error: str | None = None,
     backup_target_success: str | None = None,
     backup_target_values: dict | None = None,
+    telegram_error: str | None = None,
+    telegram_success: str | None = None,
+    telegram_test_error: str | None = None,
+    telegram_test_success: str | None = None,
+    telegram_values: dict | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -758,6 +777,10 @@ def _settings_context(
         "patch_pipeline_success": patch_pipeline_success,
         "backup_target_error": backup_target_error,
         "backup_target_success": backup_target_success,
+        "telegram_error": telegram_error,
+        "telegram_success": telegram_success,
+        "telegram_test_error": telegram_test_error,
+        "telegram_test_success": telegram_test_success,
     }
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
@@ -767,6 +790,7 @@ def _settings_context(
     context.update(
         backup_target_values if backup_target_values is not None else _backup_target_form_values()
     )
+    context.update(telegram_values if telegram_values is not None else _telegram_form_values())
     # ssh_key_path is no longer an editable field on the cluster form (see
     # CLUSTER_ENV_NAMES) — always show the actual configured value here,
     # never a `cluster_values`/submitted one, since submitted dicts no
@@ -824,6 +848,11 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "patch-pipeline"
     if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
         return "backup-targets"
+    if any(
+        context.get(k)
+        for k in ("telegram_error", "telegram_success", "telegram_test_error", "telegram_test_success")
+    ):
+        return "telegram"
     # Fresh GET /settings, nothing to react to yet — land on the first
     # section this account can actually see.
     return "restart-controls" if is_admin else "router"
@@ -1706,6 +1735,130 @@ async def backup_targets_settings_submit(
             user,
             backup_target_success="Đã lưu cấu hình lưu trữ Backup — Worker đã khởi động lại để áp dụng ngay.",
         ),
+    )
+
+
+@router.post("/settings/telegram", response_class=HTMLResponse)
+async def telegram_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    telegram_bot_token: str = Form(""),
+    telegram_chat_id: str = Form(""),
+    telegram_alerts_enabled: bool = Form(False),
+):
+    """Admin-only, same gating as every other credential-bearing form on
+    this page (backup targets, database, patch pipeline). Saves the SAME
+    Telegram alert config `worker/backup/alerting.py::send_alert` reads —
+    an outbound-only notification channel for backup fail/overdue/anomaly
+    alerts, alongside the existing generic webhook
+    (`backup_alert_webhook_url`, still configurable only via .env — this
+    form does not touch it). Nothing here can execute a Command: Telegram
+    delivery is fire-and-forget text, this project has no bot that listens
+    for replies, and every actual remediation still goes through the
+    normal Incident/Action propose-then-approve flow untouched by this
+    feature (see shared/telegram_client.py's own docstring).
+
+    telegram_bot_token follows the same "blank submit = keep the currently
+    saved value" convention as router_api_key/backup target S3 secrets —
+    the rendered form never carries the real token back into HTML (see
+    `_telegram_form_values()`), so a blank field here does NOT mean "clear
+    the token", it means "unchanged". Restarts Worker afterward (same
+    posture as backup_targets_settings_submit) since `worker/backup/
+    alerting.py` runs inside that process and its `settings` singleton only
+    loads `.env` once at import time."""
+    _require_admin_privilege(user)
+
+    bot_token = telegram_bot_token.strip() or settings.telegram_bot_token
+    chat_id = telegram_chat_id.strip()
+    enabled = telegram_alerts_enabled
+
+    if enabled and (not bot_token or not chat_id):
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                telegram_error="Cần điền đủ Bot token và Chat ID trước khi bật cảnh báo Telegram",
+                telegram_values={
+                    "telegram_chat_id": chat_id,
+                    "telegram_alerts_enabled": enabled,
+                    "masked_telegram_token": _mask_key(bot_token) if bot_token else None,
+                },
+            ),
+        )
+
+    try:
+        env_config.update_env_file_batch(
+            {
+                env_config.TELEGRAM_ENV_NAMES["telegram_bot_token"]: bot_token,
+                env_config.TELEGRAM_ENV_NAMES["telegram_chat_id"]: chat_id,
+                env_config.TELEGRAM_ENV_NAMES["telegram_alerts_enabled"]: "true" if enabled else "false",
+            }
+        )
+        settings.telegram_bot_token = bot_token
+        settings.telegram_chat_id = chat_id
+        settings.telegram_alerts_enabled = enabled
+    except Exception:
+        logger.exception("telegram_settings_submit: failed to persist config to .env")
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                telegram_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
+            ),
+        )
+
+    await asyncio.to_thread(restart_worker)
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            telegram_success="Đã lưu cấu hình Telegram — Worker đã khởi động lại để áp dụng ngay.",
+        ),
+    )
+
+
+@router.post("/settings/telegram/test", response_class=HTMLResponse)
+async def telegram_settings_test(request: Request, user: str = Depends(require_login)):
+    """"Gửi thử" button — sends one real message using whatever is
+    CURRENTLY SAVED (not unsaved form input; save first, then test), so a
+    misconfigured token/chat id/bot-not-added-to-chat surfaces as a real
+    error right on this page instead of only being discovered the first
+    time a real backup alert silently fails to arrive. Runs directly in
+    the Dashboard process (shared/telegram_client.py, same module Worker's
+    alerting.py uses) — a single outbound HTTPS call with no cluster
+    mutation, same "safe to run without Worker's propose/approve
+    machinery" posture as dashboard/volume_perf_analysis.py's AI call."""
+    _require_admin_privilege(user)
+
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user, telegram_test_error="Chưa lưu Bot token / Chat ID — lưu cấu hình trước khi gửi thử"
+            ),
+        )
+
+    try:
+        await asyncio.to_thread(
+            send_telegram_message,
+            settings.telegram_bot_token,
+            settings.telegram_chat_id,
+            "✅ Ceph AIOps: tin nhắn thử — cấu hình Telegram đang hoạt động.",
+        )
+    except TelegramSendError as exc:
+        return templates.TemplateResponse(
+            request, "settings.html", _settings_context(user, telegram_test_error=str(exc))
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(user, telegram_test_success="Đã gửi tin nhắn thử — kiểm tra Telegram."),
     )
 
 

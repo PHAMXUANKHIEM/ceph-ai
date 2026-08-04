@@ -1822,6 +1822,169 @@ def test_unauthenticated_backup_targets_settings_submit_redirects_to_login(dashb
     assert response.headers["location"] == "/login"
 
 
+# --- Cảnh báo Telegram --------------------------------------------------
+
+
+def test_get_settings_shows_telegram_tab_for_admin(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Cảnh báo Telegram" in response.text
+    assert 'action="/settings/telegram"' in response.text
+
+
+def test_get_settings_hides_telegram_tab_for_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'action="/settings/telegram"' not in response.text
+
+
+def test_telegram_settings_submit_persists_config_and_restarts_worker(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = []
+    monkeypatch.setattr(
+        settings_route,
+        "restart_worker",
+        lambda: restart_calls.append(1) or {"restarted": True, "new_pid": 1, "error": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={
+            "telegram_bot_token": "123456:AAExampleToken",
+            "telegram_chat_id": "-1001234567890",
+            "telegram_alerts_enabled": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình Telegram" in response.text
+    assert settings.telegram_bot_token == "123456:AAExampleToken"
+    assert settings.telegram_chat_id == "-1001234567890"
+    assert settings.telegram_alerts_enabled is True
+    env_contents = tmp_env.read_text()
+    assert "TELEGRAM_BOT_TOKEN=123456:AAExampleToken" in env_contents
+    assert "TELEGRAM_CHAT_ID=-1001234567890" in env_contents
+    assert "TELEGRAM_ALERTS_ENABLED=true" in env_contents
+    assert restart_calls == [1]
+
+
+def test_telegram_settings_submit_blank_token_keeps_existing_value(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None})
+    monkeypatch.setattr(settings, "telegram_bot_token", "already-saved-token", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={"telegram_bot_token": "", "telegram_chat_id": "-100999", "telegram_alerts_enabled": "true"},
+    )
+
+    assert response.status_code == 200
+    assert settings.telegram_bot_token == "already-saved-token"
+
+
+def test_telegram_settings_submit_rejects_enabling_without_token_or_chat_id(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(settings, "telegram_bot_token", "", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={"telegram_bot_token": "", "telegram_chat_id": "", "telegram_alerts_enabled": "true"},
+    )
+
+    assert response.status_code == 200
+    assert "Cần điền đủ Bot token và Chat ID" in response.text
+
+
+def test_telegram_settings_submit_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={"telegram_bot_token": "x", "telegram_chat_id": "-100999", "telegram_alerts_enabled": "true"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_unauthenticated_telegram_settings_submit_redirects_to_login(dashboard_client):
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={"telegram_bot_token": "x", "telegram_chat_id": "-100999"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_telegram_settings_test_sends_message_using_saved_config(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_chat_id", "-100999", raising=False)
+    calls = []
+    monkeypatch.setattr(
+        settings_route, "send_telegram_message", lambda token, chat_id, text: calls.append((token, chat_id, text))
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/telegram/test")
+
+    assert response.status_code == 200
+    assert "Đã gửi tin nhắn thử" in response.text
+    assert len(calls) == 1
+    assert calls[0][0] == "123:ABC"
+    assert calls[0][1] == "-100999"
+
+
+def test_telegram_settings_test_shows_error_when_not_configured(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_chat_id", "", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/telegram/test")
+
+    assert response.status_code == 200
+    assert "Chưa lưu Bot token" in response.text
+
+
+def test_telegram_settings_test_shows_error_on_send_failure(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "telegram_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_chat_id", "-100999", raising=False)
+
+    def _boom(token, chat_id, text):
+        raise settings_route.TelegramSendError("chat not found")
+
+    monkeypatch.setattr(settings_route, "send_telegram_message", _boom)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/telegram/test")
+
+    assert response.status_code == 200
+    assert "Gửi thử thất bại" in response.text
+    assert "chat not found" in response.text
+
+
+def test_telegram_settings_test_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/settings/telegram/test")
+
+    assert response.status_code == 403
+
+
 def test_restart_worker_route_shows_success_message(dashboard_client, monkeypatch):
     monkeypatch.setattr(
         settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 4242, "error": None}
