@@ -25,6 +25,7 @@ from dashboard.routes import (
     patch,
     restore_cluster,
     settings as settings_routes,
+    test_runner,
     upgrade,
     users,
     volumes,
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     application.include_router(backups.router)
     application.include_router(restore_cluster.router)
     application.include_router(bucket_access_log.router)
+    application.include_router(test_runner.router)
     application.include_router(ws_router)
     return application
 

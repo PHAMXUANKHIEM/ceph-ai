@@ -9,3 +9,8 @@ __pycache__/
 .pytest_cache/
 *.log
 scripts/deploy/deploy.local.env
+
+# Epic 10: ceph-upgrade-test-runner-frontend (React/Vite, relocated from
+# the throwaway prototype) -- installed deps and build output, not source.
+ceph-upgrade-test-runner-frontend/node_modules/
+ceph-upgrade-test-runner-frontend/dist/
