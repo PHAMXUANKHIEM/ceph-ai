@@ -578,3 +578,44 @@ class BackupDigestLog(Base):
     anomaly_count: Mapped[int] = mapped_column(Integer, nullable=False)
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class TestRunnerConfig(Base):
+    """Epic 10 (Ceph Upgrade Test Runner) Story 10.2 -- the config the
+    future 63-test-case engine (Stories 10.3-10.5) reads from: RGW test
+    endpoints, which test groups (A/B/C/D)/priorities (P1/P2/P3) to run,
+    and which of the 7 fixed baseline files have been uploaded.
+
+    Deliberately a SINGLETON row (this app manages one cluster at a time,
+    same posture config/settings.py already established for cluster/SSH
+    config -- see shared/cluster_nodes.py::configured_nodes()) -- NOT one
+    row per test run. Story 10.8 (SQLite persistence/auto-save) is the one
+    that introduces per-run history/results, not this story.
+
+    Node list, roles, and SSH user/key are deliberately NOT duplicated
+    here -- they live in config/settings.py and are read live via
+    configured_nodes(); this table only holds what's genuinely new for
+    Epic 10 and has no existing home.
+    """
+
+    __tablename__ = "test_runner_configs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    rgw_endpoint_zone_a: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rgw_endpoint_zone_b: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rgw_endpoint_vip: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # JSON-encoded list of strings, e.g. '["A", "B", "C", "D"]' -- same
+    # JSON-as-Text pattern as Action.execution_progress elsewhere in this
+    # module (project convention for flexible structured data without a
+    # dedicated child table). Nullable/absent means "nothing selected yet",
+    # distinct from an empty list (explicitly unchecked-all-and-saved).
+    test_groups: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priorities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON-encoded dict mapping each of the 7 fixed baseline keys (see
+    # dashboard/routes/test_runner.py::BASELINE_FILE_KEYS) to the relative
+    # path it was stored at under test_runner_baselines/ (or absent/None
+    # if never uploaded) -- only the path is stored here, never file bytes.
+    baseline_files: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

@@ -1,12 +1,11 @@
+import Config from './pages/Config.jsx'
+
+// Story 10.2 adds the first real page (Config). Full page routing/nav
+// across multiple Test Runner screens (dashboard/log view, report, etc.)
+// is Story 10.6's job -- until then this is a single-page app that just
+// renders Config directly, no router library needed for one page.
 function App() {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold text-slate-800">Ceph Upgrade Test Runner</h1>
-        <p className="mt-2 text-slate-500">Scaffold placeholder -- pages land in a later epic.</p>
-      </div>
-    </div>
-  )
+  return <Config />
 }
 
 export default App

@@ -14,3 +14,8 @@ scripts/deploy/deploy.local.env
 # the throwaway prototype) -- installed deps and build output, not source.
 ceph-upgrade-test-runner-frontend/node_modules/
 ceph-upgrade-test-runner-frontend/dist/
+
+# Epic 10 Story 10.2: uploaded baseline files (checksums/dumps) -- operator
+# data, not source; saved under the project root by dashboard/routes/
+# test_runner.py's baseline-upload route.
+test_runner_baselines/
