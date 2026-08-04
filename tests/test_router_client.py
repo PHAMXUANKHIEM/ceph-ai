@@ -1125,6 +1125,248 @@ def test_execute_approved_action_non_package_action_skips_finalize(isolated_db, 
     assert not any("require-osd-release" in cmd for _host, cmd in executed)
 
 
+# --- noout/noscrub/nodeep-scrub/nosnaptrim around package upgrades (2026-08-04) -
+# Ceph's own cephadm orchestrator does NOT set/unset these during `ceph orch
+# upgrade start` either (verified against src/pybind/mgr/cephadm/upgrade.py —
+# it only manages `noautoscale`), and the package-based path has no
+# orchestrator behind it at all, so nothing else protects against
+# scrub/backfill churn while OSDs bounce one host at a time.
+
+
+def test_execute_approved_action_package_upgrade_sets_flags_before_hosts_and_unsets_after(
+    isolated_db, monkeypatch
+):
+    executed = []
+
+    def fake_execute(host, command):
+        executed.append((host, command))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112,10.20.1.95")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-flags")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-flags",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=["10.20.1.83"],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    set_command = "ceph osd set noout && ceph osd set noscrub && ceph osd set nodeep-scrub && ceph osd set nosnaptrim"
+    unset_command = "ceph osd unset noout; ceph osd unset noscrub; ceph osd unset nodeep-scrub; ceph osd unset nosnaptrim"
+    assert ("10.20.1.112", set_command) in executed
+    assert ("10.20.1.112", unset_command) in executed
+    # Runs on the first configured MON node, not the (unrelated) host the
+    # actual package install ran on.
+    assert not any(cmd == set_command and host != "10.20.1.112" for host, cmd in executed)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        progress = json.loads(action.execution_progress)
+
+    # Both appended (not inserted at the front — see _set_upgrade_osd_flags'
+    # own comment on why that would corrupt the per-host loop's positional
+    # writes into `progress`) — set-flags right after the per-host
+    # placeholder(s), unset-flags right before the require-osd-release
+    # finalize step at the very end.
+    set_step = next(p for p in progress if p["command"] == set_command)
+    unset_step = next(p for p in progress if p["command"] == unset_command)
+    assert set_step["status"] == "done"
+    assert unset_step["status"] == "done"
+    assert progress[-1]["command"] == "ceph osd require-osd-release octopus"
+    assert progress.index(set_step) < progress.index(unset_step) < len(progress) - 1
+
+
+def test_execute_approved_action_package_upgrade_proceeds_when_set_flags_fails(
+    isolated_db, monkeypatch
+):
+    """A failure suppressing scrub/backfill must not block the actual
+    (approved, expected) package install — same best-effort posture as
+    the require-osd-release finalize step."""
+    from worker.executor.ssh_executor import ExecutorError
+
+    def fake_execute(host, command):
+        if command.startswith("ceph osd set"):
+            raise ExecutorError("mon busy")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-set-fail")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-set-fail",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=["10.20.1.83"],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        # The install itself still succeeded — a setup-step hiccup doesn't
+        # retroactively fail the whole upgrade.
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    set_step = next(p for p in progress if p["command"].startswith("ceph osd set"))
+    assert set_step["status"] == "failed"
+    assert set_step["error"] == "mon busy"
+
+
+def test_execute_approved_action_package_upgrade_unset_failure_does_not_fail_action(
+    isolated_db, monkeypatch
+):
+    from worker.executor.ssh_executor import ExecutorError
+
+    def fake_execute(host, command):
+        if command.startswith("ceph osd unset"):
+            raise ExecutorError("mon unreachable")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-unset-fail")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-unset-fail",
+            action_id="upgrade_ceph_cluster_package_local",
+            nodes=["10.20.1.83"],
+        )
+        action.action_params = json.dumps(
+            {"target_version": "15.2.17", "package_dir": "/opt/ceph-packages"}
+        )
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+
+    unset_step = progress[-2]
+    assert unset_step["status"] == "failed"
+    assert unset_step["error"] == "mon unreachable"
+
+
+def test_execute_approved_action_package_upgrade_skips_flags_when_no_mon_configured(
+    isolated_db, monkeypatch, caplog
+):
+    executed = []
+
+    def fake_execute(host, command):
+        executed.append((host, command))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+
+    _create_incident("incident-pkg-upgrade-no-mon")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-pkg-upgrade-no-mon",
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=["10.20.1.83"],
+        )
+        action.action_params = json.dumps({"target_version": "15.2.17"})
+        session.commit()
+        action_pk = action.id
+
+    with caplog.at_level("WARNING"):
+        router_client._execute_approved_action(action_pk)
+
+    # The install itself still ran on its own target node — only the
+    # cluster-wide flags step (which needs a MON) was skipped.
+    assert not any("ceph osd set noout" in cmd for _host, cmd in executed)
+    assert "skipping" in caplog.text.lower()
+
+
+def test_execute_approved_action_cephadm_upgrade_skips_router_clients_own_flags_handling(
+    isolated_db, monkeypatch
+):
+    """cephadm's own `upgrade_ceph_cluster` action_id (ceph orch upgrade
+    start) is a DIFFERENT action_id from the 2 package-based ones — its
+    noout/noscrub/nodeep-scrub/nosnaptrim handling is baked directly into
+    worker/executor/commands.py::_upgrade_ceph_cluster_command's own single
+    command string instead (see that function's docstring for why: this
+    app's own set/unset step-pair, scoped to _PACKAGE_UPGRADE_ACTION_IDS
+    only, would be meaningless here — a SEPARATE `ceph osd set` SSH round
+    trip achieves nothing `bash -c '... && ceph orch upgrade start ...'`
+    doesn't already do in one, and there's no unset counterpart at all on
+    this path — see dashboard/routes/upgrade.py's manual "Bỏ noout/
+    noscrub..." button instead). This only asserts THIS app's own
+    _set_upgrade_osd_flags/_unset_upgrade_osd_flags never ran as a
+    SEPARATE progress step — the single upgrade command itself legitimately
+    contains "ceph osd set noout" as a substring within its own chain."""
+    executed = []
+
+    def fake_execute(host, command):
+        executed.append((host, command))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm")
+
+    _create_incident("incident-cephadm-upgrade-no-flags")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session,
+            "incident-cephadm-upgrade-no-flags",
+            action_id="upgrade_ceph_cluster",
+            nodes=["10.20.1.112"],
+        )
+        action.action_params = json.dumps({"target_version": "16.2.15"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    # Exactly one SSH round trip — the single chained upgrade command.
+    # A dedicated router_client.py flags step would show up as an
+    # ADDITIONAL, separate command here.
+    assert len(executed) == 1
+    assert executed[0][1].startswith("cephadm shell -- bash -c")
+    assert "ceph orch upgrade start" in executed[0][1]
+    assert not any("ceph osd unset" in cmd for _host, cmd in executed)
+
+
 def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monkeypatch):
     from worker.executor.ssh_executor import ExecutorError
 

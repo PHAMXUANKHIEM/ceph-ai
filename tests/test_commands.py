@@ -84,11 +84,19 @@ def test_upgrade_ceph_cluster_requires_cephadm_exec_mode(monkeypatch):
 
 
 def test_upgrade_ceph_cluster_builds_expected_command(monkeypatch):
+    # noout/noscrub/nodeep-scrub/nosnaptrim are set BEFORE `ceph orch
+    # upgrade start` — see _upgrade_ceph_cluster_command's own docstring
+    # for why unsetting can't happen in this same command (fire-and-forget;
+    # the real upgrade continues asynchronously afterward).
     monkeypatch.setattr(commands_module.settings, "ceph_exec_mode", "cephadm")
 
     command = get_command("upgrade_ceph_cluster", "10.20.1.150", {"target_version": "19.2.0"})
 
-    assert command == "cephadm shell -- ceph orch upgrade start --ceph-version 19.2.0"
+    assert command == (
+        "cephadm shell -- bash -c 'ceph osd set noout && ceph osd set noscrub && "
+        "ceph osd set nodeep-scrub && ceph osd set nosnaptrim && "
+        "ceph orch upgrade start --ceph-version 19.2.0'"
+    )
 
 
 def test_upgrade_ceph_cluster_rejects_missing_target_version(monkeypatch):

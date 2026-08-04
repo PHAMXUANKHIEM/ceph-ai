@@ -55,6 +55,7 @@ EVENT_CHAT_ACTION_REQUESTED = "chat_action_requested"
 # lifecycle (i.e. issuing the initial `ceph orch upgrade start`).
 EVENT_CLUSTER_UPGRADE_PAUSED = "cluster_upgrade_paused"
 EVENT_CLUSTER_UPGRADE_RESUMED = "cluster_upgrade_resumed"
+EVENT_CLUSTER_UPGRADE_OSD_FLAGS_UNSET = "cluster_upgrade_osd_flags_unset"
 
 # Epic 9, Story 9.1: worker/backup/engine.py's retention sweep — fired once
 # per object actually deleted, attached to the same incident_id/action_id

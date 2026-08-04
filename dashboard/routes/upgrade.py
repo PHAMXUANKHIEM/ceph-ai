@@ -28,6 +28,7 @@ from watcher.ceph_client import (
     resume_upgrade,
     run_ceph_json_command,
     summarize_cluster_versions,
+    unset_upgrade_osd_flags,
 )
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -992,6 +993,35 @@ async def resume_upgrade_route(user: str = Depends(require_login)):
                 incident_id=incident.id,
                 action_id=None,
                 event_type=audit.EVENT_CLUSTER_UPGRADE_RESUMED,
+                actor=user,
+            )
+            session.commit()
+    return RedirectResponse(url="/upgrade", status_code=303)
+
+
+@router.post("/upgrade/unset-osd-flags")
+async def unset_upgrade_osd_flags_route(user: str = Depends(require_login)):
+    """Manual cleanup for the cephadm path — worker/executor/commands.py::
+    _upgrade_ceph_cluster_command sets noout/noscrub/nodeep-scrub/
+    nosnaptrim before starting `ceph orch upgrade start`, but can't unset
+    them itself (fire-and-forget; the real upgrade continues asynchronously
+    in cephadm's own mgr module long after that command returns — see that
+    function's own docstring). Same self-service, not-kill-switch-gated
+    posture as pause/resume just above: an operator explicitly clicking
+    this once they see (via this page's own live status, `get_upgrade_
+    status()`) that the upgrade has actually finished."""
+    try:
+        unset_upgrade_osd_flags()
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không bỏ được các cờ noout/noscrub: {exc}")
+    with db.SessionLocal() as session:
+        _, incident = _latest_upgrade_action(session)
+        if incident is not None:
+            audit.record(
+                session,
+                incident_id=incident.id,
+                action_id=None,
+                event_type=audit.EVENT_CLUSTER_UPGRADE_OSD_FLAGS_UNSET,
                 actor=user,
             )
             session.commit()

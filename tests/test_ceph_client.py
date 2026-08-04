@@ -21,6 +21,7 @@ from watcher.ceph_client import (
     run_diagnostic_command,
     ssh_key_path_error,
     summarize_cluster_versions,
+    unset_upgrade_osd_flags,
 )
 
 
@@ -621,6 +622,30 @@ def test_resume_upgrade_sends_expected_command(monkeypatch):
     resume_upgrade()
 
     assert captured["command"] == "cephadm shell -- ceph orch upgrade resume"
+
+
+def test_unset_upgrade_osd_flags_requires_cephadm(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "docker")
+    with pytest.raises(CephQueryError, match="cephadm"):
+        unset_upgrade_osd_flags()
+
+
+def test_unset_upgrade_osd_flags_sends_expected_command(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "cephadm")
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    captured = {}
+
+    def fake_run_remote_command(host, command, command_timeout=ceph_client.COMMAND_TIMEOUT_SECONDS):
+        captured["command"] = command
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run_remote_command)
+
+    unset_upgrade_osd_flags()
+
+    assert captured["command"] == (
+        "cephadm shell -- bash -c 'ceph osd unset noout; ceph osd unset noscrub; "
+        "ceph osd unset nodeep-scrub; ceph osd unset nosnaptrim'"
+    )
 
 
 def test_run_diagnostic_command_wraps_via_build_exec_command_for_docker_mode(monkeypatch):

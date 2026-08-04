@@ -642,6 +642,105 @@ def _finalize_package_upgrade_osd_release(
     _write_action_progress(action_pk, progress)
 
 
+# 2026-08-04: package-based Cluster Upgrade has no orchestrator behind it
+# (see _PACKAGE_UPGRADE_ACTION_IDS' comment above) — nothing suppresses
+# scrub/backfill/PG-autoscale churn while OSDs bounce one host at a time,
+# unlike a real production upgrade runbook. Verified against Ceph's own
+# cephadm orchestrator source (src/pybind/mgr/cephadm/upgrade.py) that even
+# `ceph orch upgrade start` does NOT set/unset these on its own (it only
+# manages `noautoscale`) — this is a known, still-open gap in cephadm
+# itself, not something this app can rely on the orchestrator for either.
+_UPGRADE_OSD_FLAGS = ("noout", "noscrub", "nodeep-scrub", "nosnaptrim")
+
+
+def _set_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) -> None:
+    """Sets _UPGRADE_OSD_FLAGS before a package-based upgrade's per-host
+    loop starts. `&&`-chained (stop at the first failure) — if the MON
+    can't even take a `ceph osd set` right now, something more fundamental
+    is wrong and attempting the rest wouldn't help. Best-effort like
+    _finalize_package_upgrade_osd_release: a failure here must not abort
+    an otherwise-approved, expected package upgrade — logged and recorded
+    in `progress`, never raised."""
+    command = " && ".join(f"ceph osd set {flag}" for flag in _UPGRADE_OSD_FLAGS)
+    step = {
+        "host": mon_host,
+        "status": "running",
+        "command": command,
+        "started_at": datetime.utcnow().isoformat(),
+    }
+    # Appended, NOT inserted at the front — `progress` already has one
+    # "pending" placeholder PER HOST at fixed indices the per-host loop
+    # below addresses positionally (`progress[node_index - 1]`, node_index
+    # from `enumerate(nodes, ...)`); inserting this step at index 0 would
+    # shift every one of those indices by one and corrupt the per-host
+    # loop's own writes into the wrong (this) entry. Same "append at the
+    # end regardless of real execution order" posture
+    # _finalize_package_upgrade_osd_release already established for its
+    # own (also last-executed, also appended) step.
+    progress.append(step)
+    _write_action_progress(action_pk, progress)
+
+    try:
+        execute_command(mon_host, command)
+    except ExecutorError as exc:
+        logger.warning(
+            "_set_upgrade_osd_flags: %s failed on %s (action %s) — proceeding with the "
+            "upgrade anyway, but scrub/backfill/autoscale are NOT suppressed during it: %s",
+            command,
+            mon_host,
+            action_pk,
+            exc,
+        )
+        step["status"] = "failed"
+        step["error"] = str(exc)
+    else:
+        step["status"] = "done"
+    step["finished_at"] = datetime.utcnow().isoformat()
+    _write_action_progress(action_pk, progress)
+
+
+def _unset_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) -> None:
+    """Always attempted after a package-based upgrade's per-host loop ends
+    — success, partial failure, or blocked by the kill-switch before any
+    host ran — unsetting an already-unset flag is a harmless no-op, so
+    this doesn't try to track whether _set_upgrade_osd_flags actually
+    succeeded first. `;`-joined (NOT `&&`) so every flag gets its own
+    unset attempt regardless of an earlier one failing — maximizes cleanup
+    at the cost of the step's own recorded status only ever reflecting the
+    LAST flag's outcome (acceptable for a best-effort cleanup step: see
+    this function's own error log for the full command either way).
+    Best-effort, same posture as _set_upgrade_osd_flags: logged, not
+    raised — leaving flags set is undesirable but must not retroactively
+    fail an otherwise-finished upgrade."""
+    command = "; ".join(f"ceph osd unset {flag}" for flag in _UPGRADE_OSD_FLAGS)
+    step = {
+        "host": mon_host,
+        "status": "running",
+        "command": command,
+        "started_at": datetime.utcnow().isoformat(),
+    }
+    progress.append(step)
+    _write_action_progress(action_pk, progress)
+
+    try:
+        execute_command(mon_host, command)
+    except ExecutorError as exc:
+        logger.warning(
+            "_unset_upgrade_osd_flags: %s failed on %s (action %s) — noout/noscrub/"
+            "nodeep-scrub/nosnaptrim may still be set on the cluster, unset manually: %s",
+            command,
+            mon_host,
+            action_pk,
+            exc,
+        )
+        step["status"] = "failed"
+        step["error"] = str(exc)
+    else:
+        step["status"] = "done"
+    step["finished_at"] = datetime.utcnow().isoformat()
+    _write_action_progress(action_pk, progress)
+
+
 def _is_disruptive_cluster_operation_in_flight() -> bool:
     """True while a cluster-upgrade or patch-install Action is proposed but
     not yet resolved (PENDING_APPROVAL/APPROVED) — same in-flight window
@@ -933,7 +1032,33 @@ def _execute_approved_action(action_pk: str) -> None:
     progress = [{"host": host, "status": "pending"} for host in nodes]
     _write_action_progress(action_pk, progress)
 
+    # 2026-08-04: noout/noscrub/nodeep-scrub/nosnaptrim around the whole
+    # per-host loop for a package-based upgrade — see _set_upgrade_osd_flags'
+    # own docstring for why (no orchestrator, nothing else suppresses
+    # scrub/backfill churn while OSDs bounce one at a time). Kill-switch
+    # checked here too, BEFORE this setup step touches the cluster at all
+    # (AD-4, no exceptions) — the per-host loop below does its own fresh
+    # check per host regardless, this just also covers the flags step.
+    is_package_upgrade = action_id_str in _PACKAGE_UPGRADE_ACTION_IDS
+    upgrade_flags_mon_host: str | None = None
+    if is_package_upgrade:
+        if _check_kill_switch_safe(incident_id):
+            blocked_before_start = True
+        else:
+            mon_nodes = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+            if mon_nodes:
+                upgrade_flags_mon_host = mon_nodes[0]
+                _set_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
+            else:
+                logger.warning(
+                    "_execute_approved_action: no MON node configured — skipping "
+                    "noout/noscrub/nodeep-scrub/nosnaptrim for action %s",
+                    action_pk,
+                )
+
     for node_index, host in enumerate(nodes, start=1):
+        if blocked_before_start:
+            break
         if _check_kill_switch_safe(incident_id):
             if executed_any:
                 logger.warning(
@@ -1036,8 +1161,17 @@ def _execute_approved_action(action_pk: str) -> None:
         )
 
     if blocked_before_start:
+        # Cleanup even on this early-exit path — the kill-switch could have
+        # flipped ON between _set_upgrade_osd_flags running (above) and the
+        # per-host loop's own first-iteration check, in which case the
+        # flags ARE set on the cluster even though nothing else ran.
+        if upgrade_flags_mon_host is not None:
+            _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
         _revert_approved_action_to_pending(incident_id, action_pk)
         return
+
+    if upgrade_flags_mon_host is not None:
+        _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
 
     if action_id_str in _PACKAGE_UPGRADE_ACTION_IDS and executed_any:
         _finalize_package_upgrade_osd_release(action_pk, action_params, progress)

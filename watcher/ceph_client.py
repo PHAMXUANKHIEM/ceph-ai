@@ -713,3 +713,31 @@ def pause_upgrade() -> None:
 
 def resume_upgrade() -> None:
     _run_upgrade_control_command("ceph orch upgrade resume")
+
+
+# 2026-08-04: worker/executor/commands.py::_upgrade_ceph_cluster_command
+# sets these before starting `ceph orch upgrade start` (that command's own
+# docstring explains why unsetting can't happen automatically there — the
+# upgrade runs asynchronously in cephadm's own mgr module afterward, well
+# past when the command that started it already returned). This is the
+# manual cleanup step (dashboard/routes/upgrade.py's own "Bỏ noout/
+# noscrub..." button) — same self-service-control posture as pause_upgrade/
+# resume_upgrade just above, not gated by the kill-switch for the same
+# reason those aren't (an operator explicitly clicking a specific,
+# narrow-scope button, not an automated remediation).
+_UPGRADE_OSD_FLAGS = ("noout", "noscrub", "nodeep-scrub", "nosnaptrim")
+
+
+def unset_upgrade_osd_flags() -> None:
+    # bash -c wrapping is REQUIRED here, not optional — build_exec_command's
+    # cephadm branch is a bare f"cephadm shell -- {inner_command}" with no
+    # shell-separator awareness of its own; a raw `;`-joined inner_command
+    # would have every command after the first `;` parsed by the REMOTE
+    # host's own top-level shell as a SEPARATE command run OUTSIDE the
+    # cephadm container entirely (where `ceph` may not even be on PATH),
+    # not chained inside the same `cephadm shell` invocation. Same fix
+    # worker/executor/commands.py::_upgrade_ceph_cluster_command already
+    # applies for its own multi-command chain.
+    unset_commands = "; ".join(f"ceph osd unset {flag}" for flag in _UPGRADE_OSD_FLAGS)
+    inner_command = f"bash -c {shlex.quote(unset_commands)}"
+    _run_upgrade_control_command(inner_command)

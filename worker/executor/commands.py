@@ -308,12 +308,39 @@ def _require_target_version(params: dict) -> str:
     return target_version
 
 
+# 2026-08-04: same flags/reasoning as worker/llm/router_client.py's own
+# _UPGRADE_OSD_FLAGS (that module can't import this one — worker/executor/
+# is deliberately self-contained, see this function's own docstring below —
+# and this one can't import that one either, since router_client.py already
+# imports FROM worker.executor.commands; small, deliberate duplication
+# rather than a new shared module for one 4-tuple). Verified against
+# cephadm's own orchestrator source (src/pybind/mgr/cephadm/upgrade.py)
+# that `ceph orch upgrade start` does NOT set/unset these itself (only
+# `noautoscale`) — a still-open gap in cephadm, not something to rely on
+# the orchestrator for.
+_UPGRADE_OSD_FLAGS = ("noout", "noscrub", "nodeep-scrub", "nosnaptrim")
+
+
 def _upgrade_ceph_cluster_command(host: str | None, params: dict) -> str:
     """`ceph orch upgrade start` requires cephadm's orchestrator — a
     non-cephadm deployment (docker/podman/none exec mode) has no
     orchestrator to drive a rolling upgrade at all, so this fails loudly
     here rather than sending a command that would just error on the
     remote end anyway.
+
+    Sets noout/noscrub/nodeep-scrub/nosnaptrim BEFORE starting the
+    upgrade, chained into the SAME `cephadm shell -- bash -c '...'`
+    invocation (one shell/container spin-up instead of 5) — but does NOT
+    unset them here: `ceph orch upgrade start` is fire-and-forget (cephadm's
+    own mgr module drives the rest asynchronously, possibly for a long
+    time), so unsetting has to happen once the upgrade actually finishes,
+    which this synchronous command has no way to observe. See
+    dashboard/routes/upgrade.py's "Bỏ noout/noscrub..." button
+    (unset_upgrade_osd_flags_route) — a deliberate manual step for this
+    path, unlike the package-based path (worker/llm/router_client.py's
+    _unset_upgrade_osd_flags), which unsets automatically because ITS
+    per-host loop is fully synchronous and this app's own code observes
+    every step of it.
 
     Only the cephadm wrapping style is applied (not the full docker/podman/
     none matrix watcher/ceph_client.py::build_exec_command handles) —
@@ -331,8 +358,10 @@ def _upgrade_ceph_cluster_command(host: str | None, params: dict) -> str:
             f"{settings.ceph_exec_mode!r}) — non-cephadm deployments have no orchestrator "
             "to drive `ceph orch upgrade`"
         )
-    inner_command = f"ceph orch upgrade start --ceph-version {shlex.quote(target_version)}"
-    return f"cephadm shell -- {inner_command}"
+    set_flag_commands = [f"ceph osd set {flag}" for flag in _UPGRADE_OSD_FLAGS]
+    upgrade_start_command = f"ceph orch upgrade start --ceph-version {shlex.quote(target_version)}"
+    chained = " && ".join([*set_flag_commands, upgrade_start_command])
+    return f"cephadm shell -- bash -c {shlex.quote(chained)}"
 
 
 # --- Package-based (ceph-deploy / traditional) Cluster Upgrade (2026-07-23) -

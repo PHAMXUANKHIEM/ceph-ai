@@ -335,6 +335,16 @@
         {% else %}
         <p class="hint">Đang tải...</p>
         {% endif %}
+        <p class="hint">
+          Trước khi bắt đầu, hệ thống đã tự đặt <code>noout</code>/<code>noscrub</code>/
+          <code>nodeep-scrub</code>/<code>nosnaptrim</code> để tránh scrub/backfill chen ngang
+          lúc OSD đang bounce từng cái — nhưng vì <code>ceph orch upgrade start</code> chạy nền
+          (không đồng bộ), hệ thống không tự biết lúc nào để bỏ lại các cờ này. Sau khi nâng cấp
+          xong (mục "Không có tiến trình nâng cấp nào" ở trên), bấm nút dưới đây để bỏ:
+        </p>
+        <form method="post" action="/upgrade/unset-osd-flags" class="inline-form">
+          <button type="submit" class="btn btn-sm">Bỏ noout/noscrub/nodeep-scrub/nosnaptrim</button>
+        </form>
       </div>
     </section>
     {% endif %}

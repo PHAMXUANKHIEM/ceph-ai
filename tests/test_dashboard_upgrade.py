@@ -5,8 +5,8 @@ from sqlalchemy.exc import OperationalError
 
 import dashboard.routes.upgrade as upgrade_route
 from config.settings import settings
-from shared import db as db_module
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared import audit, db as db_module
+from shared.models import Action, ActionStatus, AuditEntry, Incident, IncidentStatus
 
 
 def _login(client):
@@ -130,7 +130,11 @@ def test_propose_upgrade_creates_pending_action_and_synthetic_incident(dashboard
     assert incident.status == IncidentStatus.PENDING_APPROVAL.value
     assert json.loads(action.action_params) == {"target_version": "19.2.0"}
     assert json.loads(action.target_nodes) == ["10.20.1.150"]
-    assert action.proposed_command == "cephadm shell -- ceph orch upgrade start --ceph-version 19.2.0"
+    assert action.proposed_command == (
+        "cephadm shell -- bash -c 'ceph osd set noout && ceph osd set noscrub && "
+        "ceph osd set nodeep-scrub && ceph osd set nosnaptrim && "
+        "ceph orch upgrade start --ceph-version 19.2.0'"
+    )
     assert "ceph orch upgrade start" in action.rationale
 
 
@@ -278,6 +282,50 @@ def test_resume_upgrade_route_calls_resume(dashboard_client, monkeypatch):
 
     assert response.status_code == 303
     assert calls == ["resumed"]
+
+
+def test_unset_upgrade_osd_flags_route_calls_unset_and_audits(dashboard_client, monkeypatch):
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+    dashboard_client.post("/upgrade/propose", data={"target_version": "19.2.0"})
+
+    calls = []
+    monkeypatch.setattr(upgrade_route, "unset_upgrade_osd_flags", lambda: calls.append("unset"))
+
+    response = dashboard_client.post("/upgrade/unset-osd-flags", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert calls == ["unset"]
+
+    with db_module.SessionLocal() as session:
+        entry = (
+            session.query(AuditEntry)
+            .filter_by(event_type=audit.EVENT_CLUSTER_UPGRADE_OSD_FLAGS_UNSET)
+            .one()
+        )
+        assert entry.actor == "admin"
+
+
+def test_unset_upgrade_osd_flags_route_returns_502_on_failure(dashboard_client, monkeypatch):
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    def raising():
+        raise upgrade_route.CephQueryError("cụm không phản hồi")
+
+    monkeypatch.setattr(upgrade_route, "unset_upgrade_osd_flags", raising)
+
+    response = dashboard_client.post("/upgrade/unset-osd-flags")
+
+    assert response.status_code == 502
+
+
+def test_unauthenticated_unset_osd_flags_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/upgrade/unset-osd-flags", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
 
 
 # --- is_cluster_upgrade_pending_or_approved / is_cluster_upgrade_physically_running --
