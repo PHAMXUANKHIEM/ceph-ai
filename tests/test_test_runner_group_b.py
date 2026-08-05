@@ -350,6 +350,29 @@ class TestTcPost010:
         result = fw.run_test_case(gb.TcPost010RbdReplicatedChecksum(), _ctx(client_host="client1"))
         assert result.status == fw.TestStatus.FAIL
 
+    def test_one_image_ssh_failure_does_not_abort_remaining_images(self, monkeypatch):
+        """Regression test for the code-review finding that a transient
+        ExecutorError on one image used to propagate out of run() entirely,
+        discarding every other image's already-completed results."""
+        from worker.executor.ssh_executor import ExecutorError
+
+        _fake_read_baseline_text(monkeypatch, {"rbd_rep.sha256": "abc  file1.bin\n"})
+        calls = {"n": 0}
+
+        def fake(host, command):
+            calls["n"] += 1
+            # Calls alternate checksum/cleanup per image (2 calls/image); fail
+            # only the 2nd image's checksum call (the 3rd call overall).
+            if calls["n"] == 3:
+                raise ExecutorError("transient SSH failure")
+            return CHECKSUM_STEP_OK
+
+        monkeypatch.setattr(gb, "execute_with_retry", fake)
+        result = fw.run_test_case(gb.TcPost010RbdReplicatedChecksum(), _ctx(client_host="client1"))
+        assert calls["n"] == 10  # all 5 images attempted (2 SSH round trips each), loop wasn't aborted
+        assert result.status == fw.TestStatus.FAIL  # the one SSH failure still counts against "100% OK"
+        assert "testimage2" in result.criteria[0].detail
+
 
 class TestTcPost011:
     def test_all_ok_passes(self, monkeypatch):
@@ -478,6 +501,26 @@ class TestTcPost015:
         assert result.criteria[1].passed is False
         assert result.status == fw.TestStatus.FAIL
 
+    def test_missing_baseline_is_error(self, monkeypatch):
+        _fake_read_baseline_text(monkeypatch, {})
+        result = fw.run_test_case(gb.TcPost015S3DataIntegrity(), _ctx())
+        assert result.status == fw.TestStatus.ERROR
+
+    def test_malformed_bucket_stats_json_is_error(self, monkeypatch):
+        _fake_read_baseline_text(monkeypatch, {"s3_manifest.csv": "obj1\nobj2\nobj3\n"})
+        _fake_run_ceph_command(monkeypatch, {"radosgw-admin bucket stats": "not json"})
+        result = fw.run_test_case(gb.TcPost015S3DataIntegrity(), _ctx())
+        assert result.status == fw.TestStatus.ERROR
+
+    def test_header_row_excluded_from_manifest_count(self, monkeypatch):
+        manifest = "object_name,size,md5\nobj1,100,abcd\nobj2,200,efgh\nobj3,300,ijkl\n"
+        _fake_read_baseline_text(monkeypatch, {"s3_manifest.csv": manifest})
+        stats = {"usage": {"rgw.main": {"num_objects": 3}}}
+        _fake_run_ceph_command(monkeypatch, {"radosgw-admin bucket stats": json.dumps(stats)})
+        result = fw.run_test_case(gb.TcPost015S3DataIntegrity(), _ctx())
+        # Without header exclusion this would compare 3 (live) vs 4 (rows including header) and fail.
+        assert result.criteria[1].passed is True
+
 
 class TestTcPost016:
     def test_always_manual_review(self, monkeypatch):
@@ -489,6 +532,23 @@ class TestTcPost016:
 # ---------------------------------------------------------------------------
 # TC-POST-017 (background)
 # ---------------------------------------------------------------------------
+
+
+class TestFindPgStats:
+    def test_top_level_pg_stats(self):
+        assert gb._find_pg_stats({"pg_stats": [{"pgid": "1.0"}]}) == [{"pgid": "1.0"}]
+
+    def test_nested_under_some_wrapper_key(self):
+        """Regression test for the code-review finding that the old
+        fallback guessed a specific wrapper key name ("pg_map") that didn't
+        match this codebase's own "pgmap" convention and was never
+        verified -- the fix searches one level deep for ANY wrapper
+        containing pg_stats, regardless of its exact key name."""
+        data = {"pgmap": {"pg_stats": [{"pgid": "2.0"}]}}
+        assert gb._find_pg_stats(data) == [{"pgid": "2.0"}]
+
+    def test_missing_entirely_returns_empty(self):
+        assert gb._find_pg_stats({"something_else": {}}) == []
 
 
 class TestTcPost017:
@@ -622,6 +682,11 @@ class TestTcPost020:
         result = fw.run_test_case(gb.TcPost020PgAutoscaler(), _ctx())
         assert result.criteria[1].passed is None
 
+    def test_malformed_json_is_error_not_silent_empty_pools(self, monkeypatch):
+        _fake_run_ceph_command(monkeypatch, {"autoscale-status": "not json"})
+        result = fw.run_test_case(gb.TcPost020PgAutoscaler(), _ctx())
+        assert result.status == fw.TestStatus.ERROR
+
 
 class TestTcPost021:
     def test_upmap_mode_passes_first_criterion(self, monkeypatch):
@@ -639,6 +704,11 @@ class TestTcPost021:
         assert result.criteria[0].passed is False
         assert result.status == fw.TestStatus.FAIL
 
+    def test_malformed_json_is_error(self, monkeypatch):
+        _fake_run_ceph_command(monkeypatch, {"ceph balancer status": "not json", "ceph balancer eval": ""})
+        result = fw.run_test_case(gb.TcPost021Balancer(), _ctx())
+        assert result.status == fw.TestStatus.ERROR
+
 
 class TestTcPost022:
     def test_always_manual_review(self, monkeypatch):
@@ -648,9 +718,9 @@ class TestTcPost022:
 
 
 class TestTcPost023:
-    def test_always_raises_test_case_error(self):
+    def test_always_declined_as_skip(self):
         result = fw.run_test_case(gb.TcPost023DashboardWorks(), _ctx())
-        assert result.status == fw.TestStatus.ERROR
+        assert result.status == fw.TestStatus.SKIP
 
 
 class TestTcPost024:
@@ -789,6 +859,19 @@ class TestTcPost035:
         result = fw.run_test_case(gb.TcPost035CephfsMultiMds(), _ctx())
         assert result.status == fw.TestStatus.FAIL
 
+    def test_malformed_fs_ls_json_is_error(self, monkeypatch):
+        _fake_run_ceph_command(monkeypatch, {"ceph fs ls -f json": "not json"})
+        result = fw.run_test_case(gb.TcPost035CephfsMultiMds(), _ctx())
+        assert result.status == fw.TestStatus.ERROR
+
+    def test_malformed_fs_status_json_is_error(self, monkeypatch):
+        _fake_run_ceph_command(
+            monkeypatch,
+            {"ceph fs ls -f json": json.dumps([{"name": "cephfs"}]), "ceph fs status": "not json"},
+        )
+        result = fw.run_test_case(gb.TcPost035CephfsMultiMds(), _ctx())
+        assert result.status == fw.TestStatus.ERROR
+
 
 class TestTcPost037:
     def test_requires_rgw_endpoint_vip(self):
@@ -857,7 +940,7 @@ class TestTcPost039:
         gb.TcPost045InternalScripts,
     ],
 )
-def test_declined_automation_cases_always_error(test_case_cls):
+def test_declined_automation_cases_always_skip(test_case_cls):
     result = fw.run_test_case(test_case_cls(), _ctx(client_host="client1"))
-    assert result.status == fw.TestStatus.ERROR
+    assert result.status == fw.TestStatus.SKIP
     assert result.notes

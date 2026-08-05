@@ -26,10 +26,16 @@ def _configure_nodes(monkeypatch, settings, *, mon="", mgr="", osd="", rgw=""):
 
 
 def _redirect_baseline_dir(monkeypatch, tmp_path):
-    """Points the route module's baseline-upload directory at a tmp dir
-    instead of the real project-root test_runner_baselines/ -- otherwise
-    running this suite would write real files into the checkout."""
-    monkeypatch.setattr(test_runner_route, "BASELINE_FILES_DIR", tmp_path / "test_runner_baselines")
+    """Points the shared baseline-upload directory at a tmp dir instead of
+    the real project-root test_runner_baselines/ -- otherwise running this
+    suite would write real files into the checkout. Patches
+    `shared.test_runner_baselines.BASELINE_FILES_DIR` (via
+    `test_runner_route.baselines`, the same module object) rather than a
+    module-local name on test_runner_route itself -- the route file only
+    ever reads `baselines.BASELINE_FILES_DIR` (qualified), so patching the
+    shared module's own attribute is the one place that actually affects
+    every reader (this route file AND worker/executor/test_runner/group_b.py)."""
+    monkeypatch.setattr(test_runner_route.baselines, "BASELINE_FILES_DIR", tmp_path / "test_runner_baselines")
 
 
 # -- GET /api/test-runner/config ---------------------------------------------
@@ -57,7 +63,7 @@ def test_get_config_empty_state_returns_defaults_not_error(dashboard_client, mon
     assert data["rgw_endpoint_vip"] is None
     assert data["test_groups"] == []
     assert data["priorities"] == []
-    assert data["baseline_files"] == {key: False for key in test_runner_route.BASELINE_FILE_KEYS}
+    assert data["baseline_files"] == {key: False for key in test_runner_route.baselines.BASELINE_FILE_KEYS}
 
     with db_module.SessionLocal() as session:
         assert session.query(RunnerConfigModel).first() is None
@@ -178,12 +184,12 @@ def test_upload_all_seven_baseline_keys_succeed(dashboard_client, monkeypatch, t
     _redirect_baseline_dir(monkeypatch, tmp_path)
     _login(dashboard_client)
 
-    for key in test_runner_route.BASELINE_FILE_KEYS:
+    for key in test_runner_route.baselines.BASELINE_FILE_KEYS:
         response = _upload_baseline(dashboard_client, key, content=key.encode())
         assert response.status_code == 200
 
     final = dashboard_client.get("/api/test-runner/config").json()
-    assert final["baseline_files"] == {key: True for key in test_runner_route.BASELINE_FILE_KEYS}
+    assert final["baseline_files"] == {key: True for key in test_runner_route.baselines.BASELINE_FILE_KEYS}
 
 
 # -- POST /api/test-runner/ssh-check -----------------------------------------

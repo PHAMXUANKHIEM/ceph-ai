@@ -31,6 +31,7 @@ __all__ = [
     "TestResult",
     "TestRunContext",
     "TestCaseError",
+    "TestCaseDeclined",
     "TestCase",
     "run_test_case",
     "poll_test_case",
@@ -131,6 +132,22 @@ class TestCaseError(Exception):
     """
 
 
+class TestCaseDeclined(TestCaseError):
+    """Raised when a TestCase is permanently not automatable BY DESIGN --
+    not a per-run misconfiguration a different TestRunContext could fix
+    (that's plain TestCaseError), but something no config will ever change:
+    a real browser session is required, or the only way to proceed would be
+    guessing a destructive target (a specific OSD/MON to remove, a spare
+    disk device) the source document itself leaves as an operator
+    placeholder. Maps to TestStatus.SKIP instead of ERROR (see
+    run_test_case()/poll_test_case()) so a caller can tell "retry after
+    fixing config" apart from "never automatable, mark Pass/Fail manually
+    via FR37" without parsing free-text `notes`. Subclasses TestCaseError
+    so existing `except (TestCaseError, ExecutorError)` call sites still
+    catch it unchanged.
+    """
+
+
 class TestCase:
     """Base class every Group A-D test case subclasses. Two execution
     shapes, matching FR37's split between one-shot checks (evaluate a single
@@ -172,13 +189,23 @@ def run_test_case(test_case: TestCase, ctx: TestRunContext) -> TestResult:
     catching TestCaseError (unmet precondition) and ExecutorError (SSH/
     command failure) into TestStatus.ERROR rather than letting either
     propagate -- one misconfigured/unreachable test case must not abort a
-    whole Group A run. Anything else (a real bug in the TestCase itself)
-    propagates so it surfaces during development instead of being silently
-    swallowed as a test result.
+    whole Group A run. TestCaseDeclined (a TestCaseError subclass) maps to
+    TestStatus.SKIP instead -- checked first since it must not fall through
+    to the ERROR branch below. Anything else (a real bug in the TestCase
+    itself) propagates so it surfaces during development instead of being
+    silently swallowed as a test result.
     """
     started_at = datetime.utcnow()
     try:
         result = test_case.run(ctx)
+    except TestCaseDeclined as exc:
+        return TestResult(
+            test_id=test_case.id,
+            status=TestStatus.SKIP,
+            notes=str(exc),
+            started_at=started_at,
+            finished_at=datetime.utcnow(),
+        )
     except (TestCaseError, ExecutorError) as exc:
         return TestResult(
             test_id=test_case.id,
@@ -195,15 +222,20 @@ def run_test_case(test_case: TestCase, ctx: TestRunContext) -> TestResult:
 
 def poll_test_case(test_case: TestCase, ctx: TestRunContext, state: Any) -> tuple[Any, TestResult]:
     """Background-test equivalent of run_test_case(): calls
-    test_case.poll(ctx, state), catches TestCaseError/ExecutorError into a
-    TestStatus.ERROR TestResult (state is left unchanged so the caller can
-    retry the same poll on the next tick rather than losing progress), and
-    fills in `status` via TestResult.decide_status() the same way
-    run_test_case() does so individual TestCase.poll() implementations never
-    have to compute status themselves.
+    test_case.poll(ctx, state), catches TestCaseDeclined into TestStatus.SKIP
+    and TestCaseError/ExecutorError into TestStatus.ERROR (state is left
+    unchanged in both cases so the caller can retry the same poll on the
+    next tick rather than losing progress), and fills in `status` via
+    TestResult.decide_status() the same way run_test_case() does so
+    individual TestCase.poll() implementations never have to compute status
+    themselves.
     """
     try:
         new_state, result = test_case.poll(ctx, state)
+    except TestCaseDeclined as exc:
+        return state, TestResult(
+            test_id=test_case.id, status=TestStatus.SKIP, notes=str(exc), finished_at=datetime.utcnow()
+        )
     except (TestCaseError, ExecutorError) as exc:
         return state, TestResult(
             test_id=test_case.id, status=TestStatus.ERROR, notes=str(exc), finished_at=datetime.utcnow()

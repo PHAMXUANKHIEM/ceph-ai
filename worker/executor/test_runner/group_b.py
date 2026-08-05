@@ -37,16 +37,18 @@ gives), not existing production cluster membership.
 from __future__ import annotations
 
 import base64
+import csv
 import difflib
 import json
 import re
 from datetime import datetime
 from typing import Optional
 
-from worker.executor.ssh_executor import execute_with_retry
+from worker.executor.ssh_executor import ExecutorError, execute_with_retry
 from worker.executor.test_runner.framework import (
     CriterionResult,
     TestCase,
+    TestCaseDeclined,
     TestCaseError,
     TestGroup,
     TestPriority,
@@ -529,6 +531,47 @@ class TcPost009NoNewCrash(TestCase):
 # ---------------------------------------------------------------------------
 
 
+def _verify_and_cleanup_rbd_image(client: str, image_label: str, manifest: str, mount_commands: str) -> tuple[str, list[str], int]:
+    """Shared per-image body for TC-POST-010/011: runs the checksum
+    verification, then ALWAYS attempts cleanup (umount/unmap), and returns
+    (raw_output, problems, ok_count) rather than letting either step's
+    exception propagate uncaught -- two deliberate choices, both fixing
+    real gaps found in code review:
+
+    1. `_verify_checksum_manifest`'s own ExecutorError (a transient SSH
+       failure, not a real checksum mismatch) is caught HERE rather than
+       left to propagate: for TC-POST-010's 5-image loop, an uncaught
+       exception on image 2 would abort the whole run() and discard image
+       1's already-completed results. Recorded as a `problems` entry so it
+       still counts against the "100% OK" criterion (a checksum we
+       couldn't even attempt to verify is not a verified-OK checksum).
+    2. Cleanup's own result is no longer masked by a trailing `echo done`
+       (which always reports "success" regardless of whether umount/unmap
+       actually worked) -- a real cleanup failure is now both caught (so it
+       can't itself abort the loop or mask a checksum-step exception via
+       Python's finally-block exception-replacement semantics) and
+       surfaced as a `problems` entry, since a stuck mapping could affect
+       the NEXT image's mount.
+    """
+    problems: list[str] = []
+    output = ""
+    ok_count = 0
+    try:
+        output, failed, ok_count = _verify_checksum_manifest(client, manifest, RBD_VERIFY_MOUNT, mount_commands)
+        problems.extend(f"{image_label}: {ln}" for ln in failed)
+    except ExecutorError as exc:
+        problems.append(f"{image_label}: loi SSH khi kiem tra checksum, bo qua image nay ({exc})")
+    try:
+        cleanup_output = _run_script(
+            client, f"umount {RBD_VERIFY_MOUNT} 2>&1; rbd unmap {RBD_VERIFY_DEVICE} 2>&1; echo \"EXIT:$?\""
+        )
+        if _step_exit_code(cleanup_output) not in (0, None):
+            problems.append(f"{image_label}: don dep sau kiem tra that bai (umount/unmap) -- co the anh huong image tiep theo")
+    except ExecutorError as exc:
+        problems.append(f"{image_label}: loi SSH khi don dep (umount/unmap): {exc}")
+    return output, problems, ok_count
+
+
 class TcPost010RbdReplicatedChecksum(TestCase):
     """Toan ven du lieu RBD replicated. Maps+mounts each of the 5 baseline
     images in turn (reusing one mount point/device, matching the document's
@@ -536,7 +579,9 @@ class TcPost010RbdReplicatedChecksum(TestCase):
     uploaded `rbd_rep.sha256` manifest against each mount via
     _verify_checksum_manifest() (see that helper's docstring for why `cd +
     sha256sum -c` replaces the document's literal `--directory=` flag,
-    which plain sha256sum doesn't actually have).
+    which plain sha256sum doesn't actually have). Per-image verify+cleanup
+    is isolated via _verify_and_cleanup_rbd_image() so one image's SSH
+    hiccup doesn't discard the other 4 images' results.
     """
 
     id = "TC-POST-010"
@@ -555,12 +600,9 @@ class TcPost010RbdReplicatedChecksum(TestCase):
                 f'rbd map {RBD_REP_POOL}/{image} 2>&1\n'
                 f"mount {RBD_VERIFY_DEVICE} {RBD_VERIFY_MOUNT} 2>&1\n"
             )
-            try:
-                output, failed, ok_count = _verify_checksum_manifest(client, manifest, RBD_VERIFY_MOUNT, mount_commands)
-            finally:
-                _run_script(client, f"umount {RBD_VERIFY_MOUNT} 2>/dev/null; rbd unmap {RBD_VERIFY_DEVICE} 2>/dev/null; echo done")
+            output, image_problems, ok_count = _verify_and_cleanup_rbd_image(client, image, manifest, mount_commands)
             raw_chunks.append(f"== {image} ==\n{output}")
-            problems.extend(f"{image}: {ln}" for ln in failed)
+            problems.extend(image_problems)
             ok_total += ok_count
         criteria = [
             CriterionResult(
@@ -594,15 +636,12 @@ class TcPost011RbdErasureCodedChecksum(TestCase):
         mount_commands = (
             f"rbd map {RBD_EC_POOL}/{RBD_EC_IMAGE} 2>&1\n" f"mount {RBD_VERIFY_DEVICE} {RBD_VERIFY_MOUNT} 2>&1\n"
         )
-        try:
-            output, failed, ok_count = _verify_checksum_manifest(client, manifest, RBD_VERIFY_MOUNT, mount_commands)
-        finally:
-            _run_script(client, f"umount {RBD_VERIFY_MOUNT} 2>/dev/null; rbd unmap {RBD_VERIFY_DEVICE} 2>/dev/null; echo done")
+        output, problems, ok_count = _verify_and_cleanup_rbd_image(client, RBD_EC_IMAGE, manifest, mount_commands)
         criteria = [
             CriterionResult(
                 "100% checksum khop tren toan bo image thuoc pool EC",
-                passed=(False if failed else (True if ok_count > 0 else None)),
-                detail="; ".join(failed) if failed else (f"{ok_count} file OK" if ok_count else "khong xac minh duoc file nao"),
+                passed=(False if problems else (True if ok_count > 0 else None)),
+                detail="; ".join(problems) if problems else (f"{ok_count} file OK" if ok_count else "khong xac minh duoc file nao"),
             )
         ]
         return TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=output)
@@ -649,6 +688,11 @@ rbd children {RBD_REP_POOL}/{self.IMAGE}@snap_baseline 2>&1
 echo "EXIT:$?"
 umount {self.CLONE_MOUNT} 2>/dev/null
 rbd unmap {self.CLONE_DEVICE} 2>/dev/null
+# `true` guarantees the whole script's own exit status stays 0 even if
+# cleanup above failed (e.g. nothing was ever mapped because mapmount
+# failed) -- otherwise execute_with_retry() would raise ExecutorError over
+# a cleanup failure and discard every step result already parsed above.
+true
 """
         output = _run_script(client, script)
         steps = _parse_steps(output)
@@ -743,6 +787,15 @@ class TcPost015S3DataIntegrity(TestCase):
     uploaded `s3_manifest.csv` baseline's row count) is checked. Bucket
     name is a fixed lab constant (S3_MANIFEST_VERIFY_BUCKET) since the
     document's own example uses an unresolved `<ten_bucket>` placeholder.
+
+    Requires the `s3_manifest.csv` baseline via `_require_baseline()` (a
+    missing upload is now TestStatus.ERROR, matching every other
+    baseline-dependent Group B test case, instead of silently degrading to
+    an ambiguous manual-review criterion). Row-counting uses `csv.Sniffer`
+    to detect and exclude a header row -- the manifest is an actual .csv,
+    and an operator-produced one plausibly has a header, which a naive
+    line-count would previously have counted as an extra "object" and
+    reported a false MISMATCH on an otherwise perfectly healthy bucket.
     """
 
     id = "TC-POST-015"
@@ -752,17 +805,19 @@ class TcPost015S3DataIntegrity(TestCase):
 
     def run(self, ctx: TestRunContext) -> TestResult:
         rgw_host = _require_rgw_host(ctx, self.id)
-        manifest_text = read_baseline_text("s3_manifest.csv")
+        manifest_text = _require_baseline("s3_manifest.csv", self.id)
         output = run_ceph_command(rgw_host, f"radosgw-admin bucket stats --bucket={S3_MANIFEST_VERIFY_BUCKET}")
+        stats = _parse_json(output, self.id)
         try:
-            stats = json.loads(output)
-            live_count = stats.get("usage", {}).get("rgw.main", {}).get("num_objects")
-        except (ValueError, TypeError, AttributeError):
+            live_count = (stats.get("usage") or {}).get("rgw.main", {}).get("num_objects")
+        except (AttributeError, TypeError):
             live_count = None
-        expected_count = None
-        if manifest_text is not None:
-            rows = [ln for ln in manifest_text.splitlines() if ln.strip()]
-            expected_count = len(rows)
+        rows = [ln for ln in manifest_text.splitlines() if ln.strip()]
+        try:
+            has_header = bool(rows) and csv.Sniffer().has_header("\n".join(rows[:10]))
+        except csv.Error:
+            has_header = False
+        expected_count = len(rows) - (1 if has_header else 0)
         criteria = [
             CriterionResult(
                 "Khong co dong MISMATCH/MISSING trong report",
@@ -807,11 +862,26 @@ class TcPost016S3ObjectVersioning(TestCase):
         return TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=output)
 
 
+def _find_pg_stats(data: dict) -> list:
+    """`ceph pg dump --format json`'s top-level wrapper key for `pg_stats`
+    has varied across Ceph versions/configurations -- rather than guess one
+    specific wrapper key name (a prior version of this function guessed
+    "pg_map", which doesn't match this codebase's own "pgmap" convention
+    used elsewhere for `ceph -s --format json` and was never actually
+    verified against real Ceph output), search one level deep for any dict
+    value containing a `pg_stats` list, in addition to the top level.
+    """
+    if isinstance(data.get("pg_stats"), list):
+        return data["pg_stats"]
+    for value in data.values():
+        if isinstance(value, dict) and isinstance(value.get("pg_stats"), list):
+            return value["pg_stats"]
+    return []
+
+
 def _pg_deep_scrub_stamps(mon_host: str, test_id: str) -> dict[str, str]:
     data = _parse_json(run_ceph_command(mon_host, "ceph pg dump --format json"), test_id)
-    stats = data.get("pg_stats")
-    if stats is None:
-        stats = (data.get("pg_map") or {}).get("pg_stats") or []
+    stats = _find_pg_stats(data)
     return {e.get("pgid"): e.get("last_deep_scrub_stamp") for e in stats if e.get("pgid")}
 
 
@@ -961,10 +1031,7 @@ class TcPost020PgAutoscaler(TestCase):
     def run(self, ctx: TestRunContext) -> TestResult:
         mon = _require_mon_host(ctx, self.id)
         output = run_ceph_command(mon, "ceph osd pool autoscale-status -f json")
-        try:
-            pools = json.loads(output)
-        except (ValueError, TypeError):
-            pools = []
+        pools = _parse_json(output, self.id)
         suggested = [
             p.get("pool_name")
             for p in pools
@@ -994,11 +1061,8 @@ class TcPost021Balancer(TestCase):
         mon = _require_mon_host(ctx, self.id)
         status_output = run_ceph_command(mon, "ceph balancer status -f json")
         eval_output = run_ceph_command(mon, "ceph balancer eval")
-        try:
-            status = json.loads(status_output)
-            mode = status.get("mode")
-        except (ValueError, TypeError):
-            mode = None
+        status = _parse_json(status_output, self.id)
+        mode = status.get("mode")
         criteria = [
             CriterionResult("Mode giu nguyen (upmap)", passed=(mode == "upmap") if mode is not None else None, detail=f"mode = {mode}"),
             CriterionResult("Score khong xau di", passed=None, detail="khong co baseline eval score duoc luu de so sanh"),
@@ -1050,7 +1114,7 @@ class TcPost023DashboardWorks(TestCase):
     priority = TestPriority.P2
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: doi hoi thao tac trinh duyet thu cong (dang nhap Dashboard, kiem tra tung "
             "trang) -- khong tu dong hoa qua SSH duoc; danh dau Pass/Fail thu cong qua FR37 manual override"
         )
@@ -1245,6 +1309,14 @@ class TcPost033RbdMirroring(TestCase):
 
 
 class TcPost034CephfsReadWrite(TestCase):
+    """Ghi/doc CephFS moi. The "io" step tracks write_errors/read_errors
+    explicitly per iteration (`|| write_errors=$((write_errors+1))`) instead
+    of relying on the loop's/script's own final exit code -- `rm -f` (the
+    prior implementation's last command before the EXIT marker) never fails
+    on missing files, so a write/read failure partway through the 10000-file
+    loop would otherwise be completely invisible to the pass/fail criterion.
+    """
+
     id = "TC-POST-034"
     name = "Ghi/doc CephFS moi"
     group = TestGroup.B
@@ -1262,10 +1334,19 @@ class TcPost034CephfsReadWrite(TestCase):
         script = f"""
 {mount_commands}
 echo "===STEP:io==="
-for i in $(seq 1 {self.FILE_COUNT}); do echo "data-$i" > {CEPHFS_VERIFY_MOUNT}/regression_$i.txt; done
-for i in $(seq 1 {self.FILE_COUNT}); do cat {CEPHFS_VERIFY_MOUNT}/regression_$i.txt > /dev/null; done
+write_errors=0
+for i in $(seq 1 {self.FILE_COUNT}); do
+  echo "data-$i" > {CEPHFS_VERIFY_MOUNT}/regression_$i.txt 2>/tmp/test_runner_io_err.log || write_errors=$((write_errors+1))
+done
+read_errors=0
+for i in $(seq 1 {self.FILE_COUNT}); do
+  cat {CEPHFS_VERIFY_MOUNT}/regression_$i.txt > /dev/null 2>>/tmp/test_runner_io_err.log || read_errors=$((read_errors+1))
+done
 rm -f {CEPHFS_VERIFY_MOUNT}/regression_*.txt
-echo "EXIT:$?"
+echo "write_errors=$write_errors read_errors=$read_errors"
+tail -c 2000 /tmp/test_runner_io_err.log 2>/dev/null
+rm -f /tmp/test_runner_io_err.log
+if [ "$write_errors" -eq 0 ] && [ "$read_errors" -eq 0 ]; then echo "EXIT:0"; else echo "EXIT:1"; fi
 echo "===STEP:slowcheck==="
 ceph health detail 2>&1 | grep -i "slow metadata"
 echo "EXIT:$?"
@@ -1304,20 +1385,17 @@ class TcPost035CephfsMultiMds(TestCase):
     def run(self, ctx: TestRunContext) -> TestResult:
         mon = _require_mon_host(ctx, self.id)
         ls_output = run_ceph_command(mon, "ceph fs ls -f json")
+        fs_list = _parse_json(ls_output, self.id)
         try:
-            fs_list = json.loads(ls_output)
             fs_name = fs_list[0]["name"] if fs_list else None
-        except (ValueError, TypeError, KeyError, IndexError):
+        except (KeyError, IndexError, TypeError):
             fs_name = None
         if not fs_name:
             raise TestCaseError(f"{self.id}: khong tim thay CephFS filesystem nao qua `ceph fs ls`")
         status_before = run_ceph_command(mon, f"ceph fs set {fs_name} max_mds 2 2>&1; ceph fs status {fs_name} -f json")
-        try:
-            status = json.loads(status_before.strip().splitlines()[-1]) if status_before.strip() else {}
-            mds_versions = status.get("mdsmap") or []
-            active_ranks = [m for m in mds_versions if m.get("state") == "active"]
-        except (ValueError, TypeError):
-            active_ranks = []
+        status = _parse_json(status_before.strip().splitlines()[-1], self.id) if status_before.strip() else {}
+        mds_versions = status.get("mdsmap") or []
+        active_ranks = [m for m in mds_versions if m.get("state") == "active"]
         criteria = [
             CriterionResult(
                 "2 rank deu up:active, metadata phan bo can bang",
@@ -1342,7 +1420,7 @@ class TcPost036MdsFailover(TestCase):
     priority = TestPriority.P1
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: chua co cau hinh MDS host (Epic 10's config khong co vai tro MDS rieng) -- "
             "khong xac dinh duoc host nao de dung MDS dang active"
         )
@@ -1456,7 +1534,7 @@ class TcPost040AddOsd(TestCase):
     priority = TestPriority.P1
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: can chi dinh thiet bi dia trong cu the (vd /dev/sdX) -- khong co cau hinh nao "
             "de tu dong chon an toan, tranh nguy co pha huy dia dang dung"
         )
@@ -1473,7 +1551,7 @@ class TcPost041RemoveOsd(TestCase):
     priority = TestPriority.P1
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(f"{self.id}: can chi dinh OSD id cu the de xoa -- qua rui ro de tu dong chon")
+        raise TestCaseDeclined(f"{self.id}: can chi dinh OSD id cu the de xoa -- qua rui ro de tu dong chon")
 
 
 class TcPost042ReplaceMon(TestCase):
@@ -1488,7 +1566,7 @@ class TcPost042ReplaceMon(TestCase):
     priority = TestPriority.P2
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: can chi dinh mon_id cu the; xoa MON dang duoc engine nay dung lam SSH target se "
             "lam hong moi test case khac trong lan chay nay"
         )
@@ -1509,7 +1587,7 @@ class TcPost043RestartCluster(TestCase):
     priority = TestPriority.P1
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: reboot toan bo node la thao tac qua rui ro de tu dong hoa khong co xac nhan "
             "tuong minh cua nguoi van hanh -- can FR37 manual override"
         )
@@ -1527,7 +1605,7 @@ class TcPost044ErasureCodeFailure(TestCase):
     priority = TestPriority.P1
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: can chi dinh 2 OSD id cu the thuoc pool EC de dung -- qua rui ro de tu dong chon"
         )
 
@@ -1542,7 +1620,7 @@ class TcPost045InternalScripts(TestCase):
     priority = TestPriority.P2
 
     def run(self, ctx: TestRunContext) -> TestResult:
-        raise TestCaseError(
+        raise TestCaseDeclined(
             f"{self.id}: script van hanh noi bo cua tung don vi trien khai khong thuoc pham vi du an nay -- "
             "can nguoi van hanh tu chay va doi chieu"
         )

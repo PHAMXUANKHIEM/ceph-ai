@@ -8,7 +8,7 @@ from dashboard.routes.auth import require_login
 from shared import db
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.models import TestRunnerConfig
-from shared.test_runner_baselines import BASELINE_FILE_KEYS, BASELINE_FILES_DIR
+from shared import test_runner_baselines as baselines
 from worker.executor.ssh_executor import test_all_nodes
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,19 @@ async def test_runner_health():
 
 # BASELINE_FILE_KEYS/BASELINE_FILES_DIR now live in shared/test_runner_baselines.py
 # (Story 10.4) so worker/executor/test_runner/group_b.py can read the same
-# uploaded files without worker/ importing from dashboard/. Stored on disk
-# keyed by the fixed key name (not the client's original filename)
-# specifically to avoid a client-supplied filename being used to build a
-# filesystem path (path-injection risk) -- see upload_baseline_file() below.
+# uploaded files without worker/ importing from dashboard/. Referenced below
+# as `baselines.BASELINE_FILES_DIR` (qualified, via `import ... as baselines`)
+# rather than `from shared.test_runner_baselines import BASELINE_FILES_DIR` --
+# the latter would bind a SECOND, independent copy of the name in this
+# module's own namespace, so a test that monkeypatches
+# shared.test_runner_baselines.BASELINE_FILES_DIR (the one true source
+# group_b.py's baseline_file_path()/read_baseline_text() actually read)
+# would silently NOT affect this route file's own reads, and vice versa.
+# Qualified access keeps exactly one binding, patchable from either side.
+# Stored on disk keyed by the fixed key name (not the client's original
+# filename) specifically to avoid a client-supplied filename being used to
+# build a filesystem path (path-injection risk) -- see upload_baseline_file()
+# below.
 
 
 def _get_or_create_config(session) -> TestRunnerConfig:
@@ -78,7 +87,7 @@ def _config_response(config: TestRunnerConfig | None) -> dict:
         "test_groups": json.loads(config.test_groups) if config and config.test_groups else [],
         "priorities": json.loads(config.priorities) if config and config.priorities else [],
         "baseline_files": {
-            key: (key in baseline_present) for key in BASELINE_FILE_KEYS
+            key: (key in baseline_present) for key in baselines.BASELINE_FILE_KEYS
         },
     }
 
@@ -124,20 +133,20 @@ async def save_test_runner_config(request: Request, user: str = Depends(require_
 async def upload_baseline_file(
     baseline_key: str, file: UploadFile = File(...), user: str = Depends(require_login)
 ):
-    if baseline_key not in BASELINE_FILE_KEYS:
+    if baseline_key not in baselines.BASELINE_FILE_KEYS:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"baseline_key không hợp lệ: {baseline_key!r} -- chỉ chấp nhận "
-                f"{', '.join(BASELINE_FILE_KEYS)}."
+                f"{', '.join(baselines.BASELINE_FILE_KEYS)}."
             ),
         )
 
-    BASELINE_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    baselines.BASELINE_FILES_DIR.mkdir(parents=True, exist_ok=True)
     # Saved under the fixed baseline_key, never the client-supplied
     # filename (file.filename) -- avoids path-injection risk from a
     # client-controlled name reaching the filesystem.
-    dest_path = BASELINE_FILES_DIR / baseline_key
+    dest_path = baselines.BASELINE_FILES_DIR / baseline_key
     raw_bytes = await file.read()
     dest_path.write_bytes(raw_bytes)
 
@@ -148,7 +157,7 @@ async def upload_baseline_file(
         # absolute path or a path computed against PROJECT_ROOT -- keeps
         # this independent of exactly where BASELINE_FILES_DIR resolves to
         # (tests point it at a tmp dir).
-        baseline_present[baseline_key] = f"{BASELINE_FILES_DIR.name}/{baseline_key}"
+        baseline_present[baseline_key] = f"{baselines.BASELINE_FILES_DIR.name}/{baseline_key}"
         config.baseline_files = json.dumps(baseline_present)
         session.commit()
         session.refresh(config)

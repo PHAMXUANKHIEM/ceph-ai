@@ -79,6 +79,15 @@ class OneShotBugTestCase(fw.TestCase):
         raise TypeError("boom")
 
 
+class OneShotDeclinedTestCase(fw.TestCase):
+    id = "TC-FAKE-DECLINED"
+    name = "fake declined"
+    priority = fw.TestPriority.P1
+
+    def run(self, ctx):
+        raise fw.TestCaseDeclined("never automatable by design")
+
+
 def _ctx(**overrides):
     defaults = dict(mon_host="mon1", osd_hosts=[], rgw_hosts=[], client_host=None)
     defaults.update(overrides)
@@ -152,6 +161,14 @@ class TestRunTestCase:
         else:
             raise AssertionError("expected TypeError to propagate")
 
+    def test_declined_becomes_skip_status_not_error(self):
+        """TestCaseDeclined (added in Story 10.4) is a TestCaseError
+        subclass but must map to SKIP, not ERROR -- distinguishing "never
+        automatable by design" from "this run's config was incomplete"."""
+        result = fw.run_test_case(OneShotDeclinedTestCase(), _ctx())
+        assert result.status == fw.TestStatus.SKIP
+        assert "never automatable by design" in result.notes
+
 
 class BackgroundOkTestCase(fw.TestCase):
     id = "TC-FAKE-BG-OK"
@@ -179,6 +196,16 @@ class BackgroundErrorTestCase(fw.TestCase):
         raise ExecutorError("connection dropped")
 
 
+class BackgroundDeclinedTestCase(fw.TestCase):
+    id = "TC-FAKE-BG-DECLINED"
+    name = "fake background declined"
+    priority = fw.TestPriority.P1
+    background = True
+
+    def poll(self, ctx, state):
+        raise fw.TestCaseDeclined("never automatable by design")
+
+
 class TestPollTestCase:
     def test_happy_path_threads_state_and_sets_running(self):
         new_state, result = fw.poll_test_case(BackgroundOkTestCase(), _ctx(), {"ticks": 0})
@@ -191,6 +218,13 @@ class TestPollTestCase:
         assert new_state == state
         assert result.status == fw.TestStatus.ERROR
         assert "connection dropped" in result.notes
+
+    def test_declined_preserves_state_and_sets_skip(self):
+        state = {"ticks": 3}
+        new_state, result = fw.poll_test_case(BackgroundDeclinedTestCase(), _ctx(), state)
+        assert new_state == state
+        assert result.status == fw.TestStatus.SKIP
+        assert "never automatable by design" in result.notes
 
 
 class TestCheckBackgroundHandleHealth:
