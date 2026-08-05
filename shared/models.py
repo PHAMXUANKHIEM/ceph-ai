@@ -123,6 +123,20 @@ class Action(Base):
     # between "Đã duyệt" and the final EXECUTED/FAILED result. NULL for
     # every action_id that doesn't opt into writing it.
     execution_progress: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 2026-08-05: "Duyệt qua Telegram" (worker/telegram_approval_bot.py) —
+    # telegram_message_id is the Bot API message id of the Duyệt/Từ chối
+    # inline-keyboard message sent for THIS Action, needed later to edit
+    # that same message (remove the buttons, show the outcome) once
+    # approved/rejected from EITHER Telegram or the Dashboard — a separate
+    # process/poll cycle than the one that originally sent it, so it can't
+    # be recovered any other way. telegram_notified_at doubles as the
+    # dedup guard (NULL = "not sent to Telegram yet") the periodic scan in
+    # worker/telegram_approval_bot.py uses to never notify the same Action
+    # twice. Both NULL for every Action created before this feature/when
+    # the category is turned off — same "opt-in column, harmless when
+    # unused" posture as every other *_progress/*_at column on this model.
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    telegram_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

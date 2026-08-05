@@ -85,6 +85,8 @@ def test_action_has_required_columns():
         "target_nodes",
         "action_params",
         "execution_progress",
+        "telegram_message_id",
+        "telegram_notified_at",
         "executed_at",
         "created_at",
         "updated_at",

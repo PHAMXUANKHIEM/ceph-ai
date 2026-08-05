@@ -1,20 +1,30 @@
-"""Telegram Bot API client — OUTBOUND notifications only.
+"""Telegram Bot API client.
 
-Same "shared/, importable from both Dashboard and Worker without crossing
-AD-3's layering" posture as shared/router_client.py: dashboard/routes/
-settings.py's "Gửi thử" test-send button and worker/backup/alerting.py's
-real fail/overdue/AI-analysis alerts both call the one function below,
-neither reimplements the HTTP call.
+Two families of calls here, split by direction:
 
-Deliberately send-only, by design, not by omission: this project has no
-Telegram bot LISTENING for messages (no long-polling, no incoming webhook
-receiver anywhere in the codebase). A message sent from here is purely
-informational — nothing reads a reply back, and no text typed into
-Telegram can ever reach worker/executor/ or trigger a Command. Every
-remediation action still goes through the existing Incident/Action
-propose-then-approve flow (dashboard/routes/actions.py) exactly as before;
-Telegram only gets to know about it after a human decides here, not the
-other way around.
+- **Outbound-only** (`send_telegram_message`) — used by every alert
+  category that never needs a reply: backup (worker/backup/alerting.py),
+  cluster/hardware (shared/telegram_alerts.py), and the Settings page's
+  "Gửi thử" test button. A message sent this way is purely informational;
+  nothing reads a reply back.
+- **Approval-request** (`send_telegram_message_with_keyboard`,
+  `edit_telegram_message`, `get_telegram_updates`,
+  `answer_telegram_callback`) — 2026-08-05, backs worker/telegram_approval_bot.py's
+  "Duyệt qua Telegram" feature (an explicit, opt-in 4th category, its own
+  `telegram_approval_requests_enabled` toggle — see that module's own
+  docstring for the full design/trust-model). This IS the one place in
+  this codebase that reads INCOMING Telegram updates
+  (`get_telegram_updates`, Bot API long-polling `getUpdates`) — a
+  deliberate, scoped exception to this module's own former "send-only"
+  posture, added only because the operator explicitly asked for it.
+  Even so, an incoming update here can only ever trigger the SAME
+  approve/reject logic the Dashboard's own buttons already call
+  (worker/action_approval.py) — nothing new becomes executable that
+  wasn't already one click away on the Dashboard.
+
+Kept in shared/ (not worker/ or watcher/) so it stays importable from
+either process without crossing any layering boundary, same posture as
+shared/router_client.py.
 """
 
 from __future__ import annotations
@@ -26,39 +36,31 @@ TELEGRAM_TIMEOUT_SECONDS = 10
 
 
 class TelegramSendError(Exception):
-    """Raised for any failure sending a Telegram message — missing
-    config, a bad token/chat id, or a network/API failure. Callers decide
-    whether to swallow this (best-effort alert delivery, same posture as
-    the existing generic webhook in worker/backup/alerting.py) or surface
-    it (the Settings page's "Gửi thử" button, where the operator needs a
-    real error to know the config is wrong)."""
+    """Raised for any failure sending/editing a Telegram message, or
+    answering a callback — missing config, a bad token/chat id, or a
+    network/API failure. Callers decide whether to swallow this (best-
+    effort alert delivery, same posture as the existing generic webhook in
+    worker/backup/alerting.py) or surface it (the Settings page's "Gửi
+    thử" button, where the operator needs a real error to know the config
+    is wrong)."""
 
 
-def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
-    """POSTs `text` to `chat_id` via the Telegram Bot API's sendMessage.
-    Plain text, no parse_mode — alert text here is built from dynamic,
-    operator/AI-generated strings (error messages, log excerpts) that may
-    contain '<'/'>'/'&'; asking Telegram to parse that as HTML/Markdown
-    risks a 400 from a stray unescaped character, which is worse than
-    losing italics/bold formatting.
-
+def _call_telegram_api(bot_token: str, method: str, payload: dict, *, timeout: float) -> dict:
+    """Single choke point for every Telegram Bot API call in this module —
+    every method (sendMessage/editMessageText/getUpdates/
+    answerCallbackQuery) shares the exact same success/failure shape
+    (`{"ok": true, "result": ...}` or `{"ok": false, "description": ...}`),
+    so the "is this actually a success" check lives in exactly one place.
     Raises TelegramSendError on any failure — including a token/chat id
     that resolves to an API-level rejection (Telegram itself still
-    responds 200 with `"ok": false` for some of those, so a bare
+    responds HTTP 200 with `"ok": false` for some of those, so a bare
     raise_for_status() alone would miss them) — so a caller never mistakes
-    a silently-rejected message for a delivered one."""
-    if not bot_token or not chat_id:
-        raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
-
-    url = f"{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage"
+    a silently-rejected call for a successful one."""
+    url = f"{TELEGRAM_API_BASE}/bot{bot_token}/{method}"
     try:
-        response = httpx.post(
-            url,
-            json={"chat_id": chat_id, "text": text},
-            timeout=TELEGRAM_TIMEOUT_SECONDS,
-        )
+        response = httpx.post(url, json=payload, timeout=timeout)
     except Exception as exc:
-        raise TelegramSendError(f"Không gửi được tới Telegram: {exc}") from exc
+        raise TelegramSendError(f"Không gọi được Telegram API ({method}): {exc}") from exc
 
     try:
         body = response.json()
@@ -68,4 +70,107 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
     if response.status_code != 200 or not isinstance(body, dict) or not body.get("ok", False):
         description = (body or {}).get("description") if isinstance(body, dict) else None
         detail = description or response.text or f"HTTP {response.status_code}"
-        raise TelegramSendError(f"Telegram API từ chối: {detail}")
+        raise TelegramSendError(f"Telegram API ({method}) từ chối: {detail}")
+    return body
+
+
+def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
+    """POSTs `text` to `chat_id` via the Telegram Bot API's sendMessage.
+    Plain text, no parse_mode — alert text here is built from dynamic,
+    operator/AI-generated strings (error messages, log excerpts) that may
+    contain '<'/'>'/'&'; asking Telegram to parse that as HTML/Markdown
+    risks a 400 from a stray unescaped character, which is worse than
+    losing italics/bold formatting."""
+    if not bot_token or not chat_id:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
+    _call_telegram_api(
+        bot_token, "sendMessage", {"chat_id": chat_id, "text": text}, timeout=TELEGRAM_TIMEOUT_SECONDS
+    )
+
+
+def send_telegram_message_with_keyboard(
+    bot_token: str, chat_id: str, text: str, buttons: list[tuple[str, str]]
+) -> int:
+    """Same as send_telegram_message, plus a SINGLE ROW of inline buttons
+    (`buttons` — list of (label, callback_data) pairs, e.g.
+    `[("✅ Duyệt", "approve:<action_id>"), ("❌ Từ chối", "reject:<action_id>")]`).
+    Returns the sent message's own `message_id` (Bot API `result.message_id`)
+    — the caller (worker/action_approval.py's Telegram sender) must persist
+    this on the Action row, since editing the message later (once a
+    decision is made, from either Telegram or the Dashboard) needs it and
+    happens in a completely separate poll cycle/process."""
+    if not bot_token or not chat_id:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
+        },
+    }
+    body = _call_telegram_api(bot_token, "sendMessage", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
+    return int(body["result"]["message_id"])
+
+
+def edit_telegram_message(bot_token: str, chat_id: str, message_id: int, text: str) -> None:
+    """Replaces the text of an already-sent message and ALWAYS clears its
+    inline keyboard (`reply_markup: {"inline_keyboard": []}`) — the only
+    real use case in this codebase is "a decision was just made, show the
+    outcome and remove the now-stale Duyệt/Từ chối buttons", never "edit
+    but keep the buttons", so there's no separate buttons parameter to get
+    wrong. Best-effort from the CALLER's side is expected here (a message
+    that was already deleted/too old to edit is a real, harmless Telegram
+    error — see worker/action_approval.py's own handling), not swallowed
+    inside this function."""
+    if not bot_token or not chat_id:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "reply_markup": {"inline_keyboard": []},
+    }
+    _call_telegram_api(bot_token, "editMessageText", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
+
+
+def get_telegram_updates(bot_token: str, offset: int | None, timeout_seconds: int) -> list[dict]:
+    """Long-polls Telegram's own `getUpdates` for up to `timeout_seconds`
+    (Bot API holds the HTTP connection open until an update arrives or the
+    timeout elapses — NOT a busy-poll) — the only inbound Telegram call in
+    this codebase, scoped to `allowed_updates=["callback_query"]` only
+    (this feature never needs to read plain chat messages, only inline-
+    button presses). `offset` should be the highest `update_id` already
+    processed + 1 (Telegram's own documented ack mechanism — passing it
+    tells the server it can stop re-delivering everything up to and
+    including that id); `None` on the very first call.
+
+    The HTTP client's own timeout is deliberately LARGER than
+    `timeout_seconds` (+10s slack) — Telegram's long-poll response can
+    legitimately take almost exactly `timeout_seconds` to arrive, and a
+    tighter client-side timeout would spuriously abort a call that was
+    about to succeed."""
+    if not bot_token:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token")
+    payload: dict = {"timeout": timeout_seconds, "allowed_updates": ["callback_query"]}
+    if offset is not None:
+        payload["offset"] = offset
+    body = _call_telegram_api(
+        bot_token, "getUpdates", payload, timeout=httpx.Timeout(timeout_seconds + 10)
+    )
+    result = body.get("result")
+    return result if isinstance(result, list) else []
+
+
+def answer_telegram_callback(bot_token: str, callback_query_id: str, text: str | None = None) -> None:
+    """Acknowledges a `callback_query` (a button press) — Telegram shows
+    the user a loading spinner on the button until this is called (or ~30s
+    elapses and the client gives up on its own); `text` (if given) pops up
+    as a small toast on the user's screen, used here to confirm "Đã duyệt"/
+    "Đã từ chối" right at the moment they tap, before the message itself
+    finishes being edited."""
+    if not bot_token:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token")
+    payload: dict = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    _call_telegram_api(bot_token, "answerCallbackQuery", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)

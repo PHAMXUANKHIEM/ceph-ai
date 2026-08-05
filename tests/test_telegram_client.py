@@ -1,7 +1,14 @@
 import pytest
 
 import shared.telegram_client as telegram_client
-from shared.telegram_client import TelegramSendError, send_telegram_message
+from shared.telegram_client import (
+    TelegramSendError,
+    answer_telegram_callback,
+    edit_telegram_message,
+    get_telegram_updates,
+    send_telegram_message,
+    send_telegram_message_with_keyboard,
+)
 
 
 class FakeResponse:
@@ -78,3 +85,157 @@ def test_send_telegram_message_raises_when_ok_is_false_despite_200(monkeypatch):
 
     with pytest.raises(TelegramSendError, match="chat not found"):
         send_telegram_message("123:ABC", "-100999", "hello")
+
+
+# --- send_telegram_message_with_keyboard() ----------------------------------
+
+
+def test_send_with_keyboard_posts_inline_keyboard_and_returns_message_id(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append((url, json, timeout))
+        return FakeResponse(body={"ok": True, "result": {"message_id": 4242}})
+
+    monkeypatch.setattr(telegram_client.httpx, "post", fake_post)
+
+    message_id = send_telegram_message_with_keyboard(
+        "123:ABC", "-100999", "Đề xuất X", [("✅ Duyệt", "approve:a1"), ("❌ Từ chối", "reject:a1")]
+    )
+
+    assert message_id == 4242
+    url, payload, _timeout = calls[0]
+    assert url == "https://api.telegram.org/bot123:ABC/sendMessage"
+    assert payload["chat_id"] == "-100999"
+    assert payload["text"] == "Đề xuất X"
+    assert payload["reply_markup"]["inline_keyboard"] == [
+        [{"text": "✅ Duyệt", "callback_data": "approve:a1"}, {"text": "❌ Từ chối", "callback_data": "reject:a1"}]
+    ]
+
+
+def test_send_with_keyboard_raises_when_not_configured():
+    with pytest.raises(TelegramSendError):
+        send_telegram_message_with_keyboard("", "-100999", "x", [("a", "b")])
+
+
+def test_send_with_keyboard_raises_on_api_rejection(monkeypatch):
+    monkeypatch.setattr(
+        telegram_client.httpx,
+        "post",
+        lambda url, json, timeout: FakeResponse(status_code=200, body={"ok": False, "description": "bad chat"}),
+    )
+
+    with pytest.raises(TelegramSendError, match="bad chat"):
+        send_telegram_message_with_keyboard("123:ABC", "-100999", "x", [("a", "b")])
+
+
+# --- edit_telegram_message() -------------------------------------------------
+
+
+def test_edit_message_posts_text_and_clears_keyboard(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append((url, json, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(telegram_client.httpx, "post", fake_post)
+
+    edit_telegram_message("123:ABC", "-100999", 4242, "Đã duyệt")
+
+    url, payload, _timeout = calls[0]
+    assert url == "https://api.telegram.org/bot123:ABC/editMessageText"
+    assert payload == {
+        "chat_id": "-100999",
+        "message_id": 4242,
+        "text": "Đã duyệt",
+        "reply_markup": {"inline_keyboard": []},
+    }
+
+
+def test_edit_message_raises_when_not_configured():
+    with pytest.raises(TelegramSendError):
+        edit_telegram_message("", "-100999", 4242, "x")
+
+
+# --- get_telegram_updates() --------------------------------------------------
+
+
+def test_get_updates_includes_offset_and_allowed_updates(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append((url, json, timeout))
+        return FakeResponse(body={"ok": True, "result": [{"update_id": 1}]})
+
+    monkeypatch.setattr(telegram_client.httpx, "post", fake_post)
+
+    updates = get_telegram_updates("123:ABC", 55, 30)
+
+    assert updates == [{"update_id": 1}]
+    url, payload, timeout = calls[0]
+    assert url == "https://api.telegram.org/bot123:ABC/getUpdates"
+    assert payload == {"timeout": 30, "allowed_updates": ["callback_query"], "offset": 55}
+    # client-side timeout must exceed Telegram's own long-poll timeout.
+    assert timeout.read > 30
+
+
+def test_get_updates_omits_offset_on_first_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        telegram_client.httpx,
+        "post",
+        lambda url, json, timeout: calls.append(json) or FakeResponse(body={"ok": True, "result": []}),
+    )
+
+    get_telegram_updates("123:ABC", None, 30)
+
+    assert "offset" not in calls[0]
+
+
+def test_get_updates_returns_empty_list_when_result_missing(monkeypatch):
+    monkeypatch.setattr(
+        telegram_client.httpx, "post", lambda url, json, timeout: FakeResponse(body={"ok": True})
+    )
+
+    assert get_telegram_updates("123:ABC", None, 30) == []
+
+
+def test_get_updates_raises_when_token_blank():
+    with pytest.raises(TelegramSendError):
+        get_telegram_updates("", None, 30)
+
+
+# --- answer_telegram_callback() ----------------------------------------------
+
+
+def test_answer_callback_posts_callback_id_and_text(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append((url, json))
+        return FakeResponse()
+
+    monkeypatch.setattr(telegram_client.httpx, "post", fake_post)
+
+    answer_telegram_callback("123:ABC", "cbid-1", "Đã duyệt")
+
+    url, payload = calls[0]
+    assert url == "https://api.telegram.org/bot123:ABC/answerCallbackQuery"
+    assert payload == {"callback_query_id": "cbid-1", "text": "Đã duyệt"}
+
+
+def test_answer_callback_omits_text_when_none(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        telegram_client.httpx, "post", lambda url, json, timeout: calls.append(json) or FakeResponse()
+    )
+
+    answer_telegram_callback("123:ABC", "cbid-1")
+
+    assert calls[0] == {"callback_query_id": "cbid-1"}
+
+
+def test_answer_callback_raises_when_token_blank():
+    with pytest.raises(TelegramSendError):
+        answer_telegram_callback("", "cbid-1")

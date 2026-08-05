@@ -387,11 +387,10 @@
           <p class="success">{{ telegram_test_success }}</p>
         {% endif %}
         <p class="hint">
-          Một Bot Token/Chat ID DUY NHẤT, dùng chung cho cả 3 loại cảnh báo bên dưới — bật/tắt riêng
-          từng loại, không ảnh hưởng tới hai loại còn lại. Chỉ gửi tin nhắn MỘT CHIỀU: ứng dụng này
-          không chạy bot lắng nghe tin nhắn/lệnh từ Telegram — mọi hành động khắc phục vẫn luôn phải
-          qua quy trình đề xuất &amp; duyệt trên Dashboard như bình thường, không có gì có thể được
-          thực thi trực tiếp từ Telegram.
+          Một Bot Token/Chat ID DUY NHẤT, dùng chung cho cả 4 mục bên dưới — bật/tắt riêng từng mục,
+          không ảnh hưởng tới các mục còn lại. 3 mục đầu chỉ gửi tin nhắn MỘT CHIỀU (thông báo, không
+          làm gì thêm); mục cuối ("Yêu cầu phê duyệt qua Telegram") khác — bấm nút trên Telegram THỰC
+          SỰ duyệt/từ chối được, xem lưu ý riêng ngay dưới ô đó trước khi bật.
           Chưa có Bot Token/Chat ID? Xem
           <a href="/settings/telegram/help" target="_blank" rel="noopener">hướng dẫn kết nối Telegram từng bước →</a>
         </p>
@@ -419,6 +418,17 @@
             <input type="checkbox" name="telegram_node_alerts_enabled" value="true" {% if telegram_node_alerts_enabled %}checked{% endif %}>
             Cảnh báo <strong>phần cứng</strong> (CPU/RAM node cao bất thường, kéo dài)
           </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="telegram_approval_requests_enabled" value="true" {% if telegram_approval_requests_enabled %}checked{% endif %}>
+            <strong>Yêu cầu phê duyệt qua Telegram</strong> (nút Duyệt/Từ chối ngay trên mọi đề xuất đang chờ)
+          </label>
+          <p class="hint">
+            <strong>Lưu ý khi bật mục cuối:</strong> đây là mục DUY NHẤT trong 4 mục ở đây có thể THỰC SỰ
+            duyệt/từ chối một hành động — không chỉ thông báo. Bất kỳ ai đọc được và bấm nút trong đúng
+            Chat ID đã cấu hình ở trên đều duyệt/từ chối được, y hệt như đang có quyền đăng nhập Dashboard —
+            chỉ bật khi Chat ID đó là chat riêng với người bạn tin tưởng (hoặc một nhóm nhỏ đáng tin cậy),
+            không phải kênh công khai. Không cần khởi động lại gì — áp dụng ngay trong tiến trình Dashboard.
+          </p>
           <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker/Watcher</button>
         </form>
         <form method="post" action="/settings/telegram/test" style="margin-top: 0.75rem;">

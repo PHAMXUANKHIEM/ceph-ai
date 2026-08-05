@@ -657,6 +657,7 @@ def _telegram_form_values() -> dict:
         "telegram_alerts_enabled": settings.telegram_alerts_enabled,
         "telegram_incident_alerts_enabled": settings.telegram_incident_alerts_enabled,
         "telegram_node_alerts_enabled": settings.telegram_node_alerts_enabled,
+        "telegram_approval_requests_enabled": settings.telegram_approval_requests_enabled,
         "masked_telegram_token": _mask_key(settings.telegram_bot_token) if settings.telegram_bot_token else None,
     }
 
@@ -1761,12 +1762,13 @@ async def telegram_settings_submit(
     telegram_alerts_enabled: bool = Form(False),
     telegram_incident_alerts_enabled: bool = Form(False),
     telegram_node_alerts_enabled: bool = Form(False),
+    telegram_approval_requests_enabled: bool = Form(False),
 ):
     """Admin-only, same gating as every other credential-bearing form on
     this page (backup targets, database, patch pipeline). Saves ONE shared
-    Bot Token/Chat ID plus THREE independently toggleable alert categories
-    — "phân rõ cảnh báo Telegram theo loại" — each read by a different
-    piece of code, all delivering to the same destination:
+    Bot Token/Chat ID plus FOUR independently toggleable categories —
+    "phân rõ cảnh báo Telegram theo loại" — each read by a different piece
+    of code, all delivering to the same destination:
       - telegram_alerts_enabled: worker/backup/alerting.py::send_alert
         (backup fail/overdue/anomaly alerts + webhook, unchanged).
       - telegram_incident_alerts_enabled: shared/telegram_alerts.py::
@@ -1775,14 +1777,16 @@ async def telegram_settings_submit(
       - telegram_node_alerts_enabled: shared/telegram_alerts.py::
         send_node_alert, called from watcher/node_health_monitor.py for a
         node whose CPU/RAM stays abnormally high.
-    Turning one category off never affects the other two — each toggle is
-    checked independently, right where that category's alert is sent.
-
-    Nothing here can execute a Command: Telegram delivery is fire-and-
-    forget text, this project has no bot that listens for replies, and
-    every actual remediation still goes through the normal Incident/Action
-    propose-then-approve flow untouched by this feature (see
-    shared/telegram_client.py's own docstring).
+      - telegram_approval_requests_enabled: dashboard/telegram_approval_bot.py
+        — the ONE category that is NOT a pure notification: an inline
+        "✅ Duyệt"/"❌ Từ chối" keyboard on EVERY Action reaching
+        PENDING_APPROVAL, and pressing one actually resolves it (calls the
+        exact same dashboard/routes/actions.py::approve_action_core/
+        reject_action_core the HTML buttons use). See that module's own
+        docstring for the full trust model before enabling this — off by
+        default even when the other 3 are on.
+    Turning one category off never affects the other three — each toggle
+    is checked independently, right where that category's alert is sent.
 
     telegram_bot_token follows the same "blank submit = keep the currently
     saved value" convention as router_api_key/backup target S3 secrets —
@@ -1790,13 +1794,21 @@ async def telegram_settings_submit(
     `_telegram_form_values()`), so a blank field here does NOT mean "clear
     the token", it means "unchanged". Restarts BOTH Worker (backup alerts)
     AND Watcher (cluster/node alerts) afterward — unlike every other form
-    on this page, THIS config is read by two separate long-running
-    processes, both of which only load `.env` once at import time."""
+    on this page, this config is read by THREE separate processes (Worker,
+    Watcher, and this very Dashboard process); the Dashboard-side category
+    (telegram_approval_requests_enabled) needs no restart at all — its
+    background threads (dashboard/telegram_approval_bot.py) re-read
+    `settings` fresh on every loop iteration, already in this process."""
     _require_admin_privilege(user)
 
     bot_token = telegram_bot_token.strip() or settings.telegram_bot_token
     chat_id = telegram_chat_id.strip()
-    any_enabled = telegram_alerts_enabled or telegram_incident_alerts_enabled or telegram_node_alerts_enabled
+    any_enabled = (
+        telegram_alerts_enabled
+        or telegram_incident_alerts_enabled
+        or telegram_node_alerts_enabled
+        or telegram_approval_requests_enabled
+    )
 
     if any_enabled and (not bot_token or not chat_id):
         return templates.TemplateResponse(
@@ -1810,6 +1822,7 @@ async def telegram_settings_submit(
                     "telegram_alerts_enabled": telegram_alerts_enabled,
                     "telegram_incident_alerts_enabled": telegram_incident_alerts_enabled,
                     "telegram_node_alerts_enabled": telegram_node_alerts_enabled,
+                    "telegram_approval_requests_enabled": telegram_approval_requests_enabled,
                     "masked_telegram_token": _mask_key(bot_token) if bot_token else None,
                 },
             ),
@@ -1829,6 +1842,9 @@ async def telegram_settings_submit(
                 env_config.TELEGRAM_ENV_NAMES["telegram_node_alerts_enabled"]: (
                     "true" if telegram_node_alerts_enabled else "false"
                 ),
+                env_config.TELEGRAM_ENV_NAMES["telegram_approval_requests_enabled"]: (
+                    "true" if telegram_approval_requests_enabled else "false"
+                ),
             }
         )
         settings.telegram_bot_token = bot_token
@@ -1836,6 +1852,7 @@ async def telegram_settings_submit(
         settings.telegram_alerts_enabled = telegram_alerts_enabled
         settings.telegram_incident_alerts_enabled = telegram_incident_alerts_enabled
         settings.telegram_node_alerts_enabled = telegram_node_alerts_enabled
+        settings.telegram_approval_requests_enabled = telegram_approval_requests_enabled
     except Exception:
         logger.exception("telegram_settings_submit: failed to persist config to .env")
         return templates.TemplateResponse(

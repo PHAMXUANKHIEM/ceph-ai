@@ -271,14 +271,17 @@ một kênh, không thay thế** — dùng module dùng chung
 nghiêm trọng (🔴 CRITICAL / 🟡 WARNING / ℹ️ INFO) để đọc được ngay trên màn
 hình khoá điện thoại.
 
-**Thiết kế cố tình MỘT CHIỀU (gửi ra, không nhận vào):** ceph-aiops không
-chạy bot lắng nghe tin nhắn/lệnh từ Telegram (không long-polling, không
-webhook nhận vào) — một tin nhắn gửi ra thuần tuý mang tính thông báo,
-không có phản hồi nào được đọc lại, và không có gì gõ trên Telegram có thể
-chạm tới `worker/executor/`. **Mọi hành động khắc phục vẫn luôn phải đi qua
-đúng quy trình đề xuất → duyệt trên Dashboard** (`dashboard/routes/
-actions.py`) như trước khi có tính năng này — Telegram chỉ là nơi vận hành
-viên biết tin, không phải nơi ra lệnh.
+**Kênh cảnh báo Backup này vẫn MỘT CHIỀU (gửi ra, không nhận vào):** không
+có phản hồi nào từ Telegram được đọc lại cho kênh Backup, và không có gì
+gõ trên Telegram ảnh hưởng tới `worker/backup/`. (Kể từ 2026-08-05,
+ceph-aiops NÓI CHUNG có thêm một tính năng riêng, tuỳ chọn, đọc phản hồi
+Telegram — "Yêu cầu phê duyệt qua Telegram" — nhưng đó là một mục hoàn
+toàn tách biệt, công tắc bật/tắt riêng, không liên quan tới cảnh báo
+Backup mô tả ở đây; xem toàn cảnh cả 4 mục tại
+[telegram-alerts.md](./telegram-alerts.md).) Mặc định (mục này tắt), mọi
+hành động khắc phục vẫn luôn phải đi qua đúng quy trình đề xuất → duyệt
+trên Dashboard (`dashboard/routes/actions.py`) — Telegram chỉ là nơi vận
+hành viên biết tin, không phải nơi ra lệnh.
 
 Cấu hình tại Settings → **Cảnh báo Telegram** (chỉ admin thấy/sửa được —
 cùng `_require_admin_privilege` mọi form nhạy cảm khác trong trang Settings

@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from dataclasses import dataclass
+from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -16,8 +18,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/actions/{action_id}/approve")
-async def approve_action(action_id: str, user: str = Depends(require_login)):
+class ActionNotFoundError(Exception):
+    """Raised by `approve_action_core`/`reject_action_core` when
+    `action_id` doesn't exist — mapped to HTTP 404 by the FastAPI routes
+    below; the Telegram approval bot (dashboard/telegram_approval_bot.py)
+    catches this to answer the callback with a "not found" toast instead
+    of crashing its poll loop."""
+
+
+class ActionConflictError(Exception):
+    """Raised by `approve_action_core` for the two mutual-exclusion gates
+    (cluster upgrade / patch install in flight) — mapped to HTTP 409 by the
+    FastAPI route below; carries the same Vietnamese `detail` message
+    either caller (HTTP or Telegram) shows the operator."""
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+class ApprovalOutcome(Enum):
+    ALREADY_HANDLED = "already_handled"  # a double-submit — Action wasn't PENDING_APPROVAL anymore
+    ACKNOWLEDGED = "acknowledged"  # no Command exists for this action_id (e.g. investigate_manually)
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+@dataclass
+class ApprovalResult:
+    outcome: ApprovalOutcome
+    action_id: str
+    incident_id: str | None
+
+
+def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
     """Story 4.3: Dashboard only ever flips Action.status (AD-3) — it never
     executes anything itself. The Worker's approval poller
     (worker/llm/router_client.py::poll_approved_actions) picks up
@@ -32,16 +66,29 @@ async def approve_action(action_id: str, user: str = Depends(require_login)):
     falsely report "ERR". "Duyệt" on one of these instead directly closes
     it out as acknowledged — no Worker execution attempted, nothing to
     fail.
-    """
+
+    2026-08-05: extracted out of the HTTP route (`approve_action` below)
+    so `dashboard/telegram_approval_bot.py`'s "Duyệt qua Telegram" button
+    can call the EXACT same logic — including the same mutual-exclusion
+    gates and audit trail — instead of a second, drifting implementation.
+    `actor` is whatever string identifies who clicked — the Dashboard
+    username for the HTTP route, `"telegram:<username-or-id>"` for a
+    Telegram button press (FR9 requires "ai duyệt" either way). Deliberately
+    SYNCHRONOUS (blocking SSH-adjacent I/O like the HTTP route's own
+    `is_cluster_upgrade_physically_running` check) — the HTTP route wraps
+    this in `asyncio.to_thread`; the Telegram poller already runs off the
+    main event loop entirely (its own background thread), so it calls this
+    directly."""
     with db.SessionLocal() as session:
         action = session.get(Action, action_id)
         if action is None:
-            raise HTTPException(status_code=404, detail="Không tìm thấy Action")
+            raise ActionNotFoundError(action_id)
         if action.status != ActionStatus.PENDING_APPROVAL.value:
             # Already handled — a double-submit (double-click, back-button
-            # resubmit) or a second operator tab. No-op: the page they land
-            # back on already reflects reality.
-            return RedirectResponse(url="/", status_code=303)
+            # resubmit, or a second operator/channel — e.g. approved on the
+            # Dashboard while a Telegram button for the same Action was
+            # still unanswered). No-op: the caller reflects reality back.
+            return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
 
         # 2026-07-23: a live cluster upgrade must never race with some OTHER
         # risky action being approved at the same time (e.g. restarting an
@@ -54,13 +101,10 @@ async def approve_action(action_id: str, user: str = Depends(require_login)):
         if action.action_id not in upgrade_routes.CLUSTER_UPGRADE_ACTION_IDS:
             if upgrade_routes.is_cluster_upgrade_pending_or_approved(
                 session
-            ) or await asyncio.to_thread(upgrade_routes.is_cluster_upgrade_physically_running):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Đang có đề xuất/quá trình nâng cấp cụm — tạm khoá duyệt hành động khác "
-                        "cho tới khi nâng cấp xong."
-                    ),
+            ) or upgrade_routes.is_cluster_upgrade_physically_running():
+                raise ActionConflictError(
+                    "Đang có đề xuất/quá trình nâng cấp cụm — tạm khoá duyệt hành động khác "
+                    "cho tới khi nâng cấp xong."
                 )
 
         # 2026-07-24: symmetric counterpart — a patch_install is just as
@@ -76,12 +120,9 @@ async def approve_action(action_id: str, user: str = Depends(require_login)):
         # only the DB Action/Incident state.
         if action.action_id != patch_routes.PATCH_INSTALL_ACTION_ID:
             if patch_routes.is_patch_install_pending_or_approved(session):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Đang có đề xuất/quá trình cài đặt patch Ceph — tạm khoá duyệt hành động "
-                        "khác cho tới khi xong."
-                    ),
+                raise ActionConflictError(
+                    "Đang có đề xuất/quá trình cài đặt patch Ceph — tạm khoá duyệt hành động "
+                    "khác cho tới khi xong."
                 )
 
         incident = session.get(Incident, action.incident_id)
@@ -95,10 +136,10 @@ async def approve_action(action_id: str, user: str = Depends(require_login)):
                 incident_id=action.incident_id,
                 action_id=action.id,
                 event_type=audit.EVENT_RISKY_ACTION_ACKNOWLEDGED_NO_COMMAND,
-                actor=user,
+                actor=actor,
             )
             session.commit()
-            return RedirectResponse(url="/", status_code=303)
+            return ApprovalResult(ApprovalOutcome.ACKNOWLEDGED, action.id, action.incident_id)
 
         action.status = ActionStatus.APPROVED.value
         if incident is not None:
@@ -109,20 +150,21 @@ async def approve_action(action_id: str, user: str = Depends(require_login)):
             action_id=action.id,
             event_type=audit.EVENT_RISKY_ACTION_APPROVED,
             # The operator who clicked, not "system" — FR9 requires "ai duyệt".
-            actor=user,
+            actor=actor,
         )
         session.commit()
-    return RedirectResponse(url="/", status_code=303)
+        return ApprovalResult(ApprovalOutcome.APPROVED, action.id, action.incident_id)
 
 
-@router.post("/actions/{action_id}/reject")
-async def reject_action(action_id: str, user: str = Depends(require_login)):
+def reject_action_core(action_id: str, actor: str) -> ApprovalResult:
+    """2026-08-05: extracted out of the HTTP route (`reject_action` below)
+    for the same reason/shape as `approve_action_core` above."""
     with db.SessionLocal() as session:
         action = session.get(Action, action_id)
         if action is None:
-            raise HTTPException(status_code=404, detail="Không tìm thấy Action")
+            raise ActionNotFoundError(action_id)
         if action.status != ActionStatus.PENDING_APPROVAL.value:
-            return RedirectResponse(url="/", status_code=303)
+            return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
 
         action.status = ActionStatus.REJECTED.value
         incident = session.get(Incident, action.incident_id)
@@ -135,7 +177,27 @@ async def reject_action(action_id: str, user: str = Depends(require_login)):
             incident_id=action.incident_id,
             action_id=action.id,
             event_type=audit.EVENT_RISKY_ACTION_REJECTED,
-            actor=user,
+            actor=actor,
         )
         session.commit()
+        return ApprovalResult(ApprovalOutcome.REJECTED, action.id, action.incident_id)
+
+
+@router.post("/actions/{action_id}/approve")
+async def approve_action(action_id: str, user: str = Depends(require_login)):
+    try:
+        await asyncio.to_thread(approve_action_core, action_id, user)
+    except ActionNotFoundError:
+        raise HTTPException(status_code=404, detail="Không tìm thấy Action")
+    except ActionConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@router.post("/actions/{action_id}/reject")
+async def reject_action(action_id: str, user: str = Depends(require_login)):
+    try:
+        await asyncio.to_thread(reject_action_core, action_id, user)
+    except ActionNotFoundError:
+        raise HTTPException(status_code=404, detail="Không tìm thấy Action")
     return RedirectResponse(url="/", status_code=303)

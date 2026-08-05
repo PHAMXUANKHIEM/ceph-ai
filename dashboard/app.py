@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +11,7 @@ from config.settings import (
     DEFAULT_SESSION_SECRET_KEY,
     settings,
 )
+from dashboard import telegram_approval_bot
 from dashboard.routes import (
     actions,
     auth,
@@ -49,9 +51,23 @@ def _warn_if_using_dev_defaults() -> None:
         )
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 2026-08-05: starts dashboard/telegram_approval_bot.py's 2 background
+    # daemon threads exactly once per process — see that module's own
+    # docstring for what they do and why they live here (Dashboard
+    # startup) rather than Worker/Watcher. Idempotent on its own
+    # (telegram_approval_bot.start() no-ops if already started), which
+    # matters because FastAPI's TestClient re-enters this lifespan on
+    # every `with TestClient(app) as client:` block across this project's
+    # whole test suite, all sharing the same cached `app` singleton.
+    telegram_approval_bot.start()
+    yield
+
+
 def create_app() -> FastAPI:
     _warn_if_using_dev_defaults()
-    application = FastAPI(title="Ceph AIOps Dashboard")
+    application = FastAPI(title="Ceph AIOps Dashboard", lifespan=_lifespan)
     application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key)
     application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     application.include_router(auth.router)

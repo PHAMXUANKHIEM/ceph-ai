@@ -100,28 +100,35 @@
           <li>Vào <a href="/settings#telegram">Settings → Cảnh báo Telegram</a> (chỉ tài khoản admin
             thấy mục này).</li>
           <li>Dán <strong>Bot Token</strong> (Bước 1) và <strong>Chat ID</strong> (Bước 2) — dùng
-            CHUNG cho cả 3 loại cảnh báo bên dưới, chỉ cần điền một lần.</li>
-          <li>Tick chọn những loại cảnh báo muốn nhận (tick bao nhiêu tuỳ ý, độc lập với nhau):
+            CHUNG cho cả 4 mục bên dưới, chỉ cần điền một lần.</li>
+          <li>Tick chọn những mục muốn bật (tick bao nhiêu tuỳ ý, độc lập với nhau):
             <ul>
               <li><strong>Cảnh báo Backup</strong> — ceph-backup thất bại/quá hạn/bất thường, tổng
-                hợp hàng ngày (digest).</li>
+                hợp hàng ngày (digest). Chỉ thông báo.</li>
               <li><strong>Cảnh báo lỗi cụm</strong> — mọi sự cố Ceph thật (MON down, OSD down, PG
-                degraded, ...) Watcher phát hiện qua <code>ceph health detail</code>.</li>
+                degraded, ...) Watcher phát hiện qua <code>ceph health detail</code>. Chỉ thông báo.</li>
               <li><strong>Cảnh báo phần cứng</strong> — CPU hoặc RAM một node ở mức cao bất thường
-                (mặc định ≥90%), kéo dài liên tục qua nhiều lượt quét (không báo động vì một đợt tăng
-                tải ngắn hạn bình thường).</li>
+                (mặc định ≥90%), kéo dài liên tục qua nhiều lượt quét. Chỉ thông báo.</li>
+              <li><strong>Yêu cầu phê duyệt qua Telegram</strong> — khác 3 mục trên: MỌI đề xuất đang
+                chờ duyệt (bất kể do AI chẩn đoán, backup, phần cứng, hay bạn tự đề xuất trên Dashboard)
+                đều được gửi kèm 2 nút <strong>✅ Duyệt</strong> / <strong>❌ Từ chối</strong> ngay trên
+                Telegram — bấm là xử lý thật, y hệt bấm trên Dashboard. Đọc kỹ lưu ý ngay dưới ô này
+                trên trang Settings trước khi bật, vì bất kỳ ai trong đúng Chat ID đã cấu hình đều bấm
+                được.</li>
             </ul>
           </li>
-          <li>Bấm <strong>Lưu</strong> — cả Worker (đọc cảnh báo Backup) lẫn Watcher (đọc cảnh báo lỗi
-            cụm + phần cứng) đều tự khởi động lại để áp dụng ngay.</li>
+          <li>Bấm <strong>Lưu</strong> — Worker (Backup) và Watcher (lỗi cụm + phần cứng) tự khởi động
+            lại để áp dụng ngay; riêng mục "Yêu cầu phê duyệt" áp dụng ngay lập tức, không cần khởi
+            động lại gì (chạy sẵn trong tiến trình Dashboard).</li>
           <li>Bấm <strong>Gửi thử</strong> — nếu cấu hình đúng, một tin nhắn xác nhận sẽ xuất hiện
             ngay trong chat/nhóm đã chọn ở Bước 2 (xác nhận Bot Token/Chat ID hoạt động, không phụ
-            thuộc loại cảnh báo nào đang bật).</li>
+            thuộc mục nào đang bật).</li>
         </ol>
         <p class="hint">
-          Tính năng này chỉ GỬI cảnh báo một chiều — ceph-aiops không đọc/xử lý bất kỳ tin nhắn nào gửi
-          ngược lại cho bot. Mọi hành động khắc phục vẫn phải đề xuất &amp; duyệt trên Dashboard như
-          bình thường, dù bật bao nhiêu loại cảnh báo đi nữa.
+          3 mục đầu chỉ GỬI cảnh báo một chiều — ceph-aiops không đọc/xử lý tin nhắn gửi ngược lại cho
+          bot ở 3 mục đó. Mục cuối ("Yêu cầu phê duyệt qua Telegram") là ngoại lệ duy nhất — xem lưu ý
+          về mức độ tin cậy ngay trên trang Settings trước khi bật. Nếu mục đó đang tắt (mặc định), mọi
+          hành động khắc phục vẫn phải đề xuất &amp; duyệt trên Dashboard như bình thường.
         </p>
 
         <p><a href="/settings#telegram" class="btn btn-ghost">← Quay lại Settings</a></p>

@@ -262,6 +262,22 @@ class Settings(BaseSettings):
     # a breaking .env rename for the already-shipped feature.
     telegram_incident_alerts_enabled: bool = False
     telegram_node_alerts_enabled: bool = False
+    # 2026-08-05: 4th category — dashboard/telegram_approval_bot.py. Unlike
+    # the 3 pure-notification categories above, this one lets an operator
+    # actually Duyệt/Từ chối an Action from Telegram (an inline-keyboard
+    # button press), not just read about it — see that module's own
+    # docstring for the full design and TRUST MODEL (anyone with access to
+    # telegram_chat_id can approve/reject any pending RISKY action).
+    # Deliberately its OWN toggle, off by default even if the other 3 are
+    # on — turning on "get notified" must never silently also turn on
+    # "can be approved from my phone".
+    telegram_approval_requests_enabled: bool = False
+    # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
+    # PENDING_APPROVAL Actions not yet sent to Telegram — short by design
+    # (unlike device_health/node_health's scan intervals above, this is a
+    # cheap indexed DB query, not a real SSH round trip, so there's no
+    # reason to space it out).
+    telegram_approval_scan_interval_seconds: int = 10
 
     # watcher/node_health_monitor.py's own scan cadence — same reasoning as
     # device_health_scan_interval_seconds above: collecting CPU/RAM needs a
