@@ -796,6 +796,79 @@ def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
     assert any("orch daemon add osd" in cmd and "/dev/vdb" in cmd for cmd in seen_commands)
 
 
+# --- RGW (optional role) ----------------------------------------------------
+#
+# Unlike mon/mgr/osd, a node table with zero "rgw"-role nodes is a valid
+# cluster (object storage is opt-in) — both the cephadm and ceph-deploy RGW
+# phases must no-op cleanly in that case, and actually create/start RGW when
+# at least one node has the role.
+
+_NODES_WITH_RGW = _NODES + [{"ip": "10.20.1.201", "roles": ["rgw"]}]
+
+
+def test_cephadm_orch_apply_rgw_skips_cleanly_when_no_rgw_nodes(monkeypatch):
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run(
+        "action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked
+    )
+
+    assert result is True
+    steps_by_key = {s["step"]: s for s in calls[-1][1]}
+    assert steps_by_key["orch_apply_rgw"]["status"] == "done"
+    assert steps_by_key["orch_apply_rgw"]["hosts"] == []
+    assert not any("orch apply rgw" in cmd for cmd in seen_commands)
+
+
+def test_cephadm_orch_apply_rgw_happy_path(monkeypatch):
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, calls = _make_recording_progress_writer()
+
+    params = _cephadm_params(nodes=copy.deepcopy(_NODES_WITH_RGW))
+    result = run(
+        "action-1", "deploy_cluster_cephadm", params, "incident-1", write_progress, _never_blocked
+    )
+
+    assert result is True
+    steps_by_key = {s["step"]: s for s in calls[-1][1]}
+    assert steps_by_key["orch_apply_rgw"]["status"] == "done"
+
+    rgw_hostname = "10-20-1-201.lab"
+    apply_rgw_cmd = next(cmd for cmd in seen_commands if "orch apply rgw" in cmd)
+    assert "default" in apply_rgw_cmd
+    assert f"--placement={rgw_hostname}" in apply_rgw_cmd
+    assert "--port=7480" in apply_rgw_cmd
+
+
+def test_cephadm_happy_path_with_rgw_writes_rgw_nodes_to_env(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    written_fields = {}
+    monkeypatch.setattr(cluster_deploy_module.env_config, "update_env_file_batch", written_fields.update)
+
+    params = _cephadm_params(nodes=copy.deepcopy(_NODES_WITH_RGW))
+    result = run(
+        "action-1", "deploy_cluster_cephadm", params, "incident-1", write_progress, _never_blocked
+    )
+
+    assert result is True
+    assert written_fields["CEPH_RGW_NODES"] == "10.20.1.201"
+
+
 # --- ceph-deploy method (Story 8.2) ----------------------------------------
 
 
@@ -864,6 +937,90 @@ def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(m
 
     assert written_fields["CEPH_EXEC_MODE"] == "none"
     assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95,10.20.1.21"
+
+
+def test_ceph_deploy_rgw_create_skips_cleanly_when_no_rgw_nodes(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _ceph_deploy_fake_execute)
+    write_progress, calls = _make_recording_progress_writer()
+
+    result = run(
+        "action-1", "deploy_cluster_ceph_deploy", _cephadm_params(), "incident-1", write_progress, _never_blocked
+    )
+
+    assert result is True
+    steps_by_key = {s["step"]: s for s in calls[-1][1]}
+    assert steps_by_key["rgw_create"]["status"] == "done"
+    assert steps_by_key["rgw_create"]["hosts"] == []
+
+
+def test_ceph_deploy_rgw_create_happy_path(monkeypatch):
+    """Mirrors _phase_ceph_deploy_mgr_create's own shape: keyring generated
+    on first_mon via `ceph auth get-or-create`, pushed to the RGW node under
+    /var/lib/ceph/radosgw/ceph-rgw.<hostname>/keyring alongside the shared
+    ceph.conf, then `ceph-radosgw@rgw.<hostname>` enabled+started — same
+    "ceph-radosgw@rgw.*" unit-name convention commands.py's own
+    `_UNIT_TYPE_MARKERS` substring classification already expects."""
+    seen_commands: list[tuple[str, str]] = []
+
+    def fake(host, command):
+        seen_commands.append((host, command))
+        return _ceph_deploy_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, calls = _make_recording_progress_writer()
+
+    params = _cephadm_params(nodes=copy.deepcopy(_NODES_WITH_RGW))
+    result = run(
+        "action-1", "deploy_cluster_ceph_deploy", params, "incident-1", write_progress, _never_blocked
+    )
+
+    assert result is True
+    steps_by_key = {s["step"]: s for s in calls[-1][1]}
+    assert steps_by_key["rgw_create"]["status"] == "done"
+
+    rgw_ip = "10.20.1.201"
+    rgw_hostname = "10-20-1-201.lab"
+    first_mon_ip = "10.20.1.112"
+
+    auth_cmd = next(
+        cmd for host, cmd in seen_commands if host == first_mon_ip and "ceph auth get-or-create client.rgw." in cmd
+    )
+    assert f"client.rgw.{rgw_hostname}" in auth_cmd
+    assert "osd 'allow rwx' mon 'allow rw'" in auth_cmd
+
+    assert any(
+        host == rgw_ip and f"{rgw_hostname}/keyring" in cmd and "base64 -d" in cmd for host, cmd in seen_commands
+    )
+    start_cmd = next(
+        cmd for host, cmd in seen_commands if host == rgw_ip and "systemctl enable --now ceph-radosgw@rgw." in cmd
+    )
+    assert f"ceph-radosgw@rgw.{rgw_hostname}" in start_cmd
+
+    # Packages phase (installed alongside mon/mgr/osd) must have requested
+    # the RGW package for this node too — RPM build is ceph-radosgw.
+    install_cmd = next(
+        cmd for host, cmd in seen_commands if host == rgw_ip and "install -y" in cmd and "ceph-radosgw" in cmd
+    )
+    assert "ceph-radosgw" in install_cmd
+
+
+def test_build_ceph_conf_adds_client_rgw_section_only_when_rgw_nodes_given():
+    mon_nodes = [n for n in _NODES if "mon" in n["roles"]]
+    hostnames = {n["ip"]: n["ip"].replace(".", "-") + ".lab" for n in _NODES_WITH_RGW}
+
+    conf_without_rgw = cluster_deploy_module._build_ceph_conf(
+        {"osd_pool_default_size": 3, "osd_pool_default_min_size": 2}, mon_nodes, hostnames, "fake-fsid"
+    )
+    assert "[client.rgw." not in conf_without_rgw
+
+    rgw_nodes = [n for n in _NODES_WITH_RGW if "rgw" in n["roles"]]
+    conf_with_rgw = cluster_deploy_module._build_ceph_conf(
+        {"osd_pool_default_size": 3, "osd_pool_default_min_size": 2}, mon_nodes, hostnames, "fake-fsid", rgw_nodes
+    )
+    assert "[client.rgw.10-20-1-201.lab]" in conf_with_rgw
+    assert "rgw frontends = \"beast port=7480\"" in conf_with_rgw
 
 
 def test_ceph_deploy_mon_init_clears_stale_scratch_files_before_generating(monkeypatch):

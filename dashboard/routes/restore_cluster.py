@@ -49,7 +49,7 @@ RESTORE_ACTION_ID = "restore_cluster_from_backup"
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
-_VALID_ROLES = ("mon", "mgr", "osd", "mds")
+_VALID_ROLES = ("mon", "mgr", "osd", "mds", "rgw")
 
 
 def _is_valid_ip(ip: str) -> bool:
@@ -136,19 +136,26 @@ def _restore_plan_text(nodes: list[dict], version: str) -> str:
     mon = [n["ip"] for n in nodes if "mon" in n["roles"]]
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
     osd = [n["ip"] for n in nodes if "osd" in n["roles"]]
-    node_summary = f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}"
+    # RGW is OPTIONAL (see worker/executor/cluster_deploy.py::
+    # _phase_ceph_deploy_rgw_create's own docstring) — matches deploy_cluster.py's
+    # own _deploy_plan_text posture of always showing this line, even blank.
+    rgw = [n["ip"] for n in nodes if "rgw" in n["roles"]]
+    node_summary = (
+        f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}\n"
+        f"RGW: {', '.join(rgw) if rgw else '(không có)'}"
+    )
 
     return (
         f"Khôi phục toàn bộ cụm Ceph {version} sau thảm họa, TRÊN NODE MỚI:\n{node_summary}\n\n"
         f"Các bước sẽ thực hiện, LẦN LƯỢT, sau khi Duyệt:\n"
-        f"1-10. Dựng cụm trống bằng phương thức ceph-deploy (ssh_check → dependencies → repo → "
-        f"packages → mon_init → wait_quorum → mon_security → mgr_create → osd_create → verify) — "
-        f"y hệt trang Dựng cụm, phương thức ceph-deploy.\n"
-        f"11. Khôi phục auth keys + CRUSH map từ bản backup metadata gần nhất; cố gắng khôi phục "
+        f"1-11. Dựng cụm trống bằng phương thức ceph-deploy (ssh_check → dependencies → repo → "
+        f"packages → mon_init → wait_quorum → mon_security → mgr_create → osd_create → rgw_create "
+        f"[nếu có node RGW] → verify) — y hệt trang Dựng cụm, phương thức ceph-deploy.\n"
+        f"12. Khôi phục auth keys + CRUSH map từ bản backup metadata gần nhất; cố gắng khôi phục "
         f"monmap (best-effort — có thể không thành công do khác fsid, xem docs/runbook-dr.md).\n"
-        f"12. Khôi phục từng RBD image đã cấu hình trong tracked_images (full export + toàn bộ "
+        f"13. Khôi phục từng RBD image đã cấu hình trong tracked_images (full export + toàn bộ "
         f"chain export-diff, theo đúng thứ tự tạo).\n"
-        f"13. Đối chiếu kích thước từng image sau khôi phục với bản backup full gốc.\n\n"
+        f"14. Đối chiếu kích thước từng image sau khôi phục với bản backup full gốc.\n\n"
         f"CẢNH BÁO: đây là thao tác khôi phục sau thảm họa — chỉ dùng khi cụm cũ đã sập hoàn toàn. "
         f"Xem đầy đủ trước khi bắt đầu tại docs/runbook-dr.md."
     )

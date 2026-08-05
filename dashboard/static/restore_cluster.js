@@ -32,6 +32,7 @@
       '<td><input type="checkbox" class="node-role" value="mgr"></td>' +
       '<td><input type="checkbox" class="node-role node-role-osd" value="osd"></td>' +
       '<td><input type="checkbox" class="node-role" value="mds"></td>' +
+      '<td><input type="checkbox" class="node-role" value="rgw"></td>' +
       '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc" disabled></td>' +
       '<td><button type="button" class="btn btn-sm btn-ghost node-remove">×</button></td>';
     row.querySelector(".node-remove").addEventListener("click", function () {

@@ -80,8 +80,32 @@ _REMOTE_RESTORE_MONMAP_PATH = "/tmp/ceph-aiops-restore.monmap"
 # of one shared list — RPM installs never request ceph-volume at all now
 # (relies on ceph-osd's RPM providing it), APT installs still request it
 # explicitly.
-_ROLE_TO_PACKAGES_RPM = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd",)}
-_ROLE_TO_PACKAGES_APT = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd", "ceph-volume")}
+# "rgw" added alongside mon/mgr/osd (see this module's own RGW phases
+# below) — package NAME differs by manager the same way it already does for
+# ceph-volume above: upstream Ceph ships the RPM build as `ceph-radosgw`
+# but the Debian build as plain `radosgw` (verified against download.ceph.com's
+# real pool/repodata listings for both families), so this is a genuine
+# packaging difference, not one table arbitrarily reusing the other's name.
+_ROLE_TO_PACKAGES_RPM = {"mon": ("ceph-mon",), "mgr": ("ceph-mgr",), "osd": ("ceph-osd",), "rgw": ("ceph-radosgw",)}
+_ROLE_TO_PACKAGES_APT = {
+    "mon": ("ceph-mon",),
+    "mgr": ("ceph-mgr",),
+    "osd": ("ceph-osd", "ceph-volume"),
+    "rgw": ("radosgw",),
+}
+
+# Standalone RGW default: one shared service id/port for every RGW node
+# this module creates, matching the traditional `ceph-deploy rgw create`
+# default (beast frontend, port 7480 — the well-known RGW default port,
+# distinct from 80/443 so it never collides with anything else that might
+# already be listening on an RGW node). Fixed rather than operator-
+# configurable for now, same "no dedicated field for this yet" posture as
+# osd_pool_default_size's own simple int fields — an operator who needs a
+# different port/realm/zone can still change it by hand via `ceph orch apply
+# rgw`/ceph.conf afterward, same as any other post-deploy tuning this
+# feature doesn't expose.
+_RGW_SVC_ID = "default"
+_RGW_PORT = 7480
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +501,36 @@ def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_hos
         on_host_update(list(host_status))
 
 
+def _phase_cephadm_orch_apply_rgw(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """RGW is OPTIONAL, unlike mon/mgr/osd above — a node table with zero
+    "rgw"-role nodes is a perfectly valid cluster (object storage is opt-in),
+    so this phase no-ops (empty host list, no error) rather than raising the
+    "Không có node ... nào trong cấu hình" DeployPhaseError every other
+    role-specific phase in this module raises for an EMPTY required role."""
+    first_mon = _first_mon_ip(nodes)
+    hostnames: dict[str, str] = action_params.get("_node_hostnames", {})
+    rgw_ips = _node_ips_with_role(nodes, "rgw")
+    if not rgw_ips:
+        on_host_update([])
+        return
+    placement = ",".join(hostnames.get(ip, ip) for ip in rgw_ips)
+
+    host_status = [{"host": first_mon, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        execute_command(
+            first_mon,
+            f"ceph orch apply rgw {_RGW_SVC_ID} --placement={shlex.quote(placement)} "
+            f"--port={_RGW_PORT}",
+        )
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"'ceph orch apply rgw' thất bại: {exc}") from exc
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
 # --- ceph-deploy-specific phases (Story 8.2) -------------------------------
 #
 # Unlike the cephadm phases above (each a single `ceph orch ...` call sent to
@@ -528,13 +582,22 @@ def _write_remote_file(host: str, path: str, content: str) -> None:
     _write_remote_file_b64(host, path, base64.b64encode(content.encode()).decode())
 
 
-def _build_ceph_conf(action_params: dict, mon_nodes: list[dict], hostnames: dict[str, str], fsid: str) -> str:
-    """One shared ceph.conf pushed to every node (mon/mgr/osd alike) — lists
-    ALL mon nodes (mon_host, mon initial members) plus one [mon.<hostname>]
-    section PER mon with that mon's OWN public_addr set explicitly (avoids
-    the "wrong NIC picked" failure mode on multi-homed lab nodes — see the
-    story file's Dev Notes). A non-mon node simply never uses the [mon.*]
-    sections that aren't its own."""
+def _build_ceph_conf(
+    action_params: dict,
+    mon_nodes: list[dict],
+    hostnames: dict[str, str],
+    fsid: str,
+    rgw_nodes: list[dict] | None = None,
+) -> str:
+    """One shared ceph.conf pushed to every node (mon/mgr/osd/rgw alike) —
+    lists ALL mon nodes (mon_host, mon initial members) plus one
+    [mon.<hostname>] section PER mon with that mon's OWN public_addr set
+    explicitly (avoids the "wrong NIC picked" failure mode on multi-homed
+    lab nodes — see the story file's Dev Notes). A non-mon node simply
+    never uses the [mon.*] sections that aren't its own — same reasoning
+    now applies to the [client.rgw.<hostname>] sections added below for
+    `rgw_nodes` (optional — RGW is opt-in, unlike mon/mgr/osd), each
+    pinned to the traditional/default beast port 7480 (see _RGW_PORT)."""
     mon_initial_members = ",".join(hostnames.get(n["ip"], n["ip"]) for n in mon_nodes)
     mon_host = ",".join(n["ip"] for n in mon_nodes)
     public_network = action_params.get("public_network") or ""
@@ -558,6 +621,12 @@ def _build_ceph_conf(action_params: dict, mon_nodes: list[dict], hostnames: dict
         hostname = hostnames.get(n["ip"], n["ip"])
         lines.append(f"[mon.{hostname}]")
         lines.append(f"public addr = {n['ip']}")
+        lines.append("")
+    for n in rgw_nodes or []:
+        hostname = hostnames.get(n["ip"], n["ip"])
+        lines.append(f"[client.rgw.{hostname}]")
+        lines.append(f"host = {hostname}")
+        lines.append(f'rgw frontends = "beast port={_RGW_PORT}"')
         lines.append("")
     return "\n".join(lines)
 
@@ -851,8 +920,10 @@ def _phase_ceph_deploy_mon_init(nodes: list[dict], action_params: dict, on_host_
     first_mon_ip = mon_nodes[0]["ip"]
     first_mon_hostname = hostnames.get(first_mon_ip, first_mon_ip)
 
+    rgw_nodes = [n for n in nodes if "rgw" in (n.get("roles") or [])]
+
     fsid = str(uuid.uuid4())
-    ceph_conf = _build_ceph_conf(action_params, mon_nodes, hostnames, fsid)
+    ceph_conf = _build_ceph_conf(action_params, mon_nodes, hostnames, fsid, rgw_nodes)
     # Scratch state for later phases within THIS run() call only — never
     # persisted back to the DB, same posture as _node_hostnames above.
     action_params["_ceph_conf"] = ceph_conf
@@ -1104,6 +1175,71 @@ def _phase_ceph_deploy_osd_create(nodes: list[dict], action_params: dict, on_hos
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
             raise DeployPhaseError(f"Tạo OSD trên {ip} ({osd_disk}) thất bại: {exc}") from exc
+        host_status[i]["status"] = "done"
+        on_host_update(list(host_status))
+
+
+def _phase_ceph_deploy_rgw_create(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """RGW is OPTIONAL (see _phase_cephadm_orch_apply_rgw's own docstring —
+    same posture here) — no-ops if no node has the "rgw" role. Otherwise
+    mirrors _phase_ceph_deploy_mgr_create's own shape exactly (auth
+    get-or-create on first_mon -> fetch keyring -> push ceph.conf+keyring to
+    the target node -> systemctl enable --now), the traditional/manual
+    equivalent of `ceph-deploy rgw create`: keyring at
+    /var/lib/ceph/radosgw/ceph-rgw.<hostname>/keyring, capability
+    `osd 'allow rwx' mon 'allow rw'` (the standard client.rgw.* caps Ceph's
+    own manual-deployment docs use), unit `ceph-radosgw@rgw.<hostname>` —
+    already matched by commands.py's `_UNIT_TYPE_MARKERS` "rgw" substring
+    classification, so upgrade/restart tooling elsewhere in this codebase
+    discovers it correctly with no further change needed there. The
+    `[client.rgw.<hostname>]` section (host + rgw_frontends port 7480) was
+    already baked into the shared `_ceph_conf` blob by `_build_ceph_conf`
+    during mon_init, so this phase only needs to push that same blob, same
+    as mgr_create/osd_create already do."""
+    mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
+    if not mon_nodes:
+        raise DeployPhaseError("Không có node MON nào trong cấu hình")
+    first_mon_ip = mon_nodes[0]["ip"]
+    hostnames: dict[str, str] = action_params.get("_node_hostnames", {})
+    rgw_nodes = [n for n in nodes if "rgw" in (n.get("roles") or [])]
+    if not rgw_nodes:
+        on_host_update([])
+        return
+
+    ceph_conf = action_params.get("_ceph_conf")
+    if not ceph_conf:
+        raise DeployPhaseError("Thiếu ceph.conf từ bước khởi tạo MON — không thể tạo RGW")
+
+    host_status = [{"host": n["ip"], "status": "pending"} for n in rgw_nodes]
+    on_host_update(list(host_status))
+
+    for i, node in enumerate(rgw_nodes):
+        ip = node["ip"]
+        hostname = hostnames.get(ip, ip)
+        host_status[i]["status"] = "running"
+        on_host_update(list(host_status))
+        try:
+            remote_tmp_keyring = f"/tmp/ceph-aiops-rgw-{hostname}.keyring"
+            execute_command(
+                first_mon_ip,
+                f"ceph auth get-or-create client.rgw.{shlex.quote(hostname)} "
+                f"osd 'allow rwx' mon 'allow rw' "
+                f"-o {shlex.quote(remote_tmp_keyring)}",
+            )
+            keyring_b64 = _read_remote_file_b64(first_mon_ip, remote_tmp_keyring)
+
+            rgw_dir = f"/var/lib/ceph/radosgw/ceph-rgw.{hostname}"
+            _write_remote_file(ip, _REMOTE_CEPH_CONF_PATH, ceph_conf)
+            _write_remote_file_b64(ip, f"{rgw_dir}/keyring", keyring_b64)
+            execute_command(
+                ip,
+                f"(chown -R ceph:ceph {shlex.quote(rgw_dir)} 2>/dev/null || true) && "
+                f"systemctl enable --now ceph-radosgw@rgw.{shlex.quote(hostname)}",
+            )
+        except (ExecutorError, DeployPhaseError) as exc:
+            host_status[i]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{ip}: tạo/khởi động RGW thất bại: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
 
@@ -1931,11 +2067,16 @@ def _clear_cluster_config() -> None:
     deletion, the Dashboard must stop trying to monitor a cluster that no
     longer exists. Same "must not turn a successful deletion into a
     reported FAILURE" posture run() already applies to _write_cluster_config
-    below (see run()'s own comment)."""
+    below (see run()'s own comment). Clears ceph_rgw_nodes too — leaving a
+    stale RGW IP behind after the cluster (and that host's daemon) is gone
+    would leave a dangling entry in shared/cluster_nodes.py's own SSH SSRF
+    whitelist, which several unrelated features (bucket_access_log.py,
+    Chat-with-AI tool loop) read from directly."""
     fields = {
         env_config.CLUSTER_ENV_NAMES["ceph_mon_nodes"]: "",
         env_config.CLUSTER_ENV_NAMES["ceph_mgr_nodes"]: "",
         env_config.CLUSTER_ENV_NAMES["ceph_osd_nodes"]: "",
+        env_config.CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: "",
         env_config.CLUSTER_ENV_NAMES["ceph_exec_mode"]: "none",
     }
     env_config.update_env_file_batch(fields)
@@ -2227,6 +2368,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("orch_host_add", "Thêm node vào cụm (orch host add)", 65, _phase_cephadm_orch_host_add),
         ("orch_apply_mgr", "Tạo MGR (orch apply mgr)", 70, _phase_cephadm_orch_apply_mgr),
         ("orch_apply_osd", "Tạo OSD (orch daemon add osd)", 85, _phase_cephadm_orch_apply_osd),
+        ("orch_apply_rgw", "Tạo RGW (orch apply rgw, nếu có node RGW)", 90, _phase_cephadm_orch_apply_rgw),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),
     ],
     "deploy_cluster_ceph_deploy": [
@@ -2239,6 +2381,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("mon_security", "Bật msgr2, tắt insecure global-id-reclaim", 62, _phase_ceph_deploy_mon_security),
         ("mgr_create", "Tạo MGR", 65, _phase_ceph_deploy_mgr_create),
         ("osd_create", "Tạo OSD (ceph-volume lvm create)", 80, _phase_ceph_deploy_osd_create),
+        ("rgw_create", "Tạo RGW (radosgw, nếu có node RGW)", 90, _phase_ceph_deploy_rgw_create),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),
     ],
     "deploy_cluster_rpm_local": [
@@ -2251,6 +2394,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("mon_security", "Bật msgr2, tắt insecure global-id-reclaim", 62, _phase_ceph_deploy_mon_security),
         ("mgr_create", "Tạo MGR", 65, _phase_ceph_deploy_mgr_create),
         ("osd_create", "Tạo OSD (ceph-volume lvm create)", 80, _phase_ceph_deploy_osd_create),
+        ("rgw_create", "Tạo RGW (radosgw, nếu có node RGW)", 90, _phase_ceph_deploy_rgw_create),
         ("verify", "Kiểm tra cluster health", 95, _phase_verify),
     ],
     # Same phase list as delete_cluster_manual below — verified live,
@@ -2386,6 +2530,12 @@ def _write_cluster_config(action_params: dict, action_id: str) -> None:
         env_config.CLUSTER_ENV_NAMES["ceph_mon_nodes"]: ",".join(_node_ips_with_role(nodes, "mon")),
         env_config.CLUSTER_ENV_NAMES["ceph_mgr_nodes"]: ",".join(_node_ips_with_role(nodes, "mgr")),
         env_config.CLUSTER_ENV_NAMES["ceph_osd_nodes"]: ",".join(_node_ips_with_role(nodes, "osd")),
+        # RGW is opt-in (see _phase_ceph_deploy_rgw_create's own docstring)
+        # — an empty string here is correct and expected for a cluster with
+        # no RGW nodes, same "unconditionally overwrite" posture as mon/mgr/
+        # osd above (this .env shortcut always reflects the CURRENT node
+        # list, never a stale one from an earlier deploy/convert).
+        env_config.CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: ",".join(_node_ips_with_role(nodes, "rgw")),
         env_config.CLUSTER_ENV_NAMES["ceph_exec_mode"]: exec_mode,
     }
     env_config.update_env_file_batch(fields)

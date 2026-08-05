@@ -54,7 +54,7 @@ _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RPM_PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
-_VALID_ROLES = ("mon", "mgr", "osd", "mds")
+_VALID_ROLES = ("mon", "mgr", "osd", "mds", "rgw")
 
 
 def _is_valid_ip(ip: str) -> bool:
@@ -151,7 +151,18 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
     # so the operator can double check EACH node's disk assignment before
     # Duyệt, not just that osd_disk is set at all.
     osd = [f"{n['ip']} ({n.get('osd_disk')})" for n in nodes if "osd" in n["roles"]]
-    node_summary = f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}"
+    # RGW is OPTIONAL, unlike mon/mgr/osd above (see worker/executor/
+    # cluster_deploy.py::_phase_ceph_deploy_rgw_create's own docstring) — an
+    # empty rgw list is a normal, valid cluster, so this line always shows
+    # (possibly blank) rather than being hidden entirely.
+    rgw = [n["ip"] for n in nodes if "rgw" in n["roles"]]
+    node_summary = (
+        f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}\n"
+        f"RGW: {', '.join(rgw) if rgw else '(không có)'}"
+    )
+    rgw_note = (
+        f" (kèm {len(rgw)} node RGW)" if rgw else " (không có node RGW — bỏ qua bước tạo RGW)"
+    )
 
     if method == "cephadm":
         return (
@@ -165,7 +176,8 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
             f"4. `ceph orch apply mgr` cho các node MGR.\n"
             f"5. `ceph orch daemon add osd` cho từng node OSD, dùng đúng đĩa đã cấu hình (không "
             f"bao giờ dùng --all-available-devices).\n"
-            f"6. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
+            f"6. `ceph orch apply rgw` cho các node RGW{rgw_note}.\n"
+            f"7. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
             f"An toàn: kill-switch được kiểm tra lại trước MỖI bước ở trên; nếu một bước lỗi, "
             f"các bước sau không chạy."
         )
@@ -179,13 +191,14 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
             f"ngay, chưa cài đặt gì.\n"
             f"2. Cài phụ thuộc (chrony, tắt firewalld/SELinux) trên từng node.\n"
             f"3. Cấu hình repo gói Ceph chính thức từ download.ceph.com cho bản {version}.\n"
-            f"4. Cài gói Ceph theo vai trò từng node (ceph-mon/ceph-mgr/ceph-osd — node nhiều vai "
-            f"trò được cài nhiều gói).\n"
+            f"4. Cài gói Ceph theo vai trò từng node (ceph-mon/ceph-mgr/ceph-osd/ceph-radosgw — "
+            f"node nhiều vai trò được cài nhiều gói).\n"
             f"5. Khởi tạo MON thủ công (fsid, monmap, keyring, mkfs) và khởi động ceph-mon.\n"
             f"6. Chờ MON đạt quorum (tối đa vài phút).\n"
             f"7. Tạo và khởi động MGR.\n"
             f"8. Tạo OSD bằng `ceph-volume lvm create`, dùng đúng đĩa đã cấu hình.\n"
-            f"9. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
+            f"9. Tạo và khởi động RGW (radosgw, cổng 7480) cho từng node RGW{rgw_note}.\n"
+            f"10. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
             f"{_CEPH_DEPLOY_SAFETY_NOTE}"
         )
     if method == "rpm-local":
@@ -200,13 +213,14 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
             f"2. Cài phụ thuộc (chrony, tắt firewalld/SELinux) trên từng node.\n"
             f"3. Kiểm tra thư mục `{path}` tồn tại và có gói trên từng node, rồi dựng repo cục bộ "
             f"ngay tại đó (`createrepo`/`dpkg-scanpackages`) — KHÔNG thêm repo download.ceph.com.\n"
-            f"4. Cài gói Ceph theo vai trò từng node (ceph-mon/ceph-mgr/ceph-osd — node nhiều vai "
-            f"trò được cài nhiều gói) từ repo cục bộ này.\n"
+            f"4. Cài gói Ceph theo vai trò từng node (ceph-mon/ceph-mgr/ceph-osd/ceph-radosgw — "
+            f"node nhiều vai trò được cài nhiều gói) từ repo cục bộ này.\n"
             f"5. Khởi tạo MON thủ công (fsid, monmap, keyring, mkfs) và khởi động ceph-mon.\n"
             f"6. Chờ MON đạt quorum (tối đa vài phút).\n"
             f"7. Tạo và khởi động MGR.\n"
             f"8. Tạo OSD bằng `ceph-volume lvm create`, dùng đúng đĩa đã cấu hình.\n"
-            f"9. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
+            f"9. Tạo và khởi động RGW (radosgw, cổng 7480) cho từng node RGW{rgw_note}.\n"
+            f"10. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
             f"{_CEPH_DEPLOY_SAFETY_NOTE}\n\n"
             f"KHÔNG có gì được tải từ Internet — toàn bộ gói Ceph phải đã được đặt sẵn tại CÙNG "
             f"đường dẫn `{path}` trên MỌI node đã cấu hình, từ TRƯỚC khi đề xuất."

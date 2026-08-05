@@ -148,6 +148,7 @@ def test_restore_cluster_from_backup_happy_path_runs_every_phase(fakes):
         "mon_security",
         "mgr_create",
         "osd_create",
+        "rgw_create",
         "verify",
         "restore_metadata",
         "restore_rbd_images",

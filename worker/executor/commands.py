@@ -896,7 +896,8 @@ def _deploy_cluster_cephadm_preview_command(host: str | None, params: dict) -> s
     first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
     return (
         f"cephadm bootstrap --mon-ip {first_mon} (bản {version}), rồi 'ceph orch host add' + "
-        f"'ceph orch apply mgr|osd' cho các node còn lại — xem đầy đủ các pha khi bắt đầu cài đặt"
+        f"'ceph orch apply mgr|osd|rgw' (RGW chỉ nếu có node RGW) cho các node còn lại — xem đầy "
+        f"đủ các pha khi bắt đầu cài đặt"
     )
 
 
@@ -904,9 +905,9 @@ def _deploy_cluster_ceph_deploy_preview_command(host: str | None, params: dict) 
     version = params.get("version", "?")
     first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
     return (
-        f"Cài gói ceph-mon/ceph-mgr/ceph-osd bản {version} qua repo download.ceph.com, khởi tạo "
-        f"MON thủ công (monmap/keyring/mkfs) bắt đầu từ {first_mon}, chờ quorum, rồi MGR/OSD — "
-        f"xem đầy đủ các pha khi bắt đầu cài đặt"
+        f"Cài gói ceph-mon/ceph-mgr/ceph-osd/ceph-radosgw bản {version} qua repo download.ceph.com, "
+        f"khởi tạo MON thủ công (monmap/keyring/mkfs) bắt đầu từ {first_mon}, chờ quorum, rồi "
+        f"MGR/OSD/RGW (RGW chỉ nếu có node RGW) — xem đầy đủ các pha khi bắt đầu cài đặt"
     )
 
 
@@ -915,9 +916,9 @@ def _deploy_cluster_rpm_local_preview_command(host: str | None, params: dict) ->
     rpm_path = params.get("rpm_path", "?")
     first_mon = _first_node_ip_with_role(params, "mon") or host or "<mon-node>"
     return (
-        f"Cài gói ceph-mon/ceph-mgr/ceph-osd bản {version} từ thư mục RPM cục bộ {rpm_path} "
-        f"(không tải Internet), khởi tạo MON thủ công bắt đầu từ {first_mon}, chờ quorum, rồi "
-        f"MGR/OSD — xem đầy đủ các pha khi bắt đầu cài đặt"
+        f"Cài gói ceph-mon/ceph-mgr/ceph-osd/ceph-radosgw bản {version} từ thư mục RPM cục bộ "
+        f"{rpm_path} (không tải Internet), khởi tạo MON thủ công bắt đầu từ {first_mon}, chờ "
+        f"quorum, rồi MGR/OSD/RGW (RGW chỉ nếu có node RGW) — xem đầy đủ các pha khi bắt đầu cài đặt"
     )
 
 
