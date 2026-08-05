@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from dashboard.routes.auth import require_login
 from shared import db
@@ -25,6 +25,7 @@ from worker.executor.test_runner.framework import (
     poll_test_case,
     run_test_case,
 )
+from worker.executor.test_runner import report as report_builder
 from worker.executor.test_runner.registry import TEST_CASES_BY_ID, build_test_run_context, filter_selected
 
 logger = logging.getLogger(__name__)
@@ -477,3 +478,67 @@ async def override_test_result(test_id: str, request: Request, user: str = Depen
         rs.finished_at = datetime.utcnow().isoformat()
 
     return JSONResponse(_test_detail(test_case))
+
+
+# -----------------------------------------------------------------------
+# Story 10.7: report export. Read-only over the run-state store above --
+# never writes to _run_states. worker/executor/test_runner/report.py's
+# functions take plain dicts, so _run_states (dataclasses) is converted to
+# plain dicts here rather than leaking the _RunState type into worker/ (see
+# report.py's own module docstring on why it must stay dashboard/-free).
+# -----------------------------------------------------------------------
+
+
+def _run_states_snapshot() -> dict[str, dict]:
+    with _run_lock:
+        return {
+            test_id: {
+                "status": rs.status,
+                "criteria": rs.criteria,
+                "raw_output": rs.raw_output,
+                "notes": rs.notes,
+                "started_at": rs.started_at,
+                "finished_at": rs.finished_at,
+                "background_state": rs.background_state,
+                "overridden": rs.overridden,
+                "override_note": rs.override_note,
+            }
+            for test_id, rs in _run_states.items()
+        }
+
+
+def _build_report_context(username: str):
+    run_states = _run_states_snapshot()
+    rows = report_builder.build_report_rows(run_states, TEST_CASES_BY_ID, username)
+    aggregate = report_builder.build_aggregate_table(rows)
+    return run_states, rows, aggregate
+
+
+@router.get("/api/test-runner/report/markdown")
+async def download_report_markdown(user: str = Depends(require_login)):
+    run_states, rows, aggregate = _build_report_context(user)
+    run013_table = report_builder.build_run013_osd_table(run_states)
+    checklist = report_builder.build_exit_criteria_checklist(rows)
+    markdown = report_builder.build_markdown_report(user, rows, aggregate, run013_table, checklist)
+    return PlainTextResponse(
+        markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="bao-cao-nang-cap-ceph.md"'},
+    )
+
+
+@router.get("/api/test-runner/report/excel")
+async def download_report_excel(user: str = Depends(require_login)):
+    _run_states, rows, aggregate = _build_report_context(user)
+    xlsx_bytes = report_builder.build_excel_workbook(user, rows, aggregate)
+    return Response(
+        xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="bao-cao-nang-cap-ceph.xlsx"'},
+    )
+
+
+@router.get("/api/test-runner/report/summary")
+async def get_report_summary(user: str = Depends(require_login)):
+    _run_states, rows, aggregate = _build_report_context(user)
+    return JSONResponse({"summary_text": report_builder.build_copy_summary_text(rows, aggregate)})

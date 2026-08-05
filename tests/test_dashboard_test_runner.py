@@ -503,3 +503,115 @@ def test_override_is_sticky_against_further_polling(dashboard_client, fake_regis
     assert after["overridden"] is True
     assert after["override_note"] == "vận hành xác nhận thất bại thủ công"
     assert after["raw_output"] == "poll-1\n"  # unchanged since the override
+
+
+# -- Story 10.7: report export endpoints -------------------------------------
+#
+# Deliberately does NOT reuse the `fake_registry` fixture above -- its
+# "TC-FAKE-*" ids don't match any of the 4 real document-id prefixes
+# (TC-RUN-/TC-POST-/TC-COMPAT-/TC-PERF-) worker/executor/test_runner/
+# report.py's _group_for_doc_id() recognizes, so it would raise. Report
+# generation does no SSH (see report.py's own module docstring), so testing
+# against the REAL TEST_CASES_BY_ID (67 classes, always importable) is both
+# simpler and more representative -- only `_run_states` needs faking.
+
+
+def test_report_markdown_unauthenticated_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/api/test-runner/report/markdown", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_report_excel_unauthenticated_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/api/test-runner/report/excel", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_report_summary_unauthenticated_redirects_to_login(dashboard_client):
+    response = dashboard_client.get("/api/test-runner/report/summary", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_report_markdown_contains_known_rows_and_attachment_headers(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        test_runner_route,
+        "_run_states",
+        {
+            "TC-POST-001": test_runner_route._RunState(
+                status=fw.TestStatus.PASS.value,
+                criteria=[{"description": "x", "passed": True, "detail": ""}],
+                finished_at="2026-08-05T10:00:00",
+            )
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/test-runner/report/markdown")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert 'attachment; filename="bao-cao-nang-cap-ceph.md"' in response.headers["content-disposition"]
+    body = response.text
+    assert "TC-POST-001" in body
+    assert "TC-RUN-001" in body  # a never-run test still gets a row
+    assert "Bảng tổng hợp" in body
+
+
+def test_report_excel_round_trips_and_has_attachment_headers(dashboard_client, monkeypatch):
+    import io
+
+    from openpyxl import load_workbook
+
+    monkeypatch.setattr(test_runner_route, "_run_states", {})
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/test-runner/report/excel")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert 'attachment; filename="bao-cao-nang-cap-ceph.xlsx"' in response.headers["content-disposition"]
+    wb = load_workbook(io.BytesIO(response.content))
+    assert wb.sheetnames == ["Ket qua test case", "Tong hop"]
+
+
+def test_report_summary_returns_json_with_totals(dashboard_client, monkeypatch):
+    monkeypatch.setattr(test_runner_route, "_run_states", {})
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/test-runner/report/summary")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "summary_text" in data
+    assert "PASS" in data["summary_text"]
+
+
+def test_report_reflects_override_and_run013_osd_subtable(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        test_runner_route,
+        "_run_states",
+        {
+            "TC-POST-002": test_runner_route._RunState(
+                status=fw.TestStatus.FAIL.value,
+                overridden=True,
+                override_note="da xac nhan HEALTH_OK bang tay",
+            ),
+            "TC-RUN-013": test_runner_route._RunState(
+                status=fw.TestStatus.PENDING.value,
+                background_state={
+                    "completed": [{"osd_id": 5, "seconds": 12.3, "exit_code": 0, "over_estimate": False}]
+                },
+            ),
+        },
+    )
+    _login(dashboard_client)
+
+    body = dashboard_client.get("/api/test-runner/report/markdown").text
+
+    assert "[Override] da xac nhan HEALTH_OK bang tay" in body
+    assert "Chi tiết TC-RUN-013" in body
+    assert "| 5 | 12.3 | 0 | Không |" in body

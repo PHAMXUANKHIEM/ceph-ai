@@ -52,6 +52,7 @@ export default function TestRunner() {
   const [runningAction, setRunningAction] = useState(null) // id currently being POSTed to /run
   const [overrideNote, setOverrideNote] = useState('')
   const [overrideStatus, setOverrideStatus] = useState(null) // id -> 'saving' | 'error: ...'
+  const [copySummaryStatus, setCopySummaryStatus] = useState(null) // null | 'copying' | 'copied' | 'error: ...'
 
   const detailPollRef = useRef(null)
 
@@ -159,6 +160,31 @@ export default function TestRunner() {
     }
   }
 
+  // Story 10.7: report export -- same-origin GET with Content-Disposition:
+  // attachment, so a plain navigation triggers the browser's normal download
+  // UI with zero client-side blob handling needed.
+  function handleDownloadMarkdown() {
+    window.location.href = '/api/test-runner/report/markdown'
+  }
+
+  function handleDownloadExcel() {
+    window.location.href = '/api/test-runner/report/excel'
+  }
+
+  async function handleCopySummary() {
+    setCopySummaryStatus('copying')
+    try {
+      const res = await fetch('/api/test-runner/report/summary')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      await navigator.clipboard.writeText(data.summary_text || '')
+      setCopySummaryStatus('copied')
+      setTimeout(() => setCopySummaryStatus(null), 2000)
+    } catch (err) {
+      setCopySummaryStatus(`error: ${err}`)
+    }
+  }
+
   const visibleTests = groupFilter === 'ALL' ? tests : tests.filter((t) => t.group === groupFilter)
 
   const summary = tests.reduce(
@@ -187,8 +213,8 @@ export default function TestRunner() {
           </div>
         )}
 
-        {/* Aggregate summary */}
-        <section className="bg-white rounded shadow p-4">
+        {/* Aggregate summary + report export */}
+        <section className="bg-white rounded shadow p-4 space-y-3">
           <div className="flex flex-wrap gap-4 text-sm">
             <span className="font-medium text-slate-800">Tổng: {summary.total}</span>
             <span className="text-slate-500">Chưa chạy: {summary.not_started || 0}</span>
@@ -197,6 +223,34 @@ export default function TestRunner() {
             <span className="text-red-600">Không đạt: {summary.fail || 0}</span>
             <span className="text-orange-600">Lỗi: {summary.error || 0}</span>
             <span className="text-amber-600">Bỏ qua: {summary.skip || 0}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={handleDownloadMarkdown}
+              className="rounded bg-slate-700 text-white text-xs px-3 py-1.5"
+            >
+              Tải Markdown
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadExcel}
+              className="rounded bg-slate-700 text-white text-xs px-3 py-1.5"
+            >
+              Tải Excel
+            </button>
+            <button
+              type="button"
+              onClick={handleCopySummary}
+              disabled={copySummaryStatus === 'copying'}
+              className="rounded border border-slate-300 text-slate-700 text-xs px-3 py-1.5 disabled:opacity-50"
+            >
+              {copySummaryStatus === 'copying' ? 'Đang copy...' : 'Copy Summary'}
+            </button>
+            {copySummaryStatus === 'copied' && <span className="text-xs text-green-600">Đã copy</span>}
+            {copySummaryStatus && copySummaryStatus.startsWith('error') && (
+              <span className="text-xs text-red-600">{copySummaryStatus}</span>
+            )}
           </div>
         </section>
 
