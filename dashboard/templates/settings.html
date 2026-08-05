@@ -387,11 +387,11 @@
           <p class="success">{{ telegram_test_success }}</p>
         {% endif %}
         <p class="hint">
-          Gửi CÙNG cảnh báo backup thất bại/quá hạn/bất thường mà <code>worker/backup/alerting.py</code>
-          đã gửi qua webhook, sang một chat Telegram — thêm một kênh, không thay thế webhook hiện có.
-          Chỉ gửi tin nhắn MỘT CHIỀU: ứng dụng này không chạy bot lắng nghe tin nhắn/lệnh từ Telegram —
-          mọi hành động khắc phục vẫn luôn phải qua quy trình đề xuất &amp; duyệt trên Dashboard như
-          bình thường, không có gì có thể được thực thi trực tiếp từ Telegram.
+          Một Bot Token/Chat ID DUY NHẤT, dùng chung cho cả 3 loại cảnh báo bên dưới — bật/tắt riêng
+          từng loại, không ảnh hưởng tới hai loại còn lại. Chỉ gửi tin nhắn MỘT CHIỀU: ứng dụng này
+          không chạy bot lắng nghe tin nhắn/lệnh từ Telegram — mọi hành động khắc phục vẫn luôn phải
+          qua quy trình đề xuất &amp; duyệt trên Dashboard như bình thường, không có gì có thể được
+          thực thi trực tiếp từ Telegram.
           Chưa có Bot Token/Chat ID? Xem
           <a href="/settings/telegram/help" target="_blank" rel="noopener">hướng dẫn kết nối Telegram từng bước →</a>
         </p>
@@ -409,9 +409,17 @@
           </label>
           <label class="checkbox-label">
             <input type="checkbox" name="telegram_alerts_enabled" value="true" {% if telegram_alerts_enabled %}checked{% endif %}>
-            Bật gửi cảnh báo qua Telegram
+            Cảnh báo <strong>Backup</strong> (ceph-backup thất bại/quá hạn/bất thường, digest hàng ngày)
           </label>
-          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+          <label class="checkbox-label">
+            <input type="checkbox" name="telegram_incident_alerts_enabled" value="true" {% if telegram_incident_alerts_enabled %}checked{% endif %}>
+            Cảnh báo <strong>lỗi cụm</strong> (MON/OSD/PG... — mọi sự cố Watcher phát hiện qua <code>ceph health detail</code>)
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="telegram_node_alerts_enabled" value="true" {% if telegram_node_alerts_enabled %}checked{% endif %}>
+            Cảnh báo <strong>phần cứng</strong> (CPU/RAM node cao bất thường, kéo dài)
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker/Watcher</button>
         </form>
         <form method="post" action="/settings/telegram/test" style="margin-top: 0.75rem;">
           <button type="submit" class="btn btn-ghost">Gửi thử</button>

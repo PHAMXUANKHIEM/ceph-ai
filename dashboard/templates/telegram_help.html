@@ -99,15 +99,29 @@
         <ol>
           <li>Vào <a href="/settings#telegram">Settings → Cảnh báo Telegram</a> (chỉ tài khoản admin
             thấy mục này).</li>
-          <li>Dán <strong>Bot Token</strong> (Bước 1) và <strong>Chat ID</strong> (Bước 2), tick
-            "Bật gửi cảnh báo qua Telegram", bấm <strong>Lưu</strong>.</li>
+          <li>Dán <strong>Bot Token</strong> (Bước 1) và <strong>Chat ID</strong> (Bước 2) — dùng
+            CHUNG cho cả 3 loại cảnh báo bên dưới, chỉ cần điền một lần.</li>
+          <li>Tick chọn những loại cảnh báo muốn nhận (tick bao nhiêu tuỳ ý, độc lập với nhau):
+            <ul>
+              <li><strong>Cảnh báo Backup</strong> — ceph-backup thất bại/quá hạn/bất thường, tổng
+                hợp hàng ngày (digest).</li>
+              <li><strong>Cảnh báo lỗi cụm</strong> — mọi sự cố Ceph thật (MON down, OSD down, PG
+                degraded, ...) Watcher phát hiện qua <code>ceph health detail</code>.</li>
+              <li><strong>Cảnh báo phần cứng</strong> — CPU hoặc RAM một node ở mức cao bất thường
+                (mặc định ≥90%), kéo dài liên tục qua nhiều lượt quét (không báo động vì một đợt tăng
+                tải ngắn hạn bình thường).</li>
+            </ul>
+          </li>
+          <li>Bấm <strong>Lưu</strong> — cả Worker (đọc cảnh báo Backup) lẫn Watcher (đọc cảnh báo lỗi
+            cụm + phần cứng) đều tự khởi động lại để áp dụng ngay.</li>
           <li>Bấm <strong>Gửi thử</strong> — nếu cấu hình đúng, một tin nhắn xác nhận sẽ xuất hiện
-            ngay trong chat/nhóm đã chọn ở Bước 2.</li>
+            ngay trong chat/nhóm đã chọn ở Bước 2 (xác nhận Bot Token/Chat ID hoạt động, không phụ
+            thuộc loại cảnh báo nào đang bật).</li>
         </ol>
         <p class="hint">
           Tính năng này chỉ GỬI cảnh báo một chiều — ceph-aiops không đọc/xử lý bất kỳ tin nhắn nào gửi
           ngược lại cho bot. Mọi hành động khắc phục vẫn phải đề xuất &amp; duyệt trên Dashboard như
-          bình thường.
+          bình thường, dù bật bao nhiêu loại cảnh báo đi nữa.
         </p>
 
         <p><a href="/settings#telegram" class="btn btn-ghost">← Quay lại Settings</a></p>

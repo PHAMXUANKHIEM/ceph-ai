@@ -176,6 +176,28 @@ def test_volume_saturated_incident_is_never_auto_resolved_by_recovery(isolated_d
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_node_resource_high_incident_is_never_auto_resolved_by_recovery(isolated_db):
+    # 2026-08-05: same bug class as CHAT_REQUEST/CLUSTER_UPGRADE/
+    # VOLUME_SATURATED above — watcher/node_health_monitor.py's synthetic
+    # Incidents (ceph_code prefixed "NODE_RESOURCE_HIGH:") never match any
+    # real `ceph health detail` check code either. That module owns this
+    # ceph_code family's own create/resolve lifecycle (its own
+    # consecutive-high-scans streak per host); without this guard,
+    # _resolve_recovered_incidents would incorrectly "recover" every open
+    # node-resource Incident on every single poll regardless of whether the
+    # node is actually still overloaded.
+    failed_node_id = _seed_incident("NODE_RESOURCE_HIGH:10.0.0.5", IncidentStatus.FAILED.value)
+    pending_node_id = _seed_incident("NODE_RESOURCE_HIGH:10.0.0.6", IncidentStatus.PENDING_APPROVAL.value)
+    real_failed_id = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, failed_node_id).status == IncidentStatus.FAILED.value
+        assert session.get(Incident, pending_node_id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
+
+
 def test_already_terminal_incidents_are_never_touched_by_recovery(isolated_db):
     resolved_id = _seed_incident("OSD_DOWN", IncidentStatus.RESOLVED.value)
     auto_fixed_id = _seed_incident("MON_CLOCK_SKEW", IncidentStatus.AUTO_FIXED.value)
@@ -217,6 +239,31 @@ def test_incident_created_and_published_on_transition_to_warn(isolated_db, monke
     assert envelope["ceph_code"] == "MON_CLOCK_SKEW"
     assert envelope["nodes"] == ["10.20.1.249"]
     assert envelope["log_excerpt"] == "mon2 log excerpt"
+
+
+def test_incident_creation_sends_telegram_alert_per_check(isolated_db, monkeypatch):
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
+    monkeypatch.setattr(
+        watcher_main.collector,
+        "collect_relevant_logs",
+        lambda code, detail: ([], "mon2 log excerpt"),
+    )
+    calls = []
+    monkeypatch.setattr(watcher_main, "send_incident_alert", lambda code, severity, excerpt: calls.append((code, severity, excerpt)))
+
+    watcher_main.build_and_publish_incident(None, HEALTH_WARN_PAYLOAD)
+
+    assert calls == [("MON_CLOCK_SKEW", "HEALTH_WARN", "mon2 log excerpt")]
+
+
+def test_no_telegram_alert_sent_on_recovery_to_health_ok(isolated_db, monkeypatch):
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
+    calls = []
+    monkeypatch.setattr(watcher_main, "send_incident_alert", lambda *a: calls.append(a))
+
+    watcher_main.build_and_publish_incident("HEALTH_WARN", HEALTH_OK_PAYLOAD)
+
+    assert calls == []
 
 
 def test_multiple_simultaneous_checks_create_one_incident_each_and_publish_all(

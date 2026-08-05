@@ -49,6 +49,23 @@ def _fast_device_health_monitor_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fast_node_health_monitor_default(monkeypatch):
+    """2026-08-05: run() now also calls node_health_monitor.
+    check_node_resources() every poll cycle (gated to once per
+    settings.node_health_scan_interval_seconds — see that call site's own
+    comment in watcher/main.py). Same "fast default, explicit override
+    where the behavior is actually under test" reasoning as
+    _fast_device_health_monitor_default above — left unmocked, this hits
+    the real shared.cluster_nodes.configured_nodes()/SSH path, adding real
+    wall-clock time to every test in this file whether or not it cares
+    about node-health monitoring."""
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", lambda: {})
+    monkeypatch.setattr(
+        watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda _c: None
+    )
+
+
+@pytest.fixture(autouse=True)
 def _fast_volume_monitor_default(monkeypatch):
     """2026-08-01 pre-existing-slowness cleanup: run() calls volume_monitor.
     check_volumes() every poll, unconditionally. Left unmocked (as most
@@ -298,6 +315,71 @@ def test_run_survives_device_health_monitor_raising(monkeypatch):
         raise RuntimeError("bug in device_health_monitor")
 
     monkeypatch.setattr(watcher_main.device_health_monitor, "check_predicted_failing_osds", broken_check)
+
+    transitions = []
+    watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)
+
+    assert len(transitions) == 1  # HEALTH_OK on_transition still fired once, on the first poll
+
+
+def test_run_calls_node_health_monitor_once_within_default_scan_interval(monkeypatch):
+    # settings.node_health_scan_interval_seconds defaults to 15 minutes —
+    # across 3 fast poll iterations (real wall-clock time barely advances
+    # since time.sleep is mocked away), the scan must fire on the first
+    # iteration only, not every iteration the way the health/volume checks
+    # do.
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    check_calls = {"n": 0}
+    resolve_calls = []
+
+    def fake_check():
+        check_calls["n"] += 1
+        return {"NODE_RESOURCE_HIGH:10.0.0.5": {"host": "10.0.0.5"}}
+
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", fake_check)
+    monkeypatch.setattr(
+        watcher_main.node_health_monitor,
+        "create_or_resolve_node_health_incidents",
+        resolve_calls.append,
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 1
+    assert resolve_calls == [{"NODE_RESOURCE_HIGH:10.0.0.5": {"host": "10.0.0.5"}}]
+
+
+def test_run_calls_node_health_monitor_every_iteration_when_interval_is_zero(monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "node_health_scan_interval_seconds", 0, raising=False)
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    check_calls = {"n": 0}
+
+    def fake_check():
+        check_calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", fake_check)
+    monkeypatch.setattr(
+        watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda _c: None
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 3
+
+
+def test_run_survives_node_health_monitor_raising(monkeypatch):
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    def broken_check():
+        raise RuntimeError("bug in node_health_monitor")
+
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", broken_check)
 
     transitions = []
     watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)

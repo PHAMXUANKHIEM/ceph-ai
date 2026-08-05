@@ -76,6 +76,8 @@ TELEGRAM_ENV_NAMES: dict[str, str] = {
     "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
     "telegram_chat_id": "TELEGRAM_CHAT_ID",
     "telegram_alerts_enabled": "TELEGRAM_ALERTS_ENABLED",
+    "telegram_incident_alerts_enabled": "TELEGRAM_INCIDENT_ALERTS_ENABLED",
+    "telegram_node_alerts_enabled": "TELEGRAM_NODE_ALERTS_ENABLED",
 }
 
 

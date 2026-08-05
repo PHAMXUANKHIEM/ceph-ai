@@ -254,5 +254,23 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
     telegram_alerts_enabled: bool = False
 
+    # 2026-08-05: same Bot Token/Chat ID above, but two MORE independently
+    # toggleable alert categories on top of the backup one — "phân rõ cảnh
+    # báo Telegram theo loại" (backup/cluster-lỗi/phần cứng, mỗi loại bật
+    # tắt riêng). telegram_alerts_enabled above now specifically means
+    # "backup alerts"; kept under its original name (not renamed) to avoid
+    # a breaking .env rename for the already-shipped feature.
+    telegram_incident_alerts_enabled: bool = False
+    telegram_node_alerts_enabled: bool = False
+
+    # watcher/node_health_monitor.py's own scan cadence — same reasoning as
+    # device_health_scan_interval_seconds above: collecting CPU/RAM needs a
+    # fresh SSH round trip PER NODE (watcher/node_metrics.py samples /proc
+    # twice, ~1s apart, per host), so running that on every
+    # watcher_poll_interval_seconds tick (15s default) would be a
+    # meaningfully heavier SSH load than the single `ceph health detail`
+    # query the main loop already does. 15 minutes by default.
+    node_health_scan_interval_seconds: int = 900
+
 
 settings = Settings()

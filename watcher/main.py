@@ -5,12 +5,14 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from config.settings import settings
-from watcher import ceph_client, collector, device_health_monitor, publisher, volume_monitor
+from watcher import ceph_client, collector, device_health_monitor, node_health_monitor, publisher, volume_monitor
 from watcher.ceph_client import CephQueryError, query_cluster_health
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
+from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat
 from shared.models import Incident, IncidentStatus
+from shared.telegram_alerts import send_incident_alert
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,14 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
                 # predicted-failing-and-still-in osd_id set), never a real
                 # `ceph health detail` check code.
                 continue
+            if incident.ceph_code.startswith(NODE_RESOURCE_HIGH_PREFIX):
+                # 2026-08-05: same reasoning as the VOLUME_SATURATED_PREFIX/
+                # DEVICE_HEALTH_EVACUATE_PREFIX guards above —
+                # watcher/node_health_monitor.py owns this ceph_code
+                # family's own create/resolve lifecycle (its own
+                # consecutive-high-scans streak per host), never a real
+                # `ceph health detail` check code.
+                continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
         session.commit()
@@ -170,6 +180,17 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
             session.commit()
             session.refresh(incident)
             incident_id = incident.id
+
+        # 2026-08-05: "cảnh báo lỗi cụm" Telegram category (shared/
+        # telegram_alerts.py) — its own independent
+        # telegram_incident_alerts_enabled toggle, checked inside
+        # send_incident_alert itself. One message per ceph_code check,
+        # matching the one-Incident-per-check granularity above. Best-
+        # effort/never raises (see that module's own docstring) — placed
+        # OUTSIDE the DB session block above on purpose, same "don't hold a
+        # DB connection open across unrelated network I/O" reasoning this
+        # function's own docstring already gives for log collection.
+        send_incident_alert(ceph_code, check_detail.get("severity"), log_excerpt)
 
         envelopes.append(
             publisher.build_envelope(
@@ -237,6 +258,7 @@ def run(
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
     last_device_health_scan_at: Optional[datetime] = None
+    last_node_health_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -327,6 +349,25 @@ def run(
             except Exception:
                 logger.exception("run: device health scan failed")
             last_device_health_scan_at = now
+
+        # 2026-08-05: Node hardware (CPU/RAM) threshold scan — own
+        # independent try/except (same isolation reasoning as the volume-
+        # saturation/device-health blocks above) and its OWN, much slower
+        # cadence (settings.node_health_scan_interval_seconds, default 15
+        # minutes) — see watcher/node_health_monitor.py's own module
+        # docstring for why (a fresh SSH round trip per configured node,
+        # too heavy to run on every watcher_poll_interval_seconds tick).
+        if (
+            last_node_health_scan_at is None
+            or (now - last_node_health_scan_at).total_seconds()
+            >= settings.node_health_scan_interval_seconds
+        ):
+            try:
+                current_node_resources = node_health_monitor.check_node_resources()
+                node_health_monitor.create_or_resolve_node_health_incidents(current_node_resources)
+            except Exception:
+                logger.exception("run: node health scan failed")
+            last_node_health_scan_at = now
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))

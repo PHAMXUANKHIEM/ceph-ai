@@ -287,8 +287,8 @@ cùng `_require_admin_privilege` mọi form nhạy cảm khác trong trang Setti
 | Trường | Ý nghĩa |
 |---|---|
 | Bot Token | Token tạo qua [@BotFather](https://t.me/BotFather) trên Telegram — lưu theo quy ước "để trống khi lưu = giữ nguyên giá trị đã lưu" giống `router_api_key`/secret key S3, không bao giờ hiện lại giá trị thật trên form |
-| Chat ID | ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo |
-| Bật gửi cảnh báo qua Telegram | Công tắc bật/tắt RIÊNG khỏi "đã cấu hình token/chat id chưa" — admin tắt tạm thời được mà không phải xoá rồi gõ lại token |
+| Chat ID | ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo — DÙNG CHUNG cho cả 3 loại cảnh báo (xem [telegram-alerts.md](./telegram-alerts.md)) |
+| Cảnh báo Backup | Công tắc bật/tắt RIÊNG khỏi "đã cấu hình token/chat id chưa" — admin tắt tạm thời được mà không phải xoá rồi gõ lại token. Từ 2026-08-05, đây chỉ là MỘT trong 3 công tắc độc lập trên cùng trang (còn có "Cảnh báo lỗi cụm" và "Cảnh báo phần cứng" — không thuộc phạm vi tài liệu này, xem [telegram-alerts.md](./telegram-alerts.md)) |
 
 Lưu cấu hình này **khởi động lại Worker** ngay (cùng cách "Lưu trữ Backup"
 đã làm) — vì `worker/backup/alerting.py` chạy trong tiến trình Worker, và

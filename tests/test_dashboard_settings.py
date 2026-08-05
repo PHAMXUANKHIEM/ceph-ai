@@ -1871,6 +1871,10 @@ def test_get_settings_shows_telegram_tab_for_admin(dashboard_client):
     assert response.status_code == 200
     assert "Cảnh báo Telegram" in response.text
     assert 'action="/settings/telegram"' in response.text
+    # 2026-08-05: 3 independently toggleable categories, not just one.
+    assert 'name="telegram_alerts_enabled"' in response.text
+    assert 'name="telegram_incident_alerts_enabled"' in response.text
+    assert 'name="telegram_node_alerts_enabled"' in response.text
 
 
 def test_get_settings_hides_telegram_tab_for_non_admin(dashboard_client):
@@ -1883,16 +1887,30 @@ def test_get_settings_hides_telegram_tab_for_non_admin(dashboard_client):
     assert 'action="/settings/telegram"' not in response.text
 
 
-def test_telegram_settings_submit_persists_config_and_restarts_worker(dashboard_client, monkeypatch, tmp_path):
-    tmp_env = tmp_path / ".env"
-    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
-    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
-    restart_calls = []
+def _mock_both_restarts(monkeypatch):
+    restart_calls = {"worker": 0, "watcher": 0}
     monkeypatch.setattr(
         settings_route,
         "restart_worker",
-        lambda: restart_calls.append(1) or {"restarted": True, "new_pid": 1, "error": None},
+        lambda: restart_calls.__setitem__("worker", restart_calls["worker"] + 1)
+        or {"restarted": True, "new_pid": 1, "error": None},
     )
+    monkeypatch.setattr(
+        settings_route,
+        "restart_watcher",
+        lambda: restart_calls.__setitem__("watcher", restart_calls["watcher"] + 1)
+        or {"restarted": True, "new_pid": 2, "error": None},
+    )
+    return restart_calls
+
+
+def test_telegram_settings_submit_persists_config_and_restarts_worker_and_watcher(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = _mock_both_restarts(monkeypatch)
     _login(dashboard_client)
 
     response = dashboard_client.post(
@@ -1901,6 +1919,8 @@ def test_telegram_settings_submit_persists_config_and_restarts_worker(dashboard_
             "telegram_bot_token": "123456:AAExampleToken",
             "telegram_chat_id": "-1001234567890",
             "telegram_alerts_enabled": "true",
+            "telegram_incident_alerts_enabled": "true",
+            "telegram_node_alerts_enabled": "true",
         },
     )
 
@@ -1909,16 +1929,42 @@ def test_telegram_settings_submit_persists_config_and_restarts_worker(dashboard_
     assert settings.telegram_bot_token == "123456:AAExampleToken"
     assert settings.telegram_chat_id == "-1001234567890"
     assert settings.telegram_alerts_enabled is True
+    assert settings.telegram_incident_alerts_enabled is True
+    assert settings.telegram_node_alerts_enabled is True
     env_contents = tmp_env.read_text()
     assert "TELEGRAM_BOT_TOKEN=123456:AAExampleToken" in env_contents
     assert "TELEGRAM_CHAT_ID=-1001234567890" in env_contents
     assert "TELEGRAM_ALERTS_ENABLED=true" in env_contents
-    assert restart_calls == [1]
+    assert "TELEGRAM_INCIDENT_ALERTS_ENABLED=true" in env_contents
+    assert "TELEGRAM_NODE_ALERTS_ENABLED=true" in env_contents
+    assert restart_calls == {"worker": 1, "watcher": 1}
+
+
+def test_telegram_settings_submit_categories_are_independent(dashboard_client, monkeypatch, tmp_path):
+    # Enabling ONLY the "cluster error" category must leave the other two
+    # off — the whole point of splitting this into 3 separate toggles.
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    _mock_both_restarts(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={
+            "telegram_bot_token": "123456:AAExampleToken",
+            "telegram_chat_id": "-1001234567890",
+            "telegram_incident_alerts_enabled": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert settings.telegram_incident_alerts_enabled is True
+    assert settings.telegram_alerts_enabled is False
+    assert settings.telegram_node_alerts_enabled is False
 
 
 def test_telegram_settings_submit_blank_token_keeps_existing_value(dashboard_client, monkeypatch, tmp_path):
     monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
-    monkeypatch.setattr(settings_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None})
+    _mock_both_restarts(monkeypatch)
     monkeypatch.setattr(settings, "telegram_bot_token", "already-saved-token", raising=False)
     _login(dashboard_client)
 
@@ -1939,6 +1985,24 @@ def test_telegram_settings_submit_rejects_enabling_without_token_or_chat_id(dash
     response = dashboard_client.post(
         "/settings/telegram",
         data={"telegram_bot_token": "", "telegram_chat_id": "", "telegram_alerts_enabled": "true"},
+    )
+
+    assert response.status_code == 200
+    assert "Cần điền đủ Bot token và Chat ID" in response.text
+
+
+def test_telegram_settings_submit_rejects_enabling_node_category_without_config(
+    dashboard_client, monkeypatch, tmp_path
+):
+    # The validation gate must trigger for ANY of the 3 categories, not
+    # only the original backup one.
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(settings, "telegram_bot_token", "", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/telegram",
+        data={"telegram_bot_token": "", "telegram_chat_id": "", "telegram_node_alerts_enabled": "true"},
     )
 
     assert response.status_code == 200
