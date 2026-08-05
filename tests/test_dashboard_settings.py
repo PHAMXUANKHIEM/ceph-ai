@@ -1199,6 +1199,70 @@ def test_cluster_form_submission_does_not_leak_into_9router_form_state(dashboard
     assert "API key không được để trống" not in response.text  # 9router form's error stays unset
 
 
+# -- POST /settings/cluster/forget-host-key ----------------------------------
+# Ad-hoc fix (not a filed BMad story): clears a re-provisioned node's stale
+# SSH host key (watcher/ceph_client.py::forget_host_key()) so an operator
+# doesn't need server SSH access to recover from paramiko.BadHostKeyException
+# after reinstalling a lab node's OS.
+
+
+def test_forget_host_key_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/settings/cluster/forget-host-key", data={"host": "10.3.55.98"})
+
+    assert response.status_code == 403
+
+
+def test_forget_host_key_route_blank_host_shows_error(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/cluster/forget-host-key", data={"host": "  "})
+
+    assert response.status_code == 200
+    assert "Vui lòng nhập địa chỉ IP/hostname" in response.text
+
+
+def test_forget_host_key_route_success_shows_confirmation(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(settings_route, "forget_host_key", lambda host: True)
+
+    response = dashboard_client.post("/settings/cluster/forget-host-key", data={"host": "10.3.55.98"})
+
+    assert response.status_code == 200
+    assert "Đã xoá SSH host key cũ của 10.3.55.98" in response.text
+
+
+def test_forget_host_key_route_no_stored_entry_shows_not_found_message(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(settings_route, "forget_host_key", lambda host: False)
+
+    response = dashboard_client.post("/settings/cluster/forget-host-key", data={"host": "10.3.55.98"})
+
+    assert response.status_code == 200
+    assert "Không tìm thấy host key đã lưu" in response.text
+
+
+def test_forget_host_key_form_hidden_for_non_admin_on_settings_page(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'action="/settings/cluster/forget-host-key"' not in response.text
+
+
+def test_forget_host_key_form_visible_for_admin_on_settings_page(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'action="/settings/cluster/forget-host-key"' in response.text
+
+
 def test_9router_form_submission_does_not_leak_into_cluster_form_state(
     dashboard_client, monkeypatch, tmp_path
 ):

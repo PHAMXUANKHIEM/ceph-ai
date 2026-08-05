@@ -664,6 +664,28 @@
           {% endif %}
           <button type="submit" class="btn btn-primary">Lưu &amp; kiểm tra kết nối</button>
         </form>
+
+        {% if is_admin %}
+        <hr>
+        <h3>Xoá SSH host key cũ của 1 node</h3>
+        {% if ssh_host_key_error %}
+          <p class="error">{{ ssh_host_key_error }}</p>
+        {% endif %}
+        {% if ssh_host_key_success %}
+          <p class="success">{{ ssh_host_key_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Dùng khi 1 node đã cài lại OS: SSH host key mới sinh ra khác key cũ đã lưu, khiến mọi kết nối
+          tới node đó bị chặn (báo lỗi "Host key ... does not match"). Xoá key cũ ở đây để lần kết nối
+          kế tiếp tự lưu key mới — không cần SSH vào server để sửa tay.
+        </p>
+        <form class="login-box" method="post" action="/settings/cluster/forget-host-key">
+          <label>IP / hostname của node
+            <input type="text" name="host" placeholder="10.3.55.98" required>
+          </label>
+          <button type="submit" class="btn">Xoá SSH host key cũ</button>
+        </form>
+        {% endif %}
       </div>
     </section>
 

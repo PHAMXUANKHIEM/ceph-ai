@@ -7,6 +7,7 @@ from watcher.ceph_client import (
     CephQueryError,
     configured_rbd_pools,
     discover_rbd_pools,
+    forget_host_key,
     get_mon_nodes,
     get_upgrade_status,
     pause_upgrade,
@@ -278,6 +279,50 @@ def test_ssh_key_path_error_reports_missing_file(tmp_path):
 # No test for the "exists but unreadable" branch — os.access(R_OK) bypasses
 # permission bits entirely when running as root (verified: chmod 0o000 still
 # reports readable), which is how this project's dev/test environment runs.
+
+
+# -- forget_host_key() ---------------------------------------------------
+# Ad-hoc fix (not a filed BMad story): a re-provisioned (OS-reinstalled) lab
+# node gets a new SSH host key, and paramiko.BadHostKeyException then blocks
+# every connection to it until the stale entry in KNOWN_HOSTS_PATH is
+# cleared -- this is the function the Settings page's "Xoá SSH host key cũ"
+# form (dashboard/routes/settings.py) calls to do that without requiring
+# server SSH access.
+
+
+def test_forget_host_key_removes_existing_entry(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text(
+        "10.3.55.98 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+        "10.3.55.104 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    )
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+
+    removed = forget_host_key("10.3.55.98")
+
+    assert removed is True
+    remaining = known_hosts.read_text()
+    assert "10.3.55.98" not in remaining
+    assert "10.3.55.104" in remaining  # untouched entry survives
+
+
+def test_forget_host_key_returns_false_for_unknown_host(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text(
+        "10.3.55.104 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    )
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+
+    removed = forget_host_key("10.3.55.98")
+
+    assert removed is False
+    assert "10.3.55.104" in known_hosts.read_text()  # untouched
+
+
+def test_forget_host_key_returns_false_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(tmp_path / "does_not_exist"))
+
+    assert forget_host_key("10.3.55.98") is False
 # The branch itself is simple enough (os.access negative case) to trust
 # without a test that would be meaningless in this environment.
 

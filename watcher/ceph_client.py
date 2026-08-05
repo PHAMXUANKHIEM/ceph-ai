@@ -359,6 +359,33 @@ def ssh_key_path_error(ssh_key_path: str) -> str | None:
     return None
 
 
+def forget_host_key(host: str) -> bool:
+    """Removes `host`'s pinned SSH host key from KNOWN_HOSTS_PATH (trust-on-
+    first-use pinning shared by this module and worker/executor/
+    ssh_executor.py's identical constant/mechanism -- same physical file) so
+    the next connection accepts and re-pins whatever key the host presents.
+
+    Needed operationally: a lab node's OS reinstall legitimately changes its
+    SSH host key, and paramiko's BadHostKeyException (raised by the
+    Transport itself, not by set_missing_host_key_policy -- see the
+    connect()-site comments in this file and ssh_executor.py) then blocks
+    EVERY future connection to that host until the stale entry is cleared.
+    Without this, an operator had no way to recover short of SSHing into
+    this server and hand-editing the known_hosts file.
+
+    Returns True if a stored entry was found and removed, False if the host
+    had no entry (nothing to do -- not an error, e.g. it was never connected
+    to, or was already cleared)."""
+    if not os.path.exists(KNOWN_HOSTS_PATH):
+        return False
+    host_keys = paramiko.HostKeys()
+    host_keys.load(KNOWN_HOSTS_PATH)
+    removed = host_keys.pop(host, None) is not None
+    if removed:
+        host_keys.save(KNOWN_HOSTS_PATH)
+    return removed
+
+
 def read_public_key(ssh_key_path: str) -> str | None:
     """Reads the paired `<ssh_key_path>.pub` file (the standard ssh-keygen
     convention) so the Dashboard can show the operator exactly what to add
