@@ -16,7 +16,11 @@ RabbitMQ/policy_gate.py's approval flow.
 
 from __future__ import annotations
 
+import base64
+import difflib
 import enum
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
@@ -37,6 +41,14 @@ __all__ = [
     "poll_test_case",
     "run_ceph_command",
     "check_background_handle_health",
+    "require_mon_host",
+    "require_client_host",
+    "require_rgw_host",
+    "parse_json",
+    "diff_lines",
+    "run_script",
+    "parse_steps",
+    "step_exit_code",
 ]
 
 
@@ -292,3 +304,80 @@ def run_ceph_command(host: str, command: str) -> str:
     reading scrollback.
     """
     return execute_with_retry(host, command)
+
+
+# ---------------------------------------------------------------------------
+# Shared TestCase-authoring helpers. group_a.py/group_b.py (Stories 10.3/10.4)
+# each independently defined a private require-a-ctx-field / parse-JSON
+# helper; group_b.py additionally invented a base64-pipe-to-bash
+# multi-step-script mechanism for its ~15 mutating/regression test cases.
+# Story 10.5 (Group C/D) is the 3rd consumer of that same shape, which is
+# the point code review flagged as worth centralizing rather than
+# re-deriving a 3rd time -- added here as PUBLIC functions rather than
+# moving group_a.py/group_b.py's own already-shipped private copies (that
+# would be an unrequested refactor of tested, working code; new group
+# modules use these, existing ones are left as-is).
+# ---------------------------------------------------------------------------
+
+_STEP_RE = re.compile(r"===STEP:(?P<name>[^=\n]+)===\n(?P<body>.*?)(?=\n===STEP:|\Z)", re.S)
+_EXIT_RE = re.compile(r"EXIT:(-?\d+)")
+
+
+def require_mon_host(ctx: TestRunContext, test_id: str) -> str:
+    if not ctx.mon_host:
+        raise TestCaseError(f"{test_id}: chua cau hinh MON host nao")
+    return ctx.mon_host
+
+
+def require_client_host(ctx: TestRunContext, test_id: str) -> str:
+    if not ctx.client_host:
+        raise TestCaseError(f"{test_id}: chua cau hinh client_host (Config -> May client test I/O)")
+    return ctx.client_host
+
+
+def require_rgw_host(ctx: TestRunContext, test_id: str) -> str:
+    if not ctx.rgw_hosts:
+        raise TestCaseError(f"{test_id}: chua cau hinh RGW host nao")
+    return ctx.rgw_hosts[0]
+
+
+def parse_json(output: str, test_id: str) -> Any:
+    try:
+        return json.loads(output)
+    except (ValueError, TypeError) as exc:
+        raise TestCaseError(f"{test_id}: khong doc duoc JSON tu output ceph: {exc}") from exc
+
+
+def diff_lines(baseline_text: str, current_text: str, max_lines: int = 40) -> list[str]:
+    diff = list(
+        difflib.unified_diff(
+            baseline_text.splitlines(), current_text.splitlines(), fromfile="baseline", tofile="current", lineterm=""
+        )
+    )
+    changed = [ln for ln in diff if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))]
+    return changed[:max_lines]
+
+
+def run_script(host: str, script: str) -> str:
+    """Base64-encodes `script` and pipes it through bash on `host`, instead
+    of interpolating it into a `bash -c '...'` command string -- avoids
+    quoting hazards from commands that contain their own single/double
+    quotes. `script` must end with a step that leaves the shell's own exit
+    code 0 regardless of what any individual step did -- execute_with_retry()
+    raises ExecutorError on ANY non-zero exit, so multi-step scripts here
+    encode per-step results as parseable `===STEP:name===` / `EXIT:n`
+    markers instead (see parse_steps()/step_exit_code()), the same "don't
+    let an expected non-zero become ExecutorError" principle
+    run_ceph_command() already applies to single commands.
+    """
+    encoded = base64.b64encode(script.encode()).decode()
+    return execute_with_retry(host, f"echo {encoded} | base64 -d | bash")
+
+
+def parse_steps(output: str) -> dict[str, str]:
+    return {m.group("name").strip(): m.group("body") for m in _STEP_RE.finditer(output)}
+
+
+def step_exit_code(body: str) -> Optional[int]:
+    m = _EXIT_RE.search(body)
+    return int(m.group(1)) if m else None
