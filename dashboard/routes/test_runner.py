@@ -1,5 +1,10 @@
+import asyncio
 import json
 import logging
+import threading
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -9,7 +14,18 @@ from shared import db
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.models import TestRunnerConfig
 from shared import test_runner_baselines as baselines
-from worker.executor.ssh_executor import test_all_nodes
+from worker.executor.ssh_executor import ExecutorError, test_all_nodes
+from worker.executor.test_runner.framework import (
+    TestCase,
+    TestCaseDeclined,
+    TestCaseError,
+    TestResult,
+    TestRunContext,
+    TestStatus,
+    poll_test_case,
+    run_test_case,
+)
+from worker.executor.test_runner.registry import TEST_CASES_BY_ID, build_test_run_context, filter_selected
 
 logger = logging.getLogger(__name__)
 
@@ -175,3 +191,289 @@ async def ssh_check(user: str = Depends(require_login)):
     hosts = [node["host"] for node in _configured_nodes()]
     results = test_all_nodes(hosts)
     return JSONResponse(results)
+
+
+# -----------------------------------------------------------------------
+# Story 10.6: the run-state engine. Test cases execute directly inside THIS
+# Dashboard process (never through Worker/RabbitMQ -- see
+# worker/executor/test_runner/framework.py's own module docstring), and a
+# background TestCase's opaque `state` typically wraps a live paramiko
+# Channel (BackgroundCommandHandle) that cannot be serialized -- so all run
+# state lives in this module-level dict, in memory only. It is intentionally
+# NOT persisted to the DB and does NOT survive a Dashboard restart; Story
+# 10.8 (SQLite persistence/auto-save) is the story that would need to design
+# around that, not this one.
+#
+# `_run_lock` guards every read-modify-write of `_run_states` -- FastAPI can
+# genuinely run route handlers concurrently (asyncio tasks, plus
+# asyncio.to_thread handing blocking work to a real thread-pool thread), so
+# the "is this test already RUNNING" check-and-set in run_test() and the
+# "don't let a stray poll overwrite an override" guard in _apply_result()
+# both need to happen under the same lock as any other reader/writer.
+# -----------------------------------------------------------------------
+
+
+@dataclass
+class _RunState:
+    status: str = TestStatus.RUNNING.value
+    criteria: list = field(default_factory=list)
+    raw_output: str = ""
+    notes: str = ""
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    background_state: Any = None
+    overridden: bool = False
+    override_note: str = ""
+
+
+_run_states: dict[str, _RunState] = {}
+_run_lock = threading.Lock()
+
+_TERMINAL_STATUSES = {
+    TestStatus.PASS.value,
+    TestStatus.FAIL.value,
+    TestStatus.ERROR.value,
+    TestStatus.SKIP.value,
+}
+
+
+def _test_summary(test_case: TestCase) -> dict:
+    with _run_lock:
+        rs = _run_states.get(test_case.id)
+    return {
+        "id": test_case.id,
+        "name": test_case.name,
+        "group": test_case.group.value,
+        "priority": test_case.priority.value,
+        "background": test_case.background,
+        "status": rs.status if rs else "not_started",
+        "overridden": rs.overridden if rs else False,
+    }
+
+
+def _test_detail(test_case: TestCase) -> dict:
+    summary = _test_summary(test_case)
+    with _run_lock:
+        rs = _run_states.get(test_case.id)
+    if rs is None:
+        summary.update(
+            {"criteria": [], "raw_output": "", "notes": "", "override_note": "", "started_at": None, "finished_at": None}
+        )
+        return summary
+    summary.update(
+        {
+            "criteria": rs.criteria,
+            "raw_output": rs.raw_output,
+            "notes": rs.notes,
+            "override_note": rs.override_note,
+            "started_at": rs.started_at,
+            "finished_at": rs.finished_at,
+        }
+    )
+    return summary
+
+
+def _apply_result(test_id: str, result: TestResult, *, background_state: Any = None) -> None:
+    """Writes a freshly computed TestResult into the run-state store.
+    Sticky against overrides (AC6): if the operator has already manually
+    closed this test out, a poll/run result that races in after must not
+    silently reopen it. `raw_output` is APPENDED, never overwritten -- each
+    poll of a background handle only ever returns the NEW output since the
+    last read (BackgroundCommandHandle.read_new_output()'s contract), so the
+    server is the only place a full transcript can be accumulated (AC5).
+    """
+    with _run_lock:
+        rs = _run_states.setdefault(test_id, _RunState())
+        if rs.overridden:
+            return
+        rs.status = result.status.value
+        rs.criteria = [
+            {"description": c.description, "passed": c.passed, "detail": c.detail} for c in result.criteria
+        ]
+        if result.raw_output:
+            rs.raw_output += result.raw_output
+        rs.notes = result.notes
+        if result.started_at and not rs.started_at:
+            rs.started_at = result.started_at.isoformat()
+        if result.finished_at:
+            rs.finished_at = result.finished_at.isoformat()
+        rs.background_state = background_state
+
+
+def _run_one_shot_sync(test_id: str, test_case: TestCase, ctx: TestRunContext) -> None:
+    """Runs on a daemon thread (not asyncio.to_thread -- the HTTP request
+    that triggered this must return immediately with a RUNNING status, not
+    block until the test finishes; see Dev Notes on why this mirrors
+    dashboard/routes/settings.py's `threading.Thread(target=proc.wait,
+    daemon=True)` precedent rather than the codebase's more common
+    `await asyncio.to_thread(...)` call sites, which all block the request).
+    """
+    try:
+        result = run_test_case(test_case, ctx)
+    except Exception as exc:  # noqa: BLE001 - defensive: run_test_case() already
+        # catches TestCaseError/ExecutorError/TestCaseDeclined internally; anything
+        # else escaping here is a genuine bug in the TestCase itself, and an
+        # uncaught exception inside a daemon thread is otherwise silently
+        # swallowed by the interpreter -- never surfacing as TestStatus.ERROR the
+        # way run_test_case()'s own docstring says a real bug should.
+        logger.exception("test case %s raised unexpectedly", test_id)
+        result = TestResult(
+            test_id=test_id,
+            status=TestStatus.ERROR,
+            notes=f"Lỗi không mong đợi: {exc}",
+            finished_at=datetime.utcnow(),
+        )
+    _apply_result(test_id, result)
+
+
+def _start_background_sync(test_case: TestCase, ctx: TestRunContext) -> tuple[Any, Optional[TestResult]]:
+    """Runs `test_case.start(ctx)` -- unlike `.run()`/`.poll()`, framework.py
+    has no wrapper for `.start()` (only run_test_case()/poll_test_case()
+    exist), so TestCaseDeclined/TestCaseError/ExecutorError raised directly
+    out of `.start()` must be caught here, mirroring the same three-way
+    mapping run_test_case() applies to `.run()`. Returns (state, None) on
+    success, or (None, error_result) if start itself failed -- the caller
+    stores whichever applies.
+    """
+    try:
+        state = test_case.start(ctx)
+        return state, None
+    except TestCaseDeclined as exc:
+        return None, TestResult(
+            test_id=test_case.id, status=TestStatus.SKIP, notes=str(exc), finished_at=datetime.utcnow()
+        )
+    except (TestCaseError, ExecutorError) as exc:
+        return None, TestResult(
+            test_id=test_case.id, status=TestStatus.ERROR, notes=str(exc), finished_at=datetime.utcnow()
+        )
+
+
+def _load_context() -> TestRunContext:
+    with db.SessionLocal() as session:
+        config = session.query(TestRunnerConfig).first()
+        return build_test_run_context(config)
+
+
+@router.get("/api/test-runner/tests")
+async def list_tests(user: str = Depends(require_login)):
+    """Filtered by the singleton TestRunnerConfig's saved test_groups/
+    priorities -- an empty saved selection means "show all" (see
+    registry.filter_selected()'s docstring), not "show none": a fresh/
+    never-saved config row has both fields empty by construction, and
+    nobody saves an explicit empty selection intending to run zero tests.
+    """
+    with db.SessionLocal() as session:
+        config = session.query(TestRunnerConfig).first()
+        test_groups = json.loads(config.test_groups) if config and config.test_groups else []
+        priorities = json.loads(config.priorities) if config and config.priorities else []
+    # Pass this module's own TEST_CASES_BY_ID explicitly (qualified) rather
+    # than letting filter_selected() read registry.py's copy -- see
+    # filter_selected()'s own docstring for why (a test-time monkeypatch of
+    # TEST_CASES_BY_ID here would otherwise silently not apply).
+    selected = sorted(filter_selected(TEST_CASES_BY_ID, test_groups, priorities), key=lambda tc: tc.id)
+    return JSONResponse({"tests": [_test_summary(tc) for tc in selected]})
+
+
+@router.post("/api/test-runner/tests/{test_id}/run")
+async def run_test(test_id: str, user: str = Depends(require_login)):
+    """Triggers a test case regardless of whether it's inside the CURRENT
+    saved group/priority selection (AC2) -- the list endpoint's filter is
+    presentation-only; narrowing the filter after a run has started must not
+    strand an in-flight test with no way to check on it.
+
+    One-shot tests execute on a fire-and-forget daemon thread
+    (_run_one_shot_sync) so this request returns immediately with a RUNNING
+    status. Background tests call `.start()` via asyncio.to_thread (real,
+    if quick, SSH work) and store the returned opaque state server-side;
+    actual progress is observed by polling GET .../result (AC3), not by this
+    endpoint.
+    """
+    test_case = TEST_CASES_BY_ID.get(test_id)
+    if test_case is None:
+        raise HTTPException(status_code=404, detail=f"test id không hợp lệ: {test_id!r}")
+
+    with _run_lock:
+        existing = _run_states.get(test_id)
+        if existing is not None and existing.status == TestStatus.RUNNING.value:
+            raise HTTPException(status_code=409, detail=f"{test_id} đang chạy, đợi hoàn tất trước khi chạy lại")
+        _run_states[test_id] = _RunState(status=TestStatus.RUNNING.value, started_at=datetime.utcnow().isoformat())
+
+    ctx = await asyncio.to_thread(_load_context)
+
+    if test_case.background:
+        state, error_result = await asyncio.to_thread(_start_background_sync, test_case, ctx)
+        if error_result is not None:
+            _apply_result(test_id, error_result)
+        else:
+            with _run_lock:
+                rs = _run_states.get(test_id)
+                if rs is not None and not rs.overridden:
+                    rs.background_state = state
+    else:
+        threading.Thread(target=_run_one_shot_sync, args=(test_id, test_case, ctx), daemon=True).start()
+
+    return JSONResponse(_test_detail(test_case))
+
+
+@router.get("/api/test-runner/tests/{test_id}/result")
+async def get_test_result(test_id: str, user: str = Depends(require_login)):
+    """For a background test still RUNNING (and not overridden), performs
+    exactly one poll_test_case() tick per call -- matching framework.py's
+    documented contract that the CALLER is responsible for calling poll()
+    repeatedly (the caller is this endpoint, driven by the frontend's
+    periodic fetch; there is no separate server-side poll loop/scheduler).
+    Once a background test reaches a terminal status (pass/fail/error/skip)
+    or has been manually overridden, further GETs stop polling and just
+    return the stored result -- polling a finished/closed test again would
+    serve no purpose and, for a still-live handle, would keep draining
+    output nobody will read.
+    """
+    test_case = TEST_CASES_BY_ID.get(test_id)
+    if test_case is None:
+        raise HTTPException(status_code=404, detail=f"test id không hợp lệ: {test_id!r}")
+
+    with _run_lock:
+        rs = _run_states.get(test_id)
+        should_poll = (
+            rs is not None
+            and test_case.background
+            and not rs.overridden
+            and rs.status not in _TERMINAL_STATUSES
+            and rs.background_state is not None
+        )
+        background_state = rs.background_state if should_poll else None
+
+    if should_poll:
+        ctx = await asyncio.to_thread(_load_context)
+        new_state, result = await asyncio.to_thread(poll_test_case, test_case, ctx, background_state)
+        _apply_result(test_id, result, background_state=new_state)
+
+    return JSONResponse(_test_detail(test_case))
+
+
+@router.post("/api/test-runner/tests/{test_id}/override")
+async def override_test_result(test_id: str, request: Request, user: str = Depends(require_login)):
+    """FR37: manual Pass/Fail override -- needed because TestResult.decide_status()
+    deliberately never auto-promotes a criterion with passed=None (no
+    baseline collected, or an inherent human judgment call), so many test
+    cases would otherwise sit at RUNNING forever. Sticky: see _apply_result()
+    and get_test_result()'s should_poll guard -- once overridden, a later
+    automatic poll will neither overwrite it nor resume polling."""
+    test_case = TEST_CASES_BY_ID.get(test_id)
+    if test_case is None:
+        raise HTTPException(status_code=404, detail=f"test id không hợp lệ: {test_id!r}")
+
+    payload = await request.json()
+    status = payload.get("status")
+    if status not in ("pass", "fail"):
+        raise HTTPException(status_code=400, detail="status phải là 'pass' hoặc 'fail'")
+    note = (payload.get("note") or "").strip()
+
+    with _run_lock:
+        rs = _run_states.setdefault(test_id, _RunState())
+        rs.status = TestStatus.PASS.value if status == "pass" else TestStatus.FAIL.value
+        rs.overridden = True
+        rs.override_note = note
+        rs.finished_at = datetime.utcnow().isoformat()
+
+    return JSONResponse(_test_detail(test_case))
