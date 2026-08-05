@@ -61,14 +61,14 @@ def test_get_command_restart_osd_daemon_discovers_via_systemctl_and_restarts(mon
 
     def fake_execute(host, command):
         calls.append((host, command))
-        assert command == "systemctl | grep ceph || true"
+        assert command == "systemctl --all | grep ceph || true"
         return CEPHADM_SYSTEMCTL_OUTPUT
 
     monkeypatch.setattr(commands_module, "execute_command", fake_execute)
 
     command = get_command("restart_osd_daemon", "10.20.1.112")
 
-    assert calls == [("10.20.1.112", "systemctl | grep ceph || true")]
+    assert calls == [("10.20.1.112", "systemctl --all | grep ceph || true")]
     assert command == (
         "systemctl restart ceph-48a9efa2-8404-11f1-ac02-fa163ea23860@osd.0.service"
     )

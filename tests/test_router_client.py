@@ -891,7 +891,7 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
     execute_calls = []
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.3.service   loaded active running   x\n"
         execute_calls.append(host)
         return "ok"
@@ -928,7 +928,7 @@ def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_
     executed = []
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return systemctl_outputs[host]
         executed.append((host, command))
         return "ok"
@@ -969,7 +969,7 @@ def test_execute_approved_action_persists_execution_progress_per_host(
     }
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return systemctl_outputs[host]
         return "ok"
 
@@ -1107,7 +1107,7 @@ def test_execute_approved_action_non_package_action_skips_finalize(isolated_db, 
     executed = []
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.3.service   loaded active running   x\n"
         executed.append((host, command))
         return "ok"
@@ -1327,7 +1327,7 @@ def _classify_mutating_call(command: str) -> str | None:
     "restart" for the phase-order assertions below — None for anything
     else (the noout/noscrub flags bracket, require-osd-release finalize),
     which those tests don't care about ordering-wise."""
-    if command == "systemctl | grep ceph || true":
+    if command == "systemctl --all | grep ceph || true":
         return None
     if "systemctl restart" in command:
         return "restart"
@@ -1357,7 +1357,7 @@ def test_execute_approved_action_package_upgrade_runs_install_then_mon_then_osd_
 
     def fake_execute(host, command):
         calls.append((host, command))
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return discovery_output.get(host, "")
         return "ok"
 
@@ -1423,7 +1423,7 @@ def test_execute_approved_action_package_upgrade_colocated_host_not_double_resta
 
     def fake_execute(h, command):
         calls.append((h, command))
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return discovery_output
         return "ok"
 
@@ -1487,7 +1487,7 @@ def test_execute_approved_action_package_upgrade_kill_switch_mid_phase_marks_fai
     }
 
     def fake_execute(h, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return discovery_output.get(h, "")
         if "systemctl restart ceph-mon" in command:
             # Flip the kill-switch right as the MON phase's real restart
@@ -1548,7 +1548,7 @@ def test_execute_approved_action_package_upgrade_restarts_leftover_rgw_host_in_f
     rgw_host = "10.20.1.13"
 
     def fake_execute(h, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
         return "ok"
 
@@ -1601,7 +1601,7 @@ def test_execute_approved_action_package_upgrade_host_with_no_leftover_units_get
     host = "10.20.1.14"
 
     def fake_execute(h, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return ""  # nothing discovered at all
         return "ok"
 
@@ -1657,7 +1657,7 @@ def test_execute_approved_action_package_upgrade_skips_restart_for_host_with_fai
 
     def fake_execute(host, command):
         executed.append((host, command))
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-mon@a.service   loaded active running   x\n"
         if host == bad_host and ("apt-get install" in command or "dnf install" in command):
             raise ExecutorError("package conflict")
@@ -1724,7 +1724,7 @@ def test_execute_approved_action_package_upgrade_kill_switch_mid_sequence_skips_
     }
 
     def fake_execute(h, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return discovery_output.get(h, "")
         if "systemctl restart ceph-mon" in command:
             with db_module.SessionLocal() as session:
@@ -1784,7 +1784,7 @@ def test_execute_approved_action_package_upgrade_mds_rgw_phase_kill_switch_recor
     nodes = [rgw1, rgw2]
 
     def fake_execute(h, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
         if "systemctl restart" in command and h == rgw1:
             with db_module.SessionLocal() as session:
@@ -1842,7 +1842,7 @@ def test_execute_approved_action_package_upgrade_unexpected_exception_still_unse
 
     def fake_execute(host, command):
         executed.append((host, command))
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             raise RuntimeError("ssh transport blew up")
         return "ok"
 
@@ -1933,7 +1933,7 @@ def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monk
     from worker.executor.ssh_executor import ExecutorError
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.0.service   loaded active running   x\n"
         raise ExecutorError(f"{host}: boom")
 
@@ -1972,7 +1972,7 @@ def test_execute_approved_action_logs_start_and_completion_per_host(
     }
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return systemctl_outputs[host]
         return "ok"
 
@@ -2107,7 +2107,7 @@ def test_execute_approved_action_kill_switch_mid_execution_marks_failed_not_reve
     execute_calls = []
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.9.service   loaded active running   x\n"
         execute_calls.append(host)
         if host == "10.20.1.83":
@@ -2348,7 +2348,7 @@ def test_poll_approved_actions_processes_pending_approved_rows_then_stops(isolat
     execute_calls = []
 
     def fake_execute(host, command):
-        if command == "systemctl | grep ceph || true":
+        if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.4.service   loaded active running   x\n"
         execute_calls.append(host)
         return "ok"

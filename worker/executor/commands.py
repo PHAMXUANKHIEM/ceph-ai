@@ -72,19 +72,31 @@ def _classify_ceph_unit(unit_name: str) -> str | None:
 
 
 def _discover_ceph_units(host: str) -> dict[str, list[str]]:
-    """Discovers this host's Ceph systemd units via `systemctl | grep ceph`,
-    classified by daemon type (osd/mon/mgr) — works regardless of HOW this
-    cluster is deployed (cephadm, a traditional systemd package install,
-    docker/podman wrapped in a systemd unit, ...), since every one of those
-    ultimately runs its daemons as systemd units on the host. Replaces the
-    earlier cephadm-only discovery (`cephadm ls --no-detail`), which failed
-    outright for any non-cephadm deployment.
+    """Discovers this host's Ceph systemd units via `systemctl --all | grep
+    ceph`, classified by daemon type (osd/mon/mgr) — works regardless of HOW
+    this cluster is deployed (cephadm, a traditional systemd package
+    install, docker/podman wrapped in a systemd unit, ...), since every one
+    of those ultimately runs its daemons as systemd units on the host.
+    Replaces the earlier cephadm-only discovery (`cephadm ls --no-detail`),
+    which failed outright for any non-cephadm deployment.
+
+    `--all` is required, not optional: bare `systemctl` (equivalent to
+    `systemctl list-units`) hides any unit that is currently INACTIVE,
+    showing only active/failed ones. A package upgrade's own RPM/APT
+    postinst/preun scriptlet routinely stops a running templated unit
+    (`ceph-mgr@<instance>.service`) before swapping its binary and does NOT
+    restart it (it has no way to know which instance was running) — exactly
+    the moment this function is called, right after install. Verified live
+    (2026-08-05): a real cluster's `ceph-mgr@...` unit was correctly
+    installed and present but stopped at that instant, so bare `systemctl`
+    found zero "mgr" units and the restart step silently skipped it as "no
+    unit found" even though the unit existed and only needed a `start`.
 
     `|| true` because `grep` exits 1 (not an error) when a host happens to
     have zero matching lines — without it, execute_command would raise
     ExecutorError for a perfectly legitimate "no ceph units here" result.
     """
-    output = execute_command(host, "systemctl | grep ceph || true")
+    output = execute_command(host, "systemctl --all | grep ceph || true")
     units: dict[str, list[str]] = {"osd": [], "mon": [], "mgr": [], "mds": [], "rgw": []}
     for line in output.splitlines():
         match = _SYSTEMCTL_UNIT_RE.match(line)
@@ -964,6 +976,29 @@ def _restore_cluster_from_backup_preview_command(host: str | None, params: dict)
     )
 
 
+def _node_os_gate_prepare_preview_command(host: str | None, params: dict) -> str:
+    target_host = params.get("host", host or "?")
+    roles = ", ".join(params.get("roles") or []) or "?"
+    return (
+        f"Chuẩn bị node {target_host} (vai: {roles}) để cài lại OS — backup OSD id/fsid (nếu có vai "
+        f"OSD), kích hoạt backup metadata cụm on-demand nếu bản gần nhất quá 24h, đặt cờ bảo trì "
+        f"noout/noscrub/nodeep-scrub/nosnaptrim (nếu có vai OSD), rồi gỡ mon khỏi quorum từ một mon "
+        f"khác và xác nhận số lượng quorum còn lại đúng (nếu có vai MON) — xem đầy đủ các pha khi "
+        f"bắt đầu Chuẩn bị"
+    )
+
+
+def _node_os_gate_abort_preview_command(host: str | None, params: dict) -> str:
+    target_host = params.get("host", host or "?")
+    roles = ", ".join(params.get("roles") or []) or "?"
+    return (
+        f"Huỷ Chuẩn bị cho node {target_host} (vai: {roles}) — rejoin mon vào quorum theo đúng quy "
+        f"trình đầy đủ (fetch mon keyring/monmap hiện tại, mkfs + start lại, chờ tự join qua Paxos), "
+        f"gỡ cờ bảo trì NẾU đây là node duy nhất đang mid-flight, và giải phóng khoá tuần tự — xem "
+        f"đầy đủ các pha khi bắt đầu Huỷ Chuẩn bị"
+    )
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
@@ -972,6 +1007,8 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "delete_cluster_manual": _delete_cluster_preview_command,
     "convert_cluster_to_cephadm": _convert_cluster_to_cephadm_preview_command,
     "restore_cluster_from_backup": _restore_cluster_from_backup_preview_command,
+    "node_os_gate_prepare": _node_os_gate_prepare_preview_command,
+    "node_os_gate_abort": _node_os_gate_abort_preview_command,
 }
 
 
