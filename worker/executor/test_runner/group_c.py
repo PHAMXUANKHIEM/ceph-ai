@@ -18,6 +18,8 @@ left alone).
 
 from __future__ import annotations
 
+import re
+
 from worker.executor.ssh_executor import execute_background
 from worker.executor.test_runner.framework import (
     CriterionResult,
@@ -141,25 +143,39 @@ class TcCompat002KernelRbdClient(TestCase):
 
     IMAGE = "testimage1"
     DEVICE = "/dev/rbd5"
+    DD_RC_RE = re.compile(r"DDRC:(-?\d+)")
 
     def run(self, ctx: TestRunContext) -> TestResult:
         client = require_client_host(ctx, self.id)
+        # The `dd` write's own exit status is captured right after it runs
+        # (DDRC:$?) rather than relying on the script's trailing EXIT:$?,
+        # which only reflects the LAST command (`rbd unmap`) -- unmap can
+        # still succeed even if the preceding write failed, which would
+        # otherwise silently mask a real data-write failure as a PASS.
         script = f"""
 echo "===STEP:full==="
 uname -r
 rbd map {RBD_POOL}/{self.IMAGE} 2>&1
 dd if=/dev/zero of={self.DEVICE} bs=1M count=100 oflag=direct 2>&1
+echo "DDRC:$?"
 rbd unmap {self.DEVICE} 2>&1
 echo "EXIT:$?"
 """
         output = run_script(client, script)
         steps = parse_steps(output)
-        exit_code = step_exit_code(steps.get("full", ""))
+        body = steps.get("full", "")
+        exit_code = step_exit_code(body)
+        dd_match = self.DD_RC_RE.search(body)
+        dd_exit = int(dd_match.group(1)) if dd_match else None
+        if exit_code is None or dd_exit is None:
+            passed = None
+        else:
+            passed = exit_code == 0 and dd_exit == 0
         criteria = [
             CriterionResult(
                 "Map/unmap, ghi du lieu thanh cong tren kernel client_host hien tai",
-                passed=(exit_code == 0) if exit_code is not None else None,
-                detail=output,
+                passed=passed,
+                detail=body,
             )
         ]
         return TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=output)
@@ -172,15 +188,23 @@ class TcCompat003KernelCephfsClient(TestCase):
     priority = TestPriority.P1
 
     MOUNT = "/mnt/kernel_cephfs"
+    DD_RC_RE = re.compile(r"DDRC:(-?\d+)")
 
     def run(self, ctx: TestRunContext) -> TestResult:
         client = require_client_host(ctx, self.id)
         mon = require_mon_host(ctx, self.id)
+        # DDRC:$? captures the write's own exit status separately from the
+        # trailing EXIT:$? (which otherwise only reflects `umount`, same
+        # exit-code-masking risk as TcCompat002KernelRbdClient above). The
+        # "blocklist" step is now actually read into its own criterion --
+        # it used to be captured into raw_output but never inspected, so a
+        # client that genuinely got blocklisted could still report PASS.
         script = f"""
 echo "===STEP:full==="
 mkdir -p {self.MOUNT} 2>&1
 mount -t ceph {mon}:/ {self.MOUNT} -o name=admin,secretfile={CEPHFS_ADMIN_SECRET} 2>&1
 dd if=/dev/zero of={self.MOUNT}/test.bin bs=1M count=100 2>&1
+echo "DDRC:$?"
 umount {self.MOUNT} 2>&1
 echo "EXIT:$?"
 echo "===STEP:blocklist==="
@@ -189,13 +213,24 @@ echo "EXIT:$?"
 """
         output = run_script(client, script)
         steps = parse_steps(output)
-        exit_code = step_exit_code(steps.get("full", ""))
+        full_body = steps.get("full", "")
+        exit_code = step_exit_code(full_body)
+        dd_match = self.DD_RC_RE.search(full_body)
+        dd_exit = int(dd_match.group(1)) if dd_match else None
+        mount_passed = None if (exit_code is None or dd_exit is None) else (exit_code == 0 and dd_exit == 0)
+        blocklist_body = steps.get("blocklist", "")
         criteria = [
             CriterionResult(
-                "Mount/umount thanh cong, khong co client bi blocklist",
-                passed=(exit_code == 0) if exit_code is not None else None,
-                detail=output,
-            )
+                "Mount/umount/ghi du lieu thanh cong",
+                passed=mount_passed,
+                detail=full_body,
+            ),
+            CriterionResult(
+                "Khong co client bi blocklist",
+                passed=None,
+                detail=(blocklist_body.strip() or "khong doc duoc ket qua blocklist")
+                + " -- can nguoi van hanh doi chieu client_host co xuat hien trong danh sach khong",
+            ),
         ]
         return TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=output)
 

@@ -47,6 +47,12 @@ __all__ = [
 ]
 
 
+# NOTE: framework.py (Story 10.5) added PUBLIC require_mon_host()/parse_json()
+# with identical behavior, once group_c.py/group_d.py needed the same shape a
+# 3rd/4th time. This module's own copies below were deliberately left as-is
+# rather than migrated (Story 10.5 treated that as an unrequested refactor of
+# already-shipped, tested code) -- but a bug fixed in framework.py's copy will
+# NOT automatically apply here. If you're fixing one, check the other.
 def _require_mon_host(ctx: TestRunContext, test_id: str) -> str:
     if not ctx.mon_host:
         raise TestCaseError(f"{test_id}: chua cau hinh MON host nao")

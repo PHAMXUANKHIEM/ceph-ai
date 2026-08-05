@@ -78,6 +78,18 @@ def _extract_fio_summary(json_text: str) -> dict:
     the `{...}` JSON object by its outermost braces first, since parsing
     the body text as-is would always fail on the trailing "EXIT:N" line
     (`json.loads` rejects any trailing content after a valid object).
+
+    Deliberately NOT the same as worker/executor/volume_perf.py's
+    `_parse_fio_json()` (an existing fio-JSON parser for the volume max-perf
+    sweep feature) -- that one only reads the `write` side, is coupled to
+    an `iodepth` parameter and raises `VolumePerfError` on any missing
+    field (it drives pass/fail knee-detection logic). This one needs BOTH
+    `read` and `write` sides (TC-PERF-001-003 runs a mixed-read/write IOPS
+    job and a write-only bandwidth job), must never raise (its output only
+    ever feeds a disclosed manual-comparison `detail` string), and has no
+    concept of iodepth -- different enough shape requirements that sharing
+    one implementation would mean overloading it with two callers' distinct
+    contracts. Kept separate on purpose, not an unnoticed duplication.
     """
     start = json_text.find("{")
     end = json_text.rfind("}")
@@ -90,12 +102,12 @@ def _extract_fio_summary(json_text: str) -> dict:
         write = job.get("write") or {}
         summary = {}
         for label, side in (("read", read), ("write", write)):
-            if side.get("iops"):
+            if side.get("iops") is not None:
                 summary[f"{label}_iops"] = side["iops"]
-            if side.get("bw"):
+            if side.get("bw") is not None:
                 summary[f"{label}_bw_kbps"] = side["bw"]
             p99 = ((side.get("clat_ns") or {}).get("percentile") or {}).get("99.000000")
-            if p99:
+            if p99 is not None:
                 summary[f"{label}_p99_latency_ns"] = p99
         return summary
     except (ValueError, TypeError, KeyError, IndexError):
@@ -128,20 +140,38 @@ echo "EXIT:$?"
 """
         output = run_script(client, script)
         steps = parse_steps(output)
+        iops_exit = step_exit_code(steps.get("iops", ""))
+        bw_exit = step_exit_code(steps.get("bw", ""))
+        iops_failed = iops_exit not in (0, None)
+        bw_failed = bw_exit not in (0, None)
         iops_summary = _extract_fio_summary(steps.get("iops", ""))
         bw_summary = _extract_fio_summary(steps.get("bw", ""))
-        criteria = [
-            CriterionResult(
-                "IOPS/bang thong suy giam <= 10% so voi baseline",
-                passed=None,
-                detail=f"do duoc: {iops_summary}, {bw_summary} -- can doi chieu thu cong voi baseline da luu rieng",
-            ),
-            CriterionResult(
-                "Latency p99 tang <= 15%",
-                passed=None,
-                detail=f"p99 hien tai: {iops_summary.get('read_p99_latency_ns')} ns (read) -- can doi chieu voi baseline",
-            ),
-        ]
+        if iops_failed or bw_failed:
+            criteria = [
+                CriterionResult(
+                    "IOPS/bang thong suy giam <= 10% so voi baseline",
+                    passed=False,
+                    detail=f"lenh fio that bai (iops exit={iops_exit}, bw exit={bw_exit}) -- khong co so lieu de so sanh",
+                ),
+                CriterionResult(
+                    "Latency p99 tang <= 15%",
+                    passed=False,
+                    detail=f"lenh fio that bai (iops exit={iops_exit}, bw exit={bw_exit}) -- khong co so lieu de so sanh",
+                ),
+            ]
+        else:
+            criteria = [
+                CriterionResult(
+                    "IOPS/bang thong suy giam <= 10% so voi baseline",
+                    passed=None,
+                    detail=f"do duoc: {iops_summary}, {bw_summary} -- can doi chieu thu cong voi baseline da luu rieng",
+                ),
+                CriterionResult(
+                    "Latency p99 tang <= 15%",
+                    passed=None,
+                    detail=f"p99 hien tai: {iops_summary.get('read_p99_latency_ns')} ns (read) -- can doi chieu voi baseline",
+                ),
+            ]
         return TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=output)
 
 
@@ -152,14 +182,23 @@ class TcPerf004ObjectThroughput(TestCase):
     priority = TestPriority.P2
 
     BW_RE = re.compile(r"Bandwidth \(MB/sec\):\s*([\d.]+)")
+    BENCH_RC_RE = re.compile(r"BENCHRC:(-?\d+)")
 
     def run(self, ctx: TestRunContext) -> TestResult:
         mon = require_mon_host(ctx, self.id)
+        # Each `rados bench` invocation's own exit code is captured right
+        # after it runs (BENCHRC:$?) rather than relying on the script's
+        # final `EXIT:$?`, which would otherwise only reflect the trailing
+        # `rados cleanup` call -- a failed write/seq/rand bench could still
+        # leave cleanup succeeding, silently masking the real failure.
         script = f"""
 echo "===STEP:bench==="
 rados bench -p {RBD_POOL} 300 write --no-cleanup 2>&1
+echo "BENCHRC:$?"
 rados bench -p {RBD_POOL} 300 seq 2>&1
+echo "BENCHRC:$?"
 rados bench -p {RBD_POOL} 300 rand 2>&1
+echo "BENCHRC:$?"
 rados -p {RBD_POOL} cleanup 2>&1
 echo "EXIT:$?"
 """
@@ -167,13 +206,24 @@ echo "EXIT:$?"
         steps = parse_steps(output)
         body = steps.get("bench", "")
         bandwidths = self.BW_RE.findall(body)
-        criteria = [
-            CriterionResult(
-                "Suy giam <= 10% so voi baseline",
-                passed=None,
-                detail=f"bandwidth (MB/sec) do duoc qua tung giai doan write/seq/rand: {bandwidths} -- can doi chieu voi baseline",
-            )
-        ]
+        bench_exits = [int(m) for m in self.BENCH_RC_RE.findall(body)]
+        bench_failed = any(rc != 0 for rc in bench_exits) or len(bench_exits) < 3
+        if bench_failed:
+            criteria = [
+                CriterionResult(
+                    "Suy giam <= 10% so voi baseline",
+                    passed=False,
+                    detail=f"mot hoac nhieu lenh rados bench that bai (exit codes: {bench_exits}): {body.strip()[-1000:]}",
+                )
+            ]
+        else:
+            criteria = [
+                CriterionResult(
+                    "Suy giam <= 10% so voi baseline",
+                    passed=None,
+                    detail=f"bandwidth (MB/sec) do duoc qua tung giai doan write/seq/rand: {bandwidths} -- can doi chieu voi baseline",
+                )
+            ]
         return TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=output)
 
 
@@ -185,6 +235,20 @@ class TcPerf005RgwPerformance(TestCase):
     dropped from the literal command (the document's placeholders) -- relies
     on client_host's own pre-configured AWS credential chain, the same
     convention Story 10.4's aws-CLI-based S3 test cases already use.
+
+    Deliberately does NOT reuse framework.check_background_handle_health()
+    -- that helper's "clean exit (0, no keyword hit) is not an error" rule
+    is tuned for the infinite background I/O loops elsewhere in this
+    project (TC-RUN-001/010, TC-COMPAT-001), which are expected to be
+    manually stopped, not to exit on their own. `warp` is a FINITE
+    benchmark that's supposed to exit cleanly after 4h, so its poll() needs
+    its own 3-way distinction check_background_handle_health() doesn't
+    make: a real command failure (exit_code not in (0, None)) vs the SSH
+    connection being lost mid-run (BackgroundCommandHandle's own documented
+    contract: done=True, exit_code=None) vs a genuine clean finish. The
+    middle case is NOT the same as a clean finish -- a lost connection
+    means the benchmark's actual outcome is unknown, not that it "hoan
+    tat" (completed).
     """
 
     id = "TC-PERF-005"
@@ -210,6 +274,10 @@ class TcPerf005RgwPerformance(TestCase):
 
     def poll(self, ctx: TestRunContext, state):
         handle = state["handle"]
+        # Drain any stray stdout/stderr the wrapped bash process emits
+        # outside the redirected log file -- harmless if empty, keeps the
+        # channel buffer from silently accumulating over the ~4h run.
+        handle.read_new_output()
         done = handle.is_done()
         exit_code = handle.exit_code() if done else None
         log_tail = ""
@@ -220,16 +288,20 @@ class TcPerf005RgwPerformance(TestCase):
                 # Best-effort log fetch -- a transient SSH failure here shouldn't
                 # fail the whole poll, just leave log_tail empty for this tick.
                 log_tail = ""
-        failed = done and exit_code not in (0, None)
-        if failed:
-            detail = f"warp thoat voi exit code {exit_code}: {log_tail}"
+        nonzero_exit = done and exit_code not in (0, None)
+        connection_lost = done and exit_code is None
+        if nonzero_exit:
+            passed, detail = False, f"warp thoat voi exit code {exit_code}: {log_tail}"
+        elif connection_lost:
+            # BackgroundCommandHandle reports done=True/exit_code=None when the
+            # transport itself died (not when warp exited) -- outcome unknown,
+            # not a clean finish; must not be reported as "warp hoan tat".
+            passed, detail = None, "ket noi SSH bi mat truoc khi xac nhan duoc warp da hoan tat -- khong the ket luan ket qua"
         elif done:
-            detail = log_tail or "warp hoan tat nhung khong doc duoc log"
+            passed, detail = None, log_tail or "warp hoan tat nhung khong doc duoc log"
         else:
-            detail = "dang chay warp benchmark (~4h)"
-        criteria = [
-            CriterionResult("Suy giam <= 15% so voi baseline", passed=(False if failed else None), detail=detail)
-        ]
+            passed, detail = None, "dang chay warp benchmark (~4h)"
+        criteria = [CriterionResult("Suy giam <= 15% so voi baseline", passed=passed, detail=detail)]
         result = TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=log_tail)
         return state, result
 
@@ -359,14 +431,18 @@ class TcPerf008OsdMemory(TestCase):
 class TcPerf009SoakTest(TestCase):
     """On dinh dai han (soak test). Genuinely 72h background monitoring --
     launches a mixed RBD+CephFS+S3 load (same shape as TC-COMPAT-001/
-    group_a.py's TC-RUN-010) and tracks 3 sticky signals across polls: any
-    new crash (via `ceph crash ls-new` beyond the start()-time baseline,
-    same superset-check idea as TC-POST-009), any non-active+clean PG
-    state, and a naive monotonic-RAM-increase heuristic (a leak signature)
-    sampled from `ceph daemon osd.0 dump_mempools` each poll. All 3 only
-    resolve to a final True once the full 72h has genuinely elapsed --
-    matches TC-POST-017/TC-RUN-013's "never auto-PASS off partial
-    evidence" precedent.
+    group_a.py's TC-RUN-010) and tracks 4 sticky signals across polls: the
+    background load itself dying (the `execute_background()` handle is
+    checked every poll -- if the wrapped `wait` returns before the soak
+    window ends, all 3 infinite loops it's waiting on have stopped, which
+    should never happen legitimately), any new crash (via `ceph crash
+    ls-new` beyond the start()-time baseline, same superset-check idea as
+    TC-POST-009), any non-active+clean PG state, and a monotonic-RAM-
+    increase heuristic (a leak signature) sampled from `ceph daemon osd.0
+    dump_mempools` each poll. All 4 are threaded through `new_state` as
+    sticky flags (once True, stays True) and only resolve to a final True
+    once the full 72h has genuinely elapsed -- matches TC-POST-017/
+    TC-RUN-013's "never auto-PASS off partial evidence" precedent.
     """
 
     id = "TC-PERF-009"
@@ -396,14 +472,17 @@ class TcPerf009SoakTest(TestCase):
             "s3 ls s3://soak-test-bucket/ >/dev/null; sleep 2; done & "
             "wait"
         )
-        execute_background(client, f"bash -c '{script}'")
+        handle = execute_background(client, f"bash -c '{script}'")
         crash_baseline = run_ceph_command(mon, "ceph crash ls-new")
         return {
             "start_time": datetime.utcnow(),
             "mon": mon,
+            "handle": handle,
+            "load_dead_seen": False,
             "crash_baseline_lines": len([ln for ln in crash_baseline.strip().splitlines() if ln.strip()]),
             "crash_seen": False,
             "pg_issue_seen": False,
+            "ram_issue_seen": False,
             "ram_samples": [],
         }
 
@@ -411,6 +490,13 @@ class TcPerf009SoakTest(TestCase):
         mon = state["mon"]
         elapsed = (datetime.utcnow() - state["start_time"]).total_seconds()
         soak_complete = elapsed >= self.SOAK_TARGET_SECONDS
+
+        handle = state["handle"]
+        # Drain any stray output so the channel buffer doesn't accumulate
+        # over the 72h run -- the load's own commands redirect nowhere in
+        # particular, so this is mostly a no-op safety measure.
+        handle.read_new_output()
+        load_dead_seen = state.get("load_dead_seen", False) or handle.is_done()
 
         crash_output = run_ceph_command(mon, "ceph crash ls-new")
         crash_lines = len([ln for ln in crash_output.strip().splitlines() if ln.strip()])
@@ -433,18 +519,32 @@ class TcPerf009SoakTest(TestCase):
         except TestCaseError:
             pass
         ram_samples = ram_samples[-self.MAX_RAM_SAMPLES :]
-        monotonic_increase = len(ram_samples) >= 5 and all(
+        monotonic_increase_this_tick = len(ram_samples) >= 5 and all(
             ram_samples[i] <= ram_samples[i + 1] for i in range(len(ram_samples) - 1)
         )
+        # Sticky, same as crash_seen/pg_issue_seen -- a leak signature seen
+        # on one poll must not be able to un-trip on a later poll just
+        # because RAM happened to dip (GC, mempool eviction) or the
+        # leaking early samples rolled out of the MAX_RAM_SAMPLES window.
+        ram_issue_seen = state.get("ram_issue_seen", False) or monotonic_increase_this_tick
 
         new_state = {
             **state,
             "crash_seen": crash_seen,
             "pg_issue_seen": pg_issue_seen,
             "ram_samples": ram_samples,
+            "ram_issue_seen": ram_issue_seen,
+            "load_dead_seen": load_dead_seen,
         }
 
         criteria = [
+            CriterionResult(
+                "Tai trong (fio+CephFS+S3) van dang chay lien tuc",
+                passed=(False if load_dead_seen else (True if soak_complete else None)),
+                detail="tai da dung/mat ket noi som -- ket qua cac tieu chi khac khong con dang tin cay"
+                if load_dead_seen
+                else "tai dang chay",
+            ),
             CriterionResult(
                 "Khong crash trong 72 gio",
                 passed=(False if crash_seen else (True if soak_complete else None)),
@@ -457,8 +557,8 @@ class TcPerf009SoakTest(TestCase):
             ),
             CriterionResult(
                 "RAM dao dong on dinh, khong tang don dieu",
-                passed=(False if monotonic_increase else (True if soak_complete else None)),
-                detail=f"{len(ram_samples)} mau RAM da ghi nhan" + (" -- co dau hieu tang lien tuc" if monotonic_increase else ""),
+                passed=(False if ram_issue_seen else (True if soak_complete else None)),
+                detail=f"{len(ram_samples)} mau RAM da ghi nhan" + (" -- da tung phat hien dau hieu tang lien tuc" if ram_issue_seen else ""),
             ),
         ]
         result = TestResult(test_id=self.id, status=TestStatus.PENDING, criteria=criteria, raw_output=status_output)

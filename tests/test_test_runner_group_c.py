@@ -114,26 +114,62 @@ class TestTcCompat002:
             gc.TcCompat002KernelRbdClient().run(_ctx(client_host=None))
 
     def test_success_passes(self, monkeypatch):
-        _fake_run_script(monkeypatch, "===STEP:full===\n5.4.0-generic\nEXIT:0\n")
+        _fake_run_script(monkeypatch, "===STEP:full===\n5.4.0-generic\nDDRC:0\nEXIT:0\n")
         result = fw.run_test_case(gc.TcCompat002KernelRbdClient(), _ctx(client_host="client1"))
         assert result.status == fw.TestStatus.PASS
 
     def test_failure_fails(self, monkeypatch):
-        _fake_run_script(monkeypatch, "===STEP:full===\nrbd: error\nEXIT:1\n")
+        _fake_run_script(monkeypatch, "===STEP:full===\nrbd: error\nDDRC:0\nEXIT:1\n")
         result = fw.run_test_case(gc.TcCompat002KernelRbdClient(), _ctx(client_host="client1"))
         assert result.status == fw.TestStatus.FAIL
 
+    def test_dd_write_failure_fails_even_if_unmap_succeeds(self, monkeypatch):
+        """Regression test: EXIT:$? alone (unmap's exit code) used to be the
+        only signal checked, so a failed `dd` write followed by a
+        successful `rbd unmap` would incorrectly report PASS."""
+        _fake_run_script(monkeypatch, "===STEP:full===\ndd: write error\nDDRC:1\nEXIT:0\n")
+        result = fw.run_test_case(gc.TcCompat002KernelRbdClient(), _ctx(client_host="client1"))
+        assert result.status == fw.TestStatus.FAIL
+
+    def test_missing_ddrc_marker_is_manual_review(self, monkeypatch):
+        _fake_run_script(monkeypatch, "===STEP:full===\nsome unexpected output\nEXIT:0\n")
+        result = fw.run_test_case(gc.TcCompat002KernelRbdClient(), _ctx(client_host="client1"))
+        assert result.criteria[0].passed is None
+
 
 class TestTcCompat003:
-    def test_success_passes(self, monkeypatch):
-        _fake_run_script(monkeypatch, "===STEP:full===\nEXIT:0\n===STEP:blocklist===\nEXIT:0\n")
+    def test_success_is_manual_review_not_pass(self, monkeypatch):
+        """The blocklist criterion is disclosed manual-review (this engine
+        can't identify "this client" in the blocklist output), so the
+        overall result can never auto-resolve to PASS -- only RUNNING/FAIL."""
+        _fake_run_script(monkeypatch, "===STEP:full===\nDDRC:0\nEXIT:0\n===STEP:blocklist===\nEXIT:0\n")
         result = fw.run_test_case(gc.TcCompat003KernelCephfsClient(), _ctx(client_host="client1"))
-        assert result.status == fw.TestStatus.PASS
+        assert result.criteria[0].passed is True
+        assert result.criteria[1].passed is None
+        assert result.status == fw.TestStatus.RUNNING
 
     def test_mount_failure_fails(self, monkeypatch):
-        _fake_run_script(monkeypatch, "===STEP:full===\nmount error\nEXIT:32\n")
+        _fake_run_script(monkeypatch, "===STEP:full===\nmount error\nDDRC:0\nEXIT:32\n")
         result = fw.run_test_case(gc.TcCompat003KernelCephfsClient(), _ctx(client_host="client1"))
         assert result.status == fw.TestStatus.FAIL
+
+    def test_dd_write_failure_fails_even_if_umount_succeeds(self, monkeypatch):
+        """Regression test: same exit-code-masking bug as TcCompat002 --
+        DDRC:$? now checked separately from the trailing EXIT:$? (umount's)."""
+        _fake_run_script(monkeypatch, "===STEP:full===\ndd: write error\nDDRC:1\nEXIT:0\n")
+        result = fw.run_test_case(gc.TcCompat003KernelCephfsClient(), _ctx(client_host="client1"))
+        assert result.criteria[0].passed is False
+        assert result.status == fw.TestStatus.FAIL
+
+    def test_blocklist_output_surfaced_in_second_criterion(self, monkeypatch):
+        """Regression test: the blocklist step used to be captured into
+        raw_output but never inspected at all."""
+        _fake_run_script(
+            monkeypatch,
+            "===STEP:full===\nDDRC:0\nEXIT:0\n===STEP:blocklist===\nclient.1234 10.0.0.5:0/123\nEXIT:0\n",
+        )
+        result = fw.run_test_case(gc.TcCompat003KernelCephfsClient(), _ctx(client_host="client1"))
+        assert "client.1234" in result.criteria[1].detail
 
 
 class TestTcCompat004:

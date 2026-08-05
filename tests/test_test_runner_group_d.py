@@ -84,6 +84,17 @@ class TestExtractFioSummary:
     def test_unparseable_returns_empty_dict(self):
         assert gd._extract_fio_summary("not json at all\nEXIT:1\n") == {}
 
+    def test_zero_iops_is_not_dropped(self):
+        """Regression test: a truthy check (`if side.get("iops")`) used to
+        silently omit a genuine 0 -- exactly the worst-case catastrophic
+        result (a completely stalled I/O path) this measurement exists to
+        surface."""
+        payload = {"jobs": [{"read": {"iops": 0, "bw": 0}, "write": {}}]}
+        body = json.dumps(payload) + "\nEXIT:0\n"
+        summary = gd._extract_fio_summary(body)
+        assert summary["read_iops"] == 0
+        assert summary["read_bw_kbps"] == 0
+
 
 class TestTcPerf001To003:
     def test_requires_client_host(self):
@@ -101,14 +112,46 @@ class TestTcPerf001To003:
         assert "5000" in result.criteria[0].detail
         assert result.status == fw.TestStatus.RUNNING
 
+    def test_fio_command_failure_fails_instead_of_silently_reporting_no_data(self, monkeypatch):
+        """Regression test: previously neither fio step's exit code was
+        checked at all, so a failed fio invocation looked identical to
+        "ran fine, just no baseline configured yet"."""
+        canned = '===STEP:iops===\nfio: failed to open device\nEXIT:1\n===STEP:bw===\n{}\nEXIT:0\n'
+        _fake_run_script(monkeypatch, canned)
+        result = fw.run_test_case(gd.TcPerf001To003RbdPerformance(), _ctx(client_host="client1"))
+        assert result.criteria[0].passed is False
+        assert result.criteria[1].passed is False
+        assert result.status == fw.TestStatus.FAIL
+
 
 class TestTcPerf004:
     def test_always_manual_review_with_bandwidths_in_detail(self, monkeypatch):
-        body = "===STEP:bench===\nBandwidth (MB/sec): 123.45\nBandwidth (MB/sec): 100.00\nEXIT:0\n"
+        body = (
+            "===STEP:bench===\n"
+            "Bandwidth (MB/sec): 123.45\nBENCHRC:0\n"
+            "Bandwidth (MB/sec): 100.00\nBENCHRC:0\n"
+            "Bandwidth (MB/sec): 90.00\nBENCHRC:0\n"
+            "EXIT:0\n"
+        )
         _fake_run_script(monkeypatch, body)
         result = fw.run_test_case(gd.TcPerf004ObjectThroughput(), _ctx())
         assert result.criteria[0].passed is None
         assert "123.45" in result.criteria[0].detail
+
+    def test_bench_failure_fails_even_if_cleanup_succeeds(self, monkeypatch):
+        """Regression test: the script's final EXIT:$? only reflects `rados
+        cleanup`, which can succeed even if an earlier bench phase failed --
+        each bench command's own BENCHRC:$? is now checked instead."""
+        body = "===STEP:bench===\nerror: pool not found\nBENCHRC:2\nBENCHRC:0\nBENCHRC:0\nEXIT:0\n"
+        _fake_run_script(monkeypatch, body)
+        result = fw.run_test_case(gd.TcPerf004ObjectThroughput(), _ctx())
+        assert result.criteria[0].passed is False
+        assert result.status == fw.TestStatus.FAIL
+
+    def test_missing_benchrc_markers_fails(self, monkeypatch):
+        _fake_run_script(monkeypatch, "===STEP:bench===\nsome unexpected output\nEXIT:0\n")
+        result = fw.run_test_case(gd.TcPerf004ObjectThroughput(), _ctx())
+        assert result.criteria[0].passed is False
 
 
 class TestTcPerf005:
@@ -284,18 +327,50 @@ class TestTcPerf009:
         assert state["crash_baseline_lines"] == 1
         assert state["crash_seen"] is False
         assert state["ram_samples"] == []
+        assert state["handle"] is not None
+        assert state["load_dead_seen"] is False
 
     def _base_state(self, **overrides):
         state = dict(
             start_time=datetime.utcnow() - timedelta(hours=1),
             mon="mon1",
+            handle=FakeHandle(done=False),
+            load_dead_seen=False,
             crash_baseline_lines=0,
             crash_seen=False,
             pg_issue_seen=False,
+            ram_issue_seen=False,
             ram_samples=[],
         )
         state.update(overrides)
         return state
+
+    def test_poll_load_died_fails_sticky(self, monkeypatch):
+        """Regression test: start() used to discard the execute_background()
+        handle entirely, so poll() had no way to detect the load dying."""
+        status = {"pgmap": {"num_pgs": 10, "pgs_by_state": [{"state_name": "active+clean", "count": 10}]}}
+        mempool = {"mempool": {"total_bytes": 100}}
+
+        def fake(host, command):
+            if "crash ls-new" in command:
+                return ""
+            if "dump_mempools" in command:
+                return json.dumps(mempool)
+            return json.dumps(status)
+
+        monkeypatch.setattr(gd, "run_ceph_command", fake)
+        state = self._base_state(handle=FakeHandle(done=True, exit_code=0))
+        new_state, result = fw.poll_test_case(gd.TcPerf009SoakTest(), _ctx(), state)
+        assert new_state["load_dead_seen"] is True
+        assert result.criteria[0].passed is False
+        assert result.status == fw.TestStatus.FAIL
+
+        # Sticky: even if a later poll somehow observes a fresh (not-done)
+        # handle, the earlier death must still be remembered.
+        state2 = dict(new_state, handle=FakeHandle(done=False))
+        new_state2, result2 = fw.poll_test_case(gd.TcPerf009SoakTest(), _ctx(), state2)
+        assert new_state2["load_dead_seen"] is True
+        assert result2.criteria[0].passed is False
 
     def test_poll_new_crash_fails_sticky(self, monkeypatch):
         status = {"pgmap": {"num_pgs": 10, "pgs_by_state": [{"state_name": "active+clean", "count": 10}]}}
@@ -311,7 +386,7 @@ class TestTcPerf009:
         monkeypatch.setattr(gd, "run_ceph_command", fake)
         new_state, result = fw.poll_test_case(gd.TcPerf009SoakTest(), _ctx(), self._base_state())
         assert new_state["crash_seen"] is True
-        assert result.criteria[0].passed is False
+        assert result.criteria[1].passed is False
         assert result.status == fw.TestStatus.FAIL
 
     def test_poll_pg_issue_fails_sticky(self, monkeypatch):
@@ -333,7 +408,7 @@ class TestTcPerf009:
         monkeypatch.setattr(gd, "run_ceph_command", fake)
         new_state, result = fw.poll_test_case(gd.TcPerf009SoakTest(), _ctx(), self._base_state())
         assert new_state["pg_issue_seen"] is True
-        assert result.criteria[1].passed is False
+        assert result.criteria[2].passed is False
 
     def test_poll_monotonic_ram_increase_fails(self, monkeypatch):
         status = {"pgmap": {"num_pgs": 10, "pgs_by_state": [{"state_name": "active+clean", "count": 10}]}}
@@ -351,7 +426,34 @@ class TestTcPerf009:
         state = self._base_state()
         for _ in range(5):
             state, result = fw.poll_test_case(test_case, _ctx(), state)
-        assert result.criteria[2].passed is False
+        assert state["ram_issue_seen"] is True
+        assert result.criteria[3].passed is False
+
+    def test_ram_increase_signal_stays_sticky_after_a_later_dip(self, monkeypatch):
+        """Regression test: monotonic_increase used to be recomputed fresh
+        from only the last MAX_RAM_SAMPLES every poll with no sticky
+        accumulation -- a leak signature observed on one poll could
+        un-trip on a later poll where RAM happened to dip."""
+        status = {"pgmap": {"num_pgs": 10, "pgs_by_state": [{"state_name": "active+clean", "count": 10}]}}
+        # 5 increasing readings trip the leak signal, then a 6th reading
+        # that drops back down -- without stickiness this would clear it.
+        readings = iter([100, 200, 300, 400, 500, 50])
+
+        def fake(host, command):
+            if "crash ls-new" in command:
+                return ""
+            if "dump_mempools" in command:
+                return json.dumps({"mempool": {"total_bytes": next(readings)}})
+            return json.dumps(status)
+
+        monkeypatch.setattr(gd, "run_ceph_command", fake)
+        test_case = gd.TcPerf009SoakTest()
+        state = self._base_state()
+        result = None
+        for _ in range(6):
+            state, result = fw.poll_test_case(test_case, _ctx(), state)
+        assert state["ram_issue_seen"] is True
+        assert result.criteria[3].passed is False
 
     def test_poll_before_72h_stays_open_even_when_healthy(self, monkeypatch):
         status = {"pgmap": {"num_pgs": 10, "pgs_by_state": [{"state_name": "active+clean", "count": 10}]}}

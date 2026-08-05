@@ -135,6 +135,13 @@ _STEP_RE = re.compile(r"===STEP:(?P<name>[^=\n]+)===\n(?P<body>.*?)(?=\n===STEP:
 _EXIT_RE = re.compile(r"EXIT:(-?\d+)")
 
 
+# NOTE: framework.py (Story 10.5) added PUBLIC require_mon_host()/require_client_host()/
+# require_rgw_host()/parse_json()/run_script()/parse_steps()/step_exit_code() with
+# identical behavior to this module's own private copies below, once group_c.py/
+# group_d.py needed the same shape a 3rd/4th time. Left as-is here rather than
+# migrated (Story 10.5 treated that as an unrequested refactor of already-shipped,
+# tested code) -- but a bug fixed in framework.py's copy will NOT automatically
+# apply here. If you're fixing one, check the other.
 def _require_mon_host(ctx: TestRunContext, test_id: str) -> str:
     if not ctx.mon_host:
         raise TestCaseError(f"{test_id}: chua cau hinh MON host nao")
