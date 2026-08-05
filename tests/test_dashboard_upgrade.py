@@ -708,6 +708,113 @@ def test_propose_package_download_requires_configured_nodes(dashboard_client, mo
     assert response.status_code == 400
 
 
+# --- Story 11.1 (2026-08-05): OS Upgrade Gate screen replaces the ad-hoc
+# HTTPException(400) for the package-download path (FR-1/FR-2, AD-20).
+# Neither the ad-hoc 400 nor this gate screen had any regression test
+# before this story — the "propose" tests above all rely on read_os_release
+# raising ExecutorError against a fake host (best-effort skip) to avoid
+# ever hitting this path at all; these tests instead monkeypatch
+# read_os_release directly to exercise the incompatible/compatible cases.
+
+
+def _stub_os_release(monkeypatch, by_host: dict):
+    """by_host: {host: {"ID": ..., "VERSION_ID": ...}} — hosts not present
+    raise ExecutorError (unreachable), matching read_os_release's own
+    contract."""
+
+    def _fake_read_os_release(host):
+        if host not in by_host:
+            raise upgrade_route.ExecutorError(f"no stub for {host}")
+        return by_host[host]
+
+    monkeypatch.setattr(upgrade_route, "read_os_release", _fake_read_os_release)
+
+
+def test_propose_package_download_shows_os_gate_screen_when_node_incompatible(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_os_release(
+        monkeypatch,
+        {
+            "10.20.1.150": {"ID": "centos", "VERSION_ID": "7"},
+            "10.20.1.83": {"ID": "rocky", "VERSION_ID": "9"},
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/propose-package-download",
+        data={"target_version": "16.2.15"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "10.20.1.150" in response.text
+    assert "centos 7" in response.text
+    assert "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở lên" in response.text
+    # The compatible node must NOT show up in the incompatible-node table.
+    assert "10.20.1.83" not in response.text
+
+
+def test_propose_package_download_os_gate_creates_no_incident_or_action(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150")
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_os_release(monkeypatch, {"10.20.1.150": {"ID": "centos", "VERSION_ID": "7"}})
+    _login(dashboard_client)
+
+    dashboard_client.post(
+        "/upgrade/propose-package-download",
+        data={"target_version": "16.2.15"},
+        follow_redirects=False,
+    )
+
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(action_id=upgrade_route.PACKAGE_DOWNLOAD_ACTION_ID).first() is None
+        assert session.query(Incident).filter_by(ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE).first() is None
+
+
+def test_propose_package_download_proceeds_when_os_meets_floor(dashboard_client, monkeypatch):
+    # Given consequence: "khi TẤT CẢ node đã đạt... luồng đề xuất nâng cấp
+    # cụm hoạt động y hệt hiện tại" — must still create the Action/Incident
+    # exactly like before this story, not just avoid crashing.
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150")
+    _stub_no_versions_or_progress(monkeypatch)
+    _stub_package_command_preview(monkeypatch)
+    _stub_os_release(monkeypatch, {"10.20.1.150": {"ID": "rocky", "VERSION_ID": "9"}})
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/propose-package-download",
+        data={"target_version": "19.2.0"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id=upgrade_route.PACKAGE_DOWNLOAD_ACTION_ID).one()
+    assert action.status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_check_os_upgrade_needed_skips_unreachable_node_best_effort(monkeypatch):
+    # Direct unit test of the helper: an unreachable node must be SKIPPED,
+    # not reported as incompatible (FR-1's own consequence), even when
+    # another node in the same call IS genuinely incompatible.
+    _stub_os_release(monkeypatch, {"10.20.1.83": {"ID": "centos", "VERSION_ID": "7"}})
+
+    result = upgrade_route._check_os_upgrade_needed("16.2.15", ["10.20.1.150", "10.20.1.83"])
+
+    assert len(result) == 1
+    assert result[0]["host"] == "10.20.1.83"
+    assert result[0]["os_id"] == "centos"
+    assert result[0]["os_version_id"] == "7"
+
+
+def test_check_os_upgrade_needed_empty_when_all_nodes_compatible(monkeypatch):
+    _stub_os_release(monkeypatch, {"10.20.1.150": {"ID": "rocky", "VERSION_ID": "9"}})
+
+    assert upgrade_route._check_os_upgrade_needed("19.2.0", ["10.20.1.150"]) == []
+
+
 def test_propose_package_local_creates_pending_action(dashboard_client, monkeypatch):
     _set_package_deploy(monkeypatch)
     _stub_no_versions_or_progress(monkeypatch)

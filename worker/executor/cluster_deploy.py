@@ -18,14 +18,18 @@ import base64
 import json
 import logging
 import os
+import re
 import shlex
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config.settings import settings
-from shared import env_config
+from shared import db, env_config
 from shared.ceph_releases import codename_for_version, repo_path_version
+from shared.cluster_nodes import configured_nodes
+from shared.models import NodeUpgradeGate, NodeUpgradeGateState
+from shared.node_upgrade_gate import is_node_upgrade_gate_pending, release_node_upgrade_gate_lock
 from worker.backup import metadata as backup_metadata
 from worker.backup import restore as backup_restore
 from worker.backup.policy_config import load_backup_policy
@@ -57,6 +61,20 @@ _REMOTE_BOOTSTRAP_OSD_KEYRING_PATH = "/var/lib/ceph/bootstrap-osd/ceph.keyring"
 _REMOTE_RESTORE_AUTH_PATH = "/tmp/ceph-aiops-restore-auth.txt"
 _REMOTE_RESTORE_CRUSHMAP_PATH = "/tmp/ceph-aiops-restore-crushmap.bin"
 _REMOTE_RESTORE_MONMAP_PATH = "/tmp/ceph-aiops-restore.monmap"
+
+# Epic 11 (OS Upgrade Gate + Node OS Reinstall/Ceph Recovery) — cluster-wide
+# maintenance flags set before a node's mon/osd are touched (FR-4) and
+# cleared once no node is mid-flight anymore (FR-6/FR-16). Same 4 flags as
+# the (independent, deliberately not reused — see their own docstrings)
+# copies in watcher/ceph_client.py / worker/executor/commands.py /
+# worker/llm/router_client.py.
+_MAINTENANCE_FLAGS = ("noout", "noscrub", "nodeep-scrub", "nosnaptrim")
+
+# Metadata backup (worker/backup/metadata.py, Epic 9) is considered "fresh
+# enough" to skip an on-demand re-run if a successful one exists within
+# this many hours (FR-3) — same RPO threshold worker/backup/alerting.py's
+# own RPO_HOURS already uses for the unrelated "is a backup overdue" alert.
+_METADATA_BACKUP_FRESHNESS_HOURS = 24
 
 # 2026-07-29 fix (verified live + against the actual repo this app
 # installs from): the 2026-07-28 version of this table added "ceph-volume"
@@ -2492,10 +2510,498 @@ _PHASES_BY_ACTION_ID["restore_cluster_from_backup"] = _PHASES_BY_ACTION_ID["depl
     ("verify_integrity", "Đối chiếu checksum sau khôi phục", 100, _phase_verify_integrity),
 ]
 
+# --- Epic 11 (OS Upgrade Gate + Node OS Reinstall/Ceph Recovery) —
+# node_os_gate_prepare (Story 11.3, FR-3/4/5) -------------------------------
+#
+# `action_params` contract for every node_os_gate_* phase below (AD-17):
+# {"host", "target_version", "roles" (list[str] — SAME UPPERCASE
+# "MON"/"OSD"/"MGR"/"RGW" values shared.cluster_nodes.configured_nodes()
+# returns, NOT the lowercase dict-list "roles" convention the deploy/
+# delete/convert/restore phases ABOVE this point use), "nodes": [host] (a
+# ONE-ELEMENT list of the bare host string, never a node dict — "nodes is
+# always [host]", AD-17), "node_upgrade_gate_id", "action_pk",
+# "incident_id"}. Every phase looks its NodeUpgradeGate row up via
+# action_params["node_upgrade_gate_id"] ONLY — never by host + ordering
+# heuristic (Reviewer Gate finding #3's root cause).
+#
+# This is the FIRST place in this file that touches the application DB
+# directly (shared.db / shared.models.NodeUpgradeGate) — every phase above
+# this point is pure SSH-orchestration-plus-action_params.
+#
+# Only reachable when settings.ceph_exec_mode == "none" (the Gate screen,
+# Story 11.1, only ever renders from a ceph_exec_mode="none"-only route) —
+# every `ceph ...` call below runs directly via execute_command, with NO
+# docker/cephadm wrapping, matching this file's own pre-existing
+# _phase_ceph_deploy_wait_quorum/_phase_ceph_deploy_mon_security.
+
+
+def _osd_role(action_params: dict) -> bool:
+    return "OSD" in (action_params.get("roles") or [])
+
+
+def _mon_role(action_params: dict) -> bool:
+    return "MON" in (action_params.get("roles") or [])
+
+
+def _any_configured_mon_host(exclude: str | None = None) -> str:
+    """Any currently-configured MON node's host, optionally excluding one
+    (FR-5's "chạy từ MỘT MON KHÁC, không phải chính node đang xử lý") —
+    raises DeployPhaseError if none remain, which also naturally covers
+    "this node is the only configured mon" (a 1-mon cluster can never
+    safely run node_os_gate_prepare's mon-removal step at all)."""
+    candidates = [n["host"] for n in configured_nodes() if "MON" in n["roles"] and n["host"] != exclude]
+    if not candidates:
+        raise DeployPhaseError(
+            "Không có node MON nào khác trong cấu hình — không thể gỡ mon an toàn (cụm chỉ có 1 mon)"
+            if exclude
+            else "Không có node MON nào trong cấu hình"
+        )
+    return candidates[0]
+
+
+def _read_osd_flags(mon_host: str) -> set[str]:
+    """`ceph osd dump`'s `flags` field is a single comma-joined STRING
+    (e.g. "sortbitwise,recovery_deletes,noout"), NOT a JSON array."""
+    output = execute_command(mon_host, "ceph osd dump --format json")
+    flags_str = json.loads(output).get("flags") or ""
+    return {f for f in flags_str.split(",") if f}
+
+
+def _parse_osd_backup(output: str) -> list[dict]:
+    """Parses `ceph-volume lvm list` output into
+    `[{"osd_id": ..., "osd_fsid": ...}, ...]`, one entry per `======
+    osd.N =======` block. The SAME output also contains a `cluster fsid`
+    field (a DIFFERENT UUID) inside every block — only `osd fsid` is
+    captured here (addendum.md's explicit warning: 2 different UUIDs
+    appear in the same output). Raises DeployPhaseError if ANY block is
+    missing either field (FR-3: a partial backup is worse than none — Story
+    11.4's Node Recovery needs an exact OSD count) or if no OSD block is
+    found at all (a node labeled with the OSD role that genuinely has none
+    is a misconfiguration, not a valid empty backup)."""
+    blocks = re.split(r"^====== osd\.\S+ =======\s*$", output, flags=re.MULTILINE)[1:]
+    if not blocks:
+        raise DeployPhaseError(
+            "ceph-volume lvm list không trả về OSD nào trên node có vai OSD — kiểm tra lại cấu hình"
+        )
+    backups: list[dict] = []
+    for block in blocks:
+        id_match = re.search(r"^\s*osd id\s+(\S+)\s*$", block, flags=re.MULTILINE)
+        fsid_match = re.search(r"^\s*osd fsid\s+(\S+)\s*$", block, flags=re.MULTILINE)
+        if not id_match or not fsid_match:
+            raise DeployPhaseError(
+                "ceph-volume lvm list trả về một entry OSD thiếu osd id/osd fsid — dừng lại, "
+                "không backup thiếu"
+            )
+        backups.append({"osd_id": id_match.group(1), "osd_fsid": fsid_match.group(1)})
+    return backups
+
+
+def _get_node_upgrade_gate_or_raise(session, gate_id: str) -> NodeUpgradeGate:
+    gate = session.get(NodeUpgradeGate, gate_id)
+    if gate is None:
+        raise DeployPhaseError(f"Không tìm thấy NodeUpgradeGate id={gate_id!r} — dữ liệu không nhất quán")
+    return gate
+
+
+def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-3: backs up every OSD's id+fsid on this host (if it has the OSD
+    role), then triggers an on-demand cluster metadata backup
+    (worker.backup.metadata, Epic 9) if the last successful one is
+    missing/stale. Either half failing stops the WHOLE Prepare (FR-3's own
+    consequence text) — no partial state, no continuing to FR-4/FR-5
+    without a fresh insurance backup.
+
+    NOTE: worker.backup.metadata.run()'s own write_progress/check_kill_switch
+    are stubbed here (no-op / never-tripped) — this phase function's own
+    signature has no access to cluster_deploy.run()'s real callbacks
+    (only on_host_update), and AD-4's kill-switch granularity is already
+    documented as PHASE-level, not finer. Known UX limitation: the
+    operator sees this whole phase as one "running" step for as long as
+    the nested metadata backup takes, without its own 5-artifact
+    sub-progress — acceptable (not a safety gap), out of this story's
+    scope to fix.
+    """
+    host = action_params["host"]
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    if _osd_role(action_params):
+        try:
+            output = execute_command(host, "ceph-volume lvm list")
+        except ExecutorError as exc:
+            host_status[0]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError(f"{host}: ceph-volume lvm list thất bại: {exc}") from exc
+
+        osd_backup = _parse_osd_backup(output)
+        with db.SessionLocal() as session:
+            gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+            gate.osd_backup = json.dumps(osd_backup)
+            session.commit()
+
+    last_job = backup_metadata.latest_successful_metadata_job()
+    needs_backup = last_job is None or last_job.created_at < datetime.utcnow() - timedelta(
+        hours=_METADATA_BACKUP_FRESHNESS_HOURS
+    )
+    if needs_backup:
+        ok = backup_metadata.run(
+            action_params["action_pk"],
+            {},
+            action_params["incident_id"],
+            lambda *_a, **_k: None,
+            lambda _incident_id: False,
+        )
+        if not ok:
+            host_status[0]["status"] = "failed"
+            on_host_update(list(host_status))
+            raise DeployPhaseError("Backup metadata cụm on-demand thất bại — dừng Chuẩn bị (FR-3)")
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_set_maintenance_flags(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-4: only if this node has the OSD role. Idempotency is against
+    LIVE CLUSTER FLAG STATE (`ceph osd dump`), not other `NodeUpgradeGate`
+    rows — under AD-23/AD-24's strict one-node-at-a-time invariant, two
+    `NodeUpgradeGate` rows can never both be non-terminal at once, so a
+    check against "another row" would always find nothing (vacuous by
+    construction). The PRD's real intent ("đặt cờ 1 lần dùng chung cho cả
+    đợt") is about not re-running `ceph osd set` for flags a PREVIOUS node
+    in the same multi-node round already set and that haven't been unset
+    yet — the cluster's own current flag state is the only information
+    that actually answers that question."""
+    host = action_params["host"]
+    if not _osd_role(action_params):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    mon_host = _any_configured_mon_host()
+    host_status = [{"host": mon_host, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        current_flags = _read_osd_flags(mon_host)
+        to_set = [f for f in _MAINTENANCE_FLAGS if f not in current_flags]
+        if to_set:
+            execute_command(mon_host, " && ".join(f"ceph osd set {f}" for f in to_set))
+    except (ExecutorError, ValueError) as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{mon_host}: đặt cờ bảo trì thất bại: {exc}") from exc
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_remove_mon(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-5: only if this node has the MON role. Runs `ceph mon rm <name>`
+    (never the deprecated `ceph mon remove` alias) from a DIFFERENT mon,
+    then confirms quorum count is exactly previous-count-minus-1 before
+    letting Prepare proceed to the next phase — any mismatch stops
+    immediately (this IS the "không 2 mon cùng offline" hard invariant's
+    enforcement point)."""
+    host = action_params["host"]
+    if not _mon_role(action_params):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    other_mon_host = _any_configured_mon_host(exclude=host)
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    try:
+        mon_name = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
+
+    try:
+        before = json.loads(execute_command(other_mon_host, "ceph quorum_status --format json"))
+        expected_after = len(before.get("quorum_names") or []) - 1
+
+        execute_command(other_mon_host, f"ceph mon rm {shlex.quote(mon_name)}")
+
+        after = json.loads(execute_command(other_mon_host, "ceph quorum_status --format json"))
+        actual_after = len(after.get("quorum_names") or [])
+    except (ExecutorError, ValueError) as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"Gỡ mon {mon_name} khỏi quorum thất bại: {exc}") from exc
+
+    if actual_after != expected_after:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"Sau khi gỡ mon {mon_name}, quorum còn {actual_after} mon (kỳ vọng {expected_after}) — "
+            "dừng lại ngay, không tiếp tục Chuẩn bị (FR-5)"
+        )
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_mark_prepared(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """DB-only, no SSH — same "final bookkeeping phase" shape as
+    _phase_verify_integrity in the restore family above. Does NOT touch
+    the CAS lock: PREPARED is non-terminal (AD-18) — the lock stays held
+    until Confirm→Recover→DONE (Story 11.4) or Abort→DONE (below)."""
+    host = action_params["host"]
+    with db.SessionLocal() as session:
+        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate.state = NodeUpgradeGateState.PREPARED.value
+        session.commit()
+    on_host_update([{"host": host, "status": "done"}])
+
+
+_PHASES_BY_ACTION_ID["node_os_gate_prepare"] = [
+    ("backup_osd_and_metadata", "Backup OSD id/fsid + metadata cụm", 33, _phase_gate_backup_osd_and_metadata),
+    ("set_maintenance_flags", "Đặt cờ bảo trì cấp cụm", 66, _phase_gate_set_maintenance_flags),
+    ("remove_mon", "Gỡ mon khỏi quorum", 90, _phase_gate_remove_mon),
+    ("mark_prepared", "Đánh dấu node sẵn sàng cài lại OS", 100, _phase_gate_mark_prepared),
+]
+
+# --- Epic 11 — shared rejoin-mon helper + node_os_gate_abort (Story 11.3,
+# FR-6) -----------------------------------------------------------------
+
+
+def _rejoin_mon_after_reinstall(host: str, mon_name: str, other_mon_host: str) -> None:
+    """AD-22's doc-verified sequence (addendum.md, 2 corrections applied):
+    fetch the `mon.` keyring + CURRENT monmap (not yet including this mon)
+    from a live mon, `mkfs`+start the daemon on `host` with that exact
+    monmap/keyring — it self-joins quorum via Paxos. `ceph mon add` does
+    NOT appear in Ceph's current official "Adding a Monitor (Manual)"
+    procedure at all; an earlier draft fix that added it was itself found
+    wrong by a later, doc-verified review pass — do not reintroduce it.
+
+    Reusable by BOTH `node_os_gate_abort` (this story) and
+    `node_os_gate_recover` (Story 11.4, FR-14) — keep this function free of
+    Abort-specific logic so Story 11.4 can call it verbatim.
+
+    Reuses this file's own `_mkfs_and_start_mon_command`/
+    `_read_remote_file_b64`/`_write_remote_file_b64` (same helpers
+    `_phase_ceph_deploy_mon_init` already uses for an analogous
+    keyring/monmap transfer) rather than inventing new remote-file-transfer
+    code — deliberately file-based (`-o <path>` then base64-safe copy), NOT
+    `-o -`/stdout capture: `execute_command` UTF-8-decodes stdout, which is
+    unsafe for a binary monmap.
+    """
+    fetch_cmd = (
+        f"rm -f {shlex.quote(_REMOTE_MON_KEYRING_PATH)} {shlex.quote(_REMOTE_MONMAP_PATH)} && "
+        f"ceph auth get mon. -o {shlex.quote(_REMOTE_MON_KEYRING_PATH)} && "
+        f"ceph mon getmap -o {shlex.quote(_REMOTE_MONMAP_PATH)}"
+    )
+    try:
+        execute_command(other_mon_host, fetch_cmd)
+    except ExecutorError as exc:
+        raise DeployPhaseError(f"{other_mon_host}: lấy mon keyring/monmap hiện tại thất bại: {exc}") from exc
+
+    keyring_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_MON_KEYRING_PATH)
+    monmap_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_MONMAP_PATH)
+    _write_remote_file_b64(host, _REMOTE_MON_KEYRING_PATH, keyring_b64)
+    _write_remote_file_b64(host, _REMOTE_MONMAP_PATH, monmap_b64)
+
+    try:
+        execute_command(host, _mkfs_and_start_mon_command(mon_name))
+    except ExecutorError as exc:
+        raise DeployPhaseError(f"{host}: mkfs/start lại ceph-mon@{mon_name} thất bại: {exc}") from exc
+
+    deadline = time.monotonic() + _QUORUM_DEFAULT_TIMEOUT_SECONDS
+    last_error: Exception | None = None
+    while True:
+        try:
+            quorum = json.loads(execute_command(other_mon_host, "ceph quorum_status --format json"))
+            if mon_name in (quorum.get("quorum_names") or []):
+                break
+        except (ExecutorError, ValueError) as exc:
+            last_error = exc
+        if time.monotonic() >= deadline:
+            detail = f" (lỗi gần nhất: {last_error})" if last_error else ""
+            raise DeployPhaseError(
+                f"mon {mon_name} không rejoin quorum sau {_QUORUM_DEFAULT_TIMEOUT_SECONDS}s{detail}"
+            )
+        time.sleep(_QUORUM_POLL_INTERVAL_SECONDS)
+
+    _refresh_static_mon_config(host, mon_name)
+
+
+def _refresh_static_mon_config(rejoined_host: str, rejoined_mon_name: str) -> None:
+    """FR-14's own consequence: runtime monmap is correct immediately after
+    rejoin, but the STATIC /etc/ceph/ceph.conf is not — a future
+    full-cluster restart reads the static file. Refreshes
+    `mon_host`/`mon_initial_members` on the rejoined node AND every other
+    configured node via a TARGETED `sed` line-replace, NOT a full
+    ceph.conf rewrite (`_build_ceph_conf` reconstructs a whole file from
+    deploy-time-only action_params this code path doesn't have, and a
+    live node's ceph.conf may carry settings that reconstruction doesn't
+    know about)."""
+    mon_nodes = [n for n in configured_nodes() if "MON" in n["roles"]]
+    hostnames: dict[str, str] = {}
+    for n in mon_nodes:
+        ip = n["host"]
+        if ip == rejoined_host:
+            hostnames[ip] = rejoined_mon_name
+            continue
+        try:
+            hostnames[ip] = execute_command(ip, "hostname -f 2>/dev/null || hostname").strip()
+        except ExecutorError as exc:
+            raise DeployPhaseError(f"{ip}: không lấy được hostname để cập nhật ceph.conf: {exc}") from exc
+
+    mon_initial_members = ",".join(hostnames[n["host"]] for n in mon_nodes)
+    # Dual v1/v2 addressing (addendum.md's own caution against hardcoding
+    # :6789) — msgr v2 default port 3300, v1 default port 6789.
+    mon_host = ",".join(f"[v2:{n['host']}:3300/0,v1:{n['host']}:6789/0]" for n in mon_nodes)
+
+    sed_cmd = (
+        "sed -i "
+        f"-e 's/^mon initial members.*/mon initial members = {mon_initial_members}/' "
+        f"-e 's/^mon host.*/mon host = {mon_host}/' "
+        f"{shlex.quote(_REMOTE_CEPH_CONF_PATH)}"
+    )
+    for target_host in {n["host"] for n in configured_nodes()}:
+        try:
+            execute_command(target_host, sed_cmd)
+        except ExecutorError as exc:
+            raise DeployPhaseError(
+                f"{target_host}: cập nhật mon_host/mon_initial_members trong ceph.conf thất bại: {exc}"
+            ) from exc
+
+
+def _phase_gate_abort_rejoin_mon(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-6: reverses node_os_gate_prepare's mon removal — only if
+    `NodeUpgradeGate.roles_snapshot` (captured AT PREPARE TIME —
+    `action_params["roles"]` here is built from that snapshot, NOT a live
+    `configured_nodes()` re-check; see the story's Dev Notes on why
+    roles_snapshot is authoritative for Abort/Recover) includes MON. Uses
+    the SAME doc-verified full sequence as FR-14 — addendum.md explicitly
+    retracts the earlier "just restart the daemon" shortcut assumption,
+    since FR-5 already made this node's local monmap stale."""
+    host = action_params["host"]
+    if "MON" not in (action_params.get("roles") or []):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    other_mon_host = _any_configured_mon_host(exclude=host)
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        mon_name = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
+
+    try:
+        _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+    except DeployPhaseError:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_abort_maybe_clear_flags(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-6's flag-clear half: only unsets maintenance flags if NO OTHER
+    node is mid-flight — checked via `is_node_upgrade_gate_pending`,
+    excluding THIS Abort Action's own row (same row-specific exemption
+    AD-19 uses in `approve_action_core`; needed here because this gate is
+    still non-terminal, `state=ABORTING`, at the moment this phase runs)."""
+    host = action_params["host"]
+    if "OSD" not in (action_params.get("roles") or []):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    with db.SessionLocal() as session:
+        someone_else_pending = is_node_upgrade_gate_pending(
+            session, exclude_action_id=action_params["action_pk"]
+        )
+    if someone_else_pending:
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    mon_host = _any_configured_mon_host()
+    host_status = [{"host": mon_host, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        current_flags = _read_osd_flags(mon_host)
+        to_unset = [f for f in _MAINTENANCE_FLAGS if f in current_flags]
+        if to_unset:
+            execute_command(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset))
+    except (ExecutorError, ValueError) as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{mon_host}: gỡ cờ bảo trì thất bại: {exc}") from exc
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_abort_mark_done(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """DB-only. Terminal state DONE releases the CAS lock (AD-24) —
+    ABORTING's own completion counts as DONE, same as a successful
+    node_os_gate_recover would."""
+    host = action_params["host"]
+    with db.SessionLocal() as session:
+        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate.state = NodeUpgradeGateState.DONE.value
+        release_node_upgrade_gate_lock(session, action_params["node_upgrade_gate_id"])
+        session.commit()
+    on_host_update([{"host": host, "status": "done"}])
+
+
+_PHASES_BY_ACTION_ID["node_os_gate_abort"] = [
+    ("rejoin_mon", "Rejoin mon vào quorum", 50, _phase_gate_abort_rejoin_mon),
+    ("maybe_clear_flags", "Gỡ cờ bảo trì (nếu là node cuối cùng)", 90, _phase_gate_abort_maybe_clear_flags),
+    ("mark_done", "Đánh dấu Huỷ Chuẩn bị hoàn tất", 100, _phase_gate_abort_mark_done),
+]
+
 # Deploy vs delete post-phase env-config writes go opposite directions
 # (populate vs clear) — this set is how run() tells them apart without a
 # separate parameter threaded through every call site.
 _DELETE_CLUSTER_ACTION_IDS = frozenset({"delete_cluster_cephadm", "delete_cluster_manual"})
+
+# AD-17: gate actions never touch .env — they never change cluster
+# topology (action_params["nodes"] is a single bare host string, not the
+# dict-list _write_cluster_config's _node_ips_with_role expects, so
+# reaching that call for these action_ids would crash, not just be
+# pointless). node_os_gate_recover is included now even though Story 11.4
+# hasn't added its phase list yet — harmless, and matches AD-17's own
+# frozenset literal verbatim so that story doesn't need to touch this set.
+_SKIP_CONFIG_EPILOGUE_ACTION_IDS = frozenset(
+    {"node_os_gate_prepare", "node_os_gate_recover", "node_os_gate_abort"}
+)
+
+
+def _fail_node_upgrade_gate(action_params: dict) -> None:
+    """Best-effort cleanup for a node_os_gate_* action that failed (kill-
+    switch blocked before a phase, or a phase raised) — marks the
+    NodeUpgradeGate FAILED and releases the CAS lock (AD-24) so a LATER
+    Prepare attempt (this node retried, or a different node) is not
+    permanently blocked. Deliberately swallows its own exceptions: a DB
+    hiccup while recording the ORIGINAL failure must never mask that
+    failure or raise a second, more confusing one out of run(). If this
+    cleanup itself fails, the lock stays held until an operator manually
+    intervenes (AD-18: no automated path out of FAILED) — logged at
+    .exception() level specifically so that is never silent."""
+    gate_id = action_params.get("node_upgrade_gate_id")
+    if not gate_id:
+        return
+    try:
+        with db.SessionLocal() as session:
+            gate = session.get(NodeUpgradeGate, gate_id)
+            if gate is not None and gate.state not in (
+                NodeUpgradeGateState.DONE.value,
+                NodeUpgradeGateState.FAILED.value,
+            ):
+                gate.state = NodeUpgradeGateState.FAILED.value
+                release_node_upgrade_gate_lock(session, gate_id)
+                session.commit()
+    except Exception:
+        logger.exception(
+            "cluster_deploy._fail_node_upgrade_gate: could not mark gate %s FAILED / release lock — "
+            "manual DB intervention may be needed",
+            gate_id,
+        )
 
 
 def _make_step(step_key: str, label: str, pct: int) -> dict:
@@ -2580,6 +3086,8 @@ def run(
                 step_key,
                 action_pk,
             )
+            if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+                _fail_node_upgrade_gate(action_params)
             return False
 
         progress[index]["status"] = "running"
@@ -2600,6 +3108,8 @@ def run(
             logger.warning(
                 "cluster_deploy.run: phase %s failed for action %s: %s", step_key, action_pk, exc
             )
+            if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+                _fail_node_upgrade_gate(action_params)
             return False
         except Exception as exc:
             progress[index]["status"] = "failed"
@@ -2609,6 +3119,8 @@ def run(
             logger.exception(
                 "cluster_deploy.run: unexpected error in phase %s for action %s", step_key, action_pk
             )
+            if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+                _fail_node_upgrade_gate(action_params)
             return False
 
         progress[index]["status"] = "done"
@@ -2618,6 +3130,8 @@ def run(
     try:
         if action_id in _DELETE_CLUSTER_ACTION_IDS:
             _clear_cluster_config()
+        elif action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+            pass
         else:
             _write_cluster_config(action_params, action_id)
     except Exception:

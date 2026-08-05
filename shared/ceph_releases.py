@@ -40,43 +40,87 @@ RELEASES: dict[int, dict[str, str]] = {
     # release, so its codename alias is permanently frozen at 14.2.22 and
     # safe to reference by codename forever. Every other entry below omits
     # this key (defaults to False via `.get()`).
+    # 2026-08-05: `min_el_version` added — the lowest RHEL/CentOS/Rocky/
+    # AlmaLinux ("el") major OS version any packaged build of that release
+    # EVER shipped for, e.g. Pacific (16.x) never published el7 RPMs, so
+    # its floor is 8. Powers shared.ceph_releases.os_upgrade_warning()
+    # below, used by dashboard/routes/upgrade.py's package-based upgrade
+    # proposal to warn an operator BEFORE approving an upgrade that would
+    # otherwise 404 fetching download.ceph.com/rpm-<version>/el<N>/ at
+    # execution time (worker/executor/commands.py's own
+    # _upgrade_ceph_cluster_package_download_command only discovers that
+    # failure live, mid-run, on the target host itself).
+    #
+    # Same "hand-curated, not queried live" posture as the rest of this
+    # table: Nautilus/Pacific values confirmed directly by the operator
+    # (2026-08-05) who hit this exact CentOS 7 -> Pacific 16.2.15 case;
+    # Octopus/Quincy/Reef/Squid/Tentacle are from public Ceph release
+    # notes' documented OS support matrix, not independently live-verified
+    # here — flag it if one of these turns out wrong so this table gets
+    # corrected. Only tracks the FLOOR for a release's very first point
+    # release, same granularity gap this module already discloses
+    # elsewhere for `repo_path_uses_codename`/the Quincy el8-dropped-later
+    # case in worker/executor/commands.py — a later point release
+    # narrowing support further than its own first release's floor is NOT
+    # modeled and will under-warn (say "OK") for that narrower case.
     14: {
         "codename": "nautilus",
         "next_min_version": "15.2.0",
         "versions": [f"14.2.{p}" for p in range(0, 23)],
         "repo_path_uses_codename": True,
+        "min_el_version": 7,
     },
     15: {
         "codename": "octopus",
         "next_min_version": "16.2.0",
         "versions": [f"15.2.{p}" for p in range(0, 18)],
+        "min_el_version": 8,
     },
     16: {
         "codename": "pacific",
         "next_min_version": "17.2.0",
         "versions": [f"16.2.{p}" for p in range(0, 16)],
+        "min_el_version": 8,
     },
     17: {
         "codename": "quincy",
         "next_min_version": "18.2.0",
         "versions": [f"17.2.{p}" for p in range(0, 9)],
+        "min_el_version": 8,
     },
     18: {
         "codename": "reef",
         "next_min_version": "19.2.0",
         "versions": [f"18.2.{p}" for p in range(0, 9)],
+        "min_el_version": 9,
     },
     19: {
         "codename": "squid",
         "next_min_version": "20.2.0",
         "versions": ["19.2.0", "19.2.1", "19.2.2"],
+        "min_el_version": 9,
     },
     20: {
         "codename": "tentacle",
         "next_min_version": None,
         "versions": ["20.2.0"],
+        "min_el_version": 9,
     },
 }
+
+# OS `ID` values (from /etc/os-release) this module knows how to compare
+# against `min_el_version` above — the RHEL-family distros that actually
+# use "elN" packaging (matches worker/executor/cluster_deploy.py's own
+# rpm-family list minus "fedora": Fedora's own VERSION_ID isn't an "el"
+# equivalent — download.ceph.com never published a Fedora-specific repo,
+# and this app's own repo-URL builder always targets `rpm -E %rhel`, which
+# is undefined on real Fedora — so warning off Fedora's VERSION_ID would be
+# comparing the wrong scale entirely; deliberately left unmodeled here, a
+# pre-existing gap in the upgrade command builder itself, not something
+# this check can fix).  Debian/Ubuntu aren't modeled either (no equivalent
+# min-version table curated yet) — os_upgrade_warning() below simply
+# returns None (no warning) for any os_id not in this set.
+EL_FAMILY_OS_IDS = {"rhel", "centos", "rocky", "almalinux"}
 
 
 def codenames_oldest_first() -> list[tuple[str, str]]:
@@ -114,6 +158,61 @@ def next_min_version(version: str) -> str | None:
         return None
     release = RELEASES.get(major)
     return release["next_min_version"] if release else None
+
+
+def min_el_version_for(version: str) -> int | None:
+    """The lowest "el" (RHEL-family) major OS version `version`'s major
+    Ceph release ever shipped RPM builds for — see RELEASES' own
+    `min_el_version` comment above for sourcing/caveats. None if
+    `version`'s major isn't in RELEASES."""
+    major = major_version(version)
+    if major is None:
+        return None
+    release = RELEASES.get(major)
+    return release.get("min_el_version") if release else None
+
+
+def min_os_label_for(version: str) -> str | None:
+    """Human-friendly minimum-OS label for `version`'s major release's
+    `min_el_version` floor (e.g. "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở
+    lên") — factored out of os_upgrade_warning()'s inline string so Story
+    11.1's OS Upgrade Gate screen (dashboard/routes/upgrade.py) can show it
+    as its own field instead of re-parsing the full warning sentence. None
+    if `version`'s major isn't in RELEASES (same as min_el_version_for)."""
+    floor = min_el_version_for(version)
+    if floor is None:
+        return None
+    return f"CentOS/RHEL/Rocky Linux/AlmaLinux {floor} trở lên"
+
+
+def os_upgrade_warning(target_version: str, os_id: str, os_version_id: str) -> str | None:
+    """Returns a Vietnamese warning if the OS described by `os_id`/
+    `os_version_id` (as read from /etc/os-release, e.g. os_id="centos",
+    os_version_id="7") is below `target_version`'s known `min_el_version`
+    floor — the CentOS 7 -> Ceph Pacific case this function exists for.
+    Returns None (no warning) when: the OS is compatible; `os_id` isn't a
+    tracked el-family distro (see EL_FAMILY_OS_IDS' own comment — Debian/
+    Ubuntu/Fedora aren't modeled, so this simply says nothing rather than
+    guessing); `os_version_id` isn't a parseable integer-leading string; or
+    `target_version`'s major has no known floor. Callers should treat None
+    as "no warning to show", not "confirmed compatible" — see this
+    function's own caveats above for what it does NOT catch."""
+    if os_id not in EL_FAMILY_OS_IDS:
+        return None
+    try:
+        os_major = int(os_version_id.split(".")[0])
+    except (ValueError, AttributeError, IndexError):
+        return None
+    floor = min_el_version_for(target_version)
+    if floor is None or os_major >= floor:
+        return None
+    codename = (codename_for_version(target_version) or "").capitalize()
+    return (
+        f"hệ điều hành hiện tại là {os_id} {os_version_id} (el{os_major}), nhưng Ceph "
+        f"{target_version} ({codename}) yêu cầu tối thiểu el{floor} ({min_os_label_for(target_version)}) "
+        f"— download.ceph.com không có gói cho phiên bản này trên "
+        f"el{os_major}, cài đặt sẽ thất bại. Cần nâng cấp hệ điều hành TRƯỚC khi nâng cấp Ceph."
+    )
 
 
 def codename_for_version(version: str) -> str | None:

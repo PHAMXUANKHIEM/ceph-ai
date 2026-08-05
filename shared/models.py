@@ -642,3 +642,87 @@ class TestRunnerConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class NodeUpgradeGateState(str, enum.Enum):
+    PREPARING = "PREPARING"
+    PREPARED = "PREPARED"
+    RECOVERING = "RECOVERING"
+    ABORTING = "ABORTING"
+    DONE = "DONE"
+    FAILED = "FAILED"
+
+
+class NodeUpgradeGate(Base):
+    """Epic 11 (OS Upgrade Gate + Node OS Reinstall/Ceph Recovery) Story 11.2
+    -- AD-18's durable, restart-surviving mid-flight state for a single
+    node's Prepare -> Confirm -> Recover (or Abort) arc. This spans
+    multiple separate `Action` rows plus an unbounded human-paced gap
+    between them (waiting for the operator to reinstall the OS by hand) --
+    `Action.execution_progress` alone (fine-grained, within one Action's
+    phase sequence) cannot represent that; this table is the coarse-grained
+    "which stage of the overall arc" view. The two views are complementary,
+    not redundant (AD-18).
+
+    `state` moves strictly forward: PREPARING -> PREPARED -> RECOVERING ->
+    DONE, or PREPARING -> PREPARED -> ABORTING -> DONE, or into terminal
+    FAILED from PREPARING/RECOVERING. This model only validates `state` is
+    one of the 6 known values (CheckConstraint below) -- it does not
+    enforce transition order; that is up to the Stories that perform each
+    transition (11.3/11.4).
+
+    Dashboard writes prepare_action_id/confirm_action_id/abort_action_id
+    (each set in the same request that creates the corresponding synthetic
+    Action, before calling approve_action_core) -- Worker never writes
+    these FK columns, only `state` and the descriptive fields.
+    """
+
+    __tablename__ = "node_upgrade_gates"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('" + "','".join(s.value for s in NodeUpgradeGateState) + "')",
+            name="ck_node_upgrade_gates_state_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    host: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default=NodeUpgradeGateState.PREPARING.value)
+    # JSON-encoded list, e.g. '["mon", "osd"]' -- same JSON-as-Text
+    # convention as Action.execution_progress/TestRunnerConfig.test_groups.
+    # Populated by node_os_gate_prepare (Story 11.3) from the node's actual
+    # roles at Prepare time, so Recovery (Story 11.4) knows what to restore.
+    roles_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON-encoded list of {osd_id, osd_fsid}, same JSON-as-Text convention.
+    # Populated by node_os_gate_prepare's OSD backup phase (Story 11.3).
+    osd_backup: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prepare_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
+    confirm_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
+    abort_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class NodeUpgradeGateLock(Base):
+    """Epic 11 Story 11.2 -- AD-24's real fix for the TOCTOU race that a
+    plain SELECT-then-check (is_node_upgrade_gate_pending, AD-19) cannot
+    close on its own: a singleton row claimed via one atomic conditional
+    UPDATE (compare-and-swap), the same singleton-row idiom this codebase
+    already uses for SystemFlag/kill-switch (shared/kill_switch.py).
+
+    `active_gate_id` is deliberately NOT a ForeignKey to
+    NodeUpgradeGate.id: the claim (this row's UPDATE) happens BEFORE the
+    corresponding NodeUpgradeGate row is inserted (both within the same
+    request/transaction -- the gate id is generated client-side and used
+    for both writes) -- a non-deferred FK would reject the claim outright
+    since the referenced row wouldn't exist yet. See
+    shared/node_upgrade_gate.py for the claim/release functions.
+    """
+
+    __tablename__ = "node_upgrade_gate_locks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    active_gate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

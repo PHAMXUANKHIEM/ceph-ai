@@ -3,7 +3,16 @@ from datetime import datetime
 import dashboard.routes.patch as patch_route
 import dashboard.routes.upgrade as upgrade_route
 from shared import db as db_module
-from shared.models import Action, ActionClassification, ActionStatus, AuditEntry, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionClassification,
+    ActionStatus,
+    AuditEntry,
+    Incident,
+    IncidentStatus,
+    NodeUpgradeGate,
+    NodeUpgradeGateState,
+)
 
 
 def _login(client):
@@ -446,3 +455,94 @@ def test_index_shows_disabled_approve_button_for_other_action_while_upgrade_pend
 
     assert response.status_code == 200
     assert 'class="btn btn-approve" disabled' in response.text
+
+
+# --- Story 11.3 (AD-19): approving an unrelated Action is blocked while a
+# NodeUpgradeGate is non-terminal — exemption is ROW-specific, not
+# action_id-family-wide (Reviewer Gate CRITICAL finding #2) -----------------
+
+
+def _pending_gate_action(
+    state: str, incident_id: str = "inc-gate-1", action_id: str = "node_os_gate_prepare"
+) -> tuple[str, str]:
+    """Returns (action_id, gate_id) — the Action IS `prepare_action_id` on
+    the created NodeUpgradeGate row, mirroring how dashboard/routes/
+    upgrade.py's real Prepare route will build these (Story 11.3, Task 8)."""
+    with db_module.SessionLocal() as session:
+        incident = Incident(id=incident_id, ceph_code="NODE_OS_GATE", detected_at=datetime.utcnow())
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+        )
+        session.add(action)
+        session.flush()
+        gate = NodeUpgradeGate(
+            host="10.20.1.83",
+            target_version="18.2.4",
+            state=state,
+            prepare_action_id=action.id,
+        )
+        session.add(gate)
+        session.commit()
+        return action.id, gate.id
+
+
+def test_approve_other_action_is_blocked_while_node_upgrade_gate_is_preparing(dashboard_client):
+    _pending_gate_action(NodeUpgradeGateState.PREPARING.value)
+    other_action_id = _pending_action("inc-other-gate-1")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, other_action_id).status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_approve_other_action_is_blocked_while_node_upgrade_gate_is_prepared(dashboard_client):
+    _pending_gate_action(NodeUpgradeGateState.PREPARED.value)
+    other_action_id = _pending_action("inc-other-gate-2")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve")
+
+    assert response.status_code == 409
+
+
+def test_approve_other_action_still_works_when_no_node_upgrade_gate_active(dashboard_client):
+    other_action_id = _pending_action("inc-other-gate-3")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, other_action_id).status == ActionStatus.APPROVED.value
+
+
+def test_approve_other_action_works_once_node_upgrade_gate_reaches_done(dashboard_client):
+    _pending_gate_action(NodeUpgradeGateState.DONE.value)
+    other_action_id = _pending_action("inc-other-gate-4")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{other_action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+
+
+def test_approving_the_gates_own_prepare_action_is_never_blocked_by_its_own_gate(dashboard_client):
+    prepare_action_id, _gate_id = _pending_gate_action(NodeUpgradeGateState.PREPARING.value)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{prepare_action_id}/approve", follow_redirects=False)
+
+    # Row-specific self-exemption: this action IS the gate's own
+    # prepare_action_id, so it must not be blocked by its own non-terminal
+    # state. (No real command is registered for node_os_gate_prepare until
+    # Task 7 lands, so this may resolve as ACKNOWLEDGED/EXECUTED rather
+    # than APPROVED — either way, the key assertion is "not 409".)
+    assert response.status_code != 409

@@ -277,7 +277,7 @@ export default function TestRunner() {
         <section className="bg-white rounded shadow divide-y divide-slate-100">
           {loading ? (
             <p className="p-4 text-sm text-slate-400">Đang tải...</p>
-          ) : visibleTests.length === 0 ? (
+          ) : loadError ? null : visibleTests.length === 0 ? (
             <p className="p-4 text-sm text-amber-600">
               Không có test case nào — kiểm tra lựa chọn Nhóm/Ưu tiên ở trang Cấu hình.
             </p>

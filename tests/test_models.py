@@ -11,6 +11,8 @@ from shared.models import (
     AuditEntry,
     Incident,
     IncidentStatus,
+    NodeUpgradeGate,
+    NodeUpgradeGateState,
     WatcherHeartbeat,
 )
 
@@ -248,3 +250,53 @@ def test_watcher_heartbeat_error_message_can_be_null(db_session):
     db_session.commit()  # must not raise
 
     assert db_session.query(WatcherHeartbeat).one().error_message is None
+
+
+def test_node_upgrade_gate_insert_and_query(db_session):
+    gate = NodeUpgradeGate(host="10.20.1.83", target_version="18.2.4")
+    db_session.add(gate)
+    db_session.commit()
+
+    fetched = db_session.query(NodeUpgradeGate).one()
+    assert fetched.host == "10.20.1.83"
+    assert fetched.target_version == "18.2.4"
+    assert fetched.roles_snapshot is None
+    assert fetched.osd_backup is None
+    assert fetched.prepare_action_id is None
+
+
+def test_node_upgrade_gate_id_defaults_to_valid_uuid4(db_session):
+    gate = NodeUpgradeGate(host="10.20.1.83", target_version="18.2.4")
+    db_session.add(gate)
+    db_session.commit()
+
+    parsed = uuid.UUID(gate.id, version=4)
+    assert str(parsed) == gate.id
+
+
+def test_node_upgrade_gate_state_defaults_to_preparing(db_session):
+    gate = NodeUpgradeGate(host="10.20.1.83", target_version="18.2.4")
+    db_session.add(gate)
+    db_session.commit()
+    db_session.refresh(gate)
+
+    assert gate.state == NodeUpgradeGateState.PREPARING.value
+
+
+def test_node_upgrade_gate_rejects_state_outside_enum(db_session):
+    gate = NodeUpgradeGate(host="10.20.1.83", target_version="18.2.4", state="NOT_A_REAL_STATE")
+    db_session.add(gate)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_node_upgrade_gate_explicit_id_is_respected(db_session):
+    # Story 11.3's Prepare route generates the gate id client-side (to claim
+    # the CAS lock BEFORE this row exists) and passes it explicitly here —
+    # the default= factory must not override a caller-supplied id.
+    explicit_id = str(uuid.uuid4())
+    gate = NodeUpgradeGate(id=explicit_id, host="10.20.1.83", target_version="18.2.4")
+    db_session.add(gate)
+    db_session.commit()
+
+    assert gate.id == explicit_id

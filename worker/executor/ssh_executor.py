@@ -107,6 +107,23 @@ DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY_SECONDS = 5
 
 
+def read_os_release(host: str) -> Dict[str, str]:
+    """Reads and parses /etc/os-release on `host` (ID, VERSION_ID,
+    PRETTY_NAME, ...) into a plain dict. A generic SSH primitive, no
+    Ceph-specific logic — callers (e.g. shared/ceph_releases.py's
+    OS-compatibility check for cluster upgrades) interpret the fields
+    themselves. Raises ExecutorError (via execute_command) if the host is
+    unreachable; returns an empty dict if the file has no parseable
+    KEY=VALUE lines."""
+    output = execute_command(host, "cat /etc/os-release")
+    fields: Dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            fields[key.strip()] = value.strip().strip('"')
+    return fields
+
+
 def _connect_client(host: str, user: str, key_path: str, timeout: int) -> "paramiko.SSHClient":
     """Open a single fresh SSH connection to host. Same host-key handling
     as execute_command() above (load/save KNOWN_HOSTS_PATH, AutoAddPolicy)

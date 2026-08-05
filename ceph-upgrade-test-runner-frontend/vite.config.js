@@ -11,6 +11,19 @@ import react from '@vitejs/plugin-react'
 // README.md's `uvicorn dashboard.app:app --port 8000`). Proxying /api here
 // means the Vite dev server (port 5173) and the FastAPI backend can talk to
 // each other in dev without standing up CORS on the FastAPI side.
+//
+// Target is read from DASHBOARD_HOST/DASHBOARD_PORT (same env vars
+// scripts/deploy/restart_services.sh uses to launch uvicorn) rather than
+// hardcoded to localhost:8000 -- a deploy can override DASHBOARD_HOST to a
+// specific bind address (see restart_services.sh's deploy.local.env, e.g.
+// DASHBOARD_HOST=103.69.193.220) instead of 0.0.0.0, in which case the
+// backend isn't reachable on localhost at all and this proxy would
+// ECONNREFUSED on every /api call -- surfacing in the Test Runner UI as a
+// misleading "Không có test case nào" empty state that looks like a
+// Group/Priority filter problem instead of a connectivity one.
+const dashboardHost = process.env.DASHBOARD_HOST || 'localhost'
+const dashboardPort = process.env.DASHBOARD_PORT || '8000'
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -18,7 +31,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: `http://${dashboardHost}:${dashboardPort}`,
         changeOrigin: true,
       },
     },

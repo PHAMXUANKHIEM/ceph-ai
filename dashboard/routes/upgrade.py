@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from datetime import datetime
 
 import httpx
@@ -16,9 +17,24 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn
 from shared import audit, db
-from shared.ceph_releases import codename_for_version, codenames_oldest_first, versions_by_codename
+from shared.ceph_releases import (
+    codename_for_version,
+    codenames_oldest_first,
+    min_os_label_for,
+    os_upgrade_warning,
+    versions_by_codename,
+)
 from shared.cluster_nodes import configured_nodes
-from shared.models import Action, ActionStatus, Incident, IncidentStatus, UpgradeProcedureDocument
+from shared.models import (
+    Action,
+    ActionStatus,
+    Incident,
+    IncidentStatus,
+    NodeUpgradeGate,
+    NodeUpgradeGateState,
+    UpgradeProcedureDocument,
+)
+from shared.node_upgrade_gate import claim_node_upgrade_gate_lock
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from watcher.ceph_client import (
     CephQueryError,
@@ -31,7 +47,7 @@ from watcher.ceph_client import (
     unset_upgrade_osd_flags,
 )
 from worker.executor import commands as executor_commands
-from worker.executor.ssh_executor import ExecutorError
+from worker.executor.ssh_executor import ExecutorError, read_os_release
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
@@ -56,6 +72,22 @@ PACKAGE_DOWNLOAD_ACTION_ID = "upgrade_ceph_cluster_package_download"  # ceph-dep
 PACKAGE_LOCAL_ACTION_ID = "upgrade_ceph_cluster_package_local"  # ceph-deploy, local package dir
 CLUSTER_UPGRADE_ACTION_IDS = frozenset(
     {CLUSTER_UPGRADE_ACTION_ID, PACKAGE_DOWNLOAD_ACTION_ID, PACKAGE_LOCAL_ACTION_ID}
+)
+
+# Epic 11 (OS Upgrade Gate + Node OS Reinstall/Ceph Recovery), Story 11.3 —
+# same synthetic-Incident trick as CLUSTER_UPGRADE_CEPH_CODE above.
+NODE_OS_GATE_CEPH_CODE = "NODE_OS_GATE"
+NODE_OS_GATE_PREPARE_ACTION_ID = "node_os_gate_prepare"
+NODE_OS_GATE_ABORT_ACTION_ID = "node_os_gate_abort"
+# NodeUpgradeGate.state values that block a second Prepare for the SAME
+# host (FR-7's idempotency: a re-click while already PREPARING/PREPARED
+# must not re-run FR-3/4/5) — DONE/FAILED are terminal and allow a fresh
+# attempt.
+_NODE_OS_GATE_NON_TERMINAL_STATES = (
+    NodeUpgradeGateState.PREPARING.value,
+    NodeUpgradeGateState.PREPARED.value,
+    NodeUpgradeGateState.RECOVERING.value,
+    NodeUpgradeGateState.ABORTING.value,
 )
 
 _TARGET_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -338,6 +370,49 @@ async def _save_upgrade_procedure(filename: str, raw_text: str, user: str) -> No
         doc.uploaded_by = user
         doc.uploaded_at = datetime.utcnow()
         session.commit()
+
+
+def _check_os_upgrade_needed(target_version: str, target_nodes: list[str]) -> list[dict]:
+    """Best-effort OS-vs-target-Ceph-version preflight for the package-
+    based (ceph-deploy/download.ceph.com) upgrade path — the CentOS 7 ->
+    Ceph Pacific case: that install would otherwise only fail live, mid-run,
+    when worker/executor/commands.py's repo-URL builder 404s on the target
+    host (see shared/ceph_releases.py's min_el_version/os_upgrade_warning
+    for the underlying table/logic). Returns one dict
+    (`{"host", "os_id", "os_version_id", "warning"}`) per incompatible node
+    — empty = every checked node is OK to proceed. Structured (Story 11.1,
+    was a plain list[str] before) so the Gate screen (AD-20) can render
+    current-OS/minimum-OS as their own table columns instead of re-parsing
+    `warning`'s prose.
+
+    Deliberately scoped to THIS upgrade flavor only — cephadm
+    (propose_upgrade) pulls versioned container images, not an el-specific
+    RPM/APT repo, so this OS-floor concern doesn't apply there; the local-
+    package-dir flavor (propose_package_local_upgrade) never has a known
+    target_version to check against in the first place (the operator
+    supplies an arbitrary directory, not a version string).
+
+    A node that's unreachable/unparseable is SKIPPED, not reported as
+    incompatible — same best-effort posture as _safe_command_preview right
+    below: an unrelated SSH hiccup checking THIS must never be the reason a
+    real, valid upgrade proposal gets blocked. That node's real command
+    still fails loud on its own at execution time if it truly can't be
+    reached, same as today.
+    """
+    incompatible: list[dict] = []
+    for host in target_nodes:
+        try:
+            os_release = read_os_release(host)
+        except ExecutorError:
+            continue
+        os_id = (os_release.get("ID") or "").lower()
+        os_version_id = os_release.get("VERSION_ID") or ""
+        warning = os_upgrade_warning(target_version, os_id, os_version_id)
+        if warning:
+            incompatible.append(
+                {"host": host, "os_id": os_id, "os_version_id": os_version_id, "warning": warning}
+            )
+    return incompatible
 
 
 def _safe_command_preview(action_id: str, host: str, params: dict) -> str:
@@ -843,6 +918,7 @@ async def propose_upgrade(target_version: str = Form(...), user: str = Depends(r
 
 @router.post("/upgrade/propose-package-download")
 async def propose_package_download_upgrade(
+    request: Request,
     target_version: str = Form(...),
     run_test_suite: bool = Form(False),
     user: str = Depends(require_login),
@@ -859,6 +935,16 @@ async def propose_package_download_upgrade(
     own comment) — stored on the Action only when checked (an unchecked box
     omits the key entirely, keeping action_params identical to before this
     checkbox existed), never wired to an actual test-execution call here.
+
+    Story 11.1 (OS Upgrade Gate, AD-20): if one or more target nodes fail
+    the OS-compatibility preflight, this now renders the dedicated
+    `os_upgrade_gate.html` screen (200) instead of raising
+    HTTPException(400) — no Incident/Action is created either way (the
+    `with db.SessionLocal()` block below is never committed on this path),
+    matching the ad-hoc behavior this replaces exactly except for what the
+    operator sees. Story 11.1 only replaces the block screen — it does not
+    add "Chuẩn bị"/"Xác nhận" actions on it (those need `NodeUpgradeGate`,
+    Story 11.2, which doesn't exist yet).
     """
     target_version = target_version.strip()
     if not _TARGET_VERSION_RE.match(target_version):
@@ -881,6 +967,13 @@ async def propose_package_download_upgrade(
         target_nodes = [n["host"] for n in configured_nodes()]
         if not target_nodes:
             raise HTTPException(status_code=400, detail="Chưa cấu hình node nào (xem trang Cài đặt)")
+
+        incompatible_nodes = await asyncio.to_thread(_check_os_upgrade_needed, target_version, target_nodes)
+        if incompatible_nodes:
+            context = _build_os_upgrade_gate_context(
+                session, user, target_version, codename.capitalize(), incompatible_nodes
+            )
+            return templates.TemplateResponse(request, "os_upgrade_gate.html", context)
 
         action_params = {"target_version": target_version}
         preview_command = await asyncio.to_thread(

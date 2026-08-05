@@ -1,4 +1,12 @@
-from shared.ceph_releases import codename_for_version, major_version, next_min_version, repo_path_version
+from shared.ceph_releases import (
+    codename_for_version,
+    major_version,
+    min_el_version_for,
+    min_os_label_for,
+    next_min_version,
+    os_upgrade_warning,
+    repo_path_version,
+)
 
 
 def test_major_version_parses_leading_number():
@@ -66,3 +74,57 @@ def test_repo_path_version_uses_codename_for_nautilus():
 
 def test_repo_path_version_unknown_major_returns_version_unchanged():
     assert repo_path_version("99.0.0") == "99.0.0"
+
+
+# --- Story 11.1 (OS Upgrade Gate): min_el_version_for/os_upgrade_warning/
+# min_os_label_for had ZERO test coverage before this story, despite
+# already gating real proposals in dashboard/routes/upgrade.py since
+# 2026-08-05 — filling that pre-existing gap alongside the Gate-screen work
+# that consumes these functions. ---------------------------------------
+
+
+def test_min_el_version_for_known_major():
+    assert min_el_version_for("14.2.22") == 7  # Nautilus — last el7-capable release
+    assert min_el_version_for("16.2.15") == 8  # Pacific — the CentOS 7 case this exists for
+    assert min_el_version_for("19.2.0") == 9
+
+
+def test_min_el_version_for_unknown_major_returns_none():
+    assert min_el_version_for("99.0.0") is None
+
+
+def test_min_os_label_for_known_major():
+    assert min_os_label_for("16.2.15") == "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở lên"
+
+
+def test_min_os_label_for_unknown_major_returns_none():
+    assert min_os_label_for("99.0.0") is None
+
+
+def test_os_upgrade_warning_centos7_below_pacific_floor():
+    warning = os_upgrade_warning("16.2.15", "centos", "7")
+    assert warning is not None
+    assert "centos 7" in warning
+    assert "el7" in warning
+    assert "el8" in warning
+    assert "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở lên" in warning
+
+
+def test_os_upgrade_warning_none_when_os_meets_floor():
+    assert os_upgrade_warning("16.2.15", "centos", "8") is None
+    assert os_upgrade_warning("16.2.15", "rocky", "9") is None
+
+
+def test_os_upgrade_warning_none_for_non_el_family_os():
+    # Debian/Ubuntu/Fedora aren't modeled (EL_FAMILY_OS_IDS' own comment) —
+    # must say nothing rather than guessing.
+    assert os_upgrade_warning("16.2.15", "ubuntu", "20.04") is None
+    assert os_upgrade_warning("16.2.15", "fedora", "30") is None
+
+
+def test_os_upgrade_warning_none_for_unparseable_version_id():
+    assert os_upgrade_warning("16.2.15", "centos", "not-a-version") is None
+
+
+def test_os_upgrade_warning_none_for_unknown_target_major():
+    assert os_upgrade_warning("99.0.0", "centos", "7") is None

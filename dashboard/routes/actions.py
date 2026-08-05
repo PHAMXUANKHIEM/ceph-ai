@@ -11,6 +11,7 @@ from dashboard.routes import upgrade as upgrade_routes
 from dashboard.routes.auth import require_login
 from shared import audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.node_upgrade_gate import is_node_upgrade_gate_pending
 from worker.executor import commands as executor_commands
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,23 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
                     "Đang có đề xuất/quá trình cài đặt patch Ceph — tạm khoá duyệt hành động "
                     "khác cho tới khi xong."
                 )
+
+        # 2026-08-05 (Epic 11, AD-19): a node's mon may be pulled out of
+        # quorum for an unbounded, human-paced gap between Prepare and
+        # Confirm (Story 11.3) — any OTHER RISKY action approved during
+        # that gap risks compounding an already-degraded quorum. Exemption
+        # is ROW-specific (exclude_action_id), never action_id-family-wide
+        # like the two checks above — a family-wide exemption would let a
+        # SECOND node's own node_os_gate_prepare approval skip this check
+        # entirely (Reviewer Gate CRITICAL finding #2); AD-24's CAS lock
+        # already prevents a second node's gate row from ever being
+        # created while one is mid-flight, so this check only ever needs
+        # to exempt THIS SAME action's own gate row, never a whole family.
+        if is_node_upgrade_gate_pending(session, exclude_action_id=action.id):
+            raise ActionConflictError(
+                "Đang có node khác trong quá trình Chuẩn bị/chờ Xác nhận/Node Recovery OS — tạm "
+                "khoá duyệt hành động khác cho tới khi xong."
+            )
 
         incident = session.get(Incident, action.incident_id)
 
