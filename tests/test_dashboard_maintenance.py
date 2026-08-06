@@ -10,6 +10,7 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    BackupDigestLog,
     ChatMessage,
     Incident,
     IncidentStatus,
@@ -99,6 +100,22 @@ def _seed_volume_metric(polled_at: datetime) -> None:
         session.commit()
 
 
+def _seed_backup_digest_log(created_at: datetime) -> None:
+    with db_module.SessionLocal() as session:
+        session.add(
+            BackupDigestLog(
+                period_start=created_at - timedelta(hours=24),
+                period_end=created_at,
+                succeeded_count=1,
+                failed_count=0,
+                anomaly_count=0,
+                summary_text="OK",
+                created_at=created_at,
+            )
+        )
+        session.commit()
+
+
 def test_unauthenticated_post_cleanup_redirects_to_login(dashboard_client):
     response = dashboard_client.post("/settings/cleanup", data={}, follow_redirects=False)
     assert response.status_code == 303
@@ -168,6 +185,68 @@ def test_cleanup_db_blank_cutoff_deletes_everything(dashboard_client):
         assert session.query(AuditEntry).count() == 0
         assert session.query(NodeDiagnosticRun).count() == 0
         assert session.query(VolumeMetric).count() == 0
+
+
+# -- target_backup_digest (BackupDigestLog cleanup) -------------------------
+# Own separate checkbox/DB bucket — no FK relationship to Incident/Action/
+# AuditEntry/NodeDiagnosticRun/VolumeMetric, so it must be clearable
+# independently of target_db (and vice versa: checking target_db alone
+# must leave digest logs untouched).
+
+
+def test_cleanup_backup_digest_alone_satisfies_at_least_one_target(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cleanup", data={"target_backup_digest": "on", "cutoff_date": ""}
+    )
+
+    assert response.status_code == 200
+    assert "Chọn ít nhất 1 loại dữ liệu" not in response.text
+
+
+def test_cleanup_backup_digest_with_cutoff_deletes_old_and_keeps_new(dashboard_client):
+    _seed_backup_digest_log(datetime(2026, 1, 1))
+    _seed_backup_digest_log(datetime(2026, 7, 1))
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cleanup", data={"target_backup_digest": "on", "cutoff_date": "2026-03-01"}
+    )
+
+    assert response.status_code == 200
+    assert "Digest backup: đã xóa 1 bản ghi" in response.text
+    with db_module.SessionLocal() as session:
+        remaining = session.query(BackupDigestLog).all()
+        assert len(remaining) == 1
+        assert remaining[0].created_at == datetime(2026, 7, 1)
+
+
+def test_cleanup_backup_digest_blank_cutoff_deletes_everything(dashboard_client):
+    _seed_backup_digest_log(datetime(2026, 7, 1))
+    _seed_backup_digest_log(datetime(2026, 7, 2))
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/settings/cleanup", data={"target_backup_digest": "on", "cutoff_date": ""}
+    )
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        assert session.query(BackupDigestLog).count() == 0
+
+
+def test_cleanup_target_db_does_not_touch_backup_digest_logs(dashboard_client):
+    _seed_incident_with_action_and_audit("incident-x", datetime(2026, 1, 1))
+    _seed_backup_digest_log(datetime(2026, 1, 1))
+
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/cleanup", data={"target_db": "on", "cutoff_date": ""})
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        assert session.query(Incident).count() == 0
+        # target_db alone must leave BackupDigestLog completely untouched.
+        assert session.query(BackupDigestLog).count() == 1
 
 
 def test_purge_old_records_dereferences_chat_message_pointing_at_deleted_incident(monkeypatch):

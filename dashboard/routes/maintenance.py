@@ -17,7 +17,15 @@ from dashboard.routes.settings import (
 )
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import Action, AuditEntry, ChatMessage, Incident, NodeDiagnosticRun, VolumeMetric
+from shared.models import (
+    Action,
+    AuditEntry,
+    BackupDigestLog,
+    ChatMessage,
+    Incident,
+    NodeDiagnosticRun,
+    VolumeMetric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +224,27 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
     }
 
 
+def purge_backup_digest_logs(cutoff: datetime | None) -> int:
+    """Deletes `BackupDigestLog` rows (worker/backup/digest.py's periodic
+    AI-summarized digest — displayed in the "Digest" table on
+    dashboard/routes/backups.py's page) created before `cutoff`, or every
+    row if `cutoff` is None. Returns the number of rows deleted.
+
+    Kept as its own separate DB bucket rather than folded into
+    `purge_old_records` above — that checkbox's label and docstring both
+    promise exactly Incident/Action/AuditEntry/NodeDiagnosticRun/
+    VolumeMetric, and BackupDigestLog has no FK relationship to any of
+    them, so there's nothing to cascade and no reason to force an operator
+    to clear both together."""
+    with db.SessionLocal() as session:
+        query = session.query(BackupDigestLog)
+        if cutoff is not None:
+            query = query.filter(BackupDigestLog.created_at < cutoff)
+        deleted = query.delete(synchronize_session=False)
+        session.commit()
+    return deleted
+
+
 def _parse_cutoff_date(raw: str) -> date | None:
     raw = raw.strip()
     if not raw:
@@ -229,9 +258,10 @@ async def cleanup_submit(
     user: str = Depends(require_login),
     target_files: str | None = Form(None),
     target_db: str | None = Form(None),
+    target_backup_digest: str | None = Form(None),
     cutoff_date: str = Form(""),
 ):
-    if not target_files and not target_db:
+    if not target_files and not target_db and not target_backup_digest:
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -264,6 +294,9 @@ async def cleanup_submit(
             for name, path in LOG_PATHS.items():
                 freed_total += _purge_log_file(path, cutoff)
             summary_parts.append(f"File log: giải phóng {freed_total / 1024:.1f} KB.")
+        if target_backup_digest:
+            digest_deleted = purge_backup_digest_logs(cutoff)
+            summary_parts.append(f"Digest backup: đã xóa {digest_deleted} bản ghi.")
     except Exception:
         logger.exception("cleanup_submit: failed to purge old data")
         return templates.TemplateResponse(
