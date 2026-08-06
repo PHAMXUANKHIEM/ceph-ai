@@ -141,6 +141,7 @@ def test_cluster_deploy_action_ids_loaded_from_policy_yaml():
         "restore_cluster_from_backup",
         "node_os_gate_prepare",
         "node_os_gate_abort",
+        "node_os_gate_recover",
     }
 
 

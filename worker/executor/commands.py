@@ -999,6 +999,19 @@ def _node_os_gate_abort_preview_command(host: str | None, params: dict) -> str:
     )
 
 
+def _node_os_gate_recover_preview_command(host: str | None, params: dict) -> str:
+    target_host = params.get("host", host or "?")
+    roles = ", ".join(params.get("roles") or []) or "?"
+    version = params.get("target_version", "?")
+    return (
+        f"Xác nhận & Phục hồi node {target_host} (vai: {roles}) lên Ceph {version} — kiểm tra "
+        f"đĩa/LVM, cấu hình node cơ bản (hosts/SELinux/firewalld/chrony), cài lại gói Ceph đúng "
+        f"phiên bản, phục hồi ceph.conf + admin/bootstrap-osd keyring từ 1 mon còn sống, kích "
+        f"hoạt lại OSD (nếu có vai OSD), rejoin mon vào quorum (nếu có vai MON), rồi gỡ cờ bảo "
+        f"trì NẾU đây là node OSD cuối cùng đang mid-flight — xem đầy đủ các pha khi bắt đầu"
+    )
+
+
 _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "deploy_cluster_cephadm": _deploy_cluster_cephadm_preview_command,
     "deploy_cluster_ceph_deploy": _deploy_cluster_ceph_deploy_preview_command,
@@ -1009,6 +1022,7 @@ _CLUSTER_DEPLOY_COMMAND_BUILDERS = {
     "restore_cluster_from_backup": _restore_cluster_from_backup_preview_command,
     "node_os_gate_prepare": _node_os_gate_prepare_preview_command,
     "node_os_gate_abort": _node_os_gate_abort_preview_command,
+    "node_os_gate_recover": _node_os_gate_recover_preview_command,
 }
 
 

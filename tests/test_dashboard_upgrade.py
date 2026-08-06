@@ -1,12 +1,23 @@
 import json
 from datetime import datetime
 
+import pytest
 from sqlalchemy.exc import OperationalError
 
 import dashboard.routes.upgrade as upgrade_route
 from config.settings import settings
 from shared import audit, db as db_module
-from shared.models import Action, ActionStatus, AuditEntry, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionStatus,
+    AuditEntry,
+    Incident,
+    IncidentStatus,
+    NodeUpgradeGate,
+    NodeUpgradeGateLock,
+    NodeUpgradeGateState,
+)
+from shared.node_upgrade_gate import LOCK_ID
 
 
 def _login(client):
@@ -1187,3 +1198,466 @@ def test_unauthenticated_download_upgrade_log_redirects_to_login(dashboard_clien
     response = dashboard_client.get("/upgrade/log.md", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+# --- Story 11.3: Chuẩn bị node để cài lại OS (kèm Huỷ Chuẩn bị) -------------
+#
+# dashboard_client's DB fixture uses Base.metadata.create_all() (SQLite),
+# which does NOT run the migration's seed insert — same reasoning
+# test_set_kill_switch_creates_row_when_missing documents for SystemFlag —
+# so every test that expects a successful lock CLAIM must seed the
+# singleton row first.
+
+
+def _seed_gate_lock(active_gate_id: str | None = None) -> None:
+    with db_module.SessionLocal() as session:
+        session.add(NodeUpgradeGateLock(id=LOCK_ID, active_gate_id=active_gate_id))
+        session.commit()
+
+
+def test_prepare_requires_package_deploy_mode(dashboard_client, monkeypatch):
+    _set_cephadm(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare", data={"host": "10.20.1.150", "target_version": "19.2.0"}
+    )
+
+    assert response.status_code == 400
+
+
+def test_prepare_rejects_host_not_in_configured_nodes(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare", data={"host": "10.99.99.99", "target_version": "19.2.0"}
+    )
+
+    assert response.status_code == 400
+
+
+def test_prepare_happy_path_claims_lock_and_creates_gate(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150,10.20.1.151", osd_nodes="10.20.1.83")
+    _seed_gate_lock()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare",
+        data={"host": "10.20.1.83", "target_version": "19.2.0"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/upgrade/gate?target_version=19.2.0"
+    with db_module.SessionLocal() as session:
+        gate = session.query(NodeUpgradeGate).filter_by(host="10.20.1.83").one()
+        assert gate.state == NodeUpgradeGateState.PREPARING.value
+        assert gate.target_version == "19.2.0"
+        assert json.loads(gate.roles_snapshot) == ["OSD"]
+        assert gate.prepare_action_id is not None
+
+        action = session.get(Action, gate.prepare_action_id)
+        assert action.action_id == upgrade_route.NODE_OS_GATE_PREPARE_ACTION_ID
+        assert action.status == ActionStatus.APPROVED.value  # has_command()==True -> real approval
+
+        lock = session.get(NodeUpgradeGateLock, LOCK_ID)
+        assert lock.active_gate_id == gate.id
+
+        incident = session.get(Incident, action.incident_id)
+        assert incident.ceph_code == upgrade_route.NODE_OS_GATE_CEPH_CODE
+
+
+def test_prepare_blocked_when_lock_already_held(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83,10.20.1.84")
+    _seed_gate_lock(active_gate_id="some-other-gate-id")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare", data={"host": "10.20.1.83", "target_version": "19.2.0"}
+    )
+
+    assert response.status_code == 409
+    with db_module.SessionLocal() as session:
+        assert session.query(NodeUpgradeGate).filter_by(host="10.20.1.83").first() is None
+        assert session.query(Action).filter_by(action_id=upgrade_route.NODE_OS_GATE_PREPARE_ACTION_ID).first() is None
+        assert session.query(Incident).filter_by(ceph_code=upgrade_route.NODE_OS_GATE_CEPH_CODE).first() is None
+
+
+def test_prepare_is_idempotent_for_a_node_already_preparing(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="existing-gate")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="existing-gate",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARING.value,
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare",
+        data={"host": "10.20.1.83", "target_version": "19.2.0"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        # No SECOND gate row created for the same host — idempotent no-op.
+        assert session.query(NodeUpgradeGate).filter_by(host="10.20.1.83").count() == 1
+
+
+def test_prepare_is_idempotent_for_a_node_already_prepared(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="existing-gate")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="existing-gate",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARED.value,
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare",
+        data={"host": "10.20.1.83", "target_version": "19.2.0"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        assert session.query(NodeUpgradeGate).filter_by(host="10.20.1.83").count() == 1
+
+
+def test_abort_rejects_when_no_gate_exists(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/upgrade/gate/abort", data={"host": "10.20.1.83"})
+
+    assert response.status_code == 400
+
+
+def test_abort_rejects_when_gate_is_not_prepared(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1", host="10.20.1.83", target_version="19.2.0", state=NodeUpgradeGateState.PREPARING.value
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/upgrade/gate/abort", data={"host": "10.20.1.83"})
+
+    assert response.status_code == 400
+
+
+def test_abort_happy_path_sets_abort_action_id_and_approves(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARED.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/abort", data={"host": "10.20.1.83"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/upgrade/gate?target_version=19.2.0"
+    with db_module.SessionLocal() as session:
+        gate = session.get(NodeUpgradeGate, "g1")
+        assert gate.abort_action_id is not None
+        action = session.get(Action, gate.abort_action_id)
+        assert action.action_id == upgrade_route.NODE_OS_GATE_ABORT_ACTION_ID
+        assert action.status == ActionStatus.APPROVED.value
+
+
+def test_get_upgrade_gate_redirects_when_no_node_incompatible(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150")
+    _stub_os_release(monkeypatch, {"10.20.1.150": {"ID": "rocky", "VERSION_ID": "9"}})
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/upgrade/gate?target_version=19.2.0", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/upgrade"
+
+
+def test_get_upgrade_gate_shows_existing_gate_status(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150")
+    _stub_os_release(monkeypatch, {"10.20.1.150": {"ID": "centos", "VERSION_ID": "7"}})
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.150",
+                target_version="16.2.15",
+                state=NodeUpgradeGateState.PREPARED.value,
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/upgrade/gate?target_version=16.2.15")
+
+    assert response.status_code == 200
+    assert "Sẵn sàng cài lại OS" in response.text
+    assert "Huỷ Chuẩn bị" in response.text
+
+
+# --- Story 11.4: Xác nhận & Phục hồi node tự động ---------------------------
+
+
+def test_confirm_rejects_when_no_gate_exists(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/upgrade/gate/confirm", data={"host": "10.20.1.83"})
+
+    assert response.status_code == 400
+
+
+def test_confirm_rejects_when_gate_is_not_prepared(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1", host="10.20.1.83", target_version="19.2.0", state=NodeUpgradeGateState.PREPARING.value
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/upgrade/gate/confirm", data={"host": "10.20.1.83"})
+
+    assert response.status_code == 400
+
+
+def test_confirm_recheck_fails_leaves_gate_unchanged_and_creates_nothing(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARED.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    # Still el7 -> still fails os_upgrade_warning for 19.2.0.
+    _stub_os_release(monkeypatch, {"10.20.1.83": {"ID": "centos", "VERSION_ID": "7"}})
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/upgrade/gate/confirm", data={"host": "10.20.1.83"})
+
+    assert response.status_code == 400
+    with db_module.SessionLocal() as session:
+        gate = session.get(NodeUpgradeGate, "g1")
+        assert gate.state == NodeUpgradeGateState.PREPARED.value
+        assert gate.confirm_action_id is None
+        assert session.query(Action).filter_by(action_id=upgrade_route.NODE_OS_GATE_RECOVER_ACTION_ID).first() is None
+        assert session.query(Incident).filter_by(ceph_code=upgrade_route.NODE_OS_GATE_CEPH_CODE).first() is None
+        # Lock stays exactly as Prepare left it — Confirm never touches it.
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id == "g1"
+
+
+def test_confirm_recheck_ssh_unreachable_treated_as_not_confirmed(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1", host="10.20.1.83", target_version="19.2.0", state=NodeUpgradeGateState.PREPARED.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _stub_os_release(monkeypatch, {})  # 10.20.1.83 has no stub -> ExecutorError
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/upgrade/gate/confirm", data={"host": "10.20.1.83"})
+
+    assert response.status_code == 400
+    with db_module.SessionLocal() as session:
+        assert session.get(NodeUpgradeGate, "g1").state == NodeUpgradeGateState.PREPARED.value
+
+
+def test_confirm_happy_path_creates_recover_action_and_keeps_lock(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARED.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _stub_os_release(monkeypatch, {"10.20.1.83": {"ID": "rocky", "VERSION_ID": "9"}})
+    _stub_package_command_preview(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/confirm", data={"host": "10.20.1.83"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/upgrade/gate?target_version=19.2.0"
+    with db_module.SessionLocal() as session:
+        gate = session.get(NodeUpgradeGate, "g1")
+        assert gate.state == NodeUpgradeGateState.RECOVERING.value
+        assert gate.confirm_action_id is not None
+
+        action = session.get(Action, gate.confirm_action_id)
+        assert action.action_id == upgrade_route.NODE_OS_GATE_RECOVER_ACTION_ID
+        assert action.status == ActionStatus.APPROVED.value  # has_command()==True -> real approval
+        params = json.loads(action.action_params)
+        assert params["roles"] == ["OSD"]
+        assert params["node_upgrade_gate_id"] == "g1"
+
+        # AD-21: Confirm keeps the EXISTING lock, never claims/releases it.
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id == "g1"
+
+
+def test_confirm_is_idempotent_while_already_recovering(dashboard_client, monkeypatch):
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.RECOVERING.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/confirm", data={"host": "10.20.1.83"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        # No SECOND Action created for the same in-flight Recovery.
+        assert session.query(Action).filter_by(action_id=upgrade_route.NODE_OS_GATE_RECOVER_ACTION_ID).count() == 0
+
+
+def test_get_upgrade_gate_keeps_recovering_node_visible_after_os_now_passes(dashboard_client, monkeypatch):
+    # Story 11.4's own fix: the node's OS now genuinely passes the live
+    # check (it really was reinstalled), but the gate is still RECOVERING —
+    # the page must NOT drop the row or redirect away mid-flight.
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.RECOVERING.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _stub_os_release(monkeypatch, {"10.20.1.83": {"ID": "rocky", "VERSION_ID": "9"}})
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/upgrade/gate?target_version=19.2.0", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "10.20.1.83" in response.text
+    assert "Đang Xác nhận" in response.text
+
+
+# --- Code review fixes (2026-08-06) -----------------------------------------
+
+
+def test_prepare_after_failed_recovery_creates_a_fresh_gate(dashboard_client, monkeypatch):
+    # Story 11.4 code review finding: FAILED is terminal (not in
+    # _NODE_OS_GATE_NON_TERMINAL_STATES), so prepare_node_os_gate's
+    # idempotency check must NOT short-circuit here — "Chuẩn bị lại" on a
+    # FAILED node must claim the lock and create a brand-new gate row.
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id=None)
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="old-failed-gate",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.FAILED.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/upgrade/gate/prepare",
+        data={"host": "10.20.1.83", "target_version": "19.2.0"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        gates = session.query(NodeUpgradeGate).filter_by(host="10.20.1.83").all()
+        assert len(gates) == 2  # old FAILED row untouched, new one created
+        new_gate = next(g for g in gates if g.id != "old-failed-gate")
+        assert new_gate.state == NodeUpgradeGateState.PREPARING.value
+        old_gate = session.get(NodeUpgradeGate, "old-failed-gate")
+        assert old_gate.state == NodeUpgradeGateState.FAILED.value  # left as history
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id == new_gate.id
+
+
+def test_confirm_rejects_when_target_version_format_invalid_reaches_worker(dashboard_client, monkeypatch):
+    # Code review finding: _phase_gate_install_packages now rejects a
+    # non-x.y.z target_version defensively even though the Dashboard route
+    # itself doesn't validate the Form field's format — verified at the
+    # worker layer directly (this Confirm route always persists whatever
+    # gate_row.target_version already holds, so the defense-in-depth lives
+    # in cluster_deploy.py, not here; this test documents that boundary).
+    from worker.executor import cluster_deploy as cluster_deploy_module_local
+
+    with pytest.raises(cluster_deploy_module_local.DeployPhaseError):
+        cluster_deploy_module_local._phase_gate_install_packages(
+            ["10.20.1.83"],
+            {
+                "host": "10.20.1.83",
+                "target_version": "19.2.0; rm -rf /",
+                "roles": ["OSD"],
+                "nodes": ["10.20.1.83"],
+                "node_upgrade_gate_id": "gate-1",
+                "action_pk": "action-1",
+                "incident_id": "incident-1",
+            },
+            lambda host_status: None,
+        )

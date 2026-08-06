@@ -680,6 +680,24 @@ def test_get_command_restore_cluster_from_backup_builds_preview_text():
     assert "10.20.1.112" in preview
 
 
+def test_has_command_true_for_node_os_gate_recover():
+    # Story 11.4: without an entry, approve_action's has_command() gate
+    # would silently mark this Action EXECUTED without ever reaching
+    # cluster_deploy.run() — same bug class Story 9.7/11.3's own comments
+    # already name for their own action_ids.
+    assert commands_module.has_command("node_os_gate_recover") is True
+
+
+def test_get_command_node_os_gate_recover_builds_preview_text():
+    preview = commands_module.get_command(
+        "node_os_gate_recover",
+        "10.20.1.83",
+        {"host": "10.20.1.83", "roles": ["MON", "OSD"], "target_version": "19.2.0"},
+    )
+    assert "10.20.1.83" in preview
+    assert "19.2.0" in preview
+
+
 def test_has_command_true_for_restore_rbd_image_to_production():
     assert commands_module.has_command("restore_rbd_image_to_production") is True
 

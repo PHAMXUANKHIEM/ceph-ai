@@ -4,10 +4,17 @@ import json
 import shutil
 import stat
 import subprocess
+from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import worker.executor.cluster_deploy as cluster_deploy_module
+from shared.db import Base
+from shared.models import BackupJob, NodeUpgradeGate, NodeUpgradeGateLock, NodeUpgradeGateState
+from shared.node_upgrade_gate import LOCK_ID, claim_node_upgrade_gate_lock
 from worker.executor.cluster_deploy import CLUSTER_DEPLOY_ACTION_IDS, DeployPhaseError, run
 from worker.executor.ssh_executor import ExecutorError
 
@@ -1930,3 +1937,1190 @@ def test_convert_cluster_stops_on_kill_switch_before_any_phase(monkeypatch):
     final = calls[-1][1]
     assert final[0]["status"] == "failed"
     assert all(step["status"] == "pending" for step in final[1:])
+
+
+# --- Epic 11 (OS Upgrade Gate + Node OS Reinstall/Ceph Recovery), Story
+# 11.3: node_os_gate_prepare / node_os_gate_abort ---------------------------
+#
+# These phases are the FIRST in cluster_deploy.py to touch the application
+# DB directly — a real SQLite engine is wired up per-test and
+# cluster_deploy_module.db.SessionLocal is monkeypatched to it (same
+# "route modules call db.SessionLocal() at call time, not `from shared.db
+# import SessionLocal`" reasoning tests/conftest.py's dashboard_client
+# fixture already documents for the Dashboard side).
+
+_OSD_LVM_LIST_TWO_OSDS = """
+====== osd.0 =======
+
+  [block]       /dev/ceph-abc/osd-block-def
+
+      block device              /dev/ceph-abc/osd-block-def
+      block uuid                aaaa-bbbb
+      cephx lockbox secret
+      cluster fsid              11111111-1111-1111-1111-111111111111
+      cluster name              ceph
+      crush device class
+      encrypted                 0
+      osd fsid                  22222222-2222-2222-2222-222222222222
+      osd id                    0
+      osdspec affinity
+      type                      block
+      vdo                       0
+      devices                   /dev/sdb
+
+====== osd.1 =======
+
+  [block]       /dev/ceph-ghi/osd-block-jkl
+
+      block device              /dev/ceph-ghi/osd-block-jkl
+      block uuid                cccc-dddd
+      cephx lockbox secret
+      cluster fsid              11111111-1111-1111-1111-111111111111
+      cluster name              ceph
+      crush device class
+      encrypted                 0
+      osd fsid                  33333333-3333-3333-3333-333333333333
+      osd id                    1
+      osdspec affinity
+      type                      block
+      vdo                       0
+      devices                   /dev/sdc
+"""
+
+_OSD_LVM_LIST_MISSING_FSID = """
+====== osd.0 =======
+
+  [block]       /dev/ceph-abc/osd-block-def
+
+      block device              /dev/ceph-abc/osd-block-def
+      cluster fsid              11111111-1111-1111-1111-111111111111
+      osd id                    0
+"""
+
+
+@pytest.fixture
+def gate_db(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(cluster_deploy_module.db, "SessionLocal", session_factory)
+    yield session_factory
+    Base.metadata.drop_all(engine)
+
+
+def _make_gate(gate_db, **overrides) -> str:
+    with gate_db() as session:
+        session.add(NodeUpgradeGateLock(id=LOCK_ID, active_gate_id=overrides.get("id", "gate-1")))
+        fields = {
+            "id": "gate-1",
+            "host": "10.20.1.83",
+            "target_version": "19.2.0",
+            "state": NodeUpgradeGateState.PREPARING.value,
+        }
+        fields.update(overrides)
+        gate = NodeUpgradeGate(**fields)
+        session.add(gate)
+        session.commit()
+        return gate.id
+
+
+def _gate_action_params(gate_id: str, roles: list, **overrides) -> dict:
+    params = {
+        "host": "10.20.1.83",
+        "target_version": "19.2.0",
+        "roles": roles,
+        "nodes": ["10.20.1.83"],
+        "node_upgrade_gate_id": gate_id,
+        "action_pk": "action-pk-1",
+        "incident_id": "incident-1",
+    }
+    params.update(overrides)
+    return params
+
+
+def _fetch_gate(gate_db, gate_id: str) -> NodeUpgradeGate:
+    with gate_db() as session:
+        return session.get(NodeUpgradeGate, gate_id)
+
+
+def _record_recording_host_updates():
+    calls = []
+    return (lambda host_status: calls.append(copy.deepcopy(host_status))), calls
+
+
+# --- _parse_osd_backup -------------------------------------------------
+
+
+def test_parse_osd_backup_extracts_id_and_fsid_not_cluster_fsid():
+    result = cluster_deploy_module._parse_osd_backup(_OSD_LVM_LIST_TWO_OSDS)
+
+    assert result == [
+        {"osd_id": "0", "osd_fsid": "22222222-2222-2222-2222-222222222222"},
+        {"osd_id": "1", "osd_fsid": "33333333-3333-3333-3333-333333333333"},
+    ]
+    # Confirm neither entry accidentally captured the (also-present) cluster fsid.
+    assert "11111111-1111-1111-1111-111111111111" not in [r["osd_fsid"] for r in result]
+
+
+def test_parse_osd_backup_raises_on_missing_field():
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._parse_osd_backup(_OSD_LVM_LIST_MISSING_FSID)
+
+
+def test_parse_osd_backup_raises_when_no_osd_blocks_found():
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._parse_osd_backup("")
+
+
+# --- _phase_gate_backup_osd_and_metadata --------------------------------
+
+
+def test_backup_osd_and_metadata_skips_osd_backup_for_non_osd_node(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "latest_successful_metadata_job",
+        lambda: type("_J", (), {"created_at": datetime.utcnow()})(),
+    )
+
+    def fake_execute(host, command):
+        assert command != "ceph-volume lvm list", "must not run for a non-OSD node"
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_backup_osd_and_metadata(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["MON"]), on_update
+    )
+
+    assert _fetch_gate(gate_db, gate_id).osd_backup is None
+
+
+def test_backup_osd_and_metadata_writes_osd_backup_for_osd_node(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "latest_successful_metadata_job",
+        lambda: type("_J", (), {"created_at": datetime.utcnow()})(),
+    )
+
+    def fake_execute(host, command):
+        if command == "ceph-volume lvm list":
+            return _OSD_LVM_LIST_TWO_OSDS
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_backup_osd_and_metadata(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+    )
+
+    stored = json.loads(_fetch_gate(gate_db, gate_id).osd_backup)
+    assert stored == [
+        {"osd_id": "0", "osd_fsid": "22222222-2222-2222-2222-222222222222"},
+        {"osd_id": "1", "osd_fsid": "33333333-3333-3333-3333-333333333333"},
+    ]
+
+
+def test_backup_osd_and_metadata_skips_metadata_run_when_recent_backup_exists(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    recent_job = type("_J", (), {"created_at": datetime.utcnow() - timedelta(hours=1)})()
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata, "latest_successful_metadata_job", lambda: recent_job
+    )
+    called = []
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata, "run", lambda *a, **k: called.append(1) or True
+    )
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda h, c: "")
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_backup_osd_and_metadata(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["MON"]), on_update
+    )
+
+    assert called == []  # metadata.run() was never triggered
+
+
+def test_backup_osd_and_metadata_triggers_metadata_run_when_stale_or_absent(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata, "latest_successful_metadata_job", lambda: None
+    )
+    called = []
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "run",
+        lambda *a, **k: called.append(a) or True,
+    )
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda h, c: "")
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_backup_osd_and_metadata(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["MON"]), on_update
+    )
+
+    assert len(called) == 1
+
+
+def test_backup_osd_and_metadata_raises_when_metadata_run_fails(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata, "latest_successful_metadata_job", lambda: None
+    )
+    monkeypatch.setattr(cluster_deploy_module.backup_metadata, "run", lambda *a, **k: False)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda h, c: "")
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_backup_osd_and_metadata(
+            ["10.20.1.83"], _gate_action_params(gate_id, roles=["MON"]), on_update
+        )
+
+
+# --- _phase_gate_set_maintenance_flags ----------------------------------
+
+
+def test_set_maintenance_flags_skips_for_non_osd_node(monkeypatch):
+    def fake_execute(host, command):
+        raise AssertionError("must not run any ceph command for a non-OSD node")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    monkeypatch.setattr(cluster_deploy_module, "configured_nodes", lambda: [])
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_set_maintenance_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+    )
+
+
+def test_set_maintenance_flags_only_sets_flags_not_already_present(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [{"host": "10.20.1.150", "roles": ["MON"]}],
+    )
+    commands_run = []
+
+    def fake_execute(host, command):
+        if command == "ceph osd dump --format json":
+            return json.dumps({"flags": "sortbitwise,noout"})
+        commands_run.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_set_maintenance_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+    )
+
+    assert len(commands_run) == 1
+    assert "noout" not in commands_run[0]  # already set, must not be re-set
+    assert "noscrub" in commands_run[0]
+    assert "nodeep-scrub" in commands_run[0]
+    assert "nosnaptrim" in commands_run[0]
+
+
+def test_set_maintenance_flags_noop_when_all_already_set(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [{"host": "10.20.1.150", "roles": ["MON"]}],
+    )
+
+    def fake_execute(host, command):
+        if command == "ceph osd dump --format json":
+            return json.dumps({"flags": "noout,noscrub,nodeep-scrub,nosnaptrim"})
+        raise AssertionError("no `ceph osd set` should run when everything is already set")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_set_maintenance_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+    )
+
+
+# --- _phase_gate_remove_mon ----------------------------------------------
+
+
+def test_remove_mon_skips_for_non_mon_node(monkeypatch):
+    def fake_execute(host, command):
+        raise AssertionError("must not run any ceph command for a non-MON node")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_remove_mon(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+    )
+
+
+def test_remove_mon_happy_path_confirms_quorum_count(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [
+            {"host": "10.20.1.83", "roles": ["MON"]},
+            {"host": "10.20.1.150", "roles": ["MON"]},
+        ],
+    )
+    quorum_calls = {"n": 0}
+
+    def fake_execute(host, command):
+        if command.startswith("hostname"):
+            return "node83.lab"
+        if command == "ceph quorum_status --format json":
+            quorum_calls["n"] += 1
+            names = ["node83", "node150", "node200"] if quorum_calls["n"] == 1 else ["node150", "node200"]
+            return json.dumps({"quorum_names": names})
+        if command.startswith("ceph mon rm"):
+            assert "mon remove" not in command  # never the deprecated alias
+            return ""
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_remove_mon(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+    )
+
+    assert calls[-1][0]["status"] == "done"
+
+
+def test_remove_mon_fails_when_quorum_count_mismatches_expected(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [
+            {"host": "10.20.1.83", "roles": ["MON"]},
+            {"host": "10.20.1.150", "roles": ["MON"]},
+        ],
+    )
+    quorum_calls = {"n": 0}
+
+    def fake_execute(host, command):
+        if command.startswith("hostname"):
+            return "node83.lab"
+        if command == "ceph quorum_status --format json":
+            quorum_calls["n"] += 1
+            # Still 3 mons after removal (expected 2) — a real quorum problem.
+            return json.dumps({"quorum_names": ["node83", "node150", "node200"]})
+        if command.startswith("ceph mon rm"):
+            return ""
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_remove_mon(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+        )
+
+
+def test_remove_mon_fails_when_only_one_mon_configured(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.83", "roles": ["MON"]}]
+    )
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_remove_mon(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+        )
+
+
+# --- _phase_gate_mark_prepared -------------------------------------------
+
+
+def test_mark_prepared_sets_state(gate_db):
+    gate_id = _make_gate(gate_db)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_mark_prepared(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+    )
+
+    assert _fetch_gate(gate_db, gate_id).state == NodeUpgradeGateState.PREPARED.value
+
+
+# --- _rejoin_mon_after_reinstall -------------------------------------------
+
+
+def test_rejoin_mon_happy_path_reaches_quorum(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.83", "roles": ["MON"]}]
+    )
+    quorum_calls = {"n": 0}
+
+    def fake_execute(host, command):
+        if "ceph auth get mon." in command or "ceph mon getmap" in command:
+            return ""
+        if command.startswith("base64 "):
+            return base64.b64encode(b"fake-bytes").decode()
+        if "base64 -d" in command:
+            return ""
+        if command == "ceph quorum_status --format json":
+            quorum_calls["n"] += 1
+            names = ["node150"] if quorum_calls["n"] == 1 else ["node150", "node83"]
+            return json.dumps({"quorum_names": names})
+        if command.startswith("sed -i"):
+            return ""
+        if "mkfs" in command or "systemctl" in command:
+            return ""
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_POLL_INTERVAL_SECONDS", 0)
+
+    cluster_deploy_module._rejoin_mon_after_reinstall("10.20.1.83", "node83", "10.20.1.150")
+
+    assert quorum_calls["n"] == 2
+
+
+def test_rejoin_mon_raises_on_timeout(monkeypatch):
+    monkeypatch.setattr(cluster_deploy_module, "configured_nodes", lambda: [])
+
+    def fake_execute(host, command):
+        if "ceph auth get mon." in command or "ceph mon getmap" in command:
+            return ""
+        if command.startswith("base64 "):
+            return base64.b64encode(b"fake-bytes").decode()
+        if "base64 -d" in command:
+            return ""
+        if command == "ceph quorum_status --format json":
+            return json.dumps({"quorum_names": ["node150"]})  # never includes node83
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_DEFAULT_TIMEOUT_SECONDS", 0)
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._rejoin_mon_after_reinstall("10.20.1.83", "node83", "10.20.1.150")
+
+
+# --- _phase_gate_abort_maybe_clear_flags ----------------------------------
+
+
+def test_abort_maybe_clear_flags_skips_when_another_gate_pending(gate_db, monkeypatch):
+    with gate_db() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="other-gate", host="10.20.1.150", target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARING.value,
+            )
+        )
+        session.commit()
+
+    def fake_execute(host, command):
+        raise AssertionError("must not touch flags while another gate is pending")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_abort_maybe_clear_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"], action_pk="abort-action-1"), on_update
+    )
+
+
+def test_abort_maybe_clear_flags_unsets_when_last_one(gate_db, monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.150", "roles": ["MON"]}]
+    )
+    commands_run = []
+
+    def fake_execute(host, command):
+        if command == "ceph osd dump --format json":
+            return json.dumps({"flags": "noout,noscrub,nodeep-scrub,nosnaptrim"})
+        commands_run.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_abort_maybe_clear_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"], action_pk="abort-action-1"), on_update
+    )
+
+    assert len(commands_run) == 1
+    assert all(f in commands_run[0] for f in ("noout", "noscrub", "nodeep-scrub", "nosnaptrim"))
+
+
+# --- _phase_gate_abort_mark_done -------------------------------------------
+
+
+def test_abort_mark_done_sets_state_and_releases_lock(gate_db):
+    gate_id = _make_gate(gate_db, state=NodeUpgradeGateState.ABORTING.value)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_abort_mark_done(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+    )
+
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.DONE.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+# --- run()'s failure-path gate cleanup (Task 5) ----------------------------
+
+
+def test_run_marks_gate_failed_and_releases_lock_on_kill_switch_block(gate_db):
+    gate_id = _make_gate(gate_db)
+    action_params = _gate_action_params(gate_id, roles=["OSD"], nodes=["10.20.1.83"])
+
+    result = run(
+        "action-pk-1",
+        "node_os_gate_prepare",
+        action_params,
+        "incident-1",
+        lambda pk, progress: None,
+        lambda incident_id: True,  # kill-switch ON
+    )
+
+    assert result is False
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_run_marks_gate_failed_and_releases_lock_on_mid_phase_failure(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    action_params = _gate_action_params(gate_id, roles=["MON"], nodes=["10.20.1.83"])
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "latest_successful_metadata_job",
+        lambda: type("_J", (), {"created_at": datetime.utcnow()})(),
+    )
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [{"host": "10.20.1.83", "roles": ["MON"]}],  # only 1 mon -> _phase_gate_remove_mon fails
+    )
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda h, c: "")
+
+    result = run(
+        "action-pk-1", "node_os_gate_prepare", action_params, "incident-1",
+        lambda pk, progress: None, lambda incident_id: False,
+    )
+
+    assert result is False
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_run_failure_cleanup_unblocks_a_later_prepare_attempt(gate_db):
+    gate_id = _make_gate(gate_db)
+    action_params = _gate_action_params(gate_id, roles=["OSD"], nodes=["10.20.1.83"])
+
+    run(
+        "action-pk-1", "node_os_gate_prepare", action_params, "incident-1",
+        lambda pk, progress: None, lambda incident_id: True,
+    )
+
+    with gate_db() as session:
+        assert claim_node_upgrade_gate_lock(session, "new-gate-id") is True
+
+
+def test_run_does_not_touch_env_config_for_gate_action_ids(gate_db, monkeypatch):
+    # AC #7: epilogue must be skipped entirely for these action_ids —
+    # _write_cluster_config would crash anyway on nodes=[host] (a plain
+    # string list, not the dict-list _node_ips_with_role expects), so this
+    # also proves the epilogue-skip branch is actually reached.
+    gate_id = _make_gate(gate_db)
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "latest_successful_metadata_job",
+        lambda: type("_J", (), {"created_at": datetime.utcnow()})(),
+    )
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda h, c: "")
+
+    def fail_write_cluster_config(*a, **k):
+        raise AssertionError("_write_cluster_config must not be called for node_os_gate_prepare")
+
+    monkeypatch.setattr(cluster_deploy_module, "_write_cluster_config", fail_write_cluster_config)
+
+    action_params = _gate_action_params(gate_id, roles=[], nodes=["10.20.1.83"])
+    result = run(
+        "action-pk-1", "node_os_gate_prepare", action_params, "incident-1",
+        lambda pk, progress: None, lambda incident_id: False,
+    )
+
+    assert result is True
+
+
+# ============================================================================
+# Story 11.4 — node_os_gate_recover (Confirm & Node Recovery)
+# ============================================================================
+
+# --- _phase_gate_check_disk (FR-9) ------------------------------------------
+
+
+def test_check_disk_skips_for_non_osd_role(monkeypatch):
+    def fake_execute(host, command):
+        raise AssertionError("must not run any command for a non-OSD node")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_check_disk(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+    )
+    assert calls[-1][0]["status"] == "done"
+
+
+def test_check_disk_happy_path_pv_visible(monkeypatch):
+    def fake_execute(host, command):
+        assert "pvscan" in command
+        return "some lsblk output\nCEPH_AIOPS_PV_OK\nCEPH_AIOPS_LV_ALL_ACTIVE\n"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_check_disk(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+    )
+
+    assert calls[-1][0]["status"] == "done"
+
+
+def test_check_disk_raises_when_lv_stays_inactive_after_vgchange(monkeypatch):
+    # Code review fix: Task 1 requires CONFIRMING the LV reached ACTIVE
+    # after the vgchange -ay repair attempt, not just running it.
+    def fake_execute(host, command):
+        return "CEPH_AIOPS_PV_OK\nCEPH_AIOPS_LV_INACTIVE\n"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError, match="inactive"):
+        cluster_deploy_module._phase_gate_check_disk(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+        )
+
+
+def test_check_disk_raises_when_pv_still_missing_after_repair(monkeypatch):
+    def fake_execute(host, command):
+        assert "lvmdevices --adddev" in command  # repair attempt IS part of the command
+        return "CEPH_AIOPS_PV_MISSING\n"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_check_disk(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+        )
+
+
+def test_check_disk_raises_on_ssh_failure(monkeypatch):
+    def fake_execute(host, command):
+        raise ExecutorError("connection lost")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_check_disk(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+        )
+
+
+# --- _phase_gate_configure_base (FR-10) -------------------------------------
+
+
+def test_configure_base_happy_path(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [
+            {"host": "10.20.1.83", "roles": ["MON", "OSD"]},
+            {"host": "10.20.1.150", "roles": ["MON", "OSD"]},
+        ],
+    )
+    commands_run = []
+
+    def fake_execute(host, command):
+        commands_run.append((host, command))
+        if command.startswith("hostname"):
+            return f"host-{host.split('.')[-1]}.lab"
+        if "getenforce" in command:
+            return ""
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_configure_base(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON", "OSD"]), on_update
+    )
+
+    assert calls[-1][0]["status"] == "done"
+    assert any("/etc/hosts" in c for _h, c in commands_run)
+    assert any("chrony" in c for _h, c in commands_run)
+    assert any("getenforce" in c for _h, c in commands_run)
+
+
+def test_configure_base_raises_when_verification_fails(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.83", "roles": ["OSD"]}]
+    )
+
+    def fake_execute(host, command):
+        if command.startswith("hostname"):
+            return "host83.lab"
+        if "getenforce" in command:
+            return "CEPH_AIOPS_SELINUX_STILL_ENFORCING\n"
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError, match="SELinux chưa Disabled"):
+        cluster_deploy_module._phase_gate_configure_base(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+        )
+
+
+def test_configure_base_verification_names_multiple_failed_checks(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.83", "roles": ["OSD"]}]
+    )
+
+    def fake_execute(host, command):
+        if command.startswith("hostname"):
+            return "host83.lab"
+        if "getenforce" in command:
+            return "CEPH_AIOPS_FIREWALLD_STILL_ACTIVE\nCEPH_AIOPS_CHRONYD_NOT_ACTIVE\n"
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError) as excinfo:
+        cluster_deploy_module._phase_gate_configure_base(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+        )
+    assert "firewalld vẫn active" in str(excinfo.value)
+    assert "chronyd chưa active" in str(excinfo.value)
+    assert "SELinux" not in str(excinfo.value)  # only the checks that actually failed are named
+
+
+# --- _phase_gate_install_packages (FR-11) -----------------------------------
+
+
+def test_install_packages_combined_role_no_pinning(monkeypatch):
+    commands_run = []
+
+    def fake_execute(host, command):
+        commands_run.append(command)
+        return "el8-repo-ok"
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_install_packages(
+        ["10.20.1.83"],
+        _gate_action_params("gate-1", roles=["MON", "OSD"], target_version="19.2.0"),
+        on_update,
+    )
+
+    assert calls[-1][0]["status"] == "done"
+    install_cmd = next(c for c in commands_run if "install" in c and "ceph-osd" in c)
+    assert "ceph-osd-19.2.0" not in install_cmd  # non-Nautilus: unpinned
+    assert "ceph-mon" in install_cmd and "ceph-osd" in install_cmd
+    assert "fmt" in install_cmd and "python3-libs" in install_cmd
+    devel_cmd = next(c for c in commands_run if "config-manager --set-enabled" in c)
+    assert "powertools" in devel_cmd.lower() or "crb" in devel_cmd.lower()
+
+
+def test_install_packages_nautilus_pins_exact_version(monkeypatch):
+    commands_run = []
+
+    def fake_execute(host, command):
+        commands_run.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_install_packages(
+        ["10.20.1.83"],
+        _gate_action_params("gate-1", roles=["OSD"], target_version="14.2.15"),
+        on_update,
+    )
+
+    install_cmd = next(c for c in commands_run if "install" in c and "ceph-osd" in c)
+    assert "ceph-osd-14.2.15" in install_cmd
+
+
+def test_install_packages_raises_for_unrecognized_version(monkeypatch):
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_install_packages(
+            ["10.20.1.83"],
+            _gate_action_params("gate-1", roles=["OSD"], target_version="0.0.0"),
+            on_update,
+        )
+
+
+# --- _phase_gate_restore_config_and_keyring (FR-12) -------------------------
+
+
+def test_restore_config_and_keyring_happy_path(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [
+            {"host": "10.20.1.83", "roles": ["OSD"]},
+            {"host": "10.20.1.150", "roles": ["MON"]},
+        ],
+    )
+    commands_run = []
+
+    def fake_execute(host, command):
+        commands_run.append((host, command))
+        if command.startswith("base64 "):
+            return base64.b64encode(b"fake-conf-or-keyring").decode()
+        if "base64 -d" in command:
+            return ""
+        if command == "ceph -s":
+            return "cluster ok"
+        if "ceph auth get client.bootstrap-osd" in command:
+            return ""
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_restore_config_and_keyring(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+    )
+
+    assert calls[-1][0]["status"] == "done"
+    # ceph -s must run BEFORE the bootstrap-osd fetch.
+    ceph_s_index = next(i for i, (_h, c) in enumerate(commands_run) if c == "ceph -s")
+    bootstrap_index = next(
+        i for i, (_h, c) in enumerate(commands_run) if "bootstrap-osd" in c
+    )
+    assert ceph_s_index < bootstrap_index
+
+
+def test_restore_config_and_keyring_stops_before_bootstrap_when_ceph_s_fails(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [{"host": "10.20.1.83", "roles": ["OSD"]}, {"host": "10.20.1.150", "roles": ["MON"]}],
+    )
+
+    def fake_execute(host, command):
+        if command.startswith("base64 "):
+            return base64.b64encode(b"fake").decode()
+        if "base64 -d" in command:
+            return ""
+        if command == "ceph -s":
+            raise ExecutorError("auth failed")
+        raise AssertionError(f"must not reach bootstrap-osd fetch: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError) as excinfo:
+        cluster_deploy_module._phase_gate_restore_config_and_keyring(
+            ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+        )
+    assert "fake" not in str(excinfo.value)  # never leaks keyring bytes into the error
+
+
+# --- _phase_gate_activate_osd (FR-13) ---------------------------------------
+
+
+def test_activate_osd_skips_for_non_osd_role():
+    def fake_execute(host, command):
+        raise AssertionError("must not run any command for a non-OSD node")
+
+    on_update, calls = _record_recording_host_updates()
+    cluster_deploy_module._phase_gate_activate_osd(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+    )
+    assert calls[-1][0]["status"] == "done"
+
+
+def test_activate_osd_happy_path_matches_backed_up_ids(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db, osd_backup=json.dumps([{"osd_id": "0", "osd_fsid": "x"}]))
+    commands_run = []
+
+    def fake_execute(host, command):
+        commands_run.append(command)
+        if command == "ceph osd tree --format json":
+            return json.dumps({"nodes": [{"id": "0", "type": "osd", "status": "up"}]})
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_activate_osd(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+    )
+
+    assert calls[-1][0]["status"] == "done"
+    assert any("ceph-volume lvm activate --all" == c for c in commands_run)
+    assert any("ceph-osd@0" in c for c in commands_run)
+    assert not any("osd in" in c for c in commands_run)  # never runs `ceph osd in`
+
+
+def test_activate_osd_raises_without_backup_data(gate_db):
+    gate_id = _make_gate(gate_db, osd_backup=None)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_activate_osd(
+            ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+        )
+
+
+def test_activate_osd_raises_when_fewer_than_expected_are_up(gate_db, monkeypatch):
+    gate_id = _make_gate(
+        gate_db, osd_backup=json.dumps([{"osd_id": "0", "osd_fsid": "x"}, {"osd_id": "1", "osd_fsid": "y"}])
+    )
+
+    def fake_execute(host, command):
+        if command == "ceph osd tree --format json":
+            # id 1 never came up.
+            return json.dumps({"nodes": [{"id": "0", "type": "osd", "status": "up"}]})
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    with pytest.raises(DeployPhaseError):
+        cluster_deploy_module._phase_gate_activate_osd(
+            ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+        )
+
+
+# --- _phase_gate_rejoin_mon (FR-14) -----------------------------------------
+
+
+def test_rejoin_mon_phase_skips_for_non_mon_role():
+    def fake_execute(host, command):
+        raise AssertionError("must not run any command for a non-MON node")
+
+    on_update, calls = _record_recording_host_updates()
+    cluster_deploy_module._phase_gate_rejoin_mon(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
+    )
+    assert calls[-1][0]["status"] == "done"
+
+
+def test_rejoin_mon_phase_calls_shared_helper_with_same_args(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [{"host": "10.20.1.83", "roles": ["MON"]}, {"host": "10.20.1.150", "roles": ["MON"]}],
+    )
+
+    def fake_execute(host, command):
+        if command.startswith("hostname"):
+            return "node83.lab"
+        raise AssertionError(f"unexpected command outside the shared helper: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    captured = {}
+
+    def fake_rejoin(host, mon_name, other_mon_host):
+        captured.update(host=host, mon_name=mon_name, other_mon_host=other_mon_host)
+
+    monkeypatch.setattr(cluster_deploy_module, "_rejoin_mon_after_reinstall", fake_rejoin)
+    on_update, calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_rejoin_mon(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["MON"]), on_update
+    )
+
+    assert calls[-1][0]["status"] == "done"
+    assert captured == {"host": "10.20.1.83", "mon_name": "node83.lab", "other_mon_host": "10.20.1.150"}
+
+
+# --- _phase_gate_maybe_clear_flags (FR-16) ----------------------------------
+
+
+def test_recover_maybe_clear_flags_skips_when_another_gate_pending(gate_db, monkeypatch):
+    with gate_db() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="other-gate", host="10.20.1.150", target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARING.value,
+            )
+        )
+        session.commit()
+
+    def fake_execute(host, command):
+        raise AssertionError("must not touch flags while another gate is pending")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_maybe_clear_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"], action_pk="recover-action-1"), on_update
+    )
+
+
+def test_recover_maybe_clear_flags_unsets_when_last_one(gate_db, monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.150", "roles": ["MON"]}]
+    )
+    commands_run = []
+
+    def fake_execute(host, command):
+        if command == "ceph osd dump --format json":
+            return json.dumps({"flags": "noout,noscrub,nodeep-scrub,nosnaptrim"})
+        commands_run.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_maybe_clear_flags(
+        ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"], action_pk="recover-action-1"), on_update
+    )
+
+    assert len(commands_run) == 1
+    assert all(f in commands_run[0] for f in ("noout", "noscrub", "nodeep-scrub", "nosnaptrim"))
+
+
+# --- _phase_gate_mark_recovered ----------------------------------------------
+
+
+def test_mark_recovered_sets_done_and_releases_lock(gate_db):
+    gate_id = _make_gate(gate_db, state=NodeUpgradeGateState.RECOVERING.value)
+    on_update, _calls = _record_recording_host_updates()
+
+    cluster_deploy_module._phase_gate_mark_recovered(
+        ["10.20.1.83"], _gate_action_params(gate_id, roles=["OSD"]), on_update
+    )
+
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.DONE.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+# --- run() end-to-end for node_os_gate_recover ------------------------------
+
+
+def _recover_dispatch_execute(host, command):
+    """One big fake `execute_command` covering every SSH call the full
+    node_os_gate_recover phase list issues for a combined MON+OSD node,
+    happy-path only."""
+    if "pvscan" in command:
+        return "CEPH_AIOPS_PV_OK\nCEPH_AIOPS_LV_ALL_ACTIVE"
+    if command.startswith("hostname"):
+        return "node83.lab"
+    if "getenforce" in command:
+        return ""
+    if "/etc/hosts" in command or "chrony" in command:
+        return ""
+    if "download.ceph.com" in command or "rhel_ver" in command or "install" in command:
+        return ""
+    if command.startswith("base64 "):
+        return base64.b64encode(b"fake-bytes").decode()
+    if "base64 -d" in command:
+        return ""
+    if command == "ceph -s":
+        return "ok"
+    if "bootstrap-osd" in command:
+        return ""
+    if command == "ceph-volume lvm activate --all" or "ceph-osd@" in command:
+        return ""
+    if command == "ceph osd tree --format json":
+        return json.dumps({"nodes": [{"id": "0", "type": "osd", "status": "up"}]})
+    if "ceph auth get mon." in command or "ceph mon getmap" in command:
+        return ""
+    if command == "ceph quorum_status --format json":
+        return json.dumps({"quorum_names": ["node83.lab", "node150.lab"]})
+    if command.startswith("sed -i"):
+        return ""
+    if "mkfs" in command or "systemctl enable --now ceph-mon" in command:
+        return ""
+    if command == "ceph osd dump --format json":
+        return json.dumps({"flags": "noout,noscrub,nodeep-scrub,nosnaptrim"})
+    if command.startswith("ceph osd unset"):
+        return ""
+    return ""
+
+
+def test_run_node_os_gate_recover_happy_path_reaches_done(gate_db, monkeypatch):
+    gate_id = _make_gate(
+        gate_db,
+        state=NodeUpgradeGateState.RECOVERING.value,
+        osd_backup=json.dumps([{"osd_id": "0", "osd_fsid": "x"}]),
+    )
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [
+            {"host": "10.20.1.83", "roles": ["MON", "OSD"]},
+            {"host": "10.20.1.150", "roles": ["MON", "OSD"]},
+        ],
+    )
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", _recover_dispatch_execute)
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_DEFAULT_TIMEOUT_SECONDS", 1)
+
+    action_params = _gate_action_params(gate_id, roles=["MON", "OSD"], nodes=["10.20.1.83"])
+    result = run(
+        "action-pk-1", "node_os_gate_recover", action_params, "incident-1",
+        lambda pk, progress: None, lambda incident_id: False,
+    )
+
+    assert result is True
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.DONE.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_run_marks_gate_failed_and_releases_lock_on_recover_mid_phase_failure(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db, state=NodeUpgradeGateState.RECOVERING.value)
+    action_params = _gate_action_params(gate_id, roles=["OSD"], nodes=["10.20.1.83"])
+
+    def fake_execute(host, command):
+        if "pvscan" in command:
+            return "CEPH_AIOPS_PV_MISSING"  # fails the very first phase
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+
+    result = run(
+        "action-pk-1", "node_os_gate_recover", action_params, "incident-1",
+        lambda pk, progress: None, lambda incident_id: False,
+    )
+
+    assert result is False
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_run_recover_failure_cleanup_unblocks_a_later_prepare_attempt(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db, state=NodeUpgradeGateState.RECOVERING.value)
+    action_params = _gate_action_params(gate_id, roles=["OSD"], nodes=["10.20.1.83"])
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", lambda h, c: "CEPH_AIOPS_PV_MISSING")
+
+    run(
+        "action-pk-1", "node_os_gate_recover", action_params, "incident-1",
+        lambda pk, progress: None, lambda incident_id: False,
+    )
+
+    with gate_db() as session:
+        assert claim_node_upgrade_gate_lock(session, "new-gate-id") is True

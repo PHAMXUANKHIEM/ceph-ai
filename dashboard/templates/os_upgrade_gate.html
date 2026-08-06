@@ -53,14 +53,69 @@
                 <th>Node</th>
                 <th>OS hiện tại</th>
                 <th>OS tối thiểu cần</th>
+                <th>Trạng thái Chuẩn bị</th>
               </tr>
             </thead>
             <tbody>
               {% for node in incompatible_nodes %}
+              {% set gate = node_gates.get(node.host) %}
               <tr>
                 <td>{{ node.host }}</td>
                 <td>{{ node.os_id }} {{ node.os_version_id }}</td>
                 <td>{{ min_os_label }}</td>
+                <td>
+                  {% if gate is none %}
+                    <form method="post" action="/upgrade/gate/prepare" class="inline-form">
+                      <input type="hidden" name="host" value="{{ node.host }}">
+                      <input type="hidden" name="target_version" value="{{ target_version }}">
+                      <button type="submit" class="btn btn-sm">Chuẩn bị</button>
+                    </form>
+                  {% elif gate.state == "PREPARING" %}
+                    <span class="badge">Đang Chuẩn bị…</span>
+                  {% elif gate.state == "PREPARED" %}
+                    <p class="hint">
+                      ✅ Sẵn sàng cài lại OS — nhắc lại OS tối thiểu cần: <strong>{{ min_os_label }}</strong>
+                    </p>
+                    <form method="post" action="/upgrade/gate/confirm" class="inline-form">
+                      <input type="hidden" name="host" value="{{ node.host }}">
+                      <button type="submit" class="btn btn-sm">Xác nhận</button>
+                    </form>
+                    <form method="post" action="/upgrade/gate/abort" class="inline-form">
+                      <input type="hidden" name="host" value="{{ node.host }}">
+                      <button type="submit" class="btn btn-sm btn-ghost">Huỷ Chuẩn bị</button>
+                    </form>
+                  {% elif gate.state == "RECOVERING" %}
+                    <span class="badge">Đang Xác nhận &amp; Phục hồi node…</span>
+                    {% set steps = recovering_progress.get(node.host) %}
+                    {% if steps %}
+                      <table>
+                        <tbody>
+                          {% for step in steps %}
+                          <tr>
+                            <td>{{ step.label }}</td>
+                            <td>
+                              {% if step.status == "done" %}✅ Xong
+                              {% elif step.status == "running" %}⏳ Đang chạy
+                              {% elif step.status == "failed" %}❌ {{ step.message or "Lỗi" }}
+                              {% else %}Đang chờ{% endif %}
+                            </td>
+                          </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                      <p class="hint">Tải lại trang để xem tiến độ mới nhất.</p>
+                    {% endif %}
+                  {% elif gate.state == "FAILED" %}
+                    <span class="badge badge-error">❌ Thất bại</span>
+                    <form method="post" action="/upgrade/gate/prepare" class="inline-form">
+                      <input type="hidden" name="host" value="{{ node.host }}">
+                      <input type="hidden" name="target_version" value="{{ target_version }}">
+                      <button type="submit" class="btn btn-sm">Chuẩn bị lại</button>
+                    </form>
+                  {% else %}
+                    <span class="badge">{{ gate.state }}</span>
+                  {% endif %}
+                </td>
               </tr>
               {% endfor %}
             </tbody>
@@ -72,8 +127,8 @@
           lúc này (bỏ qua best-effort, không bị coi là chưa đạt).
         </p>
         <p class="hint">
-          Quy trình Chuẩn bị node / Xác nhận sau khi cài lại OS chưa khả dụng ở đây — quay lại
-          trang Upgrade Cluster sau khi đã tự tay nâng OS cho các node trên.
+          Chỉ 1 node được xử lý cùng lúc (Chuẩn bị/chờ Xác nhận/Node Recovery) — nút "Chuẩn bị" của
+          các node khác sẽ báo lỗi cho tới khi node đang xử lý hoàn tất hoặc bị Huỷ Chuẩn bị.
         </p>
 
         <div class="pending-action-buttons">

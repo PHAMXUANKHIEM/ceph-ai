@@ -128,11 +128,10 @@ patch_action_ids:
 # `node_os_gate_abort` (Gỡ mon/backup OSD before an operator wipes a
 # node's OS, and undoing that if they never come back to Confirm) added
 # to this SAME family — same reasoning, own phase lists in
-# `_PHASES_BY_ACTION_ID`. `node_os_gate_recover` (Story 11.4, Confirm +
-# Node Recovery) is deliberately NOT added here yet — it has no phase list
-# and no UI path can create one until that story lands; unlike the
-# backup_action_ids precedent below, there's no shared dispatch engine
-# already live for it to slot into early.
+# `_PHASES_BY_ACTION_ID`.
+# 2026-08-05 (Epic 11, Story 11.4): `node_os_gate_recover` (Confirm +
+# Node Recovery) added now that its phase list exists in
+# `_PHASES_BY_ACTION_ID["node_os_gate_recover"]`.
 cluster_deploy_action_ids:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
@@ -143,6 +142,7 @@ cluster_deploy_action_ids:
   - restore_cluster_from_backup
   - node_os_gate_prepare
   - node_os_gate_abort
+  - node_os_gate_recover
 
 # 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) button
 # (dashboard/routes/volumes.py) — a SEVENTH family, same reasoning as
@@ -343,3 +343,8 @@ risky:
   # exceptions, same conservative default as the rest of this file.
   - node_os_gate_prepare
   - node_os_gate_abort
+  # 2026-08-05 (Epic 11, Story 11.4): directly manipulates live mon quorum
+  # (rejoin) + LVM/OSD data on a freshly-reinstalled node — always requires
+  # explicit approval, no exceptions, same conservative default as the rest
+  # of this file.
+  - node_os_gate_recover

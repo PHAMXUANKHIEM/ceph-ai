@@ -45,6 +45,13 @@ from worker.policy.gate import VALID_CLUSTER_DEPLOY_ACTION_IDS
 _QUORUM_POLL_INTERVAL_SECONDS = 5
 _QUORUM_DEFAULT_TIMEOUT_SECONDS = 180
 
+# Code-review fix (Story 11.4): same shape as dashboard/routes/upgrade.py's
+# own _TARGET_VERSION_RE — a defense-in-depth format guard at the point
+# _phase_gate_install_packages interpolates target_version into a shell
+# command, independent of whether every Dashboard route that can set it
+# already validates it.
+_TARGET_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
 # Paths written on every ceph-deploy-method node (mon/mgr/osd alike) — same
 # conventional locations the official Ceph manual-deployment docs use, so a
 # node built this way looks like any other traditional package install to
@@ -709,24 +716,7 @@ def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_h
     Same defensive `rm -f` the `repo` phase's own command already does,
     just also done here first.
     """
-    apt_snippet = (
-        "(command -v python3 >/dev/null 2>&1 || apt-get install -y python3) && "
-        "(systemctl stop firewalld 2>/dev/null || true) && "
-        "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
-        "apt-get update -y && apt-get install -y chrony && "
-        "systemctl enable --now chrony && "
-        "(chronyc makestep || true)"
-    )
-    rpm_snippet = (
-        "(command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)) && "
-        "(systemctl stop firewalld 2>/dev/null || true) && "
-        "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
-        "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo && "
-        "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "
-        "systemctl enable --now chronyd && "
-        "(chronyc makestep || true)"
-    )
-    install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+    install_command = _build_base_dependency_install_command()
 
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
@@ -2953,6 +2943,457 @@ _PHASES_BY_ACTION_ID["node_os_gate_abort"] = [
     ("rejoin_mon", "Rejoin mon vào quorum", 50, _phase_gate_abort_rejoin_mon),
     ("maybe_clear_flags", "Gỡ cờ bảo trì (nếu là node cuối cùng)", 90, _phase_gate_abort_maybe_clear_flags),
     ("mark_done", "Đánh dấu Huỷ Chuẩn bị hoàn tất", 100, _phase_gate_abort_mark_done),
+]
+
+# --- Epic 11 — node_os_gate_recover (Story 11.4, FR-9..FR-14/FR-16) --------
+#
+# Confirm & Node Recovery: runs AFTER the operator has manually reinstalled a
+# node's OS and clicked "Xác nhận" (dashboard/routes/upgrade.py's re-check,
+# AD-20, happens BEFORE this Action is even created — by the time this phase
+# list runs, the OS is already known-good). Same action_params contract as
+# node_os_gate_prepare/node_os_gate_abort (AD-17): {"host", "target_version",
+# "roles" (from NodeUpgradeGate.roles_snapshot, NOT a live configured_nodes()
+# re-check — see this story's Dev Notes), "nodes": [host],
+# "node_upgrade_gate_id", "action_pk", "incident_id"}.
+
+
+def _build_base_dependency_install_command() -> str:
+    """Shared by `_phase_ceph_deploy_dependencies` (fresh deploy, per-node
+    list) and `_phase_gate_configure_base` (Story 11.4, single host) — same
+    firewalld-stop/SELinux-disable/chrony-install-and-start sequence either
+    way, extracted so the two call sites can't drift apart (same reasoning
+    `_build_ceph_package_repo_command` is already shared for two call
+    sites)."""
+    apt_snippet = (
+        "(command -v python3 >/dev/null 2>&1 || apt-get install -y python3) && "
+        "(systemctl stop firewalld 2>/dev/null || true) && "
+        "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
+        "apt-get update -y && apt-get install -y chrony && "
+        "systemctl enable --now chrony && "
+        "(chronyc makestep || true)"
+    )
+    rpm_snippet = (
+        "(command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)) && "
+        "(systemctl stop firewalld 2>/dev/null || true) && "
+        "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
+        "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo && "
+        "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "
+        "systemctl enable --now chronyd && "
+        "(chronyc makestep || true)"
+    )
+    return _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+
+
+def _phase_gate_check_disk(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-9: only if this node has the OSD role (else "done" no-op, same
+    role-conditional shape every other gate phase uses). READ-ONLY except
+    the two explicitly-allowed self-repair commands below — never
+    formats/creates anything.
+
+    Known gap this phase exists to close: a fresh OS install's
+    `/etc/lvm/devices/system.devices` device-file doesn't know about the
+    pre-existing PV signature on the OSD's DATA disk, which physically
+    survived the OS reinstall untouched (only the OS disk was wiped) — so
+    `pvscan` reports zero PVs even though the data is genuinely still
+    there. `lvmdevices --adddev <device>` re-registers it.
+
+    NOT verbatim-sourced from the original runbook (unlike FR-10/11/12) —
+    see this story's Dev Notes: verify the exact `pvscan`/`lvmdevices`
+    flags against Ceph/LVM docs (or a real reinstalled lab node) before
+    trusting this unattended."""
+    host = action_params["host"]
+    if not _osd_role(action_params):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    check_and_repair_cmd = (
+        "lsblk >/tmp/ceph-aiops-lsblk.out 2>&1; "
+        "pvscan --cache >/tmp/ceph-aiops-pvscan.out 2>&1; "
+        "if ! pvs --reportformat json 2>/dev/null | grep -q '\"pv_name\"'; then "
+        "for dev in $(blkid -o device 2>/dev/null); do lvmdevices --adddev \"$dev\" 2>/dev/null || true; done; "
+        "pvscan --cache >/tmp/ceph-aiops-pvscan.out 2>&1; "
+        "fi; "
+        "vgscan >/tmp/ceph-aiops-vgscan.out 2>&1; "
+        "lvscan >/tmp/ceph-aiops-lvscan.out 2>&1; "
+        "if lvscan 2>/dev/null | grep -q 'inactive'; then vgchange -ay >/dev/null 2>&1; lvscan >/tmp/ceph-aiops-lvscan.out 2>&1; fi; "
+        "pvs --reportformat json 2>/dev/null | grep -q '\"pv_name\"' && echo CEPH_AIOPS_PV_OK || echo CEPH_AIOPS_PV_MISSING; "
+        # Code-review fix: Task 1 explicitly requires CONFIRMING active state
+        # after the vgchange -ay repair attempt, not just running it — this
+        # second sentinel is checked below, separately from PV visibility.
+        "lvscan 2>/dev/null | grep -q 'inactive' && echo CEPH_AIOPS_LV_INACTIVE || echo CEPH_AIOPS_LV_ALL_ACTIVE"
+    )
+    try:
+        output = execute_command(host, check_and_repair_cmd)
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: kiểm tra đĩa/LVM thất bại: {exc}") from exc
+
+    if "CEPH_AIOPS_PV_OK" not in output:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"{host}: không thấy Physical Volume nào sau khi đã thử lvmdevices --adddev — "
+            f"dừng lại, không chạy lệnh LVM nào tiếp theo (FR-9)"
+        )
+
+    if "CEPH_AIOPS_LV_ALL_ACTIVE" not in output:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"{host}: vẫn còn Logical Volume ở trạng thái inactive sau khi đã thử vgchange -ay — "
+            f"dừng lại, không chạy lệnh LVM nào tiếp theo (FR-9)"
+        )
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_configure_base(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-10: ALWAYS runs (no role-conditional skip — hosts file/SELinux/
+    firewalld/chrony apply to every node regardless of role, unlike every
+    other phase in this Epic 11 section)."""
+    host = action_params["host"]
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    try:
+        hosts_lines: list[str] = []
+        for n in configured_nodes():
+            other_ip = n["host"]
+            if other_ip == host:
+                other_hostname = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+            else:
+                other_hostname = execute_command(other_ip, "hostname -f 2>/dev/null || hostname").strip()
+            hosts_lines.append((other_ip, other_hostname))
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: không lấy được hostname để cập nhật /etc/hosts: {exc}") from exc
+
+    append_hosts_cmd = " && ".join(
+        f"(grep -qF {shlex.quote(f'{ip} {hostname}')} /etc/hosts || "
+        f"echo {shlex.quote(f'{ip} {hostname}')} >> /etc/hosts)"
+        for ip, hostname in hosts_lines
+    )
+    dependency_cmd = _build_base_dependency_install_command()
+    # Code-review fix: each check echoes its OWN failure marker instead of
+    # being chained with `&&` — a chained command's failure gives no way to
+    # tell SELinux/firewalld/chronyd apart (Task 2's own text: "naming
+    # exactly which check failed"). Always exits 0 so ExecutorError itself
+    # never fires here; the markers below are parsed in Python instead.
+    verify_cmd = (
+        "test \"$(getenforce)\" = Disabled || echo CEPH_AIOPS_SELINUX_STILL_ENFORCING; "
+        "systemctl is-active --quiet firewalld && echo CEPH_AIOPS_FIREWALLD_STILL_ACTIVE; "
+        "systemctl is-active --quiet chronyd || echo CEPH_AIOPS_CHRONYD_NOT_ACTIVE; "
+        "true"
+    )
+    try:
+        if append_hosts_cmd:
+            execute_command(host, append_hosts_cmd)
+        execute_command(host, dependency_cmd)
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: cấu hình node cơ bản thất bại: {exc}") from exc
+
+    try:
+        verify_output = execute_command(host, verify_cmd)
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: không chạy được bước xác nhận cấu hình cơ bản: {exc}") from exc
+
+    failed_checks = []
+    if "CEPH_AIOPS_SELINUX_STILL_ENFORCING" in verify_output:
+        failed_checks.append("SELinux chưa Disabled")
+    if "CEPH_AIOPS_FIREWALLD_STILL_ACTIVE" in verify_output:
+        failed_checks.append("firewalld vẫn active")
+    if "CEPH_AIOPS_CHRONYD_NOT_ACTIVE" in verify_output:
+        failed_checks.append("chronyd chưa active")
+    if failed_checks:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: xác nhận cấu hình cơ bản thất bại — {', '.join(failed_checks)}")
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_install_packages(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-11: always runs (Ceph must be installed regardless of role before
+    FR-12/13/14 can do anything).
+
+    Code-review fix: `target_version` ultimately originates from
+    `POST /upgrade/gate/prepare`'s `Form(...)` field (Story 11.3), which
+    does not itself validate its format — and this phase interpolates it
+    directly into RPM package names (`f"{pkg}-{version}"`, no
+    `shlex.quote`) whenever `pin_exact_version` is true (Nautilus-style
+    versions). A strict `x.y.z`-only format check here, before ANY shell
+    command is built, closes that regardless of what the Dashboard route
+    does or doesn't validate — same `_TARGET_VERSION_RE` shape
+    `dashboard/routes/upgrade.py` already uses for this exact string."""
+    host = action_params["host"]
+    version = action_params["target_version"]
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    if not _TARGET_VERSION_RE.match(version):
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"target_version {version!r} không đúng định dạng x.y.z")
+    if codename_for_version(version) is None:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"Không tìm thấy mã tên release Ceph cho phiên bản {version!r}")
+
+    repo_cmd = _build_ceph_package_repo_command(version)
+    epel_and_devel_repo_cmd = (
+        "(dnf install -y epel-release || yum install -y epel-release || true); "
+        "rhel_ver=$(rpm -E %rhel); "
+        "if [ \"$rhel_ver\" = 8 ]; then "
+        "(dnf config-manager --set-enabled powertools 2>/dev/null "
+        "|| dnf config-manager --set-enabled PowerTools 2>/dev/null || true); "
+        "else "
+        "(dnf config-manager --set-enabled crb 2>/dev/null || true); "
+        "fi"
+    )
+
+    roles = [r.lower() for r in (action_params.get("roles") or [])]
+    apt_packages = sorted({pkg for role in roles for pkg in _ROLE_TO_PACKAGES_APT.get(role, ())})
+    rpm_packages = sorted({pkg for role in roles for pkg in _ROLE_TO_PACKAGES_RPM.get(role, ())})
+    pin_exact_version = repo_path_version(version) != version
+    mandatory_rpm = ["fmt", "python3", "python3-libs"] + (
+        [f"{pkg}-{version}" for pkg in rpm_packages] if pin_exact_version else list(rpm_packages)
+    )
+    fallback_rpm = [
+        "boost-random",
+        "boost-thread",
+        "boost-iostreams",
+        "boost-python3",
+        "snappy",
+        "leveldb",
+        "libbabeltrace",
+        "lttng-ust",
+        "userspace-rcu",
+        "gperftools-libs",
+    ]
+    apt_package_list = " ".join(apt_packages)
+    mandatory_rpm_list = " ".join(mandatory_rpm)
+    fallback_rpm_list = " ".join(mandatory_rpm + fallback_rpm)
+    apt_install_snippet = f"apt-get install -y {apt_package_list}"
+    rpm_install_snippet = (
+        f"(dnf install -y {mandatory_rpm_list} || yum install -y {mandatory_rpm_list} "
+        f"|| dnf install -y {fallback_rpm_list} || yum install -y {fallback_rpm_list})"
+    )
+    install_cmd = _package_manager_branch({"apt": apt_install_snippet, "rpm": rpm_install_snippet})
+
+    try:
+        execute_command(host, repo_cmd)
+        execute_command(host, epel_and_devel_repo_cmd)
+        execute_command(host, install_cmd)
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: cài lại gói Ceph {version} thất bại: {exc}") from exc
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_restore_config_and_keyring(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-12: always runs. `ceph -s` must succeed from `host` itself
+    IMMEDIATELY after the admin keyring is copied, before the bootstrap-osd
+    step — FR-12's own testable consequence, no inferring success via a
+    later phase."""
+    host = action_params["host"]
+    other_mon_host = _any_configured_mon_host(exclude=host)
+    host_status = [{"host": other_mon_host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    try:
+        conf_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_CEPH_CONF_PATH)
+        admin_keyring_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_ADMIN_KEYRING_PATH)
+        _write_remote_file_b64(host, _REMOTE_CEPH_CONF_PATH, conf_b64)
+        _write_remote_file_b64(host, _REMOTE_ADMIN_KEYRING_PATH, admin_keyring_b64)
+    except DeployPhaseError:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise
+
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        execute_command(host, "ceph -s")
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"{host}: 'ceph -s' thất bại ngay sau khi copy ceph.conf/admin keyring — dừng lại, "
+            f"không tiếp tục phục hồi bootstrap-osd keyring: {exc}"
+        ) from exc
+
+    try:
+        execute_command(
+            host,
+            f"mkdir -p {shlex.quote(os.path.dirname(_REMOTE_BOOTSTRAP_OSD_KEYRING_PATH))} && "
+            f"ceph auth get client.bootstrap-osd -o {shlex.quote(_REMOTE_BOOTSTRAP_OSD_KEYRING_PATH)}",
+        )
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: phục hồi bootstrap-osd keyring thất bại: {exc}") from exc
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_activate_osd(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-13: only if this node has the OSD role."""
+    host = action_params["host"]
+    if not _osd_role(action_params):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+
+    with db.SessionLocal() as session:
+        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        backed_up = json.loads(gate.osd_backup or "[]")
+    expected_ids = sorted({str(entry["osd_id"]) for entry in backed_up})
+    if not expected_ids:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"{host}: không có dữ liệu osd_backup từ Chuẩn bị (Story 11.3) — không biết cần "
+            f"kích hoạt lại OSD id nào"
+        )
+
+    start_cmds = " && ".join(f"systemctl enable --now ceph-osd@{shlex.quote(i)}" for i in expected_ids)
+    try:
+        execute_command(host, "ceph-volume lvm activate --all")
+        execute_command(host, start_cmds)
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: kích hoạt lại OSD thất bại: {exc}") from exc
+
+    try:
+        tree = json.loads(execute_command(host, "ceph osd tree --format json"))
+    except (ExecutorError, ValueError) as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: không đọc được ceph osd tree để xác nhận: {exc}") from exc
+
+    up_ids = sorted(
+        {
+            str(n["id"])
+            for n in (tree.get("nodes") or [])
+            if n.get("type") == "osd" and str(n.get("id")) in expected_ids and n.get("status") == "up"
+        }
+    )
+    if up_ids != expected_ids:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(
+            f"{host}: sau khi kích hoạt, OSD 'up' là {up_ids}, kỳ vọng đúng {expected_ids} "
+            f"(đã backup ở Story 11.3) — dừng lại"
+        )
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_rejoin_mon(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-14: only if this node has the MON role. Reuses
+    `_rejoin_mon_after_reinstall` (Story 11.3) UNCHANGED — its docstring
+    already names this phase as its second intended caller; do not write a
+    second copy of the mkfs/start/poll/`_refresh_static_mon_config`
+    sequence (AD-22)."""
+    host = action_params["host"]
+    if not _mon_role(action_params):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    other_mon_host = _any_configured_mon_host(exclude=host)
+    host_status = [{"host": host, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        mon_name = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
+
+    try:
+        _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+    except DeployPhaseError:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise
+
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_maybe_clear_flags(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """FR-16: only if this node has the OSD role. Identical shape to Story
+    11.3's `_phase_gate_abort_maybe_clear_flags` — only unsets maintenance
+    flags if NO OTHER node is mid-flight."""
+    host = action_params["host"]
+    if not _osd_role(action_params):
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    with db.SessionLocal() as session:
+        someone_else_pending = is_node_upgrade_gate_pending(
+            session, exclude_action_id=action_params["action_pk"]
+        )
+    if someone_else_pending:
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
+    mon_host = _any_configured_mon_host()
+    host_status = [{"host": mon_host, "status": "running"}]
+    on_host_update(list(host_status))
+    try:
+        current_flags = _read_osd_flags(mon_host)
+        to_unset = [f for f in _MAINTENANCE_FLAGS if f in current_flags]
+        if to_unset:
+            execute_command(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset))
+    except (ExecutorError, ValueError) as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"{mon_host}: gỡ cờ bảo trì thất bại: {exc}") from exc
+    host_status[0]["status"] = "done"
+    on_host_update(list(host_status))
+
+
+def _phase_gate_mark_recovered(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """DB-only. DONE is DONE regardless of which arc (Recover or Abort)
+    reached it — identical shape to `_phase_gate_abort_mark_done`."""
+    host = action_params["host"]
+    with db.SessionLocal() as session:
+        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate.state = NodeUpgradeGateState.DONE.value
+        release_node_upgrade_gate_lock(session, action_params["node_upgrade_gate_id"])
+        session.commit()
+    on_host_update([{"host": host, "status": "done"}])
+
+
+_PHASES_BY_ACTION_ID["node_os_gate_recover"] = [
+    ("check_disk", "Kiểm tra đĩa/LVM", 14, _phase_gate_check_disk),
+    ("configure_base", "Cấu hình node cơ bản", 28, _phase_gate_configure_base),
+    ("install_packages", "Cài lại gói Ceph", 42, _phase_gate_install_packages),
+    ("restore_config_and_keyring", "Phục hồi config + keyring", 56, _phase_gate_restore_config_and_keyring),
+    ("activate_osd", "Kích hoạt lại OSD", 70, _phase_gate_activate_osd),
+    ("rejoin_mon", "Rejoin mon vào quorum", 84, _phase_gate_rejoin_mon),
+    ("maybe_clear_flags", "Gỡ cờ bảo trì (nếu là node OSD cuối cùng)", 92, _phase_gate_maybe_clear_flags),
+    ("mark_recovered", "Đánh dấu node đã phục hồi", 100, _phase_gate_mark_recovered),
 ]
 
 # Deploy vs delete post-phase env-config writes go opposite directions
