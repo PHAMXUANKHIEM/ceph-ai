@@ -97,6 +97,15 @@ class Settings(BaseSettings):
     # choice here, not life_expectancy_max.
     device_health_evacuate_threshold_days: int = 7
 
+    # 2026-08-06: watcher/bluestore_omap_monitor.py's own scan cadence, same
+    # reasoning as device_health_scan_interval_seconds above — resolving
+    # which configured OSD host runs a given osd_id needs one SSH round trip
+    # per configured OSD host (probing its own systemd units, see that
+    # module's docstring for why), and BLUESTORE_NO_PER_POOL_OMAP doesn't
+    # newly appear/disappear on a sub-minute timescale. 15 minutes by
+    # default, matching node_health_scan_interval_seconds below.
+    bluestore_omap_scan_interval_seconds: int = 900
+
     # 2026-07-24: Ceph patch build & deploy pipeline (dashboard/routes/patch.py)
     # — a separate build server, NOT a Ceph cluster node, so deliberately not
     # part of the ceph_mon/osd/mgr/rgw_nodes family above or

@@ -1,21 +1,10 @@
 import json
 
-import pytest
 from sqlalchemy.exc import OperationalError
 
 from dashboard.routes import incidents as incidents_route
-from dashboard.routes import nodes as nodes_route
 from shared import db as db_module
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
-
-
-@pytest.fixture(autouse=True)
-def _fast_list_osds_default(monkeypatch):
-    """2026-08-04: this file's own test_deploy_cluster_nav_link_present_on_
-    other_pages hits GET /nodes, which now also calls watcher.ceph_client.
-    list_osds() on every page load — see tests/test_dashboard_nodes.py's
-    identical fixture for the full reasoning."""
-    monkeypatch.setattr(nodes_route, "list_osds", lambda: [])
 
 
 def _login(client):

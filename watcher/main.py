@@ -5,7 +5,16 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from config.settings import settings
-from watcher import ceph_client, collector, device_health_monitor, node_health_monitor, publisher, volume_monitor
+from watcher import (
+    bluestore_omap_monitor,
+    ceph_client,
+    collector,
+    device_health_monitor,
+    node_health_monitor,
+    publisher,
+    volume_monitor,
+)
+from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
 from watcher.ceph_client import CephQueryError, query_cluster_health
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
@@ -131,6 +140,15 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
                 # consecutive-high-scans streak per host), never a real
                 # `ceph health detail` check code.
                 continue
+            if incident.ceph_code.startswith(BLUESTORE_OMAP_PREFIX):
+                # 2026-08-06: same reasoning as the guards above —
+                # watcher/bluestore_omap_monitor.py owns this ceph_code
+                # family's own create/resolve lifecycle (its own
+                # currently-affected-osd_id set, one Incident per osd_id,
+                # not per raw `ceph health detail` check code — see
+                # build_and_publish_incident's own BLUESTORE_NO_PER_POOL_OMAP
+                # exclusion just below for the other half of this).
+                continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
         session.commit()
@@ -161,6 +179,17 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
+        if ceph_code == "BLUESTORE_NO_PER_POOL_OMAP":
+            # 2026-08-06: watcher/bluestore_omap_monitor.py owns this real
+            # ceph_code end-to-end now (its own PENDING_APPROVAL Incident+
+            # Action per affected osd_id, deterministic osd_id/host
+            # resolution, no LLM guessing) — creating a SECOND, generic
+            # Incident for the same check here would duplicate it and send
+            # it needlessly through the AI-diagnosis pipeline, which has no
+            # way to safely pick a real osd_id anyway (see that module's own
+            # docstring for why this action was deliberately never wired
+            # into Chat-with-AI/diagnosis in the first place).
+            continue
         detected_at = datetime.utcnow()
         nodes, log_excerpt = collector.collect_relevant_logs(ceph_code, check_detail)
 
@@ -259,6 +288,7 @@ def run(
     last_checks: frozenset = frozenset()
     last_device_health_scan_at: Optional[datetime] = None
     last_node_health_scan_at: Optional[datetime] = None
+    last_bluestore_omap_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -267,6 +297,11 @@ def run(
         # poll itself never completed, and never overwrites an already-True
         # heartbeat just because a downstream on_transition bug raised.
         heartbeat_recorded = False
+        # Reset every iteration (not just declared once outside the loop) —
+        # otherwise a query_cluster_health() failure on iteration N+1 would
+        # leave the bluestore-omap scan block below reading iteration N's
+        # stale dict instead of correctly seeing "no health data this tick".
+        health: Optional[dict] = None
         try:
             health = query_cluster_health()
             _record_heartbeat_safe(True, ceph_client.last_successful_mon_node, None)
@@ -368,6 +403,30 @@ def run(
             except Exception:
                 logger.exception("run: node health scan failed")
             last_node_health_scan_at = now
+
+        # 2026-08-06: BlueStore per-pool omap quick-fix, system-proposed —
+        # own independent try/except (same isolation reasoning as the
+        # blocks above) and its OWN slower cadence
+        # (settings.bluestore_omap_scan_interval_seconds, default 15 min),
+        # even though the TRIGGER data (BLUESTORE_NO_PER_POOL_OMAP's
+        # presence in `health["checks"]`) is already free from this same
+        # iteration's `health` above — only the osd_id->host RESOLUTION
+        # step costs a fresh SSH round trip per configured OSD host (see
+        # watcher/bluestore_omap_monitor.py's own docstring), which is what
+        # actually needs throttling. `health` is None if query_cluster_health()
+        # failed this tick — nothing to scan for, skip silently rather than
+        # passing an empty/stale dict.
+        if health is not None and (
+            last_bluestore_omap_scan_at is None
+            or (now - last_bluestore_omap_scan_at).total_seconds()
+            >= settings.bluestore_omap_scan_interval_seconds
+        ):
+            try:
+                current_legacy_omap = bluestore_omap_monitor.check_legacy_omap_osds(health)
+                bluestore_omap_monitor.create_or_resolve_bluestore_incidents(current_legacy_omap)
+            except Exception:
+                logger.exception("run: bluestore omap scan failed")
+            last_bluestore_omap_scan_at = now
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))

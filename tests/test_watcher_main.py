@@ -87,6 +87,21 @@ def _fast_volume_monitor_default(monkeypatch):
     monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
 
 
+@pytest.fixture(autouse=True)
+def _fast_bluestore_omap_monitor_default(monkeypatch):
+    """2026-08-06: run() now also calls bluestore_omap_monitor.
+    create_or_resolve_bluestore_incidents() every poll cycle (gated to once
+    per settings.bluestore_omap_scan_interval_seconds). check_legacy_omap_osds()
+    itself is pure (reads the already-fetched `health` dict, no SSH) so it's
+    left real; only create_or_resolve_bluestore_incidents is mocked here —
+    for a NEW code it would call resolve_osd_hosts(), a real SSH probe per
+    configured OSD host, same slowness class as the other monitors' fixtures
+    above. Same "fast default, explicit override where under test" pattern."""
+    monkeypatch.setattr(
+        watcher_main.bluestore_omap_monitor, "create_or_resolve_bluestore_incidents", lambda _c: None
+    )
+
+
 def test_run_calls_on_transition_only_when_status_changes(monkeypatch):
     statuses = [
         {"status": "HEALTH_OK"},
