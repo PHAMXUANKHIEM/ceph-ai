@@ -13,6 +13,17 @@
 
   var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
 
+  // Hidden-until-needed SSH host-key-mismatch recovery control (moved off
+  // the always-visible Settings-page form — see deploy_cluster.py's
+  // /deploy-cluster/forget-host-key docstring for why): paramiko raises
+  // this exact wording (BadHostKeyException.__str__) when a node's SSH
+  // host key changed (e.g. its OS was reinstalled) and cluster_deploy.py's
+  // _phase_ssh_check wraps it unchanged into the step's error message —
+  // "Host key for server '<ip>' does not match: got '...', expected
+  // '...'". Only match on that, not on every SSH failure (a plain refused/
+  // timed-out connection needs a different fix, not this button).
+  var HOST_KEY_MISMATCH_RE = /Host key for server .* does not match/;
+
   function pad2(n) { return String(n).padStart(2, "0"); }
   function nowClock() {
     var d = new Date();
@@ -246,6 +257,10 @@
           logBox.appendChild(hostLine);
         });
       }
+      if (step.status === "failed" && step.message && HOST_KEY_MISMATCH_RE.test(step.message)) {
+        var failedHost = (step.hosts || []).filter(function (h) { return h.status === "failed"; })[0];
+        if (failedHost) renderForgetHostKeyControl(failedHost.host);
+      }
       if (step.status === "running") runningStep = step;
     });
     logBox.scrollTop = logBox.scrollHeight;
@@ -280,6 +295,59 @@
     var div = document.createElement("div");
     div.textContent = String(text == null ? "" : text);
     return div.innerHTML;
+  }
+
+  function renderForgetHostKeyControl(host) {
+    var box = document.createElement("p");
+    box.className = "deploy-log-line status-failed";
+    box.style.marginLeft = "1.5em";
+    box.appendChild(document.createTextNode(
+      "⚠ Node " + host + " có SSH host key mới (thường do cài lại OS). "
+    ));
+
+    if (!initialState.is_admin) {
+      box.appendChild(document.createTextNode(
+        "Cần tài khoản admin để xoá host key cũ — liên hệ admin."
+      ));
+      logBox.appendChild(box);
+      return;
+    }
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-sm";
+    btn.textContent = "Xoá SSH host key cũ của " + host;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      btn.textContent = "Đang xoá...";
+      fetch("/deploy-cluster/forget-host-key", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host: host })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            return { ok: response.ok, data: data };
+          });
+        })
+        .then(function (result) {
+          var resultLine = document.createElement("p");
+          resultLine.style.marginLeft = "1.5em";
+          resultLine.className = "deploy-log-line status-" + (result.ok && result.data.success ? "done" : "failed");
+          resultLine.textContent = result.data && result.data.message
+            ? result.data.message
+            : (result.ok ? "Đã xử lý." : "Có lỗi xảy ra, thử lại.");
+          box.parentNode.insertBefore(resultLine, box.nextSibling);
+          btn.remove();
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = "Xoá SSH host key cũ của " + host;
+        });
+    });
+    box.appendChild(btn);
+    logBox.appendChild(box);
   }
 
   var pollTimer = null;

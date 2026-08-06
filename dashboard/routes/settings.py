@@ -31,7 +31,6 @@ from shared.telegram_client import TelegramSendError, send_telegram_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
     CephQueryError,
-    forget_host_key,
     query_cluster_health_with,
     read_public_key,
     ssh_key_path_error,
@@ -681,8 +680,6 @@ def _settings_context(
     worker_restart_error: str | None = None,
     cluster_error: str | None = None,
     cluster_success: str | None = None,
-    ssh_host_key_error: str | None = None,
-    ssh_host_key_success: str | None = None,
     watcher_restart_error: str | None = None,
     cluster_worker_restart_error: str | None = None,
     dashboard_restart_error: str | None = None,
@@ -763,8 +760,6 @@ def _settings_context(
         "worker_restart_error": worker_restart_error,
         "cluster_error": cluster_error,
         "cluster_success": cluster_success,
-        "ssh_host_key_error": ssh_host_key_error,
-        "ssh_host_key_success": ssh_host_key_success,
         "watcher_restart_error": watcher_restart_error,
         "cluster_worker_restart_error": cluster_worker_restart_error,
         "dashboard_restart_error": dashboard_restart_error,
@@ -850,8 +845,6 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         for k in (
             "cluster_error",
             "cluster_success",
-            "ssh_host_key_error",
-            "ssh_host_key_success",
             "watcher_restart_error",
             "cluster_worker_restart_error",
         )
@@ -1294,48 +1287,15 @@ async def cluster_settings_submit(
     )
 
 
-@router.post("/settings/cluster/forget-host-key", response_class=HTMLResponse)
-async def forget_ssh_host_key_submit(
-    request: Request, user: str = Depends(require_login), host: str = Form("")
-):
-    """Clears one node's pinned SSH host key (trust-on-first-use, watcher/
-    ceph_client.py::forget_host_key(), same KNOWN_HOSTS_PATH file worker/
-    executor/ssh_executor.py also reads/writes) so a node that was
-    re-provisioned (OS reinstalled -> new host key) can be connected to
-    again without SSHing into this server to hand-edit the known_hosts
-    file. Admin-only: this removes the guard against a swapped/MITM'd node,
-    the same security posture as every other admin-gated action on this
-    page (auth.is_admin_user)."""
-    _require_admin_privilege(user)
-    host = host.strip()
-    if not host:
-        return templates.TemplateResponse(
-            request,
-            "settings.html",
-            _settings_context(user, ssh_host_key_error="Vui lòng nhập địa chỉ IP/hostname."),
-        )
-    removed = await asyncio.to_thread(forget_host_key, host)
-    if removed:
-        return templates.TemplateResponse(
-            request,
-            "settings.html",
-            _settings_context(
-                user,
-                ssh_host_key_success=(
-                    f"Đã xoá SSH host key cũ của {host} — lần kết nối tiếp theo sẽ tự lưu key mới."
-                ),
-            ),
-        )
-    return templates.TemplateResponse(
-        request,
-        "settings.html",
-        _settings_context(
-            user,
-            ssh_host_key_error=(
-                f"Không tìm thấy host key đã lưu cho {host} (chưa từng kết nối, hoặc đã xoá rồi)."
-            ),
-        ),
-    )
+# The old always-visible "Xoá SSH host key cũ của 1 node" form that used to
+# live here (POST /settings/cluster/forget-host-key) moved to
+# dashboard/routes/deploy_cluster.py's POST /deploy-cluster/forget-host-key
+# — it's now a hidden control that only appears inline on the Deploy
+# Cluster page's log when _phase_ssh_check actually hits a host-key
+# mismatch, right where an operator would already be looking, instead of a
+# permanent Settings-page form for something only relevant in that one
+# specific failure. watcher/ceph_client.py::forget_host_key() itself is
+# unchanged — only which route/page calls it moved.
 
 
 @router.post("/settings/database/test")

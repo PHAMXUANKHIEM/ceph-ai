@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ from dashboard.vntime import format_vn_clock
 from shared import audit, db
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from watcher.ceph_client import forget_host_key
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -309,6 +311,54 @@ async def deploy_cluster_page(request: Request, user: str = Depends(require_logi
             "last_action_params": last_action_params,
             "progress": progress,
         },
+    )
+
+
+@router.post("/deploy-cluster/forget-host-key")
+async def deploy_cluster_forget_host_key(request: Request, user: str = Depends(require_login)):
+    """Clears one node's pinned SSH host key (trust-on-first-use,
+    watcher/ceph_client.py::forget_host_key(), same KNOWN_HOSTS_PATH file
+    worker/executor/ssh_executor.py also reads/writes) so a re-provisioned
+    node (OS reinstalled -> new host key) can be connected to again without
+    SSHing into this server to hand-edit the known_hosts file.
+
+    Deliberately NOT a always-visible Settings-page form anymore (that's
+    where this started — see the "Add Dashboard control to clear a stale
+    SSH host key" commit) — it's a niche recovery action an operator only
+    ever needs at the exact moment `_phase_ssh_check` in
+    worker/executor/cluster_deploy.py fails with paramiko's
+    BadHostKeyException ("Host key for server '<ip>' does not match: got
+    '...', expected '...'"). deploy_cluster.js now detects that exact
+    failure inline in the deploy log and renders a button that POSTs here
+    for just that node, right where the operator is already looking,
+    instead of a control they'd have to know to go find on a different
+    page days apart from when it's ever relevant. Admin-only: this removes
+    the guard against a swapped/MITM'd node, same posture as every other
+    admin-gated action in this app."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ tài khoản admin mới được phép thực hiện thao tác này",
+        )
+    body = await request.json()
+    host = str(body.get("host", "")).strip()
+    if not host:
+        raise HTTPException(status_code=400, detail="Thiếu địa chỉ IP/hostname của node")
+    removed = await asyncio.to_thread(forget_host_key, host)
+    if removed:
+        return JSONResponse(
+            {
+                "success": True,
+                "message": f"Đã xoá SSH host key cũ của {host} — điền lại form bên trái và bấm "
+                f"\"Bắt đầu cài đặt\" để chạy lại (lần kết nối tiếp theo sẽ tự lưu key mới).",
+            }
+        )
+    return JSONResponse(
+        {
+            "success": False,
+            "message": f"Không tìm thấy host key đã lưu cho {host} (có thể đã được xoá trước đó, hoặc "
+            f"chưa từng kết nối SSH thành công tới host này).",
+        }
     )
 
 

@@ -1,14 +1,34 @@
 import json
 
+import bcrypt
 from sqlalchemy.exc import OperationalError
 
+import dashboard.routes.deploy_cluster as deploy_cluster_route
 from dashboard.routes import incidents as incidents_route
 from shared import db as db_module
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Incident, IncidentStatus, User
 
 
 def _login(client):
     client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def _create_user(username, password, *, is_admin=False):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username=username,
+                password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+                is_admin=is_admin,
+                is_active=True,
+                created_by="admin",
+            )
+        )
+        session.commit()
+
+
+def _login_as(client, username, password):
+    client.post("/login", data={"username": username, "password": password})
 
 
 def _valid_payload(**overrides):
@@ -412,6 +432,64 @@ def test_deploy_cluster_nav_link_present_on_other_pages(dashboard_client):
     response = dashboard_client.get("/nodes")
     assert response.status_code == 200
     assert 'href="/deploy-cluster"' in response.text
+
+
+# -- POST /deploy-cluster/forget-host-key ------------------------------------
+# "Xoá SSH host key cũ" moved here from the always-visible Settings-page
+# form — it's now hidden until deploy_cluster.js's HOST_KEY_MISMATCH_RE
+# detects the exact paramiko BadHostKeyException wording in a failed
+# _phase_ssh_check step and renders the button inline, right where an
+# operator is already looking at the failure.
+
+
+def test_forget_host_key_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/deploy-cluster/forget-host-key", json={"host": "10.3.55.98"})
+
+    assert response.status_code == 403
+
+
+def test_forget_host_key_route_blank_host_returns_400(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/deploy-cluster/forget-host-key", json={"host": "  "})
+
+    assert response.status_code == 400
+
+
+def test_forget_host_key_route_success(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(deploy_cluster_route, "forget_host_key", lambda host: True)
+
+    response = dashboard_client.post("/deploy-cluster/forget-host-key", json={"host": "10.3.55.98"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "10.3.55.98" in body["message"]
+
+
+def test_forget_host_key_route_no_stored_entry(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(deploy_cluster_route, "forget_host_key", lambda host: False)
+
+    response = dashboard_client.post("/deploy-cluster/forget-host-key", json={"host": "10.3.55.98"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is False
+    assert "Không tìm thấy" in body["message"]
+
+
+def test_deploy_cluster_page_initial_state_includes_is_admin(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/deploy-cluster")
+
+    assert response.status_code == 200
+    assert '"is_admin": true' in response.text
 
 
 def test_cluster_deploy_incident_excluded_from_cluster_status():

@@ -205,7 +205,7 @@
   </main>
 
   <script type="application/json" id="deploy-initial-state">
-    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress, "not_yet_supported_methods": not_yet_supported_methods}|tojson }}
+    {{ {"status": pending_action.status if pending_action else (last_action.status if last_action else None), "progress": progress, "not_yet_supported_methods": not_yet_supported_methods, "is_admin": is_admin}|tojson }}
   </script>
   <script type="application/json" id="versions-by-codename-data">
     {{ versions_by_codename|tojson }}
