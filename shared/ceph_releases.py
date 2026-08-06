@@ -21,9 +21,47 @@ shipped after this was last updated just won't show up as a dropdown
 option yet. This is a convenience picker only, never the sole way to enter
 a version: every version input this feeds also stays a free-text field a
 caller can type any x.y.z into directly (e.g. a very new point release
-this list hasn't been extended for yet, or an internal-only build)."""
+this list hasn't been extended for yet, or an internal-only build).
 
-RELEASES: dict[int, dict[str, str]] = {
+2026-08-06: replaced the old single `min_el_version` (one floor per MAJOR
+release, e.g. "Pacific needs at least el8") with `el_history` (one
+"which el majors does THIS EXACT point release support" timeline per
+release) after a full live audit against download.ceph.com found the
+coarser model was actively wrong, not just imprecise:
+  - Octopus (15.x) was recorded as min_el_version=8 — WRONG, every single
+    Octopus point release (15.2.0..15.2.17) actually shipped el7 AND el8
+    RPMs (verified: rpm-15.2.0/el7/.../ceph-mon-15.2.0-0.el7.x86_64.rpm and
+    rpm-15.2.17/el7/... both 200).
+  - Reef (18.x) was recorded as min_el_version=9 — WRONG, the first three
+    Reef point releases (18.2.0, 18.2.1, 18.2.2) shipped BOTH el8 and el9;
+    el8 was only dropped starting 18.2.4.
+  - Quincy (17.x) was recorded as a flat min_el_version=8 forever — this
+    was the FLOOR of 17.2.0, but 17.2.8/17.2.9 dropped el8 entirely (el9
+    only). A caller on CentOS 8 upgrading to 17.2.9 would have seen NO
+    warning under the old floor-only model (8 >= 8 "looked" fine) and then
+    hit a real 404 installing — the exact class of bug this rewrite closes.
+The single per-major floor could only ever express "too old", never "this
+later point release dropped support for an OS an earlier point release of
+the SAME major used to support" — which is exactly what happened for
+Quincy and (going the other direction, gained support later) Nautilus.
+`el_history` fixes this by recording every observed transition, so
+el_versions_for()/os_upgrade_warning() below check the EXACT target
+version's real OS support, not just its major's first release.
+
+Methodology (2026-08-06, all releases below): for every known point release
+of every major in this table (91 versions total, Mimic through Tentacle),
+probed https://download.ceph.com/rpm-<path>/el{7,8,9,10}/x86_64/
+ceph-mon-<version>-0.el<N>.x86_64.rpm concurrently and recorded which el
+majors returned 200 vs 404. Nautilus/Mimic used their codename path
+(rpm-nautilus/, rpm-mimic/ — see `repo_path_uses_codename` below); every
+other major used its own exact-version path (rpm-<version>/). One anomaly
+found this way — Reef 18.2.3 — was cross-checked against debian-reef's
+pool listing and quay.io's ceph/ceph image tags too (see its own note
+below) since a same-day withdrawal is unusual enough to double-check
+before trusting a single probe. Everything else here is exactly what the
+probe returned, not inferred from release notes."""
+
+RELEASES: dict[int, dict] = {
     # `repo_path_uses_codename`: verified live against download.ceph.com,
     # 2026-07-27 (Nautilus) / 2026-08-06 (Mimic) — these are the TWO
     # releases in this table that were NEVER published under a
@@ -44,89 +82,99 @@ RELEASES: dict[int, dict[str, str]] = {
     # 14.2.22 and 13.2.10 respectively) and safe to reference by codename
     # forever. Every other entry below omits this key (defaults to False
     # via `.get()`).
-    # 2026-08-05: `min_el_version` added — the lowest RHEL/CentOS/Rocky/
-    # AlmaLinux ("el") major OS version any packaged build of that release
-    # EVER shipped for, e.g. Pacific (16.x) never published el7 RPMs, so
-    # its floor is 8. Powers shared.ceph_releases.os_upgrade_warning()
-    # below, used by dashboard/routes/upgrade.py's package-based upgrade
-    # proposal to warn an operator BEFORE approving an upgrade that would
-    # otherwise 404 fetching download.ceph.com/rpm-<version>/el<N>/ at
-    # execution time (worker/executor/commands.py's own
-    # _upgrade_ceph_cluster_package_download_command only discovers that
-    # failure live, mid-run, on the target host itself).
     #
-    # Same "hand-curated, not queried live" posture as the rest of this
-    # table: Nautilus/Pacific values confirmed directly by the operator
-    # (2026-08-05) who hit this exact CentOS 7 -> Pacific 16.2.15 case;
-    # Mimic's min_el_version=7 (and its versions list) IS independently
-    # live-verified against download.ceph.com (2026-08-06: rpm-mimic/el7 ->
-    # 200, rpm-mimic/el8 -> 404, and every ceph-mon-13.2.{0..10} RPM under
-    # rpm-mimic/el7/x86_64/ -> 200 while 13.2.11 -> 404 — no el8 build of
-    # Mimic was ever published, matching Mimic predating RHEL 8's 2019-05
-    # release); Octopus/Quincy/Reef/Squid/Tentacle are from public Ceph
-    # release notes' documented OS support matrix, not independently
-    # live-verified here — flag it if one of these turns out wrong so this
-    # table gets corrected. Only tracks the FLOOR for a release's very
-    # first point release, same granularity gap this module already
-    # discloses elsewhere for `repo_path_uses_codename`/the Quincy
-    # el8-dropped-later case in worker/executor/commands.py — a later
-    # point release narrowing support further than its own first release's
-    # floor is NOT modeled and will under-warn (say "OK") for that
-    # narrower case.
+    # `el_history`: [(version, (el majors supported FROM this version
+    # onward, until the next entry)), ...], oldest first — see this
+    # module's 2026-08-06 docstring note above for why this replaced a
+    # single per-major floor, and the "Methodology" note for how every
+    # entry below was obtained (live probe, not release notes).
     13: {
         "codename": "mimic",
         "next_min_version": "14.2.0",
         "versions": [f"13.2.{p}" for p in range(0, 11)],
         "repo_path_uses_codename": True,
-        "min_el_version": 7,
+        "el_history": [("13.2.0", (7,))],
     },
     14: {
         "codename": "nautilus",
         "next_min_version": "15.2.0",
         "versions": [f"14.2.{p}" for p in range(0, 23)],
         "repo_path_uses_codename": True,
-        "min_el_version": 7,
+        # el8 was NOT there from 14.2.0 — RHEL 8 shipped 2019-05-07,
+        # after Nautilus's 2019-03-19 GA. el8 builds only start at 14.2.10
+        # (verified: 14.2.0..14.2.9 el8 all 404, 14.2.10..14.2.22 el8 all
+        # 200) — the mirror image of the Quincy el8-drop below (support
+        # GAINED partway through the release instead of lost).
+        "el_history": [("14.2.0", (7,)), ("14.2.10", (7, 8))],
     },
     15: {
         "codename": "octopus",
         "next_min_version": "16.2.0",
         "versions": [f"15.2.{p}" for p in range(0, 18)],
-        "min_el_version": 8,
+        # Every single Octopus point release (15.2.0..15.2.17) shipped
+        # BOTH el7 and el8 — the previous table's min_el_version=8 for
+        # this release was simply wrong (never independently live-checked
+        # before 2026-08-06; see this module's docstring).
+        "el_history": [("15.2.0", (7, 8))],
     },
     16: {
         "codename": "pacific",
         "next_min_version": "17.2.0",
         "versions": [f"16.2.{p}" for p in range(0, 16)],
-        "min_el_version": 8,
+        # Confirmed live 2026-08-05 by the operator who hit the CentOS 7
+        # -> Pacific 16.2.15 case this whole el-tracking feature exists
+        # for — Pacific never published el7 RPMs, el8 only, for every
+        # point release (16.2.0..16.2.15 all el8-only, no el7/el9).
+        "el_history": [("16.2.0", (8,))],
     },
     17: {
         "codename": "quincy",
         "next_min_version": "18.2.0",
         "versions": [f"17.2.{p}" for p in range(0, 10)],
-        "min_el_version": 8,
+        # The case the user flagged 2026-08-06: 17.2.0..17.2.3 shipped el8
+        # only; el9 was ADDED at 17.2.4 (both el8+el9 for 17.2.4..17.2.7);
+        # el8 was then DROPPED at 17.2.8 (17.2.8 and 17.2.9 are el9-only).
+        # A CentOS 8 host upgrading straight to 17.2.9 will 404 — this is
+        # exactly why el_history checks the EXACT target version now
+        # instead of just Quincy's overall (now-stale) el8 floor.
+        "el_history": [("17.2.0", (8,)), ("17.2.4", (8, 9)), ("17.2.8", (9,))],
     },
     18: {
         "codename": "reef",
         "next_min_version": "19.2.0",
-        "versions": [f"18.2.{p}" for p in range(0, 9)],
-        "min_el_version": 9,
+        # 18.2.3 deliberately excluded — verified 2026-08-06 that it does
+        # not exist ANYWHERE: rpm-18.2.3/ itself 404s (both el8 and el9),
+        # debian-reef's pool has no 18.2.3 .deb (only ...-1focal/-1jammy
+        # builds of every OTHER Reef version), and quay.io's ceph/ceph
+        # image repo has no v18.2.3 tag at all (empty tag list). This
+        # version number was tagged/announced and then withdrawn before
+        # any artifact was ever published — do NOT add it back to fill
+        # the apparent gap in the range below; it will never resolve to
+        # anything installable by any method (package OR cephadm/
+        # container) on any OS.
+        "versions": [f"18.2.{p}" for p in range(0, 9) if p != 3],
+        # 18.2.0..18.2.2 shipped BOTH el8 and el9 — the previous table's
+        # min_el_version=9 for this release was wrong for these three
+        # (never independently live-checked before 2026-08-06). el8 was
+        # dropped starting 18.2.4 (18.2.3 itself never existed, see above).
+        "el_history": [("18.2.0", (8, 9)), ("18.2.4", (9,))],
     },
     19: {
         "codename": "squid",
         "next_min_version": "20.2.0",
         "versions": ["19.2.0", "19.2.1", "19.2.2"],
-        "min_el_version": 9,
+        "el_history": [("19.2.0", (9,))],
     },
     20: {
         "codename": "tentacle",
         "next_min_version": None,
         "versions": ["20.2.0"],
-        "min_el_version": 9,
+        "el_history": [("20.2.0", (9,))],
     },
 }
 
 # OS `ID` values (from /etc/os-release) this module knows how to compare
-# against `min_el_version` above — the RHEL-family distros that actually
+# against `el_history` above — the RHEL-family distros that actually
 # use "elN" packaging (matches worker/executor/cluster_deploy.py's own
 # rpm-family list minus "fedora": Fedora's own VERSION_ID isn't an "el"
 # equivalent — download.ceph.com never published a Fedora-specific repo,
@@ -169,6 +217,49 @@ def major_version(version: str) -> int | None:
         return None
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """`"17.2.9"` -> `(17, 2, 9)`, for ordering against `el_history`
+    breakpoints below. Non-numeric segments become -1 (sorts before any
+    real point release) rather than raising — callers here only ever feed
+    it strings that already passed `major_version()`'s own parse."""
+    parts = []
+    for p in version.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(-1)
+    return tuple(parts)
+
+
+def el_versions_for(version: str) -> tuple[int, ...] | None:
+    """The exact "el" (RHEL-family) major OS versions THIS SPECIFIC x.y.z
+    Ceph release has packages for — e.g. `el_versions_for("17.2.9")` ->
+    `(9,)` (el9 only — Quincy dropped el8 at 17.2.8), but
+    `el_versions_for("17.2.0")` -> `(8,)` (el8 only — el9 wasn't added
+    until 17.2.4). None if `version`'s major isn't in RELEASES. See
+    RELEASES' own `el_history` comments for the live-verification behind
+    every entry. Walks `el_history` for the version's major release and
+    returns the entry in effect at `version` (the last breakpoint at or
+    before it) — a version older than the release's very first tracked
+    breakpoint falls back to that first entry rather than returning None,
+    same "best known answer, not a hard reject" posture as the rest of
+    this module."""
+    major = major_version(version)
+    if major is None:
+        return None
+    release = RELEASES.get(major)
+    if release is None:
+        return None
+    v = _version_tuple(version)
+    result = release["el_history"][0][1]
+    for from_version, els in release["el_history"]:
+        if v >= _version_tuple(from_version):
+            result = els
+        else:
+            break
+    return result
+
+
 def next_min_version(version: str) -> str | None:
     major = major_version(version)
     if major is None:
@@ -178,24 +269,20 @@ def next_min_version(version: str) -> str | None:
 
 
 def min_el_version_for(version: str) -> int | None:
-    """The lowest "el" (RHEL-family) major OS version `version`'s major
-    Ceph release ever shipped RPM builds for — see RELEASES' own
-    `min_el_version` comment above for sourcing/caveats. None if
-    `version`'s major isn't in RELEASES."""
-    major = major_version(version)
-    if major is None:
-        return None
-    release = RELEASES.get(major)
-    return release.get("min_el_version") if release else None
+    """The lowest "el" (RHEL-family) major OS version THIS SPECIFIC x.y.z
+    Ceph release has packages for (see `el_versions_for` above — this is
+    just `min()` of that). None if `version`'s major isn't in RELEASES."""
+    els = el_versions_for(version)
+    return min(els) if els else None
 
 
 def min_os_label_for(version: str) -> str | None:
-    """Human-friendly minimum-OS label for `version`'s major release's
-    `min_el_version` floor (e.g. "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở
-    lên") — factored out of os_upgrade_warning()'s inline string so Story
-    11.1's OS Upgrade Gate screen (dashboard/routes/upgrade.py) can show it
-    as its own field instead of re-parsing the full warning sentence. None
-    if `version`'s major isn't in RELEASES (same as min_el_version_for)."""
+    """Human-friendly minimum-OS label for `version`'s own `el_versions_for`
+    floor (e.g. "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở lên") — factored
+    out of os_upgrade_warning()'s inline string so Story 11.1's OS Upgrade
+    Gate screen (dashboard/routes/upgrade.py) can show it as its own field
+    instead of re-parsing the full warning sentence. None if `version`'s
+    major isn't in RELEASES (same as min_el_version_for)."""
     floor = min_el_version_for(version)
     if floor is None:
         return None
@@ -205,30 +292,47 @@ def min_os_label_for(version: str) -> str | None:
 def os_upgrade_warning(target_version: str, os_id: str, os_version_id: str) -> str | None:
     """Returns a Vietnamese warning if the OS described by `os_id`/
     `os_version_id` (as read from /etc/os-release, e.g. os_id="centos",
-    os_version_id="7") is below `target_version`'s known `min_el_version`
-    floor — the CentOS 7 -> Ceph Pacific case this function exists for.
-    Returns None (no warning) when: the OS is compatible; `os_id` isn't a
-    tracked el-family distro (see EL_FAMILY_OS_IDS' own comment — Debian/
-    Ubuntu/Fedora aren't modeled, so this simply says nothing rather than
-    guessing); `os_version_id` isn't a parseable integer-leading string; or
-    `target_version`'s major has no known floor. Callers should treat None
-    as "no warning to show", not "confirmed compatible" — see this
-    function's own caveats above for what it does NOT catch."""
+    os_version_id="7") does not have packages for `target_version` EXACTLY
+    (via `el_versions_for` — not just `target_version`'s major's oldest
+    point release). Covers both directions: the OS is too old for this
+    exact point release (below its floor — the original CentOS 7 ->
+    Pacific case this function was built for), AND the OS was DROPPED by
+    a later point release of the same major that used to support it (the
+    CentOS 8 -> Quincy 17.2.9 case — 17.2.0 supported el8, 17.2.9 no
+    longer does). Returns None (no warning) when: the OS is compatible
+    with this exact version; `os_id` isn't a tracked el-family distro (see
+    EL_FAMILY_OS_IDS' own comment — Debian/Ubuntu/Fedora aren't modeled,
+    so this simply says nothing rather than guessing); `os_version_id`
+    isn't a parseable integer-leading string; or `target_version`'s major
+    has no known history. Callers should treat None as "no warning to
+    show", not "confirmed compatible" — see this function's own caveats
+    above for what it does NOT catch."""
     if os_id not in EL_FAMILY_OS_IDS:
         return None
     try:
         os_major = int(os_version_id.split(".")[0])
     except (ValueError, AttributeError, IndexError):
         return None
-    floor = min_el_version_for(target_version)
-    if floor is None or os_major >= floor:
+    els = el_versions_for(target_version)
+    if els is None or os_major in els:
         return None
     codename = (codename_for_version(target_version) or "").capitalize()
+    floor = min(els)
+    if os_major < floor:
+        return (
+            f"hệ điều hành hiện tại là {os_id} {os_version_id} (el{os_major}), nhưng Ceph "
+            f"{target_version} ({codename}) yêu cầu tối thiểu el{floor} ({min_os_label_for(target_version)}) "
+            f"— download.ceph.com không có gói cho phiên bản này trên "
+            f"el{os_major}, cài đặt sẽ thất bại. Cần nâng cấp hệ điều hành TRƯỚC khi nâng cấp Ceph."
+        )
+    supported_label = ", ".join(f"el{e}" for e in els)
     return (
         f"hệ điều hành hiện tại là {os_id} {os_version_id} (el{os_major}), nhưng Ceph "
-        f"{target_version} ({codename}) yêu cầu tối thiểu el{floor} ({min_os_label_for(target_version)}) "
-        f"— download.ceph.com không có gói cho phiên bản này trên "
-        f"el{os_major}, cài đặt sẽ thất bại. Cần nâng cấp hệ điều hành TRƯỚC khi nâng cấp Ceph."
+        f"{target_version} ({codename}) đã KHÔNG CÒN gói cho el{os_major} ở đúng bản này — bản này chỉ còn "
+        f"gói cho {supported_label} (một bản {codename} CŨ HƠN có thể từng hỗ trợ el{os_major}, nhưng bản "
+        f"{target_version} thì không). download.ceph.com không có gói cho phiên bản này trên el{os_major}, "
+        f"cài đặt sẽ thất bại. Chọn một bản {codename} khác đã build cho el{os_major} (nếu có), hoặc nâng "
+        f"cấp hệ điều hành lên {supported_label} trước khi tiếp tục."
     )
 
 
@@ -251,10 +355,10 @@ def repo_path_version(version: str) -> str:
     `version` itself unchanged — every caller building these URLs already
     deliberately prefers the exact-version path over the codename's rolling
     alias for that reason (see worker/executor/cluster_deploy.py's
-    `_build_ceph_package_repo_command` docstring). Nautilus is the one
-    release where that per-version path never existed at all (see this
-    module's `repo_path_uses_codename` comment above) — for it, and only
-    it, this returns the codename instead. Callers must still call
+    `_build_ceph_package_repo_command` docstring). Nautilus/Mimic are the
+    releases where that per-version path never existed at all (see this
+    module's `repo_path_uses_codename` comment above) — for them, and only
+    them, this returns the codename instead. Callers must still call
     `codename_for_version(version) is None` themselves first to reject an
     unrecognized version — this function has no such guard and just
     echoes `version` back unchanged for anything not in RELEASES."""

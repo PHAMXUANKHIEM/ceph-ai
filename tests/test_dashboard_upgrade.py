@@ -748,7 +748,13 @@ def test_propose_package_download_shows_os_gate_screen_when_node_incompatible(da
         monkeypatch,
         {
             "10.20.1.150": {"ID": "centos", "VERSION_ID": "7"},
-            "10.20.1.83": {"ID": "rocky", "VERSION_ID": "9"},
+            # rocky/8, not rocky/9: Pacific (16.2.15) never shipped el9
+            # packages at all (see shared/ceph_releases.py's el_history,
+            # 2026-08-06 live audit) — rocky/9 would ALSO be incompatible
+            # here, so it can't stand in as "the compatible node" for this
+            # assertion anymore. rocky/8 is Pacific's actual (only)
+            # supported OS.
+            "10.20.1.83": {"ID": "rocky", "VERSION_ID": "8"},
         },
     )
     _login(dashboard_client)
