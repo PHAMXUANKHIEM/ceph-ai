@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import db, env_config
-from shared.ceph_releases import codename_for_version, repo_path_version
+from shared.ceph_releases import codename_for_version, major_version, repo_path_version
 from shared.cluster_nodes import configured_nodes
 from shared.models import NodeUpgradeGate, NodeUpgradeGateState
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending, release_node_upgrade_gate_lock
@@ -1072,8 +1072,24 @@ def _phase_ceph_deploy_mon_security(nodes: list[dict], action_params: dict, on_h
     commands are idempotent/non-disruptive (verified live: `ceph mon
     enable-msgr2` briefly drops the mon it's run through out of quorum
     while it rebinds, self-recovers within seconds; `ceph config set` is
-    just a config write) — safe to always run, not gated behind any
-    operator choice."""
+    just a config write).
+
+    2026-08-06 fix (verified live against a real Mimic 13.2.10 mon —
+    "no valid command found... mon rm/mon add/mon dump/..." for `ceph mon
+    enable-msgr2`, EINVAL): this phase was written when Nautilus (14.x) was
+    the OLDEST deployable release, where both commands have always existed
+    — "safe to always run" was true THEN. Mimic (13.x) support was added
+    later (shared/ceph_releases.py) without revisiting this assumption.
+    msgr2 and the insecure-global-id-reclaim config knob were both
+    introduced in Nautilus; Mimic's `ceph mon` has neither command at all,
+    so running this against a Mimic cluster fails the whole deploy on a
+    step that doesn't even apply to it. Skip entirely for major version <
+    14."""
+    version = action_params.get("version", "")
+    if (major := major_version(version)) is not None and major < 14:
+        on_host_update([{"host": "n/a", "status": "done"}])
+        return
+
     mon_nodes = [n for n in nodes if "mon" in (n.get("roles") or [])]
     if not mon_nodes:
         raise DeployPhaseError("Không có node MON nào trong cấu hình")

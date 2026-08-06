@@ -1115,6 +1115,21 @@ def test_ceph_deploy_mon_security_enables_msgr2_and_disables_insecure_reclaim(mo
     assert "ceph config set mon auth_allow_insecure_global_id_reclaim false" in command
 
 
+def test_ceph_deploy_mon_security_skips_for_mimic(monkeypatch):
+    # 2026-08-06, verified live against a real Mimic 13.2.10 mon: `ceph mon
+    # enable-msgr2` doesn't exist pre-Nautilus ("no valid command found",
+    # EINVAL) — msgr2 support was introduced in Nautilus (14.x), so this
+    # phase must not even attempt it for Mimic.
+    def fake(host, command):
+        raise AssertionError(f"must not run any command for Mimic: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    cluster_deploy_module._phase_ceph_deploy_mon_security(
+        copy.deepcopy(_NODES), {"version": "13.2.10"}, lambda status: None
+    )
+
+
 def test_ceph_deploy_mon_security_failure_raises_deploy_phase_error(monkeypatch):
     def fake(host, command):
         if "enable-msgr2" in command:
