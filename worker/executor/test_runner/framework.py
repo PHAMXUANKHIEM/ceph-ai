@@ -57,6 +57,7 @@ class TestGroup(str, enum.Enum):
     B = "B"  # post-upgrade
     C = "C"  # compatibility
     D = "D"  # performance
+    E = "E"  # S3 (RGW) upgrade regression -- docs/s3-upgrade-test-cases.md
 
 
 class TestPriority(str, enum.Enum):

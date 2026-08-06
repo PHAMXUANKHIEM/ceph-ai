@@ -17,6 +17,7 @@ from worker.executor.test_runner.group_a import GROUP_A_TESTS
 from worker.executor.test_runner.group_b import GROUP_B_TESTS
 from worker.executor.test_runner.group_c import GROUP_C_TESTS
 from worker.executor.test_runner.group_d import GROUP_D_TESTS
+from worker.executor.test_runner.group_e import GROUP_E_TESTS
 
 __all__ = [
     "ALL_TEST_CASES",
@@ -30,6 +31,7 @@ ALL_TEST_CASES: list[type[TestCase]] = [
     *GROUP_B_TESTS,
     *GROUP_C_TESTS,
     *GROUP_D_TESTS,
+    *GROUP_E_TESTS,
 ]
 
 # Every class is default-constructible (no __init__ override anywhere in

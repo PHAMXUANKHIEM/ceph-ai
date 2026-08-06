@@ -68,11 +68,23 @@ _STATUS_TO_PASS_FAIL = {
 }
 
 
+_KNOWN_DOC_ID_PREFIXES = (("TC-RUN-", "RUN"), ("TC-POST-", "POST"), ("TC-COMPAT-", "COMPAT"), ("TC-PERF-", "PERF"))
+
+
 def _group_for_doc_id(doc_id: str) -> str:
-    for prefix, group in (("TC-RUN-", "RUN"), ("TC-POST-", "POST"), ("TC-COMPAT-", "COMPAT"), ("TC-PERF-", "PERF")):
+    for prefix, group in _KNOWN_DOC_ID_PREFIXES:
         if doc_id.startswith(prefix):
             return group
     raise ValueError(f"khong nhan dien duoc nhom tu document id: {doc_id!r}")
+
+
+def _is_report_scoped_id(doc_id: str) -> bool:
+    """This report is fixed to docs/ceph-upgrade-test-cases.md's exact
+    71-row structure (RUN/POST/COMPAT/PERF only) -- Group E (S3, its own
+    separate docs/s3-upgrade-test-cases.md, `TC-S3-*` ids) and any future
+    group intentionally do not participate in THIS report rather than
+    crashing it. A future Group-E-specific report is out of scope here."""
+    return doc_id.startswith(("TC-RUN-", "TC-POST-", "TC-COMPAT-", "TC-PERF-"))
 
 
 def _sort_key(doc_id: str) -> tuple[int, int]:
@@ -151,6 +163,8 @@ def build_report_rows(
     rows: dict[str, ReportRow] = {}
 
     for engine_id, test_case in test_cases_by_id.items():
+        if not _is_report_scoped_id(engine_id):
+            continue
         run_state = run_states.get(engine_id)
         pass_fail = map_status_to_pass_fail(
             run_state.get("status") if run_state else None,

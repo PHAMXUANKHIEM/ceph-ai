@@ -9,13 +9,14 @@ from worker.executor.test_runner.group_a import GROUP_A_TESTS
 from worker.executor.test_runner.group_b import GROUP_B_TESTS
 from worker.executor.test_runner.group_c import GROUP_C_TESTS
 from worker.executor.test_runner.group_d import GROUP_D_TESTS
+from worker.executor.test_runner.group_e import GROUP_E_TESTS
 
 
 def test_all_test_cases_concatenates_every_group():
     assert len(registry.ALL_TEST_CASES) == len(GROUP_A_TESTS) + len(GROUP_B_TESTS) + len(GROUP_C_TESTS) + len(
         GROUP_D_TESTS
-    )
-    assert len(registry.ALL_TEST_CASES) == 67
+    ) + len(GROUP_E_TESTS)
+    assert len(registry.ALL_TEST_CASES) == 67 + 52
 
 
 def test_test_cases_by_id_has_no_duplicate_ids():

@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 // volume_perf_sweep.js's POLL_INTERVAL_MS.
 const POLL_INTERVAL_MS = 3000
 
-const GROUPS = ['A', 'B', 'C', 'D']
+const GROUPS = ['A', 'B', 'C', 'D', 'E']
 
 const STATUS_STYLES = {
   not_started: 'bg-slate-200 text-slate-600',

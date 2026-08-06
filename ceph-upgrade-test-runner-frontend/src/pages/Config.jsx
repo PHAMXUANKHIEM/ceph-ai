@@ -15,7 +15,7 @@ const BASELINE_FILE_KEYS = [
   'df_before.txt',
 ]
 
-const TEST_GROUPS = ['A', 'B', 'C', 'D']
+const TEST_GROUPS = ['A', 'B', 'C', 'D', 'E']
 const PRIORITIES = ['P1', 'P2', 'P3']
 
 function toggleInList(list, value) {
