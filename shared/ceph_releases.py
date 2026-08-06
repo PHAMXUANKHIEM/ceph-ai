@@ -25,21 +25,25 @@ this list hasn't been extended for yet, or an internal-only build)."""
 
 RELEASES: dict[int, dict[str, str]] = {
     # `repo_path_uses_codename`: verified live against download.ceph.com,
-    # 2026-07-27 — Nautilus is the ONE release in this table that was NEVER
-    # published under a per-exact-version directory at all (rpm-14.2.22/el8/
-    # -> 404, debian-14.2.22/ -> 404 too); only the rolling
-    # rpm-nautilus/debian-nautilus codename alias ever existed for it (both
+    # 2026-07-27 (Nautilus) / 2026-08-06 (Mimic) — these are the TWO
+    # releases in this table that were NEVER published under a
+    # per-exact-version directory at all (rpm-14.2.22/el8/ -> 404,
+    # debian-14.2.22/ -> 404; rpm-13.2.10/el7/ -> 404 too); only the rolling
+    # rpm-nautilus/debian-nautilus and rpm-mimic/debian-mimic codename
+    # aliases ever existed for them (rpm-mimic/el7 confirmed 200; rpm-14.2.x
     # confirmed 200 on el7/el8). Every later release (Octopus+) DOES have
     # real per-version directories, which repo_path_version() below prefers
     # for them (see worker/executor/cluster_deploy.py's
     # _build_ceph_package_repo_command docstring for why: the codename alias
     # is a ROLLING pointer that can silently drop an older OS's packages
-    # once a later point release stops shipping them). Nautilus has no such
-    # risk going forward — it EOL'd 2021-06-29 (per download.ceph.com's own
-    # debian-nautilus/dists/ listing) and will never get another point
-    # release, so its codename alias is permanently frozen at 14.2.22 and
-    # safe to reference by codename forever. Every other entry below omits
-    # this key (defaults to False via `.get()`).
+    # once a later point release stops shipping them). Nautilus and Mimic
+    # have no such risk going forward — both are long EOL (Nautilus
+    # 2021-06-29, Mimic 2020-07-22, per download.ceph.com's own
+    # debian-<codename>/dists/ listings) and will never get another point
+    # release, so their codename aliases are permanently frozen (at
+    # 14.2.22 and 13.2.10 respectively) and safe to reference by codename
+    # forever. Every other entry below omits this key (defaults to False
+    # via `.get()`).
     # 2026-08-05: `min_el_version` added — the lowest RHEL/CentOS/Rocky/
     # AlmaLinux ("el") major OS version any packaged build of that release
     # EVER shipped for, e.g. Pacific (16.x) never published el7 RPMs, so
@@ -54,15 +58,28 @@ RELEASES: dict[int, dict[str, str]] = {
     # Same "hand-curated, not queried live" posture as the rest of this
     # table: Nautilus/Pacific values confirmed directly by the operator
     # (2026-08-05) who hit this exact CentOS 7 -> Pacific 16.2.15 case;
-    # Octopus/Quincy/Reef/Squid/Tentacle are from public Ceph release
-    # notes' documented OS support matrix, not independently live-verified
-    # here — flag it if one of these turns out wrong so this table gets
-    # corrected. Only tracks the FLOOR for a release's very first point
-    # release, same granularity gap this module already discloses
-    # elsewhere for `repo_path_uses_codename`/the Quincy el8-dropped-later
-    # case in worker/executor/commands.py — a later point release
-    # narrowing support further than its own first release's floor is NOT
-    # modeled and will under-warn (say "OK") for that narrower case.
+    # Mimic's min_el_version=7 (and its versions list) IS independently
+    # live-verified against download.ceph.com (2026-08-06: rpm-mimic/el7 ->
+    # 200, rpm-mimic/el8 -> 404, and every ceph-mon-13.2.{0..10} RPM under
+    # rpm-mimic/el7/x86_64/ -> 200 while 13.2.11 -> 404 — no el8 build of
+    # Mimic was ever published, matching Mimic predating RHEL 8's 2019-05
+    # release); Octopus/Quincy/Reef/Squid/Tentacle are from public Ceph
+    # release notes' documented OS support matrix, not independently
+    # live-verified here — flag it if one of these turns out wrong so this
+    # table gets corrected. Only tracks the FLOOR for a release's very
+    # first point release, same granularity gap this module already
+    # discloses elsewhere for `repo_path_uses_codename`/the Quincy
+    # el8-dropped-later case in worker/executor/commands.py — a later
+    # point release narrowing support further than its own first release's
+    # floor is NOT modeled and will under-warn (say "OK") for that
+    # narrower case.
+    13: {
+        "codename": "mimic",
+        "next_min_version": "14.2.0",
+        "versions": [f"13.2.{p}" for p in range(0, 11)],
+        "repo_path_uses_codename": True,
+        "min_el_version": 7,
+    },
     14: {
         "codename": "nautilus",
         "next_min_version": "15.2.0",
