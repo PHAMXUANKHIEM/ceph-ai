@@ -247,8 +247,8 @@ nhau** — một kênh lỗi không được phép chặn kênh còn lại:
 - **Webhook JSON chung** — POST tới `settings.backup_alert_webhook_url` nếu
   đã cấu hình (để trống = tắt, không phải lỗi).
 - **Telegram** (thêm sau, dùng chung `send_alert()` — xem mục 7.2b) — gửi
-  qua Telegram Bot API nếu `settings.telegram_alerts_enabled=true` **và**
-  đã có bot token + chat id.
+  qua Telegram Bot API nếu kênh Backup đã có đủ
+  `settings.telegram_backup_bot_token` + `telegram_backup_chat_id`.
 
 Lỗi gửi ở BẤT KỲ kênh nào (mạng, endpoint sai, token sai) đều bị **nuốt và
 chỉ log** — một alert gửi thất bại không được phép làm hỏng luồng backup/
@@ -273,33 +273,33 @@ hình khoá điện thoại.
 
 **Kênh cảnh báo Backup này vẫn MỘT CHIỀU (gửi ra, không nhận vào):** không
 có phản hồi nào từ Telegram được đọc lại cho kênh Backup, và không có gì
-gõ trên Telegram ảnh hưởng tới `worker/backup/`. (Kể từ 2026-08-05,
-ceph-aiops NÓI CHUNG có thêm một tính năng riêng, tuỳ chọn, đọc phản hồi
-Telegram — "Yêu cầu phê duyệt qua Telegram" — nhưng đó là một mục hoàn
-toàn tách biệt, công tắc bật/tắt riêng, không liên quan tới cảnh báo
-Backup mô tả ở đây; xem toàn cảnh cả 4 mục tại
-[telegram-alerts.md](./telegram-alerts.md).) Mặc định (mục này tắt), mọi
-hành động khắc phục vẫn luôn phải đi qua đúng quy trình đề xuất → duyệt
-trên Dashboard (`dashboard/routes/actions.py`) — Telegram chỉ là nơi vận
-hành viên biết tin, không phải nơi ra lệnh.
+gõ trên Telegram ảnh hưởng tới `worker/backup/`. (2026-08-06: ceph-aiops
+NÓI CHUNG có thêm một năng lực khác đọc phản hồi Telegram — "Yêu cầu phê
+duyệt" — nhưng đó KHÔNG còn là 1 công tắc rời cần bật riêng như trước; nó
+tự động áp dụng lên chính kênh Backup này (và 2 kênh còn lại) ngay khi có
+đủ Bot Token + Chat ID, độc lập với nội dung cảnh báo Backup mô tả ở đây;
+xem toàn cảnh tại [telegram-alerts.md](./telegram-alerts.md).) Mọi hành
+động khắc phục vẫn luôn phải đi qua đúng quy trình đề xuất → duyệt
+(`dashboard/routes/actions.py`, dù bấm trên Dashboard hay qua nút Telegram)
+— Telegram không mở ra đường thực thi nào mới.
 
-Cấu hình tại Settings → **Cảnh báo Telegram** (chỉ admin thấy/sửa được —
-cùng `_require_admin_privilege` mọi form nhạy cảm khác trong trang Settings
-đã dùng):
+Cấu hình tại trang riêng **Alert Telegram** (`/telegram-alerts`, không còn
+nằm trong Settings — chỉ admin thấy/sửa được, cùng `_require_admin_privilege`
+mọi form nhạy cảm khác đã dùng), card "Cảnh báo Backup":
 
 | Trường | Ý nghĩa |
 |---|---|
 | Bot Token | Token tạo qua [@BotFather](https://t.me/BotFather) trên Telegram — lưu theo quy ước "để trống khi lưu = giữ nguyên giá trị đã lưu" giống `router_api_key`/secret key S3, không bao giờ hiện lại giá trị thật trên form |
-| Chat ID | ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo — DÙNG CHUNG cho cả 3 loại cảnh báo (xem [telegram-alerts.md](./telegram-alerts.md)) |
-| Cảnh báo Backup | Công tắc bật/tắt RIÊNG khỏi "đã cấu hình token/chat id chưa" — admin tắt tạm thời được mà không phải xoá rồi gõ lại token. Từ 2026-08-05, đây chỉ là MỘT trong 3 công tắc độc lập trên cùng trang (còn có "Cảnh báo lỗi cụm" và "Cảnh báo phần cứng" — không thuộc phạm vi tài liệu này, xem [telegram-alerts.md](./telegram-alerts.md)) |
+| Chat ID | ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo Backup — RIÊNG của kênh này, không dùng chung với Lỗi cụm/Phần cứng (xem [telegram-alerts.md](./telegram-alerts.md)) |
 
-Lưu cấu hình này **khởi động lại Worker** ngay (cùng cách "Lưu trữ Backup"
-đã làm) — vì `worker/backup/alerting.py` chạy trong tiến trình Worker, và
-`settings` singleton của mỗi tiến trình chỉ đọc `.env` một lần lúc khởi
-động. Nút **"Gửi thử"** gửi ngay một tin nhắn thật bằng cấu hình ĐÃ LƯU
-(không phải giá trị chưa lưu trên form) trực tiếp từ tiến trình Dashboard —
-xác nhận token/chat id đúng ngay lập tức thay vì phải chờ tới lần cảnh báo
-thật đầu tiên mới biết cấu hình sai.
+Không còn công tắc bật/tắt riêng — điền đủ cả 2 trường là kênh hoạt động
+ngay, xoá Chat ID là tạm dừng. Lưu cấu hình này **khởi động lại Worker**
+ngay (cùng cách "Lưu trữ Backup" đã làm) — vì `worker/backup/alerting.py`
+chạy trong tiến trình Worker, và `settings` singleton của mỗi tiến trình
+chỉ đọc `.env` một lần lúc khởi động. Nút **"Gửi thử"** gửi ngay một tin
+nhắn thật bằng cấu hình ĐÃ LƯU (không phải giá trị chưa lưu trên form)
+trực tiếp từ tiến trình Dashboard — xác nhận token/chat id đúng ngay lập
+tức thay vì phải chờ tới lần cảnh báo thật đầu tiên mới biết cấu hình sai.
 
 ### 7.3. Phát hiện bất thường (`worker/backup/anomaly.py`) — thống kê, KHÔNG dùng AI
 
@@ -435,8 +435,9 @@ tầng policy khi thêm action_id mới.
      (+ `immutable_lock_days` nếu slot đó `immutable: true`)
    - `backup_alert_webhook_url` (tuỳ chọn — để trống thì chỉ log, không gửi
      webhook; hiện chỉ chỉnh được qua `.env`, chưa có form trên Settings)
-   - `telegram_bot_token`/`telegram_chat_id`/`telegram_alerts_enabled` —
-     cấu hình qua Settings → **Cảnh báo Telegram** (chỉ admin), xem mục 7.2b
+   - `telegram_backup_bot_token`/`telegram_backup_chat_id` —
+     cấu hình qua trang riêng **Alert Telegram** (`/telegram-alerts`, chỉ
+     admin), xem mục 7.2b
 
 Thiếu cấu hình transport cho một slot khiến `get_backend()` raise
 `BackupTargetNotConfiguredError` ngay khi cần dùng slot đó — lỗi rõ ràng,

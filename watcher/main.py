@@ -210,10 +210,10 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
             session.refresh(incident)
             incident_id = incident.id
 
-        # 2026-08-05: "cảnh báo lỗi cụm" Telegram category (shared/
-        # telegram_alerts.py) — its own independent
-        # telegram_incident_alerts_enabled toggle, checked inside
-        # send_incident_alert itself. One message per ceph_code check,
+        # 2026-08-05: "cảnh báo lỗi cụm" Telegram channel (shared/
+        # telegram_alerts.py) — its own independent bot token/chat id
+        # (telegram_incident_bot_token/telegram_incident_chat_id), checked
+        # inside send_incident_alert itself. One message per ceph_code check,
         # matching the one-Incident-per-check granularity above. Best-
         # effort/never raises (see that module's own docstring) — placed
         # OUTSIDE the DB session block above on purpose, same "don't hold a

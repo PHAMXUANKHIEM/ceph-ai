@@ -248,44 +248,36 @@ class Settings(BaseSettings):
     # to an external endpoint.
     backup_alert_webhook_url: str = ""
 
-    # Telegram delivery for the SAME backup alerts above (worker/backup/
-    # alerting.py::send_alert) — a second, independent channel alongside
-    # backup_alert_webhook_url, not a replacement for it (both can be
-    # configured together; either/both blank just means that channel is
-    # skipped). SEND-ONLY: this app never runs a Telegram bot that listens
-    # for incoming messages/commands (see shared/telegram_client.py's own
-    # docstring) — every remediation action still requires the normal
-    # Dashboard propose-then-approve flow, regardless of Telegram.
-    # telegram_alerts_enabled is a separate on/off switch from "is a token
-    # configured" so an admin can temporarily silence Telegram delivery
-    # without having to blank out (and later retype) the token/chat id.
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
-    telegram_alerts_enabled: bool = False
-
-    # 2026-08-05: same Bot Token/Chat ID above, but two MORE independently
-    # toggleable alert categories on top of the backup one — "phân rõ cảnh
-    # báo Telegram theo loại" (backup/cluster-lỗi/phần cứng, mỗi loại bật
-    # tắt riêng). telegram_alerts_enabled above now specifically means
-    # "backup alerts"; kept under its original name (not renamed) to avoid
-    # a breaking .env rename for the already-shipped feature.
-    telegram_incident_alerts_enabled: bool = False
-    telegram_node_alerts_enabled: bool = False
-    # 2026-08-05: 4th category — dashboard/telegram_approval_bot.py. Unlike
-    # the 3 pure-notification categories above, this one lets an operator
-    # actually Duyệt/Từ chối an Action from Telegram (an inline-keyboard
-    # button press), not just read about it — see that module's own
-    # docstring for the full design and TRUST MODEL (anyone with access to
-    # telegram_chat_id can approve/reject any pending RISKY action).
-    # Deliberately its OWN toggle, off by default even if the other 3 are
-    # on — turning on "get notified" must never silently also turn on
-    # "can be approved from my phone".
-    telegram_approval_requests_enabled: bool = False
+    # 2026-08-06: Telegram alert delivery split into 3 fully INDEPENDENT
+    # channels — Backup, Lỗi cụm (cluster health), Phần cứng (node CPU/RAM)
+    # — each with its OWN Bot Token + Chat ID (previously all 3 shared one
+    # pair). "Configured" (both token AND chat id non-blank) IS the on/off
+    # switch for a channel — no separate enabled flag, so there is no way
+    # for a channel to be half-configured-but-off; to pause a channel,
+    # blank its chat id (keep the token) rather than retyping it later.
+    #
+    # Yêu cầu phê duyệt qua Telegram (Duyệt/Từ chối an Action from an
+    # inline-keyboard button, dashboard/telegram_approval_bot.py) is no
+    # longer its own 4th toggle — it is now a DEFAULT capability of EVERY
+    # channel configured below: a PENDING_APPROVAL Action's Duyệt/Từ chối
+    # request is broadcast to every channel that has a token+chat id set,
+    # simultaneously. Anyone in ANY of these 3 chats can approve/reject any
+    # pending RISKY action — see that module's own docstring for the full
+    # design and TRUST MODEL before configuring a group chat here.
+    #
+    # Backup alerts here are a SECOND, independent channel alongside
+    # backup_alert_webhook_url above, not a replacement for it.
+    telegram_backup_bot_token: str = ""
+    telegram_backup_chat_id: str = ""
+    telegram_incident_bot_token: str = ""
+    telegram_incident_chat_id: str = ""
+    telegram_node_bot_token: str = ""
+    telegram_node_chat_id: str = ""
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
-    # PENDING_APPROVAL Actions not yet sent to Telegram — short by design
-    # (unlike device_health/node_health's scan intervals above, this is a
-    # cheap indexed DB query, not a real SSH round trip, so there's no
-    # reason to space it out).
+    # PENDING_APPROVAL Actions not yet broadcast to every configured
+    # channel above — short by design (unlike device_health/node_health's
+    # scan intervals above, this is a cheap DB query, not a real SSH round
+    # trip, so there's no reason to space it out).
     telegram_approval_scan_interval_seconds: int = 10
 
     # watcher/node_health_monitor.py's own scan cadence — same reasoning as

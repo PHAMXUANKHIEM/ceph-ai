@@ -67,12 +67,11 @@ def test_send_alert_swallows_webhook_failure(monkeypatch):
 
 
 def _enable_telegram(monkeypatch, token="123:ABC", chat_id="-100999"):
-    monkeypatch.setattr(alerting.settings, "telegram_alerts_enabled", True, raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_bot_token", token, raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_chat_id", chat_id, raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", token, raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_chat_id", chat_id, raising=False)
 
 
-def test_send_alert_sends_telegram_when_enabled_and_configured(monkeypatch):
+def test_send_alert_sends_telegram_when_configured(monkeypatch):
     monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
     _enable_telegram(monkeypatch)
     calls = []
@@ -91,11 +90,10 @@ def test_send_alert_sends_telegram_when_enabled_and_configured(monkeypatch):
     assert "CRITICAL" in text
 
 
-def test_send_alert_skips_telegram_when_disabled(monkeypatch):
+def test_send_alert_skips_telegram_when_not_configured(monkeypatch):
     monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_alerts_enabled", False, raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_bot_token", "123:ABC", raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", "", raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_chat_id", "", raising=False)
     calls = []
     monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: calls.append(a))
 
@@ -104,11 +102,10 @@ def test_send_alert_skips_telegram_when_disabled(monkeypatch):
     assert calls == []
 
 
-def test_send_alert_skips_telegram_when_enabled_but_not_configured(monkeypatch):
+def test_send_alert_skips_telegram_when_only_chat_id_configured(monkeypatch):
     monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_alerts_enabled", True, raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_bot_token", "", raising=False)
-    monkeypatch.setattr(alerting.settings, "telegram_chat_id", "", raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", "", raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_chat_id", "-100999", raising=False)
     calls = []
     monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: calls.append(a))
 

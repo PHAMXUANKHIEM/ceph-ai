@@ -3,15 +3,17 @@
 Two families of calls here, split by direction:
 
 - **Outbound-only** (`send_telegram_message`) — used by every alert
-  category that never needs a reply: backup (worker/backup/alerting.py),
-  cluster/hardware (shared/telegram_alerts.py), and the Settings page's
-  "Gửi thử" test button. A message sent this way is purely informational;
-  nothing reads a reply back.
+  category that never needs a reply: backup, cluster, hardware
+  (worker/backup/alerting.py, shared/telegram_alerts.py, each with its own
+  independent channel — config/settings.py), and the "Alert Telegram"
+  page's "Gửi thử" test button. A message sent this way is purely
+  informational; nothing reads a reply back.
 - **Approval-request** (`send_telegram_message_with_keyboard`,
   `edit_telegram_message`, `get_telegram_updates`,
-  `answer_telegram_callback`) — 2026-08-05, backs worker/telegram_approval_bot.py's
-  "Duyệt qua Telegram" feature (an explicit, opt-in 4th category, its own
-  `telegram_approval_requests_enabled` toggle — see that module's own
+  `answer_telegram_callback`) — 2026-08-05, reworked 2026-08-06, backs
+  dashboard/telegram_approval_bot.py's "Duyệt qua Telegram" feature — no
+  longer a separate opt-in toggle, now a default capability of every one
+  of the 3 alert channels above once configured (see that module's own
   docstring for the full design/trust-model). This IS the one place in
   this codebase that reads INCOMING Telegram updates
   (`get_telegram_updates`, Bot API long-polling `getUpdates`) — a

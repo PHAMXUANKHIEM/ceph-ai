@@ -69,16 +69,22 @@ def backup_target_env_names(slot: str) -> dict[str, str]:
     }
 
 
-# Telegram alert delivery (Settings page's "Cảnh báo Telegram" form) —
-# same one-dict-of-field-name-to-env-var-name role as CLUSTER_ENV_NAMES
-# above, for dashboard/routes/settings.py's telegram_settings_submit.
-TELEGRAM_ENV_NAMES: dict[str, str] = {
-    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
-    "telegram_chat_id": "TELEGRAM_CHAT_ID",
-    "telegram_alerts_enabled": "TELEGRAM_ALERTS_ENABLED",
-    "telegram_incident_alerts_enabled": "TELEGRAM_INCIDENT_ALERTS_ENABLED",
-    "telegram_node_alerts_enabled": "TELEGRAM_NODE_ALERTS_ENABLED",
-    "telegram_approval_requests_enabled": "TELEGRAM_APPROVAL_REQUESTS_ENABLED",
+# Telegram alert delivery (the "Alert Telegram" page,
+# dashboard/routes/telegram_alerts.py) — 3 fully independent channels, each
+# saved through its own form/route, so each gets its own field-name ->
+# env-var-name dict (same one-dict-per-form role as CLUSTER_ENV_NAMES
+# above) rather than one dict spanning all 3.
+TELEGRAM_BACKUP_ENV_NAMES: dict[str, str] = {
+    "telegram_backup_bot_token": "TELEGRAM_BACKUP_BOT_TOKEN",
+    "telegram_backup_chat_id": "TELEGRAM_BACKUP_CHAT_ID",
+}
+TELEGRAM_INCIDENT_ENV_NAMES: dict[str, str] = {
+    "telegram_incident_bot_token": "TELEGRAM_INCIDENT_BOT_TOKEN",
+    "telegram_incident_chat_id": "TELEGRAM_INCIDENT_CHAT_ID",
+}
+TELEGRAM_NODE_ENV_NAMES: dict[str, str] = {
+    "telegram_node_bot_token": "TELEGRAM_NODE_BOT_TOKEN",
+    "telegram_node_chat_id": "TELEGRAM_NODE_CHAT_ID",
 }
 
 

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Alert Telegram — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link active">Alert Telegram</a>{% endif %}
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>Alert Telegram</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          3 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
+          bằng chính việc điền hay để trống Chat ID (không có công tắc riêng). <strong>Yêu cầu phê duyệt
+          (Duyệt/Từ chối)</strong> là năng lực MẶC ĐỊNH của mọi kênh bên dưới đã được cấu hình — hễ 1 kênh
+          có đủ Bot Token + Chat ID, mọi đề xuất đang chờ duyệt sẽ tự động kèm 2 nút Duyệt/Từ chối gửi tới
+          đúng kênh đó, không cần bật thêm gì. Duyệt/Từ chối ở BẤT KỲ kênh nào trong số đang cấu hình đều
+          xử lý được — xem lưu ý về mức độ tin cậy (TRUST MODEL) ngay dưới mỗi kênh trước khi điền Chat ID.
+          Chưa có Bot Token/Chat ID? Xem
+          <a href="/telegram-alerts/help" target="_blank" rel="noopener">hướng dẫn kết nối Telegram từng bước →</a>
+        </p>
+      </div>
+    </section>
+
+    {% for ch in channels.values() %}
+    <section class="card">
+      <div class="card-header"><h2>{{ ch.label }}</h2></div>
+      <div class="card-body">
+        {% if ch.error %}
+          <p class="error">{{ ch.error }}</p>
+        {% endif %}
+        {% if ch.success %}
+          <p class="success">{{ ch.success }}</p>
+        {% endif %}
+        {% if ch.test_error %}
+          <p class="error">Gửi thử thất bại: {{ ch.test_error }}</p>
+        {% endif %}
+        {% if ch.test_success %}
+          <p class="success">{{ ch.test_success }}</p>
+        {% endif %}
+        <form class="login-box" method="post" action="/telegram-alerts/{{ ch.key }}">
+          <label>Bot Token (tạo qua @BotFather trên Telegram)
+            <input
+              type="password"
+              name="bot_token"
+              autocomplete="off"
+              placeholder="{% if ch.masked_bot_token %}{{ ch.masked_bot_token }} — để trống để giữ nguyên{% else %}vd: 123456789:AAExampleTokenHere{% endif %}"
+            >
+          </label>
+          <label>Chat ID (ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo)
+            <input type="text" name="chat_id" value="{{ ch.chat_id }}" placeholder="vd: -1001234567890">
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu</button>
+        </form>
+        <form method="post" action="/telegram-alerts/{{ ch.key }}/test" style="margin-top: 0.75rem;">
+          <button type="submit" class="btn btn-ghost">Gửi thử</button>
+        </form>
+        <p class="hint" style="margin-top: 0.75rem;">
+          <strong>TRUST MODEL:</strong> hễ điền Chat ID ở đây, BẤT KỲ ai đọc được và bấm nút trong đúng chat/
+          nhóm đó đều Duyệt/Từ chối được các đề xuất đang chờ — không riêng gì cảnh báo của kênh này, mà mọi
+          đề xuất chờ duyệt trong toàn hệ thống (Backup/Lỗi cụm/Phần cứng/đề xuất thủ công). Chỉ điền Chat ID
+          là chat riêng với người bạn tin tưởng, hoặc một nhóm nhỏ đáng tin cậy — không phải kênh công khai.
+          Không cần khởi động lại gì cho phần Duyệt/Từ chối — áp dụng ngay trong tiến trình Dashboard.
+        </p>
+      </div>
+    </section>
+    {% endfor %}
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

@@ -1,17 +1,16 @@
 """Category-scoped Telegram senders for Watcher-detected alerts (cluster
-health/Incident errors, node hardware) — "phân rõ cảnh báo Telegram theo
-loại" feature: backup/cluster-lỗi/phần cứng must each be switchable
-independently, never all-or-nothing.
+health/Incident errors, node hardware) — 2026-08-06: each category is now
+its own fully independent Telegram channel with its OWN Bot Token/Chat ID
+(previously all 3 categories shared one pair, switched on/off by a
+separate per-category toggle). "Configured" (both token and chat id
+non-blank) IS the on/off switch now — there is no separate enabled flag.
 
 Kept in shared/ (not watcher/) so it stays importable from either process
 without crossing any layering boundary, same posture as
 shared/router_client.py/shared/telegram_client.py. Deliberately SEPARATE
-from worker/backup/alerting.py::send_alert — that module keeps its own
-independent `telegram_alerts_enabled` toggle + webhook delivery for backup
-alerts specifically, untouched by this module. All three categories
-(backup here excluded) share the SAME Bot Token/Chat ID
-(`settings.telegram_bot_token`/`telegram_chat_id`) — only the per-category
-on/off switch differs, not the destination.
+from worker/backup/alerting.py::send_alert — that module owns its own
+independent Backup channel config + webhook delivery, untouched by this
+module.
 
 Best-effort like every other alert sender in this codebase: a
 TelegramSendError here is logged and swallowed, never raised to the
@@ -40,11 +39,11 @@ _INCIDENT_SEVERITY_PREFIX = {
 }
 
 
-def _send(text: str) -> None:
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+def _send(bot_token: str, chat_id: str, text: str) -> None:
+    if not bot_token or not chat_id:
         return
     try:
-        send_telegram_message(settings.telegram_bot_token, settings.telegram_chat_id, text)
+        send_telegram_message(bot_token, chat_id, text)
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
 
@@ -59,13 +58,10 @@ def send_incident_alert(ceph_code: str, severity: str | None, log_excerpt: str |
     detail` check code is always what reaches this function via the one
     call site above).
 
-    No-op if `settings.telegram_incident_alerts_enabled` is off, or if
-    bot token/chat id aren't configured yet — checked here (not left to
-    send_telegram_message's own "missing config" error) so an operator who
-    simply hasn't turned this category on never sees a log entry about it
-    "failing"."""
-    if not settings.telegram_incident_alerts_enabled:
-        return
+    No-op if the Lỗi cụm channel's bot token/chat id aren't configured yet
+    — checked here (not left to send_telegram_message's own "missing
+    config" error) so an operator who simply hasn't set up this channel
+    never sees a log entry about it "failing"."""
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
     excerpt = (log_excerpt or "").strip()
     if len(excerpt) > _MAX_EXCERPT_CHARS:
@@ -73,16 +69,13 @@ def send_incident_alert(ceph_code: str, severity: str | None, log_excerpt: str |
     text = f"{prefix} Cụm Ceph: {ceph_code}"
     if excerpt:
         text += f"\n{excerpt}"
-    _send(text)
+    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, text)
 
 
 def send_node_alert(host: str, message: str) -> None:
     """Called once per NEWLY-flagged node resource problem
     (watcher/node_health_monitor.py::create_or_resolve_node_health_incidents
     — only when a new Incident is created, not resent on every scan a host
-    stays flagged). No-op if `settings.telegram_node_alerts_enabled` is
-    off, or bot token/chat id aren't configured yet (same reasoning as
-    send_incident_alert above)."""
-    if not settings.telegram_node_alerts_enabled:
-        return
-    _send(f"\U0001f7e0 Phần cứng node {host}\n{message}")
+    stays flagged). No-op if the Phần cứng channel's bot token/chat id
+    aren't configured yet (same reasoning as send_incident_alert above)."""
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, f"\U0001f7e0 Phần cứng node {host}\n{message}")

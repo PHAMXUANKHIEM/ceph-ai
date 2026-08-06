@@ -27,6 +27,7 @@
           </div>
         </div>
         <a href="/settings" class="nav-link active">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
@@ -43,7 +44,6 @@
       <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
       <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch Ceph</button>
       <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Lưu trữ Backup</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'telegram' %}active{% endif %}" data-section="telegram">Cảnh báo Telegram</button>
       <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
       {% endif %}
       <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
@@ -367,72 +367,6 @@
 
           <p class="hint">Ai được ghi vào slot nào (danh sách <code>backup_targets:</code>) và slot nào là bản immutable cấu hình tại <code>worker/policy/backup_policy.yaml</code> — không phải ở đây.</p>
           <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
-        </form>
-      </div>
-    </section>
-
-    <section class="card settings-panel" data-panel="telegram" {% if active_section != 'telegram' %}hidden{% endif %}>
-      <div class="card-header"><h2>Cảnh báo Telegram</h2></div>
-      <div class="card-body">
-        {% if telegram_error %}
-          <p class="error">{{ telegram_error }}</p>
-        {% endif %}
-        {% if telegram_success %}
-          <p class="success">{{ telegram_success }}</p>
-        {% endif %}
-        {% if telegram_test_error %}
-          <p class="error">Gửi thử thất bại: {{ telegram_test_error }}</p>
-        {% endif %}
-        {% if telegram_test_success %}
-          <p class="success">{{ telegram_test_success }}</p>
-        {% endif %}
-        <p class="hint">
-          Một Bot Token/Chat ID DUY NHẤT, dùng chung cho cả 4 mục bên dưới — bật/tắt riêng từng mục,
-          không ảnh hưởng tới các mục còn lại. 3 mục đầu chỉ gửi tin nhắn MỘT CHIỀU (thông báo, không
-          làm gì thêm); mục cuối ("Yêu cầu phê duyệt qua Telegram") khác — bấm nút trên Telegram THỰC
-          SỰ duyệt/từ chối được, xem lưu ý riêng ngay dưới ô đó trước khi bật.
-          Chưa có Bot Token/Chat ID? Xem
-          <a href="/settings/telegram/help" target="_blank" rel="noopener">hướng dẫn kết nối Telegram từng bước →</a>
-        </p>
-        <form class="login-box" method="post" action="/settings/telegram">
-          <label>Bot Token (tạo qua @BotFather trên Telegram)
-            <input
-              type="password"
-              name="telegram_bot_token"
-              autocomplete="off"
-              placeholder="{% if masked_telegram_token %}{{ masked_telegram_token }} — để trống để giữ nguyên{% else %}vd: 123456789:AAExampleTokenHere{% endif %}"
-            >
-          </label>
-          <label>Chat ID (ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo)
-            <input type="text" name="telegram_chat_id" value="{{ telegram_chat_id }}" placeholder="vd: -1001234567890">
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="telegram_alerts_enabled" value="true" {% if telegram_alerts_enabled %}checked{% endif %}>
-            Cảnh báo <strong>Backup</strong> (ceph-backup thất bại/quá hạn/bất thường, digest hàng ngày)
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="telegram_incident_alerts_enabled" value="true" {% if telegram_incident_alerts_enabled %}checked{% endif %}>
-            Cảnh báo <strong>lỗi cụm</strong> (MON/OSD/PG... — mọi sự cố Watcher phát hiện qua <code>ceph health detail</code>)
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="telegram_node_alerts_enabled" value="true" {% if telegram_node_alerts_enabled %}checked{% endif %}>
-            Cảnh báo <strong>phần cứng</strong> (CPU/RAM node cao bất thường, kéo dài)
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="telegram_approval_requests_enabled" value="true" {% if telegram_approval_requests_enabled %}checked{% endif %}>
-            <strong>Yêu cầu phê duyệt qua Telegram</strong> (nút Duyệt/Từ chối ngay trên mọi đề xuất đang chờ)
-          </label>
-          <p class="hint">
-            <strong>Lưu ý khi bật mục cuối:</strong> đây là mục DUY NHẤT trong 4 mục ở đây có thể THỰC SỰ
-            duyệt/từ chối một hành động — không chỉ thông báo. Bất kỳ ai đọc được và bấm nút trong đúng
-            Chat ID đã cấu hình ở trên đều duyệt/từ chối được, y hệt như đang có quyền đăng nhập Dashboard —
-            chỉ bật khi Chat ID đó là chat riêng với người bạn tin tưởng (hoặc một nhóm nhỏ đáng tin cậy),
-            không phải kênh công khai. Không cần khởi động lại gì — áp dụng ngay trong tiến trình Dashboard.
-          </p>
-          <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker/Watcher</button>
-        </form>
-        <form method="post" action="/settings/telegram/test" style="margin-top: 0.75rem;">
-          <button type="submit" class="btn btn-ghost">Gửi thử</button>
         </form>
       </div>
     </section>

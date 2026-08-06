@@ -26,7 +26,8 @@
             <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
           </div>
         </div>
-        <a href="/settings" class="nav-link active">Settings</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link active">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
@@ -43,9 +44,11 @@
       </div>
       <div class="card-body">
         <p class="hint">
-          Làm theo 3 bước dưới đây để lấy <strong>Bot Token</strong> và <strong>Chat ID</strong>, rồi
-          quay lại <a href="/settings#telegram">Settings → Cảnh báo Telegram</a> để dán vào và bấm
-          "Gửi thử". Toàn bộ thao tác này thực hiện ngay trong app Telegram, không cần cài thêm gì.
+          Trang <a href="/telegram-alerts">Alert Telegram</a> có <strong>3 kênh độc lập</strong> — Cảnh báo
+          Backup, Cảnh báo lỗi cụm, Cảnh báo phần cứng — mỗi kênh cần 1 cặp <strong>Bot Token</strong> +
+          <strong>Chat ID</strong> riêng. Làm theo 3 bước dưới đây cho MỖI kênh muốn bật (có thể lặp lại để
+          tạo 3 Bot riêng biệt — khuyến nghị, dễ phân biệt nguồn tin — hoặc dùng lại CÙNG 1 Bot cho cả 3 kênh
+          và chỉ đổi Chat ID nếu muốn gửi các loại cảnh báo tới các nhóm/kênh khác nhau).
         </p>
 
         <h3>Bước 1 — Tạo Bot qua @BotFather</h3>
@@ -53,22 +56,24 @@
           <li>Mở Telegram (điện thoại hoặc web), tìm tài khoản <code>@BotFather</code> (tài khoản chính
             chủ của Telegram, có tick xanh) và bắt đầu chat.</li>
           <li>Gõ lệnh <code>/newbot</code> và gửi.</li>
-          <li>BotFather hỏi <strong>tên hiển thị</strong> cho bot (vd: <code>Ceph AIOps Alert</code>) —
+          <li>BotFather hỏi <strong>tên hiển thị</strong> cho bot (vd: <code>Ceph AIOps Backup</code>) —
             gõ rồi gửi.</li>
           <li>BotFather hỏi tiếp <strong>username</strong> cho bot — phải là duy nhất trên toàn Telegram
-            và bắt buộc kết thúc bằng <code>bot</code> (vd: <code>ceph_aiops_alert_bot</code>).</li>
+            và bắt buộc kết thúc bằng <code>bot</code> (vd: <code>ceph_aiops_backup_bot</code>).</li>
           <li>BotFather trả về một đoạn xác nhận kèm dòng <strong>"Use this token to access the HTTP
             API"</strong>, ngay dưới là <strong>Bot Token</strong> — dạng
             <code>123456789:AAExampleTokenHere-restOfIt</code>. Copy lại chuỗi này, đây chính là giá
-            trị điền vào ô "Bot Token" trên Settings.</li>
+            trị điền vào ô "Bot Token" của đúng kênh đang cấu hình.</li>
         </ol>
         <p class="hint">
-          Giữ kín Bot Token — bất kỳ ai có token này đều gửi được tin nhắn nhân danh bot của bạn. Không
-          dán vào chat công khai, không commit vào git.
+          Giữ kín Bot Token — bất kỳ ai có token này đều gửi được tin nhắn nhân danh bot của bạn, VÀ (vì
+          Duyệt/Từ chối là mặc định của mọi kênh) đọc/đáp được cả các nút Duyệt/Từ chối gửi qua kênh đó.
+          Không dán vào chat công khai, không commit vào git. Muốn dùng chung 1 Bot cho cả 3 kênh, bỏ qua
+          bước này ở những kênh sau — chỉ cần lấy Chat ID riêng ở Bước 2.
         </p>
 
-        <h3>Bước 2 — Lấy Chat ID (nơi nhận cảnh báo)</h3>
-        <p>Chọn MỘT trong hai cách, tuỳ muốn cảnh báo gửi vào đâu:</p>
+        <h3>Bước 2 — Lấy Chat ID (nơi nhận cảnh báo của kênh này)</h3>
+        <p>Chọn MỘT trong hai cách, tuỳ muốn cảnh báo của kênh này gửi vào đâu:</p>
         <p><strong>Cách A — Gửi thẳng vào tin nhắn riêng với bot</strong></p>
         <ol>
           <li>Tìm đúng bot vừa tạo (theo username ở Bước 1), bấm <strong>Start</strong> hoặc gửi một
@@ -82,9 +87,9 @@
         </ol>
         <p><strong>Cách B — Gửi vào một nhóm/kênh Telegram</strong></p>
         <ol>
-          <li>Thêm bot vừa tạo vào nhóm/kênh muốn nhận cảnh báo (tìm theo username bot khi mời thành
-            viên). Với kênh (channel), phải thêm bot làm <strong>quản trị viên</strong> mới gửi tin
-            nhắn được.</li>
+          <li>Thêm bot vừa tạo vào nhóm/kênh muốn nhận cảnh báo của kênh này (tìm theo username bot khi
+            mời thành viên). Với kênh (channel), phải thêm bot làm <strong>quản trị viên</strong> mới
+            gửi tin nhắn được.</li>
           <li>Gửi một tin nhắn bất kỳ trong nhóm/kênh đó (để bot "thấy" được cuộc trò chuyện).</li>
           <li>Mở cùng địa chỉ <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> như
             Cách A — tìm <code>"chat":{"id": ...}</code>, lúc này là một số <strong>âm</strong> (vd:
@@ -97,41 +102,32 @@
 
         <h3>Bước 3 — Cấu hình trên ceph-aiops</h3>
         <ol>
-          <li>Vào <a href="/settings#telegram">Settings → Cảnh báo Telegram</a> (chỉ tài khoản admin
-            thấy mục này).</li>
-          <li>Dán <strong>Bot Token</strong> (Bước 1) và <strong>Chat ID</strong> (Bước 2) — dùng
-            CHUNG cho cả 4 mục bên dưới, chỉ cần điền một lần.</li>
-          <li>Tick chọn những mục muốn bật (tick bao nhiêu tuỳ ý, độc lập với nhau):
-            <ul>
-              <li><strong>Cảnh báo Backup</strong> — ceph-backup thất bại/quá hạn/bất thường, tổng
-                hợp hàng ngày (digest). Chỉ thông báo.</li>
-              <li><strong>Cảnh báo lỗi cụm</strong> — mọi sự cố Ceph thật (MON down, OSD down, PG
-                degraded, ...) Watcher phát hiện qua <code>ceph health detail</code>. Chỉ thông báo.</li>
-              <li><strong>Cảnh báo phần cứng</strong> — CPU hoặc RAM một node ở mức cao bất thường
-                (mặc định ≥90%), kéo dài liên tục qua nhiều lượt quét. Chỉ thông báo.</li>
-              <li><strong>Yêu cầu phê duyệt qua Telegram</strong> — khác 3 mục trên: MỌI đề xuất đang
-                chờ duyệt (bất kể do AI chẩn đoán, backup, phần cứng, hay bạn tự đề xuất trên Dashboard)
-                đều được gửi kèm 2 nút <strong>✅ Duyệt</strong> / <strong>❌ Từ chối</strong> ngay trên
-                Telegram — bấm là xử lý thật, y hệt bấm trên Dashboard. Đọc kỹ lưu ý ngay dưới ô này
-                trên trang Settings trước khi bật, vì bất kỳ ai trong đúng Chat ID đã cấu hình đều bấm
-                được.</li>
-            </ul>
-          </li>
-          <li>Bấm <strong>Lưu</strong> — Worker (Backup) và Watcher (lỗi cụm + phần cứng) tự khởi động
-            lại để áp dụng ngay; riêng mục "Yêu cầu phê duyệt" áp dụng ngay lập tức, không cần khởi
-            động lại gì (chạy sẵn trong tiến trình Dashboard).</li>
-          <li>Bấm <strong>Gửi thử</strong> — nếu cấu hình đúng, một tin nhắn xác nhận sẽ xuất hiện
-            ngay trong chat/nhóm đã chọn ở Bước 2 (xác nhận Bot Token/Chat ID hoạt động, không phụ
-            thuộc mục nào đang bật).</li>
+          <li>Vào <a href="/telegram-alerts">Alert Telegram</a> (chỉ tài khoản admin thấy trang này).</li>
+          <li>Ở đúng card của kênh đang cấu hình (Cảnh báo Backup / Cảnh báo lỗi cụm / Cảnh báo phần
+            cứng), dán <strong>Bot Token</strong> (Bước 1) và <strong>Chat ID</strong> (Bước 2), bấm
+            <strong>Lưu</strong>.</li>
+          <li>Kênh này lập tức được coi là "đã cấu hình" ngay khi cả 2 ô đều có giá trị — không có công
+            tắc bật/tắt riêng nào khác cần bấm. Duyệt/Từ chối cũng tự động áp dụng cho kênh này ngay lúc
+            đó, không cần bật thêm gì.</li>
+          <li>Lặp lại đúng 3 bước trên cho từng kênh còn lại muốn bật — độc lập hoàn toàn, bật kênh nào
+            không ảnh hưởng các kênh còn lại.</li>
+          <li>Bấm <strong>"Gửi thử"</strong> ở đúng card đó — nếu cấu hình đúng, một tin nhắn xác nhận sẽ
+            xuất hiện ngay trong chat/nhóm đã chọn ở Bước 2.</li>
         </ol>
         <p class="hint">
-          3 mục đầu chỉ GỬI cảnh báo một chiều — ceph-aiops không đọc/xử lý tin nhắn gửi ngược lại cho
-          bot ở 3 mục đó. Mục cuối ("Yêu cầu phê duyệt qua Telegram") là ngoại lệ duy nhất — xem lưu ý
-          về mức độ tin cậy ngay trên trang Settings trước khi bật. Nếu mục đó đang tắt (mặc định), mọi
-          hành động khắc phục vẫn phải đề xuất &amp; duyệt trên Dashboard như bình thường.
+          Lưu 1 kênh chỉ khởi động lại ĐÚNG tiến trình đọc kênh đó (Worker cho Backup; Watcher cho Lỗi
+          cụm/Phần cứng) — không đụng tới tiến trình còn lại. Muốn tạm dừng 1 kênh mà không phải gõ lại
+          Bot Token sau này, xoá trống ô Chat ID của đúng kênh đó rồi Lưu.
+        </p>
+        <p class="hint">
+          <strong>Về Duyệt/Từ chối qua Telegram:</strong> đây KHÔNG phải một mục riêng cần bật thêm nữa —
+          mọi kênh đã cấu hình ở trên đều nghiễm nhiên nhận được nút Duyệt/Từ chối cho mọi đề xuất đang
+          chờ (bất kể nguồn gốc). Bấm nút là xử lý thật, y hệt bấm trên Dashboard. Đọc kỹ TRUST MODEL ngay
+          dưới mỗi card trên trang Alert Telegram trước khi điền Chat ID nào — bất kỳ ai trong đúng chat/
+          nhóm đó đều Duyệt/Từ chối được.
         </p>
 
-        <p><a href="/settings#telegram" class="btn btn-ghost">← Quay lại Settings</a></p>
+        <p><a href="/telegram-alerts" class="btn btn-ghost">← Quay lại Alert Telegram</a></p>
       </div>
     </section>
   </main>

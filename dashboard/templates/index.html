@@ -45,6 +45,7 @@
           </div>
         </div>
         <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">

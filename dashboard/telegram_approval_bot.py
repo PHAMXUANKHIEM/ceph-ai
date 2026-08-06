@@ -1,8 +1,17 @@
 """Telegram-based "Duyệt"/"Từ chối" for PENDING_APPROVAL actions
-(2026-08-05) — the 4th, most powerful Telegram category: unlike Backup/
-Cảnh báo lỗi cụm/Phần cứng (all pure notifications), this one lets an
-operator actually resolve an Action from their phone, via an inline
-keyboard, without opening the Dashboard.
+(2026-08-05, reworked 2026-08-06 for 3 independent channels) — unlike a
+pure notification, this lets an operator actually resolve an Action from
+their phone, via an inline keyboard, without opening the Dashboard.
+
+2026-08-06: there is no longer a single shared Bot Token/Chat ID with its
+own separate "phê duyệt" toggle. Backup/Lỗi cụm/Phần cứng are now 3
+independent Telegram channels (config/settings.py), each with its own Bot
+Token + Chat ID, and Duyệt/Từ chối is a DEFAULT capability of EVERY one of
+them: a PENDING_APPROVAL Action's request is BROADCAST to every channel
+that has a token+chat id configured, simultaneously — approving/rejecting
+from any one of them resolves the Action everywhere. There is no separate
+on/off switch for this — "a channel is configured" IS "that channel can
+approve/reject".
 
 Lives in dashboard/ (NOT worker/ or watcher/) — the mutual-exclusion
 checks `approve_action_core` needs (a cluster upgrade or patch install
@@ -12,52 +21,69 @@ layering — the reverse direction, dashboard importing worker, is
 already fine and used elsewhere). Keeping this in dashboard/ avoids ever
 needing to relocate those checks.
 
-Two independent background DAEMON THREADS (`start()`, called once from
-`dashboard/app.py`'s lifespan startup — never from a request handler,
-must survive the whole process lifetime):
+Two kinds of background DAEMON THREADS, started once from
+`dashboard/app.py`'s lifespan startup (`start()`, never from a request
+handler, must survive the whole process lifetime):
 
 1. `_notify_loop` — short cadence
    (`settings.telegram_approval_scan_interval_seconds`, default 10s): scans
-   for `Action` rows at `PENDING_APPROVAL` never yet sent to Telegram
-   (`telegram_notified_at IS NULL`), sends each with a "✅ Duyệt"/"❌ Từ
-   chối" inline keyboard, and stamps `telegram_message_id`/
-   `telegram_notified_at` so it's never sent twice — including across a
-   Dashboard restart, since that state lives in the DB, not in memory.
-2. `_listen_loop` — Telegram Bot API long-polling (`getUpdates`), the one
-   place in this whole codebase that reads INCOMING Telegram messages.
-   For each `callback_query` (a button press): verifies the chat_id
-   matches configured config (see TRUST MODEL below), calls the EXACT
-   SAME `approve_action_core`/`reject_action_core`
-   (`dashboard/routes/actions.py`) the Dashboard's own HTML buttons use —
-   no second implementation to drift — then edits the original message to
-   show the outcome and answers the callback.
+   every `PENDING_APPROVAL` Action and, for each channel currently
+   configured that this Action hasn't been sent to yet (tracked in
+   `Action.telegram_message_ids`, a JSON dict of {channel_key: message_id}),
+   sends a "✅ Duyệt"/"❌ Từ chối" inline-keyboard message to THAT channel
+   and records its message id. A channel that fails to send (bad token,
+   bot not in that chat, network) is simply retried on the next scan —
+   it never blocks the other channels for the same Action. A channel
+   configured/fixed AFTER an Action was created still picks it up on the
+   very next scan (no restart needed, no "too late" window).
+2. `_listen_supervisor_loop` + one `_listen_loop_for_token` thread PER
+   UNIQUE bot token currently in use — Telegram's `getUpdates` long-poll
+   and its `offset` ack are scoped to a BOT TOKEN, not to a chat, so if two
+   channels happen to share the same bot (different chat ids, same token),
+   there must be exactly ONE poller for that token, not one per channel
+   (two independent pollers on the same token would race for the same
+   offset and drop/duplicate updates). The supervisor reconciles the set of
+   listener threads against the currently-configured tokens every few
+   seconds — starting one for a newly-configured token, stopping one whose
+   token is no longer used by any channel. Each listener thread is the one
+   place in this whole codebase that reads INCOMING Telegram updates
+   (`get_telegram_updates`); a `callback_query` (a button press) is
+   verified against the set of ALL currently-configured chat ids (see
+   TRUST MODEL below), then calls the EXACT SAME `approve_action_core`/
+   `reject_action_core` (`dashboard/routes/actions.py`) the Dashboard's own
+   HTML buttons use — no second implementation to drift — then edits the
+   original message to show the outcome and answers the callback.
 
-Both threads check `settings.telegram_approval_requests_enabled` (plus
-bot token/chat id) FRESH on every loop iteration before ever touching the
-network — toggling the Settings checkbox takes effect on the very next
+Both the notify scan and every listener thread read `settings` FRESH on
+every iteration before touching the network — editing a channel's Bot
+Token/Chat ID on the "Alert Telegram" page takes effect on the very next
 iteration, no Dashboard restart required (this config lives IN this same
-process, unlike the Worker/Watcher-side Telegram toggles).
+process, unlike the Worker/Watcher-side Telegram channels).
 
-TRUST MODEL — read before enabling this: authorization here is "did this
-button press come from `settings.telegram_chat_id`", the SAME identity
-already used to decide whether ANY alert is delivered there at all. If
-that chat is a private 1:1 chat with one trusted operator, approving from
-Telegram is exactly as strong as that operator's own Telegram account. If
-it's a GROUP chat with several people, EVERYONE in that group can
-approve/reject any RISKY action currently pending — same trust boundary
-as sharing Dashboard login credentials, just a different set of people.
-There is NO mapping anywhere in this codebase from a Telegram account to a
-specific Dashboard user — the audit trail records `actor="telegram:<username-or-id>"`,
-never a real Dashboard username, when a decision comes from here.
+TRUST MODEL — read before configuring any channel's Chat ID: authorization
+here is "did this button press come from ONE OF the currently-configured
+channels' chat ids", the SAME identities already used to decide whether
+ANY alert is delivered there at all. If a chat is a private 1:1 chat with
+one trusted operator, approving from Telegram is exactly as strong as that
+operator's own Telegram account. If it's a GROUP chat with several people,
+EVERYONE in that group can approve/reject any RISKY action currently
+pending — same trust boundary as sharing Dashboard login credentials, just
+a different set of people. Configuring 3 channels means 3 chats (or fewer,
+if some share a chat id) all carry this same power — there is no way to
+make one channel "notify only". There is NO mapping anywhere in this
+codebase from a Telegram account to a specific Dashboard user — the audit
+trail records `actor="telegram:<username-or-id>"`, never a real Dashboard
+username, when a decision comes from here.
 
 Deliberately synchronous throughout (shared/telegram_client.py's blocking
-httpx calls, unchanged) — both loops run entirely off FastAPI's own
-asyncio event loop, in their own dedicated threads, so a ~30s Telegram
+httpx calls, unchanged) — every loop runs entirely off FastAPI's own
+asyncio event loop, in its own dedicated thread, so a ~30s Telegram
 long-poll response never stalls a single Dashboard HTTP request.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import datetime
@@ -85,21 +111,41 @@ logger = logging.getLogger(__name__)
 APPROVE_CALLBACK_PREFIX = "approve:"
 REJECT_CALLBACK_PREFIX = "reject:"
 # Telegram holds the getUpdates HTTP connection open for up to this long
-# waiting for a new update — this IS the loop's own pacing, no separate
-# sleep needed between iterations while updates keep arriving.
+# waiting for a new update — this IS each listener thread's own pacing, no
+# separate sleep needed between iterations while updates keep arriving.
 _LONG_POLL_TIMEOUT_SECONDS = 30
-# Backoff between iterations when the feature is off/unconfigured, or
-# after an API error — deliberately short (a Settings toggle flip should
-# take effect quickly) but not zero (must never busy-loop).
+# Backoff between iterations when idle/unconfigured/after an API error, and
+# the supervisor's own reconcile cadence — deliberately short (a config
+# change on the "Alert Telegram" page should take effect quickly) but not
+# zero (must never busy-loop).
 _IDLE_BACKOFF_SECONDS = 5
 
+# (channel_key, bot_token field, chat_id field) on config.settings.Settings —
+# the single source of truth for which 3 channels exist and their field
+# names, used by both the notify and listen sides below.
+_CHANNELS = (
+    ("backup", "telegram_backup_bot_token", "telegram_backup_chat_id"),
+    ("incident", "telegram_incident_bot_token", "telegram_incident_chat_id"),
+    ("node", "telegram_node_bot_token", "telegram_node_chat_id"),
+)
 
-def _configured() -> bool:
-    return bool(
-        settings.telegram_approval_requests_enabled
-        and settings.telegram_bot_token
-        and settings.telegram_chat_id
-    )
+
+def _configured_channels() -> list[tuple[str, str, str]]:
+    """[(channel_key, bot_token, chat_id), ...] for every channel that has
+    BOTH fields filled in — reads `settings` fresh on every call, never
+    cached, so a config change is picked up on the very next scan/reconcile
+    without a Dashboard restart."""
+    result = []
+    for key, token_field, chat_field in _CHANNELS:
+        bot_token = getattr(settings, token_field)
+        chat_id = getattr(settings, chat_field)
+        if bot_token and chat_id:
+            result.append((key, bot_token, chat_id))
+    return result
+
+
+def _known_chat_ids() -> set[str]:
+    return {str(chat_id) for _, _, chat_id in _configured_channels()}
 
 
 def _action_message_text(action: Action) -> str:
@@ -119,21 +165,41 @@ def _keyboard_for(action_id: str) -> list[tuple[str, str]]:
     ]
 
 
+def _load_message_ids(action: Action) -> dict:
+    if not action.telegram_message_ids:
+        return {}
+    try:
+        parsed = json.loads(action.telegram_message_ids)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _notify_pending_actions() -> None:
     """One scan cycle. Reads the candidate id list in one query, then
-    re-checks + sends + stamps EACH Action in its own session/transaction
-    — a failure sending one candidate must not lose progress already made
-    on the others in this same scan, and a status change that happened
-    between the initial query and this row's turn (approved/rejected via
-    the Dashboard in the meantime) must be re-checked fresh, not assumed
-    still true from the initial query."""
+    re-checks + broadcasts-to-missing-channels + stamps EACH Action in its
+    own session/transaction — a failure on one candidate (or one channel of
+    one candidate) must not lose progress already made on the others in
+    this same scan, and a status change that happened between the initial
+    query and this row's turn (approved/rejected via the Dashboard in the
+    meantime) must be re-checked fresh, not assumed still true from the
+    initial query.
+
+    Deliberately queries ALL PENDING_APPROVAL rows every cycle (no
+    `telegram_notified_at IS NULL` SQL filter like the single-channel
+    design used) — "already sent to every currently-configured channel" is
+    now a JSON-membership check, not expressible as a simple indexed
+    filter, and this tool's expected scale (a handful of concurrently
+    pending actions on a lab/small deployment) makes that an acceptable
+    trade for the simpler, more correct broadcast/backfill semantics."""
+    channels = _configured_channels()
+    if not channels:
+        return
+
     with db.SessionLocal() as session:
         candidate_ids = [
             row.id
-            for row in session.query(Action.id)
-            .filter(Action.status == ActionStatus.PENDING_APPROVAL.value)
-            .filter(Action.telegram_notified_at.is_(None))
-            .all()
+            for row in session.query(Action.id).filter(Action.status == ActionStatus.PENDING_APPROVAL.value).all()
         ]
 
     for action_id in candidate_ids:
@@ -141,32 +207,42 @@ def _notify_pending_actions() -> None:
             action = session.get(Action, action_id)
             if action is None or action.status != ActionStatus.PENDING_APPROVAL.value:
                 continue
-            if action.telegram_notified_at is not None:
+            sent = _load_message_ids(action)
+            missing = [ch for ch in _configured_channels() if ch[0] not in sent]
+            if not missing:
                 continue
-            try:
-                message_id = send_telegram_message_with_keyboard(
-                    settings.telegram_bot_token,
-                    settings.telegram_chat_id,
-                    _action_message_text(action),
-                    _keyboard_for(action.id),
-                )
-            except TelegramSendError:
-                logger.exception(
-                    "telegram_approval_bot: failed to send approval request for action %s", action_id
-                )
-                continue
-            action.telegram_message_id = message_id
-            action.telegram_notified_at = datetime.utcnow()
-            session.commit()
+
+            changed = False
+            for channel_key, bot_token, chat_id in missing:
+                try:
+                    message_id = send_telegram_message_with_keyboard(
+                        bot_token,
+                        chat_id,
+                        _action_message_text(action),
+                        _keyboard_for(action.id),
+                    )
+                except TelegramSendError:
+                    logger.exception(
+                        "telegram_approval_bot: failed to send approval request for action %s on channel %s",
+                        action_id,
+                        channel_key,
+                    )
+                    continue
+                sent[channel_key] = message_id
+                changed = True
+
+            if changed:
+                action.telegram_message_ids = json.dumps(sent)
+                action.telegram_notified_at = datetime.utcnow()
+                session.commit()
 
 
 def _notify_loop(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
-        if _configured():
-            try:
-                _notify_pending_actions()
-            except Exception:
-                logger.exception("telegram_approval_bot: _notify_pending_actions crashed")
+        try:
+            _notify_pending_actions()
+        except Exception:
+            logger.exception("telegram_approval_bot: _notify_pending_actions crashed")
         stop_event.wait(max(1, settings.telegram_approval_scan_interval_seconds))
 
 
@@ -174,7 +250,7 @@ _OUTCOME_EDIT_SUFFIX = {
     ApprovalOutcome.APPROVED: "\n\n✅ ĐÃ DUYỆT.",
     ApprovalOutcome.ACKNOWLEDGED: "\n\n✅ Đã xác nhận (không có lệnh tự động để chạy cho mục này).",
     ApprovalOutcome.REJECTED: "\n\n❌ ĐÃ TỪ CHỐI.",
-    ApprovalOutcome.ALREADY_HANDLED: "\n\n⚠️ Đã được xử lý từ trước (có thể qua Dashboard).",
+    ApprovalOutcome.ALREADY_HANDLED: "\n\n⚠️ Đã được xử lý từ trước (có thể qua Dashboard hoặc kênh khác).",
 }
 _OUTCOME_TOAST = {
     ApprovalOutcome.APPROVED: "Đã duyệt",
@@ -191,7 +267,11 @@ def _actor_for(callback_query: dict) -> str:
     return f"telegram:{username or user_id or 'unknown'}"
 
 
-def _handle_callback_query(callback_query: dict) -> None:
+def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
+    """`bot_token` is the token of the listener thread that received this
+    update — answering the callback / editing the message MUST use that
+    same bot (a different configured bot cannot act on a message it never
+    sent)."""
     data = callback_query.get("data") or ""
     callback_id = callback_query.get("id")
     message = callback_query.get("message") or {}
@@ -199,15 +279,17 @@ def _handle_callback_query(callback_query: dict) -> None:
     incoming_chat_id = str((message.get("chat") or {}).get("id", ""))
 
     # TRUST MODEL — see this module's own docstring: only a button press
-    # coming from the configured chat is ever honored.
-    if not settings.telegram_chat_id or incoming_chat_id != str(settings.telegram_chat_id):
+    # coming from one of the currently-configured channels' chat ids is
+    # ever honored.
+    known_chat_ids = _known_chat_ids()
+    if not known_chat_ids or incoming_chat_id not in known_chat_ids:
         logger.warning(
             "telegram_approval_bot: ignoring callback_query from unrecognized chat_id=%s",
             incoming_chat_id,
         )
         if callback_id:
             try:
-                answer_telegram_callback(settings.telegram_bot_token, callback_id, "Không có quyền")
+                answer_telegram_callback(bot_token, callback_id, "Không có quyền")
             except TelegramSendError:
                 pass
         return
@@ -236,7 +318,7 @@ def _handle_callback_query(callback_query: dict) -> None:
 
     if callback_id:
         try:
-            answer_telegram_callback(settings.telegram_bot_token, callback_id, toast)
+            answer_telegram_callback(bot_token, callback_id, toast)
         except TelegramSendError:
             logger.exception("telegram_approval_bot: answerCallbackQuery failed")
 
@@ -245,23 +327,20 @@ def _handle_callback_query(callback_query: dict) -> None:
             action = session.get(Action, action_id)
             base_text = _action_message_text(action) if action is not None else f"Action ID: {action_id}"
         try:
-            edit_telegram_message(
-                settings.telegram_bot_token, settings.telegram_chat_id, message_id, base_text + edit_suffix
-            )
+            edit_telegram_message(bot_token, incoming_chat_id, message_id, base_text + edit_suffix)
         except TelegramSendError:
             logger.exception("telegram_approval_bot: failed to edit message %s after decision", message_id)
 
 
-def _listen_loop(stop_event: threading.Event) -> None:
+def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
+    """One long-polling loop for a single bot token — see this module's own
+    docstring for why this is grouped by TOKEN rather than by channel."""
     offset: int | None = None
     while not stop_event.is_set():
-        if not _configured():
-            stop_event.wait(_IDLE_BACKOFF_SECONDS)
-            continue
         try:
-            updates = get_telegram_updates(settings.telegram_bot_token, offset, _LONG_POLL_TIMEOUT_SECONDS)
+            updates = get_telegram_updates(bot_token, offset, _LONG_POLL_TIMEOUT_SECONDS)
         except TelegramSendError:
-            logger.exception("telegram_approval_bot: getUpdates failed")
+            logger.exception("telegram_approval_bot: getUpdates failed for a configured bot")
             stop_event.wait(_IDLE_BACKOFF_SECONDS)
             continue
 
@@ -271,9 +350,55 @@ def _listen_loop(stop_event: threading.Event) -> None:
             if not callback_query:
                 continue
             try:
-                _handle_callback_query(callback_query)
+                _handle_callback_query(callback_query, bot_token)
             except Exception:
                 logger.exception("telegram_approval_bot: unexpected error handling callback_query")
+
+
+def _listen_supervisor_loop(stop_event: threading.Event) -> None:
+    """Reconciles the set of running `_listen_loop_for_token` threads
+    against the currently-configured bot tokens every `_IDLE_BACKOFF_SECONDS`
+    — starts one for a newly-configured token, stops one whose token no
+    channel uses anymore. A stopped thread exits after its current
+    long-poll call returns (up to ~30s later), same "applies on the next
+    iteration" latency this module has always had for config changes.
+
+    DEBOUNCED on purpose: a token only gets a listener thread once it has
+    been seen configured on TWO CONSECUTIVE reconcile passes (i.e. it held
+    steady across at least one full `_IDLE_BACKOFF_SECONDS` interval), not
+    on the very first sighting. A genuinely-saved channel (via the "Alert
+    Telegram" page or `.env`) trivially satisfies this — it's still
+    configured 5s later — costing it nothing but one extra poll interval of
+    startup latency. A token that only exists for the sub-millisecond
+    duration of a single test's monkeypatch/direct-`settings`-mutation
+    (this module has no other way to distinguish "real" from "test" state)
+    is essentially never observed on two separate 5s-apart polls, so it
+    never spawns a real, network-calling thread. Without this, a spurious
+    thread each making a real, ~30-40s-blocking `getUpdates` HTTP call to
+    Telegram was found (2026-08-06) to pile up across a full test-suite run
+    and starve unrelated tests of threads/connections — the whole reason
+    this debounce exists."""
+    listeners: dict[str, tuple[threading.Thread, threading.Event]] = {}
+    previously_seen_tokens: set[str] = set()
+    while not stop_event.is_set():
+        current_tokens = {token for _, token, _ in _configured_channels()}
+        stable_tokens = current_tokens & previously_seen_tokens
+        previously_seen_tokens = current_tokens
+
+        for token in stable_tokens - listeners.keys():
+            token_stop = threading.Event()
+            thread = threading.Thread(target=_listen_loop_for_token, args=(token, token_stop), daemon=True)
+            thread.start()
+            listeners[token] = (thread, token_stop)
+
+        for token in list(listeners.keys() - current_tokens):
+            _, token_stop = listeners.pop(token)
+            token_stop.set()
+
+        stop_event.wait(_IDLE_BACKOFF_SECONDS)
+
+    for _, token_stop in listeners.values():
+        token_stop.set()
 
 
 _threads: list[threading.Thread] = []
@@ -284,11 +409,12 @@ def start() -> None:
     """Called once from `dashboard/app.py`'s lifespan startup. Idempotent
     — a second call (e.g. FastAPI's TestClient re-entering the app's
     lifespan across many tests within one process, or an app reload) is a
-    no-op; both threads are daemon=True so they never block process exit
-    and need no explicit shutdown hook."""
+    no-op; both top-level threads (and every dynamically-spawned per-token
+    listener) are daemon=True so they never block process exit and need no
+    explicit shutdown hook."""
     if _threads:
         return
-    for target in (_notify_loop, _listen_loop):
+    for target in (_notify_loop, _listen_supervisor_loop):
         thread = threading.Thread(target=target, args=(_stop_event,), daemon=True)
         thread.start()
         _threads.append(thread)

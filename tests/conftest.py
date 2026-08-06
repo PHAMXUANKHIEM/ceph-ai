@@ -116,25 +116,27 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "ceph_exec_mode", TEST_CEPH_EXEC_MODE)
     monkeypatch.setattr(settings, "ssh_key_path", str(test_ssh_key_path))
 
-    # 2026-08-05 fix (found live): a real .env on THIS machine had genuine
-    # Telegram credentials configured (an operator actually testing the
-    # feature) with telegram_alerts_enabled=true — every pre-existing test
-    # in tests/test_backup_alerting.py that never touches these fields
-    # inherited those REAL values from the global `settings` singleton,
-    # so worker/backup/alerting.py::send_alert's new Telegram delivery
-    # path fired for real (or against whatever the test's own unrelated
-    # httpx.post fake returned, crashing with AttributeError since that
-    # fake wasn't shaped like a real response). Same "test suite must not
-    # depend on whatever a real .env happens to contain" principle as
-    # every other field pinned above — blank/off by default here; any
-    # test that specifically exercises Telegram delivery already
-    # monkeypatches these back to real-looking test values itself.
-    monkeypatch.setattr(settings, "telegram_bot_token", "", raising=False)
-    monkeypatch.setattr(settings, "telegram_chat_id", "", raising=False)
-    monkeypatch.setattr(settings, "telegram_alerts_enabled", False, raising=False)
-    monkeypatch.setattr(settings, "telegram_incident_alerts_enabled", False, raising=False)
-    monkeypatch.setattr(settings, "telegram_node_alerts_enabled", False, raising=False)
-    monkeypatch.setattr(settings, "telegram_approval_requests_enabled", False, raising=False)
+    # 2026-08-05 fix (found live), updated 2026-08-06 for the 3-independent-
+    # channel redesign: a real .env on THIS machine had genuine Telegram
+    # credentials configured (an operator actually testing the feature) —
+    # every pre-existing test in tests/test_backup_alerting.py that never
+    # touches these fields inherited those REAL values from the global
+    # `settings` singleton, so worker/backup/alerting.py::send_alert's
+    # Telegram delivery path fired for real (or against whatever the
+    # test's own unrelated httpx.post fake returned, crashing with
+    # AttributeError since that fake wasn't shaped like a real response).
+    # Same "test suite must not depend on whatever a real .env happens to
+    # contain" principle as every other field pinned above — blank by
+    # default for all 3 channels here (blank = "not configured", no
+    # separate enabled flag anymore); any test that specifically exercises
+    # Telegram delivery already monkeypatches these back to real-looking
+    # test values itself.
+    monkeypatch.setattr(settings, "telegram_backup_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_backup_chat_id", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_chat_id", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_node_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_node_chat_id", "", raising=False)
 
 
 @pytest.fixture()

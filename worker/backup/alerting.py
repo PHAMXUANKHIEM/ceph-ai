@@ -48,19 +48,20 @@ def _send_telegram_alert(severity: str, message: str, backup_job_id: str | None)
     """Best-effort, same posture as the webhook POST below — a Telegram
     delivery failure (bad token, chat id the bot was never added to,
     network) is logged and swallowed, never allowed to fail the backup/
-    drill run that triggered this alert. A no-op if either the feature is
-    turned off (`telegram_alerts_enabled`) or the token/chat id isn't
-    configured yet — checked here rather than relying on
-    send_telegram_message's own "missing config" error, so an operator who
-    simply hasn't set up Telegram never sees a log entry about it failing."""
-    if not settings.telegram_alerts_enabled or not settings.telegram_bot_token or not settings.telegram_chat_id:
+    drill run that triggered this alert. 2026-08-06: this Backup channel
+    has its own independent Bot Token/Chat ID (no longer shared with
+    Lỗi cụm/Phần cứng) — "configured" (both non-blank) IS the on/off
+    switch, checked here rather than relying on send_telegram_message's
+    own "missing config" error, so an operator who simply hasn't set up
+    this channel never sees a log entry about it failing."""
+    if not settings.telegram_backup_bot_token or not settings.telegram_backup_chat_id:
         return
     prefix = _TELEGRAM_SEVERITY_PREFIX.get(severity, severity.upper())
     text = f"{prefix}\n{message}"
     if backup_job_id:
         text += f"\nBackupJob: {backup_job_id}"
     try:
-        send_telegram_message(settings.telegram_bot_token, settings.telegram_chat_id, text)
+        send_telegram_message(settings.telegram_backup_bot_token, settings.telegram_backup_chat_id, text)
     except TelegramSendError:
         logger.exception("send_alert: Telegram delivery failed — alert already logged above")
 
@@ -68,12 +69,12 @@ def _send_telegram_alert(severity: str, message: str, backup_job_id: str | None)
 def send_alert(severity: str, message: str, backup_job_id: str | None = None) -> None:
     """Always logged; then delivered over every channel currently
     configured — `settings.backup_alert_webhook_url` (generic JSON
-    webhook) and/or Telegram (`settings.telegram_alerts_enabled` +
-    bot token/chat id), independently of each other. Both blank/disabled
-    is a valid, silent (log-only) configuration, not an error. A delivery
-    failure on either channel is logged and swallowed — sending an alert
-    must never block or fail the backup/drill that triggered it, and a
-    failure on one channel must never skip the other."""
+    webhook) and/or the Backup Telegram channel (its own bot token/chat
+    id), independently of each other. Both blank/disabled is a valid,
+    silent (log-only) configuration, not an error. A delivery failure on
+    either channel is logged and swallowed — sending an alert must never
+    block or fail the backup/drill that triggered it, and a failure on one
+    channel must never skip the other."""
     logger.log(
         logging.CRITICAL if severity == "critical" else logging.WARNING,
         "backup alert [%s]: %s (backup_job_id=%s)",

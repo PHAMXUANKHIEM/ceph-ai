@@ -123,19 +123,24 @@ class Action(Base):
     # between "Đã duyệt" and the final EXECUTED/FAILED result. NULL for
     # every action_id that doesn't opt into writing it.
     execution_progress: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 2026-08-05: "Duyệt qua Telegram" (worker/telegram_approval_bot.py) —
-    # telegram_message_id is the Bot API message id of the Duyệt/Từ chối
-    # inline-keyboard message sent for THIS Action, needed later to edit
-    # that same message (remove the buttons, show the outcome) once
-    # approved/rejected from EITHER Telegram or the Dashboard — a separate
-    # process/poll cycle than the one that originally sent it, so it can't
-    # be recovered any other way. telegram_notified_at doubles as the
-    # dedup guard (NULL = "not sent to Telegram yet") the periodic scan in
-    # worker/telegram_approval_bot.py uses to never notify the same Action
-    # twice. Both NULL for every Action created before this feature/when
-    # the category is turned off — same "opt-in column, harmless when
-    # unused" posture as every other *_progress/*_at column on this model.
-    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 2026-08-05, reworked 2026-08-06 for 3 independent Telegram channels
+    # (dashboard/telegram_approval_bot.py) — a Duyệt/Từ chối request for
+    # THIS Action is now BROADCAST to every configured channel (Backup/Lỗi
+    # cụm/Phần cứng) at once, so a single Integer message id no longer
+    # suffices. telegram_message_ids is a JSON-encoded dict
+    # {channel_key: message_id} (channel_key in "backup"/"incident"/"node"),
+    # one entry per channel this Action's Duyệt/Từ chối message was actually
+    # sent to — needed later to edit that channel's own copy (remove the
+    # buttons, show the outcome) once approved/rejected from EITHER
+    # Telegram or the Dashboard. Same JSON-encoded-Text convention as
+    # target_nodes/action_params/execution_progress above. NULL/empty dict
+    # for every Action created before this feature/while no channel is
+    # configured — same "opt-in column, harmless when unused" posture as
+    # every other *_progress/*_at column on this model. telegram_notified_at
+    # marks the last time a broadcast attempt ran for this Action (a
+    # channel added/fixed later still gets picked up on the next scan —
+    # see that module's own docstring).
+    telegram_message_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     telegram_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

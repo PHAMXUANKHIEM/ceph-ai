@@ -136,9 +136,10 @@ def create_or_resolve_node_health_incidents(current: dict[str, dict]) -> None:
     already open, and resolves any open NODE_RESOURCE_HIGH: Incident whose
     host dropped out of `current` (no longer over threshold). Sends a
     Telegram alert (shared/telegram_alerts.py, its own independent
-    telegram_node_alerts_enabled toggle) for each NEWLY created Incident
-    only — not resent on every scan a host stays flagged, same "one
-    notification per genuinely new problem" posture as every other alert
+    Phần cứng channel — telegram_node_bot_token/telegram_node_chat_id) for
+    each NEWLY created Incident only — not resent on every scan a host
+    stays flagged, same "one notification per genuinely new problem"
+    posture as every other alert
     path in this codebase."""
     with db.SessionLocal() as session:
         open_incidents = (
