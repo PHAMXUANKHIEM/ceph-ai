@@ -1205,7 +1205,63 @@ def test_ceph_deploy_packages_does_not_pin_version_for_normal_releases(monkeypat
 
     command = seen_commands[0]
     assert "(dnf install -y ceph-mon || yum install -y ceph-mon)" in command
-    assert "18.2.8" not in command
+    # Package NAME must not be version-pinned (the actual behavior under
+    # test) — the auto-cleanup snippet legitimately mentions the version
+    # elsewhere (for its own installed-version comparison), so check the
+    # pinned-name shape specifically rather than "18.2.8 not in command".
+    assert "ceph-mon-18.2.8" not in command
+
+
+# -- Auto-cleanup of a conflicting pre-existing Ceph install (2026-08-06) --
+# Real-world case: a lab node reused from an earlier manual/ceph-deploy
+# install (or an earlier attempt at a DIFFERENT version through this same
+# tool) already has ceph-common installed — yum/dnf then gets stuck
+# resolving the OLD version's already-installed librados2/etc against the
+# NEW ceph-common's own librados2 requirement (an unreadable dependency
+# wall, not a clean failure). _phase_ceph_deploy_packages now prepends an
+# auto-cleanup snippet that force-removes the old install FIRST when it
+# detects a version mismatch, so the install right after just works.
+
+
+def test_remove_conflicting_ceph_install_snippet_compares_exact_version():
+    snippet = cluster_deploy_module._remove_conflicting_ceph_install_snippet("13.2.10")
+
+    assert "rpm -q --qf '%{VERSION}\\n' ceph-common" in snippet
+    assert '!= 13.2.10' in snippet
+    assert "yum remove -y" in snippet and "dnf remove -y" in snippet
+    assert "ceph-*" in snippet and "librados2*" in snippet
+    assert "rm -f /etc/yum.repos.d/ceph.repo" in snippet
+    assert "dpkg-query -W" in snippet  # apt branch present too
+
+
+def test_ceph_deploy_packages_prepends_conflict_cleanup_before_install(monkeypatch):
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+
+    nodes = [{"ip": "10.20.1.112", "roles": ["mon"]}]
+    cluster_deploy_module._phase_ceph_deploy_packages(
+        nodes, {"version": "13.2.10"}, lambda status: None
+    )
+
+    command = seen_commands[0]
+    # Cleanup runs FIRST (same SSH round trip), then the real install.
+    cleanup_index = command.index("rpm -q --qf")
+    install_index = command.index("(dnf install -y ceph-mon-13.2.10")
+    assert cleanup_index < install_index
+    assert "!= 13.2.10" in command
+
+
+def test_ceph_deploy_packages_cleanup_never_blocks_install_on_removal_failure():
+    # The removal branch must swallow its own exit status — a partial
+    # removal failure (e.g. a package half-uninstalled already) must not
+    # stop the fresh install from even being attempted.
+    snippet = cluster_deploy_module._remove_conflicting_ceph_install_snippet("18.2.8")
+    assert "|| true" in snippet
 
 
 def test_ceph_deploy_quorum_timeout_fails(monkeypatch):

@@ -844,6 +844,58 @@ def _phase_ceph_deploy_repo(nodes: list[dict], action_params: dict, on_host_upda
         on_host_update(list(host_status))
 
 
+_CEPH_CONFLICT_RPM_GLOBS = (
+    "'ceph-*' 'librados2*' 'librbd1*' 'librgw2*' 'libradosstriper1*' 'libcephfs2*' "
+    "'python*-rados' 'python*-rbd' 'python*-cephfs' 'python*-rgw' 'python*-ceph-argparse'"
+)
+_CEPH_CONFLICT_APT_GLOBS = (
+    "'ceph*' 'librados2*' 'librbd1*' 'radosgw*' 'python3-rados*' 'python3-rbd*' 'python3-cephfs*'"
+)
+
+
+def _remove_conflicting_ceph_install_snippet(version: str) -> str:
+    """Real-world case this fixes (2026-08-06): a lab node reused from an
+    earlier manual/ceph-deploy install (or an earlier attempt at a
+    DIFFERENT version through this same tool) already had ceph-common
+    installed when `_phase_ceph_deploy_packages` below tried to install a
+    different major version on top — yum/dnf's dependency resolver then
+    gets stuck between the OLD version's already-installed librados2/etc
+    and the NEW ceph-common's own librados2 requirement, surfacing as an
+    unreadable wall of "Requires:/Available:/Installed:" lines instead of
+    the install just working.
+
+    Prepended (via `&&`/`;`, see call site) to the real install command so
+    the two run as ONE ssh round trip per node: if ceph-common is already
+    installed and its version differs from the one we're about to install,
+    force-removes every ceph-related package (glob covers the actual
+    NEVRAs seen in that failure: ceph-*, librados2, librbd1, librgw2,
+    libradosstriper1, libcephfs2, and the python bindings) plus any
+    leftover `ceph.repo`/`ceph-deploy.repo` file that might still be
+    enabled and feeding the SAME conflict back into the next attempt.
+    Never touches anything if ceph-common isn't installed, or is already
+    the exact version being installed (nothing to fix — removing and
+    reinstalling the same version would be pure churn, and this must stay
+    a no-op on an already-correct node so re-running this phase is safe).
+    Deliberately swallows the removal's own exit status (`|| true` /
+    trailing `2>/dev/null`) — a partial removal failure must not block the
+    fresh install that follows from even attempting to run."""
+    quoted_version = shlex.quote(version)
+    rpm_cleanup = (
+        "existing=$(rpm -q --qf '%{VERSION}\\n' ceph-common 2>/dev/null | head -1); "
+        f'if [ -n "$existing" ] && [ "$existing" != {quoted_version} ]; then '
+        f"(yum remove -y {_CEPH_CONFLICT_RPM_GLOBS} 2>/dev/null "
+        f"|| dnf remove -y {_CEPH_CONFLICT_RPM_GLOBS} 2>/dev/null || true); "
+        "rm -f /etc/yum.repos.d/ceph.repo /etc/yum.repos.d/ceph-deploy.repo; fi"
+    )
+    apt_cleanup = (
+        "existing=$(dpkg-query -W -f='${Version}\\n' ceph-common 2>/dev/null | head -1); "
+        f'if [ -n "$existing" ] && [ "${{existing%%-*}}" != {quoted_version} ]; then '
+        f"apt-get remove -y --purge {_CEPH_CONFLICT_APT_GLOBS} 2>/dev/null || true; "
+        "rm -f /etc/apt/sources.list.d/ceph.list; fi"
+    )
+    return _package_manager_branch({"apt": apt_cleanup, "rpm": rpm_cleanup})
+
+
 def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """The first phase in the whole feature where a SINGLE Action's per-host
     command depends on that host's OWN role — a node with multiple roles
@@ -895,12 +947,17 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
         apt_snippet = f"apt-get install -y {apt_package_list}"
         rpm_snippet = f"(dnf install -y {rpm_package_list} || yum install -y {rpm_package_list})"
         install_command = _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
+        # Auto-cleanup FIRST, same SSH round trip: removes a conflicting
+        # pre-existing Ceph install (different major version) so the
+        # install right after doesn't hit the cross-version librados2 wall
+        # — see _remove_conflicting_ceph_install_snippet's own docstring.
+        full_command = f"{_remove_conflicting_ceph_install_snippet(version)} && {install_command}"
         # Only used for progress display text — the ACTUAL install command
         # correctly differs per package manager above (apt_package_list
         # includes ceph-volume, rpm_package_list never does).
         package_list = " ".join(sorted(set(apt_packages) | set(rpm_packages)))
         try:
-            execute_command(host, install_command)
+            execute_command(host, full_command)
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
