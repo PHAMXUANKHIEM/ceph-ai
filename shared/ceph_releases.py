@@ -102,7 +102,7 @@ RELEASES: dict[int, dict[str, str]] = {
     17: {
         "codename": "quincy",
         "next_min_version": "18.2.0",
-        "versions": [f"17.2.{p}" for p in range(0, 9)],
+        "versions": [f"17.2.{p}" for p in range(0, 10)],
         "min_el_version": 8,
     },
     18: {
