@@ -54,6 +54,30 @@
       </div>
     </section>
 
+    <section class="card">
+      <div class="card-header"><h2>Tên cụm</h2></div>
+      <div class="card-body">
+        <p class="hint">
+          Nếu nhiều cụm Ceph (nhiều ceph-aiops) cùng gửi cảnh báo vào chung 1 chat Telegram, điền tên/nhãn
+          cụm ở đây để phân biệt — tên này sẽ được chèn vào đầu MỌI tin nhắn của cả 3 kênh bên dưới (kể cả
+          tin nhắn Duyệt/Từ chối). Để trống nếu chỉ có 1 cụm — tin nhắn giữ nguyên như trước, không có gì
+          thay đổi.
+        </p>
+        {% if cluster_name_error %}
+          <p class="error">{{ cluster_name_error }}</p>
+        {% endif %}
+        {% if cluster_name_success %}
+          <p class="success">{{ cluster_name_success }}</p>
+        {% endif %}
+        <form class="login-box" method="post" action="/telegram-alerts/cluster-name">
+          <label>Tên cụm
+            <input type="text" name="cluster_name" value="{{ cluster_name }}" placeholder="vd: cluster-hcm-01">
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu</button>
+        </form>
+      </div>
+    </section>
+
     {% for ch in channels.values() %}
     <section class="card">
       <div class="card-header"><h2>{{ ch.label }}</h2></div>

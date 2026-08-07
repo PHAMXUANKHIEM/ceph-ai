@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = make_templates()
 
+# 2026-08-07: settings.cluster_name's own .env var name — a single field
+# shared by all 3 channels (see config/settings.py's docstring on that
+# field), so it gets its own constant here rather than an entry in one of
+# the per-channel env_names dicts above. Same "local module-level constant"
+# posture as ROUTER_API_KEY_ENV_NAME in dashboard/routes/settings.py, not
+# added to shared/env_config.py — nothing outside this route needs it.
+CLUSTER_NAME_ENV_NAME = "CLUSTER_NAME"
+
 # Single source of truth for the 3 channels this page manages — label,
 # which config.settings.Settings fields back it, which .env variable names
 # shared/env_config.py maps those fields to, and which process actually
@@ -72,6 +80,8 @@ def _context(
     successes: dict[str, str] | None = None,
     test_errors: dict[str, str] | None = None,
     test_successes: dict[str, str] | None = None,
+    cluster_name_error: str | None = None,
+    cluster_name_success: str | None = None,
 ) -> dict:
     """Every one of the 3 channel forms renders from this single
     telegram_alerts.html — every response must carry every channel's
@@ -102,6 +112,9 @@ def _context(
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "channels": channels,
+        "cluster_name": settings.cluster_name,
+        "cluster_name_error": cluster_name_error,
+        "cluster_name_success": cluster_name_success,
     }
 
 
@@ -116,6 +129,45 @@ async def telegram_alerts_help(request: Request, user: str = Depends(require_log
     _require_admin_privilege(user)
     return templates.TemplateResponse(
         request, "telegram_alerts_help.html", {"user": user, "is_admin": auth.is_admin_user(user)}
+    )
+
+
+@router.post("/telegram-alerts/cluster-name", response_class=HTMLResponse)
+async def telegram_cluster_name_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    cluster_name: str = Form(""),
+):
+    """Lưu tên cụm — chèn vào ĐẦU mọi tin nhắn của cả 3 kênh bên dưới (xem
+    settings.cluster_name/shared/telegram_alerts.py::_with_cluster_prefix)
+    để phân biệt cụm nào gửi cảnh báo khi nhiều cụm cùng trỏ về chung 1 chat
+    Telegram. Khác với Bot Token/Chat ID của từng kênh (chỉ restart ĐÚNG 1
+    tiến trình đọc đúng kênh đó) — giá trị này được đọc bởi CẢ Watcher
+    (shared/telegram_alerts.py) LẪN Worker (worker/backup/alerting.py), nên
+    phải restart cả hai để áp dụng ngay. Dashboard's own
+    telegram_approval_bot.py đọc `settings` trực tiếp trong cùng tiến
+    trình, không cần restart."""
+    _require_admin_privilege(user)
+    new_value = cluster_name.strip()
+
+    try:
+        env_config.update_env_file(CLUSTER_NAME_ENV_NAME, new_value)
+        settings.cluster_name = new_value
+    except Exception:
+        logger.exception("telegram_cluster_name_submit: failed to persist cluster_name to .env")
+        return templates.TemplateResponse(
+            request,
+            "telegram_alerts.html",
+            _context(user, cluster_name_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server"),
+        )
+
+    await asyncio.to_thread(restart_watcher)
+    await asyncio.to_thread(restart_worker)
+
+    return templates.TemplateResponse(
+        request,
+        "telegram_alerts.html",
+        _context(user, cluster_name_success="Đã lưu — Watcher và Worker đã khởi động lại để áp dụng ngay."),
     )
 
 

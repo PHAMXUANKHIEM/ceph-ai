@@ -60,6 +60,13 @@ def _send_telegram_alert(severity: str, message: str, backup_job_id: str | None)
     text = f"{prefix}\n{message}"
     if backup_job_id:
         text += f"\nBackupJob: {backup_job_id}"
+    # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
+    # _with_cluster_prefix — this module has its own independent Backup
+    # channel/send path (see module docstring), so it needs its own copy
+    # rather than importing that helper across the watcher/worker boundary.
+    cluster_name = settings.cluster_name.strip()
+    if cluster_name:
+        text = f"\U0001f4cd Cụm: {cluster_name}\n{text}"
     try:
         send_telegram_message(settings.telegram_backup_bot_token, settings.telegram_backup_chat_id, text)
     except TelegramSendError:

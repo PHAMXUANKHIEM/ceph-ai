@@ -248,6 +248,19 @@ class Settings(BaseSettings):
     # to an external endpoint.
     backup_alert_webhook_url: str = ""
 
+    # 2026-08-07: label identifying WHICH Ceph cluster an alert came from —
+    # for operators running several ceph-aiops instances (one per cluster)
+    # that all point their Telegram channels at the SAME chat(s), so alerts
+    # from different clusters don't look identical in that shared chat.
+    # Deliberately ONE field shared by all 3 channels below (not per-
+    # channel) — one ceph-aiops instance always monitors exactly one
+    # cluster, so there's only ever one name to distinguish. Blank by
+    # default (single-cluster deployments don't need it) — every message
+    # builder in shared/telegram_alerts.py, worker/backup/alerting.py, and
+    # dashboard/telegram_approval_bot.py skips the prefix entirely when
+    # this is empty, so existing single-cluster message text is unchanged.
+    cluster_name: str = ""
+
     # 2026-08-06: Telegram alert delivery split into 3 fully INDEPENDENT
     # channels — Backup, Lỗi cụm (cluster health), Phần cứng (node CPU/RAM)
     # — each with its OWN Bot Token + Chat ID (previously all 3 shared one

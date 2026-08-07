@@ -46,11 +46,24 @@ _INCIDENT_SEVERITY_PREFIX = {
 }
 
 
+def _with_cluster_prefix(text: str) -> str:
+    """Prepends `settings.cluster_name` (Alert Telegram page, 2026-08-07) as
+    the first line of every message this module sends — lets an operator
+    running several ceph-aiops instances into the same Telegram chat tell
+    which cluster an alert is from. No-op (text unchanged) when unset, so a
+    single-cluster deployment's messages are byte-identical to before this
+    existed."""
+    name = settings.cluster_name.strip()
+    if not name:
+        return text
+    return f"\U0001f4cd Cụm: {name}\n{text}"
+
+
 def _send(bot_token: str, chat_id: str, text: str) -> None:
     if not bot_token or not chat_id:
         return
     try:
-        send_telegram_message(bot_token, chat_id, text)
+        send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text))
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
 

@@ -27,6 +27,11 @@ Telegram nào (mục 6.7) — một khi có ít nhất 1 kênh, mọi cảnh bá
 đoán/phê duyệt đều chuyển hẳn sang Telegram, Dashboard chỉ còn xem lịch sử
 (Incident Feed/Audit Trail).
 
+**2026-08-07 — Tên cụm, phân biệt khi nhiều cụm cùng gửi vào 1 chat:**
+`config/settings.py::cluster_name` (mục 1.6) — 1 field dùng chung cho cả 3
+kênh, chèn vào ĐẦU mọi tin nhắn (cả 3 kênh + tin phê duyệt) khi có giá trị.
+Để trống (mặc định) thì tin nhắn giữ nguyên như trước, không có gì đổi.
+
 Nguồn: `config/settings.py`, `shared/env_config.py`,
 `shared/telegram_client.py`, `shared/telegram_alerts.py`,
 `worker/backup/alerting.py`, `watcher/main.py`, `watcher/node_health_monitor.py`,
@@ -121,6 +126,36 @@ trình liên quan sau khi sửa tay; qua UI thì bước Lưu đã tự làm vi�
   đúng Chat ID đã lưu (không phải giá trị gõ nhầm trên form chưa Lưu);
   thread quét (`telegram_approval_scan_interval_seconds`, mặc định 10s)
   cần tối đa 1 chu kỳ để nhận Action mới hoặc kênh mới cấu hình.
+
+### 1.6. Tên cụm — phân biệt khi nhiều cụm cùng gửi vào 1 chat
+
+`config/settings.py::cluster_name` — MỘT field dùng chung cho cả 3 kênh
+(không phải per-channel, vì một tiến trình ceph-aiops luôn chỉ theo dõi
+đúng 1 cụm, nên chỉ có đúng 1 tên cần phân biệt). Hữu ích khi vận hành
+**nhiều cụm Ceph, mỗi cụm 1 bộ ceph-aiops riêng**, nhưng cả mấy bộ đó lại
+trỏ Bot Token/Chat ID về CÙNG một chat Telegram (gộp cảnh báo về 1 chỗ) —
+không có tên cụm thì không phân biệt được tin nhắn nào của cụm nào.
+
+Điền ở card **"Tên cụm"** trên `/telegram-alerts` (vd `cluster-hcm-01`),
+bấm **Lưu** — chèn tự động vào ĐẦU mọi tin nhắn của cả 3 kênh bên trên, kể
+cả tin nhắn phê duyệt (mục 6.6):
+
+```
+📍 Cụm: cluster-hcm-01
+🔴 HEALTH_ERR Cụm Ceph: OSD_DOWN
+osd.3 (root=default,host=node2) is down
+```
+
+Để trống (mặc định) = tin nhắn giữ nguyên như trước, không có gì đổi — an
+toàn cho triển khai chỉ có 1 cụm. Khác với Bot Token/Chat ID của từng kênh
+(chỉ restart ĐÚNG 1 tiến trình đọc kênh đó) — giá trị này được đọc bởi CẢ
+Watcher (`shared/telegram_alerts.py`) LẪN Worker (`worker/backup/
+alerting.py`), nên Lưu sẽ restart **cả hai**. `dashboard/
+telegram_approval_bot.py` (tin phê duyệt) chạy ngay trong tiến trình
+Dashboard nên áp dụng tức thì, không cần restart.
+
+.env tương ứng: biến `CLUSTER_NAME` — sửa tay cũng phải tự restart Watcher
+VÀ Worker (như mục 1.4 ở trên), không tự động như qua UI.
 
 ## 2. Nguyên tắc thiết kế chung
 
@@ -463,20 +498,20 @@ tin thứ 2).
 
 | File | Vai trò |
 |---|---|
-| `config/settings.py` | 6 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id}`) + `telegram_approval_scan_interval_seconds` |
-| `shared/env_config.py` | `TELEGRAM_BACKUP_ENV_NAMES`/`TELEGRAM_INCIDENT_ENV_NAMES`/`TELEGRAM_NODE_ENV_NAMES` — ánh xạ field ↔ biến `.env`, mỗi kênh 1 dict |
+| `config/settings.py` | 6 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id}`) + `telegram_approval_scan_interval_seconds` + `cluster_name` (mục 1.6, dùng chung cả 3 kênh) |
+| `shared/env_config.py` | `TELEGRAM_BACKUP_ENV_NAMES`/`TELEGRAM_INCIDENT_ENV_NAMES`/`TELEGRAM_NODE_ENV_NAMES` — ánh xạ field ↔ biến `.env`, mỗi kênh 1 dict (`CLUSTER_NAME_ENV_NAME` của `cluster_name` khai báo cục bộ trong `dashboard/routes/telegram_alerts.py`, không ở đây) |
 | `shared/telegram_client.py` | Client Telegram Bot API dùng chung — gửi thuần (`send_telegram_message`) VÀ 4 hàm cho Phê duyệt (`send_telegram_message_with_keyboard`/`edit_telegram_message`/`get_telegram_updates`/`answer_telegram_callback`) |
-| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()`/`send_auto_remediation_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (`send_osd_latency_alert` + `send_node_alert` chia sẻ kênh Phần cứng; `send_auto_remediation_alert` dùng lại kênh Lỗi cụm) |
-| `worker/backup/alerting.py` | `send_alert()` → `_send_telegram_alert()` dùng cặp token/chat_id kênh Backup |
+| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()`/`send_auto_remediation_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (`send_osd_latency_alert` + `send_node_alert` chia sẻ kênh Phần cứng; `send_auto_remediation_alert` dùng lại kênh Lỗi cụm); `_with_cluster_prefix()` chèn `cluster_name` (mục 1.6) vào mọi tin qua `_send()` |
+| `worker/backup/alerting.py` | `send_alert()` → `_send_telegram_alert()` dùng cặp token/chat_id kênh Backup, tự chèn `cluster_name` (bản sao logic riêng, không import `shared/telegram_alerts.py` qua ranh giới worker/watcher) |
 | `watcher/main.py` | `build_and_publish_incident()` gọi `send_incident_alert()`; nhịp quét `node_health_monitor`/`osd_latency_monitor` trong `run()` |
 | `watcher/node_health_monitor.py` | Toàn bộ logic quét CPU/RAM + ngưỡng + vòng đời Incident cho cảnh báo phần cứng (node) |
 | `watcher/osd_latency_monitor.py` | Toàn bộ logic quét `ceph osd perf` + so trung vị cụm + vòng đời Incident cho OSD latency outlier |
 | `worker/llm/router_client.py` | `_record_execution_result()` gọi `send_auto_remediation_alert()` sau khi một Action SAFE thực thi xong (mục 7) |
-| `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình (kèm `Incident.diagnosis_text`, mục 6.6) + listener gom theo bot token + trust model + idempotent + `has_configured_channel()` (mục 6.7) |
+| `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình (kèm `Incident.diagnosis_text`, mục 6.6, và `cluster_name` nếu có, mục 1.6) + listener gom theo bot token + trust model + idempotent + `has_configured_channel()` (mục 6.7) |
 | `dashboard/routes/actions.py` | `approve_action_core`/`reject_action_core` — logic Duyệt/Từ chối DÙNG CHUNG giữa nút HTML và nút Telegram |
 | `dashboard/routes/incidents.py` | `index()` — ẩn thẻ "Chờ duyệt" trên Dashboard khi `has_configured_channel()` trả `True` (mục 6.7) |
-| `dashboard/routes/telegram_alerts.py` | Router trang "Alert Telegram" — 3 card, mỗi kênh 1 route Lưu + 1 route Gửi thử, route hướng dẫn |
-| `dashboard/templates/telegram_alerts.html` | Trang chính — 3 card Backup/Lỗi cụm/Phần cứng |
+| `dashboard/routes/telegram_alerts.py` | Router trang "Alert Telegram" — 3 card kênh (mỗi kênh 1 route Lưu + 1 route Gửi thử) + 1 card/route Lưu `cluster_name` (mục 1.6, restart cả Watcher lẫn Worker), route hướng dẫn |
+| `dashboard/templates/telegram_alerts.html` | Trang chính — card "Tên cụm" + 3 card Backup/Lỗi cụm/Phần cứng |
 | `dashboard/templates/telegram_alerts_help.html` | Hướng dẫn tạo Bot/lấy Chat ID từng bước, trong app |
 | `dashboard/app.py` | `lifespan` — khởi động thread nền của `telegram_approval_bot`; đăng ký `telegram_alerts.router` |
 | `shared/models.py` | `Action.telegram_message_ids` (JSON `{channel_key: message_id}`) / `Action.telegram_notified_at` |

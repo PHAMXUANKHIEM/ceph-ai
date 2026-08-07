@@ -160,7 +160,15 @@ def has_configured_channel() -> bool:
 
 
 def _action_message_text(action: Action, incident: Incident | None) -> str:
-    lines = [f"📋 Đề xuất chờ duyệt: {action.action_id}"]
+    lines = []
+    # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
+    # _with_cluster_prefix — this module runs in the Dashboard process (not
+    # Watcher/Worker) and builds its own message text, so it needs its own
+    # copy rather than importing across that layering boundary.
+    cluster_name = settings.cluster_name.strip()
+    if cluster_name:
+        lines.append(f"\U0001f4cd Cụm: {cluster_name}")
+    lines.append(f"📋 Đề xuất chờ duyệt: {action.action_id}")
     # incident.diagnosis_text is the router's plain-language root-cause
     # explanation (worker/llm/router_client.py::diagnose_incident) — the
     # SAME field the Dashboard's own "Chờ duyệt" card prefers over
