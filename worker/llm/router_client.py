@@ -24,7 +24,19 @@ from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
 
-MAX_TOKENS = 1024
+# 2026-08-07 (incident follow-up): was 1024 -- verified against this
+# deployment's real worker.log that a reasoning-style model
+# (gemini-3-flash-preview via 9router) spends an unpredictable amount of
+# its max_tokens budget on hidden reasoning tokens BEFORE it ever emits the
+# report_diagnosis tool call, so 1024 was routinely exhausted before any
+# tool-call content came out -- every diagnose_incident() call that day
+# failed with openai.LengthFinishReasonError on all 3 retries, meaning NO
+# Incident got a diagnosis/proposal at all. Raised well above the tool
+# schema's own actual output size (diagnosis_text/rationale/command are at
+# most a few hundred tokens of JSON) to leave real headroom for reasoning
+# tokens; still finite so a genuinely stuck/looping model call fails fast
+# rather than running indefinitely.
+MAX_TOKENS = 8192
 ROUTER_TIMEOUT_SECONDS = 60.0
 TOOL_NAME = "report_diagnosis"
 

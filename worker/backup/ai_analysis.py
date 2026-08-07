@@ -25,7 +25,12 @@ from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
 
-MAX_TOKENS = 1024
+# 2026-08-07: same fix as worker/llm/router_client.py's MAX_TOKENS (see its
+# comment) -- this module calls the SAME router/model via the SAME
+# build_router_client(), so it hit the identical openai.LengthFinishReasonError
+# truncation (confirmed in worker.log: worker.backup.ai_analysis.AIAnalysisError:
+# "Could not parse response content as the length limit was reached").
+MAX_TOKENS = 8192
 ROUTER_TIMEOUT_SECONDS = 60.0
 TOOL_NAME = "report_backup_analysis"
 
