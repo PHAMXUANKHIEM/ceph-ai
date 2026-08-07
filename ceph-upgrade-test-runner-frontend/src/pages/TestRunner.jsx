@@ -50,6 +50,7 @@ export default function TestRunner() {
   const [expandedId, setExpandedId] = useState(null)
   const [details, setDetails] = useState({}) // id -> detail object
   const [runningAction, setRunningAction] = useState(null) // id currently being POSTed to /run
+  const [cancelingId, setCancelingId] = useState(null) // id currently being POSTed to /cancel
   const [overrideNote, setOverrideNote] = useState('')
   const [overrideStatus, setOverrideStatus] = useState(null) // id -> 'saving' | 'error: ...'
   const [copySummaryStatus, setCopySummaryStatus] = useState(null) // null | 'copying' | 'copied' | 'error: ...'
@@ -133,6 +134,29 @@ export default function TestRunner() {
       setLoadError(`Lỗi khi chạy ${id}: ${err}`)
     } finally {
       setRunningAction(null)
+    }
+  }
+
+  // 2026-08-07: several background test cases (TC-RUN-001/010, TC-COMPAT-001,
+  // TC-PERF-005/007/009 -- see dashboard/routes/test_runner.py's own
+  // /cancel docstring) launch remote fio + infinite while-loops that never
+  // exit on their own. Before this button existed there was NO way to stop
+  // one short of an operator SSHing into the client host by hand -- left
+  // running on a small/lab cluster, that background load alone can drive
+  // CPU/RAM to the point the cluster itself falls over.
+  async function handleCancel(id) {
+    if (!window.confirm(`Hủy ${id}? Sẽ gửi lệnh kill tiến trình tải nền trên remote host.`)) return
+    setCancelingId(id)
+    try {
+      const res = await fetch(`/api/test-runner/tests/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setDetails((prev) => ({ ...prev, [id]: data }))
+      setTests((prev) => prev.map((t) => (t.id === id ? { ...t, status: data.status, overridden: true } : t)))
+    } catch (err) {
+      setLoadError(`Lỗi khi hủy ${id}: ${err}`)
+    } finally {
+      setCancelingId(null)
     }
   }
 
@@ -307,6 +331,17 @@ export default function TestRunner() {
                       {t.group} · {t.priority}
                     </span>
                     <StatusBadge status={t.status} overridden={t.overridden} />
+                    {t.background && t.status === 'running' && !t.overridden && (
+                      <button
+                        type="button"
+                        onClick={() => handleCancel(t.id)}
+                        disabled={cancelingId === t.id}
+                        title="Kill tiến trình tải nền (fio/vòng lặp) trên remote host"
+                        className="rounded bg-red-600 text-white text-xs px-3 py-1 disabled:opacity-50"
+                      >
+                        {cancelingId === t.id ? '...' : 'Hủy'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleRun(t.id)}

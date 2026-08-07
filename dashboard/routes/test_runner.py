@@ -14,7 +14,7 @@ from shared import db
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.models import TestRunnerConfig
 from shared import test_runner_baselines as baselines
-from worker.executor.ssh_executor import ExecutorError, test_all_nodes
+from worker.executor.ssh_executor import BackgroundCommandHandle, ExecutorError, cancel_background, test_all_nodes
 from worker.executor.test_runner.framework import (
     TestCase,
     TestCaseDeclined,
@@ -412,6 +412,62 @@ async def run_test(test_id: str, user: str = Depends(require_login)):
                     rs.background_state = state
     else:
         threading.Thread(target=_run_one_shot_sync, args=(test_id, test_case, ctx), daemon=True).start()
+
+    return JSONResponse(_test_detail(test_case))
+
+
+@router.post("/api/test-runner/tests/{test_id}/cancel")
+async def cancel_test(test_id: str, user: str = Depends(require_login)):
+    """2026-08-07: kills the remote background process tree a background
+    TestCase's start() launched, via ssh_executor.cancel_background()'s
+    setsid-captured PGID -- until this endpoint existed, this app had NO
+    way to stop one of these test cases short of an operator manually
+    SSHing into the client host and hunting down the fio/while-loop
+    processes by hand. Several background test cases (TC-RUN-001/010,
+    TC-COMPAT-001, TC-PERF-005/007/009, plus their Group E S3 equivalents)
+    launch effectively-unbounded remote I/O load (`--runtime=99999` fio +
+    infinite `while true` loops for CephFS/S3) that never exits on its
+    own -- a real incident on a small/lab cluster: the load just keeps
+    running (and consuming CPU/RAM/I/O) indefinitely once started.
+
+    Same terminal-state shape as override_test_result() (FR37) --
+    overridden=True so get_test_result()'s should_poll guard stops polling
+    a handle we just tried to kill -- but reached via a different route
+    since this ALSO has a real side effect (the SSH kill) an operator
+    marking Pass/Fail by hand never has.
+    """
+    test_case = TEST_CASES_BY_ID.get(test_id)
+    if test_case is None:
+        raise HTTPException(status_code=404, detail=f"test id không hợp lệ: {test_id!r}")
+    if not test_case.background:
+        raise HTTPException(
+            status_code=409, detail=f"{test_id} không phải test chạy nền -- không có gì để hủy"
+        )
+
+    with _run_lock:
+        rs = _run_states.get(test_id)
+        if rs is None or rs.overridden or rs.status != TestStatus.RUNNING.value:
+            raise HTTPException(
+                status_code=409, detail=f"{test_id} không ở trạng thái đang chạy nền để hủy"
+            )
+        handle = rs.background_state.get("handle") if isinstance(rs.background_state, dict) else None
+
+    killed = False
+    if isinstance(handle, BackgroundCommandHandle):
+        killed = await asyncio.to_thread(cancel_background, handle)
+
+    note = (
+        "Đã hủy: đã gửi lệnh kill tiến trình nền trên remote host."
+        if killed
+        else "Đã đánh dấu hủy trên Dashboard, nhưng KHÔNG xác nhận được đã kill tiến trình remote "
+        "(chưa bắt được PGID, hoặc lệnh kill thất bại) -- kiểm tra và kill tay qua SSH nếu cần."
+    )
+    with _run_lock:
+        rs = _run_states.setdefault(test_id, _RunState())
+        rs.status = TestStatus.FAIL.value
+        rs.overridden = True
+        rs.override_note = note
+        rs.finished_at = datetime.utcnow().isoformat()
 
     return JSONResponse(_test_detail(test_case))
 

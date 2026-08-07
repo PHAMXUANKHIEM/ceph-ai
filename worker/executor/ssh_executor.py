@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -289,6 +290,15 @@ def execute_with_retry(
     return _retry_ssh(host, _attempt, retries, delay, "execute_with_retry")
 
 
+# execute_background() wraps every command as `setsid {command} & bg_pid=$!;
+# echo SSHEXEC_PGID:$bg_pid; wait "$bg_pid"` -- this is the marker line that
+# wrapper always emits FIRST, before any of the command's own output.
+# BackgroundCommandHandle.read_new_output() strips it off (once) and caches
+# the pgid so cancel_background() below can kill the whole remote process
+# tree by process GROUP, not just the single top-level process.
+_PGID_LINE_RE = re.compile(r"^SSHEXEC_PGID:(\d+)\n")
+
+
 class BackgroundCommandHandle:
     """Opaque handle for a non-blocking background command, returned by
     execute_background(). Wraps the paramiko Channel so a caller can poll
@@ -307,6 +317,15 @@ class BackgroundCommandHandle:
         self.host = host
         self.command = command
         self.channel = channel
+        # Set by read_new_output() the first time it sees output, off the
+        # execute_background() wrapper's own SSHEXEC_PGID: marker line --
+        # None until then, and permanently None if that first chunk of
+        # output didn't start with the marker (should not happen for any
+        # handle actually created by execute_background(), but
+        # cancel_background() must still degrade gracefully rather than
+        # kill the wrong process group).
+        self.pgid: Optional[int] = None
+        self._pgid_capture_attempted = False
 
     def is_done(self) -> bool:
         """True once the remote command has exited (or the connection to
@@ -324,6 +343,12 @@ class BackgroundCommandHandle:
         """Drain any newly available stdout/stderr since the last call.
         Returns (new_stdout, new_stderr); either may be empty if nothing
         new is available yet, or if the connection has been lost.
+
+        The very first non-empty stdout chunk is checked once for the
+        execute_background() wrapper's own SSHEXEC_PGID:<n> marker line --
+        if present, it's captured into self.pgid and stripped out (never
+        surfacing to a caller's own output transcript); either way this
+        check never runs again after the first attempt.
         """
         new_stdout = ""
         new_stderr = ""
@@ -334,6 +359,12 @@ class BackgroundCommandHandle:
                 new_stderr += self.channel.recv_stderr(4096).decode(errors="replace")
         except (EOFError, OSError, paramiko.SSHException):
             return "", ""
+        if not self._pgid_capture_attempted and new_stdout:
+            self._pgid_capture_attempted = True
+            match = _PGID_LINE_RE.match(new_stdout)
+            if match:
+                self.pgid = int(match.group(1))
+                new_stdout = new_stdout[match.end() :]
         return new_stdout, new_stderr
 
     def exit_code(self) -> Optional[int]:
@@ -363,9 +394,25 @@ def execute_background(
     execute_command()/execute_with_retry() do. Starting the command itself
     is retried the same way as execute_with_retry(); raises ExecutorError
     if every attempt to start it fails.
+
+    2026-08-07: `command` is wrapped in `setsid ... & echo SSHEXEC_PGID:$!;
+    wait "$bg_pid"` -- setsid makes the backgrounded process (and every `&`
+    child ITS OWN script forks, e.g. a test case's own concurrent fio +
+    while-true loops) the leader of a brand new process group, whose PGID
+    equals its own PID. Echoing that PID as the very first line lets
+    BackgroundCommandHandle.read_new_output() capture it (see
+    handle.pgid), which cancel_background() below then uses to kill the
+    ENTIRE remote tree in one shot -- before this, a caller had no way to
+    stop one of these effectively-unbounded background loads short of an
+    operator manually SSHing in and hunting down every process by hand.
+    `wait "$bg_pid"` (not a bare `wait`) so the channel's own exit status
+    still reflects `command`'s real exit code -- bash's no-argument `wait`
+    is defined to always return 0, which would have silently broken every
+    existing poll()'s nonzero-exit detection (check_background_handle_health()).
     """
     resolved_user = settings.ssh_user if user is None else user
     resolved_key_path = settings.ssh_key_path if key_path is None else key_path
+    wrapped_command = f'setsid {command} & bg_pid=$!; echo SSHEXEC_PGID:$bg_pid; wait "$bg_pid"'
 
     def _attempt() -> "paramiko.Channel":
         client = _pool.get(host, resolved_user, resolved_key_path, timeout)
@@ -373,7 +420,7 @@ def execute_background(
             transport = client.get_transport()
             channel = transport.open_session()
             channel.settimeout(COMMAND_TIMEOUT_SECONDS)
-            channel.exec_command(command)
+            channel.exec_command(wrapped_command)
             return channel
         except _RETRYABLE_EXCEPTIONS:
             _pool.close(host)
@@ -381,6 +428,46 @@ def execute_background(
 
     channel = _retry_ssh(host, _attempt, retries, delay, "execute_background")
     return BackgroundCommandHandle(host, command, channel)
+
+
+def cancel_background(handle: BackgroundCommandHandle) -> bool:
+    """Best-effort kill of the ENTIRE remote process tree execute_background()
+    started for `handle`, via the PGID its setsid wrapper captured (see
+    BackgroundCommandHandle.read_new_output()) -- `kill -TERM -<pgid>`
+    (a NEGATIVE pid) targets the whole process GROUP, reaching fio and
+    every `&` while-loop a test case's own script forked internally, not
+    just the single top-level process. SIGTERM first, then SIGKILL 1s
+    later for whatever ignored it (fio does catch SIGTERM cleanly, but the
+    plain `while true; do ...; done` loops these test cases also start
+    don't trap signals at all and need the follow-up SIGKILL). Both kill
+    invocations swallow their own exit status (`2>/dev/null; ...; true`)
+    since a process already gone by the second kill is the expected case,
+    not a failure.
+
+    Returns True once the kill command was actually SENT (not proof the
+    tree is dead, and not raised if the SSH round-trip itself fails --
+    logged instead), False if no PGID was ever captured (handle.pgid is
+    still None even after one last opportunistic drain attempt here, e.g.
+    cancel() raced ahead of every poll() that would normally have captured
+    it) -- callers must tell the operator a manual SSH kill may still be
+    needed in that case, not silently report success.
+    """
+    if handle.pgid is None:
+        handle.read_new_output()
+    if handle.pgid is None:
+        return False
+    kill_cmd = f"kill -TERM -{handle.pgid} 2>/dev/null; sleep 1; kill -KILL -{handle.pgid} 2>/dev/null; true"
+    try:
+        execute_with_retry(handle.host, kill_cmd, retries=1)
+    except ExecutorError:
+        logger.warning(
+            "cancel_background: kill command failed to reach %s for pgid %s",
+            handle.host,
+            handle.pgid,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def test_all_nodes(

@@ -23,6 +23,7 @@ from shared import db as db_module
 # bound as a name in this module (same reason Story 10.1's test_ssh_pool.py
 # aliases the imported test_all_nodes function).
 from shared.models import TestRunnerConfig as RunnerConfigModel
+from worker.executor.ssh_executor import BackgroundCommandHandle
 from worker.executor.test_runner import framework as fw
 
 
@@ -331,6 +332,35 @@ class _FakeDeclinedStart(fw.TestCase):
         raise fw.TestCaseDeclined(f"{self.id}: not automatable")
 
 
+class _FakeBackgroundWithHandle(fw.TestCase):
+    """poll() never resolves on its own -- models the real
+    effectively-unbounded background loads (TC-RUN-001/010, TC-COMPAT-001,
+    TC-PERF-005/007/009) the new POST .../cancel endpoint exists to stop.
+    start() returns a REAL BackgroundCommandHandle (so the route's own
+    isinstance() guard passes) wrapping a channel that's never actually
+    touched -- these tests monkeypatch test_runner_route.cancel_background
+    itself rather than exercising real SSH, same posture as this file's
+    existing ssh_check tests monkeypatching test_all_nodes."""
+
+    id = "TC-FAKE-BG-HANDLE"
+    name = "fake background with a cancellable handle"
+    group = fw.TestGroup.D
+    priority = fw.TestPriority.P1
+    background = True
+
+    def start(self, ctx, **kwargs):
+        return {"handle": BackgroundCommandHandle("client1", "fio --name=fake", object())}
+
+    def poll(self, ctx, state):
+        result = fw.TestResult(
+            test_id=self.id,
+            status=fw.TestStatus.RUNNING,
+            criteria=[fw.CriterionResult("van dang chay", passed=None)],
+            raw_output="still-running\n",
+        )
+        return state, result
+
+
 @pytest.fixture
 def fake_registry(monkeypatch):
     """Swaps the module-level TEST_CASES_BY_ID/_run_states for an isolated
@@ -344,6 +374,7 @@ def fake_registry(monkeypatch):
         _FakeErrorOneShot.id: _FakeErrorOneShot(),
         _FakeBackground.id: _FakeBackground(),
         _FakeDeclinedStart.id: _FakeDeclinedStart(),
+        _FakeBackgroundWithHandle.id: _FakeBackgroundWithHandle(),
     }
     monkeypatch.setattr(test_runner_route, "TEST_CASES_BY_ID", fakes)
     monkeypatch.setattr(test_runner_route, "_run_states", {})
@@ -464,6 +495,94 @@ def test_background_poll_accumulates_output_and_resolves(dashboard_client, fake_
     # terminal -- a 3rd GET must not poll again (no 3rd delta appended)
     third_poll = dashboard_client.get(f"/api/test-runner/tests/{_FakeBackground.id}/result").json()
     assert third_poll["raw_output"] == "poll-1\npoll-2\n"
+
+
+# -- POST /api/test-runner/tests/{id}/cancel ---------------------------------
+# 2026-08-07: TC-RUN-001/010, TC-COMPAT-001, TC-PERF-005/007/009 (and their
+# Group E S3 equivalents) all launch effectively-unbounded remote I/O load
+# via execute_background() -- before this endpoint existed, this app had
+# NO way to stop one short of an operator manually SSHing in and killing
+# processes by hand, which on a small/lab cluster can run the CPU/RAM up
+# until the cluster itself falls over. These tests monkeypatch
+# ssh_executor.cancel_background() (imported into test_runner_route's own
+# namespace) rather than exercising real SSH -- same posture as this
+# file's ssh_check tests monkeypatching test_all_nodes.
+
+
+def test_cancel_unknown_id_returns_404(dashboard_client, fake_registry):
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/test-runner/tests/TC-DOES-NOT-EXIST/cancel")
+    assert response.status_code == 404
+
+
+def test_cancel_never_started_returns_409(dashboard_client, fake_registry):
+    _login(dashboard_client)
+    response = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
+    assert response.status_code == 409
+
+
+def test_cancel_kills_remote_process_and_marks_terminal(dashboard_client, fake_registry, monkeypatch):
+    _login(dashboard_client)
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/run")
+
+    calls = []
+    monkeypatch.setattr(
+        test_runner_route, "cancel_background", lambda handle: calls.append(handle) or True
+    )
+
+    response = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == fw.TestStatus.FAIL.value
+    assert body["overridden"] is True
+    assert "Đã hủy" in body["override_note"]
+    assert len(calls) == 1
+    assert isinstance(calls[0], BackgroundCommandHandle)
+
+    # Sticky against further polling -- get_test_result() must not resume
+    # RUNNING or overwrite the cancel note (same guard override uses).
+    result = dashboard_client.get(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/result").json()
+    assert result["status"] == fw.TestStatus.FAIL.value
+    assert "Đã hủy" in result["override_note"]
+
+
+def test_cancel_reports_unconfirmed_when_no_pgid_was_ever_captured(
+    dashboard_client, fake_registry, monkeypatch
+):
+    _login(dashboard_client)
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/run")
+    monkeypatch.setattr(test_runner_route, "cancel_background", lambda handle: False)
+
+    response = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    # Still marked terminal (so polling stops) even though the kill itself
+    # couldn't be confirmed -- the note must say so rather than falsely
+    # claiming success.
+    assert body["status"] == fw.TestStatus.FAIL.value
+    assert "KHÔNG xác nhận được" in body["override_note"]
+
+
+def test_cancel_twice_returns_409_the_second_time(dashboard_client, fake_registry, monkeypatch):
+    _login(dashboard_client)
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/run")
+    monkeypatch.setattr(test_runner_route, "cancel_background", lambda handle: True)
+
+    first = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
+    assert first.status_code == 200
+    second = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
+    assert second.status_code == 409
+
+
+def test_cancel_one_shot_test_returns_409(dashboard_client, fake_registry):
+    # Cancel only makes sense for a background test's live SSH handle -- a
+    # one-shot test is rejected outright regardless of its current status.
+    _login(dashboard_client)
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/run")
+    response = dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/cancel")
+    assert response.status_code == 409
 
 
 def test_override_unknown_id_returns_404(dashboard_client, fake_registry):

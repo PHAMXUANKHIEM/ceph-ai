@@ -21,6 +21,7 @@ import worker.executor.ssh_executor as ssh_executor
 from worker.executor.ssh_executor import (
     BackgroundCommandHandle,
     ExecutorError,
+    cancel_background,
     close_all_pooled_connections,
     close_pooled_connection,
     execute_background,
@@ -145,6 +146,7 @@ class FakePooledSSHClient:
         self._host = None
         self.transport = _FakeTransport(active=True)
         self.closed = False
+        self.exec_calls = []
         FakePooledSSHClient.instances.append(self)
 
     def set_missing_host_key_policy(self, policy):
@@ -170,6 +172,7 @@ class FakePooledSSHClient:
         return self.transport
 
     def exec_command(self, command, timeout=None):
+        self.exec_calls.append(command)
         outcome = FakePooledSSHClient.exec_behavior.get(self._host, (0, "", ""))
         if outcome == "raise":
             raise OSError("broken pipe")
@@ -356,7 +359,11 @@ def test_execute_background_returns_pollable_handle():
     handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
 
     channel = FakePooledSSHClient.instances[0].transport.opened_sessions[0]
-    assert channel.exec_command_calls == ["long-running-fio"]
+    # Wrapped with setsid + a PGID echo (see cancel_background()'s own
+    # tests below) -- `command` itself still appears verbatim inside.
+    assert channel.exec_command_calls == [
+        'setsid long-running-fio & bg_pid=$!; echo SSHEXEC_PGID:$bg_pid; wait "$bg_pid"'
+    ]
     assert handle.is_done() is False
     assert handle.exit_code() is None
 
@@ -379,6 +386,97 @@ def test_execute_background_retries_then_raises_on_repeated_start_failure():
         execute_background("host1", "long-running-fio", retries=3, delay=5, user="root", key_path="/k")
 
     assert FakePooledSSHClient.connect_calls["host1"] == 3
+
+
+# -- PGID capture (execute_background) / cancel_background() ----------------
+
+
+def test_read_new_output_captures_and_strips_pgid_marker_line():
+    FakePooledSSHClient.exec_behavior["host1"] = (0, "", "")
+    handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
+    channel = FakePooledSSHClient.instances[0].transport.opened_sessions[0]
+
+    channel.push_stdout(b"SSHEXEC_PGID:4242\nreal output line\n")
+    out, err = handle.read_new_output()
+
+    assert handle.pgid == 4242
+    assert out == "real output line\n"
+    assert err == ""
+
+
+def test_read_new_output_gives_up_pgid_capture_if_first_chunk_has_no_marker():
+    # Should never happen for a real execute_background() handle (the
+    # wrapper always echoes the marker first), but read_new_output() must
+    # not misfire and eat legitimate output looking for it forever.
+    FakePooledSSHClient.exec_behavior["host1"] = (0, "", "")
+    handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
+    channel = FakePooledSSHClient.instances[0].transport.opened_sessions[0]
+
+    channel.push_stdout(b"not a pgid line\n")
+    out, _err = handle.read_new_output()
+    assert handle.pgid is None
+    assert out == "not a pgid line\n"
+
+    # Never retried on a later read either -- one attempt only.
+    channel.push_stdout(b"SSHEXEC_PGID:99\n")
+    out2, _err2 = handle.read_new_output()
+    assert handle.pgid is None
+    assert out2 == "SSHEXEC_PGID:99\n"
+
+
+def test_cancel_background_kills_process_group_via_pgid():
+    FakePooledSSHClient.exec_behavior["host1"] = (0, "", "")
+    handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
+    channel = FakePooledSSHClient.instances[0].transport.opened_sessions[0]
+    channel.push_stdout(b"SSHEXEC_PGID:777\n")
+    handle.read_new_output()
+
+    result = cancel_background(handle)
+
+    assert result is True
+    kill_calls = FakePooledSSHClient.instances[0].exec_calls
+    assert len(kill_calls) == 1
+    assert "kill -TERM -777" in kill_calls[0]
+    assert "kill -KILL -777" in kill_calls[0]
+
+
+def test_cancel_background_opportunistically_drains_before_giving_up():
+    # cancel() called before any poll() ever ran -- the PGID line is
+    # already sitting in the channel's buffer, just never read yet.
+    FakePooledSSHClient.exec_behavior["host1"] = (0, "", "")
+    handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
+    channel = FakePooledSSHClient.instances[0].transport.opened_sessions[0]
+    channel.push_stdout(b"SSHEXEC_PGID:555\n")
+
+    result = cancel_background(handle)
+
+    assert result is True
+    assert handle.pgid == 555
+
+
+def test_cancel_background_returns_false_without_a_captured_pgid():
+    FakePooledSSHClient.exec_behavior["host1"] = (0, "", "")
+    handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
+    # Nothing ever pushed to the channel -- pgid was never captured.
+
+    result = cancel_background(handle)
+
+    assert result is False
+    assert FakePooledSSHClient.instances[0].exec_calls == []
+
+
+def test_cancel_background_returns_false_when_kill_command_unreachable():
+    FakePooledSSHClient.exec_behavior["host1"] = (0, "", "")
+    handle = execute_background("host1", "long-running-fio", user="root", key_path="/k")
+    channel = FakePooledSSHClient.instances[0].transport.opened_sessions[0]
+    channel.push_stdout(b"SSHEXEC_PGID:777\n")
+    handle.read_new_output()
+
+    FakePooledSSHClient.exec_behavior["host1"] = "raise"
+
+    result = cancel_background(handle)
+
+    assert result is False
 
 
 def test_background_handle_survives_transport_death():
