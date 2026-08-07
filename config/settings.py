@@ -289,5 +289,16 @@ class Settings(BaseSettings):
     # query the main loop already does. 15 minutes by default.
     node_health_scan_interval_seconds: int = 900
 
+    # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
+    # device_health/node_health above because `ceph osd perf` is a single
+    # cheap JSON-RPC query through a MON (no SSH round trip per node/OSD at
+    # all, unlike those two), and a latency spike is far more transient
+    # than a slowly-climbing CPU/RAM trend or a predicted disk failure — a
+    # 15-60 minute cadence would routinely miss it entirely. 1 minute by
+    # default, independent of watcher_poll_interval_seconds (15s) so a
+    # transient MON hiccup on this query never affects the main health-check
+    # cadence and vice versa.
+    osd_latency_scan_interval_seconds: int = 60
+
 
 settings = Settings()

@@ -178,8 +178,11 @@ tổng hợp khác đã có sẵn tiền tố riêng (`VOLUME_SATURATED:`,
 
 ## 5. Cảnh báo phần cứng
 
-Module: `watcher/node_health_monitor.py`. Dùng `telegram_node_bot_token`/
-`telegram_node_chat_id`.
+Kênh này gộp 2 module độc lập, cùng dùng chung `telegram_node_bot_token`/
+`telegram_node_chat_id`: `watcher/node_health_monitor.py` (CPU/RAM node,
+mục 5.1-5.4 dưới đây) và `watcher/osd_latency_monitor.py` (OSD/đĩa chậm bất
+thường, mục 5.5) — cùng là "phần cứng/tài nguyên vật lý xuống cấp", không
+tách kênh riêng cho từng loại (xem mục 4 vì sao chỉ có đúng 3 kênh).
 
 ### 5.1. Cách quét
 
@@ -218,6 +221,47 @@ lượt quét, không gửi gì khi tự phục hồi.
 Node 10.0.0.5 có CPU 95.2% / RAM 40.1% cao bất thường, lặp lại 2 lần quét
 liên tiếp (ngưỡng 90% CPU hoặc 90% RAM) — có thể node đang quá tải hoặc có
 tiến trình bất thường, không phải lỗi cấu hình có thể tự sửa.
+```
+
+### 5.5. OSD Latency Outlier — `watcher/osd_latency_monitor.py`
+
+2026-08-07: phát hiện một OSD cụ thể có commit latency cao bất thường **so
+với chính các OSD khác trong cùng cụm tại thời điểm quét** — không phải
+`ceph health detail` (OSD vẫn `up`/`in` bình thường, không kích hoạt
+HEALTH_WARN/ERR nào) và không phải CPU/RAM node — một ổ đĩa/OSD chạy chậm
+dần vẫn kéo tail latency (p99/p999) toàn cụm xuống vì mọi I/O đi qua PG có
+OSD đó đều bị nghẽn theo.
+
+**Cách quét**: `ceph osd perf` (1 lệnh JSON nhẹ qua MON, không SSH) lấy
+`commit_latency_ms` mọi OSD đang `up`, tính **trung vị của chính cụm đó
+ngay trong lượt quét** làm baseline — không lưu lịch sử/bảng metrics riêng,
+không so với ngưỡng ms cố định (cụm lai HDD/SSD/NVMe có baseline rất khác
+nhau, ngưỡng tuyệt đối sẽ sai). Chạy trên nhịp quét riêng, NHANH hơn nhiều
+so với CPU/RAM node (`osd_latency_scan_interval_seconds`, **mặc định 60
+giây**) vì đây chỉ là 1 JSON-RPC rẻ, và spike latency thường thoáng qua hơn
+nhiều so với xu hướng CPU/RAM tăng dần.
+
+| Hằng số (`watcher/osd_latency_monitor.py`) | Giá trị mặc định | Ý nghĩa |
+|---|---|---|
+| `OUTLIER_LATENCY_RATIO` | 3.0 | Latency ≥ bấy nhiêu lần trung vị cụm coi là cao |
+| `MIN_ABSOLUTE_LATENCY_MS` | 5.0 ms | Ngưỡng sàn tuyệt đối — tránh báo động giả khi cả cụm đều cực nhanh |
+| `MIN_UP_OSDS_FOR_COMPARISON` | 4 | Cụm ít hơn số OSD `up` này thì bỏ qua (trung vị không ổn định) |
+| `CONSECUTIVE_SCANS_REQUIRED` | 2 | Phải cao liên tiếp bấy nhiêu lượt quét mới báo động |
+
+Mỗi OSD bị gắn cờ tạo một `Incident` (`ceph_code =
+"OSD_LATENCY_HIGH:<osd_id>"`, `PENDING_APPROVAL`) + một
+`Action(action_id="investigate_manually")` — không có remediation tự
+động (không rõ nguyên nhân: ổ hỏng dần, backfill/scrub đang chạy, noisy
+neighbor...). Tự resolve khi OSD rớt khỏi danh sách lệch (latency về bình
+thường, hoặc OSD không còn `up`). **Chỉ gửi Telegram khi Incident MỚI được
+tạo**, cùng nguyên tắc như mục 5.1-5.4.
+
+```
+🟠 OSD chậm bất thường: osd.7 (node2)
+osd.7 (node2) có commit_latency 42.0ms, cao gấp 4.2x so với trung vị cụm
+(10.0ms), lặp lại 2 lần quét liên tiếp — có thể ổ đĩa/OSD này đang chậm
+bất thường, ảnh hưởng tail latency toàn cụm, không phải lỗi cấu hình có
+thể tự sửa.
 ```
 
 ## 6. Yêu cầu phê duyệt qua Telegram — mặc định của mọi kênh đã cấu hình
@@ -344,10 +388,11 @@ tiếp trên Dashboard khi cần xác nhận. (Mục 6 "Yêu cầu phê duyệt"
 | `config/settings.py` | 6 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id}`) + `telegram_approval_scan_interval_seconds` |
 | `shared/env_config.py` | `TELEGRAM_BACKUP_ENV_NAMES`/`TELEGRAM_INCIDENT_ENV_NAMES`/`TELEGRAM_NODE_ENV_NAMES` — ánh xạ field ↔ biến `.env`, mỗi kênh 1 dict |
 | `shared/telegram_client.py` | Client Telegram Bot API dùng chung — gửi thuần (`send_telegram_message`) VÀ 4 hàm cho Phê duyệt (`send_telegram_message_with_keyboard`/`edit_telegram_message`/`get_telegram_updates`/`answer_telegram_callback`) |
-| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình |
+| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (2 hàm sau cùng chia sẻ kênh Phần cứng) |
 | `worker/backup/alerting.py` | `send_alert()` → `_send_telegram_alert()` dùng cặp token/chat_id kênh Backup |
-| `watcher/main.py` | `build_and_publish_incident()` gọi `send_incident_alert()`; nhịp quét `node_health_monitor` trong `run()` |
-| `watcher/node_health_monitor.py` | Toàn bộ logic quét CPU/RAM + ngưỡng + vòng đời Incident cho cảnh báo phần cứng |
+| `watcher/main.py` | `build_and_publish_incident()` gọi `send_incident_alert()`; nhịp quét `node_health_monitor`/`osd_latency_monitor` trong `run()` |
+| `watcher/node_health_monitor.py` | Toàn bộ logic quét CPU/RAM + ngưỡng + vòng đời Incident cho cảnh báo phần cứng (node) |
+| `watcher/osd_latency_monitor.py` | Toàn bộ logic quét `ceph osd perf` + so trung vị cụm + vòng đời Incident cho OSD latency outlier |
 | `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình + listener gom theo bot token + trust model + idempotent |
 | `dashboard/routes/actions.py` | `approve_action_core`/`reject_action_core` — logic Duyệt/Từ chối DÙNG CHUNG giữa nút HTML và nút Telegram |
 | `dashboard/routes/telegram_alerts.py` | Router trang "Alert Telegram" — 3 card, mỗi kênh 1 route Lưu + 1 route Gửi thử, route hướng dẫn |
@@ -356,4 +401,4 @@ tiếp trên Dashboard khi cần xác nhận. (Mục 6 "Yêu cầu phê duyệt"
 | `dashboard/app.py` | `lifespan` — khởi động thread nền của `telegram_approval_bot`; đăng ký `telegram_alerts.router` |
 | `shared/models.py` | `Action.telegram_message_ids` (JSON `{channel_key: message_id}`) / `Action.telegram_notified_at` |
 | `alembic/versions/6b1f3a9d7e2c_*.py` | Migration đổi `telegram_message_id` (Integer) → `telegram_message_ids` (Text/JSON) |
-| `tests/test_telegram_client.py`, `tests/test_shared_telegram_alerts.py`, `tests/test_node_health_monitor.py`, `tests/test_watcher_incident_flow.py`, `tests/test_telegram_approval_bot.py`, `tests/test_backup_alerting.py`, `tests/test_dashboard_telegram_alerts.py` | Test cho từng phần |
+| `tests/test_telegram_client.py`, `tests/test_shared_telegram_alerts.py`, `tests/test_node_health_monitor.py`, `tests/test_osd_latency_monitor.py`, `tests/test_watcher_incident_flow.py`, `tests/test_telegram_approval_bot.py`, `tests/test_backup_alerting.py`, `tests/test_dashboard_telegram_alerts.py` | Test cho từng phần |

@@ -11,6 +11,7 @@ from watcher import (
     collector,
     device_health_monitor,
     node_health_monitor,
+    osd_latency_monitor,
     publisher,
     volume_monitor,
 )
@@ -18,6 +19,7 @@ from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
 from watcher.ceph_client import CephQueryError, query_cluster_health
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
+from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat
 from shared.models import Incident, IncidentStatus
@@ -148,6 +150,13 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
                 # not per raw `ceph health detail` check code — see
                 # build_and_publish_incident's own BLUESTORE_NO_PER_POOL_OMAP
                 # exclusion just below for the other half of this).
+                continue
+            if incident.ceph_code.startswith(OSD_LATENCY_HIGH_PREFIX):
+                # 2026-08-07: same reasoning as the guards above —
+                # watcher/osd_latency_monitor.py owns this ceph_code
+                # family's own create/resolve lifecycle (its own
+                # consecutive-high-scans streak per osd_id), never a real
+                # `ceph health detail` check code.
                 continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
@@ -289,6 +298,7 @@ def run(
     last_device_health_scan_at: Optional[datetime] = None
     last_node_health_scan_at: Optional[datetime] = None
     last_bluestore_omap_scan_at: Optional[datetime] = None
+    last_osd_latency_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -427,6 +437,26 @@ def run(
             except Exception:
                 logger.exception("run: bluestore omap scan failed")
             last_bluestore_omap_scan_at = now
+
+        # 2026-08-07: OSD latency outlier scan — own independent try/except
+        # (same isolation reasoning as the blocks above) and its OWN, much
+        # SHORTER cadence (settings.osd_latency_scan_interval_seconds,
+        # default 60s) than device_health/node_health above — `ceph osd
+        # perf` is a single cheap JSON-RPC through a MON (no SSH round trip
+        # at all), and a latency spike is far more transient than a slowly-
+        # climbing CPU/RAM trend, so this can and should run much more
+        # often — see watcher/osd_latency_monitor.py's own module docstring.
+        if (
+            last_osd_latency_scan_at is None
+            or (now - last_osd_latency_scan_at).total_seconds()
+            >= settings.osd_latency_scan_interval_seconds
+        ):
+            try:
+                current_osd_latency = osd_latency_monitor.check_osd_latency_outliers()
+                osd_latency_monitor.create_or_resolve_osd_latency_incidents(current_osd_latency)
+            except Exception:
+                logger.exception("run: osd latency scan failed")
+            last_osd_latency_scan_at = now
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))

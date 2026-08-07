@@ -102,6 +102,23 @@ def _fast_bluestore_omap_monitor_default(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _fast_osd_latency_monitor_default(monkeypatch):
+    """2026-08-07: run() now also calls osd_latency_monitor.
+    check_osd_latency_outliers() every poll cycle (gated to once per
+    settings.osd_latency_scan_interval_seconds — see that call site's own
+    comment in watcher/main.py). Same "fast default, explicit override
+    where the behavior is actually under test" reasoning as
+    _fast_device_health_monitor_default above — left unmocked, this hits
+    the real ceph_client.run_ceph_json_command/list_osds path, adding real
+    wall-clock time to every test in this file whether or not it cares
+    about OSD latency monitoring."""
+    monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", lambda: {})
+    monkeypatch.setattr(
+        watcher_main.osd_latency_monitor, "create_or_resolve_osd_latency_incidents", lambda _c: None
+    )
+
+
 def test_run_calls_on_transition_only_when_status_changes(monkeypatch):
     statuses = [
         {"status": "HEALTH_OK"},
@@ -395,6 +412,71 @@ def test_run_survives_node_health_monitor_raising(monkeypatch):
         raise RuntimeError("bug in node_health_monitor")
 
     monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", broken_check)
+
+    transitions = []
+    watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)
+
+    assert len(transitions) == 1  # HEALTH_OK on_transition still fired once, on the first poll
+
+
+def test_run_calls_osd_latency_monitor_once_within_default_scan_interval(monkeypatch):
+    # settings.osd_latency_scan_interval_seconds defaults to 60s — across 3
+    # fast poll iterations (real wall-clock time barely advances since
+    # time.sleep is mocked away), the scan must fire on the first iteration
+    # only, same "own independent, own cadence" shape as node_health/
+    # device_health above.
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    check_calls = {"n": 0}
+    resolve_calls = []
+
+    def fake_check():
+        check_calls["n"] += 1
+        return {"OSD_LATENCY_HIGH:3": {"osd_id": 3}}
+
+    monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", fake_check)
+    monkeypatch.setattr(
+        watcher_main.osd_latency_monitor,
+        "create_or_resolve_osd_latency_incidents",
+        resolve_calls.append,
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 1
+    assert resolve_calls == [{"OSD_LATENCY_HIGH:3": {"osd_id": 3}}]
+
+
+def test_run_calls_osd_latency_monitor_every_iteration_when_interval_is_zero(monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "osd_latency_scan_interval_seconds", 0, raising=False)
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    check_calls = {"n": 0}
+
+    def fake_check():
+        check_calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", fake_check)
+    monkeypatch.setattr(
+        watcher_main.osd_latency_monitor, "create_or_resolve_osd_latency_incidents", lambda _c: None
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 3
+
+
+def test_run_survives_osd_latency_monitor_raising(monkeypatch):
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    def broken_check():
+        raise RuntimeError("bug in osd_latency_monitor")
+
+    monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", broken_check)
 
     transitions = []
     watcher_main.run(on_transition=lambda *a: transitions.append(a), max_iterations=3)

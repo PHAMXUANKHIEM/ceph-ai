@@ -5,6 +5,13 @@ its own fully independent Telegram channel with its OWN Bot Token/Chat ID
 separate per-category toggle). "Configured" (both token and chat id
 non-blank) IS the on/off switch now — there is no separate enabled flag.
 
+`send_osd_latency_alert` (2026-08-07, watcher/osd_latency_monitor.py)
+deliberately reuses the SAME "Phần cứng" channel as `send_node_alert`
+rather than getting its own 4th Bot Token/Chat ID pair — an OSD/disk
+running abnormally slow is the same category of problem (physical
+resource degradation) as a node's CPU/RAM being pegged, and the 3-channel
+design is meant to stay exactly 3, not grow a new pair per alert type.
+
 Kept in shared/ (not watcher/) so it stays importable from either process
 without crossing any layering boundary, same posture as
 shared/router_client.py/shared/telegram_client.py. Deliberately SEPARATE
@@ -79,3 +86,14 @@ def send_node_alert(host: str, message: str) -> None:
     stays flagged). No-op if the Phần cứng channel's bot token/chat id
     aren't configured yet (same reasoning as send_incident_alert above)."""
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, f"\U0001f7e0 Phần cứng node {host}\n{message}")
+
+
+def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
+    """Called once per NEWLY-flagged OSD latency outlier
+    (watcher/osd_latency_monitor.py::create_or_resolve_osd_latency_incidents
+    — only when a new Incident is created, same "one notification per
+    genuinely new problem" posture as send_node_alert above). Shares the
+    Phần cứng channel with send_node_alert — see this module's own
+    docstring for why there's no separate 4th channel for this."""
+    label = f"osd.{osd_id}" + (f" ({host})" if host else "")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, f"\U0001f7e0 OSD chậm bất thường: {label}\n{message}")
