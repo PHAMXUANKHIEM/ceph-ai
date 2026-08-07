@@ -50,11 +50,12 @@ def _send_telegram_alert(severity: str, message: str, backup_job_id: str | None)
     network) is logged and swallowed, never allowed to fail the backup/
     drill run that triggered this alert. 2026-08-06: this Backup channel
     has its own independent Bot Token/Chat ID (no longer shared with
-    Lỗi cụm/Phần cứng) — "configured" (both non-blank) IS the on/off
-    switch, checked here rather than relying on send_telegram_message's
-    own "missing config" error, so an operator who simply hasn't set up
-    this channel never sees a log entry about it failing."""
-    if not settings.telegram_backup_bot_token or not settings.telegram_backup_chat_id:
+    Lỗi cụm/Phần cứng) — checked here (along with `telegram_backup_enabled`,
+    2026-08-07's separate on/off toggle) rather than relying on
+    send_telegram_message's own "missing config" error, so an operator who
+    simply hasn't set up (or has paused) this channel never sees a log
+    entry about it failing."""
+    if not settings.telegram_backup_enabled or not settings.telegram_backup_bot_token or not settings.telegram_backup_chat_id:
         return
     prefix = _TELEGRAM_SEVERITY_PREFIX.get(severity, severity.upper())
     text = f"{prefix}\n{message}"

@@ -127,16 +127,24 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     # AttributeError since that fake wasn't shaped like a real response).
     # Same "test suite must not depend on whatever a real .env happens to
     # contain" principle as every other field pinned above — blank by
-    # default for all 3 channels here (blank = "not configured", no
-    # separate enabled flag anymore); any test that specifically exercises
-    # Telegram delivery already monkeypatches these back to real-looking
-    # test values itself.
+    # default for all 3 channels here (blank = "not configured"); any test
+    # that specifically exercises Telegram delivery already monkeypatches
+    # these back to real-looking test values itself.
     monkeypatch.setattr(settings, "telegram_backup_bot_token", "", raising=False)
     monkeypatch.setattr(settings, "telegram_backup_chat_id", "", raising=False)
     monkeypatch.setattr(settings, "telegram_incident_bot_token", "", raising=False)
     monkeypatch.setattr(settings, "telegram_incident_chat_id", "", raising=False)
     monkeypatch.setattr(settings, "telegram_node_bot_token", "", raising=False)
     monkeypatch.setattr(settings, "telegram_node_chat_id", "", raising=False)
+    # 2026-08-07: separate per-channel `_enabled` toggle reintroduced (Alert
+    # Telegram page) — pinned to True (its own default) for the same
+    # leak-across-tests reason as the 6 fields above: it's written via
+    # plain setattr in dashboard/routes/telegram_alerts.py::
+    # telegram_channel_toggle, not monkeypatch.setattr, so a test that
+    # flips one off would otherwise leave it off for every later test.
+    monkeypatch.setattr(settings, "telegram_backup_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "telegram_node_enabled", True, raising=False)
     # 2026-08-07: cluster_name is written the same way (plain setattr in
     # dashboard/routes/telegram_alerts.py::telegram_cluster_name_submit,
     # not monkeypatch.setattr) — same leak-across-tests/inherits-real-.env

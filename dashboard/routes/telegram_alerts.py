@@ -46,6 +46,7 @@ _CHANNELS: dict[str, dict] = {
         "label": "Cảnh báo Backup",
         "bot_token_field": "telegram_backup_bot_token",
         "chat_id_field": "telegram_backup_chat_id",
+        "enabled_field": "telegram_backup_enabled",
         "env_names": env_config.TELEGRAM_BACKUP_ENV_NAMES,
         "restart": "worker",
     },
@@ -53,6 +54,7 @@ _CHANNELS: dict[str, dict] = {
         "label": "Cảnh báo lỗi cụm",
         "bot_token_field": "telegram_incident_bot_token",
         "chat_id_field": "telegram_incident_chat_id",
+        "enabled_field": "telegram_incident_enabled",
         "env_names": env_config.TELEGRAM_INCIDENT_ENV_NAMES,
         "restart": "watcher",
     },
@@ -60,6 +62,7 @@ _CHANNELS: dict[str, dict] = {
         "label": "Cảnh báo phần cứng",
         "bot_token_field": "telegram_node_bot_token",
         "chat_id_field": "telegram_node_chat_id",
+        "enabled_field": "telegram_node_enabled",
         "env_names": env_config.TELEGRAM_NODE_ENV_NAMES,
         "restart": "watcher",
     },
@@ -97,11 +100,20 @@ def _context(
     channels = {}
     for key, info in _CHANNELS.items():
         bot_token = getattr(settings, info["bot_token_field"])
+        enabled = getattr(settings, info["enabled_field"])
         channels[key] = {
             "key": key,
             "label": info["label"],
             "chat_id": getattr(settings, info["chat_id_field"]),
             "masked_bot_token": _mask_key(bot_token) if bot_token else None,
+            "enabled": enabled,
+            # "Đã tắt" is only meaningful once a channel actually HAS a
+            # token+chat id -- an unconfigured channel is just "chưa cấu
+            # hình", not "tắt", even though `enabled` defaults True either
+            # way.
+            "status_label": (
+                "Chưa cấu hình" if not bot_token else "Đang bật" if enabled else "Đã tắt"
+            ),
             "error": errors.get(key),
             "success": successes.get(key),
             "test_error": test_errors.get(key),
@@ -226,11 +238,64 @@ async def telegram_channel_submit(
     )
 
 
+@router.post("/telegram-alerts/{channel}/toggle", response_class=HTMLResponse)
+async def telegram_channel_toggle(
+    request: Request,
+    channel: str,
+    user: str = Depends(require_login),
+    enabled: str = Form(...),
+):
+    """2026-08-07: Bật/Tắt riêng cho ĐÚNG 1 kênh — KHÔNG đụng tới Bot Token/
+    Chat ID đã lưu, chỉ lật cờ `*_enabled`. Cùng "nút luôn gửi giá trị
+    NGƯỢC với trạng thái đang hiển thị" như kill-switch chính
+    (dashboard/routes/incidents.py::kill_switch_submit/templates/index.html)
+    -- 1 request F5/double-submit lại trang cũ không vô tình lật lại lần
+    nữa vì form đó đã render giá trị mới rồi.
+
+    Restart cùng tiến trình như Lưu Bot Token/Chat ID ở trên (Worker cho
+    Backup; Watcher cho Lỗi cụm/Phần cứng) -- Watcher/Worker là tiến trình
+    RIÊNG, chỉ đọc `settings` của chính nó lúc khởi động, nên việc Dashboard
+    tự sửa `settings` trong tiến trình của MÌNH không đủ để 2 tiến trình
+    kia thấy cờ mới ngay."""
+    info = _channel_or_404(channel)
+    _require_admin_privilege(user)
+
+    enabled_field = info["enabled_field"]
+    new_enabled = enabled.strip().lower() == "true"
+
+    try:
+        env_config.update_env_file(info["env_names"][enabled_field], "true" if new_enabled else "false")
+        setattr(settings, enabled_field, new_enabled)
+    except Exception:
+        logger.exception("telegram_channel_toggle: failed to persist config to .env for channel %s", channel)
+        return templates.TemplateResponse(
+            request,
+            "telegram_alerts.html",
+            _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}),
+        )
+
+    if info["restart"] == "worker":
+        restart_label = "Worker"
+        await asyncio.to_thread(restart_worker)
+    else:
+        restart_label = "Watcher"
+        await asyncio.to_thread(restart_watcher)
+
+    state_label = "Đã bật" if new_enabled else "Đã tắt"
+    return templates.TemplateResponse(
+        request,
+        "telegram_alerts.html",
+        _context(user, successes={channel: f"{state_label} kênh này — {restart_label} đã khởi động lại để áp dụng ngay."}),
+    )
+
+
 @router.post("/telegram-alerts/{channel}/test", response_class=HTMLResponse)
 async def telegram_channel_test(request: Request, channel: str, user: str = Depends(require_login)):
     """"Gửi thử" — gửi 1 tin nhắn thật bằng cấu hình ĐÃ LƯU của đúng kênh
     này (không phải giá trị chưa lưu trên form — lưu trước, thử sau), cùng
-    posture với nút "Gửi thử" cũ ở Settings."""
+    posture với nút "Gửi thử" cũ ở Settings. Cố ý KHÔNG kiểm tra
+    `*_enabled` — cho phép xác nhận Bot Token/Chat ID còn hoạt động ngay cả
+    khi kênh đang tạm TẮT, trước khi bật lại."""
     info = _channel_or_404(channel)
     _require_admin_privilege(user)
 

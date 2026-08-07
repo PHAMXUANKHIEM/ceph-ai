@@ -264,17 +264,28 @@ class Settings(BaseSettings):
     # 2026-08-06: Telegram alert delivery split into 3 fully INDEPENDENT
     # channels — Backup, Lỗi cụm (cluster health), Phần cứng (node CPU/RAM)
     # — each with its OWN Bot Token + Chat ID (previously all 3 shared one
-    # pair). "Configured" (both token AND chat id non-blank) IS the on/off
-    # switch for a channel — no separate enabled flag, so there is no way
-    # for a channel to be half-configured-but-off; to pause a channel,
-    # blank its chat id (keep the token) rather than retyping it later.
+    # pair).
+    #
+    # 2026-08-07: brought back a SEPARATE per-channel `_enabled` flag
+    # (operator request) — the original "configured = both token+chat id
+    # non-blank IS the on/off switch, no separate flag" design (see git
+    # history) meant pausing a channel required BLANKING its Chat ID, so
+    # re-enabling it later meant retyping/re-pasting that Chat ID instead of
+    # a single click. Each `_enabled` field defaults to True so an existing
+    # deployment's already-configured channels keep behaving exactly as
+    # before until the operator explicitly flips one off — a channel is
+    # only actually active when BOTH "configured" (token+chat id non-blank)
+    # AND `_enabled` are true; see shared/telegram_alerts.py::_send,
+    # worker/backup/alerting.py::_send_telegram_alert, and
+    # dashboard/telegram_approval_bot.py::_configured_channels for the 3
+    # places that check both.
     #
     # Yêu cầu phê duyệt qua Telegram (Duyệt/Từ chối an Action from an
     # inline-keyboard button, dashboard/telegram_approval_bot.py) is no
     # longer its own 4th toggle — it is now a DEFAULT capability of EVERY
-    # channel configured below: a PENDING_APPROVAL Action's Duyệt/Từ chối
-    # request is broadcast to every channel that has a token+chat id set,
-    # simultaneously. Anyone in ANY of these 3 chats can approve/reject any
+    # channel that is BOTH configured AND enabled below: a PENDING_APPROVAL
+    # Action's Duyệt/Từ chối request is broadcast to every such channel
+    # simultaneously. Anyone in ANY of these chats can approve/reject any
     # pending RISKY action — see that module's own docstring for the full
     # design and TRUST MODEL before configuring a group chat here.
     #
@@ -282,10 +293,13 @@ class Settings(BaseSettings):
     # backup_alert_webhook_url above, not a replacement for it.
     telegram_backup_bot_token: str = ""
     telegram_backup_chat_id: str = ""
+    telegram_backup_enabled: bool = True
     telegram_incident_bot_token: str = ""
     telegram_incident_chat_id: str = ""
+    telegram_incident_enabled: bool = True
     telegram_node_bot_token: str = ""
     telegram_node_chat_id: str = ""
+    telegram_node_enabled: bool = True
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's

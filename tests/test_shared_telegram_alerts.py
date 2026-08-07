@@ -53,6 +53,20 @@ def test_send_incident_alert_skips_when_only_token_set(monkeypatch):
     assert calls == []
 
 
+def test_send_incident_alert_skips_when_disabled(monkeypatch):
+    # 2026-08-07: `_enabled` is a SEPARATE toggle from token+chat_id being
+    # set (Alert Telegram page's "Tắt kênh này" button) -- a fully
+    # configured but disabled channel must send nothing.
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", False, raising=False)
+    calls = []
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: calls.append(a))
+
+    telegram_alerts.send_incident_alert("MON_DOWN", "HEALTH_ERR", "mon.a is down")
+
+    assert calls == []
+
+
 def test_send_incident_alert_truncates_long_excerpt(monkeypatch):
     _configure_incident(monkeypatch)
     calls = []
@@ -97,6 +111,17 @@ def test_send_node_alert_sends_when_configured(monkeypatch):
 
 def test_send_node_alert_skips_when_not_configured(monkeypatch):
     _configure_node(monkeypatch, token="", chat_id="")
+    calls = []
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: calls.append(a))
+
+    telegram_alerts.send_node_alert("10.0.0.5", "CPU 95%")
+
+    assert calls == []
+
+
+def test_send_node_alert_skips_when_disabled(monkeypatch):
+    _configure_node(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_node_enabled", False, raising=False)
     calls = []
     monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *a: calls.append(a))
 

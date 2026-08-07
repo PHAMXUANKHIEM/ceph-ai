@@ -2,8 +2,10 @@
 health/Incident errors, node hardware) — 2026-08-06: each category is now
 its own fully independent Telegram channel with its OWN Bot Token/Chat ID
 (previously all 3 categories shared one pair, switched on/off by a
-separate per-category toggle). "Configured" (both token and chat id
-non-blank) IS the on/off switch now — there is no separate enabled flag.
+separate per-category toggle). 2026-08-07: that per-category toggle is
+back (see config/settings.py's `telegram_*_enabled` fields) — a channel is
+only active when it's BOTH "configured" (token AND chat id non-blank) AND
+`_enabled`, checked together in `_send` below.
 
 `send_osd_latency_alert` (2026-08-07, watcher/osd_latency_monitor.py)
 deliberately reuses the SAME "Phần cứng" channel as `send_node_alert`
@@ -59,8 +61,12 @@ def _with_cluster_prefix(text: str) -> str:
     return f"\U0001f4cd Cụm: {name}\n{text}"
 
 
-def _send(bot_token: str, chat_id: str, text: str) -> None:
-    if not bot_token or not chat_id:
+def _send(bot_token: str, chat_id: str, enabled: bool, text: str) -> None:
+    """`enabled` (2026-08-07, Alert Telegram page) is a SEPARATE on/off
+    switch from "configured" (bot_token/chat_id both non-blank) — lets an
+    operator pause a channel with one click without losing/retyping its
+    Chat ID, unlike the earlier "blank the chat id to pause" design."""
+    if not enabled or not bot_token or not chat_id:
         return
     try:
         send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text))
@@ -89,7 +95,7 @@ def send_incident_alert(ceph_code: str, severity: str | None, log_excerpt: str |
     text = f"{prefix} Cụm Ceph: {ceph_code}"
     if excerpt:
         text += f"\n{excerpt}"
-    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, text)
+    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, settings.telegram_incident_enabled, text)
 
 
 def send_node_alert(host: str, message: str) -> None:
@@ -98,7 +104,7 @@ def send_node_alert(host: str, message: str) -> None:
     — only when a new Incident is created, not resent on every scan a host
     stays flagged). No-op if the Phần cứng channel's bot token/chat id
     aren't configured yet (same reasoning as send_incident_alert above)."""
-    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, f"\U0001f7e0 Phần cứng node {host}\n{message}")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Phần cứng node {host}\n{message}")
 
 
 def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
@@ -109,7 +115,7 @@ def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
     Phần cứng channel with send_node_alert — see this module's own
     docstring for why there's no separate 4th channel for this."""
     label = f"osd.{osd_id}" + (f" ({host})" if host else "")
-    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, f"\U0001f7e0 OSD chậm bất thường: {label}\n{message}")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 OSD chậm bất thường: {label}\n{message}")
 
 
 def send_auto_remediation_alert(
@@ -137,4 +143,4 @@ def send_auto_remediation_alert(
         lines.append(f"Hành động: {rationale}")
     if command:
         lines.append(f"Lệnh đã chạy:\n{command}")
-    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, "\n".join(lines))
+    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, settings.telegram_incident_enabled, "\n".join(lines))

@@ -29,7 +29,7 @@ def _pending_action(incident_id: str, *, action_id: str = "restart_osd_daemon", 
 
 
 def _clear_all_channels(monkeypatch):
-    for _, token_field, chat_field in bot._CHANNELS:
+    for _, token_field, chat_field, _enabled_field in bot._CHANNELS:
         monkeypatch.setattr(bot.settings, token_field, "", raising=False)
         monkeypatch.setattr(bot.settings, chat_field, "", raising=False)
 
@@ -54,6 +54,19 @@ def test_configured_channels_requires_both_token_and_chat_id(monkeypatch):
 
     monkeypatch.setattr(bot.settings, "telegram_incident_chat_id", "-100999", raising=False)
     assert bot._configured_channels() == [("incident", "123:ABC", "-100999")]
+
+
+def test_configured_channels_excludes_a_disabled_channel(monkeypatch):
+    # 2026-08-07: a channel with a fully saved token+chat id but flipped
+    # off (Alert Telegram page's "Tắt kênh này") must not receive Duyệt/Từ
+    # chối broadcasts either -- see config.settings.py's `telegram_*_enabled`
+    # docstring.
+    _clear_all_channels(monkeypatch)
+    monkeypatch.setattr(bot.settings, "telegram_incident_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(bot.settings, "telegram_incident_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(bot.settings, "telegram_incident_enabled", False, raising=False)
+
+    assert bot._configured_channels() == []
 
 
 def test_known_chat_ids_aggregates_every_configured_channel(monkeypatch):

@@ -74,17 +74,25 @@ def backup_target_env_names(slot: str) -> dict[str, str]:
 # saved through its own form/route, so each gets its own field-name ->
 # env-var-name dict (same one-dict-per-form role as CLUSTER_ENV_NAMES
 # above) rather than one dict spanning all 3.
+#
+# `_enabled` (2026-08-07) included in each dict too -- pydantic-settings
+# parses "true"/"false" strings back into the bool field on next process
+# start, same as ROUTER_ENABLED_ENV_NAME's existing "true"/"false" string
+# convention (dashboard/routes/settings.py).
 TELEGRAM_BACKUP_ENV_NAMES: dict[str, str] = {
     "telegram_backup_bot_token": "TELEGRAM_BACKUP_BOT_TOKEN",
     "telegram_backup_chat_id": "TELEGRAM_BACKUP_CHAT_ID",
+    "telegram_backup_enabled": "TELEGRAM_BACKUP_ENABLED",
 }
 TELEGRAM_INCIDENT_ENV_NAMES: dict[str, str] = {
     "telegram_incident_bot_token": "TELEGRAM_INCIDENT_BOT_TOKEN",
     "telegram_incident_chat_id": "TELEGRAM_INCIDENT_CHAT_ID",
+    "telegram_incident_enabled": "TELEGRAM_INCIDENT_ENABLED",
 }
 TELEGRAM_NODE_ENV_NAMES: dict[str, str] = {
     "telegram_node_bot_token": "TELEGRAM_NODE_BOT_TOKEN",
     "telegram_node_chat_id": "TELEGRAM_NODE_CHAT_ID",
+    "telegram_node_enabled": "TELEGRAM_NODE_ENABLED",
 }
 
 

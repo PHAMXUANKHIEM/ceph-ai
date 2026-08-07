@@ -102,6 +102,20 @@ def test_send_alert_skips_telegram_when_not_configured(monkeypatch):
     assert calls == []
 
 
+def test_send_alert_skips_telegram_when_disabled(monkeypatch):
+    # 2026-08-07: `telegram_backup_enabled` is a SEPARATE toggle from
+    # token+chat_id being set (Alert Telegram page's "Tắt kênh này" button).
+    monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
+    _enable_telegram(monkeypatch)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_enabled", False, raising=False)
+    calls = []
+    monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: calls.append(a))
+
+    alerting.send_alert("warning", "minor issue")
+
+    assert calls == []
+
+
 def test_send_alert_skips_telegram_when_only_chat_id_configured(monkeypatch):
     monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
     monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", "", raising=False)

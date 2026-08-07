@@ -83,12 +83,12 @@ chưa có tin nhắn nào sau khi thêm bot.
 2. Ở đúng card của kênh đang cấu hình (Cảnh báo Backup / Cảnh báo lỗi cụm
    / Cảnh báo phần cứng), dán Bot Token + Chat ID, bấm **Lưu**. Bỏ trống ô
    Bot Token khi Lưu = giữ nguyên token đã lưu (không phải xoá).
-3. Kênh được coi là "đã cấu hình" ngay khi cả 2 ô đều có giá trị — **không
-   có công tắc bật/tắt riêng nào khác**. Duyệt/Từ chối cũng áp dụng ngay
-   cho kênh này, không cần bật thêm gì (xem mục 6).
+3. Kênh được coi là "đã cấu hình" ngay khi cả 2 ô đều có giá trị. Duyệt/Từ
+   chối cũng áp dụng ngay cho kênh này, không cần bật thêm gì (xem mục 6).
 4. Lặp lại cho từng kênh còn lại muốn bật — độc lập hoàn toàn.
 5. Bấm **"Gửi thử"** ở đúng card — gửi bằng cấu hình **đã lưu** (không phải
-   giá trị chưa lưu trên form), xác nhận Bot Token/Chat ID hoạt động.
+   giá trị chưa lưu trên form), xác nhận Bot Token/Chat ID hoạt động. Gửi
+   thử hoạt động cả khi kênh đang TẮT (mục 1.3b).
 
 Lưu 1 kênh chỉ khởi động lại **đúng** tiến trình đọc kênh đó — Backup →
 Worker; Lỗi cụm/Phần cứng → Watcher (không đụng tiến trình còn lại, khác
@@ -97,15 +97,33 @@ Duyệt/Từ chối không cần khởi động lại gì — 2 thread nền
 (`dashboard/telegram_approval_bot.py`) đọc `settings` mới nhất ngay ở lượt
 lặp kế tiếp, chạy sẵn trong tiến trình Dashboard.
 
+### 1.3b. Bật/Tắt riêng từng kênh (không mất Bot Token/Chat ID)
+
+2026-08-07: mỗi card có nút **"Tắt kênh này"/"Bật kênh này"** ở đầu card,
+tách biệt hoàn toàn với form Lưu Bot Token/Chat ID — bấm Tắt chỉ lật cờ
+`telegram_{backup,incident,node}_enabled` (mặc định `True`), KHÔNG đụng gì
+tới token/chat id đã lưu, nên bật lại là hoạt động ngay, không cần dán lại
+Chat ID. Nhãn trạng thái ngay cạnh tên kênh cho biết: **"Chưa cấu hình"**
+(chưa có token/chat id) / **"Đang bật"** / **"Đã tắt"**.
+
+Một kênh chỉ thực sự hoạt động khi **VỪA đã cấu hình VỪA đang bật** — tắt
+một kênh dừng cả cảnh báo thường LẪN việc kênh đó nhận tin Duyệt/Từ chối
+(mục 6.1), giống hệt như xoá token/chat id, chỉ khác là bật lại không cần
+gõ lại gì. Cùng cơ chế khởi động lại đúng tiến trình như bước Lưu ở trên
+(Backup → Worker; Lỗi cụm/Phần cứng → Watcher).
+
 ### 1.4. Cấu hình thay thế qua `.env`
 
-6 field ánh xạ trực tiếp sang biến `.env` (`shared/env_config.py`):
+9 field ánh xạ trực tiếp sang biến `.env` (`shared/env_config.py`):
 
 | Kênh | Field (`config/settings.py`) | Biến `.env` |
 |---|---|---|
-| Backup | `telegram_backup_bot_token` / `telegram_backup_chat_id` | `TELEGRAM_BACKUP_BOT_TOKEN` / `TELEGRAM_BACKUP_CHAT_ID` |
-| Lỗi cụm | `telegram_incident_bot_token` / `telegram_incident_chat_id` | `TELEGRAM_INCIDENT_BOT_TOKEN` / `TELEGRAM_INCIDENT_CHAT_ID` |
-| Phần cứng | `telegram_node_bot_token` / `telegram_node_chat_id` | `TELEGRAM_NODE_BOT_TOKEN` / `TELEGRAM_NODE_CHAT_ID` |
+| Backup | `telegram_backup_bot_token` / `telegram_backup_chat_id` / `telegram_backup_enabled` | `TELEGRAM_BACKUP_BOT_TOKEN` / `TELEGRAM_BACKUP_CHAT_ID` / `TELEGRAM_BACKUP_ENABLED` |
+| Lỗi cụm | `telegram_incident_bot_token` / `telegram_incident_chat_id` / `telegram_incident_enabled` | `TELEGRAM_INCIDENT_BOT_TOKEN` / `TELEGRAM_INCIDENT_CHAT_ID` / `TELEGRAM_INCIDENT_ENABLED` |
+| Phần cứng | `telegram_node_bot_token` / `telegram_node_chat_id` / `telegram_node_enabled` | `TELEGRAM_NODE_BOT_TOKEN` / `TELEGRAM_NODE_CHAT_ID` / `TELEGRAM_NODE_ENABLED` |
+
+`*_enabled` nhận giá trị chuỗi `true`/`false` (cùng convention với
+`ROUTER_ENABLED`), mặc định `true` nếu không set.
 
 Sửa tay `.env` cho kết quả cấu hình tương đương với sửa qua UI, chỉ khác:
 sửa tay **không** tự kích hoạt khởi động lại Worker/Watcher (pydantic-settings
@@ -498,7 +516,7 @@ tin thứ 2).
 
 | File | Vai trò |
 |---|---|
-| `config/settings.py` | 6 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id}`) + `telegram_approval_scan_interval_seconds` + `cluster_name` (mục 1.6, dùng chung cả 3 kênh) |
+| `config/settings.py` | 9 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id,enabled}`) + `telegram_approval_scan_interval_seconds` + `cluster_name` (mục 1.6, dùng chung cả 3 kênh) |
 | `shared/env_config.py` | `TELEGRAM_BACKUP_ENV_NAMES`/`TELEGRAM_INCIDENT_ENV_NAMES`/`TELEGRAM_NODE_ENV_NAMES` — ánh xạ field ↔ biến `.env`, mỗi kênh 1 dict (`CLUSTER_NAME_ENV_NAME` của `cluster_name` khai báo cục bộ trong `dashboard/routes/telegram_alerts.py`, không ở đây) |
 | `shared/telegram_client.py` | Client Telegram Bot API dùng chung — gửi thuần (`send_telegram_message`) VÀ 4 hàm cho Phê duyệt (`send_telegram_message_with_keyboard`/`edit_telegram_message`/`get_telegram_updates`/`answer_telegram_callback`) |
 | `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()`/`send_auto_remediation_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (`send_osd_latency_alert` + `send_node_alert` chia sẻ kênh Phần cứng; `send_auto_remediation_alert` dùng lại kênh Lỗi cụm); `_with_cluster_prefix()` chèn `cluster_name` (mục 1.6) vào mọi tin qua `_send()` |
@@ -510,8 +528,8 @@ tin thứ 2).
 | `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình (kèm `Incident.diagnosis_text`, mục 6.6, và `cluster_name` nếu có, mục 1.6) + listener gom theo bot token + trust model + idempotent + `has_configured_channel()` (mục 6.7) |
 | `dashboard/routes/actions.py` | `approve_action_core`/`reject_action_core` — logic Duyệt/Từ chối DÙNG CHUNG giữa nút HTML và nút Telegram |
 | `dashboard/routes/incidents.py` | `index()` — ẩn thẻ "Chờ duyệt" trên Dashboard khi `has_configured_channel()` trả `True` (mục 6.7) |
-| `dashboard/routes/telegram_alerts.py` | Router trang "Alert Telegram" — 3 card kênh (mỗi kênh 1 route Lưu + 1 route Gửi thử) + 1 card/route Lưu `cluster_name` (mục 1.6, restart cả Watcher lẫn Worker), route hướng dẫn |
-| `dashboard/templates/telegram_alerts.html` | Trang chính — card "Tên cụm" + 3 card Backup/Lỗi cụm/Phần cứng |
+| `dashboard/routes/telegram_alerts.py` | Router trang "Alert Telegram" — 3 card kênh (mỗi kênh 1 route Lưu + 1 route Bật/Tắt, mục 1.3b + 1 route Gửi thử) + 1 card/route Lưu `cluster_name` (mục 1.6, restart cả Watcher lẫn Worker), route hướng dẫn |
+| `dashboard/templates/telegram_alerts.html` | Trang chính — card "Tên cụm" + 3 card Backup/Lỗi cụm/Phần cứng, mỗi card có nút Bật/Tắt riêng + nhãn trạng thái |
 | `dashboard/templates/telegram_alerts_help.html` | Hướng dẫn tạo Bot/lấy Chat ID từng bước, trong app |
 | `dashboard/app.py` | `lifespan` — khởi động thread nền của `telegram_approval_bot`; đăng ký `telegram_alerts.router` |
 | `shared/models.py` | `Action.telegram_message_ids` (JSON `{channel_key: message_id}`) / `Action.telegram_notified_at` |

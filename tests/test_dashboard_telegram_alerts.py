@@ -266,6 +266,109 @@ def test_unauthenticated_submit_redirects_to_login(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
+# --- POST /telegram-alerts/{channel}/toggle ----------------------------------
+# 2026-08-07: separate per-channel Bật/Tắt (operator request) -- unlike
+# /telegram-alerts/{channel} above, this must NEVER touch the saved Bot
+# Token/Chat ID, only the `*_enabled` flag.
+
+
+def test_toggle_backup_channel_off_persists_and_restarts_only_worker(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = _mock_restarts(monkeypatch)
+    # See the leak note on test_submit_backup_channel_... above -- same
+    # direct-mutation-of-the-process-wide-singleton risk applies to
+    # `enabled` too.
+    monkeypatch.setattr(settings, "telegram_backup_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_backup_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(settings, "telegram_backup_enabled", True, raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/telegram-alerts/backup/toggle", data={"enabled": "false"})
+
+    assert response.status_code == 200
+    assert "Đã tắt" in response.text
+    assert settings.telegram_backup_enabled is False
+    # Bot Token/Chat ID themselves must be untouched by a toggle.
+    assert settings.telegram_backup_bot_token == "123:ABC"
+    assert settings.telegram_backup_chat_id == "-100999"
+    assert "TELEGRAM_BACKUP_ENABLED=false" in tmp_env.read_text()
+    assert restart_calls == {"worker": 1, "watcher": 0}
+
+
+def test_toggle_incident_channel_on_restarts_only_watcher(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    restart_calls = _mock_restarts(monkeypatch)
+    monkeypatch.setattr(settings, "telegram_incident_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_enabled", False, raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/telegram-alerts/incident/toggle", data={"enabled": "true"})
+
+    assert response.status_code == 200
+    assert "Đã bật" in response.text
+    assert settings.telegram_incident_enabled is True
+    assert restart_calls == {"worker": 0, "watcher": 1}
+
+
+def test_toggle_node_channel_restarts_only_watcher(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    restart_calls = _mock_restarts(monkeypatch)
+    monkeypatch.setattr(settings, "telegram_node_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_node_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(settings, "telegram_node_enabled", True, raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/telegram-alerts/node/toggle", data={"enabled": "false"})
+
+    assert response.status_code == 200
+    assert settings.telegram_node_enabled is False
+    assert restart_calls == {"worker": 0, "watcher": 1}
+
+
+def test_toggle_rejects_unknown_channel(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post("/telegram-alerts/not-a-real-channel/toggle", data={"enabled": "false"})
+    assert response.status_code == 404
+
+
+def test_toggle_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+    response = dashboard_client.post("/telegram-alerts/backup/toggle", data={"enabled": "false"})
+    assert response.status_code == 403
+
+
+def test_unauthenticated_toggle_redirects_to_login(dashboard_client):
+    response = dashboard_client.post(
+        "/telegram-alerts/backup/toggle", data={"enabled": "false"}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_get_telegram_alerts_shows_status_label_per_channel(dashboard_client, monkeypatch, tmp_path):
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(settings, "telegram_backup_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_backup_chat_id", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "telegram_node_bot_token", "123:ABC", raising=False)
+    monkeypatch.setattr(settings, "telegram_node_chat_id", "-100999", raising=False)
+    monkeypatch.setattr(settings, "telegram_node_enabled", False, raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/telegram-alerts")
+
+    assert response.status_code == 200
+    assert "Chưa cấu hình" in response.text  # backup: no token/chat id yet
+    assert "Đang bật" in response.text  # incident: configured + enabled
+    assert "Đã tắt" in response.text  # node: configured but disabled
+
+
 # --- POST /telegram-alerts/{channel}/test -----------------------------------
 
 

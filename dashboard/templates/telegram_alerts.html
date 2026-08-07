@@ -80,7 +80,17 @@
 
     {% for ch in channels.values() %}
     <section class="card">
-      <div class="card-header"><h2>{{ ch.label }}</h2></div>
+      <div class="card-header">
+        <h2>{{ ch.label }} — <span class="{% if ch.status_label == 'Đang bật' %}success{% elif ch.status_label == 'Đã tắt' %}error{% endif %}">{{ ch.status_label }}</span></h2>
+        <form method="post" action="/telegram-alerts/{{ ch.key }}/toggle" style="display:inline">
+          <input type="hidden" name="enabled" value="{{ 'false' if ch.enabled else 'true' }}">
+          {% if ch.enabled %}
+            <button type="submit" class="btn btn-kill-switch-off">Tắt kênh này</button>
+          {% else %}
+            <button type="submit" class="btn btn-kill-switch-on">Bật kênh này</button>
+          {% endif %}
+        </form>
+      </div>
       <div class="card-body">
         {% if ch.error %}
           <p class="error">{{ ch.error }}</p>
@@ -117,6 +127,8 @@
           đề xuất chờ duyệt trong toàn hệ thống (Backup/Lỗi cụm/Phần cứng/đề xuất thủ công). Chỉ điền Chat ID
           là chat riêng với người bạn tin tưởng, hoặc một nhóm nhỏ đáng tin cậy — không phải kênh công khai.
           Không cần khởi động lại gì cho phần Duyệt/Từ chối — áp dụng ngay trong tiến trình Dashboard.
+          <strong>Tắt kênh này</strong> (nút phía trên) cũng dừng luôn việc kênh này nhận tin Duyệt/Từ chối,
+          không chỉ cảnh báo thường — không mất Bot Token/Chat ID đã lưu, bật lại là hoạt động ngay.
         </p>
       </div>
     </section>

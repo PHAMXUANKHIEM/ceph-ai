@@ -120,26 +120,31 @@ _LONG_POLL_TIMEOUT_SECONDS = 30
 # zero (must never busy-loop).
 _IDLE_BACKOFF_SECONDS = 5
 
-# (channel_key, bot_token field, chat_id field) on config.settings.Settings —
-# the single source of truth for which 3 channels exist and their field
-# names, used by both the notify and listen sides below.
+# (channel_key, bot_token field, chat_id field, enabled field) on
+# config.settings.Settings — the single source of truth for which 3
+# channels exist and their field names, used by both the notify and listen
+# sides below. `enabled` field (2026-08-07) is the separate per-channel
+# on/off toggle on the Alert Telegram page — a channel with a saved token+
+# chat id but flipped OFF must not receive Duyệt/Từ chối broadcasts either,
+# same as it stops receiving plain notification alerts.
 _CHANNELS = (
-    ("backup", "telegram_backup_bot_token", "telegram_backup_chat_id"),
-    ("incident", "telegram_incident_bot_token", "telegram_incident_chat_id"),
-    ("node", "telegram_node_bot_token", "telegram_node_chat_id"),
+    ("backup", "telegram_backup_bot_token", "telegram_backup_chat_id", "telegram_backup_enabled"),
+    ("incident", "telegram_incident_bot_token", "telegram_incident_chat_id", "telegram_incident_enabled"),
+    ("node", "telegram_node_bot_token", "telegram_node_chat_id", "telegram_node_enabled"),
 )
 
 
 def _configured_channels() -> list[tuple[str, str, str]]:
     """[(channel_key, bot_token, chat_id), ...] for every channel that has
-    BOTH fields filled in — reads `settings` fresh on every call, never
-    cached, so a config change is picked up on the very next scan/reconcile
-    without a Dashboard restart."""
+    BOTH fields filled in AND is enabled — reads `settings` fresh on every
+    call, never cached, so a config change is picked up on the very next
+    scan/reconcile without a Dashboard restart."""
     result = []
-    for key, token_field, chat_field in _CHANNELS:
+    for key, token_field, chat_field, enabled_field in _CHANNELS:
         bot_token = getattr(settings, token_field)
         chat_id = getattr(settings, chat_field)
-        if bot_token and chat_id:
+        enabled = getattr(settings, enabled_field)
+        if bot_token and chat_id and enabled:
             result.append((key, bot_token, chat_id))
     return result
 
