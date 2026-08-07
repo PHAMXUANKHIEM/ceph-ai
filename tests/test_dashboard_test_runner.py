@@ -507,6 +507,19 @@ def test_background_poll_accumulates_output_and_resolves(dashboard_client, fake_
 # ssh_executor.cancel_background() (imported into test_runner_route's own
 # namespace) rather than exercising real SSH -- same posture as this
 # file's ssh_check tests monkeypatching test_all_nodes.
+#
+# 2026-08-07, extended same day (incident follow-up): the original version
+# of this endpoint 409'd whenever `_run_states` had no live RUNNING entry
+# for the test_id -- which is EXACTLY the situation after a Dashboard
+# restart (that dict is in-memory only, see its own docstring), silently
+# leaving an operator with no way to stop a still-running remote process
+# via the UI (the frontend's "Hủy" button was also only rendered while
+# status=="running", so it was invisible too -- a real incident: the app
+# kept eating a real Ceph cluster's RAM with no visible off switch). The
+# endpoint now NEVER 409s for this reason -- it always attempts a
+# pattern-based `pkill -f` fallback (test_runner_route._pattern_kill(),
+# monkeypatched to a fake here rather than exercising real SSH) in addition
+# to the PGID-based kill, and reports success either way.
 
 
 def test_cancel_unknown_id_returns_404(dashboard_client, fake_registry):
@@ -515,10 +528,28 @@ def test_cancel_unknown_id_returns_404(dashboard_client, fake_registry):
     assert response.status_code == 404
 
 
-def test_cancel_never_started_returns_409(dashboard_client, fake_registry):
+def test_cancel_never_started_falls_back_to_pattern_kill(dashboard_client, fake_registry, monkeypatch):
+    """No /run was ever called -- `_run_states` has no entry at all for
+    this test_id (models a Dashboard restart just as well as an actual
+    restart would: either way, the tracked handle is gone). Must still
+    succeed via the pattern-kill fallback rather than 409ing."""
     _login(dashboard_client)
+    pattern_calls = []
+    monkeypatch.setattr(
+        test_runner_route,
+        "_pattern_kill",
+        lambda test_id: pattern_calls.append(test_id) or [f"fakehost: đã kill tiến trình khớp pattern"],
+    )
+
     response = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
-    assert response.status_code == 409
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == fw.TestStatus.FAIL.value
+    assert body["overridden"] is True
+    assert "Dashboard không có bản ghi" in body["override_note"]
+    assert "fakehost" in body["override_note"]
+    assert pattern_calls == [_FakeBackgroundWithHandle.id]
 
 
 def test_cancel_kills_remote_process_and_marks_terminal(dashboard_client, fake_registry, monkeypatch):
@@ -536,7 +567,7 @@ def test_cancel_kills_remote_process_and_marks_terminal(dashboard_client, fake_r
     body = response.json()
     assert body["status"] == fw.TestStatus.FAIL.value
     assert body["overridden"] is True
-    assert "Đã hủy" in body["override_note"]
+    assert "Đã gửi lệnh kill theo PGID" in body["override_note"]
     assert len(calls) == 1
     assert isinstance(calls[0], BackgroundCommandHandle)
 
@@ -544,7 +575,7 @@ def test_cancel_kills_remote_process_and_marks_terminal(dashboard_client, fake_r
     # RUNNING or overwrite the cancel note (same guard override uses).
     result = dashboard_client.get(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/result").json()
     assert result["status"] == fw.TestStatus.FAIL.value
-    assert "Đã hủy" in result["override_note"]
+    assert "Đã gửi lệnh kill theo PGID" in result["override_note"]
 
 
 def test_cancel_reports_unconfirmed_when_no_pgid_was_ever_captured(
@@ -565,15 +596,27 @@ def test_cancel_reports_unconfirmed_when_no_pgid_was_ever_captured(
     assert "KHÔNG xác nhận được" in body["override_note"]
 
 
-def test_cancel_twice_returns_409_the_second_time(dashboard_client, fake_registry, monkeypatch):
+def test_cancel_twice_stays_idempotent_and_succeeds_both_times(dashboard_client, fake_registry, monkeypatch):
+    """Deliberately NOT a 409 the second time (unlike the old design) --
+    an operator unsure whether a previous cancel actually reached the
+    remote host must be able to just click "Hủy" again. cancel_test()
+    re-reads the still-live handle from `_run_states` (cancel_test never
+    clears background_state) and re-attempts both kill paths -- calling
+    cancel_background twice is itself idempotent (kill -TERM/-KILL on an
+    already-dead process group is a harmless no-op)."""
     _login(dashboard_client)
     dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/run")
-    monkeypatch.setattr(test_runner_route, "cancel_background", lambda handle: True)
+    calls = []
+    monkeypatch.setattr(
+        test_runner_route, "cancel_background", lambda handle: calls.append(handle) or True
+    )
+    monkeypatch.setattr(test_runner_route, "_pattern_kill", lambda test_id: [])
 
     first = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
     assert first.status_code == 200
     second = dashboard_client.post(f"/api/test-runner/tests/{_FakeBackgroundWithHandle.id}/cancel")
-    assert second.status_code == 409
+    assert second.status_code == 200
+    assert len(calls) == 2
 
 
 def test_cancel_one_shot_test_returns_409(dashboard_client, fake_registry):
@@ -583,6 +626,80 @@ def test_cancel_one_shot_test_returns_409(dashboard_client, fake_registry):
     dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/run")
     response = dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/cancel")
     assert response.status_code == 409
+
+
+# -- _pattern_kill() / _kill_target_hosts() -----------------------------------
+# Unit-level coverage of the pattern-fallback machinery itself (not routed
+# through fake_registry -- these exercise the REAL _BACKGROUND_KILL_PATTERNS
+# table against a real test_id), monkeypatching execute_command (imported
+# into test_runner_route's own namespace) rather than exercising real SSH,
+# same posture as the cancel_background tests above.
+
+
+def test_pattern_kill_unregistered_test_id_is_a_noop(monkeypatch):
+    calls = []
+    monkeypatch.setattr(test_runner_route, "execute_command", lambda host, cmd: calls.append((host, cmd)))
+
+    lines = test_runner_route._pattern_kill("TC-NOT-A-BACKGROUND-TEST")
+
+    assert lines == []
+    assert calls == []
+
+
+def test_pattern_kill_client_host_target_uses_saved_config(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    dashboard_client.post("/api/test-runner/config", json={"client_host": "10.0.0.9"})
+
+    calls = []
+
+    def fake_execute_command(host, cmd):
+        calls.append((host, cmd))
+        return "KILLED\n"
+
+    monkeypatch.setattr(test_runner_route, "execute_command", fake_execute_command)
+
+    lines = test_runner_route._pattern_kill("TC-RUN-001")
+
+    assert calls == [("10.0.0.9", "pkill -f 'fio --name=upgrade_io_test' && echo KILLED || echo NONE")]
+    assert lines == ["10.0.0.9: đã kill tiến trình khớp pattern đã biết"]
+
+
+def test_pattern_kill_no_client_host_configured_targets_nothing(dashboard_client):
+    # No /config POST in this test -- TestRunnerConfig row doesn't even
+    # exist yet, same as a fresh install nobody has configured.
+    lines = test_runner_route._pattern_kill("TC-RUN-001")
+    assert lines == []
+
+
+def test_pattern_kill_osd_target_checks_every_configured_osd_host(monkeypatch):
+    from config.settings import settings
+
+    _configure_nodes(monkeypatch, settings, osd="osd1,osd2")
+    monkeypatch.setattr(test_runner_route, "execute_command", lambda host, cmd: "NONE\n")
+
+    lines = test_runner_route._pattern_kill("TC-RUN-013")
+
+    assert lines == [
+        "osd1: không thấy tiến trình nào khớp pattern",
+        "osd2: không thấy tiến trình nào khớp pattern",
+    ]
+
+
+def test_pattern_kill_reports_ssh_failure_per_host_without_raising(dashboard_client, monkeypatch):
+    from worker.executor.ssh_executor import ExecutorError
+
+    _login(dashboard_client)
+    dashboard_client.post("/api/test-runner/config", json={"client_host": "unreachable-host"})
+
+    def raising_execute_command(host, cmd):
+        raise ExecutorError(f"{host}: connection refused")
+
+    monkeypatch.setattr(test_runner_route, "execute_command", raising_execute_command)
+
+    lines = test_runner_route._pattern_kill("TC-RUN-001")
+
+    assert len(lines) == 1
+    assert "lỗi SSH khi kill" in lines[0]
 
 
 def test_override_unknown_id_returns_404(dashboard_client, fake_registry):

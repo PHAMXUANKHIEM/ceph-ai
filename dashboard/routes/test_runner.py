@@ -14,7 +14,13 @@ from shared import db
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.models import TestRunnerConfig
 from shared import test_runner_baselines as baselines
-from worker.executor.ssh_executor import BackgroundCommandHandle, ExecutorError, cancel_background, test_all_nodes
+from worker.executor.ssh_executor import (
+    BackgroundCommandHandle,
+    ExecutorError,
+    cancel_background,
+    execute_command,
+    test_all_nodes,
+)
 from worker.executor.test_runner.framework import (
     TestCase,
     TestCaseDeclined,
@@ -416,25 +422,119 @@ async def run_test(test_id: str, user: str = Depends(require_login)):
     return JSONResponse(_test_detail(test_case))
 
 
+# 2026-08-07 (incident follow-up): known shell-command markers each
+# background TestCase's execute_background() call actually launches on its
+# target host(s) -- used as a FALLBACK kill path in cancel_test() below,
+# independent of `_run_states`/BackgroundCommandHandle.pgid.
+#
+# `_run_states` is in-memory only and does NOT survive a Dashboard restart
+# (see that dict's own docstring above). Before this table existed,
+# cancel_test() REQUIRED `_run_states[test_id]` to exist and still be
+# RUNNING, and the frontend's "Hủy" button was only rendered under that
+# same condition -- so a Dashboard restart while one of these was running
+# (TC-PERF-009's soak test alone targets 72h, easily spanning a restart)
+# silently lost BOTH the only way to see the test was still running AND the
+# only way to kill it, while the real remote fio/warp/while-loop process
+# (or, for TC-RUN-013, a live `ceph-bluestore-tool repair` on an actual OSD)
+# kept running, generating real I/O load and consuming real CPU/RAM on
+# whatever host it's on -- exactly the "app eats the cluster's RAM with no
+# visible off switch" incident this table exists to make unreachable again.
+#
+# Patterns are each test's own unique fio --name=/log path/tail target --
+# execute_background() backgrounds sub-jobs with plain shell `&` (not a
+# nested setsid), so every backgrounded bash subshell for a multi-job
+# script keeps the WHOLE script text as its own /proc/<pid>/cmdline; one
+# pattern match reliably nets the wrapping bash subshell(s) AND the
+# actually-exec'd fio/warp/aws process together, without needing one
+# pattern per sub-job.
+#
+# host_kind: "client" = TestRunnerConfig.client_host (the one machine Group
+# A/C/D/E's RBD/CephFS/S3 load generators run on); "rgw" = first configured
+# RGW host; "osd" = EVERY configured OSD host -- TC-RUN-013 targets
+# whichever specific OSD host the operator picked when starting it, which
+# (like everything else in `_run_states`) isn't retrievable after a
+# restart, so every configured OSD host is checked rather than guessing one.
+_BACKGROUND_KILL_PATTERNS: dict[str, tuple[str, str]] = {
+    "TC-RUN-001": ("client", "fio --name=upgrade_io_test"),
+    "TC-RUN-010": ("client", "fio --name=old_client_rbd"),
+    "TC-RUN-013": ("osd", "ceph-bluestore-tool repair"),
+    "TC-COMPAT-001": ("client", "fio --name=compat_client_rbd"),
+    "TC-PERF-005": ("client", "/tmp/warp_perf_after.log"),
+    "TC-PERF-009": ("client", "fio --name=soak_rbd"),
+    "TC-S3-RUN-001": ("client", "/tmp/s3_run001_probe.log"),
+    "TC-S3-RUN-002": ("rgw", "tail -F -n0 /var/log/ceph/ceph-client.rgw"),
+    "TC-S3-RUN-004": ("client", "/tmp/s3_run004_probe.log"),
+    "TC-S3-POST-60": ("client", "/tmp/s3_post60_warp.log"),
+}
+
+
+def _kill_target_hosts(host_kind: str) -> list[str]:
+    """Resolves candidate host(s) for a fallback kill from the CURRENTLY
+    SAVED config -- never from `_run_states` (that's exactly the state a
+    restart already lost)."""
+    if host_kind == "client":
+        with db.SessionLocal() as session:
+            config = session.query(TestRunnerConfig).first()
+            client_host = config.client_host if config else None
+        return [client_host] if client_host else []
+    nodes = _configured_nodes()
+    role = "RGW" if host_kind == "rgw" else "OSD"
+    hosts = [n["host"] for n in nodes if role in n["roles"]]
+    return hosts[:1] if host_kind == "rgw" else hosts
+
+
+def _pattern_kill(test_id: str) -> list[str]:
+    """Best-effort `pkill -f <pattern>` on every resolved host for
+    test_id's known command pattern. Returns one human-readable line per
+    host attempted; never raises -- `pkill`'s normal "nothing matched" exit
+    code (1) is folded into an `echo NONE` fallback so it never looks like
+    an SSH/command failure to execute_command()'s exit-code check, and any
+    genuine SSH failure is caught and reported per-host instead of aborting
+    the other hosts' attempts."""
+    entry = _BACKGROUND_KILL_PATTERNS.get(test_id)
+    if entry is None:
+        return []
+    host_kind, pattern = entry
+    hosts = _kill_target_hosts(host_kind)
+    lines = []
+    for host in hosts:
+        safe_pattern = pattern.replace("'", "'\\''")
+        cmd = f"pkill -f '{safe_pattern}' && echo KILLED || echo NONE"
+        try:
+            output = execute_command(host, cmd)
+        except ExecutorError as exc:
+            lines.append(f"{host}: lỗi SSH khi kill -- {exc}")
+            continue
+        if "KILLED" in output:
+            lines.append(f"{host}: đã kill tiến trình khớp pattern đã biết")
+        else:
+            lines.append(f"{host}: không thấy tiến trình nào khớp pattern")
+    return lines
+
+
 @router.post("/api/test-runner/tests/{test_id}/cancel")
 async def cancel_test(test_id: str, user: str = Depends(require_login)):
-    """2026-08-07: kills the remote background process tree a background
-    TestCase's start() launched, via ssh_executor.cancel_background()'s
-    setsid-captured PGID -- until this endpoint existed, this app had NO
-    way to stop one of these test cases short of an operator manually
-    SSHing into the client host and hunting down the fio/while-loop
-    processes by hand. Several background test cases (TC-RUN-001/010,
-    TC-COMPAT-001, TC-PERF-005/007/009, plus their Group E S3 equivalents)
-    launch effectively-unbounded remote I/O load (`--runtime=99999` fio +
-    infinite `while true` loops for CephFS/S3) that never exits on its
-    own -- a real incident on a small/lab cluster: the load just keeps
-    running (and consuming CPU/RAM/I/O) indefinitely once started.
+    """2026-08-07, extended same day (incident follow-up): kills the remote
+    background process tree a background TestCase's start() launched.
+    TWO independent kill paths, both attempted:
 
-    Same terminal-state shape as override_test_result() (FR37) --
-    overridden=True so get_test_result()'s should_poll guard stops polling
-    a handle we just tried to kill -- but reached via a different route
-    since this ALSO has a real side effect (the SSH kill) an operator
-    marking Pass/Fail by hand never has.
+    1. PGID-based (ssh_executor.cancel_background()) -- precise, kills the
+       whole setsid process group in one shot, but ONLY works if Dashboard
+       still has the live handle in `_run_states` (lost on restart).
+    2. Pattern-based (`_pattern_kill` above) -- best-effort `pkill -f` for
+       this test_id's known command signature on its usual host(s), works
+       regardless of `_run_states` -- the fallback for exactly the
+       "Dashboard restarted, tracking is gone, but the remote process is
+       still running" case path 1 cannot cover.
+
+    Deliberately NEVER 409s just because `_run_states` has no entry (or a
+    stale one) for this test_id anymore -- that used to be a hard
+    precondition and is precisely the situation this endpoint most needs to
+    still work in. Same terminal-state shape as override_test_result()
+    (FR37) -- overridden=True so get_test_result()'s should_poll guard
+    stops polling a handle we just tried to kill -- but reached via a
+    different route since this ALSO has a real side effect (the SSH kill)
+    an operator marking Pass/Fail by hand never has.
     """
     test_case = TEST_CASES_BY_ID.get(test_id)
     if test_case is None:
@@ -446,22 +546,33 @@ async def cancel_test(test_id: str, user: str = Depends(require_login)):
 
     with _run_lock:
         rs = _run_states.get(test_id)
-        if rs is None or rs.overridden or rs.status != TestStatus.RUNNING.value:
-            raise HTTPException(
-                status_code=409, detail=f"{test_id} không ở trạng thái đang chạy nền để hủy"
-            )
-        handle = rs.background_state.get("handle") if isinstance(rs.background_state, dict) else None
+        handle = rs.background_state.get("handle") if rs and isinstance(rs.background_state, dict) else None
 
-    killed = False
+    killed_via_pgid = False
     if isinstance(handle, BackgroundCommandHandle):
-        killed = await asyncio.to_thread(cancel_background, handle)
+        killed_via_pgid = await asyncio.to_thread(cancel_background, handle)
 
-    note = (
-        "Đã hủy: đã gửi lệnh kill tiến trình nền trên remote host."
-        if killed
-        else "Đã đánh dấu hủy trên Dashboard, nhưng KHÔNG xác nhận được đã kill tiến trình remote "
-        "(chưa bắt được PGID, hoặc lệnh kill thất bại) -- kiểm tra và kill tay qua SSH nếu cần."
-    )
+    pattern_lines = await asyncio.to_thread(_pattern_kill, test_id)
+
+    note_parts = []
+    if killed_via_pgid:
+        note_parts.append("Đã gửi lệnh kill theo PGID Dashboard đang theo dõi.")
+    elif rs is not None:
+        note_parts.append(
+            "Đã đánh dấu hủy trên Dashboard, nhưng KHÔNG xác nhận được đã kill theo PGID "
+            "(chưa bắt được PGID, hoặc lệnh kill thất bại)."
+        )
+    else:
+        note_parts.append(
+            "Dashboard không có bản ghi test này đang chạy (có thể do Dashboard đã restart) -- "
+            "đã thử kill theo pattern lệnh đã biết thay thế."
+        )
+    if pattern_lines:
+        note_parts.append("Kill theo pattern: " + "; ".join(pattern_lines))
+    elif test_id not in _BACKGROUND_KILL_PATTERNS:
+        note_parts.append("(test này chưa có pattern kill dự phòng trong code -- kiểm tra tay qua SSH nếu cần.)")
+
+    note = " ".join(note_parts)
     with _run_lock:
         rs = _run_states.setdefault(test_id, _RunState())
         rs.status = TestStatus.FAIL.value

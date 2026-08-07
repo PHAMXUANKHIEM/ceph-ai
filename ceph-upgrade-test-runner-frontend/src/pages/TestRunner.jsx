@@ -137,13 +137,20 @@ export default function TestRunner() {
     }
   }
 
-  // 2026-08-07: several background test cases (TC-RUN-001/010, TC-COMPAT-001,
-  // TC-PERF-005/007/009 -- see dashboard/routes/test_runner.py's own
-  // /cancel docstring) launch remote fio + infinite while-loops that never
-  // exit on their own. Before this button existed there was NO way to stop
-  // one short of an operator SSHing into the client host by hand -- left
-  // running on a small/lab cluster, that background load alone can drive
-  // CPU/RAM to the point the cluster itself falls over.
+  // 2026-08-07, extended same day (incident follow-up): several background
+  // test cases (TC-RUN-001/010/013, TC-COMPAT-001, TC-PERF-005/009, plus
+  // their Group E S3 equivalents -- see dashboard/routes/test_runner.py's
+  // own /cancel docstring) launch remote fio/warp/while-loops (or, for
+  // TC-RUN-013, `ceph-bluestore-tool repair` on a real OSD) that never
+  // exit on their own. This button is now ALWAYS shown for every
+  // background test case, not just while Dashboard still tracks it as
+  // "running" -- that tracking is in-memory only and does NOT survive a
+  // Dashboard restart, which used to also hide this exact button right
+  // when it was needed most (the remote process keeps running/eating
+  // CPU+RAM regardless of whether Dashboard remembers it). The backend
+  // now falls back to a pattern-based kill by known command signature
+  // whenever it no longer has the tracked handle, so clicking this always
+  // does *something* even after a restart.
   async function handleCancel(id) {
     if (!window.confirm(`Hủy ${id}? Sẽ gửi lệnh kill tiến trình tải nền trên remote host.`)) return
     setCancelingId(id)
@@ -331,12 +338,12 @@ export default function TestRunner() {
                       {t.group} · {t.priority}
                     </span>
                     <StatusBadge status={t.status} overridden={t.overridden} />
-                    {t.background && t.status === 'running' && !t.overridden && (
+                    {t.background && (
                       <button
                         type="button"
                         onClick={() => handleCancel(t.id)}
                         disabled={cancelingId === t.id}
-                        title="Kill tiến trình tải nền (fio/vòng lặp) trên remote host"
+                        title="Kill tiến trình tải nền (fio/warp/vòng lặp) trên remote host -- hoạt động cả khi Dashboard KHÔNG còn ghi nhận test này đang chạy (vd sau khi Dashboard restart), qua kill theo pattern lệnh dự phòng"
                         className="rounded bg-red-600 text-white text-xs px-3 py-1 disabled:opacity-50"
                       >
                         {cancelingId === t.id ? '...' : 'Hủy'}
