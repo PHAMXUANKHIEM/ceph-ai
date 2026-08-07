@@ -49,7 +49,20 @@ pip install -e . --quiet
 npm --prefix ceph-upgrade-test-runner-frontend install --silent
 
 echo "==> Applying DB migrations"
-alembic upgrade head
+# "heads" (plural), not "head" — 2026-08-07: this repo can legitimately have
+# more than one migration branch tip at once when unrelated feature work
+# lands its own migration file before an earlier one is merged/reconciled
+# (exactly what happened with the CRUSH-monitor and multi-cluster
+# migrations). Bare `alembic upgrade head` refuses to guess which branch
+# you meant and raises CommandError — which, under `set -euo pipefail`,
+# aborted this ENTIRE script before it ever reached the "stop/start
+# services" section below, silently leaving the OLD processes running
+# while the checkout had already moved to new code that assumed the new
+# migration's tables existed. `upgrade heads` applies every outstanding
+# branch instead of guessing, and is a no-op for the normal single-head
+# case, so this is strictly safer with no downside when there's only one
+# head.
+alembic upgrade heads
 
 echo "==> Stopping existing services (if running)"
 pkill -f "$VENV_PYTHON -m watcher.main" || true

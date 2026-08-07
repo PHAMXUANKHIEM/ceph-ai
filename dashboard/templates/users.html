@@ -29,6 +29,7 @@
         <a href="/settings" class="nav-link">Settings</a>
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         <a href="/users" class="nav-link active">Users</a>
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
