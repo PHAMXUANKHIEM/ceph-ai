@@ -33,7 +33,7 @@
       '<td><input type="checkbox" class="node-role node-role-osd" value="osd"></td>' +
       '<td><input type="checkbox" class="node-role" value="mds"></td>' +
       '<td><input type="checkbox" class="node-role" value="rgw"></td>' +
-      '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc" disabled></td>' +
+      '<td><input type="text" class="node-osd-disk" placeholder="/dev/vdc, /dev/vdd" disabled></td>' +
       '<td><button type="button" class="btn btn-sm btn-ghost node-remove">×</button></td>';
     row.querySelector(".node-remove").addEventListener("click", function () {
       row.remove();
@@ -69,7 +69,10 @@
       var node = { ip: ip, roles: roles };
       if (roles.indexOf("osd") !== -1) {
         var diskInput = row.querySelector(".node-osd-disk");
-        node.osd_disk = diskInput ? diskInput.value.trim() : "";
+        var rawDisks = diskInput ? diskInput.value.trim() : "";
+        node.osd_disks = rawDisks
+          ? rawDisks.split(",").map(function (d) { return d.trim(); }).filter(function (d) { return d.length > 0; })
+          : [];
       }
       nodes.push(node);
     });

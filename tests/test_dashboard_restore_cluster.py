@@ -20,8 +20,8 @@ def _valid_payload(**overrides):
         "version": "18.2.8",
         "nodes": [
             {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
-            {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
-            {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+            {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc"]},
+            {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
         ],
         "public_network": "10.20.1.0/24",
         "cluster_network": "10.20.1.0/24",
@@ -100,7 +100,7 @@ def test_propose_rejects_missing_mon_node(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.post(
         "/restore-cluster/propose",
-        json=_valid_payload(nodes=[{"ip": "10.20.1.95", "roles": ["mgr", "osd"], "osd_disk": "/dev/vdc"}]),
+        json=_valid_payload(nodes=[{"ip": "10.20.1.95", "roles": ["mgr", "osd"], "osd_disks": ["/dev/vdc"]}]),
     )
     assert response.status_code == 400
     assert "MON" in response.json()["detail"]
@@ -112,7 +112,7 @@ def test_propose_rejects_duplicate_ip(dashboard_client):
         "/restore-cluster/propose",
         json=_valid_payload(
             nodes=[
-                {"ip": "10.20.1.112", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
+                {"ip": "10.20.1.112", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc"]},
                 {"ip": "10.20.1.112", "roles": ["mon"]},
             ]
         ),

@@ -24,8 +24,8 @@ _ROCKY_OS_RELEASE = 'ID="rocky"\nVERSION_ID="9.3"\nPRETTY_NAME="Rocky Linux 9.3"
 
 _NODES = [
     {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
-    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
-    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc"]},
+    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
 ]
 
 

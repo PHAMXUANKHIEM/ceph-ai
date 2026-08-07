@@ -25,9 +25,9 @@ _UNSUPPORTED_OS_RELEASE = 'ID="alpine"\nVERSION_ID="3.19"\nPRETTY_NAME="Alpine L
 _NODES = [
     {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
     # Different disk names per node (node1 /dev/vdc, node2 /dev/vdb) — the
-    # whole point of per-node osd_disk instead of one cluster-wide value.
-    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
-    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+    # whole point of per-node osd_disks instead of one cluster-wide value.
+    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc"]},
+    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
 ]
 
 
@@ -798,9 +798,42 @@ def test_no_command_sent_with_all_available_devices_flag(monkeypatch):
 
     assert not any("--all-available-devices" in cmd for cmd in seen_commands)
     # Each OSD node uses its OWN disk (10.20.1.95 -> /dev/vdc, 10.20.1.21 ->
-    # /dev/vdb) — proves osd_disk is read per node, not one cluster-wide value.
+    # /dev/vdb) — proves osd_disks is read per node, not one cluster-wide value.
     assert any("orch daemon add osd" in cmd and "/dev/vdc" in cmd for cmd in seen_commands)
     assert any("orch daemon add osd" in cmd and "/dev/vdb" in cmd for cmd in seen_commands)
+
+
+def test_cephadm_orch_apply_osd_creates_one_osd_per_disk_on_same_node(monkeypatch):
+    """The feature this all exists for: a single node can carry multiple
+    OSD disks (e.g. /dev/vdc AND /dev/vdd), each becoming its OWN OSD via
+    its own `ceph orch daemon add osd` call — never a combined/batch call."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return _default_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    nodes = copy.deepcopy(_NODES)
+    nodes[1]["osd_disks"] = ["/dev/vdc", "/dev/vdd"]  # 10.20.1.95 now has 2 disks
+
+    result = run(
+        "action-1",
+        "deploy_cluster_cephadm",
+        _cephadm_params(nodes=nodes),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    assert result is True
+    add_osd_commands = [cmd for cmd in seen_commands if "orch daemon add osd" in cmd]
+    assert any("10-20-1-95.lab:/dev/vdc" in cmd for cmd in add_osd_commands)
+    assert any("10-20-1-95.lab:/dev/vdd" in cmd for cmd in add_osd_commands)
+    # 2 disks on 10.20.1.95 + 1 disk on 10.20.1.21 = 3 total OSD-create calls.
+    assert len(add_osd_commands) == 3
 
 
 # --- RGW (optional role) ----------------------------------------------------
@@ -944,6 +977,41 @@ def test_ceph_deploy_happy_path_installs_role_specific_packages_and_writes_env(m
 
     assert written_fields["CEPH_EXEC_MODE"] == "none"
     assert written_fields["CEPH_MON_NODES"] == "10.20.1.112,10.20.1.95,10.20.1.21"
+
+
+def test_ceph_deploy_osd_create_runs_one_lvm_create_per_disk_on_same_node(monkeypatch):
+    """Same feature, ceph-deploy method: `ceph-volume lvm create` creates
+    exactly one OSD per invocation, so a node with 2 configured disks must
+    get 2 separate calls — never a combined/batch call."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append((host, command))
+        return _ceph_deploy_fake_execute(host, command)
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    monkeypatch.setattr(cluster_deploy_module, "_QUORUM_POLL_INTERVAL_SECONDS", 0)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    nodes = copy.deepcopy(_NODES)
+    nodes[1]["osd_disks"] = ["/dev/vdc", "/dev/vdd"]  # 10.20.1.95 now has 2 disks
+
+    result = run(
+        "action-1",
+        "deploy_cluster_ceph_deploy",
+        _cephadm_params(nodes=nodes),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    assert result is True
+    lvm_create_commands = [
+        cmd for host, cmd in seen_commands if host == "10.20.1.95" and "ceph-volume lvm create" in cmd
+    ]
+    assert any("/dev/vdc" in cmd for cmd in lvm_create_commands)
+    assert any("/dev/vdd" in cmd for cmd in lvm_create_commands)
+    assert len(lvm_create_commands) == 2
 
 
 def test_ceph_deploy_rgw_create_skips_cleanly_when_no_rgw_nodes(monkeypatch):

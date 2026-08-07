@@ -38,9 +38,9 @@ def _valid_payload(**overrides):
         "nodes": [
             {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
             # Different disk names per node (node1 /dev/vdc, node2 /dev/vdb)
-            # — osd_disk is per node, not one cluster-wide value.
-            {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
-            {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+            # — osd_disks is per node, not one cluster-wide value.
+            {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc"]},
+            {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
         ],
         "public_network": "10.20.1.0/24",
         "cluster_network": "10.20.1.0/24",
@@ -247,8 +247,8 @@ def test_propose_rejects_invalid_osd_disk(dashboard_client):
     _login(dashboard_client)
     bad_nodes = [
         {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
-        {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "vdc"},
-        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+        {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["vdc"]},
+        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
     ]
     response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(nodes=bad_nodes))
     assert response.status_code == 400
@@ -260,12 +260,36 @@ def test_propose_rejects_missing_osd_disk_on_osd_node(dashboard_client):
     bad_nodes = [
         {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
         {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"]},
-        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
     ]
     response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(nodes=bad_nodes))
     assert response.status_code == 400
-    assert "Đĩa OSD" in response.json()["detail"]
+    assert "đĩa OSD" in response.json()["detail"]
     assert "10.20.1.95" in response.json()["detail"]
+
+
+def test_propose_rejects_empty_osd_disk_list_on_osd_node(dashboard_client):
+    _login(dashboard_client)
+    bad_nodes = [
+        {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
+        {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": []},
+        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
+    ]
+    response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(nodes=bad_nodes))
+    assert response.status_code == 400
+    assert "đĩa OSD" in response.json()["detail"]
+
+
+def test_propose_rejects_duplicate_osd_disk_on_same_node(dashboard_client):
+    _login(dashboard_client)
+    bad_nodes = [
+        {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
+        {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc", "/dev/vdc"]},
+        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
+    ]
+    response = dashboard_client.post("/deploy-cluster/propose", json=_valid_payload(nodes=bad_nodes))
+    assert response.status_code == 400
+    assert "trùng lặp" in response.json()["detail"]
 
 
 def test_propose_allows_different_osd_disk_names_per_node(dashboard_client):
@@ -278,11 +302,33 @@ def test_propose_allows_different_osd_disk_names_per_node(dashboard_client):
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_pk)
         params = json.loads(action.action_params)
-        disks_by_ip = {n["ip"]: n["osd_disk"] for n in params["nodes"] if "osd" in n["roles"]}
-        assert disks_by_ip == {"10.20.1.95": "/dev/vdc", "10.20.1.21": "/dev/vdb"}
+        disks_by_ip = {n["ip"]: n["osd_disks"] for n in params["nodes"] if "osd" in n["roles"]}
+        assert disks_by_ip == {"10.20.1.95": ["/dev/vdc"], "10.20.1.21": ["/dev/vdb"]}
         # The plan text must name EACH node's own disk, not one shared value.
         assert "10.20.1.95 (/dev/vdc)" in action.rationale
         assert "10.20.1.21 (/dev/vdb)" in action.rationale
+
+
+def test_propose_allows_multiple_osd_disks_on_the_same_node(dashboard_client):
+    """A single node can carry more than one OSD disk (e.g. /dev/vdc AND
+    /dev/vdd on the same node, each becoming its own OSD)."""
+    _login(dashboard_client)
+    multi_disk_nodes = [
+        {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
+        {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc", "/dev/vdd"]},
+        {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
+    ]
+    response = dashboard_client.post(
+        "/deploy-cluster/propose", json=_valid_payload(nodes=multi_disk_nodes)
+    )
+    assert response.status_code == 201
+    action_pk = response.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        params = json.loads(action.action_params)
+        disks_by_ip = {n["ip"]: n["osd_disks"] for n in params["nodes"] if "osd" in n["roles"]}
+        assert disks_by_ip == {"10.20.1.95": ["/dev/vdc", "/dev/vdd"], "10.20.1.21": ["/dev/vdb"]}
+        assert "10.20.1.95 (/dev/vdc, /dev/vdd)" in action.rationale
 
 
 def test_propose_rejects_second_deploy_while_one_in_flight(dashboard_client):

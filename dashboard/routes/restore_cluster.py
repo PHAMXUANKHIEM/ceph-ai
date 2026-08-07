@@ -70,7 +70,11 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
     `delete_cluster.py` — this is `deploy_cluster.py::_validate_nodes`'s
     logic, duplicated here rather than imported (that function is
     module-private there, and every cluster-lifecycle route in this project
-    already keeps its own copy of this exact shape of helper)."""
+    already keeps its own copy of this exact shape of helper).
+
+    2026-08-07: `osd_disk` (single string) -> `osd_disks` (list[str]), same
+    reason and same-shape fix as deploy_cluster.py's own — a node can carry
+    multiple OSD disks."""
     if not isinstance(nodes_raw, list) or not nodes_raw:
         return [], "Cần ít nhất 1 node"
 
@@ -91,8 +95,15 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
             return [], f"Vai trò không hợp lệ cho node {ip}"
         roles = [r for r in _VALID_ROLES if r in roles_raw]
 
-        osd_disk = str(entry.get("osd_disk", "")).strip() if "osd" in roles else None
-        normalized.append({"ip": ip, "roles": roles, "osd_disk": osd_disk})
+        osd_disks: list[str] = []
+        if "osd" in roles:
+            # A MISSING key defaults to [] — same reasoning as
+            # deploy_cluster.py::_validate_nodes' identical check.
+            disks_raw = entry.get("osd_disks", [])
+            if not isinstance(disks_raw, list):
+                return [], f"Dữ liệu đĩa OSD không hợp lệ cho node {ip}"
+            osd_disks = [str(d).strip() for d in disks_raw if str(d).strip()]
+        normalized.append({"ip": ip, "roles": roles, "osd_disks": osd_disks})
 
     mon_count = sum(1 for n in normalized if "mon" in n["roles"])
     mgr_count = sum(1 for n in normalized if "mgr" in n["roles"])
@@ -105,8 +116,12 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
         return [], "Cần ít nhất 1 node OSD"
 
     for n in normalized:
-        if "osd" in n["roles"] and not n["osd_disk"]:
+        if "osd" not in n["roles"]:
+            continue
+        if not n["osd_disks"]:
             return [], f"Chưa điền đĩa OSD cho node {n['ip']}"
+        if len(set(n["osd_disks"])) != len(n["osd_disks"]):
+            return [], f"Đĩa OSD bị trùng lặp cho node {n['ip']}"
 
     return normalized, None
 

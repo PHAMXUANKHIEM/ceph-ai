@@ -9,8 +9,8 @@ from worker.executor.ssh_executor import ExecutorError
 
 _NODES = [
     {"ip": "10.20.1.112", "roles": ["mon", "mgr"]},
-    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disk": "/dev/vdc"},
-    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disk": "/dev/vdb"},
+    {"ip": "10.20.1.95", "roles": ["mon", "mgr", "osd"], "osd_disks": ["/dev/vdc"]},
+    {"ip": "10.20.1.21", "roles": ["mon", "osd"], "osd_disks": ["/dev/vdb"]},
 ]
 
 
@@ -301,6 +301,34 @@ def test_delete_manual_wipes_each_osd_nodes_own_disk_when_requested(monkeypatch)
     assert "/dev/vdb" in zap_commands["10.20.1.21"]
 
 
+def test_delete_manual_wipes_every_disk_when_node_has_multiple_osd_disks(monkeypatch):
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append((host, command))
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    nodes = copy.deepcopy(_NODES)
+    nodes[1]["osd_disks"] = ["/dev/vdc", "/dev/vdd"]  # 10.20.1.95 now has 2 disks
+
+    run(
+        "action-1",
+        "delete_cluster_manual",
+        _delete_params(nodes=nodes, wipe_osd_disks=True),
+        "incident-1",
+        write_progress,
+        _never_blocked,
+    )
+
+    zap_commands = [cmd for host, cmd in seen_commands if host == "10.20.1.95" and "ceph-volume lvm zap" in cmd]
+    assert any("/dev/vdc" in cmd for cmd in zap_commands)
+    assert any("/dev/vdd" in cmd for cmd in zap_commands)
+    assert len(zap_commands) == 2
+
+
 def test_delete_manual_wipes_osd_disk_before_removing_packages(monkeypatch):
     """Regression, 2026-07-28 (live-verified): wipe_osd_disk was originally
     ordered AFTER remove_packages — `ceph-volume lvm zap --destroy` is
@@ -336,7 +364,7 @@ def test_delete_manual_wipe_fails_when_osd_disk_missing_on_a_node(monkeypatch):
     write_progress, calls = _make_recording_progress_writer()
 
     nodes = copy.deepcopy(_NODES)
-    del nodes[1]["osd_disk"]  # 10.20.1.95 now has no osd_disk configured
+    nodes[1]["osd_disks"] = []  # 10.20.1.95 now has no osd disk configured
 
     result = run(
         "action-1",

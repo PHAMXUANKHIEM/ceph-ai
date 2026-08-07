@@ -40,7 +40,12 @@
       var osdDisks = {};
       if (wipeOsdDisks) {
         Array.prototype.forEach.call(document.querySelectorAll(".dc-osd-disk-input"), function (input) {
-          osdDisks[input.dataset.ip] = input.value.trim();
+          var raw = input.value.trim();
+          // Comma-separated so one node's multiple OSD disks can all be
+          // wiped in one go (vd "/dev/vdc, /dev/vdd").
+          osdDisks[input.dataset.ip] = raw
+            ? raw.split(",").map(function (d) { return d.trim(); }).filter(function (d) { return d.length > 0; })
+            : [];
         });
       }
 

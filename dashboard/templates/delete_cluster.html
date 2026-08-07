@@ -84,14 +84,15 @@
 
             <div id="dc-osd-disk-section" hidden>
               <label>Đĩa OSD cần xoá trên từng node</label>
+              <p class="hint">Node có nhiều đĩa OSD: nhập tất cả, phân tách bằng dấu phẩy (vd <code>/dev/vdc, /dev/vdd</code>).</p>
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th>IP</th><th>Đĩa OSD</th></tr></thead>
+                  <thead><tr><th>IP</th><th>Đĩa OSD (1 hoặc nhiều)</th></tr></thead>
                   <tbody>
                     {% for node in osd_nodes %}
                     <tr>
                       <td>{{ node.ip }}</td>
-                      <td><input type="text" class="dc-osd-disk-input" data-ip="{{ node.ip }}" placeholder="/dev/vdc"></td>
+                      <td><input type="text" class="dc-osd-disk-input" data-ip="{{ node.ip }}" placeholder="/dev/vdc, /dev/vdd"></td>
                     </tr>
                     {% endfor %}
                   </tbody>

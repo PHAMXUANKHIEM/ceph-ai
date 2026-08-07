@@ -273,12 +273,21 @@ def _phase_ssh_check(nodes: list[dict], action_params: dict, on_host_update) -> 
             raise
 
         if "osd" in (node.get("roles") or []):
-            try:
-                _check_osd_disk_safe(host, node.get("osd_disk"))
-            except DeployPhaseError:
+            osd_disks = node.get("osd_disks") or []
+            if not osd_disks:
                 host_status[i]["status"] = "failed"
                 on_host_update(list(host_status))
-                raise
+                raise DeployPhaseError(f"{host}: chưa cấu hình đĩa OSD (osd_disks)")
+            # One node can carry multiple OSD disks (e.g. node1
+            # /dev/vdc+/dev/vdd) — each is checked independently so a
+            # failure names the EXACT disk at fault, not just the host.
+            for osd_disk in osd_disks:
+                try:
+                    _check_osd_disk_safe(host, osd_disk)
+                except DeployPhaseError:
+                    host_status[i]["status"] = "failed"
+                    on_host_update(list(host_status))
+                    raise
 
         try:
             hostname_output = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
@@ -495,32 +504,38 @@ def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_hos
     for i, node in enumerate(osd_nodes):
         ip = node["ip"]
         hostname = hostnames.get(ip, ip)
-        # Per-node disk (AC: mỗi node OSD có thể dùng tên đĩa khác nhau, vd
-        # node1 /dev/vdc, node2 /dev/vdb) — already validated non-empty at
-        # propose time, but the ssh_check phase's read-only safety check is
-        # what actually proved THIS disk safe-to-use on THIS host, so re-
-        # reading it fresh from `node` here (not a single cluster-wide
-        # value) is what keeps that guarantee meaningful per-host.
-        osd_disk = node.get("osd_disk")
-        if not osd_disk:
+        # Per-node disk LIST (AC: mỗi node OSD có thể dùng nhiều đĩa khác
+        # nhau, vd node1 /dev/vdc + /dev/vdd, node2 /dev/vdb) — already
+        # validated non-empty at propose time, but the ssh_check phase's
+        # read-only safety check is what actually proved EACH disk
+        # safe-to-use on THIS host, so re-reading it fresh from `node` here
+        # (not a single cluster-wide value) is what keeps that guarantee
+        # meaningful per-host. `ceph orch daemon add osd` only ever takes
+        # ONE device per call — one call per disk.
+        osd_disks = node.get("osd_disks") or []
+        if not osd_disks:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
-            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD (osd_disk)")
+            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD (osd_disks)")
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
+        current_disk = osd_disks[0]
         try:
-            # Explicit device — never --all-available-devices — so only the
-            # operator's chosen osd_disk is ever touched (already proven
-            # safe-to-use by the ssh_check phase's read-only disk check).
-            execute_command(
-                first_mon,
-                f"ceph orch daemon add osd {shlex.quote(hostname)}:{shlex.quote(osd_disk)}",
-            )
+            for osd_disk in osd_disks:
+                current_disk = osd_disk
+                # Explicit device — never --all-available-devices — so only
+                # the operator's chosen osd_disk is ever touched (already
+                # proven safe-to-use by the ssh_check phase's read-only disk
+                # check).
+                execute_command(
+                    first_mon,
+                    f"ceph orch daemon add osd {shlex.quote(hostname)}:{shlex.quote(osd_disk)}",
+                )
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
             raise DeployPhaseError(
-                f"Tạo OSD trên {hostname} ({osd_disk}) thất bại: {exc}"
+                f"Tạo OSD trên {hostname} ({current_disk}) thất bại: {exc}"
             ) from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
@@ -1234,28 +1249,36 @@ def _phase_ceph_deploy_osd_create(nodes: list[dict], action_params: dict, on_hos
 
     for i, node in enumerate(osd_nodes):
         ip = node["ip"]
-        # Per-node disk (vd node1 /dev/vdc, node2 /dev/vdb) — see the cephadm
-        # phase's own osd_disk comment for why this is read fresh per node
-        # rather than one cluster-wide value.
-        osd_disk = node.get("osd_disk")
-        if not osd_disk:
+        # Per-node disk LIST (vd node1 /dev/vdc + /dev/vdd, node2 /dev/vdb) —
+        # see the cephadm phase's own osd_disks comment for why this is read
+        # fresh per node rather than one cluster-wide value. One
+        # `ceph-volume lvm create` call PER disk — it creates exactly one
+        # OSD per invocation, no built-in multi-device batch mode that keeps
+        # this codebase's "explicit device, never --all-available-devices"
+        # safety posture.
+        osd_disks = node.get("osd_disks") or []
+        if not osd_disks:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
-            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD (osd_disk)")
+            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD (osd_disks)")
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
+        current_disk = osd_disks[0]
         try:
             _write_remote_file(ip, _REMOTE_CEPH_CONF_PATH, ceph_conf)
             _write_remote_file_b64(ip, _REMOTE_BOOTSTRAP_OSD_KEYRING_PATH, bootstrap_osd_keyring_b64)
-            # Explicit device — never --all-available-devices — same safety
-            # posture as the cephadm phase's own OSD-creation step; osd_disk
-            # was already proven empty/unmounted by the ssh_check phase's
-            # read-only check before ANY phase (including this one) ran.
-            execute_command(ip, f"ceph-volume lvm create --data {shlex.quote(osd_disk)}")
+            for osd_disk in osd_disks:
+                current_disk = osd_disk
+                # Explicit device — never --all-available-devices — same
+                # safety posture as the cephadm phase's own OSD-creation
+                # step; osd_disk was already proven empty/unmounted by the
+                # ssh_check phase's read-only check before ANY phase
+                # (including this one) ran.
+                execute_command(ip, f"ceph-volume lvm create --data {shlex.quote(osd_disk)}")
         except (ExecutorError, DeployPhaseError) as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
-            raise DeployPhaseError(f"Tạo OSD trên {ip} ({osd_disk}) thất bại: {exc}") from exc
+            raise DeployPhaseError(f"Tạo OSD trên {ip} ({current_disk}) thất bại: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
 
@@ -1595,27 +1618,28 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
 
     for i, node in enumerate(osd_nodes):
         ip = node["ip"]
-        osd_disk = node.get("osd_disk")
-        if not osd_disk:
+        osd_disks = node.get("osd_disks") or []
+        if not osd_disks:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))
-            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD cần xoá (osd_disk)")
+            raise DeployPhaseError(f"{ip}: chưa cấu hình đĩa OSD cần xoá (osd_disks)")
         host_status[i]["status"] = "running"
         on_host_update(list(host_status))
-        quoted_disk = shlex.quote(osd_disk)
-        zap_command = (
-            "if command -v ceph-volume >/dev/null 2>&1; then "
-            f"ceph-volume lvm zap --destroy {quoted_disk}; "
-            "elif command -v cephadm >/dev/null 2>&1; then "
-            f"cephadm ceph-volume -- lvm zap --destroy {quoted_disk}; "
-            "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi"
-        )
-        try:
-            execute_command(ip, zap_command)
-        except ExecutorError as exc:
-            host_status[i]["status"] = "failed"
-            on_host_update(list(host_status))
-            raise DeployPhaseError(f"Xoá dữ liệu đĩa {osd_disk} trên {ip} thất bại: {exc}") from exc
+        for osd_disk in osd_disks:
+            quoted_disk = shlex.quote(osd_disk)
+            zap_command = (
+                "if command -v ceph-volume >/dev/null 2>&1; then "
+                f"ceph-volume lvm zap --destroy {quoted_disk}; "
+                "elif command -v cephadm >/dev/null 2>&1; then "
+                f"cephadm ceph-volume -- lvm zap --destroy {quoted_disk}; "
+                "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi"
+            )
+            try:
+                execute_command(ip, zap_command)
+            except ExecutorError as exc:
+                host_status[i]["status"] = "failed"
+                on_host_update(list(host_status))
+                raise DeployPhaseError(f"Xoá dữ liệu đĩa {osd_disk} trên {ip} thất bại: {exc}") from exc
         host_status[i]["status"] = "done"
         on_host_update(list(host_status))
 

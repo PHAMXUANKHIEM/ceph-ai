@@ -45,13 +45,16 @@ def _normalize_configured_nodes() -> list[dict]:
     """shared/cluster_nodes.py::configured_nodes() returns
     {"host": .., "roles": ["MON", "OSD"]} (uppercase roles, "host" key) —
     normalized here to the SAME lowercase {"ip": .., "roles": [...],
-    "osd_disk": None} shape worker/executor/cluster_deploy.py's phase
+    "osd_disks": []} shape worker/executor/cluster_deploy.py's phase
     helpers already expect (e.g. _first_mon_ip, _node_ips_with_role), so
-    those are reused completely unchanged for deletion too."""
+    those are reused completely unchanged for deletion too. `osd_disks`
+    starts empty here (.env doesn't remember which disks a node uses) —
+    `propose_delete` below fills it in from the operator's own input when
+    `wipe_osd_disks` is requested."""
     nodes = []
     for n in configured_nodes():
         roles = [_ROLE_UPPER_TO_LOWER[r] for r in n["roles"] if r in _ROLE_UPPER_TO_LOWER]
-        nodes.append({"ip": n["host"], "roles": roles, "osd_disk": None})
+        nodes.append({"ip": n["host"], "roles": roles, "osd_disks": []})
     return nodes
 
 
@@ -60,7 +63,7 @@ def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
     osd_nodes = [n for n in nodes if "osd" in n["roles"]]
     if wipe_osd_disks:
-        osd = [f"{n['ip']} ({n.get('osd_disk')})" for n in osd_nodes]
+        osd = [f"{n['ip']} ({', '.join(n.get('osd_disks') or [])})" for n in osd_nodes]
     else:
         osd = [n["ip"] for n in osd_nodes]
     node_summary = f"MON: {', '.join(mon)}\nMGR: {', '.join(mgr)}\nOSD: {', '.join(osd)}"
@@ -193,12 +196,27 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
         for node in nodes:
             if "osd" not in node["roles"]:
                 continue
-            disk = str((osd_disks_raw or {}).get(node["ip"], "")).strip()
-            if not _OSD_DISK_RE.match(disk):
+            disks_raw = (osd_disks_raw or {}).get(node["ip"])
+            if not isinstance(disks_raw, list):
                 raise HTTPException(
-                    status_code=400, detail=f"Đĩa OSD không hợp lệ cho node {node['ip']} (vd /dev/vdc)"
+                    status_code=400, detail=f"Dữ liệu đĩa OSD không hợp lệ cho node {node['ip']}"
                 )
-            node["osd_disk"] = disk
+            disks = [str(d).strip() for d in disks_raw if str(d).strip()]
+            if not disks:
+                raise HTTPException(
+                    status_code=400, detail=f"Chưa điền đĩa OSD cần xoá cho node {node['ip']}"
+                )
+            for disk in disks:
+                if not _OSD_DISK_RE.match(disk):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Đĩa OSD không hợp lệ cho node {node['ip']} (vd /dev/vdc): {disk!r}",
+                    )
+            if len(set(disks)) != len(disks):
+                raise HTTPException(
+                    status_code=400, detail=f"Đĩa OSD bị trùng lặp cho node {node['ip']}"
+                )
+            node["osd_disks"] = disks
 
     exec_mode = settings.ceph_exec_mode
     action_id = DELETE_CEPHADM_ACTION_ID if exec_mode == "cephadm" else DELETE_MANUAL_ACTION_ID

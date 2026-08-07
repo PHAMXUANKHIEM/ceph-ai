@@ -84,14 +84,14 @@ def test_propose_with_wipe_requires_osd_disk_per_node(dashboard_client, monkeypa
         "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": {}}
     )
     assert response.status_code == 400
-    assert "Đĩa OSD" in response.json()["detail"]
+    assert "đĩa OSD" in response.json()["detail"]
 
 
 def test_propose_with_wipe_and_valid_disks_succeeds(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "ceph_exec_mode", "none")
     _login(dashboard_client)
 
-    osd_disks = {ip: "/dev/vdc" for ip in settings.ceph_osd_nodes.split(",")}
+    osd_disks = {ip: ["/dev/vdc"] for ip in settings.ceph_osd_nodes.split(",")}
     response = dashboard_client.post(
         "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks}
     )
@@ -101,10 +101,41 @@ def test_propose_with_wipe_and_valid_disks_succeeds(dashboard_client, monkeypatc
         action = session.get(Action, action_pk)
         params = json.loads(action.action_params)
         assert params["wipe_osd_disks"] is True
-        disks = {n["ip"]: n["osd_disk"] for n in params["nodes"] if "osd" in n["roles"]}
-        assert all(v == "/dev/vdc" for v in disks.values())
+        disks = {n["ip"]: n["osd_disks"] for n in params["nodes"] if "osd" in n["roles"]}
+        assert all(v == ["/dev/vdc"] for v in disks.values())
         assert "CÓ xoá" in action.rationale
         assert "KHÔNG THỂ HOÀN TÁC" in action.rationale
+
+
+def test_propose_with_wipe_allows_multiple_disks_on_same_node(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+    _login(dashboard_client)
+
+    osd_nodes = settings.ceph_osd_nodes.split(",")
+    osd_disks = {ip: ["/dev/vdc", "/dev/vdd"] for ip in osd_nodes}
+    response = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks}
+    )
+    assert response.status_code == 201
+    action_pk = response.json()["action_id"]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        params = json.loads(action.action_params)
+        disks = {n["ip"]: n["osd_disks"] for n in params["nodes"] if "osd" in n["roles"]}
+        assert all(v == ["/dev/vdc", "/dev/vdd"] for v in disks.values())
+
+
+def test_propose_with_wipe_rejects_duplicate_disk_on_same_node(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
+    _login(dashboard_client)
+
+    osd_nodes = settings.ceph_osd_nodes.split(",")
+    osd_disks = {ip: ["/dev/vdc", "/dev/vdc"] for ip in osd_nodes}
+    response = dashboard_client.post(
+        "/delete-cluster/propose", json={"wipe_osd_disks": True, "osd_disks": osd_disks}
+    )
+    assert response.status_code == 400
+    assert "trùng lặp" in response.json()["detail"]
 
 
 def test_propose_rejects_when_no_cluster_configured(dashboard_client, monkeypatch):

@@ -117,7 +117,7 @@
                   <tr>
                     <th>IP Address</th>
                     <th>MON</th><th>MGR</th><th>OSD</th><th>MDS</th><th>RGW</th>
-                    <th>Đĩa OSD</th>
+                    <th>Đĩa OSD (1 hoặc nhiều)</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -125,6 +125,7 @@
               </table>
             </div>
             <button type="button" class="btn btn-sm" id="rf-add-node">+ Thêm node</button>
+            <p class="hint">Nhiều đĩa OSD trên cùng 1 node: phân tách bằng dấu phẩy (vd <code>/dev/vdc, /dev/vdd</code>).</p>
             <p class="hint">Nên dùng CÙNG số lượng node MON như cụm cũ (giúp bước khôi phục monmap có ý nghĩa hơn — xem <code>docs/runbook-dr.md</code>).</p>
 
             <label>

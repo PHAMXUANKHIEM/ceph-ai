@@ -74,11 +74,18 @@ def _is_valid_ip(ip: str) -> bool:
 def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
     """Returns (normalized_nodes, error_message) — error_message is None on
     success. Normalizes each node to {"ip": str, "roles": [str, ...],
-    "osd_disk": str | None} (roles deduped, restricted to _VALID_ROLES,
-    order-stable). `osd_disk` is PER NODE (not one cluster-wide value) so
+    "osd_disks": list[str]} (roles deduped, restricted to _VALID_ROLES,
+    order-stable). `osd_disks` is PER NODE (not one cluster-wide value) so
     nodes with different device naming (e.g. node1 /dev/vdc, node2
     /dev/vdb) can each use their own — required and validated only for a
-    node with the "osd" role; omitted (None) otherwise."""
+    node with the "osd" role; an empty list otherwise.
+
+    2026-08-07: `osd_disk` (single string) -> `osd_disks` (list[str]) — a
+    real node can carry MULTIPLE OSD disks (e.g. node1 /dev/vdc AND
+    /dev/vdd, each becoming its own OSD), which a single-string field could
+    never express. worker/executor/cluster_deploy.py's OSD-creation/safety
+    phases now loop over this list, one `ceph-volume lvm create`/
+    `ceph orch daemon add osd` call per disk."""
     if not isinstance(nodes_raw, list) or not nodes_raw:
         return [], "Cần ít nhất 1 node"
 
@@ -99,8 +106,18 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
             return [], f"Vai trò không hợp lệ cho node {ip}"
         roles = [r for r in _VALID_ROLES if r in roles_raw]
 
-        osd_disk = str(entry.get("osd_disk", "")).strip() if "osd" in roles else None
-        normalized.append({"ip": ip, "roles": roles, "osd_disk": osd_disk})
+        osd_disks: list[str] = []
+        if "osd" in roles:
+            # A MISSING key defaults to [] (deferred to the "chưa điền đĩa
+            # OSD" check below, run only AFTER mon/mgr/osd counts are known
+            # valid — see that check's own comment for why). Only a
+            # PRESENT-but-wrong-typed value (e.g. a string) is rejected
+            # here, immediately.
+            disks_raw = entry.get("osd_disks", [])
+            if not isinstance(disks_raw, list):
+                return [], f"Dữ liệu đĩa OSD không hợp lệ cho node {ip}"
+            osd_disks = [str(d).strip() for d in disks_raw if str(d).strip()]
+        normalized.append({"ip": ip, "roles": roles, "osd_disks": osd_disks})
 
     mon_count = sum(1 for n in normalized if "mon" in n["roles"])
     mgr_count = sum(1 for n in normalized if "mgr" in n["roles"])
@@ -117,8 +134,15 @@ def _validate_nodes(nodes_raw) -> tuple[list[dict], str | None]:
     # (e.g. missing a MON node entirely) should surface THAT error, not an
     # unrelated disk-path complaint about a node that was never the problem.
     for n in normalized:
-        if "osd" in n["roles"] and not _RPM_PATH_RE.match(n["osd_disk"] or ""):
-            return [], f"Đĩa OSD không hợp lệ cho node {n['ip']} (vd /dev/vdc)"
+        if "osd" not in n["roles"]:
+            continue
+        if not n["osd_disks"]:
+            return [], f"Chưa điền đĩa OSD cho node {n['ip']}"
+        for disk in n["osd_disks"]:
+            if not _RPM_PATH_RE.match(disk):
+                return [], f"Đĩa OSD không hợp lệ cho node {n['ip']} (vd /dev/vdc): {disk!r}"
+        if len(set(n["osd_disks"])) != len(n["osd_disks"]):
+            return [], f"Đĩa OSD bị trùng lặp cho node {n['ip']}"
 
     return normalized, None
 
@@ -136,9 +160,9 @@ nâng cấp bằng gói hiện có (cố ý CHẠY TIẾP sang node kế tiếp 
 này DỪNG LẠI NGAY khi BẤT KỲ node nào lỗi ở các bước cài đặt/khởi tạo — không có node/daemon nào
 được đụng tới sau điểm lỗi. Kill-switch được kiểm tra lại trước MỖI bước.
 
-Bước tạo OSD sẽ GHI/ĐỊNH DẠNG THẬT lên đĩa osd_disk đã cấu hình (`ceph-volume lvm create`) — đĩa
-này đã được kiểm tra CHỈ ĐỌC (rỗng, không mount) ở bước đầu tiên, nhưng thao tác tạo OSD ở bước
-này là không thể hoàn tác.
+Bước tạo OSD sẽ GHI/ĐỊNH DẠNG THẬT lên (một hoặc nhiều) đĩa OSD đã cấu hình cho từng node
+(`ceph-volume lvm create`, một lần gọi cho MỖI đĩa) — mỗi đĩa đã được kiểm tra CHỈ ĐỌC (rỗng,
+không mount) ở bước đầu tiên, nhưng thao tác tạo OSD ở bước này là không thể hoàn tác.
 
 Lưu ý: quy trình dưới đây được viết theo tài liệu triển khai thủ công chính thức của Ceph, CHƯA
 được kiểm thử trực tiếp trên một cụm ceph-deploy/gói truyền thống thật trong môi trường phát triển
@@ -149,10 +173,10 @@ tiên nên được operator theo dõi sát, không nên để chạy không gi�
 def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: str | None = None) -> str:
     mon = [n["ip"] for n in nodes if "mon" in n["roles"]]
     mgr = [n["ip"] for n in nodes if "mgr" in n["roles"]]
-    # Per-node disk (vd node1 /dev/vdc, node2 /dev/vdb) shown explicitly here
-    # so the operator can double check EACH node's disk assignment before
-    # Duyệt, not just that osd_disk is set at all.
-    osd = [f"{n['ip']} ({n.get('osd_disk')})" for n in nodes if "osd" in n["roles"]]
+    # Per-node disk LIST (vd node1 /dev/vdc + /dev/vdd, node2 /dev/vdb) shown
+    # explicitly here so the operator can double check EACH node's disk
+    # assignment before Duyệt, not just that osd_disks is set at all.
+    osd = [f"{n['ip']} ({', '.join(n.get('osd_disks') or [])})" for n in nodes if "osd" in n["roles"]]
     # RGW is OPTIONAL, unlike mon/mgr/osd above (see worker/executor/
     # cluster_deploy.py::_phase_ceph_deploy_rgw_create's own docstring) — an
     # empty rgw list is a normal, valid cluster, so this line always shows
