@@ -37,6 +37,7 @@ from datetime import datetime, timedelta
 from config.settings import settings
 from shared import audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.telegram_alerts import send_node_alert
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from worker.policy import gate
@@ -116,6 +117,14 @@ def check_predicted_failing_osds() -> dict[str, dict]:
     except CephQueryError:
         return {}
 
+    # crush_host (the OSD's actual physical node), NOT mon_host below (just
+    # whichever MON `ceph device ls` happened to be run against) — same
+    # host_by_osd_id lookup watcher/osd_latency_monitor.py::
+    # check_osd_latency_outliers already uses for its own per-OSD Telegram
+    # alert. Best-effort: an OSD missing from this map (e.g. `ceph osd
+    # tree` query failed) just alerts with host=None.
+    host_by_osd_id = {o["osd_id"]: o.get("crush_host") for o in ceph_client.list_osds()}
+
     devices = device_payload if isinstance(device_payload, list) else []
     horizon = datetime.utcnow() + timedelta(days=settings.device_health_evacuate_threshold_days)
 
@@ -146,6 +155,7 @@ def check_predicted_failing_osds() -> dict[str, dict]:
                 "life_expectancy_min": device.get("life_expectancy_min"),
                 "life_expectancy_max": device.get("life_expectancy_max"),
                 "mon_host": host,
+                "host": host_by_osd_id.get(osd_id),
             }
     return candidates
 
@@ -168,7 +178,13 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
     already open, and resolves any open DEVICE_HEALTH_EVACUATE: Incident
     whose osd_id dropped out of `current` (prediction cleared, or the OSD
     is no longer `in` — including because a prior proposal here was
-    already approved and executed)."""
+    already approved and executed).
+
+    2026-08-07: also pushes a Telegram alert (shared/telegram_alerts.py::
+    send_node_alert, same "Phần cứng" channel as node_health_monitor.py/
+    osd_latency_monitor.py) for each NEWLY created Incident only — this
+    module previously created the Incident/Action silently with no
+    notification at all, unlike its two sibling hardware monitors."""
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -218,4 +234,6 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
                 event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
                 actor=audit.ACTOR_SYSTEM,
             )
+
+            send_node_alert(detail["host"] or detail["mon_host"], rationale)
         session.commit()

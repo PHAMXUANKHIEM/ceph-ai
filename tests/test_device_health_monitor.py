@@ -51,6 +51,20 @@ def _fake_run_ceph_json_command(device_ls_result, osd_dump_osds):
     return fake
 
 
+def _stub_list_osds(monkeypatch, hosts=None):
+    """check_predicted_failing_osds() now also calls ceph_client.list_osds()
+    (osd_id -> crush_host, for the Telegram alert's host label) — same
+    stubbing approach tests/test_osd_latency_monitor.py already uses for
+    its own identical lookup, mocked directly rather than routed through
+    _fake_run_ceph_json_command's own "ceph osd tree" branch."""
+    hosts = hosts or {}
+    monkeypatch.setattr(
+        dhm.ceph_client,
+        "list_osds",
+        lambda: [{"osd_id": osd_id, "crush_host": host} for osd_id, host in hosts.items()],
+    )
+
+
 # --- check_predicted_failing_osds() -------------------------------------
 
 
@@ -58,6 +72,7 @@ def test_check_predicted_failing_osds_returns_empty_when_no_devices(monkeypatch)
     monkeypatch.setattr(
         dhm.ceph_client, "run_ceph_json_command", _fake_run_ceph_json_command([], [])
     )
+    _stub_list_osds(monkeypatch)
 
     assert dhm.check_predicted_failing_osds() == {}
 
@@ -70,6 +85,7 @@ def test_check_predicted_failing_osds_flags_device_within_threshold(monkeypatch)
         "run_ceph_json_command",
         _fake_run_ceph_json_command([device], [{"osd": 7, "in": 1}]),
     )
+    _stub_list_osds(monkeypatch, {7: "khiempx-data-b2"})
 
     result = dhm.check_predicted_failing_osds()
 
@@ -78,6 +94,7 @@ def test_check_predicted_failing_osds_flags_device_within_threshold(monkeypatch)
     assert detail["osd_id"] == 7
     assert detail["devid"] == "SEAGATE_ABC"
     assert detail["mon_host"] == "10.20.1.150"
+    assert detail["host"] == "khiempx-data-b2"
 
 
 def test_check_predicted_failing_osds_ignores_device_beyond_threshold(monkeypatch):
@@ -88,6 +105,7 @@ def test_check_predicted_failing_osds_ignores_device_beyond_threshold(monkeypatc
         "run_ceph_json_command",
         _fake_run_ceph_json_command([device], [{"osd": 7, "in": 1}]),
     )
+    _stub_list_osds(monkeypatch, {7: "khiempx-data-b2"})
 
     assert dhm.check_predicted_failing_osds() == {}
 
@@ -101,6 +119,7 @@ def test_check_predicted_failing_osds_ignores_device_with_no_prediction_set(monk
         "run_ceph_json_command",
         _fake_run_ceph_json_command([device], [{"osd": 7, "in": 1}]),
     )
+    _stub_list_osds(monkeypatch, {7: "khiempx-data-b2"})
 
     assert dhm.check_predicted_failing_osds() == {}
 
@@ -114,6 +133,7 @@ def test_check_predicted_failing_osds_skips_osd_already_marked_out(monkeypatch):
         "run_ceph_json_command",
         _fake_run_ceph_json_command([device], [{"osd": 7, "in": 0}]),
     )
+    _stub_list_osds(monkeypatch, {7: "khiempx-data-b2"})
 
     assert dhm.check_predicted_failing_osds() == {}
 
@@ -136,6 +156,7 @@ def test_check_predicted_failing_osds_handles_multiple_daemons_on_one_device(mon
         "run_ceph_json_command",
         _fake_run_ceph_json_command([device], [{"osd": 7, "in": 1}, {"osd": 8, "in": 1}]),
     )
+    _stub_list_osds(monkeypatch, {7: "khiempx-data-b2", 8: "khiempx-data-b2"})
 
     result = dhm.check_predicted_failing_osds()
 
@@ -145,17 +166,29 @@ def test_check_predicted_failing_osds_handles_multiple_daemons_on_one_device(mon
 # --- create_or_resolve_device_health_incidents() -------------------------
 
 
-def _detail(osd_id=7, devid="SEAGATE_ABC", mon_host="10.20.1.150"):
+def _detail(osd_id=7, devid="SEAGATE_ABC", mon_host="10.20.1.150", host="khiempx-data-b2"):
     return {
         "osd_id": osd_id,
         "devid": devid,
         "life_expectancy_min": _life_expectancy(3.0),
         "life_expectancy_max": _life_expectancy(10.0),
         "mon_host": mon_host,
+        "host": host,
     }
 
 
-def test_create_or_resolve_creates_incident_and_evacuate_action(isolated_db):
+def _stub_send_node_alert(monkeypatch):
+    """create_or_resolve_device_health_incidents() now pushes a Telegram
+    alert per newly-created Incident (same as its two sibling hardware
+    monitors) — stubbed here rather than actually calling out, same
+    posture as tests/test_node_health_monitor.py's own equivalent stub."""
+    calls = []
+    monkeypatch.setattr(dhm, "send_node_alert", lambda host, message: calls.append((host, message)))
+    return calls
+
+
+def test_create_or_resolve_creates_incident_and_evacuate_action(isolated_db, monkeypatch):
+    calls = _stub_send_node_alert(monkeypatch)
     current = {"DEVICE_HEALTH_EVACUATE:7": _detail()}
 
     dhm.create_or_resolve_device_health_incidents(current)
@@ -176,8 +209,26 @@ def test_create_or_resolve_creates_incident_and_evacuate_action(isolated_db):
         assert audit_entry.event_type == "risky_action_pending_approval"
         assert audit_entry.actor == "system"
 
+    assert len(calls) == 1
+    alert_host, alert_message = calls[0]
+    assert alert_host == "khiempx-data-b2"
+    assert "osd.7" in alert_message
 
-def test_create_or_resolve_does_not_duplicate_an_already_open_incident(isolated_db):
+
+def test_create_or_resolve_alert_falls_back_to_mon_host_when_osd_host_unknown(isolated_db, monkeypatch):
+    # ceph_client.list_osds() couldn't resolve this osd_id's crush_host
+    # (e.g. its own query failed) — still alert, just with the MON host
+    # this scan reached, rather than silently dropping the notification.
+    calls = _stub_send_node_alert(monkeypatch)
+    current = {"DEVICE_HEALTH_EVACUATE:7": _detail(host=None)}
+
+    dhm.create_or_resolve_device_health_incidents(current)
+
+    assert calls == [("10.20.1.150", calls[0][1])]
+
+
+def test_create_or_resolve_does_not_duplicate_an_already_open_incident(isolated_db, monkeypatch):
+    _stub_send_node_alert(monkeypatch)
     current = {"DEVICE_HEALTH_EVACUATE:7": _detail()}
 
     dhm.create_or_resolve_device_health_incidents(current)
@@ -188,7 +239,8 @@ def test_create_or_resolve_does_not_duplicate_an_already_open_incident(isolated_
         assert count == 1
 
 
-def test_create_or_resolve_resolves_when_no_longer_a_candidate(isolated_db):
+def test_create_or_resolve_resolves_when_no_longer_a_candidate(isolated_db, monkeypatch):
+    _stub_send_node_alert(monkeypatch)
     dhm.create_or_resolve_device_health_incidents({"DEVICE_HEALTH_EVACUATE:7": _detail()})
 
     dhm.create_or_resolve_device_health_incidents({})  # prediction cleared, or osd already out
@@ -198,7 +250,8 @@ def test_create_or_resolve_resolves_when_no_longer_a_candidate(isolated_db):
         assert incident.status == IncidentStatus.RESOLVED.value
 
 
-def test_create_or_resolve_only_touches_its_own_ceph_code_family(isolated_db):
+def test_create_or_resolve_only_touches_its_own_ceph_code_family(isolated_db, monkeypatch):
+    _stub_send_node_alert(monkeypatch)
     with db_module.SessionLocal() as session:
         unrelated = Incident(
             ceph_code="OSD_DOWN", status=IncidentStatus.FAILED.value, detected_at=datetime.utcnow()
