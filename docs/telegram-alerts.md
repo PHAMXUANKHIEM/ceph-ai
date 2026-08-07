@@ -16,11 +16,23 @@ Hướng dẫn thao tác từng bước (tạo Bot, lấy Chat ID) nằm ngay tr
 liệu tham khảo ngoài app; các mục còn lại tập trung vào **thiết kế/hành
 vi**.
 
+**2026-08-07 — Telegram giờ là kênh CHÍNH cho cả chẩn đoán lẫn phê duyệt,
+không chỉ cảnh báo thô:** hai thay đổi cùng ngày. (1) Tin nhắn phê duyệt
+(mục 6.6) và tin nhắn kết quả tự động xử lý MỚI (mục 7,
+`send_auto_remediation_alert`) giờ mang theo `Incident.diagnosis_text` —
+lời giải thích gốc rễ đầy đủ của AI, trước đây CHỈ hiện trên Dashboard,
+không hề ra tới Telegram. (2) Thẻ "Chờ duyệt — Risky Action" trên Dashboard
+chính (`/`) giờ chỉ còn là phương án dự phòng khi CHƯA cấu hình kênh
+Telegram nào (mục 6.7) — một khi có ít nhất 1 kênh, mọi cảnh báo/chẩn
+đoán/phê duyệt đều chuyển hẳn sang Telegram, Dashboard chỉ còn xem lịch sử
+(Incident Feed/Audit Trail).
+
 Nguồn: `config/settings.py`, `shared/env_config.py`,
 `shared/telegram_client.py`, `shared/telegram_alerts.py`,
 `worker/backup/alerting.py`, `watcher/main.py`, `watcher/node_health_monitor.py`,
-`dashboard/telegram_approval_bot.py`, `dashboard/routes/telegram_alerts.py`,
-`dashboard/routes/actions.py`.
+`worker/llm/router_client.py`, `dashboard/telegram_approval_bot.py`,
+`dashboard/routes/telegram_alerts.py`, `dashboard/routes/actions.py`,
+`dashboard/routes/incidents.py`.
 
 ## 1. Cấu hình & quyền truy cập (từng bước)
 
@@ -358,7 +370,8 @@ thật.
 
 ```
 📋 Đề xuất chờ duyệt: restart_osd_daemon
-osd.3 trên node2 nghi bị treo, đề xuất khởi động lại daemon
+Chẩn đoán: osd.3 (host node2) đã down và không tự lên lại sau 3 lần watcher poll liên tiếp, log cho thấy tiến trình bị treo chứ không phải bị OOM-kill hay crash — nghi daemon bị treo/deadlock.
+Lý do chọn hành động: osd.3 trên node2 nghi bị treo, đề xuất khởi động lại daemon
 
 Lệnh xem trước:
 docker restart ceph-osd-B
@@ -367,19 +380,84 @@ Action ID: 3f9c1a2e-...
 [✅ Duyệt]  [❌ Từ chối]
 ```
 
+2026-08-07: dòng `Chẩn đoán:` (nếu có) là `Incident.diagnosis_text` — lời
+giải thích gốc rễ đầy đủ của router (`worker/llm/router_client.py::
+diagnose_incident`), CÙNG trường mà thẻ "Chờ duyệt" trên Dashboard vẫn ưu
+tiên hiển thị. Trước ngày này, tin Telegram chỉ có dòng `Lý do chọn hành
+động:` (`Action.rationale` — lý do CHỌN action_id, thường ngắn hơn nhiều)
+— đây là lý do gửi lên Telegram "có LLM nhưng không thấy giải pháp": chẩn
+đoán thật sự chỉ hiện trên Dashboard, chưa bao giờ ra tới Telegram. Dòng
+`Lý do chọn hành động:` chỉ hiện thêm khi khác nội dung với `Chẩn đoán:`
+(action không có diagnosis, vd envelope cũ) để tránh lặp lại y hệt.
+
 Cùng nội dung được gửi giống hệt tới mọi kênh Action này broadcast tới —
 không tuỳ biến theo kênh. Sau khi bấm ở bất kỳ kênh nào, bản tin của kênh
 đó được sửa lại: `✅ ĐÃ DUYỆT.` / `❌ ĐÃ TỪ CHỐI.` / `✅ Đã xác nhận (không
 có lệnh tự động để chạy cho mục này).` (trường hợp `investigate_manually`)
 / `⚠️ Đã được xử lý từ trước (có thể qua Dashboard hoặc kênh khác).`
 
-## 7. Vì sao không có "tin nhắn khi đã phục hồi"
+### 6.7. Dashboard's own "Chờ duyệt" card — chỉ còn là phương án dự phòng
+
+2026-08-07: trang Dashboard chính (`/`) chỉ còn hiển thị thẻ "Chờ duyệt —
+Risky Action" (và nút Duyệt/Từ chối trực tiếp trên trang) khi **KHÔNG có
+kênh Telegram nào đã cấu hình** (`dashboard/telegram_approval_bot.py::
+has_configured_channel()` trả `False`) — vì mục 6.1 ở trên đã broadcast
+đúng thẻ này (kèm nút bấm) tới mọi kênh đã cấu hình rồi, hiển thị lại lần
+nữa trên Dashboard là dư thừa một khi Telegram đã làm việc đó. Ngay khi có
+ít nhất 1 kênh đủ Bot Token + Chat ID, thẻ này biến mất khỏi trang chủ
+(tab "Chờ duyệt" cũng không còn), tab mặc định đổi từ "Chờ duyệt" sang
+"Incident Feed", và thẻ đó có 1 dòng ghi chú trỏ sang `/telegram-alerts`.
+**Không xoá** route `/actions/{id}/approve|reject` hay logic
+`approve_action_core`/`reject_action_core` — cả hai vẫn là những gì nút
+Telegram gọi thẳng tới (mục 6.3); chỉ ẩn UI HTML khi có phương án khác.
+Đây là lựa chọn có chủ đích để KHÔNG tái diễn lỗi đã từng xảy ra hồi
+2026-07-23 (xem `tests/test_dashboard_actions.py::
+test_index_shows_pending_action_card`'s docstring): thẻ này từng bị xoá
+hẳn một lần với giả định "Chat-with-AI tự confirm là đủ", nhưng lúc đó
+CHƯA có Telegram approval — kết quả là một RISKY Action confirm qua Chat
+kẹt vĩnh viễn ở `PENDING_APPROVAL`, không có đường nào duyệt/từ chối. Bây
+giờ Telegram approval đã tồn tại và thay thế đúng vai trò đó, nên ẩn thẻ
+Dashboard là an toàn — NHƯNG chỉ khi Telegram thực sự đã cấu hình; nếu ai
+đó xoá hết 3 cặp Bot Token/Chat ID sau này, thẻ tự động hiện lại ngay lần
+tải trang kế tiếp, không cần thao tác gì thêm.
+
+## 7. Vì sao không có "tin nhắn khi đã phục hồi" — và tin nhắn kết quả tự động xử lý
 
 Cả 3 kênh thông báo thuần (Backup/Lỗi cụm/Phần cứng) đều **chỉ gửi khi một
 vấn đề MỚI xuất hiện**, không gửi thông báo khi vấn đề tự hết — nhất quán
 trên toàn hệ thống. Vận hành viên xem trạng thái "đã RESOLVED chưa" trực
 tiếp trên Dashboard khi cần xác nhận. (Mục 6 "Yêu cầu phê duyệt" thì khác
 — bản thân nó LÀ hành động, không phải một thông báo trạng thái.)
+
+**2026-08-07 — `send_auto_remediation_alert()` (`shared/telegram_alerts.py`),
+gọi từ `worker/llm/router_client.py::_record_execution_result`**: đây LÀ
+một thông báo kết quả, cố ý khác nguyên tắc "chỉ gửi khi vấn đề mới xuất
+hiện" ở trên, vì lý do riêng — `send_incident_alert()` (mục 4) gửi ngay
+lúc `Incident` vừa được tạo, TRƯỚC KHI router kịp chẩn đoán bất cứ điều gì
+(chẩn đoán chạy bất đồng bộ qua RabbitMQ, sau đó), nên tin nhắn đầu tiên
+đó không bao giờ có thể chứa "giải pháp". Với mọi Action được xếp loại
+`SAFE` (tự động chạy, không cần duyệt), sau khi thực thi xong (thành công
+hay thất bại) gửi thêm đúng 1 tin lên kênh Lỗi cụm:
+
+```
+✅ Đã tự động xử lý: OSD_DOWN
+Chẩn đoán: osd.3 (host node2) đã down và không tự lên lại sau 3 lần watcher poll liên tiếp...
+Hành động: khởi động lại daemon osd.3
+Lệnh đã chạy:
+docker restart ceph-osd-B
+```
+
+(`❌ Tự động xử lý thất bại` khi `succeeded=False`.) Dùng lại kênh
+`telegram_incident_bot_token`/`telegram_incident_chat_id` (không thêm kênh
+thứ 4) — cùng cách `send_osd_latency_alert` dùng lại kênh Phần cứng. Chạy
+SAU khi session DB đã commit/đóng (không giữ kết nối DB trong lúc gọi
+mạng, cùng nguyên tắc `watcher/main.py::build_and_publish_incident` đã có)
+và best-effort như mọi hàm khác trong `shared/telegram_alerts.py` — một
+Action SAFE đã thực thi xong không bao giờ bị coi là thất bại chỉ vì gửi
+Telegram lỗi. Không áp dụng cho Action RISKY (những Action đó đã có tin
+nhắn phê duyệt riêng ở mục 6, và một khi được duyệt/từ chối, kết quả hiện
+ngay trên chính tin nhắn đó qua `_OUTCOME_EDIT_SUFFIX` — không cần thêm
+tin thứ 2).
 
 ## 8. Các file liên quan trong mã nguồn
 
@@ -388,13 +466,15 @@ tiếp trên Dashboard khi cần xác nhận. (Mục 6 "Yêu cầu phê duyệt"
 | `config/settings.py` | 6 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id}`) + `telegram_approval_scan_interval_seconds` |
 | `shared/env_config.py` | `TELEGRAM_BACKUP_ENV_NAMES`/`TELEGRAM_INCIDENT_ENV_NAMES`/`TELEGRAM_NODE_ENV_NAMES` — ánh xạ field ↔ biến `.env`, mỗi kênh 1 dict |
 | `shared/telegram_client.py` | Client Telegram Bot API dùng chung — gửi thuần (`send_telegram_message`) VÀ 4 hàm cho Phê duyệt (`send_telegram_message_with_keyboard`/`edit_telegram_message`/`get_telegram_updates`/`answer_telegram_callback`) |
-| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (2 hàm sau cùng chia sẻ kênh Phần cứng) |
+| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()`/`send_auto_remediation_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (`send_osd_latency_alert` + `send_node_alert` chia sẻ kênh Phần cứng; `send_auto_remediation_alert` dùng lại kênh Lỗi cụm) |
 | `worker/backup/alerting.py` | `send_alert()` → `_send_telegram_alert()` dùng cặp token/chat_id kênh Backup |
 | `watcher/main.py` | `build_and_publish_incident()` gọi `send_incident_alert()`; nhịp quét `node_health_monitor`/`osd_latency_monitor` trong `run()` |
 | `watcher/node_health_monitor.py` | Toàn bộ logic quét CPU/RAM + ngưỡng + vòng đời Incident cho cảnh báo phần cứng (node) |
 | `watcher/osd_latency_monitor.py` | Toàn bộ logic quét `ceph osd perf` + so trung vị cụm + vòng đời Incident cho OSD latency outlier |
-| `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình + listener gom theo bot token + trust model + idempotent |
+| `worker/llm/router_client.py` | `_record_execution_result()` gọi `send_auto_remediation_alert()` sau khi một Action SAFE thực thi xong (mục 7) |
+| `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình (kèm `Incident.diagnosis_text`, mục 6.6) + listener gom theo bot token + trust model + idempotent + `has_configured_channel()` (mục 6.7) |
 | `dashboard/routes/actions.py` | `approve_action_core`/`reject_action_core` — logic Duyệt/Từ chối DÙNG CHUNG giữa nút HTML và nút Telegram |
+| `dashboard/routes/incidents.py` | `index()` — ẩn thẻ "Chờ duyệt" trên Dashboard khi `has_configured_channel()` trả `True` (mục 6.7) |
 | `dashboard/routes/telegram_alerts.py` | Router trang "Alert Telegram" — 3 card, mỗi kênh 1 route Lưu + 1 route Gửi thử, route hướng dẫn |
 | `dashboard/templates/telegram_alerts.html` | Trang chính — 3 card Backup/Lỗi cụm/Phần cứng |
 | `dashboard/templates/telegram_alerts_help.html` | Hướng dẫn tạo Bot/lấy Chat ID từng bước, trong app |

@@ -12,6 +12,7 @@ from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.routes.delete_cluster import CLUSTER_DELETE_CEPH_CODE
 from dashboard.routes.deploy_cluster import CLUSTER_DEPLOY_CEPH_CODE
 from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
+from dashboard.telegram_approval_bot import has_configured_channel
 from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
@@ -203,6 +204,7 @@ def _fetch_dashboard_data(
     list[AuditEntry],
     bool,
     BackupJob | None,
+    bool,
 ]:
     with db.SessionLocal() as session:
         incidents = session.query(Incident).order_by(Incident.detected_at.desc()).all()
@@ -239,6 +241,17 @@ def _fetch_dashboard_data(
         audit_entries = _query_audit_entries(session, incident_id, since_dt, until_dt)
         # Epic 9, Story 9.4 (AC #2) — see _recent_backup_failure's docstring.
         backup_alert = _recent_backup_failure(session)
+    # 2026-08-07: the "Chờ duyệt — Risky Action" card is only shown as a
+    # FALLBACK now that dashboard/telegram_approval_bot.py broadcasts the
+    # same proposal (with Duyệt/Từ chối buttons) to every configured
+    # Telegram channel — see docs/telegram-alerts.md mục 6. Do NOT remove
+    # this card outright: if no Telegram channel is configured (or it's
+    # been cleared since), this is the ONLY remaining place to
+    # approve/reject an auto-diagnosed or Chat-with-AI-confirmed RISKY
+    # Action — the exact stranding bug test_dashboard_actions.py::
+    # test_index_shows_pending_action_card's docstring already describes
+    # from 2026-07-23, before Telegram approval existed.
+    telegram_configured = has_configured_channel()
     return (
         incidents,
         latest_heartbeat,
@@ -247,6 +260,7 @@ def _fetch_dashboard_data(
         audit_entries,
         upgrade_blocks_other_actions,
         backup_alert,
+        telegram_configured,
     )
 
 
@@ -270,6 +284,7 @@ async def index(
             audit_entries,
             upgrade_blocks_other_actions,
             backup_alert,
+            telegram_configured,
         ) = _fetch_dashboard_data(incident_id, since_dt, until_dt)
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
@@ -319,11 +334,22 @@ async def index(
             "filter_until": until,
             "upgrade_blocks_other_actions": upgrade_blocks_other_actions,
             "backup_alert": backup_alert,
+            # 2026-08-07: the "Chờ duyệt" card only renders when Telegram
+            # approval ISN'T configured (see _fetch_dashboard_data's
+            # docstring above) — Duyệt/Từ chối already reaches every
+            # configured Telegram channel for every RISKY Action regardless
+            # of where it originated.
+            "telegram_approval_configured": telegram_configured,
             # Sidebar tab (2026-07-24) — lands on Audit Trail if the operator
             # just used its filter form (a GET with query params, unlike
             # Settings' POST-result sections), otherwise defaults to Chờ
-            # duyệt (the most actionable tab).
-            "active_tab": "audit" if (incident_id or since or until) else "pending",
+            # duyệt (the most actionable tab) when that card exists, else
+            # Incident Feed.
+            "active_tab": (
+                "audit" if (incident_id or since or until)
+                else "pending" if not telegram_configured
+                else "incidents"
+            ),
         },
     )
 

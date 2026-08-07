@@ -108,15 +108,18 @@
 
     <div class="tabbed-page">
     <nav class="tabbed-sidebar">
+      {% if not telegram_approval_configured %}
       <label class="pending-tab-autoswitch" title="Khi tắt, trang sẽ nhớ tab bạn đang xem thay vì tự nhảy về Chờ duyệt mỗi lần có Incident/Action mới">
         <input type="checkbox" id="pending-tab-autoswitch" checked>
         Tự động mở tab này khi có Risky Action mới
       </label>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'pending' %}active{% endif %}" data-section="pending">Chờ duyệt{% if pending_actions %} ({{ pending_actions|length }}){% endif %}</button>
+      {% endif %}
       <button type="button" class="tabbed-nav-item {% if active_tab == 'incidents' %}active{% endif %}" data-section="incidents">Incident Feed</button>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'audit' %}active{% endif %}" data-section="audit">Audit Trail</button>
     </nav>
     <div class="tabbed-content">
+    {% if not telegram_approval_configured %}
     <section class="card tabbed-panel" data-panel="pending" {% if active_tab != 'pending' %}hidden{% endif %}>
       <div class="card-header">
         <h2>Chờ duyệt — Risky Action</h2>
@@ -161,9 +164,13 @@
         {% endfor %}
       </div>
     </section>
+    {% endif %}
 
     <section class="card tabbed-panel" data-panel="incidents" {% if active_tab != 'incidents' %}hidden{% endif %}>
       <div class="card-header"><h2>Incident Feed</h2></div>
+      {% if telegram_approval_configured %}
+      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối Risky Action đã chuyển hẳn sang Telegram (xem <a href="/telegram-alerts">Alert Telegram</a>) — không còn danh sách chờ duyệt riêng trên trang này.</p>
+      {% endif %}
       <div class="card-body table-wrap">
         <table id="incident-feed">
           <thead>

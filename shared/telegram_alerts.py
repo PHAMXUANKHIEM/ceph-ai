@@ -97,3 +97,31 @@ def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
     docstring for why there's no separate 4th channel for this."""
     label = f"osd.{osd_id}" + (f" ({host})" if host else "")
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, f"\U0001f7e0 OSD chậm bất thường: {label}\n{message}")
+
+
+def send_auto_remediation_alert(
+    ceph_code: str,
+    diagnosis_text: str | None,
+    rationale: str | None,
+    command: str | None,
+    succeeded: bool,
+) -> None:
+    """Called once per SAFE Action after execution finishes
+    (worker/llm/router_client.py::_record_execution_result) — the
+    send_incident_alert() call for the same Incident fires the moment it's
+    CREATED, before the router has diagnosed anything, so it can only ever
+    carry the raw ceph_code + log excerpt. This is the follow-up message
+    that actually reports what the AI concluded and did about it, on the
+    same Lỗi cụm channel (reusing telegram_incident_bot_token/chat_id
+    rather than adding a 4th channel — same reasoning send_osd_latency_alert
+    gives for reusing Phần cứng). No-op if that channel isn't configured,
+    same as every other function in this module."""
+    prefix = "\u2705 Đã tự động xử lý" if succeeded else "\u274c Tự động xử lý thất bại"
+    lines = [f"{prefix}: {ceph_code}"]
+    if diagnosis_text:
+        lines.append(f"Chẩn đoán: {diagnosis_text}")
+    if rationale:
+        lines.append(f"Hành động: {rationale}")
+    if command:
+        lines.append(f"Lệnh đã chạy:\n{command}")
+    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, "\n".join(lines))

@@ -97,7 +97,7 @@ from dashboard.routes.actions import (
     reject_action_core,
 )
 from shared import db
-from shared.models import Action, ActionStatus
+from shared.models import Action, ActionStatus, Incident
 from shared.telegram_client import (
     TelegramSendError,
     answer_telegram_callback,
@@ -148,10 +148,31 @@ def _known_chat_ids() -> set[str]:
     return {str(chat_id) for _, _, chat_id in _configured_channels()}
 
 
-def _action_message_text(action: Action) -> str:
+def has_configured_channel() -> bool:
+    """True if at least one of Backup/Lỗi cụm/Phần cứng has both Bot Token +
+    Chat ID set — i.e. Duyệt/Từ chối is reachable via Telegram right now
+    (see this module's/docs/telegram-alerts.md's mục 6: approval is a
+    capability of ANY configured channel, not a 4th toggle). Used by
+    dashboard/routes/incidents.py to decide whether the Dashboard's own
+    "Chờ duyệt" card is still needed as a fallback, or whether Telegram
+    already covers it."""
+    return bool(_configured_channels())
+
+
+def _action_message_text(action: Action, incident: Incident | None) -> str:
     lines = [f"📋 Đề xuất chờ duyệt: {action.action_id}"]
-    if action.rationale:
-        lines.append(action.rationale)
+    # incident.diagnosis_text is the router's plain-language root-cause
+    # explanation (worker/llm/router_client.py::diagnose_incident) — the
+    # SAME field the Dashboard's own "Chờ duyệt" card prefers over
+    # action.rationale (dashboard/templates/index.html). Telegram used to
+    # only ever send `rationale` (a short "why this action_id" note) and
+    # never the diagnosis itself — the actual "giải pháp" an operator asked
+    # about lived only on the Dashboard. Show both when they differ.
+    diagnosis = (incident.diagnosis_text if incident else None) or None
+    if diagnosis:
+        lines.append(f"Chẩn đoán: {diagnosis}")
+    if action.rationale and action.rationale != diagnosis:
+        lines.append(f"Lý do chọn hành động: {action.rationale}")
     if action.proposed_command:
         lines.append(f"\nLệnh xem trước:\n{action.proposed_command}")
     lines.append(f"\nAction ID: {action.id}")
@@ -212,13 +233,15 @@ def _notify_pending_actions() -> None:
             if not missing:
                 continue
 
+            incident = session.get(Incident, action.incident_id)
+            message_text = _action_message_text(action, incident)
             changed = False
             for channel_key, bot_token, chat_id in missing:
                 try:
                     message_id = send_telegram_message_with_keyboard(
                         bot_token,
                         chat_id,
-                        _action_message_text(action),
+                        message_text,
                         _keyboard_for(action.id),
                     )
                 except TelegramSendError:
@@ -325,7 +348,11 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     if message_id is not None:
         with db.SessionLocal() as session:
             action = session.get(Action, action_id)
-            base_text = _action_message_text(action) if action is not None else f"Action ID: {action_id}"
+            if action is not None:
+                incident = session.get(Incident, action.incident_id)
+                base_text = _action_message_text(action, incident)
+            else:
+                base_text = f"Action ID: {action_id}"
         try:
             edit_telegram_message(bot_token, incoming_chat_id, message_id, base_text + edit_suffix)
         except TelegramSendError:

@@ -15,6 +15,7 @@ from shared.models import Action, ActionClassification, ActionStatus, Incident, 
 from shared.ceph_releases import codename_for_version
 from shared.cluster_nodes import configured_nodes
 from shared.router_client import build_router_client
+from shared.telegram_alerts import send_auto_remediation_alert
 from worker.backup import engine as backup_engine
 from worker.executor import cluster_deploy, commands, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
@@ -514,6 +515,15 @@ def _route_to_manual_approval(incident_id: str, action_pk: str, action_id: str) 
 def _record_execution_result(
     incident_id: str, action_pk: str, command: str | None, succeeded: bool
 ) -> None:
+    # Captured while the session is open so the Telegram notification below
+    # (best-effort network I/O) can run AFTER commit/close — same "don't hold
+    # a DB connection open across unrelated network I/O" posture
+    # watcher/main.py::build_and_publish_incident's own docstring already
+    # establishes for this codebase.
+    notify_ceph_code: str | None = None
+    notify_diagnosis: str | None = None
+    notify_rationale: str | None = None
+
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         incident = session.get(Incident, incident_id)
@@ -531,6 +541,7 @@ def _record_execution_result(
             )
             if succeeded:
                 action.executed_at = datetime.utcnow()
+            notify_rationale = action.rationale
         if incident is None:
             # AuditEntry.incident_id is a required FK — there is nothing
             # valid to attach an audit row to, so skip it too (see the same
@@ -556,7 +567,18 @@ def _record_execution_result(
                 ),
                 actor=audit.ACTOR_SYSTEM,
             )
+            notify_ceph_code = incident.ceph_code
+            notify_diagnosis = incident.diagnosis_text
         session.commit()
+
+    # Best-effort, never raises (see shared/telegram_alerts.py's own
+    # docstring) — a SAFE action's Telegram follow-up must never affect the
+    # already-decided Action/Incident status above. No-op if there was no
+    # Incident row to report against.
+    if notify_ceph_code is not None:
+        send_auto_remediation_alert(
+            notify_ceph_code, notify_diagnosis, notify_rationale, command, succeeded
+        )
 
 
 _DISRUPTIVE_CLUSTER_OPERATION_ACTION_IDS = (
