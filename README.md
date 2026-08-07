@@ -286,6 +286,15 @@ push/PR, và tự động SSH vào server để deploy lại khi push lên `main
 `scripts/deploy/README.md` để set up SSH deploy key + GitHub Secrets cho
 máy chủ mới.
 
+## 12. Giám sát nhiều cụm Ceph
+
+ceph-aiops là 1 instance / 1 cụm theo thiết kế (xem
+[docs/multi-cluster-deployment.md](docs/multi-cluster-deployment.md)) — để
+giám sát cụm thứ 2, chạy thêm 1 instance riêng (server riêng, hoặc checkout
+thứ 2 cạnh checkout này trên cùng server). Tài liệu trên liệt kê đầy đủ
+những gì cần tách riêng cho mỗi cụm (`.env`, database, RabbitMQ vhost,
+port).
+
 ## Xử lý sự cố thường gặp
 
 - **`ensurepip is not available`** khi chạy `python3.11 -m venv .venv` →

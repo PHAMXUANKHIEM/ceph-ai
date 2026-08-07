@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import shlex
 import signal
 import stat
@@ -81,9 +82,24 @@ PROVIDER_PRESETS: dict[str, dict[str, str | None]] = {
 DEFAULT_PROVIDER = "9router"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# Multi-cluster deployment (docs/multi-cluster-deployment.md): a 2nd Ceph
+# cluster is monitored by a 2nd full checkout of this repo, sometimes on the
+# SAME host as this one. LOG_TAG (this checkout's own directory name) scopes
+# this instance's log filenames, and _INSTANCE_PROC_PREFIX (this instance's
+# OWN venv interpreter, `sys.executable` — never a bare "python" that a
+# sibling checkout's venv would match too) scopes WORKER_PGREP_PATTERN /
+# WATCHER_PGREP_PATTERN below — without it, clicking "Khởi động lại
+# Worker/Watcher" on THIS cluster's Settings page could find and kill/
+# restart a DIFFERENT cluster's Worker/Watcher process running from a
+# sibling checkout on the same host, since a plain `-m worker.main` pattern
+# matches every checkout's process alike. For the existing single-instance
+# deployment (checkout named "ceph-aiops") LOG_TAG reproduces the exact same
+# /var/log/ceph-aiops-*.log paths as before.
+LOG_TAG = PROJECT_ROOT.name
+_INSTANCE_PROC_PREFIX = re.escape(sys.executable) + r"\s+"
 WORKER_MODULE = "worker.main"
-WORKER_PGREP_PATTERN = r"-m\s+worker\.main"
-WORKER_LOG_PATH = Path("/var/log/ceph-aiops-worker.log")
+WORKER_PGREP_PATTERN = _INSTANCE_PROC_PREFIX + r"-m\s+worker\.main"
+WORKER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-worker.log")
 WORKER_STOP_TIMEOUT_SECONDS = 5.0
 WORKER_START_CHECK_DELAY_SECONDS = 1.5
 PGREP_TIMEOUT_SECONDS = 5.0
@@ -91,14 +107,14 @@ PGREP_TIMEOUT_SECONDS = 5.0
 # Story 5.1: same process-management pattern as Worker above, applied to
 # Watcher so a cluster-connection config change takes effect immediately.
 WATCHER_MODULE = "watcher.main"
-WATCHER_PGREP_PATTERN = r"-m\s+watcher\.main"
-WATCHER_LOG_PATH = Path("/var/log/ceph-aiops-watcher.log")
+WATCHER_PGREP_PATTERN = _INSTANCE_PROC_PREFIX + r"-m\s+watcher\.main"
+WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-watcher.log")
 
 # Restarting the Dashboard itself — unlike Worker/Watcher, this is the very
 # process handling the HTTP request that triggers it, so it can't just spawn
 # a replacement and kill the old one the same way _start_process() does (see
 # restart_dashboard_process below for why).
-DASHBOARD_LOG_PATH = Path("/var/log/ceph-aiops-dashboard.log")
+DASHBOARD_LOG_PATH = Path(f"/var/log/{LOG_TAG}-dashboard.log")
 DASHBOARD_RESTART_GRACE_SECONDS = 1.0
 DASHBOARD_RESTART_WAIT_SECONDS = 10.0
 

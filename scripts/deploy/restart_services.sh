@@ -14,10 +14,30 @@
 # running is a no-op (guarded by `|| true`), and starting the same service
 # twice would just leave two processes running, so this always kills
 # before starting.
+#
+# Multi-cluster note: this project is single-cluster-per-instance by design
+# (one .env, one Settings() singleton, no cluster_id anywhere in the DB —
+# see docs/multi-cluster-deployment.md). Monitoring a 2nd Ceph cluster means
+# running a 2nd full checkout+.env+DB of this repo, either on its own
+# server (nothing below matters, it's already isolated) or side-by-side on
+# THIS SAME server (a different checkout directory, e.g.
+# /root/source-code-vita/ceph-aiops-clusterb). The pkill/pgrep patterns and
+# log filenames below are derived from $REPO_DIR specifically so a restart
+# in one checkout can never kill or overwrite the logs of a sibling
+# instance running from a different checkout — do not change them back to
+# bare "python"/plain log names without re-reading this comment.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_DIR"
+# Absolute interpreter path (not bare "python") and a log-file tag derived
+# from the checkout's own directory name — both scope this instance's
+# processes/logs away from any sibling ceph-aiops checkout running on the
+# same host for a different cluster. For the existing single-instance
+# deployment (checkout named "ceph-aiops") this reproduces the exact same
+# /var/log/ceph-aiops-*.log paths as before, so it's a no-op there.
+VENV_PYTHON="$REPO_DIR/.venv/bin/python"
+LOG_TAG="$(basename "$REPO_DIR")"
 
 echo "==> Pulling latest main"
 git fetch origin main
@@ -32,30 +52,34 @@ echo "==> Applying DB migrations"
 alembic upgrade head
 
 echo "==> Stopping existing services (if running)"
-pkill -f "python -m watcher.main" || true
-pkill -f "python -m worker.main" || true
-pkill -f "uvicorn dashboard.app:app" || true
-pkill -f "ceph-upgrade-test-runner-frontend/node_modules/.bin/vite" || true
+pkill -f "$VENV_PYTHON -m watcher.main" || true
+pkill -f "$VENV_PYTHON -m worker.main" || true
+pkill -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
+pkill -f "$REPO_DIR/ceph-upgrade-test-runner-frontend/node_modules/.bin/vite" || true
 sleep 2
 
 echo "==> Starting services"
 # Optional server-local override (gitignored, never committed — this repo
 # may end up on a public remote and must not hardcode this box's real bind
 # address) — e.g. `echo 'DASHBOARD_HOST=103.69.193.220' >
-# scripts/deploy/deploy.local.env` once, on this server only.
+# scripts/deploy/deploy.local.env` once, on this server only. When running
+# a 2nd cluster's checkout on the SAME server, its own deploy.local.env
+# MUST set a different DASHBOARD_PORT (and TEST_RUNNER_PORT, see below) —
+# otherwise the two instances fight over the same port.
 if [ -f "$REPO_DIR/scripts/deploy/deploy.local.env" ]; then
   # shellcheck disable=SC1091
   source "$REPO_DIR/scripts/deploy/deploy.local.env"
 fi
 DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
+TEST_RUNNER_PORT="${TEST_RUNNER_PORT:-5173}"
 
-nohup python -m watcher.main >> /var/log/ceph-aiops-watcher.log 2>&1 &
+nohup "$VENV_PYTHON" -m watcher.main >> "/var/log/${LOG_TAG}-watcher.log" 2>&1 &
 disown
-nohup python -m worker.main >> /var/log/ceph-aiops-worker.log 2>&1 &
+nohup "$VENV_PYTHON" -m worker.main >> "/var/log/${LOG_TAG}-worker.log" 2>&1 &
 disown
-nohup python -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
-  >> /var/log/ceph-aiops-dashboard.log 2>&1 &
+nohup "$VENV_PYTHON" -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
+  >> "/var/log/${LOG_TAG}-dashboard.log" 2>&1 &
 disown
 
 # Test Runner UI (ceph-upgrade-test-runner-frontend) is a Vite dev server
@@ -71,12 +95,12 @@ export DASHBOARD_HOST
 export DASHBOARD_PORT
 (
   cd ceph-upgrade-test-runner-frontend
-  nohup ./node_modules/.bin/vite --host 0.0.0.0 --port 5173 \
-    >> /var/log/ceph-aiops-test-runner-frontend.log 2>&1 &
+  nohup ./node_modules/.bin/vite --host 0.0.0.0 --port "$TEST_RUNNER_PORT" \
+    >> "/var/log/${LOG_TAG}-test-runner-frontend.log" 2>&1 &
   disown
 )
 
 sleep 3
 echo "==> Deploy complete: $(date -u +%FT%TZ)"
 echo "==> Running processes:"
-pgrep -fa "watcher.main|worker.main|uvicorn dashboard.app|test-runner-frontend/node_modules/.bin/vite" || echo "WARNING: no matching processes found after restart"
+pgrep -fa "$VENV_PYTHON -m (watcher|worker)\.main|$VENV_PYTHON -m uvicorn dashboard.app|$REPO_DIR/ceph-upgrade-test-runner-frontend/node_modules/.bin/vite" || echo "WARNING: no matching processes found after restart"

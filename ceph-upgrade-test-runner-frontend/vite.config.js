@@ -23,12 +23,19 @@ import react from '@vitejs/plugin-react'
 // Group/Priority filter problem instead of a connectivity one.
 const dashboardHost = process.env.DASHBOARD_HOST || 'localhost'
 const dashboardPort = process.env.DASHBOARD_PORT || '8000'
+// Own listen port -- kept overridable (not hardcoded 5173) so a 2nd
+// ceph-aiops checkout monitoring a different Ceph cluster can run
+// side-by-side on the same host without a port clash. restart_services.sh
+// already passes this via `vite --port`, which wins over this config value
+// when both are present -- this default only matters for a plain `npm run
+// dev` invocation that skips restart_services.sh entirely.
+const testRunnerPort = Number(process.env.TEST_RUNNER_PORT) || 5173
 
 export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: testRunnerPort,
     proxy: {
       '/api': {
         target: `http://${dashboardHost}:${dashboardPort}`,
