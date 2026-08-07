@@ -10,6 +10,7 @@ from config.settings import settings
 from shared import db as db_module
 from shared import env_config
 from shared.db import Base, make_engine
+from shared.models import Cluster
 
 # Fixed test credentials — the fixture pins Settings to these values so tests
 # never depend on whatever a real .env happens to contain (e.g. after a
@@ -203,3 +204,16 @@ def dashboard_client(monkeypatch):
 
     with TestClient(app) as client:
         yield client
+
+
+@pytest.fixture()
+def default_cluster_id(dashboard_client) -> str:
+    """The real id of the one is_default=True Cluster row — dashboard_client's
+    TestClient `with` block already ran the app's lifespan (dashboard/app.py),
+    which seeds this row (shared/clusters.py::ensure_default_cluster) before
+    this fixture's DB query runs. Multi-cluster observability Phase 1:
+    Incident.cluster_id/WatcherHeartbeat.cluster_id are real FKs to this
+    table now — any test inserting either directly (not through a route)
+    needs this instead of a bare literal like the old fixed id=1."""
+    with db_module.SessionLocal() as session:
+        return session.query(Cluster).filter_by(is_default=True).one().id

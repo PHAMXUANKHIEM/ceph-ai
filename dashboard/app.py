@@ -18,6 +18,7 @@ from dashboard.routes import (
     backups,
     bucket_access_log,
     chat,
+    clusters as clusters_routes,
     convert_cluster,
     delete_cluster,
     deploy_cluster,
@@ -34,6 +35,8 @@ from dashboard.routes import (
     volumes,
 )
 from dashboard.ws import router as ws_router
+from shared import db
+from shared.clusters import ensure_default_cluster
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
@@ -63,6 +66,12 @@ async def _lifespan(_app: FastAPI):
     # every `with TestClient(app) as client:` block across this project's
     # whole test suite, all sharing the same cached `app` singleton.
     telegram_approval_bot.start()
+    # Multi-cluster observability Phase 1 — idempotent, same "safe to
+    # re-enter on every TestClient block" property as telegram_approval_bot
+    # .start() above (shared/clusters.py::ensure_default_cluster re-queries
+    # rather than blindly inserting).
+    with db.SessionLocal() as session:
+        ensure_default_cluster(session)
     yield
 
 
@@ -90,6 +99,7 @@ def create_app() -> FastAPI:
     application.include_router(bucket_access_log.router)
     application.include_router(telegram_alerts.router)
     application.include_router(test_runner.router)
+    application.include_router(clusters_routes.router)
     application.include_router(ws_router)
     return application
 

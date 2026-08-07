@@ -48,20 +48,25 @@ _INCIDENT_SEVERITY_PREFIX = {
 }
 
 
-def _with_cluster_prefix(text: str) -> str:
-    """Prepends `settings.cluster_name` (Alert Telegram page, 2026-08-07) as
-    the first line of every message this module sends — lets an operator
-    running several ceph-aiops instances into the same Telegram chat tell
-    which cluster an alert is from. No-op (text unchanged) when unset, so a
-    single-cluster deployment's messages are byte-identical to before this
-    existed."""
-    name = settings.cluster_name.strip()
+def _with_cluster_prefix(text: str, cluster_name: str | None = None) -> str:
+    """Prepends a cluster name as the first line of every message this
+    module sends — lets an operator running several ceph-aiops instances
+    (or, since 2026-08-07's multi-cluster observability Phase 1, several
+    OBSERVED clusters from one instance) into the same Telegram chat tell
+    which cluster an alert is from.
+
+    `cluster_name=None` (every caller except send_incident_alert's observed-
+    cluster case) falls back to `settings.cluster_name` — unchanged
+    behavior for the default cluster. No-op (text unchanged) when the
+    resolved name is blank, so a single-cluster deployment's messages stay
+    byte-identical to before this existed."""
+    name = (cluster_name if cluster_name is not None else settings.cluster_name).strip()
     if not name:
         return text
     return f"\U0001f4cd Cụm: {name}\n{text}"
 
 
-def _send(bot_token: str, chat_id: str, enabled: bool, text: str) -> None:
+def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: str | None = None) -> None:
     """`enabled` (2026-08-07, Alert Telegram page) is a SEPARATE on/off
     switch from "configured" (bot_token/chat_id both non-blank) — lets an
     operator pause a channel with one click without losing/retyping its
@@ -69,12 +74,14 @@ def _send(bot_token: str, chat_id: str, enabled: bool, text: str) -> None:
     if not enabled or not bot_token or not chat_id:
         return
     try:
-        send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text))
+        send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
 
 
-def send_incident_alert(ceph_code: str, severity: str | None, log_excerpt: str | None) -> None:
+def send_incident_alert(
+    ceph_code: str, severity: str | None, log_excerpt: str | None, cluster_name: str | None = None
+) -> None:
     """Called once per newly-created cluster-health Incident
     (watcher/main.py::build_and_publish_incident, one call per `ceph
     health detail` check) — a genuine cluster problem, NOT a Volume-
@@ -95,7 +102,13 @@ def send_incident_alert(ceph_code: str, severity: str | None, log_excerpt: str |
     text = f"{prefix} Cụm Ceph: {ceph_code}"
     if excerpt:
         text += f"\n{excerpt}"
-    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, settings.telegram_incident_enabled, text)
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
 
 
 def send_node_alert(host: str, message: str) -> None:
@@ -116,6 +129,23 @@ def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
     docstring for why there's no separate 4th channel for this."""
     label = f"osd.{osd_id}" + (f" ({host})" if host else "")
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 OSD chậm bất thường: {label}\n{message}")
+
+
+def send_crush_skew_alert(signal: str, entity_label: str, message: str) -> None:
+    """Called once per NEWLY-flagged CRUSH data-distribution Skew
+    (watcher/crush_skew_monitor.py::create_or_resolve_crush_skew_incidents —
+    only when a new Incident is created, same "one notification per
+    genuinely new problem" posture as send_osd_latency_alert above). Shares
+    the Phần cứng channel with send_node_alert/send_osd_latency_alert (AD-31
+    — the 2 Skew signals, USE and PG, are deliberately NOT a 4th channel).
+
+    `entity_label` is a pre-formatted string (e.g. "osd.3" or "host node1")
+    rather than separate osd_id/host parameters — the flagged entity can be
+    either an OSD or a Host, and only one of those two ever has a
+    meaningful osd_id, so a single already-formatted label avoids an
+    always-None parameter on half of all calls."""
+    label = f"{entity_label} ({signal})"
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Lệch tải CRUSH: {label}\n{message}")
 
 
 def send_auto_remediation_alert(

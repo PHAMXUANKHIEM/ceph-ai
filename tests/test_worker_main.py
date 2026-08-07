@@ -260,3 +260,86 @@ def test_run_with_max_messages_zero_processes_nothing():
     # No RabbitMQ connection should even be attempted — max_messages=0 must
     # short-circuit before any I/O.
     asyncio.run(worker_main.run(process_incident=unreachable_process, max_messages=0))
+
+
+# --- Multi-cluster observability Phase 1: cluster-scope safety guard -------
+# CRITICAL: Worker's SSH creds/command-building are only ever correct for
+# the default cluster (see worker/main.py::_handle_message's own comment) —
+# an Incident from any OTHER cluster must NEVER reach process_incident.
+
+
+def _make_message_for_cluster(incident_id: str, cluster_id) -> FakeMessage:
+    envelope = dict(ENVELOPE, incident_id=incident_id, cluster_id=cluster_id)
+    return FakeMessage(body=json.dumps(envelope).encode())
+
+
+def test_handle_message_skips_process_incident_for_non_default_cluster(isolated_db):
+    from shared.clusters import ensure_default_cluster
+
+    _create_incident(db_module.SessionLocal, "incident-other-cluster")
+    with db_module.SessionLocal() as session:
+        default_cluster = ensure_default_cluster(session)
+    other_cluster_id = "not-" + default_cluster.id  # guaranteed not to match
+
+    message = _make_message_for_cluster("incident-other-cluster", other_cluster_id)
+    channel = FakeChannel()
+
+    async def unreachable_process(incident_id, envelope):
+        raise AssertionError(
+            "process_incident (AI diagnosis/remediation) must never run for a "
+            "non-default cluster's Incident — this is the core safety property "
+            "of multi-cluster observability Phase 1"
+        )
+
+    asyncio.run(worker_main._handle_message(message, channel, unreachable_process, max_retries=3))
+
+    assert message.ack_calls == 1
+    assert message.reject_calls == []
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-other-cluster")
+        # Left at NEW, never DIAGNOSING — process_incident's dispatch is
+        # what would have moved it, and it must never run here.
+        assert incident.status == IncidentStatus.NEW.value
+
+
+def test_handle_message_processes_default_cluster_envelope_normally(isolated_db):
+    from shared.clusters import ensure_default_cluster
+
+    _create_incident(db_module.SessionLocal, "incident-default-cluster")
+    with db_module.SessionLocal() as session:
+        default_cluster = ensure_default_cluster(session)
+
+    message = _make_message_for_cluster("incident-default-cluster", default_cluster.id)
+    channel = FakeChannel()
+
+    calls = []
+
+    async def ok_process(incident_id, envelope):
+        calls.append(incident_id)
+
+    asyncio.run(worker_main._handle_message(message, channel, ok_process, max_retries=3))
+
+    assert calls == ["incident-default-cluster"]
+    assert message.ack_calls == 1
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-default-cluster")
+        assert incident.status == IncidentStatus.DIAGNOSING.value
+
+
+def test_handle_message_processes_envelope_with_no_cluster_id_key_normally(isolated_db):
+    # Every envelope before this feature existed (and every hand-built
+    # ENVELOPE in this test file) has no "cluster_id" key at all — must be
+    # treated exactly like the default cluster, not skipped.
+    _create_incident(db_module.SessionLocal, "incident-legacy-envelope")
+    message = _make_message("incident-legacy-envelope")  # ENVELOPE has no cluster_id key
+    channel = FakeChannel()
+
+    calls = []
+
+    async def ok_process(incident_id, envelope):
+        calls.append(incident_id)
+
+    asyncio.run(worker_main._handle_message(message, channel, ok_process, max_retries=3))
+
+    assert calls == ["incident-legacy-envelope"]
+    assert message.ack_calls == 1

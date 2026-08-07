@@ -32,7 +32,9 @@ def test_authenticated_websocket_receives_change_notification(dashboard_client, 
 # --- Story 5.2: _snapshot() must also fingerprint WatcherHeartbeat ---------
 
 
-def test_snapshot_changes_when_heartbeat_recorded_even_without_incident_change(dashboard_client):
+def test_snapshot_changes_when_heartbeat_recorded_even_without_incident_change(
+    dashboard_client, default_cluster_id
+):
     # dashboard_client fixture already points db_module.SessionLocal at an
     # isolated in-memory DB — no Incident is touched here at all.
     before = ws_module._snapshot()
@@ -40,7 +42,11 @@ def test_snapshot_changes_when_heartbeat_recorded_even_without_incident_change(d
     with db_module.SessionLocal() as session:
         session.add(
             WatcherHeartbeat(
-                id=1, success=True, mon_node="10.20.1.150", error_message=None, polled_at=datetime.utcnow()
+                cluster_id=default_cluster_id,
+                success=True,
+                mon_node="10.20.1.150",
+                error_message=None,
+                polled_at=datetime.utcnow(),
             )
         )
         session.commit()
@@ -51,7 +57,7 @@ def test_snapshot_changes_when_heartbeat_recorded_even_without_incident_change(d
 
 
 def test_authenticated_websocket_receives_change_notification_on_heartbeat_update(
-    dashboard_client, monkeypatch
+    dashboard_client, monkeypatch, default_cluster_id
 ):
     monkeypatch.setattr(ws_module, "POLL_INTERVAL_SECONDS", 0.05)
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
@@ -60,7 +66,7 @@ def test_authenticated_websocket_receives_change_notification_on_heartbeat_updat
         with db_module.SessionLocal() as session:
             session.add(
                 WatcherHeartbeat(
-                    id=1,
+                    cluster_id=default_cluster_id,
                     success=True,
                     mon_node="10.20.1.150",
                     error_message=None,

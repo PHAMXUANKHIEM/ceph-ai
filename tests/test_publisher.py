@@ -34,10 +34,14 @@ def test_build_envelope_has_exact_ac2_fields():
         "nodes",
         "log_excerpt",
         "cluster_snapshot",
+        "cluster_id",
     }
     assert envelope["schema_version"] == SCHEMA_VERSION
     assert envelope["incident_id"] == "abc-123"
     assert envelope["nodes"] == ["10.20.1.249"]
+    # Multi-cluster observability Phase 1: omitted cluster_id means "the
+    # default cluster" (see build_envelope's own docstring), not an error.
+    assert envelope["cluster_id"] is None
 
 
 @pytest.mark.live

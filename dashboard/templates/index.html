@@ -47,7 +47,22 @@
         <a href="/settings" class="nav-link">Settings</a>
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
       </nav>
+      {% if clusters|length > 1 %}
+      <!-- Multi-cluster observability Phase 1: only shown once a 2nd
+           cluster actually exists — a single-cluster deployment's page
+           looks byte-identical to before this existed. Plain GET query
+           param (?cluster=<id>), same pattern as the Audit Trail filters
+           below — no session state to keep in sync elsewhere on the page. -->
+      <form method="get" action="/" class="topbar-cluster-switcher">
+        <select name="cluster" onchange="this.form.submit()">
+          {% for c in clusters %}
+          <option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
         <button type="submit" class="btn btn-ghost btn-sm">Logout</button>

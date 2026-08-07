@@ -109,11 +109,11 @@ def test_index_shows_connection_lost_warning_when_never_polled(dashboard_client)
     assert "Mất kết nối cụm Ceph" in response.text
 
 
-def test_index_shows_connection_lost_warning_when_last_poll_failed(dashboard_client):
+def test_index_shows_connection_lost_warning_when_last_poll_failed(dashboard_client, default_cluster_id):
     with db_module.SessionLocal() as session:
         session.add(
             WatcherHeartbeat(
-                id=1,
+                cluster_id=default_cluster_id,
                 success=False,
                 mon_node=None,
                 error_message="All MON nodes failed: timed out",
@@ -130,14 +130,14 @@ def test_index_shows_connection_lost_warning_when_last_poll_failed(dashboard_cli
     assert "All MON nodes failed: timed out" in response.text
 
 
-def test_index_shows_connection_lost_warning_when_poll_too_old(dashboard_client, monkeypatch):
+def test_index_shows_connection_lost_warning_when_poll_too_old(dashboard_client, monkeypatch, default_cluster_id):
     from config.settings import settings
 
     monkeypatch.setattr(settings, "watcher_poll_interval_seconds", 15)
     with db_module.SessionLocal() as session:
         session.add(
             WatcherHeartbeat(
-                id=1,
+                cluster_id=default_cluster_id,
                 success=True,
                 mon_node="10.20.1.150",
                 error_message=None,
@@ -153,14 +153,14 @@ def test_index_shows_connection_lost_warning_when_poll_too_old(dashboard_client,
     assert "Mất kết nối cụm Ceph" in response.text
 
 
-def test_index_shows_healthy_connection_details_when_recent_and_successful(dashboard_client, monkeypatch):
+def test_index_shows_healthy_connection_details_when_recent_and_successful(dashboard_client, monkeypatch, default_cluster_id):
     from config.settings import settings
 
     monkeypatch.setattr(settings, "watcher_poll_interval_seconds", 15)
     with db_module.SessionLocal() as session:
         session.add(
             WatcherHeartbeat(
-                id=1,
+                cluster_id=default_cluster_id,
                 success=True,
                 mon_node="10.20.1.150",
                 error_message=None,

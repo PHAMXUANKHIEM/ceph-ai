@@ -5,6 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func
 
 from shared import db, heartbeat
+from shared.clusters import get_default_cluster_id
 from shared.models import Incident
 
 router = APIRouter()
@@ -28,7 +29,13 @@ def _snapshot() -> tuple[int, object, object]:
     with db.SessionLocal() as session:
         count = session.query(func.count(Incident.id)).scalar()
         latest_updated = session.query(func.max(Incident.updated_at)).scalar()
-        latest_heartbeat = heartbeat.get_latest(session)
+        # Multi-cluster observability Phase 1: the connection-status section
+        # this feeds still only ever shows the default cluster's heartbeat
+        # (dashboard/routes/incidents.py's feed does too, until the cluster
+        # switcher lands) — Incident count/updated_at above already span
+        # every cluster unfiltered, so this remains a reasonable "did
+        # anything change" signal regardless.
+        latest_heartbeat = heartbeat.get_latest(session, get_default_cluster_id(session))
         polled_at = latest_heartbeat.polled_at if latest_heartbeat is not None else None
     return count, latest_updated, polled_at
 

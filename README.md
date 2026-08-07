@@ -288,12 +288,15 @@ máy chủ mới.
 
 ## 12. Giám sát nhiều cụm Ceph
 
-ceph-aiops là 1 instance / 1 cụm theo thiết kế (xem
-[docs/multi-cluster-deployment.md](docs/multi-cluster-deployment.md)) — để
-giám sát cụm thứ 2, chạy thêm 1 instance riêng (server riêng, hoặc checkout
-thứ 2 cạnh checkout này trên cùng server). Tài liệu trên liệt kê đầy đủ
-những gì cần tách riêng cho mỗi cụm (`.env`, database, RabbitMQ vhost,
-port).
+Trang **Clusters** (`/clusters`, admin) — thêm cụm Ceph thứ 2 trở đi để
+**quan sát** ngay trong instance hiện tại, không cần dựng thêm server/DB
+nào. Watcher tự chạy thêm 1 vòng lặp health-check + Incident feed riêng cho
+mỗi cụm, Dashboard có bộ chọn cụm ở trang chính. **Giới hạn**: chẩn đoán
+AI/remediation/backup/patch/upgrade/Telegram vẫn chỉ áp dụng cho cụm mặc
+định (Worker chủ động bỏ qua Incident từ cụm khác) — xem
+[docs/multi-cluster-deployment.md](docs/multi-cluster-deployment.md) để
+biết chi tiết và hướng thay thế (chạy nhiều instance riêng) nếu cần đầy đủ
+mọi tính năng cho nhiều cụm.
 
 ## Xử lý sự cố thường gặp
 

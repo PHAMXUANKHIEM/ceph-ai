@@ -1,14 +1,21 @@
 import asyncio
+import functools
 import logging
+import threading
 import time
 from datetime import datetime
 from typing import Callable, Optional
+
+from sqlalchemy import or_
 
 from config.settings import settings
 from watcher import (
     bluestore_omap_monitor,
     ceph_client,
     collector,
+    crush_distribution_monitor,
+    crush_skew_monitor,
+    crush_structure_monitor,
     device_health_monitor,
     node_health_monitor,
     osd_latency_monitor,
@@ -16,13 +23,15 @@ from watcher import (
     volume_monitor,
 )
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
-from watcher.ceph_client import CephQueryError, query_cluster_health
+from watcher.ceph_client import CephQueryError, query_cluster_health, query_cluster_health_with
+from watcher.crush_skew_monitor import CRUSH_SKEW_PG_PREFIX, CRUSH_SKEW_USE_PREFIX
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat
-from shared.models import Incident, IncidentStatus
+from shared.clusters import get_default_cluster_id, list_active_clusters
+from shared.models import Cluster, Incident, IncidentStatus
 from shared.telegram_alerts import send_incident_alert
 
 logger = logging.getLogger(__name__)
@@ -84,7 +93,9 @@ async def _publish_all(envelopes: list[dict]) -> None:
         await publisher.publish_incident(envelope)
 
 
-def _resolve_recovered_incidents(current_codes: set[str]) -> None:
+def _resolve_recovered_incidents(
+    current_codes: set[str], cluster_id: str | None = None, include_legacy_null: bool = True
+) -> None:
     """A ceph_code no longer being reported by `ceph health detail` means
     THAT specific problem has recovered — even if the cluster overall is
     still WARN/ERR from a different, still-active check (only Incidents
@@ -100,10 +111,30 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
     permanently miss those, since nothing about the CLUSTER changes again
     afterward to re-trigger it. Cheap even every poll: one indexed DB query,
     no extra network I/O beyond the health check that already just ran.
+
+    `cluster_id`/`include_legacy_null` (multi-cluster observability Phase 1):
+    scopes which Incidents this poll may touch — without it, an OBSERVED
+    cluster's poll (whose `current_codes` only ever reflects THAT cluster)
+    would incorrectly resolve the default cluster's still-open Incidents
+    the moment their ceph_code isn't also present in the observed cluster's
+    health check. `include_legacy_null=True` (the default — matches the
+    DEFAULT cluster's loop, and every existing caller before these
+    parameters existed) ALSO matches legacy rows with `cluster_id IS NULL`
+    (pre-migration Incidents, or any test that never set cluster_id) — see
+    shared/models.py::Incident's own docstring for that convention. Observed
+    (non-default) clusters never have such legacy rows, so their loop calls
+    this with `include_legacy_null=False` — a real UUID match only.
     """
     with db.SessionLocal() as session:
+        cluster_filter = (
+            or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
+            if include_legacy_null
+            else Incident.cluster_id == cluster_id
+        )
         open_incidents = (
-            session.query(Incident).filter(Incident.status.in_(_RECOVERABLE_STATUSES)).all()
+            session.query(Incident)
+            .filter(Incident.status.in_(_RECOVERABLE_STATUSES), cluster_filter)
+            .all()
         )
         for incident in open_incidents:
             if incident.ceph_code in (_CHAT_REQUEST_CEPH_CODE, _CLUSTER_UPGRADE_CEPH_CODE):
@@ -158,12 +189,31 @@ def _resolve_recovered_incidents(current_codes: set[str]) -> None:
                 # consecutive-high-scans streak per osd_id), never a real
                 # `ceph health detail` check code.
                 continue
+            if incident.ceph_code.startswith(CRUSH_SKEW_USE_PREFIX) or incident.ceph_code.startswith(
+                CRUSH_SKEW_PG_PREFIX
+            ):
+                # 2026-08-07 (Epic 12 Story 12.2, AD-32 — CRITICAL, found
+                # independently by 2 reviewers during Architecture, before
+                # any code existed): same reasoning as every guard above —
+                # watcher/crush_skew_monitor.py owns this ceph_code family's
+                # own create/resolve lifecycle (its own consecutive-scans
+                # streak per OSD/Host entity, read from
+                # CrushStructureSnapshot/CrushOsdDistribution), never a real
+                # `ceph health detail` check code. WITHOUT this guard, a
+                # CRUSH Skew Incident self-resolves within about one
+                # `ceph health detail` poll tick (far faster than
+                # crush_scan_interval_seconds) every time this function
+                # runs, hiding it from the operator before it can ever be
+                # acted on.
+                continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
         session.commit()
 
 
-def build_and_publish_incident(previous_status: Optional[str], health: dict) -> None:
+def build_and_publish_incident(
+    previous_status: Optional[str], health: dict, cluster_id: str | None = None
+) -> None:
     """Real production `on_transition` callback (Story 1.4): for a transition
     INTO HEALTH_WARN/HEALTH_ERR, create one Incident per reported check, collect
     its relevant daemon logs, write the row to DB, and publish it to RabbitMQ.
@@ -179,6 +229,19 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
     lock contention with anything else touching the DB (e.g. the Dashboard).
     All envelopes for this call are published together in one `asyncio.run()`
     rather than one per incident, avoiding a full connect+declare per check.
+
+    `cluster_id` (multi-cluster observability Phase 1, default None means
+    "the default cluster" — see Incident's own docstring): this function is
+    used ONLY for the default cluster's loop (`run_all_clusters()` binds it
+    via `functools.partial` before passing it as `on_transition`) — it still
+    calls `collector.collect_relevant_logs`, which reads OSD/MGR/MON node
+    lists and exec-mode/container settings straight from the global
+    `settings` singleton (NOT parameterized), so it is only ever correct for
+    the cluster `settings` actually describes. An OBSERVED (non-default)
+    cluster's incidents are built by the separate, much simpler
+    `_build_and_publish_incident_for_observed_cluster` below, which
+    deliberately skips log collection rather than risk collecting the
+    WRONG cluster's logs.
     """
     current_status = health.get("status")
     current_checks = health.get("checks", {})
@@ -213,6 +276,7 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
                 # HEALTH_ERR from a different check) — not to be confused
                 # with Incident.status, this codebase's own lifecycle state.
                 severity=check_detail.get("severity"),
+                cluster_id=cluster_id,
             )
             session.add(incident)
             session.commit()
@@ -228,6 +292,9 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
         # OUTSIDE the DB session block above on purpose, same "don't hold a
         # DB connection open across unrelated network I/O" reasoning this
         # function's own docstring already gives for log collection.
+        # No explicit cluster_name here — this function is default-cluster
+        # only (see its own docstring), so the fallback to
+        # settings.cluster_name inside send_incident_alert is correct.
         send_incident_alert(ceph_code, check_detail.get("severity"), log_excerpt)
 
         envelopes.append(
@@ -238,6 +305,7 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
                 nodes=nodes,
                 log_excerpt=log_excerpt,
                 cluster_snapshot=health,
+                cluster_id=cluster_id,
             )
         )
 
@@ -255,18 +323,23 @@ def build_and_publish_incident(previous_status: Optional[str], health: dict) -> 
 
 
 def _record_heartbeat_safe(
-    success: bool, mon_node: Optional[str], error_message: Optional[str]
+    success: bool, mon_node: Optional[str], error_message: Optional[str], cluster_id: str | None = None
 ) -> None:
     """Story 5.2: records the outcome of EVERY poll attempt (success or
     failure), independent of whether `on_transition` fires — this is a
     separate signal ("is Watcher able to reach the cluster at all") from
     Incident data ("is the cluster healthy"). A failure to record the
     heartbeat itself must never kill the poll loop — that would defeat the
-    whole point of this monitoring process."""
+    whole point of this monitoring process.
+
+    `cluster_id=None` (multi-cluster observability Phase 1 default) means
+    "the default cluster" — shared/heartbeat.py's own docstring covers why
+    that's a distinct, valid key rather than an error."""
     try:
         with db.SessionLocal() as session:
             heartbeat.record(
                 session,
+                cluster_id=cluster_id,
                 success=success,
                 mon_node=mon_node,
                 error_message=error_message,
@@ -280,6 +353,7 @@ def _record_heartbeat_safe(
 def run(
     on_transition: OnTransition = default_on_transition,
     max_iterations: Optional[int] = None,
+    cluster_id: str | None = None,
 ) -> None:
     """Poll cluster health and fire `on_transition` when the overall status
     OR the set of reported check codes changes.
@@ -292,6 +366,17 @@ def run(
 
     `max_iterations=None` loops forever (real usage); a finite value lets
     tests exercise a bounded number of poll cycles.
+
+    This is exclusively the DEFAULT cluster's loop (multi-cluster
+    observability Phase 1) — it reads connection config from the global
+    `settings` singleton throughout (query_cluster_health(), every secondary
+    monitor below), never from a `Cluster` DB row. `cluster_id` only tags
+    the Incident/heartbeat rows this iteration writes (defaults to None,
+    preserving every existing caller's exact behavior); `run_all_clusters()`
+    below is the real production entrypoint and passes the resolved default
+    cluster's real id. An OBSERVED (non-default) cluster never calls this
+    function — see `run_observed_cluster_loop` instead, which polls a
+    `Cluster` row directly and skips every secondary monitor.
     """
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
@@ -299,6 +384,7 @@ def run(
     last_node_health_scan_at: Optional[datetime] = None
     last_bluestore_omap_scan_at: Optional[datetime] = None
     last_osd_latency_scan_at: Optional[datetime] = None
+    last_crush_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -314,7 +400,7 @@ def run(
         health: Optional[dict] = None
         try:
             health = query_cluster_health()
-            _record_heartbeat_safe(True, ceph_client.last_successful_mon_node, None)
+            _record_heartbeat_safe(True, ceph_client.last_successful_mon_node, None, cluster_id=cluster_id)
             heartbeat_recorded = True
             current_status = health.get("status")
             current_checks = frozenset(health.get("checks", {}).keys())
@@ -322,13 +408,13 @@ def run(
             # changed — see _resolve_recovered_incidents' docstring for why
             # gating this behind "only on transition" can permanently miss
             # Incidents Worker resolves/fails on its own, later.
-            _resolve_recovered_incidents(set(current_checks))
+            _resolve_recovered_incidents(set(current_checks), cluster_id=cluster_id)
             if current_status != last_status or current_checks != last_checks:
                 on_transition(last_status, health)
                 last_status = current_status
                 last_checks = current_checks
         except CephQueryError as exc:
-            _record_heartbeat_safe(False, None, str(exc))
+            _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster_id)
             if "no MON nodes configured" in str(exc):
                 # 2026-07-28 (found on a real first-time install): expected,
                 # quiet state before the operator has configured a cluster
@@ -351,7 +437,7 @@ def run(
             # failed heartbeat if the poll attempt itself never succeeded
             # (AC #1: every poll iteration gets a heartbeat, success or not).
             if not heartbeat_recorded:
-                _record_heartbeat_safe(False, None, str(exc))
+                _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster_id)
             logger.exception("run: unexpected error during poll iteration")
 
         # 2026-07-28: Volume (RBD) performance/saturation check — its own
@@ -458,8 +544,202 @@ def run(
                 logger.exception("run: osd latency scan failed")
             last_osd_latency_scan_at = now
 
+        # 2026-08-07 (Epic 12, Story 12.1 + 12.2): CRUSH structure + OSD
+        # distribution scan, plus Skew detection off that same data — own
+        # independent try/except (same isolation reasoning as the blocks
+        # above) and its OWN cadence (settings.crush_scan_interval_seconds).
+        # Both `ceph osd crush dump` and `ceph osd df` are single cheap
+        # JSON-RPC queries through a MON (no SSH round trip at all, same
+        # cost class as osd_latency_monitor.py's `ceph osd perf` above) —
+        # see crush_structure_monitor.py/crush_distribution_monitor.py's own
+        # module docstrings for why this is ONE shared cadence, not two
+        # (AD-25b). Story 12.2's crush_skew_monitor.py IS the
+        # Incident/Action/Telegram-creating step of this block (AD-28) —
+        # the 2 collection calls above it stay pure (no Incident of their
+        # own), same split as Story 12.1 originally shipped.
+        if (
+            last_crush_scan_at is None
+            or (now - last_crush_scan_at).total_seconds() >= settings.crush_scan_interval_seconds
+        ):
+            try:
+                crush_structure_monitor.scan_and_store()
+                crush_distribution_monitor.sync_distribution()
+                # 2026-08-07 (Epic 12, Story 12.2): Skew detection reads
+                # BACK the 2 tables the calls above just wrote, on the SAME
+                # tick (AD-28 — 2 independent signals, USE and PG, both
+                # computed off this one shared scan). Kept in the SAME
+                # try/except as the collection calls above (not a separate
+                # block) so one shared failure-isolation boundary covers
+                # this whole tick, same as every other scan block in this
+                # function.
+                current_crush_skew = crush_skew_monitor.check_crush_skew()
+                crush_skew_monitor.create_or_resolve_crush_skew_incidents(current_crush_skew)
+            except Exception:
+                logger.exception("run: crush structure/distribution/skew scan failed")
+            last_crush_scan_at = now
+
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))
+
+
+def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: dict) -> None:
+    """Multi-cluster observability Phase 1's incident-creation path for any
+    cluster OTHER than the default one — deliberately NOT a call into
+    `build_and_publish_incident` above, and deliberately NOT calling
+    `collector.collect_relevant_logs` at all (unlike that function): that
+    module (watcher/collector.py) resolves OSD/MGR/MON nodes and exec-mode/
+    container names straight from the global `settings` singleton in
+    several places, not just the one `ceph_client.last_successful_mon_node`
+    global — there is no parameterized version of it the way
+    query_cluster_health_with() exists for the health check itself. Calling
+    it here would silently collect (or attempt to SSH for) the DEFAULT
+    cluster's logs while labeling the result as this OTHER cluster's
+    Incident. So: every check the poll reports becomes a plain Incident
+    with `log_excerpt=None` — no log collection, no BLUESTORE_NO_PER_POOL_OMAP
+    special-case (that skip exists in build_and_publish_incident ONLY
+    because watcher/bluestore_omap_monitor.py owns that ceph_code's
+    lifecycle for the default cluster; no such specialized monitor runs for
+    an observed cluster in Phase 1, so this generic path is the only thing
+    that will ever surface it — skipping it here would make it invisible
+    instead of specialized).
+    """
+    current_status = health.get("status")
+    current_checks = health.get("checks", {})
+    if current_status not in PROBLEM_STATUSES:
+        return
+
+    envelopes = []
+    for ceph_code, check_detail in current_checks.items():
+        detected_at = datetime.utcnow()
+        with db.SessionLocal() as session:
+            incident = Incident(
+                ceph_code=ceph_code,
+                status=IncidentStatus.NEW.value,
+                detected_at=detected_at,
+                log_excerpt=None,
+                severity=check_detail.get("severity"),
+                cluster_id=cluster.id,
+            )
+            session.add(incident)
+            session.commit()
+            session.refresh(incident)
+            incident_id = incident.id
+
+        send_incident_alert(ceph_code, check_detail.get("severity"), None, cluster_name=cluster.name)
+
+        envelopes.append(
+            publisher.build_envelope(
+                incident_id=incident_id,
+                ceph_code=ceph_code,
+                detected_at=detected_at.isoformat(),
+                nodes=[],
+                log_excerpt=None,
+                cluster_snapshot=health,
+                cluster_id=cluster.id,
+            )
+        )
+
+    if not envelopes:
+        return
+    try:
+        asyncio.run(_publish_all(envelopes))
+    except Exception:
+        logger.exception(
+            "_build_and_publish_incident_for_observed_cluster: failed to publish %d "
+            "incident(s) for cluster %r to RabbitMQ",
+            len(envelopes),
+            cluster.name,
+        )
+
+
+def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = None) -> None:
+    """Multi-cluster observability Phase 1: the loop for any cluster OTHER
+    than the default one — core health poll + Incident creation + heartbeat
+    ONLY. Deliberately does NOT run device_health/node_health/
+    bluestore_omap/osd_latency/crush/volume_monitor — every one of those
+    secondary monitors is coupled to the global `settings` singleton the
+    same way watcher/collector.py is (see
+    `_build_and_publish_incident_for_observed_cluster`'s docstring), and
+    parameterizing all of them is explicitly deferred to a later phase (see
+    the sibling architecture doc's "Explicitly deferred" section).
+
+    Runs in its own background thread (started by `run_all_clusters()`) —
+    NOT via asyncio, matching this whole module's existing synchronous/
+    blocking style (`time.sleep`, not `await asyncio.sleep`); a thread per
+    additional cluster is the natural fit here rather than converting this
+    entire module to async for Phase 1.
+    """
+    last_status: Optional[str] = None
+    last_checks: frozenset = frozenset()
+    mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
+    iterations = 0
+    while max_iterations is None or iterations < max_iterations:
+        try:
+            health = query_cluster_health_with(
+                mon_nodes,
+                cluster.ceph_container_name,
+                cluster.ssh_user,
+                cluster.ssh_key_path,
+                cluster.ceph_exec_mode,
+                # Never overwrite the DEFAULT cluster's sticky MON-node
+                # fallback (watcher/ceph_client.py::query_cluster_health_with's
+                # own docstring) — this is a DIFFERENT cluster's poll.
+                update_sticky_fallback=False,
+            )
+            # mon_node=None on success (unlike the default loop, which
+            # passes ceph_client.last_successful_mon_node) — that global is
+            # deliberately not updated for this cluster (see above), so
+            # there is no "which host answered" value available here
+            # without a more invasive change to query_cluster_health_with's
+            # return type. A small loss of detail on this cluster's
+            # heartbeat row, not a correctness issue.
+            _record_heartbeat_safe(True, None, None, cluster_id=cluster.id)
+            current_status = health.get("status")
+            current_checks = frozenset(health.get("checks", {}).keys())
+            _resolve_recovered_incidents(
+                set(current_checks), cluster_id=cluster.id, include_legacy_null=False
+            )
+            if current_status != last_status or current_checks != last_checks:
+                _build_and_publish_incident_for_observed_cluster(cluster, health)
+                last_status = current_status
+                last_checks = current_checks
+        except CephQueryError as exc:
+            _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
+            logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)
+        except Exception:
+            _record_heartbeat_safe(False, None, "unexpected error", cluster_id=cluster.id)
+            logger.exception("run_observed_cluster_loop(%r): unexpected error during poll iteration", cluster.name)
+
+        iterations += 1
+        time.sleep(max(0, settings.watcher_poll_interval_seconds))
+
+
+def run_all_clusters() -> None:
+    """Real production entrypoint (multi-cluster observability Phase 1):
+    resolves the default cluster (seeding it from `.env` on first run, same
+    as Dashboard/Worker — see shared/clusters.py::ensure_default_cluster),
+    starts one background thread per additional ACTIVE `Cluster` row
+    running `run_observed_cluster_loop`, then runs the default cluster's
+    own `run()` loop — unchanged in every way except tagging its writes
+    with the default cluster's real id — on the main thread (blocking, so
+    the process exits if and only if the default loop ever returns, same
+    as before this function existed)."""
+    with db.SessionLocal() as session:
+        default_cluster_id = get_default_cluster_id(session)
+        observed_clusters = [c for c in list_active_clusters(session) if not c.is_default]
+        session.expunge_all()
+
+    for cluster in observed_clusters:
+        thread = threading.Thread(
+            target=run_observed_cluster_loop, args=(cluster,), name=f"watcher-cluster-{cluster.name}", daemon=True
+        )
+        thread.start()
+        logger.info("run_all_clusters: started observed-cluster loop for %r (id=%s)", cluster.name, cluster.id)
+
+    run(
+        on_transition=functools.partial(build_and_publish_incident, cluster_id=default_cluster_id),
+        cluster_id=default_cluster_id,
+    )
 
 
 if __name__ == "__main__":
@@ -467,4 +747,4 @@ if __name__ == "__main__":
     # feature (dashboard/routes/maintenance.py) actually filter by date —
     # without it, log lines have no per-entry timestamp to filter on at all.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")
-    run(on_transition=build_and_publish_incident)
+    run_all_clusters()

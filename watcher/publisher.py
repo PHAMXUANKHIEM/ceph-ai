@@ -14,8 +14,15 @@ def build_envelope(
     nodes: list[str],
     log_excerpt: str,
     cluster_snapshot: dict,
+    cluster_id: str | None = None,
 ) -> dict:
-    """Build the Incident message envelope (matches Story 1.4 AC #2 exactly)."""
+    """Build the Incident message envelope (matches Story 1.4 AC #2 exactly).
+
+    `cluster_id` (multi-cluster observability Phase 1, default None):
+    worker/main.py's message handler uses this to skip AI diagnosis/
+    remediation entirely for any cluster other than the default one — see
+    that module's cluster-scope guard. None means "the default cluster",
+    same COALESCE convention as Incident.cluster_id/WatcherHeartbeat.cluster_id."""
     return {
         "schema_version": SCHEMA_VERSION,
         "incident_id": incident_id,
@@ -24,6 +31,7 @@ def build_envelope(
         "nodes": nodes,
         "log_excerpt": log_excerpt,
         "cluster_snapshot": cluster_snapshot,
+        "cluster_id": cluster_id,
     }
 
 

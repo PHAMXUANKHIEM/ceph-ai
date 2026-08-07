@@ -577,6 +577,7 @@ def query_cluster_health_with(
     ssh_user: str,
     ssh_key_path: str,
     exec_mode: str = "docker",
+    update_sticky_fallback: bool = True,
 ) -> dict:
     """Story 5.1: same fallback-across-MON-nodes logic as `query_cluster_health()`,
     but takes every connection parameter explicitly instead of reading
@@ -584,7 +585,20 @@ def query_cluster_health_with(
     not-yet-saved values for real before writing them to `.env`.
 
     `exec_mode` defaults to "docker" so every pre-existing caller (before
-    multi-deploy-mode support existed) keeps its exact original behavior."""
+    multi-deploy-mode support existed) keeps its exact original behavior.
+
+    `update_sticky_fallback` (multi-cluster observability Phase 1): the
+    module-level `last_successful_mon_node` this function updates on
+    success is READ by watcher/collector.py as a fallback for the DEFAULT
+    cluster's own log collection — there is only ever one such global, not
+    one per cluster. watcher/main.py's new observed-cluster loop (any
+    cluster other than the default one) calls this same function to poll
+    OTHER clusters concurrently, and must pass `update_sticky_fallback=False`
+    so a successful poll of cluster B never overwrites the sticky node the
+    DEFAULT cluster's log collection depends on. Defaults to True so every
+    pre-existing caller (the default cluster's own health poll, and the
+    Dashboard's own "test connection before saving" forms for the default
+    cluster) keeps its exact original behavior unchanged."""
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured")
 
@@ -598,7 +612,8 @@ def query_cluster_health_with(
         try:
             output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
             payload = _parse_health_payload(output)
-            last_successful_mon_node = host
+            if update_sticky_fallback:
+                last_successful_mon_node = host
             return payload
         except Exception as exc:
             logger.warning("query_cluster_health_with: %s failed: %s", host, exc)

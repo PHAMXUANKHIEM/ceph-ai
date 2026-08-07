@@ -9,6 +9,8 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    CrushOsdDistribution,
+    CrushStructureSnapshot,
     Incident,
     IncidentStatus,
     NodeUpgradeGate,
@@ -63,6 +65,7 @@ def test_incident_has_required_columns():
     columns = {c.name for c in Incident.__table__.columns}
     assert columns == {
         "id",
+        "cluster_id",
         "ceph_code",
         "status",
         "severity",
@@ -222,7 +225,7 @@ def test_audit_entry_foreign_key_is_actually_enforced_by_sqlite(db_session):
 
 def test_watcher_heartbeat_has_required_columns():
     columns = {c.name for c in WatcherHeartbeat.__table__.columns}
-    assert columns == {"id", "success", "mon_node", "error_message", "polled_at"}
+    assert columns == {"id", "cluster_id", "success", "mon_node", "error_message", "polled_at"}
 
 
 def test_watcher_heartbeat_insert_and_query(db_session):
@@ -300,3 +303,64 @@ def test_node_upgrade_gate_explicit_id_is_respected(db_session):
     db_session.commit()
 
     assert gate.id == explicit_id
+
+
+def test_crush_structure_snapshot_insert_and_query(db_session):
+    snapshot = CrushStructureSnapshot(tree_json='{"roots": []}')
+    db_session.add(snapshot)
+    db_session.commit()
+
+    fetched = db_session.query(CrushStructureSnapshot).one()
+    assert fetched.tree_json == '{"roots": []}'
+    assert fetched.diff_json is None  # first-ever snapshot has no diff (AC #1)
+
+
+def test_crush_structure_snapshot_id_defaults_to_valid_uuid4(db_session):
+    snapshot = CrushStructureSnapshot(tree_json='{"roots": []}')
+    db_session.add(snapshot)
+    db_session.commit()
+
+    parsed = uuid.UUID(snapshot.id, version=4)
+    assert str(parsed) == snapshot.id
+
+
+def test_crush_structure_snapshot_stores_diff_json(db_session):
+    snapshot = CrushStructureSnapshot(
+        tree_json='{"roots": []}', diff_json='{"added": [], "removed": [], "reweighted": []}'
+    )
+    db_session.add(snapshot)
+    db_session.commit()
+    db_session.refresh(snapshot)
+
+    assert snapshot.diff_json == '{"added": [], "removed": [], "reweighted": []}'
+
+
+def test_crush_osd_distribution_insert_and_query(db_session):
+    row = CrushOsdDistribution(osd_id=3, host="node2", bytes_used=1000, bytes_total=2000, pgs=42)
+    db_session.add(row)
+    db_session.commit()
+
+    fetched = db_session.get(CrushOsdDistribution, 3)
+    assert fetched.host == "node2"
+    assert fetched.bytes_used == 1000
+    assert fetched.bytes_total == 2000
+    assert fetched.pgs == 42
+
+
+def test_crush_osd_distribution_upsert_overwrites_existing_row(db_session):
+    # osd_id is the real Ceph osd id (caller-assigned), not an
+    # autoincrement surrogate — updating in place (not inserting a second
+    # row) is the whole point of this table (AD-27, "latest value only").
+    row = CrushOsdDistribution(osd_id=3, host="node2", bytes_used=1000, bytes_total=2000, pgs=42)
+    db_session.add(row)
+    db_session.commit()
+
+    fetched = db_session.get(CrushOsdDistribution, 3)
+    fetched.bytes_used = 1500
+    fetched.pgs = 50
+    db_session.commit()
+
+    assert db_session.query(CrushOsdDistribution).count() == 1
+    refetched = db_session.get(CrushOsdDistribution, 3)
+    assert refetched.bytes_used == 1500
+    assert refetched.pgs == 50

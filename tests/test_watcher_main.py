@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
@@ -535,7 +537,7 @@ def test_run_records_heartbeat_on_successful_poll(monkeypatch):
     watcher_main.run(on_transition=lambda *_: None, max_iterations=1)
 
     with db_module.SessionLocal() as session:
-        row = heartbeat.get_latest(session)
+        row = heartbeat.get_latest(session, None)
         assert row is not None
         assert row.success is True
         assert row.mon_node == "10.20.1.150"
@@ -554,7 +556,7 @@ def test_run_records_heartbeat_on_failed_poll(monkeypatch):
     watcher_main.run(on_transition=lambda *_: None, max_iterations=1)
 
     with db_module.SessionLocal() as session:
-        row = heartbeat.get_latest(session)
+        row = heartbeat.get_latest(session, None)
         assert row is not None
         assert row.success is False
         assert row.mon_node is None
@@ -606,7 +608,9 @@ def test_run_resolves_recovered_incidents_on_every_poll_not_just_on_transition(m
 
     calls = []
     monkeypatch.setattr(
-        watcher_main, "_resolve_recovered_incidents", lambda codes: calls.append(codes)
+        watcher_main,
+        "_resolve_recovered_incidents",
+        lambda codes, cluster_id=None, include_legacy_null=True: calls.append(codes),
     )
 
     transition_calls = []
@@ -628,7 +632,7 @@ def test_run_records_failed_heartbeat_when_query_raises_unexpected_exception(mon
     watcher_main.run(on_transition=lambda *_: None, max_iterations=1)
 
     with db_module.SessionLocal() as session:
-        row = heartbeat.get_latest(session)
+        row = heartbeat.get_latest(session, None)
         assert row is not None
         assert row.success is False
         assert "unexpected bug" in row.error_message
@@ -648,7 +652,7 @@ def test_run_does_not_overwrite_successful_heartbeat_when_on_transition_raises(m
     watcher_main.run(on_transition=broken_callback, max_iterations=1)
 
     with db_module.SessionLocal() as session:
-        row = heartbeat.get_latest(session)
+        row = heartbeat.get_latest(session, None)
         assert row is not None
         assert row.success is True
         assert row.mon_node == "10.20.1.150"
@@ -665,3 +669,93 @@ def test_run_survives_heartbeat_recording_failure(monkeypatch):
 
     # Must not raise — a heartbeat-write failure must not kill the poll loop.
     watcher_main.run(on_transition=lambda *_: None, max_iterations=2)
+
+
+# --- Multi-cluster observability Phase 1: observed-cluster loop ------------
+
+
+def _make_observed_cluster(session) -> "Cluster":
+    from shared.models import Cluster
+
+    cluster = Cluster(
+        name="cluster-b",
+        ceph_mon_nodes="10.30.1.10",
+        ceph_container_name="ceph-mon",
+        ssh_user="root",
+        ssh_key_path="/root/.ssh/key",
+        ceph_exec_mode="docker",
+        is_default=False,
+        is_active=True,
+    )
+    session.add(cluster)
+    session.commit()
+    session.refresh(cluster)
+    return cluster
+
+
+def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(monkeypatch):
+    with db_module.SessionLocal() as session:
+        cluster = _make_observed_cluster(session)
+        cluster_id = cluster.id
+
+    monkeypatch.setattr(
+        watcher_main,
+        "query_cluster_health_with",
+        lambda *a, **kw: {"status": "HEALTH_WARN", "checks": {"OSD_DOWN": {"severity": "HEALTH_WARN"}}},
+    )
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", lambda envelope: _noop_coro())
+
+    with db_module.SessionLocal() as session:
+        cluster = session.get(watcher_main.Cluster, cluster_id)
+        watcher_main.run_observed_cluster_loop(cluster, max_iterations=1)
+
+    with db_module.SessionLocal() as session:
+        incidents = session.query(watcher_main.Incident).filter_by(cluster_id=cluster_id).all()
+        assert len(incidents) == 1
+        assert incidents[0].ceph_code == "OSD_DOWN"
+        assert incidents[0].log_excerpt is None  # no log collection for observed clusters (Phase 1)
+
+        row = heartbeat.get_latest(session, cluster_id)
+        assert row is not None
+        assert row.success is True
+
+
+async def _noop_coro():
+    return None
+
+
+def test_run_observed_cluster_loop_never_resolves_a_different_clusters_open_incident(monkeypatch):
+    from shared.models import Incident, IncidentStatus
+
+    with db_module.SessionLocal() as session:
+        observed = _make_observed_cluster(session)
+        observed_id = observed.id
+        other_cluster = _make_observed_cluster(session)  # a second, unrelated cluster
+        other_cluster_id = other_cluster.id
+        # An OPEN incident belonging to a totally different (unrelated)
+        # cluster — must survive THIS cluster's HEALTH_OK poll untouched
+        # (it's not in current_codes, but it's also not THIS cluster's
+        # incident).
+        session.add(
+            Incident(
+                ceph_code="MON_CLOCK_SKEW",
+                status=IncidentStatus.NEW.value,
+                detected_at=datetime.utcnow(),
+                cluster_id=other_cluster_id,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        watcher_main, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK", "checks": {}}
+    )
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    with db_module.SessionLocal() as session:
+        cluster = session.get(watcher_main.Cluster, observed_id)
+        watcher_main.run_observed_cluster_loop(cluster, max_iterations=1)
+
+    with db_module.SessionLocal() as session:
+        other_incident = session.query(Incident).filter_by(cluster_id=other_cluster_id).one()
+        assert other_incident.status == IncidentStatus.NEW.value  # untouched, not wrongly resolved

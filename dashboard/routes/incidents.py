@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
@@ -15,8 +16,9 @@ from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgra
 from dashboard.telegram_approval_bot import has_configured_channel
 from dashboard.templating import make_templates
 from shared import db, heartbeat
+from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
-from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Incident, IncidentStatus, WatcherHeartbeat
+from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +197,7 @@ def _query_audit_entries(
 
 
 def _fetch_dashboard_data(
-    incident_id: str, since_dt: datetime | None, until_dt: datetime | None
+    incident_id: str, since_dt: datetime | None, until_dt: datetime | None, cluster_id: str, is_default_cluster: bool
 ) -> tuple[
     list[Incident],
     WatcherHeartbeat | None,
@@ -207,8 +209,28 @@ def _fetch_dashboard_data(
     bool,
 ]:
     with db.SessionLocal() as session:
-        incidents = session.query(Incident).order_by(Incident.detected_at.desc()).all()
-        latest_heartbeat = heartbeat.get_latest(session)
+        # Multi-cluster observability Phase 1: the incident feed/heartbeat
+        # are scoped to whichever cluster is selected (see index()'s
+        # cluster switcher) — everything else this function fetches
+        # (kill-switch, pending Actions, Audit Trail, backup alert) stays
+        # APP-WIDE/default-cluster-only on purpose, since Worker/backups/
+        # actions aren't multi-cluster-aware yet (see docs/multi-cluster-
+        # deployment.md's sibling architecture doc). Pre-migration Incident
+        # rows have `cluster_id IS NULL`, which means "the default cluster"
+        # (Incident's own docstring) — only match those when the SELECTED
+        # cluster IS the default one.
+        incident_cluster_filter = (
+            or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
+            if is_default_cluster
+            else Incident.cluster_id == cluster_id
+        )
+        incidents = (
+            session.query(Incident)
+            .filter(incident_cluster_filter)
+            .order_by(Incident.detected_at.desc())
+            .all()
+        )
+        latest_heartbeat = heartbeat.get_latest(session, cluster_id)
         kill_switch_enabled = is_kill_switch_enabled(session)
         # Cheap DB-only signal (no SSH) for disabling "Duyệt" on every OTHER
         # pending risky action while a cluster upgrade is proposed/approved —
@@ -264,6 +286,22 @@ def _fetch_dashboard_data(
     )
 
 
+def _resolve_selected_cluster(requested_cluster_id: str) -> tuple[list[Cluster], Cluster]:
+    """Multi-cluster observability Phase 1's cluster switcher — `?cluster=`
+    on `/` (a plain query param, same pattern this file already uses for
+    incident_id/since/until, not session state: bookmarkable, and every
+    existing link/form on this page keeps working unchanged since it's
+    additive). Falls back to the default cluster when blank, unknown, or
+    deactivated — a stale bookmarked link to a since-deactivated cluster
+    must not 404/500, it should just land back on the default cluster."""
+    with db.SessionLocal() as session:
+        default_cluster = ensure_default_cluster(session)
+        clusters = list_active_clusters(session)
+        session.expunge_all()
+    selected = next((c for c in clusters if c.id == requested_cluster_id), None) if requested_cluster_id else None
+    return clusters, (selected or default_cluster)
+
+
 @router.get("/", response_class=HTMLResponse)
 async def index(
     request: Request,
@@ -271,11 +309,17 @@ async def index(
     incident_id: str = "",
     since: str = "",
     until: str = "",
+    cluster: str = "",
 ):
     incident_id = incident_id.strip()
     since_dt = _parse_datetime_filter(since.strip())
     until_dt = _parse_datetime_filter(until.strip())
     try:
+        # Inside the try (not resolved before it) — this hits the DB same
+        # as everything else _fetch_dashboard_data does below, and must
+        # fail the same clean 503 way if the DB is unreachable, not an
+        # unhandled 500 from before the try block even started.
+        clusters, selected_cluster = _resolve_selected_cluster(cluster.strip())
         (
             incidents,
             latest_heartbeat,
@@ -285,7 +329,9 @@ async def index(
             upgrade_blocks_other_actions,
             backup_alert,
             telegram_configured,
-        ) = _fetch_dashboard_data(incident_id, since_dt, until_dt)
+        ) = _fetch_dashboard_data(
+            incident_id, since_dt, until_dt, selected_cluster.id, selected_cluster.is_default
+        )
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
         # (e.g. a malformed row) should surface the same friendly error,
@@ -326,6 +372,15 @@ async def index(
             "cluster_mon_nodes": settings.ceph_mon_nodes,
             "cluster_container_name": settings.ceph_container_name,
             "cluster_exec_mode": settings.ceph_exec_mode,
+            # Multi-cluster observability Phase 1 — cluster switcher. Note
+            # cluster_mon_nodes/container_name/exec_mode above ALWAYS show
+            # the default cluster's config (unchanged from before this
+            # existed), even when a different cluster is selected — that
+            # header snapshot is deferred to a later phase, same as every
+            # other default-cluster-only limitation documented in
+            # docs/multi-cluster-deployment.md's sibling architecture doc.
+            "clusters": clusters,
+            "selected_cluster": selected_cluster,
             "kill_switch_enabled": kill_switch_enabled,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,

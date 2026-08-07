@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -13,10 +14,63 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.db import Base
+
+
+class Cluster(Base):
+    """A Ceph cluster Watcher can poll for health status (multi-cluster
+    observability, Phase 1 — see docs/multi-cluster-deployment.md's sibling
+    plan). Deliberately holds ONLY the fields the core health check
+    (watcher/ceph_client.py::query_cluster_health_with) needs — mon nodes,
+    exec mode, container name, SSH creds — not the full field set
+    config/settings.py's Settings singleton has (mgr/rgw nodes, RBD pools,
+    backup targets, ...): those stay `.env`-scoped and single-cluster until
+    a later phase makes Worker (remediation/backup/patch/upgrade/Telegram)
+    multi-cluster too.
+
+    Exactly one row has `is_default=True` — that row MIRRORS the
+    `.env`-configured cluster (shared/clusters.py::ensure_default_cluster
+    seeds it at startup) and is NOT editable via the Cluster CRUD UI; the
+    `.env`/Settings-page "Kết nối cụm Ceph" form stays its one source of
+    truth, unchanged. Every OTHER row is an additional cluster added purely
+    for observation, editable via dashboard/routes/clusters.py — Worker
+    never acts on these (worker/main.py's cluster-scope guard skips any
+    Incident whose cluster_id isn't the default cluster's).
+    """
+
+    __tablename__ = "clusters"
+    __table_args__ = (
+        # Partial unique index — at most one is_default=True row, ever.
+        # Declared here (not just in the Alembic migration) so it also
+        # exists on every `Base.metadata.create_all()`-built test DB, not
+        # only a real `alembic upgrade head`-migrated one — the migration's
+        # own `op.create_index(...)` call is invisible to SQLAlchemy's ORM
+        # metadata, and shared/clusters.py::ensure_default_cluster's
+        # race-safety depends on this constraint actually existing wherever
+        # the app runs, tests included.
+        Index(
+            "uq_clusters_single_default",
+            "is_default",
+            unique=True,
+            sqlite_where=text("is_default"),
+            postgresql_where=text("is_default"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    ceph_mon_nodes: Mapped[str] = mapped_column(Text, nullable=False)
+    ceph_container_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    ssh_user: Mapped[str] = mapped_column(String(64), nullable=False)
+    ssh_key_path: Mapped[str] = mapped_column(Text, nullable=False)
+    ceph_exec_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="docker")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class IncidentStatus(str, enum.Enum):
@@ -41,6 +95,12 @@ class Incident(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Nullable, no backfill (multi-cluster observability Phase 1) — every
+    # row from before this column existed means "the default cluster",
+    # same as every row a single-cluster deployment ever inserts; read
+    # paths treat NULL as the default cluster via COALESCE, not a real
+    # unknown-cluster state. See shared/models.py::Cluster's docstring.
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
     ceph_code: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=IncidentStatus.NEW.value)
     # Ceph's own per-check severity (HEALTH_WARN/HEALTH_ERR) from
@@ -322,18 +382,30 @@ class UpgradeProcedureDocument(Base):
 
 
 class WatcherHeartbeat(Base):
-    """Singleton row (Story 5.2) — `id` is always `1`, upserted by
-    `shared/heartbeat.py::record()` after EVERY Watcher poll cycle (success
-    or failure), not just when cluster health transitions. Unlike
-    `AuditEntry` (append-only history), this table only ever answers "what
-    happened on the LAST poll" — no history is kept here, so it can't grow
+    """One row per cluster (Story 5.2, extended for multi-cluster
+    observability Phase 1) — `id` was originally always `1` (a true
+    singleton, single-cluster only); now `cluster_id` is the effective
+    upsert key (`shared/heartbeat.py::record()`/`get_latest()` look up by
+    `cluster_id`, not by the old fixed id), so each cluster gets its own
+    "what happened on the LAST poll" row. `id` stays a plain autoincrement
+    PK rather than becoming `cluster_id` itself — avoids an ALTER-COLUMN-TYPE
+    migration on a table SQLite can't cheaply retype in place. The original
+    id=1 row (from before this column existed) keeps `cluster_id` NULL
+    forever — harmless: the default cluster's watcher loop writes a fresh,
+    real row (with `cluster_id` set) within one poll interval of startup,
+    so nothing ever reads that stale row again. Unlike `AuditEntry`
+    (append-only history), this table only ever answers "what happened on
+    the last poll for this cluster" — no history kept, so it can't grow
     unbounded even though polls happen every `watcher_poll_interval_seconds`
-    (default 15s).
+    (default 15s) per cluster.
     """
 
     __tablename__ = "watcher_heartbeat"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cluster_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=True, unique=True
+    )
     success: Mapped[bool] = mapped_column(Boolean, nullable=False)
     # Nullable — no MON node answered when success=False.
     mon_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -731,3 +803,66 @@ class NodeUpgradeGateLock(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     active_gate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class CrushStructureSnapshot(Base):
+    """Epic 12 Story 12.1 (AD-26) -- one row per DISTINCT CRUSH structure
+    ever observed (Root/Rack/Host/OSD tree + Weight, from `ceph osd crush
+    dump`) -- `watcher/crush_structure_monitor.py` only inserts a new row
+    when `tree_json` (canonicalized -- object keys AND array element order
+    both sorted, see that module's own docstring for why plain
+    `json.dumps(..., sort_keys=True)` alone is not enough) differs from the
+    single most-recent row. `diff_json` is NULL for the very first snapshot
+    ever taken (no prior row to diff against) and otherwise holds the
+    Bucket/OSD add/remove/reweight delta versus the row immediately before
+    it -- an OSD merely flipping up/down (no Weight/position change) is
+    NEVER represented here (that is `OSD_DOWN`'s Incident family, unrelated
+    to this table).
+
+    Whole-tree JSON blob (not a normalized Bucket/OSD table) mirrors this
+    codebase's established convention for nested structured data
+    (`Action.execution_progress`/`action_params`/`target_nodes`) -- see
+    AD-26's own reasoning.
+    """
+
+    __tablename__ = "crush_structure_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tree_json: Mapped[str] = mapped_column(Text, nullable=False)
+    diff_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class CrushOsdDistribution(Base):
+    """Epic 12 Story 12.1 (AD-27) -- latest-known-only (UPSERT, not
+    append-only) actual data distribution per OSD, from `ceph osd df` --
+    `watcher/crush_distribution_monitor.py` is the sole writer. Deliberately
+    stores RAW bytes (`bytes_used`/`bytes_total`), never a precomputed
+    percentage: a percentage cannot be summed across OSDs of different
+    capacity, so Story 12.2's Host/Rack-level skew calculation needs the
+    raw numbers to derive a correct ratio by summing bytes up the CRUSH
+    tree -- see AD-27's own reasoning for the bug this avoids.
+
+    A row is DELETED (not left stale) the moment its `osd_id` is confirmed
+    absent from a SUCCESSFUL `ceph osd df` scan -- distinct from a FAILED
+    scan attempt, which must leave every existing row untouched (see
+    `watcher/crush_distribution_monitor.py::sync_distribution`'s own
+    docstring). `pgs` shares this same table/row/`updated_at` because both
+    numbers come from the ONE `ceph osd df` call (AD-25b) -- there is no
+    separate slower scan for PG count as originally scoped in the PRD draft.
+    """
+
+    __tablename__ = "crush_osd_distribution"
+
+    # autoincrement=False: this is the REAL Ceph osd_id (caller-assigned),
+    # never a synthetic surrogate key — an Integer primary key defaults to
+    # autoincrement=True otherwise, which would silently create an unused
+    # Postgres SERIAL sequence and invite the wrong mental model.
+    osd_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    host: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bytes_used: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pgs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

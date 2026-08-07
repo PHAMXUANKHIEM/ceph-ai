@@ -1,7 +1,43 @@
-# Giám sát nhiều cụm Ceph — mô hình "1 instance / 1 cụm"
+# Giám sát nhiều cụm Ceph
 
-ceph-aiops được thiết kế **1 instance quản lý đúng 1 cụm Ceph**, không phải
-giới hạn UI mà nằm ở tầng kiến trúc:
+**2026-08-07 — CẬP NHẬT: đã có multi-cluster observability (Phase 1) ngay
+trong 1 instance.** Trang **Clusters** (`/clusters`, admin) cho phép thêm
+cụm Ceph thứ 2/3/... để **quan sát** — Watcher tự chạy thêm 1 vòng lặp giám
+sát riêng cho mỗi cụm (health check + Incident feed + heartbeat), Dashboard
+có bộ chọn cụm ngay trên trang chính (`/`, góc phải thanh nav, chỉ hiện khi
+có ≥ 2 cụm). Đây là cách **khuyến nghị** để xem nhiều cụm cùng lúc — không
+cần dựng thêm server/checkout nào nữa cho nhu cầu quan sát thuần tuý.
+
+**Giới hạn quan trọng của Phase 1** (đọc kỹ trước khi thêm cụm thứ 2):
+chỉ phần **quan sát** (health/Incident feed) là multi-cluster. Chẩn đoán AI,
+tự động xử lý (remediation), backup, patch, upgrade, kill-switch, cảnh báo
+Telegram (Duyệt/Từ chối) **vẫn chỉ áp dụng cho cụm mặc định** (cụm cấu hình
+qua `.env`/trang Cài đặt) — Worker chủ động **bỏ qua** (không chạy lệnh SSH
+nào) đối với Incident đến từ cụm khác, đây là biện pháp an toàn bắt buộc
+(SSH creds/lệnh của Worker chỉ đúng cho cụm mặc định). Các cụm thêm qua
+`/clusters` chỉ nhận được: health status, Incident feed (không có log SSH
+đính kèm — `log_excerpt` luôn rỗng), heartbeat. Không có: remediation tự
+động, backup, patch, upgrade, phê duyệt Telegram cho các cụm này.
+
+Chi tiết kiến trúc/thiết kế: `shared/models.py::Cluster`'s docstring,
+`shared/clusters.py`, `watcher/main.py::run_observed_cluster_loop`,
+`worker/main.py::_handle_message`'s cluster-scope guard.
+
+Nếu cần MỌI tính năng (remediation/backup/patch/upgrade/Telegram) đa cụm —
+chưa làm, đây là phase sau, khối lượng lớn hơn nhiều (xem phần cuối tài
+liệu này). Phần còn lại của tài liệu (dưới đây) mô tả hướng **thay thế**:
+chạy nhiều instance riêng biệt, mỗi instance 1 cụm — vẫn hợp lệ nếu bạn cần
+MỌI tính năng đa cụm ngay (mỗi instance có Worker/backup/patch/upgrade đầy
+đủ cho cụm của riêng nó), đổi lại phải tự vận hành N bộ service/DB/RabbitMQ
+riêng thay vì 1 bộ chọn cụm trong 1 Dashboard.
+
+---
+
+## (Thay thế) Chạy nhiều instance riêng, mỗi instance 1 cụm
+
+ceph-aiops **cốt lõi vẫn** thiết kế 1 instance quản lý đúng 1 cụm Ceph theo
+mặc định (Worker/backup/patch/upgrade/kill-switch/Telegram — xem giới hạn
+Phase 1 ở trên), không phải giới hạn UI mà nằm ở tầng kiến trúc:
 
 - `config/settings.py` là một `Settings()` singleton nạp từ **1 file
   `.env`** — `ceph_mon_nodes`, SSH key, exec mode, RBD pools... chỉ có 1 bộ
