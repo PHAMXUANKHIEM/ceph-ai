@@ -20,7 +20,6 @@ from dashboard.routes import (
     chat,
     clusters as clusters_routes,
     convert_cluster,
-    crush_map,
     delete_cluster,
     deploy_cluster,
     incidents,
@@ -100,7 +99,6 @@ def create_app() -> FastAPI:
     application.include_router(bucket_access_log.router)
     application.include_router(telegram_alerts.router)
     application.include_router(test_runner.router)
-    application.include_router(crush_map.router)
     application.include_router(clusters_routes.router)
     application.include_router(ws_router)
     return application
