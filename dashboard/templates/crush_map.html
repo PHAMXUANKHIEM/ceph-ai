@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>CRUSH Map — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link active">CRUSH Map</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header"><h2>Cây CRUSH</h2></div>
+      <div class="card-body">
+        <div id="crush-map-empty-no-snapshot" class="empty-state" hidden>
+          <span class="empty-icon">&#8987;</span>
+          Chưa có dữ liệu — Watcher chưa quét cấu trúc CRUSH lần nào.
+        </div>
+        <div id="crush-map-empty-cluster" class="empty-state" hidden>
+          <span class="empty-icon">&#128235;</span>
+          Cụm hiện không còn OSD nào.
+        </div>
+        <div id="crush-map-error" class="empty-state" hidden>
+          <span class="empty-icon">&#9888;</span>
+          Không tải được dữ liệu CRUSH Map — trang sẽ tự thử lại.
+        </div>
+        <p id="crush-map-meta" class="hint" hidden></p>
+        <div id="crush-map-tree" class="crush-tree" hidden></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Lịch sử thay đổi cấu trúc</h2></div>
+      <div class="card-body">
+        <div id="crush-history-empty" class="empty-state" hidden>
+          Chưa có lần thay đổi cấu trúc CRUSH nào được ghi nhận.
+        </div>
+        <ul id="crush-history-list" class="crush-history-list"></ul>
+        <button id="crush-history-load-more" class="btn btn-sm" type="button" hidden>Xem thêm</button>
+      </div>
+    </section>
+
+    <div id="crush-history-detail" class="crush-history-detail" hidden>
+      <div class="crush-history-detail-inner">
+        <div class="crush-history-detail-header">
+          <h3 id="crush-history-detail-title"></h3>
+          <button id="crush-history-detail-close" class="btn btn-ghost btn-sm" type="button">Đóng</button>
+        </div>
+        <div id="crush-history-detail-body"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/crush_map.js?v={{ static_version }}"></script>
+</body>
+</html>
