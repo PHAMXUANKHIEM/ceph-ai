@@ -198,6 +198,29 @@ def test_node_resource_high_incident_is_never_auto_resolved_by_recovery(isolated
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_crush_skew_incidents_are_never_auto_resolved_by_recovery(isolated_db):
+    # 2026-08-07 (Epic 12, Story 12.2, AD-32 — CRITICAL, marked as this
+    # story's mandatory acceptance condition): same bug class as
+    # CHAT_REQUEST/CLUSTER_UPGRADE/VOLUME_SATURATED/NODE_RESOURCE_HIGH
+    # above — watcher/crush_skew_monitor.py's synthetic Incidents (ceph_code
+    # prefixed "CRUSH_SKEW_USE:"/"CRUSH_SKEW_PG:") never match any real
+    # `ceph health detail` check code either. Without this guard, a genuine
+    # CRUSH Skew Incident would self-resolve on the very next poll
+    # (typically within seconds — far faster than
+    # settings.crush_scan_interval_seconds), hiding it from the operator
+    # before it can ever be seen at PENDING_APPROVAL.
+    pending_use_id = _seed_incident("CRUSH_SKEW_USE:3", IncidentStatus.PENDING_APPROVAL.value)
+    pending_pg_id = _seed_incident("CRUSH_SKEW_PG:hostA", IncidentStatus.PENDING_APPROVAL.value)
+    real_failed_id = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, pending_use_id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, pending_pg_id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
+
+
 def test_already_terminal_incidents_are_never_touched_by_recovery(isolated_db):
     resolved_id = _seed_incident("OSD_DOWN", IncidentStatus.RESOLVED.value)
     auto_fixed_id = _seed_incident("MON_CLOCK_SKEW", IncidentStatus.AUTO_FIXED.value)
