@@ -327,5 +327,16 @@ class Settings(BaseSettings):
     # cadence and vice versa.
     osd_latency_scan_interval_seconds: int = 60
 
+    # watcher/crush_structure_monitor.py + watcher/crush_distribution_monitor.py's
+    # shared scan cadence (Epic 12, AD-25b) -- both `ceph osd crush dump` and
+    # `ceph osd df` are single cheap JSON-RPC queries through a MON, same
+    # cost class as `ceph osd perf` above (no SSH round trip, no dependency
+    # on the cluster's PG count) -- originally scoped as 2 separate
+    # cadences (a slow one for a planned `ceph pg dump` call), collapsed to
+    # ONE after confirming `ceph osd df` already reports per-OSD PG count
+    # (the `pgs` column) in the same call. 1 minute by default, same as
+    # osd_latency_scan_interval_seconds above.
+    crush_scan_interval_seconds: int = 60
+
 
 settings = Settings()
