@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from dashboard.routes.auth import require_login
 from shared import db
 from shared.cluster_nodes import configured_nodes as _configured_nodes
-from shared.models import TestRunnerConfig
+from shared.models import TestRunnerConfig, TestRunResult
 from shared import test_runner_baselines as baselines
 from worker.executor.ssh_executor import (
     BackgroundCommandHandle,
@@ -205,11 +205,12 @@ async def ssh_check(user: str = Depends(require_login)):
 # Dashboard process (never through Worker/RabbitMQ -- see
 # worker/executor/test_runner/framework.py's own module docstring), and a
 # background TestCase's opaque `state` typically wraps a live paramiko
-# Channel (BackgroundCommandHandle) that cannot be serialized -- so all run
-# state lives in this module-level dict, in memory only. It is intentionally
-# NOT persisted to the DB and does NOT survive a Dashboard restart; Story
-# 10.8 (SQLite persistence/auto-save) is the story that would need to design
-# around that, not this one.
+# Channel (BackgroundCommandHandle) that cannot be serialized -- so
+# `background_state` lives in this module-level dict ONLY, in memory, never
+# persisted (Story 10.8). Every OTHER field on `_RunState` IS auto-saved to
+# `TestRunResult` (shared/models.py) on every write via `_persist_run_state()`
+# below (Story 10.8) -- see that function's docstring and
+# `_load_persisted_run_states()` for how a restart recovers what it can.
 #
 # `_run_lock` guards every read-modify-write of `_run_states` -- FastAPI can
 # genuinely run route handlers concurrently (asyncio tasks, plus
@@ -242,6 +243,82 @@ _TERMINAL_STATUSES = {
     TestStatus.ERROR.value,
     TestStatus.SKIP.value,
 }
+
+
+def _persist_run_state(test_id: str, rs: _RunState) -> None:
+    """Upserts every field of `rs` EXCEPT `background_state` into
+    `TestRunResult` (Story 10.8) -- called right after every `_run_states`
+    mutation, outside `_run_lock` (a blocking DB round-trip must never
+    happen while holding a `threading.Lock` other request threads are
+    waiting on). `background_state` is deliberately never read here -- see
+    `TestRunResult`'s own docstring for why (it can hold a live,
+    unserializable SSH handle)."""
+    with db.SessionLocal() as session:
+        row = session.get(TestRunResult, test_id)
+        if row is None:
+            row = TestRunResult(test_id=test_id)
+            session.add(row)
+        row.status = rs.status
+        row.criteria_json = json.dumps(rs.criteria)
+        row.raw_output = rs.raw_output
+        row.notes = rs.notes
+        row.started_at = datetime.fromisoformat(rs.started_at) if rs.started_at else None
+        row.finished_at = datetime.fromisoformat(rs.finished_at) if rs.finished_at else None
+        row.overridden = rs.overridden
+        row.override_note = rs.override_note
+        session.commit()
+
+
+def _run_state_from_row(row: TestRunResult) -> _RunState:
+    return _RunState(
+        status=row.status,
+        criteria=json.loads(row.criteria_json) if row.criteria_json else [],
+        raw_output=row.raw_output or "",
+        notes=row.notes or "",
+        started_at=row.started_at.isoformat() if row.started_at else None,
+        finished_at=row.finished_at.isoformat() if row.finished_at else None,
+        overridden=row.overridden,
+        override_note=row.override_note or "",
+    )
+
+
+def _load_persisted_run_states() -> None:
+    """Rebuilds `_run_states` from `TestRunResult` on Dashboard startup
+    (Story 10.8) -- wired into `dashboard/app.py`'s `_lifespan()`, same
+    idempotent-on-every-call posture as `ensure_default_cluster()`/
+    `telegram_approval_bot.start()` (FastAPI's TestClient re-enters the
+    lifespan on every `with TestClient(app) as client:` block across this
+    project's whole test suite).
+
+    A row that was `RUNNING` (not overridden) the instant the process died
+    is NOT resumable -- its `background_state` (the only thing that could
+    poll or precisely `.cancel()` it) was never persisted (see
+    `TestRunResult`'s docstring) and there is no way to reattach to a dead
+    SSH session. Such a row is normalized to `ERROR` with an explanatory
+    note pointing at the Hủy button's pattern-kill fallback, and that
+    correction is immediately re-persisted so the DB stops claiming
+    `running` forever too -- not just the in-memory copy.
+    """
+    with db.SessionLocal() as session:
+        rows = session.query(TestRunResult).all()
+        restored = {row.test_id: _run_state_from_row(row) for row in rows}
+
+    to_repersist: dict[str, _RunState] = {}
+    with _run_lock:
+        for test_id, rs in restored.items():
+            if rs.status == TestStatus.RUNNING.value and not rs.overridden:
+                rs.status = TestStatus.ERROR.value
+                rs.finished_at = datetime.utcnow().isoformat()
+                rs.notes = (rs.notes + " " if rs.notes else "") + (
+                    "Dashboard đã khởi động lại trong lúc test đang chạy nền -- theo dõi tiến trình "
+                    "đã mất (không thể khôi phục phiên SSH cũ). Tiến trình thật trên node có thể vẫn "
+                    "đang chạy -- dùng nút Hủy (sẽ thử pattern-kill dự phòng) hoặc kiểm tra tay qua SSH."
+                )
+                to_repersist[test_id] = rs
+            _run_states[test_id] = rs
+
+    for test_id, rs in to_repersist.items():
+        _persist_run_state(test_id, rs)
 
 
 def _test_summary(test_case: TestCase) -> dict:
@@ -305,6 +382,11 @@ def _apply_result(test_id: str, result: TestResult, *, background_state: Any = N
         if result.finished_at:
             rs.finished_at = result.finished_at.isoformat()
         rs.background_state = background_state
+
+    # Story 10.8: auto-save -- outside _run_lock (never hold a lock across a
+    # blocking DB call). The `overridden` early-return above skips this on
+    # purpose: nothing changed, nothing new to persist.
+    _persist_run_state(test_id, rs)
 
 
 def _run_one_shot_sync(test_id: str, test_case: TestCase, ctx: TestRunContext) -> None:
@@ -403,14 +485,20 @@ async def run_test(test_id: str, user: str = Depends(require_login)):
         existing = _run_states.get(test_id)
         if existing is not None and existing.status == TestStatus.RUNNING.value:
             raise HTTPException(status_code=409, detail=f"{test_id} đang chạy, đợi hoàn tất trước khi chạy lại")
-        _run_states[test_id] = _RunState(status=TestStatus.RUNNING.value, started_at=datetime.utcnow().isoformat())
+        new_rs = _RunState(status=TestStatus.RUNNING.value, started_at=datetime.utcnow().isoformat())
+        _run_states[test_id] = new_rs
+
+    # Story 10.8: auto-save the RUNNING seed itself -- this is what lets
+    # _load_persisted_run_states() detect "was RUNNING when the process
+    # died" on the next startup, not just terminal results.
+    await asyncio.to_thread(_persist_run_state, test_id, new_rs)
 
     ctx = await asyncio.to_thread(_load_context)
 
     if test_case.background:
         state, error_result = await asyncio.to_thread(_start_background_sync, test_case, ctx)
         if error_result is not None:
-            _apply_result(test_id, error_result)
+            await asyncio.to_thread(_apply_result, test_id, error_result)
         else:
             with _run_lock:
                 rs = _run_states.get(test_id)
@@ -580,6 +668,8 @@ async def cancel_test(test_id: str, user: str = Depends(require_login)):
         rs.override_note = note
         rs.finished_at = datetime.utcnow().isoformat()
 
+    await asyncio.to_thread(_persist_run_state, test_id, rs)
+
     return JSONResponse(_test_detail(test_case))
 
 
@@ -614,7 +704,7 @@ async def get_test_result(test_id: str, user: str = Depends(require_login)):
     if should_poll:
         ctx = await asyncio.to_thread(_load_context)
         new_state, result = await asyncio.to_thread(poll_test_case, test_case, ctx, background_state)
-        _apply_result(test_id, result, background_state=new_state)
+        await asyncio.to_thread(_apply_result, test_id, result, background_state=new_state)
 
     return JSONResponse(_test_detail(test_case))
 
@@ -644,7 +734,26 @@ async def override_test_result(test_id: str, request: Request, user: str = Depen
         rs.override_note = note
         rs.finished_at = datetime.utcnow().isoformat()
 
+    await asyncio.to_thread(_persist_run_state, test_id, rs)
+
     return JSONResponse(_test_detail(test_case))
+
+
+@router.post("/api/test-runner/reset")
+async def reset_test_runner(user: str = Depends(require_login)):
+    """Story 10.8: explicit "start a new campaign" reset -- necessitated BY
+    this story's own persistence work. Before results survived a restart,
+    restarting the Dashboard was the de-facto way to clear old results;
+    now that they're durable on purpose, there needs to be an explicit way
+    to clear them without also wiping `TestRunnerConfig` (cluster/RGW/
+    baseline config, which an operator re-running the suite still wants
+    kept)."""
+    with _run_lock:
+        _run_states.clear()
+    with db.SessionLocal() as session:
+        session.query(TestRunResult).delete()
+        session.commit()
+    return JSONResponse({"status": "ok"})
 
 
 # -----------------------------------------------------------------------

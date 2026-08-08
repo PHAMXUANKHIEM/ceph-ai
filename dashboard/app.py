@@ -73,6 +73,12 @@ async def _lifespan(_app: FastAPI):
     # rather than blindly inserting).
     with db.SessionLocal() as session:
         ensure_default_cluster(session)
+    # Epic 10 Story 10.8 — rebuilds dashboard/routes/test_runner.py's
+    # in-memory `_run_states` from the durable `TestRunResult` table so a
+    # Dashboard restart doesn't wipe upgrade-test-runner results back to a
+    # blank slate. Idempotent, same TestClient-re-entry posture as the two
+    # calls above (a fresh load just overwrites _run_states again).
+    test_runner._load_persisted_run_states()
     yield
 
 

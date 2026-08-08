@@ -721,6 +721,45 @@ class TestRunnerConfig(Base):
     )
 
 
+class TestRunResult(Base):
+    """Epic 10 Story 10.8 -- durable projection of
+    `dashboard/routes/test_runner.py`'s in-memory `_run_states[test_id]`,
+    auto-saved on every write (run completion, poll reaching a terminal
+    status, manual override, cancel) so a Dashboard restart mid-campaign
+    doesn't wipe results back to a blank slate. One row per `test_id`
+    (upserted, latest-known-only -- same posture as
+    shared/models.py::CrushOsdDistribution, not an append-only history).
+
+    Deliberately NEVER stores a background TestCase's opaque
+    `background_state` -- for most background tests that dict's own
+    "handle" key wraps a live `BackgroundCommandHandle`
+    (worker/executor/ssh_executor.py), itself wrapping an open
+    paramiko.Channel/SSH socket. There is no operation anywhere in this
+    codebase that can serialize a live network connection and reconstruct
+    it after a restart, so a test that was RUNNING at the exact moment the
+    process died is NOT resumable -- dashboard/routes/test_runner.py's
+    `_load_persisted_run_states()` normalizes any such row to ERROR with an
+    explanatory note on load rather than pretending it can still be polled.
+    This is a deliberate, disclosed scope boundary, not an oversight -- see
+    that story's own Dev Notes for the full reasoning.
+    """
+
+    __tablename__ = "test_run_results"
+
+    test_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    criteria_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    override_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class NodeUpgradeGateState(str, enum.Enum):
     PREPARING = "PREPARING"
     PREPARED = "PREPARED"

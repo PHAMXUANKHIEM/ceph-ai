@@ -23,6 +23,7 @@ from shared import db as db_module
 # bound as a name in this module (same reason Story 10.1's test_ssh_pool.py
 # aliases the imported test_all_nodes function).
 from shared.models import TestRunnerConfig as RunnerConfigModel
+from shared.models import TestRunResult as RunResultModel
 from worker.executor.ssh_executor import BackgroundCommandHandle
 from worker.executor.test_runner import framework as fw
 
@@ -851,3 +852,184 @@ def test_report_reflects_override_and_run013_osd_subtable(dashboard_client, monk
     assert "[Override] da xac nhan HEALTH_OK bang tay" in body
     assert "Chi tiết TC-RUN-013" in body
     assert "| 5 | 12.3 | 0 | Không |" in body
+
+
+# -----------------------------------------------------------------------
+# Story 10.8: results survive a Dashboard restart. `_persist_run_state()`/
+# `_load_persisted_run_states()` bridge `_run_states` <-> `RunResultModel`;
+# `POST /reset` is the new explicit "start a new campaign" endpoint this
+# story's own persistence work necessitated (a restart used to be the
+# de-facto reset -- it deliberately no longer is one).
+# -----------------------------------------------------------------------
+
+
+def test_run_one_shot_auto_saves_terminal_result_to_db(dashboard_client, fake_registry):
+    _login(dashboard_client)
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/run")
+
+    # Wait on the DB row itself, not just _run_states via the HTTP endpoint:
+    # _apply_result() flips the in-memory status BEFORE the auto-save DB
+    # write happens (persist runs after releasing _run_lock) -- polling the
+    # HTTP endpoint alone would be a TOCTOU race against the still-in-flight
+    # daemon-thread DB commit.
+    def _row_saved():
+        with db_module.SessionLocal() as session:
+            row = session.get(RunResultModel, _FakeOneShot.id)
+            return row is not None and row.status != fw.TestStatus.RUNNING.value
+
+    assert _wait_until(_row_saved), "one-shot fake test's result never auto-saved to DB"
+
+    with db_module.SessionLocal() as session:
+        row = session.get(RunResultModel, _FakeOneShot.id)
+        assert row is not None
+        assert row.status == fw.TestStatus.PASS.value
+        assert row.raw_output == "one-shot output\n"
+        assert row.overridden is False
+
+
+def test_override_auto_saves_to_db(dashboard_client, fake_registry):
+    _login(dashboard_client)
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/run")
+    dashboard_client.post(
+        f"/api/test-runner/tests/{_FakeOneShot.id}/override",
+        json={"status": "fail", "note": "ghi de thu cong"},
+    )
+
+    with db_module.SessionLocal() as session:
+        row = session.get(RunResultModel, _FakeOneShot.id)
+        assert row is not None
+        assert row.status == fw.TestStatus.FAIL.value
+        assert row.overridden is True
+        assert row.override_note == "ghi de thu cong"
+
+
+def test_load_persisted_run_states_restores_terminal_and_overridden_rows(dashboard_client):
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            RunResultModel(
+                test_id="TC-FAKE-TERMINAL",
+                status=fw.TestStatus.PASS.value,
+                criteria_json='[{"description": "x", "passed": true, "detail": ""}]',
+                raw_output="done\n",
+                notes="",
+                overridden=False,
+            )
+        )
+        session.add(
+            RunResultModel(
+                test_id="TC-FAKE-OVERRIDDEN",
+                status=fw.TestStatus.FAIL.value,
+                overridden=True,
+                override_note="manual call",
+            )
+        )
+        session.commit()
+
+    test_runner_route._run_states.clear()
+    test_runner_route._load_persisted_run_states()
+
+    restored_terminal = test_runner_route._run_states["TC-FAKE-TERMINAL"]
+    assert restored_terminal.status == fw.TestStatus.PASS.value
+    assert restored_terminal.raw_output == "done\n"
+    assert restored_terminal.criteria == [{"description": "x", "passed": True, "detail": ""}]
+
+    restored_overridden = test_runner_route._run_states["TC-FAKE-OVERRIDDEN"]
+    assert restored_overridden.status == fw.TestStatus.FAIL.value
+    assert restored_overridden.overridden is True
+    assert restored_overridden.override_note == "manual call"
+
+
+def test_load_persisted_run_states_normalizes_orphaned_running_row_to_error(dashboard_client):
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(
+            RunResultModel(
+                test_id="TC-FAKE-ORPHANED",
+                status=fw.TestStatus.RUNNING.value,
+                overridden=False,
+            )
+        )
+        session.commit()
+
+    test_runner_route._run_states.clear()
+    test_runner_route._load_persisted_run_states()
+
+    restored = test_runner_route._run_states["TC-FAKE-ORPHANED"]
+    assert restored.status == fw.TestStatus.ERROR.value
+    assert restored.finished_at is not None
+    assert "khởi động lại" in restored.notes
+    assert restored.background_state is None  # never attempted to restore/fabricate one
+
+    # The correction must be re-persisted too -- the DB must not keep
+    # claiming "running" forever just because only the in-memory copy was
+    # fixed.
+    with db_module.SessionLocal() as session:
+        row = session.get(RunResultModel, "TC-FAKE-ORPHANED")
+        assert row.status == fw.TestStatus.ERROR.value
+
+
+def test_load_persisted_run_states_leaves_overridden_running_alone(dashboard_client):
+    """An overridden test is, by definition, already closed out by an
+    operator -- even if its stored status somehow says RUNNING (shouldn't
+    happen via this app's own routes, but the normalization guard is keyed
+    on overridden specifically, not just status, so this locks that in)."""
+    with db_module.SessionLocal() as session:
+        session.add(
+            RunResultModel(
+                test_id="TC-FAKE-OVERRIDDEN-RUNNING",
+                status=fw.TestStatus.RUNNING.value,
+                overridden=True,
+                override_note="closed by hand",
+            )
+        )
+        session.commit()
+
+    test_runner_route._run_states.clear()
+    test_runner_route._load_persisted_run_states()
+
+    restored = test_runner_route._run_states["TC-FAKE-OVERRIDDEN-RUNNING"]
+    assert restored.status == fw.TestStatus.RUNNING.value
+    assert restored.overridden is True
+
+
+# -- POST /api/test-runner/reset -----------------------------------------
+
+
+def test_unauthenticated_reset_redirects_to_login(dashboard_client):
+    response = dashboard_client.post("/api/test-runner/reset", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_reset_clears_run_states_and_db_but_not_config(dashboard_client, fake_registry):
+    _login(dashboard_client)
+    dashboard_client.post(
+        "/api/test-runner/config",
+        json={"rgw_endpoint_zone_a": "https://rgw-a.example", "test_groups": ["A"]},
+    )
+    dashboard_client.post(f"/api/test-runner/tests/{_FakeOneShot.id}/run")
+
+    # Wait for the daemon thread's OWN auto-save to actually land before
+    # resetting -- otherwise a still-in-flight background persist could
+    # write its row back in right after /reset's DELETE runs (same TOCTOU
+    # class as test_run_one_shot_auto_saves_terminal_result_to_db above).
+    def _row_saved():
+        with db_module.SessionLocal() as session:
+            row = session.get(RunResultModel, _FakeOneShot.id)
+            return row is not None and row.status != fw.TestStatus.RUNNING.value
+
+    assert _wait_until(_row_saved), "one-shot fake test's result never auto-saved to DB"
+
+    response = dashboard_client.post("/api/test-runner/reset")
+    assert response.status_code == 200
+
+    assert test_runner_route._run_states == {}
+    with db_module.SessionLocal() as session:
+        assert session.query(RunResultModel).count() == 0
+        config = session.query(RunnerConfigModel).first()
+        assert config is not None
+        assert config.rgw_endpoint_zone_a == "https://rgw-a.example"
+
+    after_reset = dashboard_client.get(f"/api/test-runner/tests/{_FakeOneShot.id}/result").json()
+    assert after_reset["status"] == "not_started"

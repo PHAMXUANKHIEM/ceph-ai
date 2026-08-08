@@ -54,6 +54,7 @@ export default function TestRunner() {
   const [overrideNote, setOverrideNote] = useState('')
   const [overrideStatus, setOverrideStatus] = useState(null) // id -> 'saving' | 'error: ...'
   const [copySummaryStatus, setCopySummaryStatus] = useState(null) // null | 'copying' | 'copied' | 'error: ...'
+  const [resetStatus, setResetStatus] = useState(null) // null | 'resetting' | 'error: ...'
 
   const detailPollRef = useRef(null)
 
@@ -216,6 +217,27 @@ export default function TestRunner() {
     }
   }
 
+  // Story 10.8: results now survive a Dashboard restart on purpose (see
+  // dashboard/routes/test_runner.py::_persist_run_state/
+  // _load_persisted_run_states) -- before that, a restart was the de-facto
+  // way to clear old results before a new campaign. This is the explicit
+  // replacement for that. Destructive (clears every test's result, not
+  // just the current filter view) -- confirm-gated like handleCancel above.
+  async function handleReset() {
+    if (!window.confirm('Xoá TOÀN BỘ kết quả test đã lưu (không ảnh hưởng Cấu hình cụm/RGW/baseline)? Không thể hoàn tác.')) return
+    setResetStatus('resetting')
+    try {
+      const res = await fetch('/api/test-runner/reset', { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setDetails({})
+      setExpandedId(null)
+      await loadTests()
+      setResetStatus(null)
+    } catch (err) {
+      setResetStatus(`error: ${err}`)
+    }
+  }
+
   const visibleTests = groupFilter === 'ALL' ? tests : tests.filter((t) => t.group === groupFilter)
 
   const summary = tests.reduce(
@@ -281,6 +303,18 @@ export default function TestRunner() {
             {copySummaryStatus === 'copied' && <span className="text-xs text-green-600">Đã copy</span>}
             {copySummaryStatus && copySummaryStatus.startsWith('error') && (
               <span className="text-xs text-red-600">{copySummaryStatus}</span>
+            )}
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={resetStatus === 'resetting'}
+              title="Xoá toàn bộ kết quả test đã lưu để bắt đầu một đợt chạy mới -- không ảnh hưởng Cấu hình cụm/RGW/baseline"
+              className="ml-auto rounded border border-red-300 text-red-600 text-xs px-3 py-1.5 disabled:opacity-50"
+            >
+              {resetStatus === 'resetting' ? 'Đang reset...' : 'Reset kết quả'}
+            </button>
+            {resetStatus && resetStatus.startsWith('error') && (
+              <span className="text-xs text-red-600">{resetStatus}</span>
             )}
           </div>
         </section>
