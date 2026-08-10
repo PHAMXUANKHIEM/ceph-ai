@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
+from dashboard.routes.settings import restart_watcher
 from dashboard.templating import make_templates
 from shared import db
 from shared.clusters import ensure_default_cluster
@@ -167,10 +168,24 @@ async def create_cluster(
         )
         session.commit()
 
+    # `run_all_clusters()` (watcher/main.py) only ever enumerates the
+    # "Đang hoạt động" cluster list ONCE, at Watcher process startup — one
+    # background poll thread per cluster, started then and never again.
+    # Without restarting Watcher here, a newly-added cluster sits in the DB
+    # with no poll thread ever started for it: no heartbeat, no Incident,
+    # ever — the Dashboard's cluster selector would show it as if it were
+    # never actually being watched. Same "save = restart the process that
+    # reads this config" posture every other config page in this app already
+    # has (Alert Telegram, Settings' own "Kết nối cụm Ceph").
+    await asyncio.to_thread(restart_watcher)
+
     return templates.TemplateResponse(
         request,
         "clusters.html",
-        _clusters_context(user, cluster_create_success=f"Đã thêm cụm {submitted['name']!r}."),
+        _clusters_context(
+            user,
+            cluster_create_success=f"Đã thêm cụm {submitted['name']!r} — Watcher đã khởi động lại để bắt đầu giám sát ngay.",
+        ),
     )
 
 
@@ -180,8 +195,9 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
     WatcherHeartbeat row may already reference this cluster_id). The
     default cluster can never be a target here — deactivating it would stop
     Watcher's PRIMARY loop, including every secondary monitor and Worker's
-    remediation, none of which this page controls; that stays a
-    Worker/Watcher-restart decision on /settings."""
+    remediation, none of which this page controls; that stays a config
+    change on /settings' own "Kết nối cụm Ceph" section instead. Restarts
+    Watcher on success (see create_cluster()'s own comment for why)."""
     _require_admin_privilege(user)
 
     with db.SessionLocal() as session:
@@ -204,5 +220,11 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
             )
         target.is_active = not target.is_active
         session.commit()
+
+    # Same reasoning as create_cluster() above — Watcher only enumerates
+    # "Đang hoạt động" clusters once at startup, so flipping is_active here
+    # has no real effect (poll thread doesn't start/stop) until Watcher
+    # restarts.
+    await asyncio.to_thread(restart_watcher)
 
     return templates.TemplateResponse(request, "clusters.html", _clusters_context(user))

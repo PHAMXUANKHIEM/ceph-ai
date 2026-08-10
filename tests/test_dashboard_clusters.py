@@ -22,6 +22,21 @@ def _cluster_form_data(**overrides):
     return data
 
 
+def _stub_restart_watcher(monkeypatch):
+    """create_cluster()/toggle_cluster_active() now call the REAL
+    restart_watcher() (dashboard/routes/settings.py) on success — that
+    spawns an actual `python -m watcher.main` OS subprocess via
+    subprocess.Popen (see _start_process()), same as every other route
+    that touches Worker/Watcher config. Every test below that reaches a
+    successful create/toggle MUST stub this out, same convention
+    test_dashboard_settings.py already uses for restart_worker — verified
+    live, 2026-08-10: forgetting this once actually spawned a real Watcher
+    process mid test-run, inheriting pytest's own process env (test fixture
+    MON IPs) into a real background process still running after the test
+    suite exited."""
+    monkeypatch.setattr(clusters_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 1, "error": None})
+
+
 def test_unauthenticated_get_clusters_redirects_to_login(dashboard_client):
     response = dashboard_client.get("/clusters", follow_redirects=False)
     assert response.status_code == 303
@@ -38,6 +53,7 @@ def test_get_clusters_page_shows_default_cluster(dashboard_client, default_clust
 
 def test_create_cluster_tests_connection_before_saving(dashboard_client, monkeypatch):
     monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
+    _stub_restart_watcher(monkeypatch)
 
     _login(dashboard_client)
     response = dashboard_client.post("/clusters/create", data=_cluster_form_data())
@@ -65,6 +81,7 @@ def test_create_cluster_never_touches_the_default_clusters_sticky_mon_node(dashb
         return {"status": "HEALTH_OK"}
 
     monkeypatch.setattr(clusters_route, "query_cluster_health_with", fake_query)
+    _stub_restart_watcher(monkeypatch)
 
     _login(dashboard_client)
     dashboard_client.post("/clusters/create", data=_cluster_form_data())
@@ -102,6 +119,7 @@ def test_create_cluster_missing_required_field_skips_connection_test(dashboard_c
 
 def test_toggle_active_flips_an_additional_cluster(dashboard_client, monkeypatch):
     monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
+    _stub_restart_watcher(monkeypatch)
     _login(dashboard_client)
     dashboard_client.post("/clusters/create", data=_cluster_form_data())
     with db_module.SessionLocal() as session:
@@ -129,6 +147,7 @@ def test_toggle_active_rejects_the_default_cluster(dashboard_client, default_clu
 
 def test_index_filters_incidents_by_selected_cluster(dashboard_client, monkeypatch, default_cluster_id):
     monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
+    _stub_restart_watcher(monkeypatch)
     _login(dashboard_client)
     dashboard_client.post("/clusters/create", data=_cluster_form_data())
     with db_module.SessionLocal() as session:
