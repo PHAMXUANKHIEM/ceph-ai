@@ -42,6 +42,7 @@ def _users_context(
 ) -> dict:
     return {
         "user": user,
+        "is_admin": auth.is_admin_user(user),
         "users": _list_users(),
         "user_create_error": user_create_error,
         "user_create_success": user_create_success,
