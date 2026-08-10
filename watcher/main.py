@@ -16,6 +16,7 @@ from watcher import (
     crush_distribution_monitor,
     crush_skew_monitor,
     crush_structure_monitor,
+    database_capacity_monitor,
     device_health_monitor,
     node_health_monitor,
     osd_latency_monitor,
@@ -25,6 +26,7 @@ from watcher import (
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
 from watcher.ceph_client import CephQueryError, query_cluster_health, query_cluster_health_with
 from watcher.crush_skew_monitor import CRUSH_SKEW_PG_PREFIX, CRUSH_SKEW_USE_PREFIX
+from watcher.database_capacity_monitor import DATABASE_SIZE_HIGH_PREFIX
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
@@ -206,6 +208,16 @@ def _resolve_recovered_incidents(
                 # runs, hiding it from the operator before it can ever be
                 # acted on.
                 continue
+            if incident.ceph_code == DATABASE_SIZE_HIGH_PREFIX:
+                # 2026-08-10: same reasoning as every guard above --
+                # watcher/database_capacity_monitor.py owns this
+                # ceph_code's own create/resolve lifecycle (its own
+                # consecutive-scans streak), never a real `ceph health
+                # detail` check code. Exact `==`, not `.startswith`, since
+                # this ceph_code has no dynamic per-entity suffix (there
+                # is only ever one database) -- still functionally the
+                # same guard, just no colon-prefixed family to match.
+                continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
         session.commit()
@@ -385,6 +397,7 @@ def run(
     last_bluestore_omap_scan_at: Optional[datetime] = None
     last_osd_latency_scan_at: Optional[datetime] = None
     last_crush_scan_at: Optional[datetime] = None
+    last_database_size_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -577,6 +590,25 @@ def run(
             except Exception:
                 logger.exception("run: crush structure/distribution/skew scan failed")
             last_crush_scan_at = now
+
+        # 2026-08-10: ceph-aiops's OWN database size — own independent
+        # try/except (same isolation reasoning as every block above) and
+        # its OWN, deliberately much slower cadence
+        # (settings.database_size_scan_interval_seconds, default 1h) — see
+        # watcher/database_capacity_monitor.py's own module docstring for
+        # why this is not on the same tick as any Ceph-facing scan (this
+        # one doesn't touch Ceph at all).
+        if (
+            last_database_size_scan_at is None
+            or (now - last_database_size_scan_at).total_seconds()
+            >= settings.database_size_scan_interval_seconds
+        ):
+            try:
+                current_database_size = database_capacity_monitor.check_database_size()
+                database_capacity_monitor.create_or_resolve_database_size_incident(current_database_size)
+            except Exception:
+                logger.exception("run: database size scan failed")
+            last_database_size_scan_at = now
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))

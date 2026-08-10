@@ -329,6 +329,49 @@ bất thường, ảnh hưởng tail latency toàn cụm, không phải lỗi c�
 thể tự sửa.
 ```
 
+### 5.6. Dung lượng Database — `watcher/database_capacity_monitor.py`
+
+2026-08-10: khác 5 mục trên (đều về cụm Ceph), mục này giám sát dung
+lượng CHÍNH database vận hành của ceph-aiops (`shared/db.py`'s
+`database_url` — bảng Incident/Action/AuditEntry/BackupJob/ChatMessage/
+TestRunResult...), không đụng gì tới cụm Ceph. Ở deployment thực tế của
+dự án, DB là cụm Postgres do OpenEverest (Percona Everest) quản lý trên
+Kubernetes, một host riêng cùng dải mạng với ceph-aiops (không SSH được
+như node Ceph) — không có Prometheus/Everest API metrics nào khả dụng để
+biết dung lượng PVC còn trống, nên v1 CHỈ đo được kích thước của chính DB
+(`pg_database_size(current_database())`, chạy qua đúng kết nối
+SQLAlchemy hiện có, không mở kết nối mới), không đo được đĩa còn trống —
+xem chi tiết lý do trong docstring module.
+
+**Cách quét**: hỗ trợ CẢ 2 backend `database_url` có thể là — SQLite (đo
+trực tiếp kích thước file, không cần SQL) và mọi backend còn lại
+(Postgres, chạy `SELECT pg_database_size(current_database())`, câu SQL
+thô DUY NHẤT trong toàn bộ codebase — mọi truy vấn khác đều qua ORM).
+Chạy trên nhịp quét RIÊNG, CHẬM hơn hẳn mọi nhịp khác
+(`database_size_scan_interval_seconds`, **mặc định 1 giờ**) vì dung
+lượng DB chỉ biến động theo ngày/tuần, không theo giây.
+
+| Hằng số (`watcher/database_capacity_monitor.py`) | Giá trị mặc định | Ý nghĩa |
+|---|---|---|
+| `DATABASE_SIZE_THRESHOLD_BYTES` | 5 GiB | Kích thước DB ≥ ngưỡng này coi là cao — số khởi điểm, chưa đo trên dữ liệu tăng trưởng thật |
+| `CONSECUTIVE_SCANS_REQUIRED` | 2 | Phải cao liên tiếp bấy nhiêu lượt quét mới báo động |
+
+Tạo một `Incident` (`ceph_code = "DATABASE_SIZE_HIGH"`, không có suffix
+động vì chỉ có đúng 1 database) + một
+`Action(action_id="investigate_manually")` — không có remediation tự
+động (có thể do dữ liệu lịch sử tăng trưởng bình thường, hoặc 1 bảng
+đang phình bất thường, cần vận hành viên tự kiểm tra). Tự resolve khi
+kích thước quay dưới ngưỡng. **Chỉ gửi Telegram khi Incident MỚI được
+tạo**, cùng nguyên tắc như mục 5.1-5.5.
+
+```
+🟠 Database ceph-aiops gần đầy
+Database ceph-aiops đã đạt 6.20 GB, vượt ngưỡng 5.00 GB, lặp lại 2 lần
+quét liên tiếp — có thể do dữ liệu lịch sử (Incident/Action/Backup/
+Chat...) tăng trưởng bình thường theo thời gian, hoặc một bảng cụ thể
+đang phình bất thường, cần vận hành viên kiểm tra trực tiếp.
+```
+
 ## 6. Yêu cầu phê duyệt qua Telegram — mặc định của mọi kênh đã cấu hình
 
 Khác 3 mục trên: đây là nơi Telegram thực sự **hành động được**. Toàn bộ
@@ -519,11 +562,12 @@ tin thứ 2).
 | `config/settings.py` | 9 field cấu hình theo kênh (`telegram_{backup,incident,node}_{bot_token,chat_id,enabled}`) + `telegram_approval_scan_interval_seconds` + `cluster_name` (mục 1.6, dùng chung cả 3 kênh) |
 | `shared/env_config.py` | `TELEGRAM_BACKUP_ENV_NAMES`/`TELEGRAM_INCIDENT_ENV_NAMES`/`TELEGRAM_NODE_ENV_NAMES` — ánh xạ field ↔ biến `.env`, mỗi kênh 1 dict (`CLUSTER_NAME_ENV_NAME` của `cluster_name` khai báo cục bộ trong `dashboard/routes/telegram_alerts.py`, không ở đây) |
 | `shared/telegram_client.py` | Client Telegram Bot API dùng chung — gửi thuần (`send_telegram_message`) VÀ 4 hàm cho Phê duyệt (`send_telegram_message_with_keyboard`/`edit_telegram_message`/`get_telegram_updates`/`answer_telegram_callback`) |
-| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()`/`send_auto_remediation_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (`send_osd_latency_alert` + `send_node_alert` chia sẻ kênh Phần cứng; `send_auto_remediation_alert` dùng lại kênh Lỗi cụm); `_with_cluster_prefix()` chèn `cluster_name` (mục 1.6) vào mọi tin qua `_send()` |
+| `shared/telegram_alerts.py` | `send_incident_alert()`/`send_node_alert()`/`send_osd_latency_alert()`/`send_database_size_alert()`/`send_auto_remediation_alert()` — mỗi hàm dùng đúng cặp token/chat_id của kênh mình (`send_osd_latency_alert`/`send_database_size_alert` + `send_node_alert` chia sẻ kênh Phần cứng; `send_auto_remediation_alert` dùng lại kênh Lỗi cụm); `_with_cluster_prefix()` chèn `cluster_name` (mục 1.6) vào mọi tin qua `_send()` |
 | `worker/backup/alerting.py` | `send_alert()` → `_send_telegram_alert()` dùng cặp token/chat_id kênh Backup, tự chèn `cluster_name` (bản sao logic riêng, không import `shared/telegram_alerts.py` qua ranh giới worker/watcher) |
-| `watcher/main.py` | `build_and_publish_incident()` gọi `send_incident_alert()`; nhịp quét `node_health_monitor`/`osd_latency_monitor` trong `run()` |
+| `watcher/main.py` | `build_and_publish_incident()` gọi `send_incident_alert()`; nhịp quét `node_health_monitor`/`osd_latency_monitor`/`database_capacity_monitor` trong `run()` |
 | `watcher/node_health_monitor.py` | Toàn bộ logic quét CPU/RAM + ngưỡng + vòng đời Incident cho cảnh báo phần cứng (node) |
 | `watcher/osd_latency_monitor.py` | Toàn bộ logic quét `ceph osd perf` + so trung vị cụm + vòng đời Incident cho OSD latency outlier |
+| `watcher/database_capacity_monitor.py` | Toàn bộ logic đo kích thước database ceph-aiops (SQLite file hoặc `pg_database_size()`) + ngưỡng + vòng đời Incident (mục 5.6) |
 | `worker/llm/router_client.py` | `_record_execution_result()` gọi `send_auto_remediation_alert()` sau khi một Action SAFE thực thi xong (mục 7) |
 | `dashboard/telegram_approval_bot.py` | Broadcast tới mọi kênh đã cấu hình (kèm `Incident.diagnosis_text`, mục 6.6, và `cluster_name` nếu có, mục 1.6) + listener gom theo bot token + trust model + idempotent + `has_configured_channel()` (mục 6.7) |
 | `dashboard/routes/actions.py` | `approve_action_core`/`reject_action_core` — logic Duyệt/Từ chối DÙNG CHUNG giữa nút HTML và nút Telegram |

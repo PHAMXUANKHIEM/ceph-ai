@@ -148,6 +148,19 @@ def send_crush_skew_alert(signal: str, entity_label: str, message: str) -> None:
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Lệch tải CRUSH: {label}\n{message}")
 
 
+def send_database_size_alert(message: str) -> None:
+    """Called once per NEWLY-flagged database-size Incident
+    (watcher/database_capacity_monitor.py::create_or_resolve_database_size_incident
+    — only when a new Incident is created, same "one notification per
+    genuinely new problem" posture as send_node_alert/send_osd_latency_alert/
+    send_crush_skew_alert above). Shares the Phần cứng channel with those 3
+    — this is about a resource running out (the app's own DB storage), not
+    a Ceph-cluster check, same reasoning AD-31 already established for not
+    opening a 4th channel. No entity/label parameter -- there is only ever
+    one database, unlike the per-osd/per-host/per-CRUSH-entity alerts above."""
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Database ceph-aiops gần đầy\n{message}")
+
+
 def send_auto_remediation_alert(
     ceph_code: str,
     diagnosis_text: str | None,

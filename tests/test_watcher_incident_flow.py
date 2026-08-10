@@ -221,6 +221,24 @@ def test_crush_skew_incidents_are_never_auto_resolved_by_recovery(isolated_db):
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_database_size_incident_is_never_auto_resolved_by_recovery(isolated_db):
+    # 2026-08-10: same bug class/guard as CRUSH_SKEW_USE/PG above --
+    # watcher/database_capacity_monitor.py's synthetic Incident (ceph_code
+    # "DATABASE_SIZE_HIGH", no dynamic suffix -- there is only ever one
+    # database) never matches a real `ceph health detail` check code
+    # either. Without this guard, it would self-resolve on the very next
+    # poll, hiding it from the operator before it can ever be seen at
+    # PENDING_APPROVAL.
+    pending_id = _seed_incident("DATABASE_SIZE_HIGH", IncidentStatus.PENDING_APPROVAL.value)
+    real_failed_id = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, pending_id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
+
+
 def test_already_terminal_incidents_are_never_touched_by_recovery(isolated_db):
     resolved_id = _seed_incident("OSD_DOWN", IncidentStatus.RESOLVED.value)
     auto_fixed_id = _seed_incident("MON_CLOCK_SKEW", IncidentStatus.AUTO_FIXED.value)

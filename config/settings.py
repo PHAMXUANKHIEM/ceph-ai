@@ -338,5 +338,13 @@ class Settings(BaseSettings):
     # osd_latency_scan_interval_seconds above.
     crush_scan_interval_seconds: int = 60
 
+    # watcher/database_capacity_monitor.py's own cadence -- deliberately
+    # much slower than every other scan above: this app's own DB size
+    # grows on a scale of days/weeks, not seconds, and checking it every
+    # tick would be pure overhead (a file stat for SQLite, or a real
+    # round trip to the separate OpenEverest-managed Postgres cluster for
+    # everything else) for no operational benefit. 1 hour by default.
+    database_size_scan_interval_seconds: int = 3600
+
 settings = Settings()
 
