@@ -138,19 +138,27 @@ def _skew_ratio(
     expected_ratio`, both ratios computed LOCALLY within the sibling group
     (never against a cluster-wide total).
 
-    Returns `None` if `own_actual` is missing (no data for this entity this
-    scan -- skip it, do not fabricate a Skew value). Returns `1.0` (max
-    skew) if the expected share is zero (`own_weight` is 0/None, or the
-    whole sibling group's Weight sums to 0) but the entity still has real
-    actual data -- the formula's denominator would otherwise be a division
-    by zero (PRD FR-8 AC #2, a draining OSD/Host is the canonical example).
-    Returns `0.0` in the same zero-expected-share case if `own_actual` is
-    also 0 -- both sides being zero is not an anomaly.
+    Returns `None` if `own_actual` OR `own_weight` is missing (no data for
+    this entity this scan -- skip it, do not fabricate a Skew value; a
+    missing Weight is distinct from a real Weight of 0, see below). Returns
+    `1.0` (max skew) if the expected share is zero (`own_weight` is a real
+    `0`, or the whole sibling group's Weight sums to 0) but the entity still
+    has real actual data -- the formula's denominator would otherwise be a
+    division by zero (PRD FR-8 AC #2, a draining OSD/Host is the canonical
+    example). Returns `0.0` in the same zero-expected-share case if
+    `own_actual` is also 0 -- both sides being zero is not an anomaly.
     """
     if own_actual is None:
         return None
 
-    own_weight = own_weight or 0
+    if own_weight is None:
+        # Distinct from a real Weight of 0 (the draining case below) --
+        # this means no Weight data exists for this entity at all (e.g. a
+        # CrushStructureSnapshot row written before crush_structure_monitor.py's
+        # own leaf-Weight fix, see that module's docstring). Skip silently
+        # rather than misreport it as fully drained (max skew).
+        return None
+
     if own_weight <= 0 or siblings_weight_sum <= 0:
         return 1.0 if own_actual > 0 else 0.0
 
@@ -337,14 +345,28 @@ def check_crush_skew() -> dict[str, dict]:
     return flagged
 
 
+def _share_pct(numerator: int | None, denominator: int) -> str:
+    """Renders `numerator/denominator` as a rounded percentage string, or
+    an em-dash if it can't be computed (missing numerator, zero
+    denominator) -- used to surface the actual/expected LOCAL share FR-9
+    requires ("so với kỳ vọng bao nhiêu"), not just the derived relative
+    skew ratio."""
+    if numerator is None or denominator <= 0:
+        return "—"
+    return f"{(numerator / denominator) * 100:.0f}%"
+
+
 def _rationale_for(detail: dict) -> str:
     entity_label = (
         f"osd.{detail['entity_id']}" if detail["entity_type"] == "osd" else f"host {detail['entity_id']}"
     )
     signal_label = "%%USE" if detail["signal"] == "USE" else "số PG"
+    actual_pct = _share_pct(detail["own_actual"], detail["siblings_actual_sum"])
+    expected_pct = _share_pct(detail["own_weight"], detail["siblings_weight_sum"])
     return (
         f"{entity_label} lệch tải {detail['skew'] * 100:.0f}% so với tỷ trọng kỳ vọng theo Weight "
-        f"(tính theo {signal_label}, so cục bộ trong nhóm anh em cùng Bucket cha), "
+        f"(tính theo {signal_label}, so cục bộ trong nhóm anh em cùng Bucket cha): "
+        f"hiện chiếm {actual_pct} trong nhóm, kỳ vọng {expected_pct}, "
         f"lặp lại {detail['consecutive_scans']} lần quét liên tiếp — có thể do cấu hình Weight sai, "
         f"cụm đang rebalance kéo dài bất thường, hoặc phần cứng gánh tải không đều."
     )

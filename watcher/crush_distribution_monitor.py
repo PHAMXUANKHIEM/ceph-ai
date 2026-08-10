@@ -48,7 +48,15 @@ def collect_osd_distribution() -> dict[int, dict] | None:
     if not isinstance(nodes, list):
         return None
 
-    host_by_osd_id = {o["osd_id"]: o.get("crush_host") for o in ceph_client.list_osds()}
+    try:
+        host_by_osd_id = {o["osd_id"]: o.get("crush_host") for o in ceph_client.list_osds()}
+    except CephQueryError:
+        # A MON hiccup here must not discard the bytes/pgs data the `ceph
+        # osd df` call above already succeeded at fetching -- degrade to
+        # "no host enrichment this scan" rather than raising out of a
+        # function documented (and tested) to always return `None` or a
+        # populated dict, never propagate an exception.
+        host_by_osd_id = {}
 
     result: dict[int, dict] = {}
     for node in nodes:

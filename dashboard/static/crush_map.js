@@ -94,9 +94,13 @@
       var badge = document.createElement("span");
       var kind = node.recent_change.kind;
       badge.className = "crush-node-badge " + (kind === "added" ? "is-added" : "is-reweighted");
-      badge.textContent = kind === "added"
+      var changeDesc = kind === "added"
         ? "Mới thêm"
         : "Đổi Weight " + fmtWeight(node.recent_change.old_weight) + " → " + fmtWeight(node.recent_change.new_weight);
+      var changedAt = node.recent_change.changed_at
+        ? " (" + new Date(node.recent_change.changed_at).toLocaleString("vi-VN") + ")"
+        : "";
+      badge.textContent = changeDesc + changedAt;
       row.appendChild(badge);
     }
 
@@ -159,14 +163,22 @@
     treeEl.hidden = false;
   }
 
+  var latestPollSeq = 0;
+
   function poll() {
+    var seq = ++latestPollSeq;
     fetch("/api/crush-map/tree", { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
-      .then(renderTree)
+      .then(function (data) {
+        // A slower response resolving after a later, faster poll's
+        // response must not overwrite the DOM with stale tree/usage data.
+        if (seq === latestPollSeq) renderTree(data);
+      })
       .catch(function () {
+        if (seq !== latestPollSeq) return;
         // Transient network hiccup — next tick retries, same posture as
         // backups.js's own poll loop.
         hideAllStates();
@@ -294,6 +306,12 @@
   }
 
   function loadPage(before) {
+    // Guards against a fast double-click on "Xem thêm" firing two requests
+    // for the same cursor, which would duplicate every item on that page
+    // (renderItems' append path has no dedup of its own).
+    if (loadMoreBtn.disabled) return;
+    loadMoreBtn.disabled = true;
+
     var url = "/api/crush-map/history?limit=20" + (before ? "&before=" + encodeURIComponent(before) : "");
     fetch(url, { credentials: "same-origin" })
       .then(function (response) {
@@ -304,6 +322,7 @@
         renderItems(data.items, !!before);
         nextBefore = data.next_before;
         loadMoreBtn.hidden = !nextBefore;
+        loadMoreBtn.disabled = false;
         if (!before) {
           emptyEl.hidden = data.items.length > 0;
           listEl.hidden = data.items.length === 0;
@@ -312,6 +331,7 @@
       .catch(function () {
         // Transient hiccup — history isn't live-critical like the tree,
         // no retry loop; the admin can just reopen the page.
+        loadMoreBtn.disabled = false;
       });
   }
 

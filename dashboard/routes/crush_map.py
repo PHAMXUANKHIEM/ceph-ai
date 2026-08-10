@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import and_, or_
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
@@ -67,18 +68,29 @@ def _load_distribution_by_osd_id() -> dict[int, dict]:
         }
 
 
-def _recent_change_map(diff: dict | None) -> dict[int, dict]:
+def _recent_change_map(diff: dict | None, changed_at: str) -> dict[int, dict]:
     """Only `added`/`reweighted` entries can be attached to a node still
     present in the current tree -- a `removed` entry references a node that,
     by definition, no longer exists to attach a badge to (it only ever
-    surfaces via the history detail view, see `_snapshot_detail`)."""
+    surfaces via the history detail view, see `_snapshot_detail`).
+
+    `changed_at` (the owning Snapshot's own `created_at`, ISO string) is
+    attached to every entry -- Story 12.3 AC #6 requires the badge to
+    include "thời điểm đổi" (when the change happened), not just what
+    changed; every entry in one Snapshot's diff shares the same moment by
+    definition (one Snapshot = one point in time)."""
     if not diff:
         return {}
     changes: dict[int, dict] = {}
     for item in diff.get("added") or []:
         node_id = item.get("id")
         if node_id is not None:
-            changes[node_id] = {"kind": "added", "name": item.get("name"), "type": item.get("type")}
+            changes[node_id] = {
+                "kind": "added",
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "changed_at": changed_at,
+            }
     for item in diff.get("reweighted") or []:
         node_id = item.get("id")
         if node_id is not None:
@@ -88,6 +100,7 @@ def _recent_change_map(diff: dict | None) -> dict[int, dict]:
                 "type": item.get("type"),
                 "old_weight": item.get("old_weight"),
                 "new_weight": item.get("new_weight"),
+                "changed_at": changed_at,
             }
     return changes
 
@@ -169,7 +182,7 @@ def _build_tree_response(latest: CrushStructureSnapshot) -> dict:
         diff is not None
         and datetime.utcnow() - latest.created_at <= timedelta(hours=RECENT_CHANGE_HOURS)
     )
-    changes = _recent_change_map(diff) if is_recent else {}
+    changes = _recent_change_map(diff, latest.created_at.isoformat()) if is_recent else {}
     distribution = _load_distribution_by_osd_id()
 
     return {
@@ -213,12 +226,16 @@ async def crush_map_history_api(
     limit: int = Query(DEFAULT_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT),
     before: str | None = Query(None),
 ):
-    """Newest-first, simple cursor pagination via `before` (an ISO
-    `created_at` string from the last item of the previous page — pass it
-    straight back to fetch the next older page). Only rows with a real
-    `diff_json` are "a time the structure changed" (FR-5/FR62) — the very
-    first snapshot ever taken has `diff_json=None` (no baseline to diff
-    against) and is deliberately excluded here, same distinction
+    """Newest-first, simple cursor pagination via `before` (an opaque
+    `<created_at ISO>|<id>` cursor from the last item of the previous page
+    — pass it straight back to fetch the next older page). The `id` half
+    is a tie-breaker: `created_at` alone is not unique enough to paginate
+    on safely (two rows can share the exact same timestamp at a page
+    boundary), so both `ORDER BY` and the cursor filter use
+    `(created_at, id)` together, not `created_at` alone. Only rows with a
+    real `diff_json` are "a time the structure changed" (FR-5/FR62) — the
+    very first snapshot ever taken has `diff_json=None` (no baseline to
+    diff against) and is deliberately excluded here, same distinction
     `crush_structure_monitor.py::scan_and_store` itself draws."""
     _require_admin_privilege(user)
 
@@ -227,13 +244,28 @@ async def crush_map_history_api(
             CrushStructureSnapshot.diff_json.isnot(None)
         )
         if before:
+            before_ts, _, before_id = before.rpartition("|")
             try:
-                before_dt = datetime.fromisoformat(before)
+                before_dt = datetime.fromisoformat(before_ts)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Tham số 'before' không hợp lệ")
-            query = query.filter(CrushStructureSnapshot.created_at < before_dt)
+            if not before_id:
+                raise HTTPException(status_code=400, detail="Tham số 'before' không hợp lệ")
+            query = query.filter(
+                or_(
+                    CrushStructureSnapshot.created_at < before_dt,
+                    and_(
+                        CrushStructureSnapshot.created_at == before_dt,
+                        CrushStructureSnapshot.id < before_id,
+                    ),
+                )
+            )
 
-        rows = query.order_by(CrushStructureSnapshot.created_at.desc()).limit(limit).all()
+        rows = (
+            query.order_by(CrushStructureSnapshot.created_at.desc(), CrushStructureSnapshot.id.desc())
+            .limit(limit)
+            .all()
+        )
 
         items = []
         for row in rows:
@@ -248,7 +280,7 @@ async def crush_map_history_api(
                 }
             )
 
-        next_before = items[-1]["created_at"] if len(items) == limit else None
+        next_before = f"{rows[-1].created_at.isoformat()}|{rows[-1].id}" if len(items) == limit else None
         return {"items": items, "next_before": next_before}
 
 

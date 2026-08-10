@@ -338,5 +338,5 @@ class Settings(BaseSettings):
     # osd_latency_scan_interval_seconds above.
     crush_scan_interval_seconds: int = 60
 
-
 settings = Settings()
+
