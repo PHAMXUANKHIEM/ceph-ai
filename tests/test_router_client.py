@@ -18,6 +18,7 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    Cluster,
     Incident,
     IncidentStatus,
     SystemFlag,
@@ -88,7 +89,7 @@ def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, m
     monkeypatch.setattr(router_client.default_redactor, "redact", spying_redact)
     # Story 3.2: resync_ntp is SAFE and now auto-executes — this test cares
     # about diagnosis_text/Action creation, not execution, so stub it out.
-    monkeypatch.setattr(router_client, "execute_command", lambda host, command: "ok")
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
 
     _create_incident("incident-1")
     envelope = dict(ENVELOPE, incident_id="incident-1")
@@ -122,7 +123,7 @@ def test_diagnose_incident_called_twice_does_not_create_duplicate_action(isolate
         return {"diagnosis_text": "second diagnosis", "action_id": "restart_osd_daemon", "rationale": "r2"}
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
-    monkeypatch.setattr(router_client, "execute_command", lambda host, command: "ok")
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
 
     _create_incident("incident-1c")
     envelope = dict(ENVELOPE, incident_id="incident-1c")
@@ -220,7 +221,7 @@ def test_diagnose_incident_routes_risky_action_normally_once_upgrade_resolved(
         }
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
-    monkeypatch.setattr(router_client.commands, "execute_command", lambda host, command: "")
+    monkeypatch.setattr(router_client.commands, "execute_command", lambda host, command, **kwargs: "")
 
     upgrade_incident = Incident(
         id="upgrade-incident-2",
@@ -266,7 +267,7 @@ def test_diagnose_incident_keeps_restart_osd_daemon_risky(isolated_db, monkeypat
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: pytest.fail("must not execute")
+        router_client, "execute_command", lambda host, command, **kwargs: pytest.fail("must not execute")
     )
 
     _create_incident("incident-auto-2")
@@ -552,7 +553,7 @@ async def _fake_call_router_risky(user_content):
 def test_diagnose_incident_executes_safe_action_and_marks_auto_fixed(isolated_db, monkeypatch):
     execute_calls = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         execute_calls.append((host, command))
         return "ok"
 
@@ -578,8 +579,39 @@ def test_diagnose_incident_executes_safe_action_and_marks_auto_fixed(isolated_db
         assert entry.actor == audit.ACTOR_SYSTEM
 
 
+def test_diagnose_incident_safe_action_uses_envelopes_own_cluster_creds_not_default(isolated_db, monkeypatch):
+    """2026-08-10 (multi-tenant remediation Phase 1) regression guard: the
+    envelope's own ssh_user/ssh_key_path (a NON-default cluster's, in this
+    test) must reach execute_command() exactly as given — never silently
+    falling back to the default cluster's settings.ssh_user/ssh_key_path.
+    This is the single most important test in this file given the
+    credential-mixup risk the whole feature exists to avoid."""
+    execute_calls = []
+
+    def fake_execute(host, command, user=None, key_path=None):
+        execute_calls.append((host, user, key_path))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+
+    _create_incident("incident-5z")
+    envelope = dict(
+        ENVELOPE,
+        incident_id="incident-5z",
+        nodes=["10.30.1.20"],
+        cluster_id="other-cluster-id",
+        ssh_user="other-cluster-user",
+        ssh_key_path="/root/.ssh/other-cluster-key",
+    )
+
+    asyncio.run(router_client.diagnose_incident("incident-5z", envelope))
+
+    assert execute_calls == [("10.30.1.20", "other-cluster-user", "/root/.ssh/other-cluster-key")]
+
+
 def test_diagnose_incident_marks_failed_when_any_node_execution_fails(isolated_db, monkeypatch):
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if host == "10.20.1.253":
             raise router_client.ExecutorError(f"{host}: command exited 1")
         return "ok"
@@ -616,7 +648,7 @@ def test_diagnose_incident_skips_execution_and_routes_to_approval_when_kill_swit
     execute_calls = []
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(1)
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(1)
     )
 
     _create_incident("incident-5c")
@@ -696,7 +728,7 @@ def test_diagnose_incident_risky_action_never_executes_regardless_of_kill_switch
     execute_calls = []
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(1)
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(1)
     )
 
     _create_incident("incident-5d")
@@ -726,7 +758,7 @@ def test_diagnose_incident_kill_switch_checked_before_each_node_not_just_once(
 
     execute_calls = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         execute_calls.append(host)
         if host == "10.20.1.249":
             # Flip the switch ON right after the first node's check passes,
@@ -768,7 +800,7 @@ def test_diagnose_incident_kill_switch_on_before_any_node_routes_cleanly_to_appr
     execute_calls = []
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(host)
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host)
     )
 
     _create_incident("incident-5f")
@@ -805,7 +837,7 @@ def test_diagnose_incident_recovers_pending_action_left_by_a_crashed_prior_attem
     execute_calls = []
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(host) or "ok"
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host) or "ok"
     )
 
     envelope = dict(ENVELOPE, incident_id="incident-5g")
@@ -828,7 +860,7 @@ def test_diagnose_incident_risky_action_records_pending_approval_audit_entry(
 ):
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_risky)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: pytest.fail("must not execute")
+        router_client, "execute_command", lambda host, command, **kwargs: pytest.fail("must not execute")
     )
 
     _create_incident("incident-6a")
@@ -890,7 +922,7 @@ def _approved_action(session, incident_id: str, action_id: str = "restart_osd_da
 def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db, monkeypatch):
     execute_calls = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.3.service   loaded active running   x\n"
         execute_calls.append(host)
@@ -918,6 +950,57 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
 
 
+def test_execute_approved_action_uses_incidents_own_cluster_creds_not_default(isolated_db, monkeypatch):
+    """2026-08-10 (multi-tenant remediation Phase 1) regression guard: by the
+    time an operator approves a RISKY action, the original RabbitMQ envelope
+    is long gone — Incident.cluster_id -> Cluster is the only place left to
+    resolve creds from. Must be that cluster's own ssh_user/ssh_key_path,
+    never settings.ssh_user/settings.ssh_key_path (the default cluster's)."""
+    execute_calls = []
+
+    def fake_execute(host, command, user=None, key_path=None):
+        if command == "systemctl --all | grep ceph || true":
+            return "  ceph-fsid@osd.9.service   loaded active running   x\n"
+        execute_calls.append((host, user, key_path))
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-b",
+            ceph_mon_nodes="10.30.1.10",
+            ssh_user="other-cluster-user",
+            ssh_key_path="/root/.ssh/other-cluster-key",
+            ceph_exec_mode="docker",
+            is_default=False,
+            is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        session.refresh(cluster)
+        cluster_id = cluster.id
+
+    with db_module.SessionLocal() as session:
+        session.add(
+            Incident(
+                id="incident-cross-cluster",
+                ceph_code="OSD_DOWN",
+                status=IncidentStatus.DIAGNOSING.value,
+                detected_at=datetime.utcnow(),
+                cluster_id=cluster_id,
+            )
+        )
+        session.commit()
+        action = _approved_action(session, "incident-cross-cluster", nodes=["10.30.1.20"])
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert execute_calls == [("10.30.1.20", "other-cluster-user", "/root/.ssh/other-cluster-key")]
+
+
 def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_restarts(
     isolated_db, monkeypatch
 ):
@@ -927,7 +1010,7 @@ def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_
     }
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return systemctl_outputs[host]
         executed.append((host, command))
@@ -968,7 +1051,7 @@ def test_execute_approved_action_persists_execution_progress_per_host(
         "10.20.1.95": "  ceph-fsid@osd.1.service   loaded active running   x\n",
     }
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return systemctl_outputs[host]
         return "ok"
@@ -1016,7 +1099,7 @@ def test_execute_approved_action_package_upgrade_runs_require_osd_release_finali
 ):
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         executed.append((host, command))
         return "ok"
 
@@ -1063,7 +1146,7 @@ def test_execute_approved_action_package_upgrade_finalize_failure_does_not_fail_
     successful multi-node upgrade into FAILED."""
     from worker.executor.ssh_executor import ExecutorError
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command.startswith("ceph osd require-osd-release"):
             raise ExecutorError("mon unreachable")
         return "ok"
@@ -1106,7 +1189,7 @@ def test_execute_approved_action_non_package_action_skips_finalize(isolated_db, 
     trigger the require-osd-release finalization step."""
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.3.service   loaded active running   x\n"
         executed.append((host, command))
@@ -1138,7 +1221,7 @@ def test_execute_approved_action_package_upgrade_sets_flags_before_hosts_and_uns
 ):
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         executed.append((host, command))
         return "ok"
 
@@ -1199,7 +1282,7 @@ def test_execute_approved_action_package_upgrade_proceeds_when_set_flags_fails(
     the require-osd-release finalize step."""
     from worker.executor.ssh_executor import ExecutorError
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command.startswith("ceph osd set"):
             raise ExecutorError("mon busy")
         return "ok"
@@ -1244,7 +1327,7 @@ def test_execute_approved_action_package_upgrade_unset_failure_does_not_fail_act
 ):
     from worker.executor.ssh_executor import ExecutorError
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command.startswith("ceph osd unset"):
             raise ExecutorError("mon unreachable")
         return "ok"
@@ -1287,7 +1370,7 @@ def test_execute_approved_action_package_upgrade_skips_flags_when_no_mon_configu
 ):
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         executed.append((host, command))
         return "ok"
 
@@ -1355,7 +1438,7 @@ def test_execute_approved_action_package_upgrade_runs_install_then_mon_then_osd_
 
     calls = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         calls.append((host, command))
         if command == "systemctl --all | grep ceph || true":
             return discovery_output.get(host, "")
@@ -1421,7 +1504,7 @@ def test_execute_approved_action_package_upgrade_colocated_host_not_double_resta
 
     calls = []
 
-    def fake_execute(h, command):
+    def fake_execute(h, command, **kwargs):
         calls.append((h, command))
         if command == "systemctl --all | grep ceph || true":
             return discovery_output
@@ -1486,7 +1569,7 @@ def test_execute_approved_action_package_upgrade_kill_switch_mid_phase_marks_fai
         osd_host: "  ceph-osd@0.service   loaded active running   x\n",
     }
 
-    def fake_execute(h, command):
+    def fake_execute(h, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return discovery_output.get(h, "")
         if "systemctl restart ceph-mon" in command:
@@ -1547,7 +1630,7 @@ def test_execute_approved_action_package_upgrade_restarts_leftover_rgw_host_in_f
 
     rgw_host = "10.20.1.13"
 
-    def fake_execute(h, command):
+    def fake_execute(h, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
         return "ok"
@@ -1600,7 +1683,7 @@ def test_execute_approved_action_package_upgrade_host_with_no_leftover_units_get
 
     host = "10.20.1.14"
 
-    def fake_execute(h, command):
+    def fake_execute(h, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return ""  # nothing discovered at all
         return "ok"
@@ -1655,7 +1738,7 @@ def test_execute_approved_action_package_upgrade_skips_restart_for_host_with_fai
 
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         executed.append((host, command))
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-mon@a.service   loaded active running   x\n"
@@ -1723,7 +1806,7 @@ def test_execute_approved_action_package_upgrade_kill_switch_mid_sequence_skips_
         mgr_host: "  ceph-mgr@a.service   loaded active running   x\n",
     }
 
-    def fake_execute(h, command):
+    def fake_execute(h, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return discovery_output.get(h, "")
         if "systemctl restart ceph-mon" in command:
@@ -1783,7 +1866,7 @@ def test_execute_approved_action_package_upgrade_mds_rgw_phase_kill_switch_recor
     rgw2 = "10.20.1.51"
     nodes = [rgw1, rgw2]
 
-    def fake_execute(h, command):
+    def fake_execute(h, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
         if "systemctl restart" in command and h == rgw1:
@@ -1840,7 +1923,7 @@ def test_execute_approved_action_package_upgrade_unexpected_exception_still_unse
     mon_host = "10.20.1.60"
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         executed.append((host, command))
         if command == "systemctl --all | grep ceph || true":
             raise RuntimeError("ssh transport blew up")
@@ -1895,7 +1978,7 @@ def test_execute_approved_action_cephadm_upgrade_skips_router_clients_own_flags_
     contains "ceph osd set noout" as a substring within its own chain."""
     executed = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         executed.append((host, command))
         return "ok"
 
@@ -1932,7 +2015,7 @@ def test_execute_approved_action_cephadm_upgrade_skips_router_clients_own_flags_
 def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monkeypatch):
     from worker.executor.ssh_executor import ExecutorError
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.0.service   loaded active running   x\n"
         raise ExecutorError(f"{host}: boom")
@@ -1971,7 +2054,7 @@ def test_execute_approved_action_logs_start_and_completion_per_host(
         "10.20.1.95": "  ceph-fsid@osd.1.service   loaded active running   x\n",
     }
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return systemctl_outputs[host]
         return "ok"
@@ -2007,7 +2090,7 @@ def test_execute_approved_action_logs_start_and_completion_per_host(
 def test_execute_approved_action_ssh_failure_marks_failed(isolated_db, monkeypatch):
     from worker.executor.ssh_executor import ExecutorError
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         raise ExecutorError("boom")
 
     monkeypatch.setattr(router_client, "execute_command", fake_execute)
@@ -2030,7 +2113,7 @@ def test_execute_approved_action_ssh_failure_marks_failed(isolated_db, monkeypat
 
 def test_execute_approved_action_no_command_defined_marks_failed(isolated_db, monkeypatch):
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: pytest.fail("must not execute")
+        router_client, "execute_command", lambda host, command, **kwargs: pytest.fail("must not execute")
     )
 
     _create_incident("incident-7c")
@@ -2049,7 +2132,7 @@ def test_execute_approved_action_no_command_defined_marks_failed(isolated_db, mo
 
 def test_execute_approved_action_malformed_target_nodes_marks_failed(isolated_db, monkeypatch):
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: pytest.fail("must not execute")
+        router_client, "execute_command", lambda host, command, **kwargs: pytest.fail("must not execute")
     )
 
     _create_incident("incident-7d")
@@ -2081,7 +2164,7 @@ def test_execute_approved_action_kill_switch_on_before_start_reverts_to_pending_
 
     execute_calls = []
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(host)
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host)
     )
 
     _create_incident("incident-7e")
@@ -2106,7 +2189,7 @@ def test_execute_approved_action_kill_switch_mid_execution_marks_failed_not_reve
 ):
     execute_calls = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.9.service   loaded active running   x\n"
         execute_calls.append(host)
@@ -2140,7 +2223,7 @@ def test_execute_approved_action_kill_switch_mid_execution_marks_failed_not_reve
 
 def test_execute_approved_action_skips_non_approved_action(isolated_db, monkeypatch):
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: pytest.fail("must not execute")
+        router_client, "execute_command", lambda host, command, **kwargs: pytest.fail("must not execute")
     )
 
     _create_incident("incident-7g")
@@ -2347,7 +2430,7 @@ def test_execute_approved_action_volume_perf_malformed_action_params_marks_faile
 def test_poll_approved_actions_processes_pending_approved_rows_then_stops(isolated_db, monkeypatch):
     execute_calls = []
 
-    def fake_execute(host, command):
+    def fake_execute(host, command, **kwargs):
         if command == "systemctl --all | grep ceph || true":
             return "  ceph-fsid@osd.4.service   loaded active running   x\n"
         execute_calls.append(host)
@@ -2394,7 +2477,7 @@ def test_diagnose_incident_redelivery_of_already_resolved_action_restores_incide
     execute_calls = []
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(host)
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host)
     )
 
     envelope = dict(ENVELOPE, incident_id="incident-5h")
@@ -2413,7 +2496,7 @@ def test_diagnose_incident_malformed_nodes_field_marks_failed_instead_of_guessin
     execute_calls = []
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
     monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command: execute_calls.append(host)
+        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host)
     )
 
     _create_incident("incident-5i")

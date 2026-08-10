@@ -680,6 +680,7 @@ def _make_observed_cluster(session) -> "Cluster":
     cluster = Cluster(
         name="cluster-b",
         ceph_mon_nodes="10.30.1.10",
+        ceph_osd_nodes="10.30.1.20",
         ceph_container_name="ceph-mon",
         ssh_user="root",
         ssh_key_path="/root/.ssh/key",
@@ -706,6 +707,18 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", lambda envelope: _noop_coro())
 
+    # 2026-08-10 (multi-tenant remediation Phase 1): log collection now runs
+    # for observed clusters too — assert it uses THIS cluster's own SSH
+    # creds/host, never the default cluster's, since that's exactly the
+    # credential-mixup risk the whole feature exists to avoid.
+    collect_calls = []
+
+    def fake_run_command_on_node_with(host, command, ssh_user, ssh_key_path, timeout=None):
+        collect_calls.append((host, ssh_user, ssh_key_path))
+        return "osd log tail"
+
+    monkeypatch.setattr(watcher_main.collector, "run_command_on_node_with", fake_run_command_on_node_with)
+
     with db_module.SessionLocal() as session:
         cluster = session.get(watcher_main.Cluster, cluster_id)
         watcher_main.run_observed_cluster_loop(cluster, max_iterations=1)
@@ -714,11 +727,13 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
         incidents = session.query(watcher_main.Incident).filter_by(cluster_id=cluster_id).all()
         assert len(incidents) == 1
         assert incidents[0].ceph_code == "OSD_DOWN"
-        assert incidents[0].log_excerpt is None  # no log collection for observed clusters (Phase 1)
+        assert "osd log tail" in incidents[0].log_excerpt
 
         row = heartbeat.get_latest(session, cluster_id)
         assert row is not None
         assert row.success is True
+
+    assert collect_calls == [("10.30.1.20", "root", "/root/.ssh/key")]
 
 
 async def _noop_coro():

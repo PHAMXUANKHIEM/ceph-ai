@@ -1,11 +1,17 @@
+from __future__ import annotations
+
 import json
 import logging
 import re
 import shlex
+from typing import TYPE_CHECKING
 
 from config.settings import settings
 from watcher import ceph_client
-from watcher.ceph_client import run_command_on_node
+from watcher.ceph_client import run_command_on_node, run_command_on_node_with
+
+if TYPE_CHECKING:
+    from shared.models import Cluster
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +22,11 @@ LOG_TAIL_LINES = 50
 _MON_NAME_PATTERN = re.compile(r"mon\.([\w-]+)")
 
 
-def _mon_hostname_to_ip() -> dict[str, str]:
-    names = [n.strip() for n in settings.ceph_mon_hostnames.split(",") if n.strip()]
-    ips = [ip.strip() for ip in settings.ceph_mon_nodes.split(",") if ip.strip()]
+def _mon_hostname_to_ip(cluster: "Cluster | None" = None) -> dict[str, str]:
+    hostnames_raw = cluster.ceph_mon_hostnames if cluster is not None else settings.ceph_mon_hostnames
+    nodes_raw = cluster.ceph_mon_nodes if cluster is not None else settings.ceph_mon_nodes
+    names = [n.strip() for n in hostnames_raw.split(",") if n.strip()]
+    ips = [ip.strip() for ip in nodes_raw.split(",") if ip.strip()]
     if len(names) != len(ips):
         logger.warning(
             "ceph_mon_hostnames (%d entries) and ceph_mon_nodes (%d entries) "
@@ -29,34 +37,42 @@ def _mon_hostname_to_ip() -> dict[str, str]:
     return dict(zip(names, ips))
 
 
-def _get_osd_nodes() -> list[str]:
-    return [h.strip() for h in settings.ceph_osd_nodes.split(",") if h.strip()]
+def _get_osd_nodes(cluster: "Cluster | None" = None) -> list[str]:
+    raw = cluster.ceph_osd_nodes if cluster is not None else settings.ceph_osd_nodes
+    return [h.strip() for h in raw.split(",") if h.strip()]
 
 
-def _get_mon_nodes() -> list[str]:
-    return [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+def _get_mon_nodes(cluster: "Cluster | None" = None) -> list[str]:
+    raw = cluster.ceph_mon_nodes if cluster is not None else settings.ceph_mon_nodes
+    return [h.strip() for h in raw.split(",") if h.strip()]
 
 
-def _get_mgr_nodes() -> list[str]:
-    return [h.strip() for h in settings.ceph_mgr_nodes.split(",") if h.strip()]
+def _get_mgr_nodes(cluster: "Cluster | None" = None) -> list[str]:
+    raw = cluster.ceph_mgr_nodes if cluster is not None else settings.ceph_mgr_nodes
+    return [h.strip() for h in raw.split(",") if h.strip()]
 
 
-def identify_relevant_nodes(ceph_code: str, check_detail: dict) -> list[str]:
+def identify_relevant_nodes(ceph_code: str, check_detail: dict, cluster: "Cluster | None" = None) -> list[str]:
     """Return the SSH-able IP(s) of the node(s) relevant to this check.
 
     `ceph_code` prefix decides daemon type FIRST and deterministically
     (OSD_/PG_ -> OSD nodes, MGR_ -> MGR nodes, never MON) — this is what AC #1
     depends on. Only for MON-related/ambiguous codes do we try to parse a
     specific mon name out of the check's detail text.
+
+    `cluster` (2026-08-10, multi-tenant remediation Phase 1): when given,
+    resolves every node list from THAT cluster's own fields instead of the
+    global `settings` singleton — same opt-in posture as
+    `shared/cluster_nodes.py::configured_nodes()`.
     """
     if ceph_code.startswith("OSD_") or ceph_code.startswith("PG_"):
         # No cheap osd-id -> host mapping available in v1 (would need an
         # extra `ceph osd tree`/`ceph osd find` query) — collect from all
         # OSD nodes instead of the whole cluster. See Dev Notes.
-        return _get_osd_nodes()
+        return _get_osd_nodes(cluster)
 
     if ceph_code.startswith("MGR_"):
-        mgr_nodes = _get_mgr_nodes()
+        mgr_nodes = _get_mgr_nodes(cluster)
         if mgr_nodes:
             return mgr_nodes
         # No MGR nodes configured — fall through to the generic MON-fallback
@@ -66,7 +82,7 @@ def identify_relevant_nodes(ceph_code: str, check_detail: dict) -> list[str]:
     detail_messages = " ".join(d.get("message", "") for d in check_detail.get("detail", []))
     mon_names_mentioned = _MON_NAME_PATTERN.findall(detail_messages)
     if mon_names_mentioned:
-        hostname_to_ip = _mon_hostname_to_ip()
+        hostname_to_ip = _mon_hostname_to_ip(cluster)
         ips = [hostname_to_ip[name] for name in mon_names_mentioned if name in hostname_to_ip]
         if ips:
             return ips
@@ -74,13 +90,18 @@ def identify_relevant_nodes(ceph_code: str, check_detail: dict) -> list[str]:
     # MON-related or unrecognized code with no parseable node name: fall back
     # to whichever MON node last actually answered a health query, rather
     # than blindly assuming the first configured node is reachable.
-    if ceph_client.last_successful_mon_node:
+    # `ceph_client.last_successful_mon_node` is a DEFAULT-cluster-only sticky
+    # value (see query_cluster_health_with's own docstring — observed
+    # clusters poll with update_sticky_fallback=False) — never consulted for
+    # a non-default cluster, which falls straight through to its own
+    # configured MON list instead.
+    if cluster is None and ceph_client.last_successful_mon_node:
         return [ceph_client.last_successful_mon_node]
-    mon_nodes = _get_mon_nodes()
+    mon_nodes = _get_mon_nodes(cluster)
     return mon_nodes[:1]
 
 
-def _log_command_for_host(host: str) -> tuple[str, str]:
+def _log_command_for_host(host: str, cluster: "Cluster | None" = None) -> tuple[str, str]:
     """Returns (command, descriptor) for fetching this host's daemon log via
     docker/podman/none mode — `descriptor` is shown in the excerpt header (a
     container name for docker/podman, a systemd unit glob for bare-metal) so
@@ -97,15 +118,21 @@ def _log_command_for_host(host: str) -> tuple[str, str]:
     `ceph-osd@<id>` unit name, this targets ALL osd units on the host with a
     systemd unit glob (`journalctl` supports `-u` globbing natively) — one
     query gets every OSD daemon's recent log on that node instead of none.
+
+    `cluster` (2026-08-10, multi-tenant remediation Phase 1): resolves
+    exec-mode/container names from that cluster's own fields when given.
     """
-    is_osd = host in set(_get_osd_nodes())
-    exec_mode = settings.ceph_exec_mode
+    is_osd = host in set(_get_osd_nodes(cluster))
+    exec_mode = cluster.ceph_exec_mode if cluster is not None else settings.ceph_exec_mode
     if exec_mode == "none":
         unit_glob = "ceph-osd@*" if is_osd else "ceph-mon@*"
         command = f"journalctl -u {shlex.quote(unit_glob)} -n {LOG_TAIL_LINES} --no-pager 2>&1"
         return command, unit_glob
 
-    container = settings.ceph_osd_container_name if is_osd else settings.ceph_container_name
+    if cluster is not None:
+        container = cluster.ceph_osd_container_name if is_osd else cluster.ceph_container_name
+    else:
+        container = settings.ceph_osd_container_name if is_osd else settings.ceph_container_name
     # ceph-mon/ceph-osd run with `-d` (foreground) and log to stderr, so
     # `docker logs`/`podman logs` surfaces the actual daemon log on ITS
     # stderr — must redirect stderr to stdout or the excerpt comes back
@@ -122,7 +149,19 @@ def _cephadm_daemon_prefix_for_code(ceph_code: str) -> str:
     return "mon."
 
 
-def _cephadm_relevant_daemon_names(host: str, daemon_prefix: str) -> list[str]:
+def _run_on_host(host: str, command: str, cluster: "Cluster | None" = None) -> str:
+    """SSH-runs `command` on `host` using `cluster`'s own creds when given,
+    else `settings.ssh_user`/`settings.ssh_key_path` (2026-08-10,
+    multi-tenant remediation Phase 1) — every collector.py call site that
+    used to call `run_command_on_node` directly goes through this instead,
+    so a non-default cluster's log collection never silently uses the
+    DEFAULT cluster's SSH key."""
+    if cluster is not None:
+        return run_command_on_node_with(host, command, cluster.ssh_user, cluster.ssh_key_path)
+    return run_command_on_node(host, command)
+
+
+def _cephadm_relevant_daemon_names(host: str, daemon_prefix: str, cluster: "Cluster | None" = None) -> list[str]:
     """Discovers this host's EXACT daemon names matching `daemon_prefix`
     (e.g. "mon.", "osd.", "mgr.") via `cephadm ls --no-detail`.
 
@@ -135,7 +174,7 @@ def _cephadm_relevant_daemon_names(host: str, daemon_prefix: str) -> list[str]:
     where a single assumed daemon type per host would miss the others.
     """
     try:
-        output = run_command_on_node(host, "cephadm ls --no-detail")
+        output = _run_on_host(host, "cephadm ls --no-detail", cluster)
         daemons = json.loads(output)
     except Exception as exc:
         logger.warning("_cephadm_relevant_daemon_names: %s: failed to list daemons: %s", host, exc)
@@ -149,9 +188,9 @@ def _cephadm_relevant_daemon_names(host: str, daemon_prefix: str) -> list[str]:
     ]
 
 
-def _collect_cephadm_log_excerpt(host: str, ceph_code: str) -> str:
+def _collect_cephadm_log_excerpt(host: str, ceph_code: str, cluster: "Cluster | None" = None) -> str:
     daemon_prefix = _cephadm_daemon_prefix_for_code(ceph_code)
-    daemon_names = _cephadm_relevant_daemon_names(host, daemon_prefix)
+    daemon_names = _cephadm_relevant_daemon_names(host, daemon_prefix, cluster)
     if not daemon_names:
         return f"--- {host} (cephadm: no {daemon_prefix}* daemon found) ---"
 
@@ -162,7 +201,7 @@ def _collect_cephadm_log_excerpt(host: str, ceph_code: str) -> str:
         # path pipes `docker logs` output, for a consistently-sized excerpt.
         command = f"cephadm logs --name {shlex.quote(name)} 2>&1 | tail -n {LOG_TAIL_LINES}"
         try:
-            output = run_command_on_node(host, command)
+            output = _run_on_host(host, command, cluster)
             parts.append(f"--- {host} ({name}) ---\n{output}")
         except Exception as exc:
             logger.warning("_collect_cephadm_log_excerpt: %s (%s) unavailable: %s", host, name, exc)
@@ -185,7 +224,7 @@ _CRASH_EXCERPT_MAX_ENTRIES = 10
 _CRASH_BACKTRACE_MAX_CHARS = 2000
 
 
-def _collect_recent_crash_excerpt() -> tuple[list[str], str]:
+def _collect_recent_crash_excerpt(cluster: "Cluster | None" = None) -> tuple[list[str], str]:
     """Returns (nodes, log_excerpt) same shape as collect_relevant_logs —
     `nodes` here is the single MON node `run_ceph_json_command` actually
     reached (becomes the Incident envelope's `nodes[]`, and in turn the
@@ -193,7 +232,13 @@ def _collect_recent_crash_excerpt() -> tuple[list[str], str]:
     eventual `ceph crash archive-all` SAFE-action command runs on a MON
     node already verified reachable, not a guess)."""
     try:
-        host, parsed = ceph_client.run_ceph_json_command("ceph crash ls-new")
+        if cluster is not None:
+            host, parsed = ceph_client.run_ceph_json_command_with(
+                _get_mon_nodes(cluster), cluster.ceph_container_name, cluster.ssh_user,
+                cluster.ssh_key_path, cluster.ceph_exec_mode, "ceph crash ls-new",
+            )
+        else:
+            host, parsed = ceph_client.run_ceph_json_command("ceph crash ls-new")
     except ceph_client.CephQueryError as exc:
         logger.warning("_collect_recent_crash_excerpt: crash ls-new failed: %s", exc)
         return [], f"(unavailable: {exc})"
@@ -251,7 +296,7 @@ def _format_device_location(device: dict) -> str:
     return ",".join(parts) if parts else "?"
 
 
-def _collect_device_health_excerpt() -> tuple[list[str], str]:
+def _collect_device_health_excerpt(cluster: "Cluster | None" = None) -> tuple[list[str], str]:
     """DEVICE_HEALTH*'s own check detail already names the failing device(s)
     in free text, but re-parsing that (like _MON_NAME_PATTERN does for
     MON-related codes) is fragile for a devid string's format. Queries
@@ -261,7 +306,13 @@ def _collect_device_health_excerpt() -> tuple[list[str], str]:
     location/life_expectancy_min/life_expectancy_max — verified against
     src/pybind/mgr/devicehealth/module.py), not guessed ones."""
     try:
-        host, parsed = ceph_client.run_ceph_json_command("ceph device ls")
+        if cluster is not None:
+            host, parsed = ceph_client.run_ceph_json_command_with(
+                _get_mon_nodes(cluster), cluster.ceph_container_name, cluster.ssh_user,
+                cluster.ssh_key_path, cluster.ceph_exec_mode, "ceph device ls",
+            )
+        else:
+            host, parsed = ceph_client.run_ceph_json_command("ceph device ls")
     except ceph_client.CephQueryError as exc:
         logger.warning("_collect_device_health_excerpt: ceph device ls failed: %s", exc)
         return [], f"(unavailable: {exc})"
@@ -289,27 +340,38 @@ def _collect_device_health_excerpt() -> tuple[list[str], str]:
     return [host], "\n".join(parts)
 
 
-def collect_relevant_logs(ceph_code: str, check_detail: dict) -> tuple[list[str], str]:
+def collect_relevant_logs(
+    ceph_code: str, check_detail: dict, cluster: "Cluster | None" = None
+) -> tuple[list[str], str]:
     """Collect the daemon log from the node(s) relevant to this check, using
-    whatever command shape matches settings.ceph_exec_mode.
+    whatever command shape matches this cluster's exec mode.
 
     Returns (nodes, log_excerpt) — `nodes` is the list of node IPs actually
     targeted (used for the Incident envelope's `nodes[]` field).
+
+    `cluster` (2026-08-10, multi-tenant remediation Phase 1): when given,
+    every node list/SSH creds/exec-mode/container name below comes from
+    THAT cluster's own fields instead of the global `settings` singleton —
+    same opt-in-via-explicit-cluster posture as every other function in this
+    module. `watcher/main.py::_build_and_publish_incident_for_observed_
+    cluster` passes its own `Cluster` row here; the DEFAULT cluster's own
+    `build_and_publish_incident` still omits it, unchanged behavior.
     """
     if ceph_code == RECENT_CRASH_CEPH_CODE:
-        return _collect_recent_crash_excerpt()
+        return _collect_recent_crash_excerpt(cluster)
     if ceph_code.startswith(DEVICE_HEALTH_CEPH_CODE_PREFIX):
-        return _collect_device_health_excerpt()
+        return _collect_device_health_excerpt(cluster)
 
-    nodes = identify_relevant_nodes(ceph_code, check_detail)
+    nodes = identify_relevant_nodes(ceph_code, check_detail, cluster)
+    exec_mode = cluster.ceph_exec_mode if cluster is not None else settings.ceph_exec_mode
     excerpt_parts = []
     for host in nodes:
-        if settings.ceph_exec_mode == "cephadm":
-            excerpt_parts.append(_collect_cephadm_log_excerpt(host, ceph_code))
+        if exec_mode == "cephadm":
+            excerpt_parts.append(_collect_cephadm_log_excerpt(host, ceph_code, cluster))
             continue
-        command, descriptor = _log_command_for_host(host)
+        command, descriptor = _log_command_for_host(host, cluster)
         try:
-            output = run_command_on_node(host, command)
+            output = _run_on_host(host, command, cluster)
             excerpt_parts.append(f"--- {host} ({descriptor}) ---\n{output}")
         except Exception as exc:
             logger.warning("collect_relevant_logs: %s unavailable: %s", host, exc)

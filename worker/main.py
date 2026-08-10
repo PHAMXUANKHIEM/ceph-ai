@@ -8,7 +8,6 @@ from aio_pika.abc import AbstractIncomingMessage
 
 from config.settings import settings
 from shared import db
-from shared.clusters import get_default_cluster_id
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Incident, IncidentStatus
 
@@ -101,33 +100,20 @@ async def _handle_message(
         await message.reject(requeue=False)
         return
 
-    # Multi-cluster observability Phase 1 — CRITICAL SAFETY GUARD: Worker's
-    # SSH credentials/command-building (worker/executor/*, watcher/
-    # ceph_client.py via the global `settings` singleton) are only ever
-    # correct for the DEFAULT cluster. `envelope["cluster_id"]` is None for
-    # the default cluster (watcher/publisher.py::build_envelope's own
-    # convention) and every pre-existing envelope shape (the key may be
-    # entirely absent, same meaning) — anything else means this Incident
-    # came from an OBSERVED (non-default) cluster's Watcher loop, and this
-    # message must NEVER reach `process_incident` (AI diagnosis, and from
-    # there SAFE-action auto-execution): running a default-cluster command
-    # against a host that may not even belong to that cluster is exactly
-    # the failure mode this guard exists to prevent. Left at Incident
-    # status NEW (never DIAGNOSING) — the Dashboard still shows it via the
-    # cluster switcher, it just never gets AI-processed in this phase.
-    incident_cluster_id = envelope.get("cluster_id")
-    if incident_cluster_id is not None:
-        with db.SessionLocal() as session:
-            default_cluster_id = get_default_cluster_id(session)
-        if incident_cluster_id != default_cluster_id:
-            logger.info(
-                "_handle_message: incident %s belongs to non-default cluster %s — "
-                "skipping AI diagnosis/remediation (observation-only in this phase), acking",
-                incident_id,
-                incident_cluster_id,
-            )
-            await message.ack()
-            return
+    # 2026-08-10 (multi-tenant remediation Phase 1): the "default cluster
+    # only" guard that used to sit here is GONE — Worker's SSH credentials/
+    # command-building now come from THIS envelope's own ssh_user/
+    # ssh_key_path/ceph_exec_mode/ceph_container_name fields
+    # (watcher/publisher.py::build_envelope), populated from the
+    # ORIGINATING cluster (watcher/main.py::run_observed_cluster_loop for a
+    # non-default one), never implicitly from the global `settings`
+    # singleton. worker/llm/router_client.py's `_maybe_execute_safe_action`/
+    # `_execute_approved_action` both resolve creds from the Incident's own
+    # cluster_id now, not the process-wide default. See this session's plan
+    # (multi-tenant ceph-aiops) for the full audit of what was made
+    # cluster-aware to make this safe: shared/cluster_nodes.py,
+    # watcher/collector.py, watcher/ceph_client.py's `_with`-suffixed
+    # functions, worker/executor/ssh_executor.py::execute_command().
 
     retry_count = _safe_retry_count(message.headers)
 

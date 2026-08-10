@@ -77,7 +77,13 @@ async def create_cluster(
     user: str = Depends(require_login),
     name: str = Form(""),
     ceph_mon_nodes: str = Form(""),
+    ceph_mon_hostnames: str = Form(""),
+    ceph_mgr_nodes: str = Form(""),
+    ceph_osd_nodes: str = Form(""),
+    ceph_rgw_nodes: str = Form(""),
     ceph_container_name: str = Form(""),
+    ceph_osd_container_name: str = Form(""),
+    ceph_rgw_container_name: str = Form(""),
     ssh_user: str = Form(""),
     ssh_key_path: str = Form(""),
     ceph_exec_mode: str = Form("docker"),
@@ -85,13 +91,26 @@ async def create_cluster(
     """Adds an additional observed cluster — tests the connection with the
     submitted values BEFORE saving (same AC as /settings' cluster form,
     reusing the same watcher/ceph_client.query_cluster_health_with helper),
-    so a typo'd MON node/SSH key never silently gets saved as if it worked."""
+    so a typo'd MON node/SSH key never silently gets saved as if it worked.
+
+    2026-08-10 (multi-tenant remediation Phase 1): MGR/OSD/RGW nodes + RGW
+    container name are all OPTIONAL, same posture as their `.env` equivalents
+    (config/settings.py's own fields) — only MON nodes are required to add a
+    cluster at all (the connection test itself only ever needs MON). Left
+    blank, `shared/cluster_nodes.py::configured_nodes(cluster)` for this
+    cluster just returns MON-only, same as an unconfigured `.env` today."""
     _require_admin_privilege(user)
 
     submitted = {
         "name": name.strip(),
         "ceph_mon_nodes": ceph_mon_nodes.strip(),
+        "ceph_mon_hostnames": ceph_mon_hostnames.strip(),
+        "ceph_mgr_nodes": ceph_mgr_nodes.strip(),
+        "ceph_osd_nodes": ceph_osd_nodes.strip(),
+        "ceph_rgw_nodes": ceph_rgw_nodes.strip(),
         "ceph_container_name": ceph_container_name.strip(),
+        "ceph_osd_container_name": ceph_osd_container_name.strip(),
+        "ceph_rgw_container_name": ceph_rgw_container_name.strip(),
         "ssh_user": ssh_user.strip(),
         "ssh_key_path": ssh_key_path.strip(),
         "ceph_exec_mode": ceph_exec_mode.strip() or "docker",
@@ -158,7 +177,13 @@ async def create_cluster(
             Cluster(
                 name=submitted["name"],
                 ceph_mon_nodes=submitted["ceph_mon_nodes"],
+                ceph_mon_hostnames=submitted["ceph_mon_hostnames"],
+                ceph_mgr_nodes=submitted["ceph_mgr_nodes"],
+                ceph_osd_nodes=submitted["ceph_osd_nodes"],
+                ceph_rgw_nodes=submitted["ceph_rgw_nodes"],
                 ceph_container_name=submitted["ceph_container_name"],
+                ceph_osd_container_name=submitted["ceph_osd_container_name"],
+                ceph_rgw_container_name=submitted["ceph_rgw_container_name"],
                 ssh_user=submitted["ssh_user"],
                 ssh_key_path=submitted["ssh_key_path"],
                 ceph_exec_mode=submitted["ceph_exec_mode"],

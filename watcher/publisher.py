@@ -15,14 +15,28 @@ def build_envelope(
     log_excerpt: str,
     cluster_snapshot: dict,
     cluster_id: str | None = None,
+    ssh_user: str = "",
+    ssh_key_path: str = "",
+    ceph_exec_mode: str = "",
+    ceph_container_name: str = "",
 ) -> dict:
     """Build the Incident message envelope (matches Story 1.4 AC #2 exactly).
 
-    `cluster_id` (multi-cluster observability Phase 1, default None):
-    worker/main.py's message handler uses this to skip AI diagnosis/
-    remediation entirely for any cluster other than the default one — see
-    that module's cluster-scope guard. None means "the default cluster",
-    same COALESCE convention as Incident.cluster_id/WatcherHeartbeat.cluster_id."""
+    `cluster_id` (multi-cluster observability Phase 1, default None): tags
+    which cluster this Incident belongs to — None means "the default
+    cluster", same COALESCE convention as Incident.cluster_id/
+    WatcherHeartbeat.cluster_id.
+
+    `ssh_user`/`ssh_key_path`/`ceph_exec_mode`/`ceph_container_name`
+    (2026-08-10, multi-tenant remediation Phase 1): the ORIGINATING
+    cluster's own credentials/exec-mode, captured at Incident-detection time
+    so `worker/main.py`'s diagnosis/remediation pipeline executes against
+    the RIGHT cluster regardless of which one it is — Worker never re-derives
+    these from its own global `settings` singleton for a non-default
+    cluster's Incident. Every caller must pass real values (there is no
+    sensible "unset" default that's still safe to execute against — an
+    empty string here would surface as a clear, loud SSH/paramiko failure
+    rather than silently falling back to the default cluster's creds)."""
     return {
         "schema_version": SCHEMA_VERSION,
         "incident_id": incident_id,
@@ -32,6 +46,10 @@ def build_envelope(
         "log_excerpt": log_excerpt,
         "cluster_snapshot": cluster_snapshot,
         "cluster_id": cluster_id,
+        "ssh_user": ssh_user,
+        "ssh_key_path": ssh_key_path,
+        "ceph_exec_mode": ceph_exec_mode,
+        "ceph_container_name": ceph_container_name,
     }
 
 

@@ -273,7 +273,13 @@ def _make_message_for_cluster(incident_id: str, cluster_id) -> FakeMessage:
     return FakeMessage(body=json.dumps(envelope).encode())
 
 
-def test_handle_message_skips_process_incident_for_non_default_cluster(isolated_db):
+def test_handle_message_processes_non_default_cluster_envelope_too(isolated_db):
+    """2026-08-10 (multi-tenant remediation Phase 1): the guard that used to
+    skip process_incident entirely for a non-default cluster's Incident is
+    gone — every cluster-aware caller downstream (worker/llm/router_client.py)
+    now resolves THAT cluster's own creds from the envelope/Incident.cluster_id
+    instead of the default cluster's global settings, so it's safe to process
+    normally here, same as the default cluster's own envelope."""
     from shared.clusters import ensure_default_cluster
 
     _create_incident(db_module.SessionLocal, "incident-other-cluster")
@@ -284,22 +290,18 @@ def test_handle_message_skips_process_incident_for_non_default_cluster(isolated_
     message = _make_message_for_cluster("incident-other-cluster", other_cluster_id)
     channel = FakeChannel()
 
-    async def unreachable_process(incident_id, envelope):
-        raise AssertionError(
-            "process_incident (AI diagnosis/remediation) must never run for a "
-            "non-default cluster's Incident — this is the core safety property "
-            "of multi-cluster observability Phase 1"
-        )
+    calls = []
 
-    asyncio.run(worker_main._handle_message(message, channel, unreachable_process, max_retries=3))
+    async def ok_process(incident_id, envelope):
+        calls.append(incident_id)
 
+    asyncio.run(worker_main._handle_message(message, channel, ok_process, max_retries=3))
+
+    assert calls == ["incident-other-cluster"]
     assert message.ack_calls == 1
-    assert message.reject_calls == []
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-other-cluster")
-        # Left at NEW, never DIAGNOSING — process_incident's dispatch is
-        # what would have moved it, and it must never run here.
-        assert incident.status == IncidentStatus.NEW.value
+        assert incident.status == IncidentStatus.DIAGNOSING.value
 
 
 def test_handle_message_processes_default_cluster_envelope_normally(isolated_db):

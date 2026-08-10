@@ -31,16 +31,26 @@ class ExecutorError(Exception):
     failures, not for a command that's unlikely to succeed on a bare retry)."""
 
 
-def execute_command(host: str, command: str) -> str:
+def execute_command(host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None) -> str:
     """Run `command` on `host` over SSH using the Worker's own keypair
     (AD-3: this module — worker/executor/ — is only ever loaded in the
     Worker process). Returns stdout on success; raises ExecutorError on
     connection failure or non-zero exit.
 
+    `user`/`key_path` (2026-08-10, multi-tenant remediation Phase 1): default
+    to `settings.ssh_user`/`settings.ssh_key_path` (the default cluster) when
+    omitted — zero behavior change for every existing call site. A
+    multi-cluster caller (worker/llm/router_client.py's per-Incident
+    execution) passes the target Incident's own cluster's creds via
+    `shared/cluster_nodes.py::resolve_ssh_creds()` instead, so the command
+    actually runs against the RIGHT cluster's credentials.
+
     Deliberately self-contained (no import from watcher/) — Watcher and
     Worker are independent processes/services and shouldn't depend on each
     other's internals, even though the underlying SSH mechanics are similar.
     """
+    resolved_user = settings.ssh_user if user is None else user
+    resolved_key_path = settings.ssh_key_path if key_path is None else key_path
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
@@ -48,8 +58,8 @@ def execute_command(host: str, command: str) -> str:
     try:
         client.connect(
             hostname=host,
-            username=settings.ssh_user,
-            key_filename=settings.ssh_key_path,
+            username=resolved_user,
+            key_filename=resolved_key_path,
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
         client.save_host_keys(KNOWN_HOSTS_PATH)

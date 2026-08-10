@@ -1080,6 +1080,28 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
     """No command defined -> ExecutorError, never a silent no-op or a guess
     at what to run — an unrecognized action_id must never execute anything.
 
+    2026-08-10 (multi-tenant remediation Phase 1) — deliberately still reads
+    `settings.ceph_exec_mode` directly, not cluster-parameterized: the every-
+    day SAFE-remediation loop (`_restart_osd_daemon_command`, every plain
+    `COMMANDS[...]` entry) never branches on exec_mode at all — Ceph CLI
+    commands assume `ceph-common` is installed on the target host (same
+    assumption `_phase_cephadm_bootstrap`'s `ensure_ceph_common` step makes),
+    regardless of how the daemons themselves are deployed. Only
+    `bluestore_omap_quick_fix` (RISKY-only, proposed from a dedicated
+    Dashboard OSD picker) and the Cluster Upgrade action_ids (their own
+    Upgrade-page-only flow, explicitly deferred to a later multi-tenant
+    phase) branch on it — neither has a cluster-scoped caller yet, so
+    threading a `cluster` param through here now would be untestable dead
+    code; revisit alongside whichever phase makes those two flows
+    cluster-aware.
+
+    `host` is used by restart_osd_daemon and both package-based Cluster
+    Upgrade action_ids (systemd unit names must be discovered per-host —
+    see `_restart_osd_daemon_command`/`_restart_discovered_units_snippet`) —
+    every other action_id's command is the same regardless of host, so
+    callers that don't have a specific host yet (e.g. building a preview
+    string before any node is chosen) may omit it.
+
     `host` is used by restart_osd_daemon and both package-based Cluster
     Upgrade action_ids (systemd unit names must be discovered per-host —
     see `_restart_osd_daemon_command`/`_restart_discovered_units_snippet`) —

@@ -11,7 +11,7 @@ import yaml
 from config.settings import settings
 from shared import audit, db
 from shared.kill_switch import is_kill_switch_enabled
-from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.ceph_releases import codename_for_version
 from shared.cluster_nodes import configured_nodes
 from shared.router_client import build_router_client
@@ -411,6 +411,15 @@ def _maybe_execute_safe_action(
         _record_execution_result(incident_id, action_pk, command=None, succeeded=False)
         return
 
+    # 2026-08-10 (multi-tenant remediation Phase 1): the envelope carries the
+    # ORIGINATING cluster's own SSH creds (watcher/publisher.py::
+    # build_envelope) — every execute_command() call below uses these
+    # explicitly instead of implicitly falling back to settings.ssh_user/
+    # settings.ssh_key_path (the default cluster), so a non-default
+    # cluster's Incident never silently runs against the wrong credentials.
+    ssh_user = envelope.get("ssh_user") or None
+    ssh_key_path = envelope.get("ssh_key_path") or None
+
     executed_any = False
     all_succeeded = True
     # The command actually run — resolved per-host below rather than once
@@ -457,7 +466,7 @@ def _maybe_execute_safe_action(
         last_command = command
 
         try:
-            execute_command(host, command)
+            execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
             executed_any = True
         except ExecutorError:
             logger.exception(
@@ -1407,6 +1416,20 @@ def _execute_approved_action(action_pk: str) -> None:
         if incident is not None:
             incident.status = IncidentStatus.EXECUTING.value
             session.commit()
+        # 2026-08-10 (multi-tenant remediation Phase 1): resolve THIS
+        # Incident's own cluster's SSH creds here, inside the same session —
+        # by the time this function runs (a DB poll, long after the RabbitMQ
+        # envelope that carried them at diagnosis time is gone), the
+        # envelope itself is unavailable, so Incident.cluster_id -> Cluster
+        # is the only place left to look them up. None means the default
+        # cluster (execute_command()'s own settings.* fallback applies).
+        if incident is not None and incident.cluster_id is not None:
+            cluster = session.get(Cluster, incident.cluster_id)
+            ssh_user = cluster.ssh_user if cluster is not None else None
+            ssh_key_path = cluster.ssh_key_path if cluster is not None else None
+        else:
+            ssh_user = None
+            ssh_key_path = None
 
     try:
         nodes = json.loads(target_nodes_raw) if target_nodes_raw else None
@@ -1606,7 +1629,7 @@ def _execute_approved_action(action_pk: str) -> None:
         _write_action_progress(action_pk, progress)
 
         try:
-            execute_command(host, command)
+            execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
             executed_any = True
         except ExecutorError as exc:
             logger.exception(

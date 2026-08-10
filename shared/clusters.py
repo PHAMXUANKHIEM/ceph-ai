@@ -35,7 +35,13 @@ def ensure_default_cluster(session: Session) -> Cluster:
     cluster = Cluster(
         name=settings.cluster_name.strip() or DEFAULT_CLUSTER_NAME_FALLBACK,
         ceph_mon_nodes=settings.ceph_mon_nodes,
+        ceph_mgr_nodes=settings.ceph_mgr_nodes,
+        ceph_osd_nodes=settings.ceph_osd_nodes,
+        ceph_rgw_nodes=settings.ceph_rgw_nodes,
         ceph_container_name=settings.ceph_container_name,
+        ceph_rgw_container_name=settings.ceph_rgw_container_name,
+        ceph_mon_hostnames=settings.ceph_mon_hostnames,
+        ceph_osd_container_name=settings.ceph_osd_container_name,
         ssh_user=settings.ssh_user,
         ssh_key_path=settings.ssh_key_path,
         ceph_exec_mode=settings.ceph_exec_mode,

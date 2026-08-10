@@ -472,6 +472,18 @@ def run_command_on_node(host: str, command: str, timeout: int = COMMAND_TIMEOUT_
     return _run_remote_command(host, command, timeout)
 
 
+def run_command_on_node_with(
+    host: str, command: str, ssh_user: str, ssh_key_path: str, timeout: int = COMMAND_TIMEOUT_SECONDS
+) -> str:
+    """Same as `run_command_on_node()` but takes SSH creds explicitly instead
+    of reading `settings.ssh_user`/`settings.ssh_key_path` (2026-08-10,
+    multi-tenant remediation Phase 1) — `watcher/collector.py`'s log
+    collection uses this for a non-default cluster's Incident, mirroring the
+    `query_cluster_health_with`/`_run_remote_command_with` split this module
+    already established for the health check itself."""
+    return _run_remote_command_with(host, command, ssh_user, ssh_key_path, timeout)
+
+
 def run_diagnostic_command(host: str, command_id: str) -> str:
     """Runs one WHITELISTED read-only command on `host`, wrapped for however
     this cluster is deployed (settings.ceph_exec_mode). `command_id` must be
@@ -520,20 +532,36 @@ def run_ceph_json_command(inner_command: str) -> tuple[str, dict | list]:
     nodes = get_mon_nodes()
     if not nodes:
         raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
-    command = build_exec_command(
-        settings.ceph_exec_mode, settings.ceph_container_name, f"{inner_command} --format json"
+    return run_ceph_json_command_with(
+        nodes, settings.ceph_container_name, settings.ssh_user, settings.ssh_key_path,
+        settings.ceph_exec_mode, inner_command,
     )
-    command_timeout = (
-        CEPHADM_COMMAND_TIMEOUT_SECONDS
-        if settings.ceph_exec_mode == "cephadm"
-        else MCP_COMMAND_TIMEOUT_SECONDS
-    )
+
+
+def run_ceph_json_command_with(
+    mon_nodes: list[str],
+    container_name: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    exec_mode: str,
+    inner_command: str,
+) -> tuple[str, dict | list]:
+    """Same as `run_ceph_json_command()` but takes every connection
+    parameter explicitly instead of reading `settings` (2026-08-10,
+    multi-tenant remediation Phase 1) — same `_with`-suffix split as
+    `query_cluster_health_with()`. `watcher/collector.py`'s
+    `_collect_recent_crash_excerpt`/`_collect_device_health_excerpt` use
+    this for a non-default cluster's Incident."""
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured for this cluster")
+    command = build_exec_command(exec_mode, container_name, f"{inner_command} --format json")
+    command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
     errors = []
-    for host in nodes:
+    for host in mon_nodes:
         try:
-            output = _run_remote_command(host, command, command_timeout)
+            output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
         except Exception as exc:
-            logger.warning("run_ceph_json_command: %s failed: %s", host, exc)
+            logger.warning("run_ceph_json_command_with: %s failed: %s", host, exc)
             errors.append(f"{host}: {exc}")
             continue
         try:

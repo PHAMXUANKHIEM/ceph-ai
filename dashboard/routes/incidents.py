@@ -197,12 +197,17 @@ def _query_audit_entries(
 
 
 def _fetch_dashboard_data(
-    incident_id: str, since_dt: datetime | None, until_dt: datetime | None, cluster_id: str, is_default_cluster: bool
+    incident_id: str,
+    since_dt: datetime | None,
+    until_dt: datetime | None,
+    cluster_id: str,
+    is_default_cluster: bool,
+    cluster_names_by_id: dict[str, str],
 ) -> tuple[
     list[Incident],
     WatcherHeartbeat | None,
     bool,
-    list[Action],
+    list[tuple[Action, Incident | None, str]],
     list[AuditEntry],
     bool,
     BackupJob | None,
@@ -252,12 +257,38 @@ def _fetch_dashboard_data(
         # sat in PENDING_APPROVAL forever — visibly proposed, silently never
         # run, with no operator-facing indication anything further was
         # needed.
-        pending_actions = (
+        pending_actions_rows = (
             session.query(Action)
             .filter_by(status=ActionStatus.PENDING_APPROVAL.value)
             .order_by(Action.created_at.desc())
             .all()
         )
+        # 2026-08-10 (multi-tenant remediation Phase 1): this card shows
+        # PENDING_APPROVAL Actions from EVERY cluster, not just whichever one
+        # is currently selected in the switcher — same "broadcast to every
+        # channel regardless of source" posture Telegram approval already
+        # has (docs/telegram-alerts.md mục 6.1). Their Incidents must be
+        # looked up directly here (NOT via the `incidents` list above, which
+        # IS scoped to the selected cluster) — before non-default clusters
+        # could ever have a RISKY Action (the safety guard this phase
+        # removed), that mismatch never mattered; now it would silently show
+        # "no incident" for another cluster's pending approval.
+        pending_incident_ids = {a.incident_id for a in pending_actions_rows}
+        pending_incidents_by_id = (
+            {
+                row.id: row
+                for row in session.query(Incident).filter(Incident.id.in_(pending_incident_ids)).all()
+            }
+            if pending_incident_ids
+            else {}
+        )
+        pending_actions = []
+        for action in pending_actions_rows:
+            pending_incident = pending_incidents_by_id.get(action.incident_id)
+            cluster_label = ""
+            if pending_incident is not None and pending_incident.cluster_id is not None:
+                cluster_label = cluster_names_by_id.get(pending_incident.cluster_id, "")
+            pending_actions.append((action, pending_incident, cluster_label))
         # Audit Trail (filters + full history) now lives directly on the
         # Dashboard — there is no separate /audit page anymore.
         audit_entries = _query_audit_entries(session, incident_id, since_dt, until_dt)
@@ -320,17 +351,18 @@ async def index(
         # fail the same clean 503 way if the DB is unreachable, not an
         # unhandled 500 from before the try block even started.
         clusters, selected_cluster = _resolve_selected_cluster(cluster.strip())
+        cluster_names_by_id = {c.id: c.name for c in clusters}
         (
             incidents,
             latest_heartbeat,
             kill_switch_enabled,
-            pending_actions,
+            pending_actions_with_incident,
             audit_entries,
             upgrade_blocks_other_actions,
             backup_alert,
             telegram_configured,
         ) = _fetch_dashboard_data(
-            incident_id, since_dt, until_dt, selected_cluster.id, selected_cluster.is_default
+            incident_id, since_dt, until_dt, selected_cluster.id, selected_cluster.is_default, cluster_names_by_id
         )
         # Kept inside the same try as the fetch (Review Story 5.2) — these
         # derive directly from just-fetched DB data, so any failure here
@@ -339,14 +371,6 @@ async def index(
         # alone wouldn't catch.
         stale = is_heartbeat_stale(latest_heartbeat)
         status = compute_cluster_status(incidents, stale)
-        # Incidents already fetched are looked up by id (in-memory, no extra
-        # query) for the pending-approval section — every PENDING_APPROVAL
-        # Action has a corresponding row in `incidents` since both derive
-        # from the same DB snapshot.
-        incidents_by_id = {incident.id: incident for incident in incidents}
-        pending_actions_with_incident = [
-            (action, incidents_by_id.get(action.incident_id)) for action in pending_actions
-        ]
     except SQLAlchemyError:
         logger.exception("index: failed to query incidents from DB")
         raise HTTPException(

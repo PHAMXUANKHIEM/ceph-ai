@@ -97,7 +97,7 @@ from dashboard.routes.actions import (
     reject_action_core,
 )
 from shared import db
-from shared.models import Action, ActionStatus, Incident
+from shared.models import Action, ActionStatus, Cluster, Incident
 from shared.telegram_client import (
     TelegramSendError,
     answer_telegram_callback,
@@ -164,13 +164,29 @@ def has_configured_channel() -> bool:
     return bool(_configured_channels())
 
 
-def _action_message_text(action: Action, incident: Incident | None) -> str:
+def _action_message_text(action: Action, incident: Incident | None, session) -> str:
     lines = []
     # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
     # _with_cluster_prefix — this module runs in the Dashboard process (not
     # Watcher/Worker) and builds its own message text, so it needs its own
     # copy rather than importing across that layering boundary.
-    cluster_name = settings.cluster_name.strip()
+    #
+    # 2026-08-10 (multi-tenant remediation Phase 1): looks up the Incident's
+    # OWN cluster by cluster_id instead of always using the global
+    # settings.cluster_name — an operator approving from Telegram must be
+    # able to tell WHICH cluster a RISKY command is about to run against
+    # when more than one is configured, not just the default one's label
+    # (or nothing at all, if settings.cluster_name was left blank).
+    # cluster_id=None still means the default cluster, same convention as
+    # Incident.cluster_id everywhere else — falls back to settings.
+    # cluster_name exactly as before for that case.
+    cluster_name = ""
+    if incident is not None and incident.cluster_id is not None:
+        cluster = session.get(Cluster, incident.cluster_id)
+        if cluster is not None:
+            cluster_name = cluster.name.strip()
+    else:
+        cluster_name = settings.cluster_name.strip()
     if cluster_name:
         lines.append(f"\U0001f4cd Cụm: {cluster_name}")
     lines.append(f"📋 Đề xuất chờ duyệt: {action.action_id}")
@@ -247,7 +263,7 @@ def _notify_pending_actions() -> None:
                 continue
 
             incident = session.get(Incident, action.incident_id)
-            message_text = _action_message_text(action, incident)
+            message_text = _action_message_text(action, incident, session)
             changed = False
             for channel_key, bot_token, chat_id in missing:
                 try:
@@ -363,7 +379,7 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
             action = session.get(Action, action_id)
             if action is not None:
                 incident = session.get(Incident, action.incident_id)
-                base_text = _action_message_text(action, incident)
+                base_text = _action_message_text(action, incident, session)
             else:
                 base_text = f"Action ID: {action_id}"
         try:

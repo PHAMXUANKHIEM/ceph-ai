@@ -22,15 +22,15 @@ from shared.db import Base
 
 
 class Cluster(Base):
-    """A Ceph cluster Watcher can poll for health status (multi-cluster
-    observability, Phase 1 — see docs/multi-cluster-deployment.md's sibling
-    plan). Deliberately holds ONLY the fields the core health check
-    (watcher/ceph_client.py::query_cluster_health_with) needs — mon nodes,
-    exec mode, container name, SSH creds — not the full field set
-    config/settings.py's Settings singleton has (mgr/rgw nodes, RBD pools,
-    backup targets, ...): those stay `.env`-scoped and single-cluster until
-    a later phase makes Worker (remediation/backup/patch/upgrade/Telegram)
-    multi-cluster too.
+    """A Ceph cluster Watcher can poll for health status, and (as of the
+    Phase 2 multi-tenant remediation work) that Worker can diagnose/execute
+    remediation for. Holds every field `shared/cluster_nodes.py::
+    configured_nodes()`/`resolve_ssh_creds()` need to fully stand in for
+    `config/settings.py`'s Settings singleton on a per-cluster basis: mon/
+    mgr/osd/rgw nodes, exec mode, container names, SSH creds. Still does NOT
+    carry RBD pools, backup targets, patch/upgrade config, or per-cluster
+    Telegram routing — those remain `.env`-scoped/single-cluster until their
+    own later phase (see docs/multi-cluster-deployment.md's sibling plan).
 
     Exactly one row has `is_default=True` — that row MIRRORS the
     `.env`-configured cluster (shared/clusters.py::ensure_default_cluster
@@ -65,6 +65,20 @@ class Cluster(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     ceph_mon_nodes: Mapped[str] = mapped_column(Text, nullable=False)
     ceph_container_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    # 2026-08-10 (multi-tenant remediation Phase 1) -- same optional-CSV
+    # posture as config/settings.py's equivalent fields: blank means "no
+    # nodes with this role for this cluster", not an error.
+    ceph_mgr_nodes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ceph_osd_nodes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ceph_rgw_nodes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ceph_rgw_container_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    # watcher/collector.py's log-collection needs these two: MON hostnames
+    # (parses a mon NAME out of `ceph health detail` text, then maps it back
+    # to an IP via this list — same positional pairing with ceph_mon_nodes
+    # settings.ceph_mon_hostnames already uses) and the OSD daemon's own
+    # container name (separate from ceph_container_name, which is MON's).
+    ceph_mon_hostnames: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ceph_osd_container_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     ssh_user: Mapped[str] = mapped_column(String(64), nullable=False)
     ssh_key_path: Mapped[str] = mapped_column(Text, nullable=False)
     ceph_exec_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="docker")

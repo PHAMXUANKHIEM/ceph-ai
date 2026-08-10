@@ -99,6 +99,18 @@
           <label>MON nodes (cách nhau bởi dấu phẩy)
             <input type="text" name="ceph_mon_nodes" placeholder="10.20.1.10,10.20.1.11" value="{{ cluster_form_values.ceph_mon_nodes or '' }}">
           </label>
+          <label>MON hostnames (tuỳ chọn — cùng thứ tự với MON nodes ở trên, giúp AI đọc đúng tên mon trong log)
+            <input type="text" name="ceph_mon_hostnames" placeholder="mon1,mon2" value="{{ cluster_form_values.ceph_mon_hostnames or '' }}">
+          </label>
+          <label>MGR nodes (tuỳ chọn, cách nhau bởi dấu phẩy)
+            <input type="text" name="ceph_mgr_nodes" placeholder="10.20.1.10" value="{{ cluster_form_values.ceph_mgr_nodes or '' }}">
+          </label>
+          <label>OSD nodes (tuỳ chọn — cần điền nếu muốn AI chẩn đoán/tự xử lý sự cố OSD cho cụm này)
+            <input type="text" name="ceph_osd_nodes" placeholder="10.20.1.10,10.20.1.11,10.20.1.12" value="{{ cluster_form_values.ceph_osd_nodes or '' }}">
+          </label>
+          <label>RGW nodes (tuỳ chọn)
+            <input type="text" name="ceph_rgw_nodes" placeholder="" value="{{ cluster_form_values.ceph_rgw_nodes or '' }}">
+          </label>
           <label>Kiểu deploy
             <select name="ceph_exec_mode">
               {% for mode in ("cephadm", "docker", "podman", "none") %}
@@ -108,6 +120,12 @@
           </label>
           <label>MON container (bỏ trống nếu cephadm/none)
             <input type="text" name="ceph_container_name" value="{{ cluster_form_values.ceph_container_name or '' }}">
+          </label>
+          <label>OSD container (tuỳ chọn, bỏ trống nếu cephadm/none)
+            <input type="text" name="ceph_osd_container_name" value="{{ cluster_form_values.ceph_osd_container_name or '' }}">
+          </label>
+          <label>RGW container (tuỳ chọn, bỏ trống nếu cephadm/none hoặc không có RGW)
+            <input type="text" name="ceph_rgw_container_name" value="{{ cluster_form_values.ceph_rgw_container_name or '' }}">
           </label>
           <label>SSH user
             <input type="text" name="ssh_user" placeholder="root" value="{{ cluster_form_values.ssh_user or '' }}">

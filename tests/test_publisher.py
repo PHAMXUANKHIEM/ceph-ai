@@ -35,6 +35,10 @@ def test_build_envelope_has_exact_ac2_fields():
         "log_excerpt",
         "cluster_snapshot",
         "cluster_id",
+        "ssh_user",
+        "ssh_key_path",
+        "ceph_exec_mode",
+        "ceph_container_name",
     }
     assert envelope["schema_version"] == SCHEMA_VERSION
     assert envelope["incident_id"] == "abc-123"

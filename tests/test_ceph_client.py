@@ -814,7 +814,9 @@ def test_run_ceph_json_command_raises_when_no_mon_nodes_configured(monkeypatch):
 def test_run_ceph_json_command_falls_back_to_raw_output_on_invalid_json(monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     monkeypatch.setattr(
-        ceph_client, "_run_remote_command", lambda host, command, command_timeout=None: "not valid json"
+        ceph_client,
+        "_run_remote_command_with",
+        lambda host, command, ssh_user, ssh_key_path, command_timeout=None: "not valid json",
     )
 
     host, parsed = run_ceph_json_command("ceph pg stat")
@@ -829,12 +831,12 @@ def test_run_ceph_json_command_appends_format_json_and_uses_mcp_timeout(monkeypa
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     captured = {}
 
-    def fake_run_remote_command(host, command, command_timeout=None):
+    def fake_run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout=None):
         captured["command"] = command
         captured["timeout"] = command_timeout
         return "{}"
 
-    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run_remote_command)
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", fake_run_remote_command_with)
 
     run_ceph_json_command("ceph df")
 
@@ -847,12 +849,12 @@ def test_run_ceph_json_command_uses_cephadm_timeout_in_cephadm_mode(monkeypatch)
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     captured = {}
 
-    def fake_run_remote_command(host, command, command_timeout=None):
+    def fake_run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout=None):
         captured["command"] = command
         captured["timeout"] = command_timeout
         return "{}"
 
-    monkeypatch.setattr(ceph_client, "_run_remote_command", fake_run_remote_command)
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", fake_run_remote_command_with)
 
     run_ceph_json_command("ceph mon stat")
 

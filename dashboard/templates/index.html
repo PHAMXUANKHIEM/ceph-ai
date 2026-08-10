@@ -142,9 +142,10 @@
         <button type="button" class="card-toggle-btn" id="pending-actions-toggle" aria-label="Ẩn danh sách" title="Ẩn danh sách">&#8722;</button>
       </div>
       <div class="card-body pending-actions" id="pending-actions-body">
-        {% for action, incident in pending_actions %}
+        {% for action, incident, cluster_label in pending_actions %}
         <article class="pending-action-card">
           <p><strong>Nguồn:</strong>
+            {% if cluster_label %}<span class="hint">[{{ cluster_label }}]</span>{% endif %}
             {% if incident and incident.ceph_code == "CHAT_REQUEST" %}Yêu cầu qua Chat với AI
             {% elif incident and incident.ceph_code == "CLUSTER_UPGRADE" %}Đề xuất nâng cấp cụm (xem <a href="/upgrade">trang Nâng cấp</a>)
             {% else %}Tự động phát hiện — Mã lỗi <code>{{ incident.ceph_code if incident else "—" }}</code>{% endif %}

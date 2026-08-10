@@ -318,6 +318,10 @@ def build_and_publish_incident(
                 log_excerpt=log_excerpt,
                 cluster_snapshot=health,
                 cluster_id=cluster_id,
+                ssh_user=settings.ssh_user,
+                ssh_key_path=settings.ssh_key_path,
+                ceph_exec_mode=settings.ceph_exec_mode,
+                ceph_container_name=settings.ceph_container_name,
             )
         )
 
@@ -615,25 +619,22 @@ def run(
 
 
 def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: dict) -> None:
-    """Multi-cluster observability Phase 1's incident-creation path for any
-    cluster OTHER than the default one — deliberately NOT a call into
-    `build_and_publish_incident` above, and deliberately NOT calling
-    `collector.collect_relevant_logs` at all (unlike that function): that
-    module (watcher/collector.py) resolves OSD/MGR/MON nodes and exec-mode/
-    container names straight from the global `settings` singleton in
-    several places, not just the one `ceph_client.last_successful_mon_node`
-    global — there is no parameterized version of it the way
-    query_cluster_health_with() exists for the health check itself. Calling
-    it here would silently collect (or attempt to SSH for) the DEFAULT
-    cluster's logs while labeling the result as this OTHER cluster's
-    Incident. So: every check the poll reports becomes a plain Incident
-    with `log_excerpt=None` — no log collection, no BLUESTORE_NO_PER_POOL_OMAP
-    special-case (that skip exists in build_and_publish_incident ONLY
-    because watcher/bluestore_omap_monitor.py owns that ceph_code's
-    lifecycle for the default cluster; no such specialized monitor runs for
-    an observed cluster in Phase 1, so this generic path is the only thing
-    that will ever surface it — skipping it here would make it invisible
-    instead of specialized).
+    """Multi-cluster observability's incident-creation path for any cluster
+    OTHER than the default one — deliberately NOT a call into
+    `build_and_publish_incident` above (that one is wired to the
+    default-cluster-only BLUESTORE_NO_PER_POOL_OMAP special-case that
+    `watcher/bluestore_omap_monitor.py` owns the lifecycle for; no such
+    specialized monitor runs for an observed cluster yet, so a check
+    matching that prefix here still takes the generic path below instead of
+    being silently skipped — see build_and_publish_incident's own skip
+    comment for why that split exists).
+
+    2026-08-10 (multi-tenant remediation Phase 1): DOES now call
+    `collector.collect_relevant_logs(ceph_code, check_detail, cluster=cluster)`
+    — every function in watcher/collector.py this touches was made
+    cluster-parameterized specifically for this call site, so log collection
+    runs against THIS cluster's own nodes/creds/exec-mode, never the
+    default's. `nodes`/`log_excerpt` are no longer always empty/None.
     """
     current_status = health.get("status")
     current_checks = health.get("checks", {})
@@ -643,12 +644,14 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
         detected_at = datetime.utcnow()
+        nodes, log_excerpt = collector.collect_relevant_logs(ceph_code, check_detail, cluster=cluster)
+
         with db.SessionLocal() as session:
             incident = Incident(
                 ceph_code=ceph_code,
                 status=IncidentStatus.NEW.value,
                 detected_at=detected_at,
-                log_excerpt=None,
+                log_excerpt=log_excerpt,
                 severity=check_detail.get("severity"),
                 cluster_id=cluster.id,
             )
@@ -657,17 +660,21 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             session.refresh(incident)
             incident_id = incident.id
 
-        send_incident_alert(ceph_code, check_detail.get("severity"), None, cluster_name=cluster.name)
+        send_incident_alert(ceph_code, check_detail.get("severity"), log_excerpt, cluster_name=cluster.name)
 
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,
                 ceph_code=ceph_code,
                 detected_at=detected_at.isoformat(),
-                nodes=[],
-                log_excerpt=None,
+                nodes=nodes,
+                log_excerpt=log_excerpt,
                 cluster_snapshot=health,
                 cluster_id=cluster.id,
+                ssh_user=cluster.ssh_user,
+                ssh_key_path=cluster.ssh_key_path,
+                ceph_exec_mode=cluster.ceph_exec_mode,
+                ceph_container_name=cluster.ceph_container_name,
             )
         )
 
