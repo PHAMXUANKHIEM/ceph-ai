@@ -184,3 +184,47 @@ def test_index_falls_back_to_default_cluster_for_unknown_cluster_query_param(das
     response = dashboard_client.get("/?cluster=does-not-exist")
 
     assert response.status_code == 200  # no 404/500 on a stale/bad bookmark
+
+
+# 2026-08-10: user-reported bug — the Clusters nav link was missing from
+# every template EXCEPT clusters.html/crush_map.html/index.html, because
+# this app has no shared nav partial (every template hand-copies its own
+# topbar, same root cause test_dashboard_users.py's own
+# test_nav_shows_users_link_for_admin_on_other_pages already documents for
+# the Users link). Covers every admin-nav page that got the fix, not just
+# a small sample, since the actual bug spanned all of them.
+def test_nav_shows_clusters_link_for_admin_on_every_page(dashboard_client):
+    _login(dashboard_client)
+
+    for path in (
+        "/",
+        "/nodes",
+        "/volumes",
+        "/deploy-cluster",
+        "/delete-cluster",
+        "/convert-cluster",
+        "/upgrade",
+        "/patch",
+        "/backups",
+        "/restore-cluster",
+        "/bucket-access-log",
+        "/settings",
+        "/telegram-alerts",
+        "/telegram-alerts/help",
+        "/users",
+        "/crush-map",
+        "/clusters",
+    ):
+        response = dashboard_client.get(path)
+        assert 'href="/clusters"' in response.text, f"missing Clusters nav link on {path}"
+
+
+def test_nav_hides_clusters_link_for_non_admin_on_other_pages(dashboard_client):
+    from tests.test_dashboard_users import _create_user, _login_as
+
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    for path in ("/", "/nodes", "/upgrade", "/settings"):
+        response = dashboard_client.get(path)
+        assert 'href="/clusters"' not in response.text, f"Clusters nav link leaked on {path}"
