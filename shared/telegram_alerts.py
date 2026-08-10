@@ -80,7 +80,13 @@ def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: 
 
 
 def send_incident_alert(
-    ceph_code: str, severity: str | None, log_excerpt: str | None, cluster_name: str | None = None
+    ceph_code: str,
+    severity: str | None,
+    log_excerpt: str | None,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
 ) -> None:
     """Called once per newly-created cluster-health Incident
     (watcher/main.py::build_and_publish_incident, one call per `ceph
@@ -94,7 +100,16 @@ def send_incident_alert(
     No-op if the Lỗi cụm channel's bot token/chat id aren't configured yet
     — checked here (not left to send_telegram_message's own "missing
     config" error) so an operator who simply hasn't set up this channel
-    never sees a log entry about it "failing"."""
+    never sees a log entry about it "failing".
+
+    `bot_token`/`chat_id`/`enabled` (2026-08-10, multi-tenant remediation
+    Phase 2): override the 3 GLOBAL "Lỗi cụm" channel fields when given —
+    `watcher/main.py::_build_and_publish_incident_for_observed_cluster`
+    passes an OBSERVED cluster's own `Cluster.telegram_*` fields here when
+    that cluster has configured its own channel, narrowing delivery to
+    just that chat instead of the 3 global ones. `None` (every other
+    caller, unchanged) means "use the global settings.telegram_incident_*
+    exactly as before this param existed"."""
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
     excerpt = (log_excerpt or "").strip()
     if len(excerpt) > _MAX_EXCERPT_CHARS:
@@ -103,9 +118,9 @@ def send_incident_alert(
     if excerpt:
         text += f"\n{excerpt}"
     _send(
-        settings.telegram_incident_bot_token,
-        settings.telegram_incident_chat_id,
-        settings.telegram_incident_enabled,
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
         text,
         cluster_name,
     )
@@ -167,6 +182,9 @@ def send_auto_remediation_alert(
     rationale: str | None,
     command: str | None,
     succeeded: bool,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
 ) -> None:
     """Called once per SAFE Action after execution finishes
     (worker/llm/router_client.py::_record_execution_result) — the
@@ -177,7 +195,14 @@ def send_auto_remediation_alert(
     same Lỗi cụm channel (reusing telegram_incident_bot_token/chat_id
     rather than adding a 4th channel — same reasoning send_osd_latency_alert
     gives for reusing Phần cứng). No-op if that channel isn't configured,
-    same as every other function in this module."""
+    same as every other function in this module.
+
+    `bot_token`/`chat_id`/`enabled` (2026-08-10, multi-tenant remediation
+    Phase 2): same override posture as send_incident_alert() — `worker/
+    llm/router_client.py::_record_execution_result` passes the SAFE
+    Action's own Incident's cluster's channel here when that cluster has
+    configured one of its own; `None` (default) keeps reading the 3
+    global settings.telegram_incident_* fields exactly as before."""
     prefix = "\u2705 Đã tự động xử lý" if succeeded else "\u274c Tự động xử lý thất bại"
     lines = [f"{prefix}: {ceph_code}"]
     if diagnosis_text:
@@ -186,4 +211,9 @@ def send_auto_remediation_alert(
         lines.append(f"Hành động: {rationale}")
     if command:
         lines.append(f"Lệnh đã chạy:\n{command}")
-    _send(settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, settings.telegram_incident_enabled, "\n".join(lines))
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        "\n".join(lines),
+    )

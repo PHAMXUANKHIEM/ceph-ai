@@ -82,6 +82,21 @@ class Cluster(Base):
     ssh_user: Mapped[str] = mapped_column(String(64), nullable=False)
     ssh_key_path: Mapped[str] = mapped_column(Text, nullable=False)
     ceph_exec_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="docker")
+    # 2026-08-10 (multi-tenant remediation Phase 2) -- ONE Telegram channel
+    # per ADDITIONAL cluster (not the default cluster's own 3 categories):
+    # a non-default cluster can only ever produce "Lỗi cụm" health-check
+    # Incidents/RISKY approvals today (node/osd-latency/crush-skew monitors
+    # and the backup pipeline don't run for observed clusters yet — see
+    # watcher/main.py::run_observed_cluster_loop's own docstring), so a
+    # 3-category split here would be dead configuration. Blank/disabled
+    # means "no channel of its own" — dashboard/telegram_approval_bot.py::
+    # channels_for_incident() then falls back to the 3 GLOBAL channels for
+    # the default cluster only; a configured non-default cluster's own
+    # channel REPLACES (narrows to) the global ones for its own Incidents,
+    # never adds to them (see that function's own docstring for why).
+    telegram_bot_token: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    telegram_chat_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    telegram_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

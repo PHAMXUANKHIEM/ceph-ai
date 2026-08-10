@@ -2,12 +2,14 @@ from datetime import datetime
 
 import dashboard.routes.patch as patch_route
 import dashboard.routes.upgrade as upgrade_route
+import dashboard.telegram_approval_bot as telegram_bot
 from shared import db as db_module
 from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    Cluster,
     Incident,
     IncidentStatus,
     NodeUpgradeGate,
@@ -82,6 +84,65 @@ def test_approve_action_sets_approved_and_audits_operator_as_actor(dashboard_cli
         assert len(entries) == 1
         assert entries[0].actor == "admin"
         assert entries[0].event_type == "risky_action_approved"
+
+
+def test_index_still_shows_pending_card_for_uncovered_cluster_even_with_global_telegram_configured(
+    dashboard_client, monkeypatch
+):
+    """2026-08-10 (multi-tenant remediation Phase 2) regression guard: before
+    this phase, configuring the 3 global Telegram channels hid the "Chờ
+    duyệt" card entirely — safe back then, since every RISKY action was
+    always default-cluster-covered by them. Now a non-default cluster can
+    have its OWN channel, which NARROWS coverage instead of the global ones
+    always covering everything — an uncovered action must still show here,
+    or it would be silently unapprovable anywhere (the exact stranding bug
+    this codebase already fixed once, see test_index_shows_pending_action_
+    card's own docstring)."""
+    monkeypatch.setattr(telegram_bot.settings, "telegram_incident_bot_token", "global-token", raising=False)
+    monkeypatch.setattr(telegram_bot.settings, "telegram_incident_chat_id", "-1", raising=False)
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-b",
+            ceph_mon_nodes="10.30.1.10",
+            ssh_user="root",
+            ssh_key_path="/root/.ssh/key",
+            ceph_exec_mode="docker",
+            is_default=False,
+            is_active=True,
+            # No telegram_bot_token/chat_id -- no channel of its own.
+        )
+        session.add(cluster)
+        session.commit()
+        session.refresh(cluster)
+        cluster_id = cluster.id
+        session.add(
+            Incident(
+                id="inc-cluster-b",
+                ceph_code="OSD_DOWN",
+                status=IncidentStatus.PENDING_APPROVAL.value,
+                detected_at=datetime.utcnow(),
+                cluster_id=cluster_id,
+            )
+        )
+        session.add(
+            Action(
+                incident_id="inc-cluster-b",
+                action_id="restart_osd_daemon",
+                classification=ActionClassification.RISKY.value,
+                status=ActionStatus.PENDING_APPROVAL.value,
+                rationale="stuck OSD on cluster-b",
+                target_nodes='["10.30.1.20"]',
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/")
+
+    assert response.status_code == 200
+    assert "Chờ duyệt" in response.text
+    assert "stuck OSD on cluster-b" in response.text
+    assert "chưa có kênh Telegram cho cụm này" in response.text
 
 
 def test_reject_action_sets_rejected(dashboard_client):

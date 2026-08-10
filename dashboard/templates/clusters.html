@@ -133,6 +133,16 @@
           <label>SSH key path (trên server chạy Watcher)
             <input type="text" name="ssh_key_path" placeholder="/root/.ssh/ceph_aiops_watcher" value="{{ cluster_form_values.ssh_key_path or '' }}">
           </label>
+          <label>Telegram Bot Token (tuỳ chọn — bỏ trống thì cảnh báo/phê duyệt của cụm này dùng chung 3 kênh mặc định)
+            <input type="password" name="telegram_bot_token" autocomplete="off" value="{{ cluster_form_values.telegram_bot_token or '' }}">
+          </label>
+          <label>Telegram Chat ID (tuỳ chọn — bắt buộc nếu đã điền Bot Token ở trên)
+            <input type="text" name="telegram_chat_id" placeholder="vd: -1001234567890" value="{{ cluster_form_values.telegram_chat_id or '' }}">
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" name="telegram_enabled" value="true" {{ "" if cluster_form_values and cluster_form_values.telegram_enabled is defined and not cluster_form_values.telegram_enabled else "checked" }}>
+            Bật kênh Telegram riêng cho cụm này
+          </label>
           <button type="submit" class="btn btn-primary btn-sm">Kiểm tra kết nối &amp; Thêm cụm</button>
         </form>
       </div>

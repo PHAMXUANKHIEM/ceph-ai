@@ -660,7 +660,23 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             session.refresh(incident)
             incident_id = incident.id
 
-        send_incident_alert(ceph_code, check_detail.get("severity"), log_excerpt, cluster_name=cluster.name)
+        # 2026-08-10 (multi-tenant remediation Phase 2): pass this cluster's
+        # OWN Telegram channel when it has configured one — narrows delivery
+        # to just that chat instead of the 3 global channels (shared/
+        # telegram_alerts.py::send_incident_alert's own docstring). Both
+        # bot_token/chat_id must be set (an empty chat_id alone is not a
+        # usable channel); `None`/`None`/`None` falls back to global exactly
+        # like every other caller.
+        has_own_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
+        send_incident_alert(
+            ceph_code,
+            check_detail.get("severity"),
+            log_excerpt,
+            cluster_name=cluster.name,
+            bot_token=cluster.telegram_bot_token if has_own_channel else None,
+            chat_id=cluster.telegram_chat_id if has_own_channel else None,
+            enabled=cluster.telegram_enabled if has_own_channel else None,
+        )
 
         envelopes.append(
             publisher.build_envelope(

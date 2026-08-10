@@ -13,7 +13,7 @@ from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.routes.delete_cluster import CLUSTER_DELETE_CEPH_CODE
 from dashboard.routes.deploy_cluster import CLUSTER_DEPLOY_CEPH_CODE
 from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
-from dashboard.telegram_approval_bot import has_configured_channel
+from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.clusters import ensure_default_cluster, list_active_clusters
@@ -207,7 +207,7 @@ def _fetch_dashboard_data(
     list[Incident],
     WatcherHeartbeat | None,
     bool,
-    list[tuple[Action, Incident | None, str]],
+    list[tuple[Action, Incident | None, str, bool]],
     list[AuditEntry],
     bool,
     BackupJob | None,
@@ -288,7 +288,16 @@ def _fetch_dashboard_data(
             cluster_label = ""
             if pending_incident is not None and pending_incident.cluster_id is not None:
                 cluster_label = cluster_names_by_id.get(pending_incident.cluster_id, "")
-            pending_actions.append((action, pending_incident, cluster_label))
+            # 2026-08-10 (multi-tenant remediation Phase 2): whether THIS
+            # action actually has a reachable Telegram channel — a
+            # non-default cluster with no channel of its own is NOT covered
+            # by the 3 global channels anymore (channels_for_incident
+            # narrows, doesn't add) — see index()'s own use of this to keep
+            # the "Chờ duyệt" card from ever stranding such an action, the
+            # exact bug class docs/telegram-alerts.md mục 6.7 already
+            # documents having happened once before.
+            telegram_covered = bool(channels_for_incident(pending_incident, session))
+            pending_actions.append((action, pending_incident, cluster_label, telegram_covered))
         # Audit Trail (filters + full history) now lives directly on the
         # Dashboard — there is no separate /audit page anymore.
         audit_entries = _query_audit_entries(session, incident_id, since_dt, until_dt)
@@ -371,6 +380,20 @@ async def index(
         # alone wouldn't catch.
         stale = is_heartbeat_stale(latest_heartbeat)
         status = compute_cluster_status(incidents, stale)
+        # 2026-08-10 (multi-tenant remediation Phase 2): the "Chờ duyệt" card
+        # used to hide the instant the 3 GLOBAL channels were configured —
+        # now that a non-default cluster's own channel can NARROW coverage
+        # instead of the global ones always covering everything, that alone
+        # would strand an uncovered action (the "Chat-with-AI confirm was
+        # assumed sufficient" bug docs/telegram-alerts.md mục 6.7 already
+        # describes fixing once). Force the card visible whenever at least
+        # one pending action isn't actually covered by any reachable
+        # Telegram channel, even if the global 3 are configured — default
+        # single-cluster behavior (every action always default-cluster-
+        # covered) is unchanged.
+        show_pending_card = not telegram_configured or any(
+            not covered for _, _, _, covered in pending_actions_with_incident
+        )
     except SQLAlchemyError:
         logger.exception("index: failed to query incidents from DB")
         raise HTTPException(
@@ -414,11 +437,13 @@ async def index(
             "upgrade_blocks_other_actions": upgrade_blocks_other_actions,
             "backup_alert": backup_alert,
             # 2026-08-07: the "Chờ duyệt" card only renders when Telegram
-            # approval ISN'T configured (see _fetch_dashboard_data's
-            # docstring above) — Duyệt/Từ chối already reaches every
-            # configured Telegram channel for every RISKY Action regardless
-            # of where it originated.
-            "telegram_approval_configured": telegram_configured,
+            # approval doesn't already cover every pending action (see
+            # show_pending_card's own comment above, and
+            # _fetch_dashboard_data's docstring) — Duyệt/Từ chối reaches a
+            # covered RISKY Action's Telegram channel regardless of where it
+            # originated; the card stays as the fallback for anything that
+            # isn't reachable that way.
+            "telegram_approval_configured": not show_pending_card,
             # Sidebar tab (2026-07-24) — lands on Audit Trail if the operator
             # just used its filter form (a GET with query params, unlike
             # Settings' POST-result sections), otherwise defaults to Chờ
@@ -426,7 +451,7 @@ async def index(
             # Incident Feed.
             "active_tab": (
                 "audit" if (incident_id or since or until)
-                else "pending" if not telegram_configured
+                else "pending" if show_pending_card
                 else "incidents"
             ),
         },

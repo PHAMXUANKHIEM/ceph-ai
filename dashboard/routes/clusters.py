@@ -87,6 +87,9 @@ async def create_cluster(
     ssh_user: str = Form(""),
     ssh_key_path: str = Form(""),
     ceph_exec_mode: str = Form("docker"),
+    telegram_bot_token: str = Form(""),
+    telegram_chat_id: str = Form(""),
+    telegram_enabled: str = Form(""),
 ):
     """Adds an additional observed cluster — tests the connection with the
     submitted values BEFORE saving (same AC as /settings' cluster form,
@@ -98,7 +101,14 @@ async def create_cluster(
     (config/settings.py's own fields) — only MON nodes are required to add a
     cluster at all (the connection test itself only ever needs MON). Left
     blank, `shared/cluster_nodes.py::configured_nodes(cluster)` for this
-    cluster just returns MON-only, same as an unconfigured `.env` today."""
+    cluster just returns MON-only, same as an unconfigured `.env` today.
+
+    2026-08-10 (multi-tenant remediation Phase 2): telegram_bot_token/
+    chat_id are also OPTIONAL and NOT part of the pre-save connection test
+    above (same "Gửi thử là hành động riêng" posture the 3 global channels'
+    own /telegram-alerts page already has) — left blank, this cluster's
+    alerts/RISKY approvals fall back to the 3 global channels
+    (dashboard/telegram_approval_bot.py::channels_for_incident)."""
     _require_admin_privilege(user)
 
     submitted = {
@@ -114,6 +124,9 @@ async def create_cluster(
         "ssh_user": ssh_user.strip(),
         "ssh_key_path": ssh_key_path.strip(),
         "ceph_exec_mode": ceph_exec_mode.strip() or "docker",
+        "telegram_bot_token": telegram_bot_token.strip(),
+        "telegram_chat_id": telegram_chat_id.strip(),
+        "telegram_enabled": telegram_enabled.strip().lower() in ("true", "on", "1"),
     }
     mon_nodes_list = _parse_node_list(submitted["ceph_mon_nodes"])
 
@@ -187,6 +200,9 @@ async def create_cluster(
                 ssh_user=submitted["ssh_user"],
                 ssh_key_path=submitted["ssh_key_path"],
                 ceph_exec_mode=submitted["ceph_exec_mode"],
+                telegram_bot_token=submitted["telegram_bot_token"],
+                telegram_chat_id=submitted["telegram_chat_id"],
+                telegram_enabled=submitted["telegram_enabled"],
                 is_default=False,
                 is_active=True,
             )

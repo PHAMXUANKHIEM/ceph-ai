@@ -544,6 +544,13 @@ def _record_execution_result(
     notify_ceph_code: str | None = None
     notify_diagnosis: str | None = None
     notify_rationale: str | None = None
+    # 2026-08-10 (multi-tenant remediation Phase 2): None/None/None means
+    # "use the 3 global settings.telegram_incident_* fields" (unchanged
+    # default-cluster behavior) — overridden below only when this Incident
+    # belongs to a non-default cluster that has configured its own channel.
+    notify_bot_token: str | None = None
+    notify_chat_id: str | None = None
+    notify_enabled: bool | None = None
 
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
@@ -590,6 +597,12 @@ def _record_execution_result(
             )
             notify_ceph_code = incident.ceph_code
             notify_diagnosis = incident.diagnosis_text
+            if incident.cluster_id is not None:
+                cluster = session.get(Cluster, incident.cluster_id)
+                if cluster is not None and cluster.telegram_bot_token and cluster.telegram_chat_id:
+                    notify_bot_token = cluster.telegram_bot_token
+                    notify_chat_id = cluster.telegram_chat_id
+                    notify_enabled = cluster.telegram_enabled
         session.commit()
 
     # Best-effort, never raises (see shared/telegram_alerts.py's own
@@ -598,7 +611,14 @@ def _record_execution_result(
     # Incident row to report against.
     if notify_ceph_code is not None:
         send_auto_remediation_alert(
-            notify_ceph_code, notify_diagnosis, notify_rationale, command, succeeded
+            notify_ceph_code,
+            notify_diagnosis,
+            notify_rationale,
+            command,
+            succeeded,
+            bot_token=notify_bot_token,
+            chat_id=notify_chat_id,
+            enabled=notify_enabled,
         )
 
 

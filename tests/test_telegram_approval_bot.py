@@ -3,15 +3,17 @@ from datetime import datetime
 
 import dashboard.telegram_approval_bot as bot
 from shared import db as db_module
-from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 
 
-def _pending_action(incident_id: str, *, action_id: str = "restart_osd_daemon", rationale: str = "stuck OSD") -> str:
+def _pending_action(
+    incident_id: str, *, action_id: str = "restart_osd_daemon", rationale: str = "stuck OSD", cluster_id: str | None = None
+) -> str:
     with db_module.SessionLocal() as session:
         session.add(
             Incident(
                 id=incident_id, ceph_code="OSD_DOWN", status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=datetime.utcnow(), cluster_id=cluster_id,
             )
         )
         action = Action(
@@ -414,3 +416,120 @@ def test_handle_callback_ignores_unrecognized_callback_data(dashboard_client, mo
 
     with db_module.SessionLocal() as session:
         assert session.get(Action, action_id).status == ActionStatus.PENDING_APPROVAL.value
+
+
+# --- Multi-tenant remediation Phase 2: per-cluster channel scoping ---------
+#
+# `channels_for_incident()` narrows delivery/trust to a non-default
+# cluster's OWN configured channel instead of the 3 global ones -- these
+# are the core security-property tests for that narrowing (see this
+# session's own plan doc, "Verification" section).
+
+
+def _make_observed_cluster(session, *, telegram_bot_token="", telegram_chat_id="", telegram_enabled=True) -> str:
+    cluster = Cluster(
+        name="cluster-b",
+        ceph_mon_nodes="10.30.1.10",
+        ssh_user="root",
+        ssh_key_path="/root/.ssh/key",
+        ceph_exec_mode="docker",
+        is_default=False,
+        is_active=True,
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
+        telegram_enabled=telegram_enabled,
+    )
+    session.add(cluster)
+    session.commit()
+    session.refresh(cluster)
+    return cluster.id
+
+
+def test_notify_routes_non_default_cluster_to_its_own_channel_only(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="global-token", chat_id="-1")
+    with db_module.SessionLocal() as session:
+        cluster_id = _make_observed_cluster(
+            session, telegram_bot_token="cluster-token", telegram_chat_id="-500"
+        )
+    action_id = _pending_action("inc-cluster-b", cluster_id=cluster_id)
+    calls = []
+    monkeypatch.setattr(
+        bot,
+        "send_telegram_message_with_keyboard",
+        lambda token, chat_id, text, buttons: calls.append((token, chat_id)) or 111,
+    )
+
+    bot._notify_pending_actions()
+
+    # Only the cluster's own channel -- never the global "incident" one,
+    # even though it's fully configured and would have covered this action
+    # before Phase 2.
+    assert calls == [("cluster-token", "-500")]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert json.loads(action.telegram_message_ids) == {f"cluster:{cluster_id}": 111}
+
+
+def test_notify_sends_nothing_for_non_default_cluster_without_own_channel(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="global-token", chat_id="-1")
+    with db_module.SessionLocal() as session:
+        cluster_id = _make_observed_cluster(session)  # no telegram fields set
+    _pending_action("inc-cluster-b", cluster_id=cluster_id)
+    calls = []
+    monkeypatch.setattr(
+        bot, "send_telegram_message_with_keyboard", lambda *a: calls.append(a)
+    )
+
+    bot._notify_pending_actions()
+
+    # Narrowed to "nothing", not "fall through to the 3 global channels".
+    assert calls == []
+
+
+def test_handle_callback_rejects_global_chat_id_for_a_clusters_own_action(dashboard_client, monkeypatch):
+    """The actual security property Phase 2 exists to add: a chat id that IS
+    a legitimately configured channel (the global "incident" one) must NOT
+    be able to approve an action belonging to a DIFFERENT cluster that has
+    its own channel."""
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="global-token", chat_id="-1")
+    with db_module.SessionLocal() as session:
+        cluster_id = _make_observed_cluster(
+            session, telegram_bot_token="cluster-token", telegram_chat_id="-500"
+        )
+    action_id = _pending_action("inc-cluster-b", cluster_id=cluster_id)
+    answer_calls = []
+    monkeypatch.setattr(
+        bot, "answer_telegram_callback", lambda token, cb_id, text=None: answer_calls.append(text)
+    )
+    monkeypatch.setattr(bot, "edit_telegram_message", lambda *a: (_ for _ in ()).throw(AssertionError("must not edit")))
+
+    # Callback arrives via the GLOBAL "incident" channel's own chat id.
+    bot._handle_callback_query(_callback_query(action_id, "approve", chat_id="-1"), "global-token")
+
+    assert answer_calls == ["Không có quyền"]
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_id).status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_handle_callback_accepts_the_clusters_own_chat_id(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="global-token", chat_id="-1")
+    with db_module.SessionLocal() as session:
+        cluster_id = _make_observed_cluster(
+            session, telegram_bot_token="cluster-token", telegram_chat_id="-500"
+        )
+    action_id = _pending_action("inc-cluster-b", cluster_id=cluster_id)
+    monkeypatch.setattr(bot, "edit_telegram_message", lambda *a: None)
+    answer_calls = []
+    monkeypatch.setattr(
+        bot, "answer_telegram_callback", lambda token, cb_id, text=None: answer_calls.append(text)
+    )
+
+    bot._handle_callback_query(_callback_query(action_id, "approve", chat_id="-500"), "cluster-token")
+
+    assert answer_calls == ["Đã duyệt"]
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_id).status == ActionStatus.APPROVED.value

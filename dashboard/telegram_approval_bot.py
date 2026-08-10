@@ -86,6 +86,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 
 from config.settings import settings
@@ -97,6 +98,7 @@ from dashboard.routes.actions import (
     reject_action_core,
 )
 from shared import db
+from shared.clusters import get_default_cluster_id
 from shared.models import Action, ActionStatus, Cluster, Incident
 from shared.telegram_client import (
     TelegramSendError,
@@ -158,10 +160,100 @@ def has_configured_channel() -> bool:
     Chat ID set — i.e. Duyệt/Từ chối is reachable via Telegram right now
     (see this module's/docs/telegram-alerts.md's mục 6: approval is a
     capability of ANY configured channel, not a 4th toggle). Used by
-    dashboard/routes/incidents.py to decide whether the Dashboard's own
-    "Chờ duyệt" card is still needed as a fallback, or whether Telegram
-    already covers it."""
+    dashboard/routes/incidents.py as the BASELINE signal for whether the
+    Dashboard's own "Chờ duyệt" card is needed — deliberately still scoped
+    to just the 3 global channels (unchanged since before Phase 2), NOT
+    per-cluster channels: `channels_for_incident()` below is what incidents.py
+    additionally checks PER pending action to catch a non-default cluster
+    with no channel of its own, which this global boolean alone can't see."""
     return bool(_configured_channels())
+
+
+def _cluster_channel(cluster: Cluster) -> tuple[str, str, str] | None:
+    """(channel_key, bot_token, chat_id) for `cluster`'s own Telegram
+    channel (2026-08-10, multi-tenant remediation Phase 2), or None if it
+    hasn't configured one (bot_token/chat_id blank) or has it disabled.
+    `channel_key` is namespaced ("cluster:<id>") so it can never collide
+    with the fixed 3 global keys ("backup"/"incident"/"node") inside
+    `Action.telegram_message_ids`."""
+    if cluster.telegram_bot_token and cluster.telegram_chat_id and cluster.telegram_enabled:
+        return (f"cluster:{cluster.id}", cluster.telegram_bot_token, cluster.telegram_chat_id)
+    return None
+
+
+def channels_for_incident(incident: Incident | None, session) -> list[tuple[str, str, str]]:
+    """The Telegram channel(s) legitimately covering `incident` (2026-08-10,
+    multi-tenant remediation Phase 2) — narrows to just an OWN configured
+    channel for a non-default cluster's Incident instead of broadcasting to
+    (or trusting) the 3 global channels. Falls back to `_configured_
+    channels()` (the existing 3-global broadcast-to-all behavior, unchanged)
+    when `incident` is None, has no `cluster_id`, belongs to the DEFAULT
+    cluster, or belongs to a cluster that hasn't configured its own channel.
+
+    Used by BOTH the broadcast side (`_notify_pending_actions`) and the
+    callback TRUST check (`_handle_callback_query`) so they can never drift
+    apart — the set of chats a pending action is sent TO is always exactly
+    the set allowed to approve/reject it."""
+    if incident is not None and incident.cluster_id is not None:
+        if incident.cluster_id != get_default_cluster_id(session):
+            cluster = session.get(Cluster, incident.cluster_id)
+            if cluster is not None:
+                own_channel = _cluster_channel(cluster)
+                return [own_channel] if own_channel is not None else []
+    return _configured_channels()
+
+
+# 2026-08-10 (multi-tenant remediation Phase 2): `_listen_supervisor_loop`'s
+# reconcile tick runs every `_IDLE_BACKOFF_SECONDS` (5s) for as long as the
+# Dashboard process lives — querying the DB for cluster tokens that often,
+# forever, adds needless steady-state load and was found (verified live in
+# this session's own test suite) to occasionally starve OTHER background DB
+# work of a connection/cursor in time. Cached at this coarser interval
+# instead; a `_CLUSTER_TOKENS_CACHE_SECONDS`-stale cluster-channel pickup is
+# an acceptable trade — a NEW/changed cluster channel already needs a
+# Watcher restart to take effect for anything else about that cluster
+# (dashboard/routes/clusters.py's own restart_watcher() call), which takes
+# far longer than this cache's own staleness window.
+_CLUSTER_TOKENS_CACHE_SECONDS = 30
+_cluster_tokens_cache: tuple[float, set[str]] = (0.0, set())
+_cluster_tokens_cache_lock = threading.Lock()
+
+
+def _cluster_tokens_cached() -> set[str]:
+    """Cluster-specific bot tokens, refreshed from the DB at most once every
+    `_CLUSTER_TOKENS_CACHE_SECONDS` — see the module-level comment above for
+    why. On a DB error, keeps serving the last known-good set (logged, never
+    raised) rather than an empty one — a transient blip must not make every
+    cluster's listener thread flap stopped/restarted."""
+    global _cluster_tokens_cache
+    with _cluster_tokens_cache_lock:
+        last_fetched, cached = _cluster_tokens_cache
+        now = time.monotonic()
+        if now - last_fetched < _CLUSTER_TOKENS_CACHE_SECONDS:
+            return cached
+        tokens: set[str] = set()
+        try:
+            with db.SessionLocal() as session:
+                for cluster in session.query(Cluster).filter(Cluster.is_active.is_(True)).all():
+                    own_channel = _cluster_channel(cluster)
+                    if own_channel is not None:
+                        tokens.add(own_channel[1])
+        except Exception:
+            logger.exception("telegram_approval_bot: _cluster_tokens_cached failed to query clusters")
+            return cached
+        _cluster_tokens_cache = (now, tokens)
+        return tokens
+
+
+def _all_configured_tokens() -> set[str]:
+    """Every bot token currently in use across the 3 global channels AND
+    every active Cluster's own configured+enabled channel (2026-08-10,
+    Phase 2) — the full set `_listen_supervisor_loop` must keep exactly one
+    poller running per token for (see this module's own docstring on why
+    grouping is by token, not by channel). `_configured_channels()` is a
+    pure `settings` read (never fails, always fresh); the cluster half is
+    `_cluster_tokens_cached()` above."""
+    return {token for _, token, _ in _configured_channels()} | _cluster_tokens_cached()
 
 
 def _action_message_text(action: Action, incident: Incident | None, session) -> str:
@@ -241,11 +333,13 @@ def _notify_pending_actions() -> None:
     now a JSON-membership check, not expressible as a simple indexed
     filter, and this tool's expected scale (a handful of concurrently
     pending actions on a lab/small deployment) makes that an acceptable
-    trade for the simpler, more correct broadcast/backfill semantics."""
-    channels = _configured_channels()
-    if not channels:
-        return
+    trade for the simpler, more correct broadcast/backfill semantics.
 
+    2026-08-10 (multi-tenant remediation Phase 2): no longer bails out early
+    just because the 3 GLOBAL channels are unconfigured — a non-default
+    cluster's own channel (`channels_for_incident`, resolved per action
+    below) may still need this Action delivered even when none of the 3
+    global ones are set up at all."""
     with db.SessionLocal() as session:
         candidate_ids = [
             row.id
@@ -257,12 +351,15 @@ def _notify_pending_actions() -> None:
             action = session.get(Action, action_id)
             if action is None or action.status != ActionStatus.PENDING_APPROVAL.value:
                 continue
+            incident = session.get(Incident, action.incident_id)
+            target_channels = channels_for_incident(incident, session)
+            if not target_channels:
+                continue
             sent = _load_message_ids(action)
-            missing = [ch for ch in _configured_channels() if ch[0] not in sent]
+            missing = [ch for ch in target_channels if ch[0] not in sent]
             if not missing:
                 continue
 
-            incident = session.get(Incident, action.incident_id)
             message_text = _action_message_text(action, incident, session)
             changed = False
             for channel_key, bot_token, chat_id in missing:
@@ -330,22 +427,6 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     message_id = message.get("message_id")
     incoming_chat_id = str((message.get("chat") or {}).get("id", ""))
 
-    # TRUST MODEL — see this module's own docstring: only a button press
-    # coming from one of the currently-configured channels' chat ids is
-    # ever honored.
-    known_chat_ids = _known_chat_ids()
-    if not known_chat_ids or incoming_chat_id not in known_chat_ids:
-        logger.warning(
-            "telegram_approval_bot: ignoring callback_query from unrecognized chat_id=%s",
-            incoming_chat_id,
-        )
-        if callback_id:
-            try:
-                answer_telegram_callback(bot_token, callback_id, "Không có quyền")
-            except TelegramSendError:
-                pass
-        return
-
     if data.startswith(APPROVE_CALLBACK_PREFIX):
         action_id = data[len(APPROVE_CALLBACK_PREFIX):]
         core_fn = approve_action_core
@@ -354,6 +435,38 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         core_fn = reject_action_core
     else:
         logger.warning("telegram_approval_bot: unrecognized callback_data=%r", data)
+        return
+
+    # TRUST MODEL (per-cluster scoped, 2026-08-10) — see this module's own
+    # docstring: resolve the chat ids LEGITIMATELY covering THIS SPECIFIC
+    # action's cluster via `channels_for_incident` — the SAME function
+    # `_notify_pending_actions` used to decide where to broadcast this very
+    # action, so the set of chats that CAN approve is always exactly the
+    # set it was SENT to. A chat configured for a DIFFERENT cluster's own
+    # channel (or one of the 3 global channels, when this action's cluster
+    # has its own) is no longer trusted just for being "some configured
+    # channel somewhere" — unlike before Phase 2. An action_id that no
+    # longer resolves to a real Action/Incident falls back to the 3 global
+    # channels' chat ids (safe: `core_fn` below still raises
+    # ActionNotFoundError right after, handled identically to before).
+    with db.SessionLocal() as session:
+        action_for_trust = session.get(Action, action_id)
+        incident_for_trust = (
+            session.get(Incident, action_for_trust.incident_id) if action_for_trust is not None else None
+        )
+        legit_chat_ids = {str(chat_id) for _, _, chat_id in channels_for_incident(incident_for_trust, session)}
+
+    if not legit_chat_ids or incoming_chat_id not in legit_chat_ids:
+        logger.warning(
+            "telegram_approval_bot: ignoring callback_query from unauthorized chat_id=%s for action_id=%s",
+            incoming_chat_id,
+            action_id,
+        )
+        if callback_id:
+            try:
+                answer_telegram_callback(bot_token, callback_id, "Không có quyền")
+            except TelegramSendError:
+                pass
         return
 
     actor = _actor_for(callback_query)
@@ -437,7 +550,7 @@ def _listen_supervisor_loop(stop_event: threading.Event) -> None:
     listeners: dict[str, tuple[threading.Thread, threading.Event]] = {}
     previously_seen_tokens: set[str] = set()
     while not stop_event.is_set():
-        current_tokens = {token for _, token, _ in _configured_channels()}
+        current_tokens = _all_configured_tokens()
         stable_tokens = current_tokens & previously_seen_tokens
         previously_seen_tokens = current_tokens
 
