@@ -731,7 +731,33 @@ def _phase_ceph_deploy_dependencies(nodes: list[dict], action_params: dict, on_h
     Same defensive `rm -f` the `repo` phase's own command already does,
     just also done here first.
     """
-    install_command = _build_base_dependency_install_command()
+    _run_dependency_install(nodes, on_host_update, install_container_runtime=False)
+
+
+def _phase_ceph_deploy_dependencies_cephadm(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Same as `_phase_ceph_deploy_dependencies` above, PLUS a container
+    runtime on every node -- cephadm's own preflight check (run by
+    `cephadm bootstrap` in the next phase) hard-refuses to proceed unless
+    podman or docker is already installed, and neither this app nor
+    `cephadm bootstrap` itself ever installs one. Verified live, 2026-08-10:
+    a fresh CentOS Stream 9 node has neither by default, so `deploy_cluster_
+    cephadm` failed outright at the bootstrap phase with no earlier phase
+    having tried to fix it.
+
+    Applies to EVERY node in this list, not just first_mon -- the
+    orchestrator's own per-host agent (installed later by `orch_host_add`)
+    needs a container runtime on every host it will ever place a MON/MGR/
+    OSD/RGW daemon on, not only the bootstrap node.
+
+    Only wired into `deploy_cluster_cephadm`'s phase list -- the
+    `ceph_deploy`/`rpm_local` methods install Ceph as plain native systemd
+    services, never touch a container runtime, and must not gain an
+    unrelated podman/docker install they never asked for."""
+    _run_dependency_install(nodes, on_host_update, install_container_runtime=True)
+
+
+def _run_dependency_install(nodes: list[dict], on_host_update, *, install_container_runtime: bool) -> None:
+    install_command = _build_base_dependency_install_command(install_container_runtime=install_container_runtime)
 
     host_status = [{"host": n["ip"], "status": "pending"} for n in nodes]
     on_host_update(list(host_status))
@@ -1579,6 +1605,43 @@ def _phase_delete_manual_remove_packages(nodes: list[dict], action_params: dict,
         on_host_update(list(host_status))
 
 
+_ZAP_CONNECT_RETRY_ATTEMPTS = 3
+_ZAP_CONNECT_RETRY_DELAY_SECONDS = 5
+
+
+def _execute_zap_with_connect_retry(host: str, command: str) -> str:
+    """execute_command()'s own docstring: no retry, fresh SSH connection
+    every call. Verified live, 2026-08-10: on a host with 2+ OSD disks,
+    `ceph-volume lvm zap --destroy` is heavy I/O (wipefs + LVM teardown +
+    kernel partition-table re-read) -- the FRESH connection execute_command()
+    opens for the NEXT disk, right after the previous disk's zap just
+    finished, can hit paramiko's own transient `SSHException("No existing
+    session")` (raised when auth is attempted before the transport's key
+    exchange has settled) while the host is still busy. With zero retry,
+    that single transient hiccup used to abort the entire multi-node "Xoá
+    cụm" job outright -- every other pending node stuck "⏳" forever, never
+    even attempted. A host with only 1 OSD disk (1 connection) rarely hits
+    this, which is why it only ever showed up "khi có 2 osd".
+
+    Only retries a CONNECTION/transport-level ExecutorError -- its message
+    never contains "command exited" (that substring is exclusive to a real
+    non-zero exit from the remote command, see execute_command's own
+    f-string) -- a genuine zap failure (bad device path, disk busy) still
+    fails immediately on the first attempt, never masked by 3 retries of
+    something that would keep failing the same way."""
+    last_error: ExecutorError | None = None
+    for attempt in range(1, _ZAP_CONNECT_RETRY_ATTEMPTS + 1):
+        try:
+            return execute_command(host, command)
+        except ExecutorError as exc:
+            if "command exited" in str(exc):
+                raise
+            last_error = exc
+            if attempt < _ZAP_CONNECT_RETRY_ATTEMPTS:
+                time.sleep(_ZAP_CONNECT_RETRY_DELAY_SECONDS)
+    raise last_error
+
+
 def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """Only touches a disk if the operator explicitly opted into
     wipe_osd_disks — otherwise every host is marked done immediately
@@ -1635,7 +1698,7 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
                 "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi"
             )
             try:
-                execute_command(ip, zap_command)
+                _execute_zap_with_connect_retry(ip, zap_command)
             except ExecutorError as exc:
                 host_status[i]["status"] = "failed"
                 on_host_update(list(host_status))
@@ -2468,7 +2531,7 @@ def _phase_verify_integrity(nodes: list[dict], action_params: dict, on_host_upda
 _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
     "deploy_cluster_cephadm": [
         ("ssh_check", "Kiểm tra kết nối SSH & hệ thống", 10, _phase_ssh_check),
-        ("dependencies", "Cài đặt phụ thuộc (chrony, tắt firewalld/SELinux)", 15, _phase_ceph_deploy_dependencies),
+        ("dependencies", "Cài đặt phụ thuộc (chrony, podman/docker, tắt firewalld/SELinux)", 15, _phase_ceph_deploy_dependencies_cephadm),
         ("bootstrap", "cephadm bootstrap", 55, _phase_cephadm_bootstrap),
         ("orch_host_add", "Thêm node vào cụm (orch host add)", 65, _phase_cephadm_orch_host_add),
         ("orch_apply_mgr", "Tạo MGR (orch apply mgr)", 70, _phase_cephadm_orch_apply_mgr),
@@ -3054,13 +3117,34 @@ _PHASES_BY_ACTION_ID["node_os_gate_abort"] = [
 # "node_upgrade_gate_id", "action_pk", "incident_id"}.
 
 
-def _build_base_dependency_install_command() -> str:
-    """Shared by `_phase_ceph_deploy_dependencies` (fresh deploy, per-node
-    list) and `_phase_gate_configure_base` (Story 11.4, single host) — same
-    firewalld-stop/SELinux-disable/chrony-install-and-start sequence either
-    way, extracted so the two call sites can't drift apart (same reasoning
-    `_build_ceph_package_repo_command` is already shared for two call
-    sites)."""
+def _build_base_dependency_install_command(*, install_container_runtime: bool = False) -> str:
+    """Shared by `_phase_ceph_deploy_dependencies`/`_phase_ceph_deploy_dependencies_cephadm`
+    (fresh deploy, per-node list) and `_phase_gate_configure_base` (Story
+    11.4, single host) — same firewalld-stop/SELinux-disable/chrony-install-
+    and-start sequence either way, extracted so the call sites can't drift
+    apart (same reasoning `_build_ceph_package_repo_command` is already
+    shared for two call sites).
+
+    `install_container_runtime` (2026-08-10, default False so the existing
+    2 call sites are unchanged) adds podman (RPM/el family — already in the
+    base/AppStream repo on CentOS Stream 9, no EPEL needed) or docker.io
+    (Debian/Ubuntu family — the in-distro package, no extra Docker repo
+    needed) — cephadm's own docs recommend exactly this pairing, one or the
+    other, never both. Podman needs no service enable/start (daemonless,
+    unlike docker); docker.io does, or `cephadm bootstrap` fails the same
+    "no container runtime" preflight check even with the package installed.
+    """
+    if install_container_runtime:
+        container_apt = (
+            " && (command -v docker >/dev/null 2>&1 || apt-get install -y docker.io) && "
+            "systemctl enable --now docker"
+        )
+        container_rpm = (
+            " && (command -v podman >/dev/null 2>&1 || dnf install -y podman || yum install -y podman)"
+        )
+    else:
+        container_apt = ""
+        container_rpm = ""
     apt_snippet = (
         "(command -v python3 >/dev/null 2>&1 || apt-get install -y python3) && "
         "(systemctl stop firewalld 2>/dev/null || true) && "
@@ -3068,6 +3152,7 @@ def _build_base_dependency_install_command() -> str:
         "apt-get update -y && apt-get install -y chrony && "
         "systemctl enable --now chrony && "
         "(chronyc makestep || true)"
+        f"{container_apt}"
     )
     rpm_snippet = (
         "(command -v python3 >/dev/null 2>&1 || (dnf install -y python3 || yum install -y python3)) && "
@@ -3077,6 +3162,7 @@ def _build_base_dependency_install_command() -> str:
         "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "
         "systemctl enable --now chronyd && "
         "(chronyc makestep || true)"
+        f"{container_rpm}"
     )
     return _package_manager_branch({"apt": apt_snippet, "rpm": rpm_snippet})
 
