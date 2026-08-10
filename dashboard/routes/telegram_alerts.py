@@ -20,7 +20,8 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import _mask_key, _require_admin_privilege, restart_watcher, restart_worker
 from dashboard.templating import make_templates
-from shared import env_config
+from shared import db, env_config
+from shared.models import TelegramChannelConfigChange
 from shared.telegram_client import TelegramSendError, send_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,50 @@ def _channel_or_404(channel: str) -> dict:
     return info
 
 
+# Most-recent-first entries shown per channel on the page — this is an
+# at-a-glance history, not a full export/search screen, so an unbounded
+# query isn't needed.
+_HISTORY_ROWS_PER_CHANNEL = 10
+
+
+def _record_channel_config_change(channel: str, chat_id: str, bot_token: str, actor: str) -> None:
+    """Called once per successful Bot Token/Chat ID save
+    (`telegram_channel_submit` below) — never on Bật/Tắt (that endpoint
+    doesn't touch either value). Best-effort: a history-row failure must
+    never roll back or mask the config save that already succeeded."""
+    try:
+        with db.SessionLocal() as session:
+            session.add(
+                TelegramChannelConfigChange(
+                    channel=channel,
+                    chat_id=chat_id,
+                    bot_token_masked=_mask_key(bot_token) if bot_token else "",
+                    actor=actor,
+                )
+            )
+            session.commit()
+    except Exception:
+        logger.exception("telegram_alerts: failed to record config-change history for channel %s", channel)
+
+
+def _channel_history() -> dict[str, list[TelegramChannelConfigChange]]:
+    """{channel_key: [most-recent-first rows]} for every channel — admin-only
+    (this whole page requires `_require_admin_privilege`), used to answer
+    "kênh này ai từng cấu hình, đổi lúc nào" on `/telegram-alerts`."""
+    result: dict[str, list[TelegramChannelConfigChange]] = {key: [] for key in _CHANNELS}
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(TelegramChannelConfigChange)
+            .order_by(TelegramChannelConfigChange.created_at.desc())
+            .all()
+        )
+    for row in rows:
+        bucket = result.get(row.channel)
+        if bucket is not None and len(bucket) < _HISTORY_ROWS_PER_CHANNEL:
+            bucket.append(row)
+    return result
+
+
 def _context(
     user: str,
     *,
@@ -97,6 +142,7 @@ def _context(
     test_errors = test_errors or {}
     test_successes = test_successes or {}
 
+    history = _channel_history()
     channels = {}
     for key, info in _CHANNELS.items():
         bot_token = getattr(settings, info["bot_token_field"])
@@ -118,6 +164,7 @@ def _context(
             "success": successes.get(key),
             "test_error": test_errors.get(key),
             "test_success": test_successes.get(key),
+            "history": history.get(key, []),
         }
 
     return {
@@ -223,6 +270,8 @@ async def telegram_channel_submit(
             "telegram_alerts.html",
             _context(user, errors={channel: "Không ghi được file cấu hình — kiểm tra quyền ghi trên server"}),
         )
+
+    _record_channel_config_change(channel, new_chat_id, new_bot_token, user)
 
     if info["restart"] == "worker":
         restart_label = "Worker"

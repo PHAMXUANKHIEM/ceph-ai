@@ -905,3 +905,30 @@ class CrushOsdDistribution(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class TelegramChannelConfigChange(Base):
+    """Append-only audit trail of Bot Token/Chat ID saves on the
+    "Alert Telegram" page (`dashboard/routes/telegram_alerts.py::
+    telegram_channel_submit`, the ONLY writer) -- answers "kênh này ai từng
+    cấu hình, đổi lúc nào" for an admin, since `config/settings.py`'s live
+    fields only ever hold the CURRENT value, never history.
+
+    Same "ad-hoc operator action, no Incident FK" shape as
+    NodeDiagnosticRun above, not an AuditEntry row (that table requires a
+    real incident_id). `bot_token_masked` stores the SAME masked form the
+    page itself renders (`dashboard/routes/settings.py::_mask_key`) --
+    never the full token -- so this history table is never a second place
+    a leaked DB backup could recover a live secret from. `chat_id` is
+    stored in full: it's already rendered unmasked on the page today (see
+    telegram_alerts.py::_context) and identifies a chat, not a credential.
+    """
+
+    __tablename__ = "telegram_channel_config_changes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_token_masked: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

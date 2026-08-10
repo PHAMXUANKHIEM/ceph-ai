@@ -131,6 +131,29 @@
           <strong>Tắt kênh này</strong> (nút phía trên) cũng dừng luôn việc kênh này nhận tin Duyệt/Từ chối,
           không chỉ cảnh báo thường — không mất Bot Token/Chat ID đã lưu, bật lại là hoạt động ngay.
         </p>
+
+        {% if is_admin %}
+        <div class="table-wrap" style="margin-top: 1rem;">
+          <h3 style="margin-bottom: 0.5rem;">Lịch sử cấu hình (chỉ admin)</h3>
+          <table>
+            <thead>
+              <tr><th>Thời điểm</th><th>Chat ID</th><th>Bot Token</th><th>Người lưu</th></tr>
+            </thead>
+            <tbody>
+              {% for h in ch.history %}
+              <tr>
+                <td>{{ h.created_at|vntime }}</td>
+                <td><code>{{ h.chat_id }}</code></td>
+                <td><code>{{ h.bot_token_masked }}</code></td>
+                <td>{{ h.actor }}</td>
+              </tr>
+              {% else %}
+              <tr class="empty-row"><td colspan="4" class="empty-state"><span class="empty-icon" aria-hidden="true">&#8709;</span>Chưa từng lưu Bot Token/Chat ID cho kênh này.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
       </div>
     </section>
     {% endfor %}
