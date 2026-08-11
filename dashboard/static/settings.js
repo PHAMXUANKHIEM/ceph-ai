@@ -5,6 +5,9 @@
   var codexFlow = document.getElementById("codex-device-flow");
   var codexLink = document.getElementById("codex-verification-link");
   var codexCode = document.getElementById("codex-user-code");
+  var codexInstallPrompt = document.getElementById("codex-install-prompt");
+  var codexInstallYesBtn = document.getElementById("codex-install-yes-btn");
+  var codexInstallNoBtn = document.getElementById("codex-install-no-btn");
   var codexPollTimer = null;
 
   function codexRequest(url, options) {
@@ -16,7 +19,13 @@
 
   function renderCodexStatus(data) {
     if (!codexStatus) return;
-    if (data.authenticated) {
+    if (data.installed === false) {
+      codexStatus.textContent = "⚠️ Chưa cài Codex CLI trên server.";
+      if (codexInstallPrompt) codexInstallPrompt.hidden = false;
+      if (codexLoginBtn) codexLoginBtn.hidden = true;
+      if (codexLogoutBtn) codexLogoutBtn.hidden = true;
+    } else if (data.authenticated) {
+      if (codexInstallPrompt) codexInstallPrompt.hidden = true;
       var detail = data.email || "tài khoản ChatGPT";
       if (data.plan_type) detail += " · gói " + data.plan_type;
       codexStatus.textContent = "✅ Đã đăng nhập " + detail + (data.enabled ? " — đang dùng cho Chat-with-AI" : "");
@@ -24,6 +33,7 @@
       if (codexLogoutBtn) codexLogoutBtn.hidden = false;
       if (codexFlow) codexFlow.hidden = true;
     } else {
+      if (codexInstallPrompt) codexInstallPrompt.hidden = true;
       codexStatus.textContent = data.error ? "❌ " + data.error : "Chưa đăng nhập tài khoản Codex.";
       if (codexLoginBtn) codexLoginBtn.hidden = false;
       if (codexLogoutBtn) codexLogoutBtn.hidden = true;
@@ -45,6 +55,23 @@
   }
 
   if (codexStatus) refreshCodexStatus(false);
+  if (codexInstallNoBtn) codexInstallNoBtn.addEventListener("click", function () {
+    codexInstallPrompt.hidden = true;
+    codexStatus.textContent = "Chưa cài Codex CLI. Bạn có thể cài sau bằng cách tải lại trang.";
+  });
+  if (codexInstallYesBtn) codexInstallYesBtn.addEventListener("click", function () {
+    codexInstallYesBtn.disabled = true;
+    codexInstallNoBtn.disabled = true;
+    codexStatus.textContent = "Đang tải và cài Codex CLI từ OpenAI...";
+    codexRequest("/settings/codex/install", { method: "POST" }).then(function () {
+      codexStatus.textContent = "✅ Đã cài Codex CLI. Đang kiểm tra...";
+      return refreshCodexStatus(false);
+    }).catch(function (err) {
+      codexStatus.textContent = "❌ " + err.message;
+      codexInstallYesBtn.disabled = false;
+      codexInstallNoBtn.disabled = false;
+    });
+  });
   if (codexLoginBtn) codexLoginBtn.addEventListener("click", function () {
     codexLoginBtn.disabled = true;
     codexStatus.textContent = "Đang tạo mã đăng nhập...";

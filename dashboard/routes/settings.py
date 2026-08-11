@@ -27,7 +27,12 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db, env_config
-from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.codex_app_server import (
+    CodexAppServerError,
+    codex_app_server,
+    codex_executable,
+    install_codex_cli,
+)
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -874,17 +879,31 @@ async def settings_form(request: Request, user: str = Depends(require_login)):
 
 @router.get("/settings/codex/status")
 async def settings_codex_status(user: str = Depends(require_login)):
+    executable = codex_executable()
+    if executable is None:
+        return {"installed": False, "authenticated": False, "enabled": False}
     try:
         account = await codex_app_server.account()
     except CodexAppServerError as exc:
-        return {"authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
+        return {"installed": True, "authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
     authenticated = bool(account)
     return {
+        "installed": True,
         "authenticated": authenticated,
         "enabled": settings.codex_chat_enabled,
         "email": account.get("email"),
         "plan_type": account.get("planType") or account.get("plan_type"),
     }
+
+
+@router.post("/settings/codex/install")
+async def settings_codex_install(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        result = await install_codex_cli()
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return result
 
 
 @router.post("/settings/codex/login/start")

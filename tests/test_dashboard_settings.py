@@ -79,6 +79,40 @@ def test_codex_controls_require_admin(dashboard_client):
     assert response.status_code == 403
 
 
+def test_codex_status_prompts_install_when_cli_missing(dashboard_client, monkeypatch):
+    monkeypatch.setattr(settings_route, "codex_executable", lambda: None)
+    _login(dashboard_client)
+    response = dashboard_client.get("/settings/codex/status")
+    assert response.status_code == 200
+    assert response.json() == {"installed": False, "authenticated": False, "enabled": False}
+
+
+def test_admin_can_install_codex_from_settings(dashboard_client, monkeypatch):
+    async def fake_install():
+        return {"installed": True, "path": "/tmp/codex", "already_installed": False}
+
+    monkeypatch.setattr(settings_route, "install_codex_cli", fake_install)
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/codex/install")
+    assert response.status_code == 200
+    assert response.json()["installed"] is True
+
+
+def test_non_admin_cannot_install_codex(dashboard_client, monkeypatch):
+    called = {"value": False}
+
+    async def fake_install():
+        called["value"] = True
+        return {"installed": True}
+
+    monkeypatch.setattr(settings_route, "install_codex_cli", fake_install)
+    _create_user("operator-install", "secret", is_admin=False)
+    _login_as(dashboard_client, "operator-install", "secret")
+    response = dashboard_client.post("/settings/codex/install")
+    assert response.status_code == 403
+    assert called["value"] is False
+
+
 # --- POST /settings/9router/save (Step 2 "[Lưu cấu hình]" button) ---------
 
 

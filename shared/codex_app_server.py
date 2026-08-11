@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -20,6 +21,45 @@ class CodexAppServerError(RuntimeError):
 
 
 ToolHandler = Callable[[str, dict], Awaitable[tuple[str, bool]]]
+
+CODEX_INSTALL_COMMAND = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+_install_lock = asyncio.Lock()
+
+
+def codex_executable() -> str | None:
+    """Locate Codex both on PATH and in the standalone installer's default bin dir."""
+    found = shutil.which("codex")
+    if found:
+        return found
+    candidate = Path.home() / ".local" / "bin" / "codex"
+    return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+async def install_codex_cli() -> dict:
+    """Run OpenAI's official standalone installer once, with bounded output/time."""
+    async with _install_lock:
+        existing = codex_executable()
+        if existing:
+            return {"installed": True, "path": existing, "already_installed": True}
+        if shutil.which("curl") is None or shutil.which("sh") is None:
+            raise CodexAppServerError("Server cần có curl và sh để cài Codex CLI")
+        process = await asyncio.create_subprocess_exec(
+            "sh", "-c", CODEX_INSTALL_COMMAND,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 180)
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise CodexAppServerError("Cài Codex quá 3 phút và đã bị dừng") from exc
+        text = output.decode(errors="replace")[-6000:]
+        installed = codex_executable()
+        if process.returncode != 0 or not installed:
+            detail = text.strip() or f"installer exit {process.returncode}"
+            raise CodexAppServerError(f"Cài Codex thất bại: {detail}")
+        return {"installed": True, "path": installed, "already_installed": False, "output": text}
 
 
 class CodexAppServer:
@@ -51,8 +91,11 @@ class CodexAppServer:
             env = os.environ.copy()
             env["CODEX_HOME"] = str(self._codex_home())
             try:
+                executable = codex_executable()
+                if executable is None:
+                    raise CodexAppServerError("Chưa cài Codex CLI trên server")
                 self._process = await asyncio.create_subprocess_exec(
-                    "codex", "app-server", "--stdio",
+                    executable, "app-server", "--stdio",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,

@@ -42,6 +42,11 @@
 
   <main class="page settings-page">
     <nav class="settings-sidebar">
+      <div class="settings-sidebar-heading">
+        <span class="settings-sidebar-kicker">CEPH-AI</span>
+        <strong>Cài đặt hệ thống</strong>
+        <small>Quản lý kết nối và dịch vụ</small>
+      </div>
       {% if is_admin %}
       <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
       <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
@@ -434,6 +439,13 @@
           </p>
           <p id="codex-account-status" class="hint">Đang kiểm tra trạng thái...</p>
           {% if is_admin %}
+          <div id="codex-install-prompt" hidden>
+            <p><strong>Codex CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="codex-install-yes-btn">Có, cài đặt</button>
+              <button type="button" class="btn btn-sm" id="codex-install-no-btn">Không</button>
+            </div>
+          </div>
           <div class="ai-test-row">
             <button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng ChatGPT</button>
             <button type="button" class="btn btn-sm btn-kill-switch-on" id="codex-logout-btn" hidden>Đăng xuất</button>

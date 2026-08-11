@@ -1659,6 +1659,219 @@ a { transition: color 140ms ease; }
 .audit-filters input:focus, .audit-filters select:focus { box-shadow: var(--focus-ring); }
 .checkbox-label input { accent-color: var(--accent); }
 
+/* ===== Settings workspace =====
+   Scoped to .settings-page so the denser, higher-contrast form treatment
+   does not alter login, deploy, upgrade or other pages that also reuse
+   .login-box/.card. */
+.settings-page {
+  width: 100%;
+  max-width: 1500px;
+  gap: 22px;
+  align-items: stretch;
+}
+.settings-page .settings-sidebar {
+  flex-basis: 258px;
+  top: 20px;
+  padding: 10px;
+  gap: 5px;
+  background: #121924;
+  border-color: #273244;
+  border-radius: 14px;
+}
+.settings-sidebar-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 2px 8px;
+  padding: 13px 12px 15px;
+  border-bottom: 1px solid #273244;
+}
+.settings-sidebar-kicker {
+  color: #55a7ff;
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+}
+.settings-sidebar-heading strong {
+  color: #f1f5fb;
+  font-size: 0.94rem;
+  letter-spacing: -0.01em;
+}
+.settings-sidebar-heading small {
+  color: #718096;
+  font-size: 0.72rem;
+}
+.settings-page .settings-nav-item {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  color: #9aa8bc;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 0.82rem;
+  line-height: 1.25;
+}
+.settings-page .settings-nav-item::before {
+  content: "•";
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #2e3a4d;
+  border-radius: 7px;
+  background: #192231;
+  color: #8190a5;
+  font-size: 0.78rem;
+}
+.settings-page .settings-nav-item[data-section="restart-controls"]::before { content: "↻"; }
+.settings-page .settings-nav-item[data-section="database"]::before { content: "DB"; font-size: 0.58rem; font-weight: 750; }
+.settings-page .settings-nav-item[data-section="patch-pipeline"]::before { content: "⌁"; font-size: 1rem; }
+.settings-page .settings-nav-item[data-section="backup-targets"]::before { content: "↓"; }
+.settings-page .settings-nav-item[data-section="server-log"]::before { content: "≡"; font-size: 1rem; }
+.settings-page .settings-nav-item[data-section="router"]::before { content: "AI"; font-size: 0.58rem; font-weight: 750; }
+.settings-page .settings-nav-item[data-section="cluster"]::before { content: "◇"; font-size: 0.95rem; }
+.settings-page .settings-nav-item[data-section="cleanup"]::before { content: "×"; font-size: 1rem; }
+.settings-page .settings-nav-item:hover {
+  background: #182231;
+  border-color: #2a374a;
+}
+.settings-page .settings-nav-item.active {
+  color: #f2f7ff;
+  border-color: rgba(85, 167, 255, 0.32);
+  background: rgba(85, 167, 255, 0.11);
+  box-shadow: inset 3px 0 #55a7ff;
+}
+.settings-page .settings-nav-item.active::before {
+  color: #dcebff;
+  border-color: rgba(85, 167, 255, 0.44);
+  background: rgba(85, 167, 255, 0.16);
+}
+.settings-page .settings-content {
+  min-width: 0;
+}
+.settings-page .settings-panel {
+  overflow: hidden;
+  border-color: #273244;
+  border-radius: 14px;
+  background: #111925;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
+}
+.settings-page .settings-panel > .card-header {
+  min-height: 62px;
+  padding: 17px 22px;
+  border-bottom-color: #273244;
+  background: #151e2b;
+}
+.settings-page .settings-panel > .card-header h2 {
+  font-size: 1.02rem;
+  color: #f1f5fb;
+}
+.settings-page .settings-panel > .card-body {
+  padding: 22px;
+}
+.settings-page .settings-panel .login-box {
+  width: 100%;
+  max-width: 780px;
+  margin-top: 18px;
+  padding: 20px;
+  gap: 17px;
+  border: 1px solid #273244;
+  border-radius: 11px;
+  background: rgba(7, 13, 23, 0.34);
+}
+.settings-page .settings-panel .login-box h3 {
+  color: #eaf1fb;
+}
+.settings-page .settings-panel .login-box label {
+  gap: 7px;
+  color: #b2bfd0;
+  font-size: 0.81rem;
+  font-weight: 600;
+}
+.settings-page .settings-panel .login-box input,
+.settings-page .settings-panel .login-box textarea,
+.settings-page .settings-panel .login-box select {
+  min-height: 43px;
+  padding: 0.68rem 0.78rem;
+  border-color: #344258;
+  border-radius: 8px;
+  background: #0b121d;
+}
+.settings-page .settings-panel .login-box textarea {
+  min-height: 94px;
+}
+.settings-page .settings-panel .login-box input:focus,
+.settings-page .settings-panel .login-box textarea:focus,
+.settings-page .settings-panel .login-box select:focus {
+  border-color: #55a7ff;
+  background: #0d1623;
+}
+.settings-page .restart-controls-row {
+  margin-top: 18px;
+  gap: 14px;
+}
+.settings-page .restart-control {
+  min-height: 145px;
+  justify-content: space-between;
+  padding: 16px;
+  border: 1px solid #29364a;
+  border-radius: 10px;
+  background: rgba(7, 13, 23, 0.34);
+}
+.settings-page .restart-control .hint {
+  margin-top: 0;
+}
+.settings-page .backup-target-slot {
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid #2d3b50;
+  border-radius: 10px;
+  background: rgba(15, 24, 38, 0.72);
+}
+.settings-page .backup-target-slot legend {
+  padding: 0 8px;
+  color: #77b9ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.settings-page .error,
+.settings-page .success {
+  padding: 10px 12px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.settings-page hr {
+  height: 1px;
+  margin: 24px 0;
+  border: 0;
+  background: #273244;
+}
+
+@media (max-width: 900px) {
+  .settings-page { flex-direction: column; }
+  .settings-page .settings-sidebar {
+    width: 100%;
+    flex: 0 0 auto;
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+  .settings-sidebar-heading { display: none; }
+  .settings-page .settings-nav-item { flex: 0 0 auto; white-space: nowrap; }
+}
+
+@media (max-width: 600px) {
+  .settings-page .settings-panel > .card-header,
+  .settings-page .settings-panel > .card-body { padding: 16px; }
+  .settings-page .settings-panel .login-box { margin-top: 14px; padding: 15px; }
+  .settings-page .restart-controls-row { grid-template-columns: 1fr; }
+}
+
 .table-wrap { border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 table { font-size: 0.835rem; }
 thead th { background: rgba(3, 9, 17, 0.34); padding: 11px 16px; color: #8292a8; }
