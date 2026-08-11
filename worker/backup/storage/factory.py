@@ -3,10 +3,15 @@ other backup code path calls only `BackupStorageBackend`'s Protocol
 methods, never checks `transport` itself.
 """
 
+from typing import TYPE_CHECKING
+
 from config.settings import Settings
 from worker.backup.storage.base import BackupStorageBackend
 from worker.backup.storage.s3_backend import S3StorageBackend
 from worker.backup.storage.ssh_backend import SSHStorageBackend
+
+if TYPE_CHECKING:
+    from shared.models import Cluster
 
 
 class BackupTargetNotConfiguredError(Exception):
@@ -40,4 +45,37 @@ def get_backend(slot: str, settings: Settings, immutable_enabled: bool = False) 
         )
     raise BackupTargetNotConfiguredError(
         f"backup_target_{slot}_transport={transport!r} — expected 'ssh' or 's3', slot not configured"
+    )
+
+
+def get_backend_for_cluster(cluster: "Cluster") -> BackupStorageBackend:
+    """`get_backend()`'s sibling for an ADDITIONAL cluster (multi-tenant
+    remediation Phase 3) — reads `cluster.backup_*` instead of `settings.
+    backup_target_<slot>_*`. Only ONE target per cluster (no a/b pair —
+    see `shared/models.py::Cluster`'s own docstring), so there's no `slot`
+    parameter to branch on; `cluster.backup_immutable_enabled`/
+    `backup_immutable_lock_days` stand in for the caller-supplied
+    `immutable_enabled`/slot-policy split `get_backend()` above has.
+    Raises the SAME `BackupTargetNotConfiguredError` for a blank/
+    unrecognized `backup_transport` — callers must not silently skip an
+    enabled cluster with a half-configured target."""
+    transport = cluster.backup_transport
+    if transport == "ssh":
+        return SSHStorageBackend(
+            host=cluster.backup_ssh_host,
+            user=cluster.backup_ssh_user,
+            key_path=cluster.backup_ssh_key_path,
+            landing_dir=cluster.backup_ssh_landing_dir,
+        )
+    if transport == "s3":
+        return S3StorageBackend(
+            endpoint_url=cluster.backup_s3_endpoint,
+            access_key=cluster.backup_s3_access_key,
+            secret_key=cluster.backup_s3_secret_key,
+            bucket=cluster.backup_s3_bucket,
+            immutable_enabled=cluster.backup_immutable_enabled,
+            immutable_lock_days=cluster.backup_immutable_lock_days,
+        )
+    raise BackupTargetNotConfiguredError(
+        f"cluster {cluster.id} backup_transport={transport!r} — expected 'ssh' or 's3', not configured"
     )

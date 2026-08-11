@@ -52,19 +52,32 @@
         {% if cluster_toggle_error %}
           <p class="error">{{ cluster_toggle_error }}</p>
         {% endif %}
+        {% if cluster_delete_error %}
+          <p class="error">{{ cluster_delete_error }}</p>
+        {% endif %}
+        {% if cluster_delete_success %}
+          <p class="success">{{ cluster_delete_success }}</p>
+        {% endif %}
+        {% if backup_config_error %}
+          <p class="error">{{ backup_config_error }}</p>
+        {% endif %}
+        {% if backup_config_success %}
+          <p class="success">{{ backup_config_success }}</p>
+        {% endif %}
         <p class="hint">
           Watcher chạy một vòng lặp giám sát sức khoẻ riêng cho mỗi cụm "Đang hoạt động" bên dưới —
-          Incident/heartbeat của mỗi cụm hiện riêng trên Dashboard qua bộ chọn cụm.
-          <strong>Chỉ giám sát (quan sát)</strong>: chẩn đoán AI, tự động xử lý (remediation), backup,
-          patch, upgrade và cảnh báo Telegram vẫn chỉ áp dụng cho <em>cụm mặc định</em> — Worker sẽ bỏ
-          qua (không chạy lệnh gì) đối với Incident đến từ cụm khác. Cụm mặc định (đánh dấu bên dưới)
-          được cấu hình qua mục "Kết nối cụm Ceph" ở trang <a href="/settings">Cài đặt</a>, không sửa
-          được ở đây.
+          Incident/heartbeat của mỗi cụm hiện riêng trên Dashboard qua bộ chọn cụm. Chẩn đoán AI/tự
+          động xử lý (remediation) và cảnh báo/phê duyệt Telegram riêng đã áp dụng cho mọi cụm; backup
+          RBD/metadata cũng áp dụng cho cụm bổ sung nếu bật "Cấu hình backup" ở mỗi dòng bên dưới
+          (nơi lưu/thông tin đăng nhập backup của cụm đó là riêng, không dùng chung với cụm mặc định).
+          <strong>Vẫn chỉ áp dụng cho cụm mặc định</strong>: patch, upgrade, và RestoreDrill/digest backup
+          định kỳ. Cụm mặc định (đánh dấu bên dưới) được cấu hình qua mục "Kết nối cụm Ceph" ở trang
+          <a href="/settings">Cài đặt</a>, không sửa được ở đây.
         </p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Tên cụm</th><th>MON nodes</th><th>Exec mode</th><th>Trạng thái</th><th>Ngày thêm</th><th></th></tr>
+              <tr><th>Tên cụm</th><th>MON nodes</th><th>Exec mode</th><th>Trạng thái</th><th>Backup</th><th>Ngày thêm</th><th></th></tr>
             </thead>
             <tbody>
               {% for c in clusters %}
@@ -73,6 +86,13 @@
                 <td>{{ c.ceph_mon_nodes }}</td>
                 <td>{{ c.ceph_exec_mode }}</td>
                 <td>{{ "Đang hoạt động" if c.is_active else "Đã vô hiệu hoá" }}</td>
+                <td>
+                  {% if c.is_default %}
+                  <span class="hint">(YAML/backup_policy.yaml)</span>
+                  {% else %}
+                  {{ "Bật" if c.backup_enabled else "Tắt" }}
+                  {% endif %}
+                </td>
                 <td>{{ c.created_at|vntime }}</td>
                 <td>
                   {% if c.is_default %}
@@ -83,11 +103,80 @@
                       {{ "Vô hiệu hoá" if c.is_active else "Kích hoạt lại" }}
                     </button>
                   </form>
+                  <form
+                    method="post"
+                    action="/clusters/{{ c.id }}/delete"
+                    class="inline-form"
+                    onsubmit="return confirm('Xoá vĩnh viễn cụm {{ c.name }}? Toàn bộ Incident/Action/Audit Trail/backup job/heartbeat RIÊNG của cụm này sẽ bị xoá khỏi database, không thể hoàn tác. Các cụm khác không bị ảnh hưởng.');"
+                  >
+                    <button type="submit" class="btn btn-sm btn-kill-switch-on">Xoá</button>
+                  </form>
                   {% endif %}
                 </td>
               </tr>
+              {% if not c.is_default %}
+              {% set bv = backup_config_form_values if backup_config_cluster_id == c.id else c %}
+              <tr class="backup-config-row">
+                <td colspan="7">
+                  <details{% if backup_config_cluster_id == c.id %} open{% endif %}>
+                    <summary>Cấu hình backup — {{ c.name }} ({{ "Bật" if c.backup_enabled else "Tắt" }})</summary>
+                    <form method="post" action="/clusters/{{ c.id }}/backup-config" class="login-box">
+                      <label class="checkbox-label">
+                        <input type="checkbox" name="backup_enabled" value="true" {{ "checked" if bv.backup_enabled else "" }}>
+                        Bật backup cho cụm này
+                      </label>
+                      <label>RBD pools/images cần backup (dạng pool/image, cách nhau bởi dấu phẩy)
+                        <input type="text" name="backup_tracked_images" placeholder="rbd/vm1,rbd/vm2" value="{{ bv.backup_tracked_images or '' }}">
+                      </label>
+                      <label>Full refresh mỗi N ngày (tuỳ chọn — để trống nếu không giới hạn)
+                        <input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ bv.backup_full_refresh_days if bv.backup_full_refresh_days is not none else '' }}">
+                      </label>
+                      <label>Nơi lưu backup
+                        <select name="backup_transport">
+                          <option value="" {{ "selected" if not bv.backup_transport else "" }}>-- chưa chọn --</option>
+                          <option value="ssh" {{ "selected" if bv.backup_transport == "ssh" else "" }}>SSH</option>
+                          <option value="s3" {{ "selected" if bv.backup_transport == "s3" else "" }}>S3</option>
+                        </select>
+                      </label>
+                      <label>SSH host (backup đích, tuỳ chọn nếu dùng S3)
+                        <input type="text" name="backup_ssh_host" value="{{ bv.backup_ssh_host or '' }}">
+                      </label>
+                      <label>SSH user (backup đích)
+                        <input type="text" name="backup_ssh_user" value="{{ bv.backup_ssh_user or '' }}">
+                      </label>
+                      <label>SSH key path (backup đích — để trống nếu không đổi)
+                        <input type="password" name="backup_ssh_key_path" autocomplete="off">
+                      </label>
+                      <label>SSH landing dir (backup đích)
+                        <input type="text" name="backup_ssh_landing_dir" value="{{ bv.backup_ssh_landing_dir or '' }}">
+                      </label>
+                      <label>S3 endpoint (tuỳ chọn nếu dùng SSH)
+                        <input type="text" name="backup_s3_endpoint" value="{{ bv.backup_s3_endpoint or '' }}">
+                      </label>
+                      <label>S3 access key (để trống nếu không đổi)
+                        <input type="password" name="backup_s3_access_key" autocomplete="off">
+                      </label>
+                      <label>S3 secret key (để trống nếu không đổi)
+                        <input type="password" name="backup_s3_secret_key" autocomplete="off">
+                      </label>
+                      <label>S3 bucket
+                        <input type="text" name="backup_s3_bucket" value="{{ bv.backup_s3_bucket or '' }}">
+                      </label>
+                      <label class="checkbox-label">
+                        <input type="checkbox" name="backup_immutable_enabled" value="true" {{ "checked" if bv.backup_immutable_enabled else "" }}>
+                        Immutable (WORM lock)
+                      </label>
+                      <label>Immutable lock days
+                        <input type="text" inputmode="numeric" name="backup_immutable_lock_days" value="{{ bv.backup_immutable_lock_days if bv.backup_immutable_lock_days is not none else 7 }}">
+                      </label>
+                      <button type="submit" class="btn btn-primary btn-sm">Lưu cấu hình backup</button>
+                    </form>
+                  </details>
+                </td>
+              </tr>
+              {% endif %}
               {% else %}
-              <tr class="empty-row"><td colspan="6" class="empty-state">Chưa có cụm nào.</td></tr>
+              <tr class="empty-row"><td colspan="7" class="empty-state">Chưa có cụm nào.</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -143,6 +232,57 @@
             <input type="checkbox" name="telegram_enabled" value="true" {{ "" if cluster_form_values and cluster_form_values.telegram_enabled is defined and not cluster_form_values.telegram_enabled else "checked" }}>
             Bật kênh Telegram riêng cho cụm này
           </label>
+          <details>
+            <summary>Cấu hình backup (tuỳ chọn — có thể để trống rồi cấu hình sau ở bảng phía trên)</summary>
+            <label class="checkbox-label">
+              <input type="checkbox" name="backup_enabled" value="true" {{ "checked" if cluster_form_values.backup_enabled else "" }}>
+              Bật backup cho cụm này
+            </label>
+            <label>RBD pools/images cần backup (dạng pool/image, cách nhau bởi dấu phẩy)
+              <input type="text" name="backup_tracked_images" placeholder="rbd/vm1,rbd/vm2" value="{{ cluster_form_values.backup_tracked_images or '' }}">
+            </label>
+            <label>Full refresh mỗi N ngày (tuỳ chọn)
+              <input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ cluster_form_values.backup_full_refresh_days or '' }}">
+            </label>
+            <label>Nơi lưu backup
+              <select name="backup_transport">
+                <option value="" {{ "selected" if not cluster_form_values.backup_transport else "" }}>-- chưa chọn --</option>
+                <option value="ssh" {{ "selected" if cluster_form_values.backup_transport == "ssh" else "" }}>SSH</option>
+                <option value="s3" {{ "selected" if cluster_form_values.backup_transport == "s3" else "" }}>S3</option>
+              </select>
+            </label>
+            <label>SSH host (backup đích)
+              <input type="text" name="backup_ssh_host" value="{{ cluster_form_values.backup_ssh_host or '' }}">
+            </label>
+            <label>SSH user (backup đích)
+              <input type="text" name="backup_ssh_user" value="{{ cluster_form_values.backup_ssh_user or '' }}">
+            </label>
+            <label>SSH key path (backup đích)
+              <input type="password" name="backup_ssh_key_path" autocomplete="off" value="{{ cluster_form_values.backup_ssh_key_path or '' }}">
+            </label>
+            <label>SSH landing dir (backup đích)
+              <input type="text" name="backup_ssh_landing_dir" value="{{ cluster_form_values.backup_ssh_landing_dir or '' }}">
+            </label>
+            <label>S3 endpoint
+              <input type="text" name="backup_s3_endpoint" value="{{ cluster_form_values.backup_s3_endpoint or '' }}">
+            </label>
+            <label>S3 access key
+              <input type="password" name="backup_s3_access_key" autocomplete="off" value="{{ cluster_form_values.backup_s3_access_key or '' }}">
+            </label>
+            <label>S3 secret key
+              <input type="password" name="backup_s3_secret_key" autocomplete="off" value="{{ cluster_form_values.backup_s3_secret_key or '' }}">
+            </label>
+            <label>S3 bucket
+              <input type="text" name="backup_s3_bucket" value="{{ cluster_form_values.backup_s3_bucket or '' }}">
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="backup_immutable_enabled" value="true" {{ "checked" if cluster_form_values.backup_immutable_enabled else "" }}>
+              Immutable (WORM lock)
+            </label>
+            <label>Immutable lock days
+              <input type="text" inputmode="numeric" name="backup_immutable_lock_days" value="{{ cluster_form_values.backup_immutable_lock_days or 7 }}">
+            </label>
+          </details>
           <button type="submit" class="btn btn-primary btn-sm">Kiểm tra kết nối &amp; Thêm cụm</button>
         </form>
       </div>

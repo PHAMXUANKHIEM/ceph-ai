@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 import worker.backup.scheduler as scheduler
 from shared import db as db_module
 from shared.db import Base
-from shared.models import Action, ActionClassification, ActionStatus, Incident
+from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident
 
 
 @pytest.fixture()
@@ -204,6 +204,99 @@ def test_trigger_restore_drill_calls_execute_approved_action(isolated_db, monkey
     with db_module.SessionLocal() as session:
         action = session.get(Action, calls[0])
         assert action.action_id == "restore_drill_execute"
+
+
+def _make_additional_cluster(**overrides) -> str:
+    defaults = dict(
+        name="cluster-b",
+        ceph_mon_nodes="10.20.2.10",
+        ssh_user="root",
+        ssh_key_path="/root/.ssh/id_rsa",
+        is_default=False,
+        is_active=True,
+        backup_enabled=True,
+        backup_tracked_images="rbd/vm1,rbd/vm2",
+        backup_transport="s3",
+        backup_s3_endpoint="https://s3.example.test",
+        backup_s3_bucket="cluster-b-backups",
+    )
+    defaults.update(overrides)
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(**defaults)
+        session.add(cluster)
+        session.commit()
+        return cluster.id
+
+
+def test_build_scheduler_registers_jobs_for_backup_enabled_additional_cluster(isolated_db, monkeypatch):
+    """Multi-tenant remediation Phase 3 — an ADDITIONAL cluster with
+    backup_enabled=True gets its own rbd_backup_run/backup_metadata_run
+    jobs registered ALONGSIDE (never replacing) the default cluster's
+    own YAML-driven jobs, one per pool/image in its own
+    backup_tracked_images."""
+    policy = {
+        "backup_targets": [{"slot": "a", "immutable": False}],
+        "tracked_images": [{"pool": "vms", "image": "web01"}],
+        "retention": {"keep_full_count": 3, "keep_incremental_count": 7},
+        "schedule": {"cron": {"hour": 2, "minute": 0}, "metadata_cron": {"hour": "*/6", "minute": 0}},
+    }
+    monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    cluster_id = _make_additional_cluster()
+
+    built = scheduler.build_scheduler()
+
+    job_ids = {job.id for job in built.get_jobs()}
+    assert "rbd_backup_vms_web01" in job_ids  # default cluster's own job, untouched
+    assert f"rbd_backup_{cluster_id}_rbd_vm1" in job_ids
+    assert f"rbd_backup_{cluster_id}_rbd_vm2" in job_ids
+    assert f"backup_metadata_run_{cluster_id}" in job_ids
+
+    job = built.get_job(f"rbd_backup_{cluster_id}_rbd_vm1")
+    assert tuple(job.args) == ("rbd", "vm1", cluster_id)
+
+
+def test_build_scheduler_skips_disabled_additional_cluster(isolated_db, monkeypatch):
+    policy = {
+        "backup_targets": [],
+        "tracked_images": [],
+        "retention": {"keep_full_count": 3, "keep_incremental_count": 7},
+        "schedule": {},
+    }
+    monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    cluster_id = _make_additional_cluster(backup_enabled=False)
+
+    built = scheduler.build_scheduler()
+
+    job_ids = {job.id for job in built.get_jobs()}
+    assert not any(cluster_id in job_id for job_id in job_ids)
+
+
+def test_create_scheduled_action_stamps_cluster_id(isolated_db):
+    cluster_id = _make_additional_cluster()
+
+    action_pk = scheduler._create_scheduled_action(
+        "rbd_backup_run", {"pool": "rbd", "image": "vm1"}, "Backup RBD theo lịch cho rbd/vm1", cluster_id=cluster_id
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, action.incident_id)
+        assert incident.cluster_id == cluster_id
+
+
+def test_trigger_backup_passes_cluster_id_through(isolated_db, monkeypatch):
+    cluster_id = _make_additional_cluster()
+    calls = []
+    monkeypatch.setattr(
+        "worker.llm.router_client._execute_approved_action", lambda action_pk: calls.append(action_pk)
+    )
+
+    asyncio.run(scheduler.trigger_backup("rbd", "vm1", cluster_id))
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, calls[0])
+        incident = session.get(Incident, action.incident_id)
+        assert incident.cluster_id == cluster_id
 
 
 def test_build_scheduler_always_registers_digest_job(isolated_db, monkeypatch):

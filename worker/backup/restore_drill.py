@@ -52,12 +52,19 @@ def _first_mon_node() -> str:
 
 
 def _latest_successful_full_backup(pool: str, image: str) -> BackupJob | None:
+    """Default cluster only (multi-tenant remediation Phase 3 keeps
+    RestoreDrill out of scope — its own `backup_policy.yaml` config is a
+    single global dict, not a per-cluster list). `cluster_id.is_(None)`
+    is REQUIRED, not decorative: an additional cluster can now have its
+    own BackupJob rows for a same-named pool/image (Phase 3), which must
+    never leak into the default cluster's drill."""
     with db.SessionLocal() as session:
         return (
             session.query(BackupJob)
             .filter(
                 BackupJob.pool == pool,
                 BackupJob.image == image,
+                BackupJob.cluster_id.is_(None),
                 BackupJob.job_type == "full",
                 BackupJob.status == "SUCCESS",
             )

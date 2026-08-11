@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import worker.backup.cluster_scope as cluster_scope
 import worker.backup.engine as engine
 from shared import db as db_module
 from shared.db import Base
@@ -110,6 +111,10 @@ def fakes(monkeypatch):
     monkeypatch.setattr(engine.paramiko, "SSHClient", FakeSSHClient)
     backend = FakeBackend()
     monkeypatch.setattr(engine, "get_backend", lambda slot, settings, immutable_enabled=False: backend)
+    # worker/backup/cluster_scope.py::resolve_targets() is where engine.py's
+    # upload loop actually resolves backends now (multi-tenant remediation
+    # Phase 3 consolidation) — patch it there too, not just on `engine`.
+    monkeypatch.setattr(cluster_scope, "get_backend", lambda slot, settings, immutable_enabled=False: backend)
     monkeypatch.setattr(engine, "load_backup_policy", lambda: DEFAULT_POLICY)
     monkeypatch.setattr(engine.settings, "ceph_mon_nodes", "10.20.1.112,10.20.1.95,10.20.1.21", raising=False)
 
@@ -137,7 +142,7 @@ def test_verify_success_marks_backup_job_success(isolated_db, fakes):
     fakes.verify_result = True
 
     succeeded = engine.run(
-        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", _write_progress, _kill_switch_off
+        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _kill_switch_off
     )
 
     assert succeeded is True
@@ -153,7 +158,7 @@ def test_verify_failure_never_marks_backup_job_success(isolated_db, fakes):
     fakes.verify_result = False
 
     succeeded = engine.run(
-        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", _write_progress, _kill_switch_off
+        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _kill_switch_off
     )
 
     assert succeeded is False
@@ -172,7 +177,7 @@ def test_sha256_computed_during_streaming_not_by_rereading(isolated_db, fakes):
     which would only be true if it was computed from the actual bytes
     that flowed through, not some placeholder."""
     engine.run(
-        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", _write_progress, _kill_switch_off
+        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _kill_switch_off
     )
 
     uploaded_content = next(iter(fakes.uploaded.values()))

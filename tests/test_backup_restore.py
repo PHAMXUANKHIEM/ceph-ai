@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import worker.backup.restore as restore
+from config.settings import settings
 from shared import db as db_module
 from shared.db import Base
 from shared.models import BackupJob
@@ -137,7 +138,12 @@ def fakes(monkeypatch):
     FakeSSHClient.stderr_by_cmd = {}
     FakeSSHClient.imported_calls = []
     monkeypatch.setattr(restore.paramiko, "SSHClient", FakeSSHClient)
-    monkeypatch.setattr(restore.settings, "ceph_mon_nodes", "10.20.1.112,10.20.1.95", raising=False)
+    # ceph_mon_nodes lives on the shared Settings singleton -- restore.py no
+    # longer imports `settings` itself (multi-tenant remediation Phase 3:
+    # mon-node resolution now goes through worker/backup/cluster_scope.py::
+    # first_mon_node() -> shared/cluster_nodes.py::configured_nodes(), which
+    # reads this SAME object).
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.20.1.112,10.20.1.95", raising=False)
     yield
 
 

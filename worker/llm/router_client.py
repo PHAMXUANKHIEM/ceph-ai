@@ -1450,6 +1450,11 @@ def _execute_approved_action(action_pk: str) -> None:
         else:
             ssh_user = None
             ssh_key_path = None
+        # 2026-08-11 (multi-tenant remediation Phase 3): captured here too
+        # (not re-derived below) for worker/backup/engine.py's dispatch —
+        # same "None means the default cluster" semantics as ssh_user/
+        # ssh_key_path just above.
+        cluster_id = incident.cluster_id if incident is not None else None
 
     try:
         nodes = json.loads(target_nodes_raw) if target_nodes_raw else None
@@ -1547,6 +1552,7 @@ def _execute_approved_action(action_pk: str) -> None:
             action_id_str,
             action_params,
             incident_id,
+            cluster_id,
             _write_action_progress,
             _check_kill_switch_safe,
         )

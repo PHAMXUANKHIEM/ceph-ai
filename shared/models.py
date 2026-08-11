@@ -27,10 +27,15 @@ class Cluster(Base):
     remediation for. Holds every field `shared/cluster_nodes.py::
     configured_nodes()`/`resolve_ssh_creds()` need to fully stand in for
     `config/settings.py`'s Settings singleton on a per-cluster basis: mon/
-    mgr/osd/rgw nodes, exec mode, container names, SSH creds. Still does NOT
-    carry RBD pools, backup targets, patch/upgrade config, or per-cluster
-    Telegram routing — those remain `.env`-scoped/single-cluster until their
-    own later phase (see docs/multi-cluster-deployment.md's sibling plan).
+    mgr/osd/rgw nodes, exec mode, container names, SSH creds. As of Phase 3
+    also carries its own RBD backup config (`backup_*` fields below) — one
+    backup destination per cluster, deliberately SEPARATE credentials from
+    `ssh_user`/`ssh_key_path` above (same PRD FR-4 "backup destination must
+    never share creds/network access with the source cluster's admin path"
+    reasoning `config/settings.py`'s `backup_target_a/b_*` fields already
+    follow). Still does NOT carry patch/upgrade config — that remains
+    `.env`-scoped/single-cluster until its own later phase (see
+    docs/multi-cluster-deployment.md's sibling plan).
 
     Exactly one row has `is_default=True` — that row MIRRORS the
     `.env`-configured cluster (shared/clusters.py::ensure_default_cluster
@@ -97,6 +102,36 @@ class Cluster(Base):
     telegram_bot_token: Mapped[str] = mapped_column(Text, nullable=False, default="")
     telegram_chat_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     telegram_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 2026-08-11 (multi-tenant remediation Phase 3) -- RBD backup for this
+    # ADDITIONAL cluster, off by default (blank/false means "no backup
+    # pipeline for this cluster", same opt-in posture as telegram_* above).
+    # ONE backup target (not the default cluster's a/b pair) -- additional
+    # clusters are new/opt-in, one destination is the pragmatic starting
+    # point; see worker/backup/storage/factory.py::get_backend_for_cluster.
+    backup_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # CSV of "pool/image" pairs (same tolerant comma-split parsing as
+    # ceph_mon_nodes above) -- which RBD images worker/backup/scheduler.py
+    # schedules a backup job for. Retention keep_full_count/
+    # keep_incremental_count stay the GLOBAL worker/policy/backup_policy.yaml
+    # values for every cluster (not overridable per-cluster, Phase 3 scope).
+    backup_tracked_images: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Optional per-cluster override of backup_policy.yaml's
+    # full_refresh_every_n_days (per-image override there doesn't apply here
+    # -- Phase 3 keeps this one flat setting for the whole cluster). NULL
+    # means never force a full refresh, same "blank = unbounded chain"
+    # default the global policy's own field has.
+    backup_full_refresh_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    backup_transport: Mapped[str] = mapped_column(String(16), nullable=False, default="")  # "ssh" | "s3" | ""
+    backup_ssh_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    backup_ssh_user: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    backup_ssh_key_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    backup_ssh_landing_dir: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    backup_s3_endpoint: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    backup_s3_access_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    backup_s3_secret_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    backup_s3_bucket: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    backup_immutable_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backup_immutable_lock_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -626,9 +661,21 @@ class BackupJob(Base):
     """
 
     __tablename__ = "backup_jobs"
-    __table_args__ = (Index("ix_backup_jobs_pool_image_created_at", "pool", "image", "created_at"),)
+    __table_args__ = (
+        Index("ix_backup_jobs_pool_image_created_at", "pool", "image", "created_at"),
+        Index("ix_backup_jobs_cluster_id", "cluster_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # 2026-08-11 (multi-tenant remediation Phase 3) -- NULL means the
+    # default cluster, same semantics as Incident.cluster_id (no backfill:
+    # every row from before this column existed means "the default
+    # cluster", same as every row a single-cluster deployment ever
+    # inserts). MUST be included in every query filtered by (pool, image)
+    # below -- two clusters can otherwise have a same-named pool/image and
+    # silently corrupt each other's retention/restore-chain/anomaly-
+    # baseline queries.
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
     # Shared by every BackupJob row produced from the same single `rbd
     # export`/`export-diff` invocation (one per configured backup_target
     # slot) — NOT a FK, just a grouping key.
@@ -645,7 +692,10 @@ class BackupJob(Base):
     base_job_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("backup_jobs.id"), nullable=True
     )
-    backup_target_slot: Mapped[str | None] = mapped_column(String(1), nullable=True)  # "a" | "b"
+    # "a" | "b" for the default cluster's two fixed slots; "cluster" for any
+    # additional cluster (Phase 3) -- it has exactly one backup target, so
+    # there's no a/b distinction to make, just a fixed marker.
+    backup_target_slot: Mapped[str | None] = mapped_column(String(16), nullable=True)
     remote_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)

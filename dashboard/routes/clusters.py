@@ -6,12 +6,14 @@ from fastapi.responses import HTMLResponse
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
-from dashboard.routes.settings import restart_watcher
+from dashboard.routes.settings import restart_watcher, restart_worker
 from dashboard.templating import make_templates
 from shared import db
 from shared.clusters import ensure_default_cluster
-from shared.models import Cluster
+from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, WatcherHeartbeat
 from watcher.ceph_client import VALID_EXEC_MODES, CephQueryError, query_cluster_health_with
+
+VALID_BACKUP_TRANSPORTS = ("ssh", "s3", "")
 
 router = APIRouter()
 templates = make_templates()
@@ -46,7 +48,13 @@ def _clusters_context(
     cluster_create_error: str | None = None,
     cluster_create_success: str | None = None,
     cluster_toggle_error: str | None = None,
+    cluster_delete_error: str | None = None,
+    cluster_delete_success: str | None = None,
     cluster_form_values: dict | None = None,
+    backup_config_error: str | None = None,
+    backup_config_success: str | None = None,
+    backup_config_cluster_id: str | None = None,
+    backup_config_form_values: dict | None = None,
 ) -> dict:
     return {
         "user": user,
@@ -55,7 +63,17 @@ def _clusters_context(
         "cluster_create_error": cluster_create_error,
         "cluster_create_success": cluster_create_success,
         "cluster_toggle_error": cluster_toggle_error,
+        "cluster_delete_error": cluster_delete_error,
+        "cluster_delete_success": cluster_delete_success,
         "cluster_form_values": cluster_form_values or {},
+        # Multi-tenant remediation Phase 3 — which cluster's backup-config
+        # sub-form (one per additional cluster row) an error/success/
+        # redisplay belongs to; every OTHER cluster's sub-form just shows
+        # its own current DB values, untouched.
+        "backup_config_error": backup_config_error,
+        "backup_config_success": backup_config_success,
+        "backup_config_cluster_id": backup_config_cluster_id,
+        "backup_config_form_values": backup_config_form_values or {},
     }
 
 
@@ -90,6 +108,20 @@ async def create_cluster(
     telegram_bot_token: str = Form(""),
     telegram_chat_id: str = Form(""),
     telegram_enabled: str = Form(""),
+    backup_enabled: str = Form(""),
+    backup_tracked_images: str = Form(""),
+    backup_full_refresh_days: str = Form(""),
+    backup_transport: str = Form(""),
+    backup_ssh_host: str = Form(""),
+    backup_ssh_user: str = Form(""),
+    backup_ssh_key_path: str = Form(""),
+    backup_ssh_landing_dir: str = Form(""),
+    backup_s3_endpoint: str = Form(""),
+    backup_s3_access_key: str = Form(""),
+    backup_s3_secret_key: str = Form(""),
+    backup_s3_bucket: str = Form(""),
+    backup_immutable_enabled: str = Form(""),
+    backup_immutable_lock_days: str = Form(""),
 ):
     """Adds an additional observed cluster — tests the connection with the
     submitted values BEFORE saving (same AC as /settings' cluster form,
@@ -108,7 +140,17 @@ async def create_cluster(
     above (same "Gửi thử là hành động riêng" posture the 3 global channels'
     own /telegram-alerts page already has) — left blank, this cluster's
     alerts/RISKY approvals fall back to the 3 global channels
-    (dashboard/telegram_approval_bot.py::channels_for_incident)."""
+    (dashboard/telegram_approval_bot.py::channels_for_incident).
+
+    2026-08-11 (multi-tenant remediation Phase 3): backup_* fields are also
+    OPTIONAL and NOT part of the pre-save connection test — this cluster's
+    own RBD/SSH-or-S3 backup target is a SEPARATE credential path from the
+    source-cluster SSH creds above (PRD FR-4), reachability of a backup
+    destination is a different check than reachability of a Ceph MON, and
+    is deliberately out of this phase's scope (same "gửi thử là hành động
+    riêng" reasoning Phase 2 used). Left blank, this cluster simply has no
+    backup pipeline (`worker/backup/scheduler.py::build_scheduler()` never
+    registers a job for it)."""
     _require_admin_privilege(user)
 
     submitted = {
@@ -127,6 +169,20 @@ async def create_cluster(
         "telegram_bot_token": telegram_bot_token.strip(),
         "telegram_chat_id": telegram_chat_id.strip(),
         "telegram_enabled": telegram_enabled.strip().lower() in ("true", "on", "1"),
+        "backup_enabled": backup_enabled.strip().lower() in ("true", "on", "1"),
+        "backup_tracked_images": backup_tracked_images.strip(),
+        "backup_full_refresh_days": backup_full_refresh_days.strip(),
+        "backup_transport": backup_transport.strip(),
+        "backup_ssh_host": backup_ssh_host.strip(),
+        "backup_ssh_user": backup_ssh_user.strip(),
+        "backup_ssh_key_path": backup_ssh_key_path.strip(),
+        "backup_ssh_landing_dir": backup_ssh_landing_dir.strip(),
+        "backup_s3_endpoint": backup_s3_endpoint.strip(),
+        "backup_s3_access_key": backup_s3_access_key.strip(),
+        "backup_s3_secret_key": backup_s3_secret_key.strip(),
+        "backup_s3_bucket": backup_s3_bucket.strip(),
+        "backup_immutable_enabled": backup_immutable_enabled.strip().lower() in ("true", "on", "1"),
+        "backup_immutable_lock_days": backup_immutable_lock_days.strip(),
     }
     mon_nodes_list = _parse_node_list(submitted["ceph_mon_nodes"])
 
@@ -158,6 +214,27 @@ async def create_cluster(
             request,
             "clusters.html",
             _clusters_context(user, cluster_create_error=message, cluster_form_values=submitted),
+        )
+
+    if submitted["backup_transport"] not in VALID_BACKUP_TRANSPORTS:
+        return templates.TemplateResponse(
+            request,
+            "clusters.html",
+            _clusters_context(
+                user,
+                cluster_create_error=f"Nơi lưu backup không hợp lệ: {submitted['backup_transport']!r}",
+                cluster_form_values=submitted,
+            ),
+        )
+    if submitted["backup_enabled"] and not submitted["backup_transport"]:
+        return templates.TemplateResponse(
+            request,
+            "clusters.html",
+            _clusters_context(
+                user,
+                cluster_create_error="Bật backup cần chọn nơi lưu (SSH hoặc S3).",
+                cluster_form_values=submitted,
+            ),
         )
 
     try:
@@ -203,6 +280,24 @@ async def create_cluster(
                 telegram_bot_token=submitted["telegram_bot_token"],
                 telegram_chat_id=submitted["telegram_chat_id"],
                 telegram_enabled=submitted["telegram_enabled"],
+                backup_enabled=submitted["backup_enabled"],
+                backup_tracked_images=submitted["backup_tracked_images"],
+                backup_full_refresh_days=(
+                    int(submitted["backup_full_refresh_days"]) if submitted["backup_full_refresh_days"].isdigit() else None
+                ),
+                backup_transport=submitted["backup_transport"],
+                backup_ssh_host=submitted["backup_ssh_host"],
+                backup_ssh_user=submitted["backup_ssh_user"],
+                backup_ssh_key_path=submitted["backup_ssh_key_path"],
+                backup_ssh_landing_dir=submitted["backup_ssh_landing_dir"],
+                backup_s3_endpoint=submitted["backup_s3_endpoint"],
+                backup_s3_access_key=submitted["backup_s3_access_key"],
+                backup_s3_secret_key=submitted["backup_s3_secret_key"],
+                backup_s3_bucket=submitted["backup_s3_bucket"],
+                backup_immutable_enabled=submitted["backup_immutable_enabled"],
+                backup_immutable_lock_days=(
+                    int(submitted["backup_immutable_lock_days"]) if submitted["backup_immutable_lock_days"].isdigit() else 7
+                ),
                 is_default=False,
                 is_active=True,
             )
@@ -217,15 +312,21 @@ async def create_cluster(
     # ever — the Dashboard's cluster selector would show it as if it were
     # never actually being watched. Same "save = restart the process that
     # reads this config" posture every other config page in this app already
-    # has (Alert Telegram, Settings' own "Kết nối cụm Ceph").
+    # has (Alert Telegram, Settings' own "Kết nối cụm Ceph"). Worker's own
+    # scheduler (worker/backup/scheduler.py::build_scheduler()) has the
+    # exact same "enumerates clusters once, at its own startup" shape
+    # (multi-tenant remediation Phase 3) — restarted too so a cluster
+    # created with backup_enabled already set gets its jobs registered
+    # without a second, separate save.
     await asyncio.to_thread(restart_watcher)
+    await asyncio.to_thread(restart_worker)
 
     return templates.TemplateResponse(
         request,
         "clusters.html",
         _clusters_context(
             user,
-            cluster_create_success=f"Đã thêm cụm {submitted['name']!r} — Watcher đã khởi động lại để bắt đầu giám sát ngay.",
+            cluster_create_success=f"Đã thêm cụm {submitted['name']!r} — Watcher/Worker đã khởi động lại để bắt đầu giám sát/backup ngay.",
         ),
     )
 
@@ -269,3 +370,278 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
     await asyncio.to_thread(restart_watcher)
 
     return templates.TemplateResponse(request, "clusters.html", _clusters_context(user))
+
+
+def _purge_cluster_data(session, cluster_id: str) -> dict[str, int]:
+    """Hard-deletes every DB row scoped to exactly this ONE additional
+    (non-default) cluster — called by delete_cluster() below, inside the
+    SAME session/transaction as that Cluster row's own deletion so a crash
+    partway through can never leave orphaned child rows behind.
+
+    Only 3 tables carry a `cluster_id`/FK chain back to `clusters.id`
+    (Incident, WatcherHeartbeat, BackupJob — see shared/models.py; every
+    OTHER table in this app is still default-cluster-only, per Cluster's
+    own docstring: patch/upgrade/RestoreDrill/digest/CRUSH-monitor/
+    volume-monitor/node-diagnostics/test-runner never run for an
+    additional cluster). So this is NOT a generic "cascade delete
+    anything that might reference this row" helper — it is exactly these
+    3 tables' rows, deleted in FK-dependency order (children before
+    parents), the same "manually break/delete the FK before the parent"
+    idiom dashboard/routes/maintenance.py::purge_old_records already uses
+    for the identical Incident -> Action -> AuditEntry chain (there is no
+    ORM/DB cascade configured anywhere in this codebase).
+
+    Deliberately does NOT touch ChatMessage.proposed_incident_id (a
+    nullable FK to Incident) the way purge_old_records does — that purge
+    can hit ANY Incident, chat-originated ones included, so it must null
+    the reference first. Chat (dashboard/routes/chat.py) has no cluster
+    picker and only ever creates Incidents with cluster_id=None (the
+    default cluster) — no ChatMessage row can ever reference a
+    non-default cluster's Incident in the first place, so there is
+    nothing to break here.
+    """
+    incident_ids = [
+        row[0] for row in session.query(Incident.id).filter(Incident.cluster_id == cluster_id).all()
+    ]
+    audit_deleted = action_deleted = incident_deleted = 0
+    if incident_ids:
+        audit_deleted = (
+            session.query(AuditEntry)
+            .filter(AuditEntry.incident_id.in_(incident_ids))
+            .delete(synchronize_session=False)
+        )
+        action_deleted = (
+            session.query(Action)
+            .filter(Action.incident_id.in_(incident_ids))
+            .delete(synchronize_session=False)
+        )
+        incident_deleted = (
+            session.query(Incident)
+            .filter(Incident.id.in_(incident_ids))
+            .delete(synchronize_session=False)
+        )
+
+    backup_job_ids = [
+        row[0] for row in session.query(BackupJob.id).filter(BackupJob.cluster_id == cluster_id).all()
+    ]
+    backup_anomaly_deleted = backup_job_deleted = 0
+    if backup_job_ids:
+        backup_anomaly_deleted = (
+            session.query(BackupAnomaly)
+            .filter(BackupAnomaly.backup_job_id.in_(backup_job_ids))
+            .delete(synchronize_session=False)
+        )
+        # BackupJob.base_job_id is a SELF-FK (an incremental row points at
+        # the full export its export-diff chain is based on) — deleting a
+        # whole cluster's chain via one bulk DELETE can otherwise trip that
+        # constraint depending on row-processing order, so break every
+        # self-reference within this cluster's own rows first (same "null
+        # the FK before deleting" idiom as ChatMessage above, just
+        # self-referencing instead of cross-table).
+        session.query(BackupJob).filter(BackupJob.id.in_(backup_job_ids)).update(
+            {"base_job_id": None}, synchronize_session=False
+        )
+        backup_job_deleted = (
+            session.query(BackupJob).filter(BackupJob.id.in_(backup_job_ids)).delete(synchronize_session=False)
+        )
+
+    heartbeat_deleted = (
+        session.query(WatcherHeartbeat)
+        .filter(WatcherHeartbeat.cluster_id == cluster_id)
+        .delete(synchronize_session=False)
+    )
+
+    return {
+        "incidents": incident_deleted,
+        "actions": action_deleted,
+        "audit_entries": audit_deleted,
+        "backup_jobs": backup_job_deleted,
+        "backup_anomalies": backup_anomaly_deleted,
+        "heartbeats": heartbeat_deleted,
+    }
+
+
+@router.post("/clusters/{cluster_id}/delete", response_class=HTMLResponse)
+async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(require_login)):
+    """Hard delete — unlike toggle_cluster_active's soft-disable above,
+    this PERMANENTLY removes the Cluster row and every Incident/Action/
+    AuditEntry/BackupJob/BackupAnomaly/WatcherHeartbeat row scoped to it
+    (see _purge_cluster_data's own docstring for exactly which tables,
+    and why only those — nothing belonging to any OTHER cluster, default
+    included, is ever touched). The default cluster can never be a
+    target here, same guard/reasoning as toggle_cluster_active above."""
+    _require_admin_privilege(user)
+
+    with db.SessionLocal() as session:
+        target = session.get(Cluster, cluster_id)
+        if target is None:
+            return templates.TemplateResponse(
+                request, "clusters.html", _clusters_context(user, cluster_delete_error="Không tìm thấy cụm.")
+            )
+        if target.is_default:
+            return templates.TemplateResponse(
+                request,
+                "clusters.html",
+                _clusters_context(user, cluster_delete_error="Không thể xoá cụm mặc định."),
+            )
+        cluster_name = target.name
+        counts = _purge_cluster_data(session, cluster_id)
+        session.delete(target)
+        session.commit()
+
+    # Same "config only takes effect after a restart" reasoning as
+    # create_cluster()/toggle_cluster_active() above — Watcher's poll
+    # thread and Worker's backup-scheduler jobs for this cluster_id both
+    # only ever get (de)registered once, at process startup. Skipping this
+    # would leave a deleted cluster's Worker backup job still firing —
+    # worker/backup/cluster_scope.py::get_cluster() re-fetches by id and
+    # returns None once the row is gone, and a None cluster means "the
+    # DEFAULT cluster" everywhere else in that module — so a stale job
+    # would silently start backing up the DEFAULT cluster's images under
+    # the deleted cluster's old schedule. A real data-safety bug, not just
+    # a cosmetic stale-UI one, so both restart unconditionally on success.
+    await asyncio.to_thread(restart_watcher)
+    await asyncio.to_thread(restart_worker)
+
+    return templates.TemplateResponse(
+        request,
+        "clusters.html",
+        _clusters_context(
+            user,
+            cluster_delete_success=(
+                f"Đã xoá cụm {cluster_name!r} và toàn bộ dữ liệu riêng của cụm này: "
+                f"{counts['incidents']} incident, {counts['actions']} action, "
+                f"{counts['audit_entries']} audit entry, {counts['backup_jobs']} backup job, "
+                f"{counts['backup_anomalies']} backup anomaly, {counts['heartbeats']} heartbeat. "
+                "Watcher/Worker đã khởi động lại."
+            ),
+        ),
+    )
+
+
+@router.post("/clusters/{cluster_id}/backup-config", response_class=HTMLResponse)
+async def update_cluster_backup_config(
+    request: Request,
+    cluster_id: str,
+    user: str = Depends(require_login),
+    backup_enabled: str = Form(""),
+    backup_tracked_images: str = Form(""),
+    backup_full_refresh_days: str = Form(""),
+    backup_transport: str = Form(""),
+    backup_ssh_host: str = Form(""),
+    backup_ssh_user: str = Form(""),
+    backup_ssh_key_path: str = Form(""),
+    backup_ssh_landing_dir: str = Form(""),
+    backup_s3_endpoint: str = Form(""),
+    backup_s3_access_key: str = Form(""),
+    backup_s3_secret_key: str = Form(""),
+    backup_s3_bucket: str = Form(""),
+    backup_immutable_enabled: str = Form(""),
+    backup_immutable_lock_days: str = Form(""),
+):
+    """Multi-tenant remediation Phase 3 — narrowly-scoped edit endpoint for
+    an EXISTING additional cluster's backup config ONLY. `create_cluster()`
+    above has no general "edit a cluster" counterpart (its connection
+    fields — MON nodes, SSH creds, exec mode — stay create-time-only,
+    unchanged by this phase); this endpoint exists purely because getting
+    ~10 backup-target fields right in ONE create-time submission is
+    unrealistic in practice.
+
+    `backup_ssh_key_path`/`backup_s3_access_key`/`backup_s3_secret_key` are
+    secret-shaped — the template never echoes a saved secret back (same
+    posture `telegram_bot_token`'s own `<input type=password>` already
+    has on the create form), so these three are write-only: submitted
+    blank means "keep the current value", not "clear it". Every other
+    field is a plain overwrite, including `backup_enabled`/
+    `backup_transport` themselves (an admin unchecking "Bật backup" here
+    genuinely disables it — worker/backup/scheduler.py's next rebuild
+    (via restart_worker() below) simply stops registering this cluster's
+    jobs)."""
+    _require_admin_privilege(user)
+
+    submitted = {
+        "backup_enabled": backup_enabled.strip().lower() in ("true", "on", "1"),
+        "backup_tracked_images": backup_tracked_images.strip(),
+        "backup_full_refresh_days": backup_full_refresh_days.strip(),
+        "backup_transport": backup_transport.strip(),
+        "backup_ssh_host": backup_ssh_host.strip(),
+        "backup_ssh_user": backup_ssh_user.strip(),
+        "backup_ssh_key_path": backup_ssh_key_path.strip(),
+        "backup_ssh_landing_dir": backup_ssh_landing_dir.strip(),
+        "backup_s3_endpoint": backup_s3_endpoint.strip(),
+        "backup_s3_access_key": backup_s3_access_key.strip(),
+        "backup_s3_secret_key": backup_s3_secret_key.strip(),
+        "backup_s3_bucket": backup_s3_bucket.strip(),
+        "backup_immutable_enabled": backup_immutable_enabled.strip().lower() in ("true", "on", "1"),
+        "backup_immutable_lock_days": backup_immutable_lock_days.strip(),
+    }
+
+    if submitted["backup_transport"] not in VALID_BACKUP_TRANSPORTS:
+        return templates.TemplateResponse(
+            request,
+            "clusters.html",
+            _clusters_context(
+                user,
+                backup_config_error=f"Nơi lưu backup không hợp lệ: {submitted['backup_transport']!r}",
+                backup_config_cluster_id=cluster_id,
+                backup_config_form_values=submitted,
+            ),
+        )
+    if submitted["backup_enabled"] and not submitted["backup_transport"]:
+        return templates.TemplateResponse(
+            request,
+            "clusters.html",
+            _clusters_context(
+                user,
+                backup_config_error="Bật backup cần chọn nơi lưu (SSH hoặc S3).",
+                backup_config_cluster_id=cluster_id,
+                backup_config_form_values=submitted,
+            ),
+        )
+
+    with db.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is None or cluster.is_default:
+            return templates.TemplateResponse(
+                request,
+                "clusters.html",
+                _clusters_context(user, backup_config_error="Không tìm thấy cụm, hoặc đây là cụm mặc định."),
+            )
+
+        cluster.backup_enabled = submitted["backup_enabled"]
+        cluster.backup_tracked_images = submitted["backup_tracked_images"]
+        cluster.backup_full_refresh_days = (
+            int(submitted["backup_full_refresh_days"]) if submitted["backup_full_refresh_days"].isdigit() else None
+        )
+        cluster.backup_transport = submitted["backup_transport"]
+        cluster.backup_ssh_host = submitted["backup_ssh_host"]
+        cluster.backup_ssh_user = submitted["backup_ssh_user"]
+        if submitted["backup_ssh_key_path"]:
+            cluster.backup_ssh_key_path = submitted["backup_ssh_key_path"]
+        cluster.backup_ssh_landing_dir = submitted["backup_ssh_landing_dir"]
+        cluster.backup_s3_endpoint = submitted["backup_s3_endpoint"]
+        if submitted["backup_s3_access_key"]:
+            cluster.backup_s3_access_key = submitted["backup_s3_access_key"]
+        if submitted["backup_s3_secret_key"]:
+            cluster.backup_s3_secret_key = submitted["backup_s3_secret_key"]
+        cluster.backup_s3_bucket = submitted["backup_s3_bucket"]
+        cluster.backup_immutable_enabled = submitted["backup_immutable_enabled"]
+        cluster.backup_immutable_lock_days = (
+            int(submitted["backup_immutable_lock_days"]) if submitted["backup_immutable_lock_days"].isdigit() else 7
+        )
+        session.commit()
+        cluster_name = cluster.name
+
+    # Not restart_watcher() -- backup config only affects Worker's own
+    # scheduler (worker/backup/scheduler.py::build_scheduler(), which
+    # enumerates clusters once at ITS OWN startup, same shape Watcher's
+    # poll-thread startup already has, see create_cluster()'s own comment).
+    await asyncio.to_thread(restart_worker)
+
+    return templates.TemplateResponse(
+        request,
+        "clusters.html",
+        _clusters_context(
+            user, backup_config_success=f"Đã lưu cấu hình backup cho cụm {cluster_name!r} — Worker đã khởi động lại."
+        ),
+    )

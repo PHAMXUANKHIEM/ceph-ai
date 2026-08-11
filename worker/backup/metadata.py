@@ -17,14 +17,17 @@ import hashlib
 import io
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from config.settings import settings
 from shared import db
+from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import BackupJob
 from worker.backup import ai_analysis
-from worker.backup.policy_config import backup_targets_from_policy
-from worker.backup.storage.factory import get_backend
+from worker.backup.cluster_scope import first_mon_node, get_cluster, resolve_targets
 from worker.executor.ssh_executor import execute_command
+
+if TYPE_CHECKING:
+    from shared.models import Cluster
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +42,23 @@ _ARTIFACTS = [
 ]
 
 
-def latest_successful_metadata_job() -> BackupJob | None:
+def latest_successful_metadata_job(cluster_id: str | None = None) -> BackupJob | None:
     """Story 9.7, Task 2 — the DR `_phase_restore_metadata` phase needs the
     most recent successful metadata backup to restore from. `remote_key`
     on a metadata BackupJob is the PREFIX directory (`metadata/{timestamp}`),
-    not a single artifact key — see `download_artifact()` below."""
+    not a single artifact key — see `download_artifact()` below. `cluster_id`
+    (Phase 3) defaults to `None` (the default cluster) -- the DR phase
+    itself stays default-cluster-only this phase, so its own call site
+    passes nothing; the param exists so this stays correct if that
+    changes later, same as `restore.py`'s equivalent queries."""
     with db.SessionLocal() as session:
         return (
             session.query(BackupJob)
-            .filter(BackupJob.job_type == "metadata", BackupJob.status == "SUCCESS")
+            .filter(
+                BackupJob.job_type == "metadata",
+                BackupJob.status == "SUCCESS",
+                BackupJob.cluster_id == cluster_id,
+            )
             .order_by(BackupJob.created_at.desc())
             .first()
         )
@@ -61,21 +72,27 @@ def download_artifact(backend, remote_key_prefix: str, artifact_name: str) -> by
     return buf.getvalue()
 
 
-def _first_mon_node() -> str:
-    nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
-    if not nodes:
-        raise RuntimeError("ceph_mon_nodes is not configured — cannot back up cluster metadata")
-    return nodes[0]
+def _first_mon_node(cluster: "Cluster | None" = None) -> str:
+    try:
+        return first_mon_node(cluster)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def run(
-    action_pk: str, action_params: dict, incident_id: str, write_progress, check_kill_switch
+    action_pk: str,
+    action_params: dict,
+    incident_id: str,
+    cluster_id: str | None,
+    write_progress,
+    check_kill_switch,
 ) -> bool:
     if check_kill_switch(incident_id):
         logger.warning("backup_metadata.run: kill-switch is ON — skipping metadata backup")
         return False
 
-    mon_ip = _first_mon_node()
+    cluster = get_cluster(cluster_id)
+    mon_ip = _first_mon_node(cluster)
     prefix = f"metadata/{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
     run_id_base = prefix
 
@@ -85,34 +102,34 @@ def run(
     ]
     write_progress(action_pk, progress)
 
+    ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
+
     collected: dict[str, bytes] = {}
     for index, (name, cmd) in enumerate(_ARTIFACTS):
         progress[index]["status"] = "running"
         progress[index]["started_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
         try:
-            output = execute_command(mon_ip, cmd)
+            output = execute_command(mon_ip, cmd, user=ssh_user, key_path=ssh_key_path)
         except Exception as exc:
             logger.exception("backup_metadata.run: command failed for %s (%s)", name, cmd)
             progress[index]["status"] = "failed"
             progress[index]["message"] = str(exc)
             write_progress(action_pk, progress)
-            _record_failure(run_id_base, f"{name}: {exc}")
+            _record_failure(run_id_base, f"{name}: {exc}", cluster_id=cluster_id)
             return False
         collected[name] = output.encode() if isinstance(output, str) else output
         progress[index]["status"] = "done"
         progress[index]["finished_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
 
-    targets = backup_targets_from_policy()
+    targets = resolve_targets(cluster)
     if not targets:
         logger.error("backup_metadata.run: no backup_targets configured in backup_policy.yaml")
-        _record_failure(run_id_base, "no backup_targets configured")
+        _record_failure(run_id_base, "no backup_targets configured", cluster_id=cluster_id)
         return False
 
-    for target in targets:
-        slot = target["slot"]
-        backend = get_backend(slot, settings, immutable_enabled=bool(target.get("immutable")))
+    for slot, backend in targets:
         for name, content in collected.items():
             remote_key = f"{prefix}/{name}"
             sha256 = hashlib.sha256(content).hexdigest()
@@ -126,13 +143,14 @@ def run(
                 logger.exception(
                     "backup_metadata.run: upload/verify failed for slot %s, key %s", slot, remote_key
                 )
-                _record_failure(run_id_base, str(exc), backup_target_slot=slot)
+                _record_failure(run_id_base, str(exc), backup_target_slot=slot, cluster_id=cluster_id)
                 return False
 
         with db.SessionLocal() as session:
             session.add(
                 BackupJob(
                     run_id=run_id_base,
+                    cluster_id=cluster_id,
                     job_type="metadata",
                     status="SUCCESS",
                     backup_target_slot=slot,
@@ -145,10 +163,13 @@ def run(
     return True
 
 
-def _record_failure(run_id: str, message: str, backup_target_slot: str | None = None) -> None:
+def _record_failure(
+    run_id: str, message: str, backup_target_slot: str | None = None, cluster_id: str | None = None
+) -> None:
     with db.SessionLocal() as session:
         failed_job = BackupJob(
             run_id=run_id,
+            cluster_id=cluster_id,
             job_type="metadata",
             status="FAILED",
             backup_target_slot=backup_target_slot,

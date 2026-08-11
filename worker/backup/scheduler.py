@@ -26,8 +26,10 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from shared import db
-from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.clusters import list_active_clusters
+from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 from worker.backup import alerting, digest
+from worker.backup.cluster_scope import first_mon_node, get_cluster, parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
 
 logger = logging.getLogger(__name__)
@@ -40,16 +42,16 @@ BACKUP_SCHEDULED_CEPH_CODE = "BACKUP_SCHEDULED"
 IDLE_SLEEP_SECONDS = 3600
 
 
-def _first_mon_node() -> str:
-    from config.settings import settings
-
-    nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
-    if not nodes:
-        raise RuntimeError("ceph_mon_nodes is not configured — cannot schedule a backup")
-    return nodes[0]
+def _first_mon_node(cluster: "Cluster | None" = None) -> str:
+    try:
+        return first_mon_node(cluster)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
-def _create_scheduled_action(action_id: str, action_params: dict, log_excerpt: str) -> str:
+def _create_scheduled_action(
+    action_id: str, action_params: dict, log_excerpt: str, cluster_id: str | None = None
+) -> str:
     """Creates the synthetic Incident+Action a scheduled job runs as,
     already APPROVED (Safe, no operator step) so it can go straight to
     `_execute_approved_action()`. Returns the new Action's primary key.
@@ -65,10 +67,18 @@ def _create_scheduled_action(action_id: str, action_params: dict, log_excerpt: s
     `worker/backup/metadata.py` themselves never read this column (they
     resolve their own mon node from `action_params`/settings), this exists
     purely to pass that gate.
+
+    `cluster_id` (multi-tenant remediation Phase 3): `None` means the
+    default cluster (byte-for-byte unchanged), else the synthetic
+    Incident is stamped with it so `worker/llm/router_client.py::
+    _execute_approved_action` resolves the RIGHT cluster's SSH creds/
+    backup target when it later dispatches to `backup_engine.run()`.
     """
-    mon_ip = _first_mon_node()
+    cluster = get_cluster(cluster_id)
+    mon_ip = _first_mon_node(cluster)
     with db.SessionLocal() as session:
         incident = Incident(
+            cluster_id=cluster_id,
             ceph_code=BACKUP_SCHEDULED_CEPH_CODE,
             status=IncidentStatus.EXECUTING.value,
             log_excerpt=log_excerpt,
@@ -105,21 +115,31 @@ async def _dispatch(action_pk: str, error_context: str) -> None:
         logger.exception("scheduler: unexpected error executing %s", error_context)
 
 
-async def trigger_backup(pool: str, image: str) -> None:
-    """The APScheduler job callable for a scheduled RBD backup."""
+async def trigger_backup(pool: str, image: str, cluster_id: str | None = None) -> None:
+    """The APScheduler job callable for a scheduled RBD backup. `cluster_id`
+    (Phase 3): `None` means the default cluster, unchanged; an additional
+    cluster's own job (registered by `build_scheduler()` below) passes its
+    id so the backup runs against THAT cluster."""
     action_pk = _create_scheduled_action(
-        "rbd_backup_run", {"pool": pool, "image": image}, f"Backup RBD theo lịch cho {pool}/{image}"
+        "rbd_backup_run",
+        {"pool": pool, "image": image},
+        f"Backup RBD theo lịch cho {pool}/{image}",
+        cluster_id=cluster_id,
     )
-    await _dispatch(action_pk, f"scheduled RBD backup for {pool}/{image}")
+    await _dispatch(action_pk, f"scheduled RBD backup for {pool}/{image} (cluster_id={cluster_id})")
 
 
-async def trigger_metadata_backup() -> None:
+async def trigger_metadata_backup(cluster_id: str | None = None) -> None:
     """The APScheduler job callable for a scheduled cluster metadata
-    backup (Story 9.3) — not tied to a (pool, image) pair."""
+    backup (Story 9.3) — not tied to a (pool, image) pair. `cluster_id`:
+    see `trigger_backup`'s own docstring."""
     action_pk = _create_scheduled_action(
-        "backup_metadata_run", {}, "Backup metadata cụm theo lịch (monmap/osdmap/crushmap/auth/config)"
+        "backup_metadata_run",
+        {},
+        "Backup metadata cụm theo lịch (monmap/osdmap/crushmap/auth/config)",
+        cluster_id=cluster_id,
     )
-    await _dispatch(action_pk, "scheduled cluster metadata backup")
+    await _dispatch(action_pk, f"scheduled cluster metadata backup (cluster_id={cluster_id})")
 
 
 async def trigger_restore_drill() -> None:
@@ -131,6 +151,36 @@ async def trigger_restore_drill() -> None:
         "restore_drill_execute", {}, "RestoreDrill theo lịch"
     )
     await _dispatch(action_pk, "scheduled RestoreDrill")
+
+
+def _register_cluster_backup_jobs(scheduler: AsyncIOScheduler, cron: dict, metadata_cron: dict) -> None:
+    """Multi-tenant remediation Phase 3 — registers `trigger_backup`/
+    `trigger_metadata_backup` jobs for every ADDITIONAL cluster that has
+    opted in (`Cluster.backup_enabled`), on the SAME shared global cron as
+    the default cluster's own jobs above (Phase 3 does not give each
+    cluster its own cron config — explicit narrowing, see this session's
+    plan). RestoreDrill/BackupDigest stay default-cluster-only, so neither
+    is registered here."""
+    with db.SessionLocal() as session:
+        clusters = [c for c in list_active_clusters(session) if not c.is_default and c.backup_enabled]
+        session.expunge_all()
+
+    for cluster in clusters:
+        for pool, image in parse_tracked_images(cluster.backup_tracked_images):
+            scheduler.add_job(
+                trigger_backup,
+                trigger=CronTrigger(hour=cron.get("hour", 2), minute=cron.get("minute", 0)),
+                args=[pool, image, cluster.id],
+                id=f"rbd_backup_{cluster.id}_{pool}_{image}",
+                replace_existing=True,
+            )
+        scheduler.add_job(
+            trigger_metadata_backup,
+            trigger=CronTrigger(hour=metadata_cron.get("hour", "*/6"), minute=metadata_cron.get("minute", 0)),
+            args=[cluster.id],
+            id=f"backup_metadata_run_{cluster.id}",
+            replace_existing=True,
+        )
 
 
 def build_scheduler() -> AsyncIOScheduler:
@@ -161,6 +211,12 @@ def build_scheduler() -> AsyncIOScheduler:
             id="backup_metadata_run",
             replace_existing=True,
         )
+
+    # Multi-tenant remediation Phase 3 — every ADDITIONAL cluster with
+    # backup_enabled gets its own rbd_backup_run/backup_metadata_run jobs
+    # on this SAME shared cron/metadata_cron, registered alongside (never
+    # replacing) the default cluster's jobs above.
+    _register_cluster_backup_jobs(scheduler, cron, metadata_cron)
 
     # Story 9.4 (AC #3): only register if restore_drill is actually
     # configured (pool/image + scratch_pool/scratch_image) — same "blank

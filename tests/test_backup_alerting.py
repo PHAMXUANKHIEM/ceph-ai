@@ -42,7 +42,12 @@ def test_send_alert_posts_webhook_when_url_configured(monkeypatch):
     assert len(calls) == 1
     url, payload, timeout = calls[0]
     assert url == "http://example.test/hook"
-    assert payload == {"severity": "critical", "message": "something broke", "backup_job_id": "job-1"}
+    assert payload == {
+        "severity": "critical",
+        "message": "something broke",
+        "backup_job_id": "job-1",
+        "cluster_id": None,
+    }
 
 
 def test_send_alert_does_not_call_http_when_url_blank(monkeypatch):
@@ -181,7 +186,7 @@ def test_check_overdue_and_failed_backups_alerts_on_failure(isolated_db, monkeyp
         session.commit()
 
     alerts = []
-    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None: alerts.append((severity, message)))
+    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None, cluster=None: alerts.append((severity, message)))
 
     alerting.check_overdue_and_failed_backups()
 
@@ -208,7 +213,7 @@ def test_check_overdue_and_failed_backups_alerts_when_stale(isolated_db, monkeyp
         session.commit()
 
     alerts = []
-    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None: alerts.append((severity, message)))
+    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None, cluster=None: alerts.append((severity, message)))
 
     alerting.check_overdue_and_failed_backups()
 
@@ -233,7 +238,7 @@ def test_check_overdue_and_failed_backups_silent_when_fresh_and_successful(isola
         session.commit()
 
     alerts = []
-    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None: alerts.append((severity, message)))
+    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None, cluster=None: alerts.append((severity, message)))
 
     alerting.check_overdue_and_failed_backups()
 
@@ -244,9 +249,93 @@ def test_check_overdue_and_failed_backups_alerts_for_metadata_never_run(isolated
     monkeypatch.setattr(alerting, "load_backup_policy", lambda: {"tracked_images": []})
 
     alerts = []
-    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None: alerts.append((severity, message)))
+    monkeypatch.setattr(alerting, "send_alert", lambda severity, message, backup_job_id=None, cluster=None: alerts.append((severity, message)))
 
     alerting.check_overdue_and_failed_backups()
 
     assert len(alerts) == 1
     assert "metadata" in alerts[0][1]
+
+
+def _make_additional_cluster(session, **overrides):
+    from shared.models import Cluster
+
+    defaults = dict(
+        name="cluster-b",
+        ceph_mon_nodes="10.20.2.10",
+        ssh_user="root",
+        ssh_key_path="/root/.ssh/id_rsa",
+        is_default=False,
+        is_active=True,
+        backup_enabled=True,
+        backup_tracked_images="rbd/vm1",
+        telegram_bot_token="123:CLUSTERB",
+        telegram_chat_id="-100222",
+        telegram_enabled=True,
+    )
+    defaults.update(overrides)
+    cluster = Cluster(**defaults)
+    session.add(cluster)
+    session.commit()
+    return cluster
+
+
+def test_check_overdue_and_failed_backups_covers_additional_cluster_and_routes_its_own_telegram(
+    isolated_db, monkeypatch
+):
+    """Multi-tenant remediation Phase 3 — an additional cluster's overdue/
+    never-run backup is checked too, and its Telegram alert goes to ITS
+    OWN channel (Phase 2 fields), never the global backup_telegram_* one."""
+    monkeypatch.setattr(alerting, "load_backup_policy", lambda: {"tracked_images": []})
+    monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
+    # Global backup Telegram channel deliberately left UNCONFIGURED here —
+    # if the additional cluster's alert fell back to it, this would be a
+    # cross-cluster channel leak (exactly what this test guards against).
+    monkeypatch.setattr(alerting.settings, "telegram_backup_bot_token", "", raising=False)
+    monkeypatch.setattr(alerting.settings, "telegram_backup_chat_id", "", raising=False)
+
+    with db_module.SessionLocal() as session:
+        cluster = _make_additional_cluster(session)
+        cluster_id = cluster.id
+
+    telegram_calls = []
+    monkeypatch.setattr(
+        alerting, "send_telegram_message", lambda token, chat_id, text: telegram_calls.append((token, chat_id, text))
+    )
+
+    alerting.check_overdue_and_failed_backups()
+
+    # One alert for the never-run rbd/vm1 image, one for never-run metadata.
+    assert len(telegram_calls) == 2
+    for token, chat_id, _text in telegram_calls:
+        assert token == "123:CLUSTERB"
+        assert chat_id == "-100222"
+    with db_module.SessionLocal() as session:
+        # Confirms _check_target() looked up THIS cluster's own BackupJob
+        # rows (none exist), not silently querying cluster_id=None.
+        assert session.query(BackupJob).filter(BackupJob.cluster_id == cluster_id).count() == 0
+
+
+def test_check_overdue_and_failed_backups_additional_cluster_without_telegram_is_skipped_not_fallback(
+    isolated_db, monkeypatch
+):
+    """An additional cluster with NO Telegram channel configured must not
+    fall back to the global Backup channel — same narrowing Phase 2
+    established for regular Incidents."""
+    monkeypatch.setattr(alerting, "load_backup_policy", lambda: {"tracked_images": []})
+    monkeypatch.setattr(alerting.settings, "backup_alert_webhook_url", "", raising=False)
+    _enable_telegram(monkeypatch)  # GLOBAL backup channel IS configured here
+
+    with db_module.SessionLocal() as session:
+        _make_additional_cluster(session, telegram_bot_token="", telegram_chat_id="")
+
+    telegram_calls = []
+    monkeypatch.setattr(alerting, "send_telegram_message", lambda *a: telegram_calls.append(a))
+
+    alerting.check_overdue_and_failed_backups()
+
+    # Only the default cluster's own 2 alerts (empty tracked_images + never-
+    # run metadata) went out over the global channel; the additional
+    # cluster's own 2 alerts (also never-run image + metadata) must be
+    # silently skipped, not delivered over the global channel instead.
+    assert len(telegram_calls) == 1  # default cluster's never-run metadata alert only

@@ -29,21 +29,27 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import paramiko
 
 from config.settings import settings
 from shared import audit, db
+from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import BackupJob
 from worker.backup import ai_analysis, anomaly
 from worker.backup import metadata as backup_metadata
 from worker.backup import restore
 from worker.backup import restore_drill
-from worker.backup.policy_config import backup_targets_from_policy, load_backup_policy
+from worker.backup.cluster_scope import first_mon_node, get_cluster, resolve_targets
+from worker.backup.policy_config import load_backup_policy
 from worker.backup.storage.base import RetentionPolicyLike
-from worker.backup.storage.factory import get_backend
+from worker.backup.storage.factory import get_backend, get_backend_for_cluster
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
 from worker.policy.gate import VALID_BACKUP_ACTION_IDS
+
+if TYPE_CHECKING:
+    from shared.models import Cluster
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +135,11 @@ class _ProgressTrackingReader:
         self._write_progress(self._action_pk, self._progress)
 
 
-def _first_mon_node() -> str:
-    nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
-    if not nodes:
-        raise BackupEngineError("ceph_mon_nodes is not configured — cannot run rbd commands")
-    return nodes[0]
+def _first_mon_node(cluster: "Cluster | None" = None) -> str:
+    try:
+        return first_mon_node(cluster)
+    except ValueError as exc:
+        raise BackupEngineError(str(exc)) from exc
 
 
 def _rbd_image_size_bytes(mon_ip: str, pool: str, image: str) -> int:
@@ -142,22 +148,31 @@ def _rbd_image_size_bytes(mon_ip: str, pool: str, image: str) -> int:
     return int(info["size"])
 
 
-def _latest_backup_job(pool: str, image: str, job_type: str | None = None) -> BackupJob | None:
+def _latest_backup_job(
+    pool: str, image: str, job_type: str | None = None, cluster_id: str | None = None
+) -> BackupJob | None:
     with db.SessionLocal() as session:
-        query = session.query(BackupJob).filter(BackupJob.pool == pool, BackupJob.image == image)
+        query = session.query(BackupJob).filter(
+            BackupJob.pool == pool, BackupJob.image == image, BackupJob.cluster_id == cluster_id
+        )
         if job_type is not None:
             query = query.filter(BackupJob.job_type == job_type)
         return query.order_by(BackupJob.created_at.desc()).first()
 
 
-def _protected_keys(pool: str, image: str) -> frozenset[str]:
+def _protected_keys(pool: str, image: str, cluster_id: str | None = None) -> frozenset[str]:
     """Full-export keys that a currently-kept incremental still depends
     on — retention (FR-2) must never delete these even if they'd
     otherwise fall outside keep_full_count by age alone."""
     with db.SessionLocal() as session:
         incrementals = (
             session.query(BackupJob)
-            .filter(BackupJob.pool == pool, BackupJob.image == image, BackupJob.job_type == "incremental")
+            .filter(
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                BackupJob.cluster_id == cluster_id,
+                BackupJob.job_type == "incremental",
+            )
             .filter(BackupJob.status == "SUCCESS")
             .all()
         )
@@ -175,22 +190,38 @@ def run(
     action_id: str,
     action_params: dict,
     incident_id: str,
+    cluster_id: str | None,
     write_progress,
     check_kill_switch,
 ) -> bool:
     """Dispatches by `action_id` — this family has more than one member
     needing different logic (unlike volume_perf.py's single-id module),
-    so this takes `action_id` the way `cluster_deploy.run()` does."""
+    so this takes `action_id` the way `cluster_deploy.run()` does.
+
+    `cluster_id` (multi-tenant remediation Phase 3): `None` means the
+    default cluster, byte-for-byte the same behavior as before this param
+    existed — an additional cluster's own Incident/Action carries its
+    `cluster_id` through here from `worker/llm/router_client.py::
+    _execute_approved_action`/`worker/backup/scheduler.py`'s scheduled
+    jobs. `restore_drill_execute` does NOT forward it — RestoreDrill stays
+    default-cluster-only this phase (explicit narrowing, see this
+    session's plan)."""
     if action_id == "rbd_backup_run":
-        return _run_rbd_backup(action_pk, action_params, incident_id, write_progress, check_kill_switch)
+        return _run_rbd_backup(action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch)
     if action_id == "retention_sweep_delete":
-        return _run_retention_sweep(action_pk, action_params, incident_id, write_progress, check_kill_switch)
+        return _run_retention_sweep(
+            action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch
+        )
     if action_id == "backup_metadata_run":
-        return backup_metadata.run(action_pk, action_params, incident_id, write_progress, check_kill_switch)
+        return backup_metadata.run(
+            action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch
+        )
     if action_id == "restore_drill_execute":
         return restore_drill.run(action_pk, action_params, incident_id, write_progress, check_kill_switch)
     if action_id == "restore_rbd_image_to_production":
-        return _run_restore_to_production(action_pk, action_params, incident_id, write_progress, check_kill_switch)
+        return _run_restore_to_production(
+            action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch
+        )
     logger.error(
         "backup_engine.run: action_id=%s is registered in backup_action_ids but not yet "
         "implemented (lands in a later Epic 9 story) — marking FAILED instead of guessing",
@@ -200,7 +231,7 @@ def run(
 
 
 def _run_rbd_backup(
-    action_pk: str, action_params: dict, incident_id: str, write_progress, check_kill_switch
+    action_pk: str, action_params: dict, incident_id: str, cluster_id: str | None, write_progress, check_kill_switch
 ) -> bool:
     pool = action_params.get("pool")
     image = action_params.get("image")
@@ -214,8 +245,10 @@ def _run_rbd_backup(
         )
         return False
 
+    cluster = get_cluster(cluster_id)
+
     stale_cutoff = datetime.utcnow().timestamp() - STALE_RUNNING_TIMEOUT_SECONDS
-    running = _latest_backup_job(pool, image, job_type=None)
+    running = _latest_backup_job(pool, image, job_type=None, cluster_id=cluster_id)
     if running is not None and running.status == "RUNNING":
         if running.created_at.timestamp() > stale_cutoff:
             logger.info(
@@ -240,14 +273,20 @@ def _run_rbd_backup(
                 row.finished_at = datetime.utcnow()
                 session.commit()
 
-    last_full = _latest_backup_job(pool, image, job_type="full")
-    last_success = _latest_backup_job(pool, image, job_type=None)
-    full_refresh_days = None
-    tracked = next(
-        (t for t in (load_backup_policy().get("tracked_images") or []) if t.get("pool") == pool and t.get("image") == image),
-        {},
-    )
-    full_refresh_days = tracked.get("full_refresh_every_n_days")
+    last_full = _latest_backup_job(pool, image, job_type="full", cluster_id=cluster_id)
+    last_success = _latest_backup_job(pool, image, job_type=None, cluster_id=cluster_id)
+    if cluster is not None:
+        # Additional cluster (Phase 3): backup_policy.yaml's tracked_images
+        # list only ever describes the default cluster's own pools/images —
+        # this cluster's full-refresh cadence is its own Cluster.
+        # backup_full_refresh_days column instead (see that column's docstring).
+        full_refresh_days = cluster.backup_full_refresh_days
+    else:
+        tracked = next(
+            (t for t in (load_backup_policy().get("tracked_images") or []) if t.get("pool") == pool and t.get("image") == image),
+            {},
+        )
+        full_refresh_days = tracked.get("full_refresh_every_n_days")
 
     is_full = last_full is None or last_full.status != "SUCCESS"
     if not is_full and full_refresh_days:
@@ -257,7 +296,7 @@ def _run_rbd_backup(
     base_job = None if is_full else last_full
 
     run_id = str(uuid.uuid4())
-    mon_ip = _first_mon_node()
+    mon_ip = _first_mon_node(cluster)
     snap_name = f"backup-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
 
     progress = _make_progress(total_bytes=0)
@@ -288,6 +327,8 @@ def _run_rbd_backup(
             f"--from-snap {_snap_name_of(base_job)} -"
         )
 
+    ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
+
     job_ids: list[str] = []
     tmp_path = None
     try:
@@ -297,8 +338,8 @@ def _run_rbd_backup(
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
             hostname=mon_ip,
-            username=settings.ssh_user,
-            key_filename=settings.ssh_key_path,
+            username=ssh_user,
+            key_filename=ssh_key_path,
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
         client.save_host_keys(KNOWN_HOSTS_PATH)
@@ -327,9 +368,7 @@ def _run_rbd_backup(
         sha256 = tracked_stream.sha256.hexdigest()
         size_bytes = tracked_stream._bytes_read
 
-        for target in backup_targets_from_policy():
-            slot = target["slot"]
-            backend = get_backend(slot, settings, immutable_enabled=bool(target.get("immutable")))
+        for slot, backend in resolve_targets(cluster):
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
                 result = backend.upload(f, remote_key)
@@ -339,6 +378,7 @@ def _run_rbd_backup(
             with db.SessionLocal() as session:
                 job = BackupJob(
                     run_id=run_id,
+                    cluster_id=cluster_id,
                     pool=pool,
                     image=image,
                     job_type=job_type,
@@ -379,6 +419,7 @@ def _run_rbd_backup(
         with db.SessionLocal() as session:
             failed_job = BackupJob(
                 run_id=run_id,
+                cluster_id=cluster_id,
                 pool=pool,
                 image=image,
                 job_type=job_type,
@@ -398,7 +439,7 @@ def _run_rbd_backup(
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-    _sweep_retention_after_success(pool, image, incident_id, action_pk)
+    _sweep_retention_after_success(pool, image, incident_id, action_pk, cluster_id)
     return True
 
 
@@ -409,14 +450,20 @@ def _snap_name_of(job: BackupJob) -> str:
     return job.remote_key.rsplit("/", 1)[-1].removesuffix(".bin")
 
 
-def _sweep_retention_after_success(pool: str, image: str, incident_id: str, action_pk: str) -> None:
+def _sweep_retention_after_success(
+    pool: str, image: str, incident_id: str, action_pk: str, cluster_id: str | None = None
+) -> None:
     """Sweeps BOTH the full/ and incremental/ prefixes separately — each
     has its OWN keep count (AC #4: "giữ N bản full + M bản incremental"),
-    not one combined count across both job types."""
+    not one combined count across both job types. `keep_full_count`/
+    `keep_incremental_count` stay the GLOBAL `backup_policy.yaml` values
+    for every cluster (Phase 3 does not make retention COUNTS per-cluster
+    overridable — explicit narrowing, see this session's plan)."""
+    cluster = get_cluster(cluster_id)
     policy_dict = load_backup_policy().get("retention") or {}
     keep_full_count = int(policy_dict.get("keep_full_count", 1))
     keep_incremental_count = int(policy_dict.get("keep_incremental_count", 0))
-    protected = _protected_keys(pool, image)
+    protected = _protected_keys(pool, image, cluster_id=cluster_id)
 
     for job_type, keep_count in (("full", keep_full_count), ("incremental", keep_incremental_count)):
         policy = RetentionPolicyLike(
@@ -424,9 +471,7 @@ def _sweep_retention_after_success(pool: str, image: str, incident_id: str, acti
             keep_incremental_count=keep_count if job_type == "incremental" else 0,
             protected_keys=protected,
         )
-        for target in backup_targets_from_policy():
-            slot = target["slot"]
-            backend = get_backend(slot, settings, immutable_enabled=bool(target.get("immutable")))
+        for slot, backend in resolve_targets(cluster):
             prefix = f"{job_type}/{pool}/{image}"
             try:
                 deleted = backend.apply_retention(prefix, policy)
@@ -450,7 +495,12 @@ def _sweep_retention_after_success(pool: str, image: str, incident_id: str, acti
 
 
 def _run_restore_to_production(
-    action_pk: str, action_params: dict, incident_id: str, write_progress, check_kill_switch
+    action_pk: str,
+    action_params: dict,
+    incident_id: str,
+    cluster_id: str | None,
+    write_progress,
+    check_kill_switch,
 ) -> bool:
     """`restore_rbd_image_to_production` (Story 9.7, Task 3) — restores ONE
     image OVER its own live production data (unlike `restore_drill_execute`,
@@ -479,7 +529,8 @@ def _run_restore_to_production(
     progress = [{"step": "restore", "status": "running", "started_at": datetime.utcnow().isoformat()}]
     write_progress(action_pk, progress)
 
-    slot = restore.latest_backup_target_slot(pool, image)
+    cluster = get_cluster(cluster_id)
+    slot = restore.latest_backup_target_slot(pool, image, cluster_id=cluster_id)
     if slot is None:
         message = f"Không có bản backup full thành công nào cho {pool}/{image} để khôi phục"
         logger.error("backup_engine._run_restore_to_production: %s", message)
@@ -488,8 +539,8 @@ def _run_restore_to_production(
         write_progress(action_pk, progress)
         return False
 
-    backend = get_backend(slot, settings)
-    result = restore.restore_image(pool, image, backend, pool, image)
+    backend = get_backend_for_cluster(cluster) if cluster is not None else get_backend(slot, settings)
+    result = restore.restore_image(pool, image, backend, pool, image, cluster_id=cluster_id)
 
     if not result.success:
         progress[0]["status"] = "failed"
@@ -510,7 +561,7 @@ def _run_restore_to_production(
 
 
 def _run_retention_sweep(
-    action_pk: str, action_params: dict, incident_id: str, write_progress, check_kill_switch
+    action_pk: str, action_params: dict, incident_id: str, cluster_id: str | None, write_progress, check_kill_switch
 ) -> bool:
     """Manual/on-demand retention sweep entry point (same underlying
     `_sweep_retention_after_success` the automatic post-backup sweep uses)
@@ -525,7 +576,7 @@ def _run_retention_sweep(
     progress = [{"step": "retention", "status": "running", "started_at": datetime.utcnow().isoformat()}]
     write_progress(action_pk, progress)
     try:
-        _sweep_retention_after_success(pool, image, incident_id, action_pk)
+        _sweep_retention_after_success(pool, image, incident_id, action_pk, cluster_id)
     except Exception as exc:
         logger.exception("backup_engine._run_retention_sweep: failed for %s/%s", pool, image)
         progress[0]["status"] = "failed"

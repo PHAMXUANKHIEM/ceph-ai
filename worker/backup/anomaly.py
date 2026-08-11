@@ -19,13 +19,14 @@ MIN_HISTORY_SIZE = 30
 DEFAULT_THRESHOLD_STDDEV = 3
 
 
-def _history(pool: str, image: str, job_type: str, exclude_id: str) -> list[BackupJob]:
+def _history(pool: str, image: str, job_type: str, exclude_id: str, cluster_id: str | None) -> list[BackupJob]:
     with db.SessionLocal() as session:
         return (
             session.query(BackupJob)
             .filter(
                 BackupJob.pool == pool,
                 BackupJob.image == image,
+                BackupJob.cluster_id == cluster_id,
                 BackupJob.job_type == job_type,
                 BackupJob.status == "SUCCESS",
                 BackupJob.id != exclude_id,
@@ -45,7 +46,7 @@ def check_anomaly(job: BackupJob) -> dict | None:
     if job.status != "SUCCESS" or job.pool is None or job.image is None:
         return None  # metadata jobs (pool=None) have no per-image baseline to compare against
 
-    history = _history(job.pool, job.image, job.job_type, job.id)
+    history = _history(job.pool, job.image, job.job_type, job.id, job.cluster_id)
     if len(history) < MIN_HISTORY_SIZE:
         return None
 

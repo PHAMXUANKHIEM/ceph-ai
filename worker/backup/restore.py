@@ -27,14 +27,19 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import paramiko
 
-from config.settings import settings
 from shared import db
+from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import BackupJob
+from worker.backup.cluster_scope import first_mon_node, get_cluster
 from worker.backup.storage.base import BackupStorageBackend
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH
+
+if TYPE_CHECKING:
+    from shared.models import Cluster
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +63,10 @@ class RestoreResult:
     error_message: str | None = None
 
 
-def _backup_chain(pool: str, image: str) -> tuple[BackupJob | None, list[BackupJob]]:
-    """The latest successful full backup for (pool, image), plus every
+def _backup_chain(pool: str, image: str, cluster_id: str | None = None) -> tuple[BackupJob | None, list[BackupJob]]:
+    """The latest successful full backup for (pool, image) IN cluster_id's
+    OWN cluster (Phase 3 -- `None` means the default cluster, same as
+    every other BackupJob query in this module family), plus every
     successful incremental built on top of IT SPECIFICALLY (`base_job_id`
     lineage, Story 9.1), oldest-first — the exact order `rbd import-diff`
     must apply them in."""
@@ -69,6 +76,7 @@ def _backup_chain(pool: str, image: str) -> tuple[BackupJob | None, list[BackupJ
             .filter(
                 BackupJob.pool == pool,
                 BackupJob.image == image,
+                BackupJob.cluster_id == cluster_id,
                 BackupJob.job_type == "full",
                 BackupJob.status == "SUCCESS",
             )
@@ -90,44 +98,47 @@ def _backup_chain(pool: str, image: str) -> tuple[BackupJob | None, list[BackupJ
         return full_job, diff_jobs
 
 
-def latest_backup_target_slot(pool: str, image: str) -> str | None:
-    """Which `BackupTarget` slot ("a"/"b") the latest successful full
-    backup for (pool, image) was written to. Callers need this to pick the
-    right `BackupStorageBackend` (`worker/backup/storage/factory.py::
-    get_backend()`) BEFORE calling `restore_image()` below — that function
-    re-resolves the full backup job internally once given a backend, but
-    has no way to pick a backend on its own. Shared by both Story 9.7
-    consumers (Task 2, Task 3) so neither re-queries this itself."""
-    full_job, _ = _backup_chain(pool, image)
+def latest_backup_target_slot(pool: str, image: str, cluster_id: str | None = None) -> str | None:
+    """Which `BackupTarget` slot ("a"/"b", or "cluster" for an additional
+    cluster's own single target) the latest successful full backup for
+    (pool, image) was written to. Callers need this to pick the right
+    `BackupStorageBackend` (`worker/backup/storage/factory.py::
+    get_backend()`/`get_backend_for_cluster()`) BEFORE calling
+    `restore_image()` below — that function re-resolves the full backup
+    job internally once given a backend, but has no way to pick a backend
+    on its own. Shared by both Story 9.7 consumers (Task 2, Task 3) so
+    neither re-queries this itself."""
+    full_job, _ = _backup_chain(pool, image, cluster_id=cluster_id)
     return full_job.backup_target_slot if full_job is not None else None
 
 
-def latest_full_backup_job(pool: str, image: str) -> BackupJob | None:
+def latest_full_backup_job(pool: str, image: str, cluster_id: str | None = None) -> BackupJob | None:
     """The latest successful full backup for (pool, image) — exposed
     separately from `restore_image()` for callers that only need its
     metadata (e.g. `size_bytes`, for post-restore integrity comparison —
     Story 9.7 Task 2's `_phase_verify_integrity`) without running an
     actual restore."""
-    full_job, _ = _backup_chain(pool, image)
+    full_job, _ = _backup_chain(pool, image, cluster_id=cluster_id)
     return full_job
 
 
-def _first_mon_node() -> str:
-    nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
-    if not nodes:
-        raise RestoreError("ceph_mon_nodes is not configured — cannot run rbd import")
-    return nodes[0]
+def _first_mon_node(cluster: "Cluster | None" = None) -> str:
+    try:
+        return first_mon_node(cluster)
+    except ValueError as exc:
+        raise RestoreError(str(exc)) from exc
 
 
-def _ssh_connect(mon_ip: str) -> paramiko.SSHClient:
+def _ssh_connect(mon_ip: str, cluster: "Cluster | None" = None) -> paramiko.SSHClient:
+    ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
         hostname=mon_ip,
-        username=settings.ssh_user,
-        key_filename=settings.ssh_key_path,
+        username=ssh_user,
+        key_filename=ssh_key_path,
         timeout=CONNECT_TIMEOUT_SECONDS,
     )
     client.save_host_keys(KNOWN_HOSTS_PATH)
@@ -162,12 +173,12 @@ def _download_and_verify(storage: BackupStorageBackend, job: BackupJob) -> tuple
     return tmp_path, size
 
 
-def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str) -> None:
+def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cluster | None" = None) -> None:
     """Streams `local_path` into `command` (an `rbd import -`/`rbd
     import-diff -` invocation) over a raw SSH session — same direction and
     pattern as `restore_drill.py::_import_backup_to_scratch`, generalized
     to accept any destination command instead of a scratch-only one."""
-    client = _ssh_connect(mon_ip)
+    client = _ssh_connect(mon_ip, cluster)
     try:
         stdin, stdout, stderr = client.exec_command(command)
         with open(local_path, "rb") as f:
@@ -186,24 +197,31 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str) -> None:
 
 
 def restore_image(
-    pool: str, image: str, storage: BackupStorageBackend, dest_pool: str, dest_image: str
+    pool: str,
+    image: str,
+    storage: BackupStorageBackend,
+    dest_pool: str,
+    dest_image: str,
+    cluster_id: str | None = None,
 ) -> RestoreResult:
-    """Rebuilds `dest_pool/dest_image` (on the currently configured
-    cluster, `settings.ceph_mon_nodes`) from `pool/image`'s latest
-    successful full backup plus every successful incremental chained on
-    top of it, applied oldest-first: `rbd import` for the full export,
-    then `rbd import-diff` for each incremental in `created_at` order.
-    Never raises — failures come back as `RestoreResult(success=False,
-    error_message=...)` so callers (a DR phase, or a single-image action)
-    can record/report them their own way."""
+    """Rebuilds `dest_pool/dest_image` (on `cluster_id`'s own cluster --
+    `None` means the default cluster/`settings.ceph_mon_nodes`, Phase 3)
+    from `pool/image`'s latest successful full backup plus every
+    successful incremental chained on top of it, applied oldest-first:
+    `rbd import` for the full export, then `rbd import-diff` for each
+    incremental in `created_at` order. Never raises — failures come back
+    as `RestoreResult(success=False, error_message=...)` so callers (a DR
+    phase, or a single-image action) can record/report them their own
+    way."""
     started_at = datetime.utcnow()
-    full_job, diff_jobs = _backup_chain(pool, image)
+    cluster = get_cluster(cluster_id)
+    full_job, diff_jobs = _backup_chain(pool, image, cluster_id=cluster_id)
     if full_job is None:
         message = f"No successful full backup found for {pool}/{image} — nothing to restore"
         logger.error("restore.restore_image: %s", message)
         return RestoreResult(success=False, error_message=message)
 
-    mon_ip = _first_mon_node()
+    mon_ip = _first_mon_node(cluster)
     total_size = 0
     applied_diff_ids: list[str] = []
     tmp_paths: list[str] = []
@@ -211,13 +229,13 @@ def restore_image(
         full_path, full_size = _download_and_verify(storage, full_job)
         tmp_paths.append(full_path)
         total_size += full_size
-        _stream_file_to_rbd(mon_ip, full_path, f"rbd import - {dest_pool}/{dest_image}")
+        _stream_file_to_rbd(mon_ip, full_path, f"rbd import - {dest_pool}/{dest_image}", cluster)
 
         for diff_job in diff_jobs:
             diff_path, diff_size = _download_and_verify(storage, diff_job)
             tmp_paths.append(diff_path)
             total_size += diff_size
-            _stream_file_to_rbd(mon_ip, diff_path, f"rbd import-diff - {dest_pool}/{dest_image}")
+            _stream_file_to_rbd(mon_ip, diff_path, f"rbd import-diff - {dest_pool}/{dest_image}", cluster)
             applied_diff_ids.append(diff_job.id)
 
         return RestoreResult(
