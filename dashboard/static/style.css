@@ -409,9 +409,7 @@ code {
 .node-sidebar-item { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .node-sidebar-item.is-loading { animation: pill-pulse 1.4s ease-in-out infinite; }
 
-/* Dashboard home page only — lets an operator opt out of the WebSocket-
-   triggered full-page reload (dashboard/static/app.js) always yanking them
-   back to the "Chờ duyệt" tab mid-task. */
+/* Dashboard home page only — controls automatic pending-tab selection. */
 .pending-tab-autoswitch {
   display: flex;
   align-items: center;

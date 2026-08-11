@@ -58,6 +58,25 @@ def test_dashboard_health_payload_exposes_live_metrics_and_servers():
     assert body["servers"] == {"online": 1, "total": 3}
 
 
+def test_dashboard_health_payload_prefers_per_osd_up_flags():
+    cluster = type("ClusterConfig", (), {
+        "ceph_mon_nodes": "10.0.0.1", "ceph_mgr_nodes": "",
+        "ceph_osd_nodes": "10.0.0.1", "ceph_rgw_nodes": "",
+    })()
+    status = {
+        "health": {"status": "HEALTH_WARN"},
+        "osdmap": {"num_osds": 3, "num_up_osds": 0},
+        "pgmap": {}, "monmap": {"num_mons": 1}, "quorum_names": ["a"],
+    }
+    osd_dump = {"osds": [
+        {"osd": 0, "up": 1}, {"osd": 1, "up": 1}, {"osd": 2, "up": 1},
+    ]}
+
+    body = incidents._dashboard_health_payload(status, cluster, osd_dump=osd_dump)
+
+    assert body["osds"] == {"up": 3, "total": 3}
+
+
 def test_dashboard_health_api_never_returns_sample_counts_on_query_failure(dashboard_client, monkeypatch):
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
     def fake(*args):

@@ -53,13 +53,17 @@ export function CephDashboard() {
         if (!response.ok) throw new Error("Dashboard health API returned " + response.status);
         return response.json() as Promise<DashboardHealth>;
       })
-      .then(setHealth)
+        .then((next) => setHealth((current) =>
+          JSON.stringify(current) === JSON.stringify(next) ? current : next
+        ))
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === "AbortError")) console.error(error);
       });
     };
     load();
-    const timer = window.setInterval(load, 10_000);
+    // Metrics remain live without constantly repainting the dashboard. A
+    // WebSocket incident event still requests an immediate refresh.
+    const timer = window.setInterval(load, 30_000);
     window.addEventListener("ceph-dashboard-refresh", load);
     return () => {
       window.clearInterval(timer);

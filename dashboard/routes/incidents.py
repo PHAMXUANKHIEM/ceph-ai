@@ -395,6 +395,7 @@ def _dashboard_health_payload(
     cluster: Cluster,
     osd_perf: dict | None = None,
     cluster_nodes: dict | list | None = None,
+    osd_dump: dict | None = None,
 ) -> dict:
     """Convert one authoritative ceph status response into card values."""
     health = status.get("health") if isinstance(status.get("health"), dict) else {}
@@ -469,9 +470,18 @@ def _dashboard_health_payload(
     bandwidth_bps = sum(value for value in (read_bps, write_bps) if isinstance(value, (int, float)))
     iops = sum(value for value in (read_ops, write_ops) if isinstance(value, (int, float)))
 
+    osd_total = osdmap.get("num_osds")
+    osd_up = osdmap.get("num_up_osds")
+    dump_rows = osd_dump.get("osds") if isinstance(osd_dump, dict) else None
+    if isinstance(dump_rows, list):
+        valid_rows = [row for row in dump_rows if isinstance(row, dict) and "osd" in row]
+        if valid_rows:
+            osd_total = len(valid_rows)
+            osd_up = sum(1 for row in valid_rows if row.get("up") in (1, True, "1"))
+
     return {
         "health": health_value,
-        "osds": {"up": osdmap.get("num_up_osds"), "total": osdmap.get("num_osds")},
+        "osds": {"up": osd_up, "total": osd_total},
         "mons": {"up": len(quorum), "total": mon_total},
         "servers": {"online": len(online_hosts) if cluster_nodes is not None else None, "total": server_total},
         "utilization": {
@@ -510,6 +520,7 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
         if not isinstance(payload, dict):
             raise CephQueryError("ceph -s returned an unexpected response")
         osd_perf = None
+        osd_dump = None
         cluster_nodes = None
         try:
             _host, osd_perf = await asyncio.to_thread(
@@ -518,6 +529,13 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
             )
         except Exception as exc:
             logger.info("dashboard_health: osd latency unavailable: %s", exc)
+        try:
+            _host, osd_dump = await asyncio.to_thread(
+                run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
+                ssh_key_path, exec_mode, "ceph osd dump",
+            )
+        except Exception as exc:
+            logger.info("dashboard_health: detailed OSD state unavailable: %s", exc)
         node_commands = ("ceph orch host ls", "ceph node ls") if exec_mode == "cephadm" else ("ceph node ls",)
         for node_command in node_commands:
             try:
@@ -528,7 +546,7 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
                 break
             except Exception as exc:
                 logger.info("dashboard_health: server inventory unavailable via %s: %s", node_command, exc)
-        return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes)
+        return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
     except CephQueryError as exc:
         logger.warning("dashboard_health: live Ceph query failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -262,15 +262,13 @@
   // "Tự động mở tab này khi có Risky Action mới" checkbox (Dashboard home
   // page only, 2026-07-28). dashboard/routes/incidents.py::index always
   // defaults active_tab to "pending" on a plain GET / — combined with the
-  // WebSocket handler above, which does a full window.location.reload() on
-  // EVERY Incident/Action change system-wide (not just ones the operator
-  // is looking at), this meant the page kept yanking an operator back to
+  // Incident/Action changes system-wide (not just ones the operator is
+  // looking at) used to yank an operator back to
   // the "Chờ duyệt" tab mid-task any time they'd manually switched to
   // Incident Feed/Audit Trail to look at something unrelated. Turning this
   // off remembers whichever tab was last clicked and restores THAT instead
   // of the server's "pending" default on the next reload — same
-  // localStorage-persistence posture as the collapse toggle below (this
-  // page's own reload defeats any purely in-memory state).
+  // localStorage-persistence posture as the collapse toggle below.
   var pendingTabBtn = document.querySelector('.tabbed-nav-item[data-section="pending"]');
   var autoSwitchCheckbox = document.getElementById("pending-tab-autoswitch");
   if (pendingTabBtn && autoSwitchCheckbox) {
@@ -330,9 +328,7 @@
 
 (function () {
   // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
-  // in localStorage since this page's WebSocket auto-reloads on every
-  // Incident/Action change (dashboard/ws.py) — without persistence the
-  // card would silently re-expand on the very next reload.
+  // in localStorage so it survives normal navigation and manual refreshes.
   var STORAGE_KEY = "pendingActionsCollapsed";
   var toggleBtn = document.getElementById("pending-actions-toggle");
   var bodyEl = document.getElementById("pending-actions-body");
