@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -24,6 +25,13 @@ ToolHandler = Callable[[str, dict], Awaitable[tuple[str, bool]]]
 
 CODEX_INSTALL_COMMAND = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
 _install_lock = asyncio.Lock()
+_device_login_lock = asyncio.Lock()
+_device_login_process: asyncio.subprocess.Process | None = None
+_device_login_result: dict | None = None
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_URL_RE = re.compile(r"https?://[^\s<>\]\[()]+")
+_DEVICE_CODE_RE = re.compile(r"\b[A-Z0-9]{4}(?:-[A-Z0-9]{4})+\b", re.IGNORECASE)
 
 
 def codex_executable() -> str | None:
@@ -60,6 +68,80 @@ async def install_codex_cli() -> dict:
             detail = text.strip() or f"installer exit {process.returncode}"
             raise CodexAppServerError(f"Cài Codex thất bại: {detail}")
         return {"installed": True, "path": installed, "already_installed": False, "output": text}
+
+
+async def start_cli_device_login() -> dict:
+    """Start the real server-side CLI device flow and return its URL/code.
+
+    The child stays alive after this function returns; Codex CLI itself exits
+    once the operator grants access. Repeated clicks reuse the still-valid
+    flow instead of spawning competing login processes for the same home.
+    """
+    global _device_login_process, _device_login_result
+    async with _device_login_lock:
+        if _device_login_process and _device_login_process.returncode is None and _device_login_result:
+            return _device_login_result
+
+        executable = codex_executable()
+        if executable is None:
+            raise CodexAppServerError("Chưa cài Codex CLI trên server")
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_app_server._codex_home())
+        _device_login_process = await asyncio.create_subprocess_exec(
+            executable, "login", "--device-auth",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+
+        output = ""
+        assert _device_login_process.stdout is not None
+        try:
+            while len(output) < 16_000:
+                line = await asyncio.wait_for(_device_login_process.stdout.readline(), 15)
+                if not line:
+                    break
+                output += line.decode(errors="replace")
+                clean = _ANSI_ESCAPE_RE.sub("", output)
+                urls = _URL_RE.findall(clean)
+                codes = _DEVICE_CODE_RE.findall(clean.upper())
+                if urls and codes:
+                    _device_login_result = {
+                        "loginId": f"cli-{_device_login_process.pid}",
+                        "verificationUrl": urls[-1].rstrip(".,;"),
+                        "userCode": codes[-1].upper(),
+                    }
+                    # Continue draining output while the CLI waits, otherwise
+                    # a full pipe could prevent it from completing login.
+                    asyncio.create_task(_device_login_process.communicate())
+                    return _device_login_result
+        except asyncio.TimeoutError as exc:
+            _device_login_process.terminate()
+            await _device_login_process.wait()
+            _device_login_process = None
+            raise CodexAppServerError("Codex CLI không in device code trong 15 giây") from exc
+
+        return_code = await _device_login_process.wait()
+        _device_login_process = None
+        detail = _ANSI_ESCAPE_RE.sub("", output).strip()[-3000:]
+        raise CodexAppServerError(
+            f"Không đọc được device code từ Codex CLI (exit {return_code}): {detail or 'không có output'}"
+        )
+
+
+async def refresh_app_server_after_cli_login() -> None:
+    """Restart app-server once the external CLI login has completed."""
+    global _device_login_process, _device_login_result
+    async with _device_login_lock:
+        process = _device_login_process
+        if process is None or process.returncode is None:
+            return
+        await process.wait()
+        _device_login_process = None
+        _device_login_result = None
+        # account/read may otherwise retain the pre-login auth state from the
+        # app-server process started when the Settings page first loaded.
+        await codex_app_server.close()
 
 
 class CodexAppServer:

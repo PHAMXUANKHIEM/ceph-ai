@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
 
-from shared import db, heartbeat
+from shared import db
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.models import Incident
 
@@ -15,13 +15,12 @@ POLL_INTERVAL_SECONDS = 2
 WS_POLICY_VIOLATION = 1008
 
 
-def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) -> tuple[int, object, object]:
-    """A cheap fingerprint of table state: Incident row count + latest
-    update time, plus WatcherHeartbeat's polled_at (Story 5.2) — Watcher
-    writes a heartbeat on EVERY poll (not just Incident-worthy transitions),
-    so including it here makes the connection-status section refresh
-    in near-real-time too, reusing this exact same polling mechanism with
-    no new event type or app.js change needed.
+def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) -> tuple[int, object]:
+    """A cheap fingerprint of incident state for the selected cluster.
+
+    Watcher heartbeat is deliberately excluded: it changes on every poll
+    and used to trigger a full browser reload every few seconds even when
+    the cluster state had not changed.
 
     Polling the DB is a simple stand-in — there is no event bus wired from
     Watcher/Worker directly to the Dashboard.
@@ -36,9 +35,7 @@ def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) ->
         )
         count = session.query(func.count(Incident.id)).filter(cluster_filter).scalar()
         latest_updated = session.query(func.max(Incident.updated_at)).filter(cluster_filter).scalar()
-        latest_heartbeat = heartbeat.get_latest(session, effective_id)
-        polled_at = latest_heartbeat.polled_at if latest_heartbeat is not None else None
-    return count, latest_updated, polled_at
+    return count, latest_updated
 
 
 @router.websocket("/ws/incidents")

@@ -32,6 +32,8 @@ from shared.codex_app_server import (
     codex_app_server,
     codex_executable,
     install_codex_cli,
+    refresh_app_server_after_cli_login,
+    start_cli_device_login,
 )
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
@@ -883,6 +885,7 @@ async def settings_codex_status(user: str = Depends(require_login)):
     if executable is None:
         return {"installed": False, "authenticated": False, "enabled": False}
     try:
+        await refresh_app_server_after_cli_login()
         account = await codex_app_server.account()
     except CodexAppServerError as exc:
         return {"installed": True, "authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
@@ -910,7 +913,7 @@ async def settings_codex_install(user: str = Depends(require_login)):
 async def settings_codex_login_start(user: str = Depends(require_login)):
     _require_admin_privilege(user)
     try:
-        result = await codex_app_server.start_device_login()
+        result = await start_cli_device_login()
     except CodexAppServerError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {

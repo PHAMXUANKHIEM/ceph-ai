@@ -47,7 +47,7 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     response = dashboard_client.get("/settings")
     assert response.status_code == 200
     assert "API Key" in response.text
-    assert "Đăng nhập bằng ChatGPT" in response.text
+    assert "Đăng nhập bằng Codex" in response.text
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
@@ -57,7 +57,7 @@ def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
     async def fake_account():
         return {"email": "admin@example.test", "planType": "plus"}
 
-    monkeypatch.setattr(settings_route.codex_app_server, "start_device_login", fake_start)
+    monkeypatch.setattr(settings_route, "start_cli_device_login", fake_start)
     monkeypatch.setattr(settings_route.codex_app_server, "account", fake_account)
     monkeypatch.setattr(settings, "codex_chat_enabled", False)
     _login(dashboard_client)

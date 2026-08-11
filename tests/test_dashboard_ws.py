@@ -29,10 +29,10 @@ def test_authenticated_websocket_receives_change_notification(dashboard_client, 
         assert message == {"event": "incidents_changed"}
 
 
-# --- Story 5.2: _snapshot() must also fingerprint WatcherHeartbeat ---------
+# Heartbeats are intentionally not browser-refresh events -------------------
 
 
-def test_snapshot_changes_when_heartbeat_recorded_even_without_incident_change(
+def test_snapshot_does_not_change_when_heartbeat_recorded_without_incident_change(
     dashboard_client, default_cluster_id
 ):
     # dashboard_client fixture already points db_module.SessionLocal at an
@@ -53,27 +53,4 @@ def test_snapshot_changes_when_heartbeat_recorded_even_without_incident_change(
 
     after = ws_module._snapshot()
 
-    assert before != after
-
-
-def test_authenticated_websocket_receives_change_notification_on_heartbeat_update(
-    dashboard_client, monkeypatch, default_cluster_id
-):
-    monkeypatch.setattr(ws_module, "POLL_INTERVAL_SECONDS", 0.05)
-    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
-
-    with dashboard_client.websocket_connect("/ws/incidents") as websocket:
-        with db_module.SessionLocal() as session:
-            session.add(
-                WatcherHeartbeat(
-                    cluster_id=default_cluster_id,
-                    success=True,
-                    mon_node="10.20.1.150",
-                    error_message=None,
-                    polled_at=datetime.utcnow(),
-                )
-            )
-            session.commit()
-
-        message = websocket.receive_json()
-        assert message == {"event": "incidents_changed"}
+    assert before == after

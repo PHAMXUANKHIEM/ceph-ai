@@ -60,7 +60,12 @@ export function CephDashboard() {
     };
     load();
     const timer = window.setInterval(load, 10_000);
-    return () => { window.clearInterval(timer); controller?.abort(); };
+    window.addEventListener("ceph-dashboard-refresh", load);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("ceph-dashboard-refresh", load);
+      controller?.abort();
+    };
   }, []);
 
   const statusCards = useMemo<StatusDatum[]>(() => [

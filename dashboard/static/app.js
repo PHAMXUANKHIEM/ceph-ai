@@ -214,7 +214,9 @@
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(proto + "//" + window.location.host + "/ws/incidents");
     ws.onmessage = function () {
-      window.location.reload();
+      // Update live widgets in place. A full reload used to reset scroll,
+      // tabs, expanded cards and chat state whenever Watcher changed data.
+      window.dispatchEvent(new CustomEvent("ceph-dashboard-refresh"));
     };
     // A closed/errored socket (server restart, idle timeout, network blip)
     // must not leave the page silently stale — reconnect after a short delay.
