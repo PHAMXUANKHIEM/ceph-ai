@@ -23,6 +23,24 @@ Chi tiết kiến trúc/thiết kế: `shared/models.py::Cluster`'s docstring,
 `shared/clusters.py`, `watcher/main.py::run_observed_cluster_loop`,
 `worker/main.py::_handle_message`'s cluster-scope guard.
 
+**2026-08-11 — sửa lỗi cụm đã chọn bị "quên" khi điều hướng:** trước bản vá
+này, chọn cụm 2 trên Dashboard rồi bấm sang trang khác (Volumes, Cluster
+Metrics...) và quay lại Dashboard sẽ âm thầm rơi về cụm mặc định — bộ chọn
+cụm chỉ là query param `?cluster=` trên `/`, không có gì lưu lại lựa chọn,
+và không link/nav nào trong app forward tham số đó. Đã sửa bằng cách lưu
+`selected_cluster_id` vào session (cùng cơ chế session đăng nhập sẵn có,
+`dashboard/app.py`'s `SessionMiddleware`) — xem
+`dashboard/routes/incidents.py::_resolve_selected_cluster`. Quay lại `/`
+không kèm `?cluster=` giờ tiếp tục đúng cụm đã chọn lần gần nhất thay vì
+rơi về mặc định; `?cluster=` tường minh trên URL vẫn luôn thắng session
+(bookmark cũ vẫn hoạt động y hệt trước).
+
+Lưu ý: bản vá này **chỉ** khắc phục việc bộ chọn cụm trên Dashboard bị mất
+khi điều hướng. Nó KHÔNG làm cho Volumes/Cluster Metrics/Backup/... trở
+nên multi-cluster — các trang đó vẫn luôn hiển thị dữ liệu của cụm mặc
+định bất kể Dashboard đang chọn cụm nào, đúng giới hạn Phase 1 đã mô tả ở
+trên.
+
 Nếu cần MỌI tính năng (remediation/backup/patch/upgrade/Telegram) đa cụm —
 chưa làm, đây là phase sau, khối lượng lớn hơn nhiều (xem phần cuối tài
 liệu này). Phần còn lại của tài liệu (dưới đây) mô tả hướng **thay thế**:

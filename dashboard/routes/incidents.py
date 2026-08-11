@@ -326,19 +326,36 @@ def _fetch_dashboard_data(
     )
 
 
-def _resolve_selected_cluster(requested_cluster_id: str) -> tuple[list[Cluster], Cluster]:
+def _resolve_selected_cluster(requested_cluster_id: str, session_cluster_id: str = "") -> tuple[list[Cluster], Cluster]:
     """Multi-cluster observability Phase 1's cluster switcher — `?cluster=`
     on `/` (a plain query param, same pattern this file already uses for
-    incident_id/since/until, not session state: bookmarkable, and every
-    existing link/form on this page keeps working unchanged since it's
-    additive). Falls back to the default cluster when blank, unknown, or
-    deactivated — a stale bookmarked link to a since-deactivated cluster
-    must not 404/500, it should just land back on the default cluster."""
+    incident_id/since/until — bookmarkable, and every existing link/form on
+    this page keeps working unchanged since it's additive).
+
+    2026-08-11: `?cluster=` alone isn't enough to make a choice actually
+    "stick" — nothing else in the app (nav links, the brand link back to
+    `/`) ever forwards it, so leaving /volumes, /nodes etc. via the nav bar
+    and coming back to Dashboard silently lost the selection and landed
+    back on the default cluster even though the picker still LOOKED
+    selected on cluster 2. `session_cluster_id` (backed by
+    `request.session["selected_cluster_id"]`, set below in index()) is the
+    fallback once the query param itself is blank — same signed-cookie
+    session already used for login (dashboard/app.py's SessionMiddleware),
+    not a new mechanism. The query param still wins when present, so the
+    picker/bookmarked links behave exactly as before.
+
+    Falls back to the default cluster when both are blank, unknown, or
+    deactivated — a stale bookmarked link (or session pointing at a
+    since-deactivated cluster) must not 404/500, it should just land back
+    on the default cluster."""
     with db.SessionLocal() as session:
         default_cluster = ensure_default_cluster(session)
         clusters = list_active_clusters(session)
         session.expunge_all()
-    selected = next((c for c in clusters if c.id == requested_cluster_id), None) if requested_cluster_id else None
+    by_id = {c.id: c for c in clusters}
+    selected = by_id.get(requested_cluster_id) if requested_cluster_id else None
+    if selected is None and session_cluster_id:
+        selected = by_id.get(session_cluster_id)
     return clusters, (selected or default_cluster)
 
 
@@ -359,7 +376,16 @@ async def index(
         # as everything else _fetch_dashboard_data does below, and must
         # fail the same clean 503 way if the DB is unreachable, not an
         # unhandled 500 from before the try block even started.
-        clusters, selected_cluster = _resolve_selected_cluster(cluster.strip())
+        clusters, selected_cluster = _resolve_selected_cluster(
+            cluster.strip(), request.session.get("selected_cluster_id", "")
+        )
+        # Persist whatever we landed on (explicit ?cluster=, prior session
+        # value, or the default-cluster fallback) so the NEXT visit to `/`
+        # with no query param — e.g. clicking "Dashboard" in the nav bar
+        # after navigating to /volumes — resumes on this cluster instead of
+        # silently resetting to the default one (see _resolve_selected_
+        # cluster's docstring above).
+        request.session["selected_cluster_id"] = selected_cluster.id
         cluster_names_by_id = {c.id: c.name for c in clusters}
         (
             incidents,
