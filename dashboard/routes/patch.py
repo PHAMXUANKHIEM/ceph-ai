@@ -57,7 +57,6 @@ QUAN TRỌNG: bước 4 cần build server tự kết nối SSH sang từng node
 hình thủ công một lần, không phải việc app tự làm được.
 
 Bước này CHƯA đụng gì tới Ceph đang chạy — chỉ build & đặt file lên node, chưa cài đặt.
-An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi gửi lệnh
 trên (nếu đang bật, lệnh sẽ không được gửi và đề xuất quay lại trạng thái chờ duyệt)."""
 
 _INSTALL_PLAN_TEMPLATE = """\
@@ -67,12 +66,8 @@ Lệnh sẽ gửi tới TỪNG node Ceph đã cấu hình ({target_nodes}), LẦ
 
 QUAN TRỌNG — khác với `ceph orch upgrade`: KHÔNG có orchestrator tự kiểm tra sức khoẻ cụm
 giữa các bước. Nếu một node gặp lỗi, hệ thống VẪN thử tiếp node kế tiếp trong danh sách
-(không tự dừng lại) — cách duy nhất để dừng giữa chừng là bấm nút khẩn cấp (kill-switch)
-trên Dashboard NGAY khi phát hiện sự cố: kill-switch được kiểm tra lại trước MỖI node, node
-tiếp theo sẽ không được thử nếu kill-switch đang bật. Khuyến nghị theo dõi sát Audit Trail
 trong suốt quá trình, đặc biệt với cụm nhiều node.
 
-An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi chạy bước
 đầu tiên (nếu đang bật, đề xuất quay lại trạng thái chờ duyệt, chưa node nào bị đụng tới)."""
 
 

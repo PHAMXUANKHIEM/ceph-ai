@@ -125,9 +125,10 @@
       </div>
       <div class="card-body">
         <p class="hint metrics-panel-desc">
-          Quét tải fio tăng dần (iodepth 1→256) trên 1 scratch image riêng của pool này (KHÔNG đụng
-          volume thật) để tìm điểm bão hoà hiệu năng — nơi tăng thêm tải chỉ được thêm chút IOPS
-          nhưng đổi lại độ trễ tăng vọt. Tạo tải I/O thật lên cluster trong vài phút khi chạy, cần
+          Quét tải fio 4K random-write tăng dần (iodepth 1→256) trên scratch image riêng của pool
+          này (KHÔNG đụng volume thật). Mỗi mức được đo 3 lần và lấy median; điểm bão hòa chỉ được
+          chốt sau 2 mức xấu liên tiếp. Scratch image 50 GiB được tạo mới trước khi đo và xóa hẳn
+          sau khi kết thúc hoặc gặp lỗi. Đây là tải I/O thật, có thể kéo dài khoảng 4–12 phút và cần
           duyệt trước khi thực thi (chỉ admin đề xuất được).
         </p>
 

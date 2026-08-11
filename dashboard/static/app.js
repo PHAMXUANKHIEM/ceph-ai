@@ -328,7 +328,6 @@
 
 (function () {
   // "Chờ duyệt — Risky Action" card (Dashboard home page only): pure
-  // show/hide toggle, no change to approval/kill-switch behavior. Persisted
   // in localStorage since this page's WebSocket auto-reloads on every
   // Incident/Action change (dashboard/ws.py) — without persistence the
   // card would silently re-expand on the very next reload.

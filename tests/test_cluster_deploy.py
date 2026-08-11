@@ -222,41 +222,7 @@ def test_osd_disk_not_checked_on_non_osd_nodes(monkeypatch):
     assert "10.20.1.112" not in checked_hosts
 
 
-# --- Framework: kill-switch, ordering, stop-on-first-failure --------------
-
-
-def test_kill_switch_blocks_before_first_phase(monkeypatch):
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
-    write_progress, calls = _make_recording_progress_writer()
-
-    result = run(
-        "action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, lambda inc: True
-    )
-
-    assert result is False
-    assert calls[-1][1][0]["status"] == "failed"
-    assert "Kill-switch" in calls[-1][1][0]["message"]
-    assert all(step["status"] == "pending" for step in calls[-1][1][1:])
-
-
-def test_kill_switch_checked_fresh_before_each_phase(monkeypatch):
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
-    write_progress, _calls = _make_recording_progress_writer()
-
-    call_count = {"n": 0}
-
-    def check_kill_switch(incident_id):
-        call_count["n"] += 1
-        # Block on the 3rd phase (orch_host_add) — after ssh_check and
-        # bootstrap already ran once each.
-        return call_count["n"] >= 3
-
-    result = run(
-        "action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, check_kill_switch
-    )
-
-    assert result is False
-    assert call_count["n"] == 3
+# --- Framework: ordering and stop-on-first-failure -------------------------
 
 
 def test_stops_at_first_phase_failure_does_not_run_later_phases(monkeypatch):
@@ -358,27 +324,6 @@ def test_completed_steps_get_frozen_started_and_finished_timestamps(monkeypatch)
 
     for step in final_progress:
         assert first_seen_done[step["step"]] == (step["started_at"], step["finished_at"])
-
-
-def test_pending_steps_have_no_timestamps_yet(monkeypatch):
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", _default_fake_execute)
-    write_progress, calls = _make_recording_progress_writer()
-
-    run(
-        "action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, lambda inc: True
-    )
-
-    # kill-switch blocks before the very first phase — the first step is
-    # "failed" (with a finished_at, never started), every step after it is
-    # still untouched "pending" with neither timestamp set.
-    final_progress = calls[-1][1]
-    assert final_progress[0]["status"] == "failed"
-    assert final_progress[0]["started_at"] is None
-    assert final_progress[0]["finished_at"] is not None
-    for step in final_progress[1:]:
-        assert step["status"] == "pending"
-        assert step["started_at"] is None
-        assert step["finished_at"] is None
 
 
 def test_env_write_failure_does_not_turn_a_successful_deploy_into_a_failure(monkeypatch):
@@ -2082,79 +2027,21 @@ def test_convert_cluster_stops_at_health_precheck_when_already_health_err(monkey
     assert steps_by_key["install_cephadm"]["status"] == "pending"
 
 
-def test_convert_cluster_stops_on_kill_switch_before_any_phase(monkeypatch):
-    monkeypatch.setattr(cluster_deploy_module, "execute_command", _convert_fake_execute)
-    write_progress, calls = _make_recording_progress_writer()
-
-    result = run(
-        "action-1",
-        "convert_cluster_to_cephadm",
-        _convert_params(),
-        "incident-1",
-        write_progress,
-        lambda inc: True,
-    )
-
-    assert result is False
-    final = calls[-1][1]
-    assert final[0]["status"] == "failed"
-    assert all(step["status"] == "pending" for step in final[1:])
-
-
-# --- Epic 11 (OS Upgrade Gate + Node OS Reinstall/Ceph Recovery), Story
-# 11.3: node_os_gate_prepare / node_os_gate_abort ---------------------------
-#
-# These phases are the FIRST in cluster_deploy.py to touch the application
-# DB directly — a real SQLite engine is wired up per-test and
-# cluster_deploy_module.db.SessionLocal is monkeypatched to it (same
-# "route modules call db.SessionLocal() at call time, not `from shared.db
-# import SessionLocal`" reasoning tests/conftest.py's dashboard_client
-# fixture already documents for the Dashboard side).
-
 _OSD_LVM_LIST_TWO_OSDS = """
 ====== osd.0 =======
-
-  [block]       /dev/ceph-abc/osd-block-def
-
-      block device              /dev/ceph-abc/osd-block-def
-      block uuid                aaaa-bbbb
-      cephx lockbox secret
       cluster fsid              11111111-1111-1111-1111-111111111111
-      cluster name              ceph
-      crush device class
-      encrypted                 0
       osd fsid                  22222222-2222-2222-2222-222222222222
       osd id                    0
-      osdspec affinity
-      type                      block
-      vdo                       0
       devices                   /dev/sdb
-
 ====== osd.1 =======
-
-  [block]       /dev/ceph-ghi/osd-block-jkl
-
-      block device              /dev/ceph-ghi/osd-block-jkl
-      block uuid                cccc-dddd
-      cephx lockbox secret
       cluster fsid              11111111-1111-1111-1111-111111111111
-      cluster name              ceph
-      crush device class
-      encrypted                 0
       osd fsid                  33333333-3333-3333-3333-333333333333
       osd id                    1
-      osdspec affinity
-      type                      block
-      vdo                       0
       devices                   /dev/sdc
 """
 
 _OSD_LVM_LIST_MISSING_FSID = """
 ====== osd.0 =======
-
-  [block]       /dev/ceph-abc/osd-block-def
-
-      block device              /dev/ceph-abc/osd-block-def
       cluster fsid              11111111-1111-1111-1111-111111111111
       osd id                    0
 """
@@ -2633,25 +2520,6 @@ def test_abort_mark_done_sets_state_and_releases_lock(gate_db):
 
 
 # --- run()'s failure-path gate cleanup (Task 5) ----------------------------
-
-
-def test_run_marks_gate_failed_and_releases_lock_on_kill_switch_block(gate_db):
-    gate_id = _make_gate(gate_db)
-    action_params = _gate_action_params(gate_id, roles=["OSD"], nodes=["10.20.1.83"])
-
-    result = run(
-        "action-pk-1",
-        "node_os_gate_prepare",
-        action_params,
-        "incident-1",
-        lambda pk, progress: None,
-        lambda incident_id: True,  # kill-switch ON
-    )
-
-    assert result is False
-    with gate_db() as session:
-        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
-        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
 
 
 def test_run_marks_gate_failed_and_releases_lock_on_mid_phase_failure(gate_db, monkeypatch):

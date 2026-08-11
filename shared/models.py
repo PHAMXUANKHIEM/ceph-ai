@@ -325,7 +325,6 @@ class NodeDiagnosticRun(Base):
 class ChatMessage(Base):
     """One global chat log (Dashboard has a single static account — AD:
     no RBAC/multi-tenant concept anywhere else in this codebase either, e.g.
-    the kill-switch and auto-approve flags are single global rows too), not
     a per-user table. `session_id` groups messages into conversations
     within that single log — "the current session" is just whichever
     session_id the most recently created row has (dashboard/routes/chat.py),
@@ -384,7 +383,6 @@ class ChatMessage(Base):
     # NULL = no proposal on this message. "PENDING" = proposed, not yet
     # confirmed. "CONFIRMED" = operator clicked Execute — an Incident/Action
     # row now exists (dashboard/routes/chat.py) and the normal SAFE/RISKY
-    # pipeline (kill-switch, approval, audit) owns it from here on; this
     # column is not updated again after that.
     proposed_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     proposed_incident_id: Mapped[str | None] = mapped_column(
@@ -891,7 +889,6 @@ class NodeUpgradeGateLock(Base):
     plain SELECT-then-check (is_node_upgrade_gate_pending, AD-19) cannot
     close on its own: a singleton row claimed via one atomic conditional
     UPDATE (compare-and-swap), the same singleton-row idiom this codebase
-    already uses for SystemFlag/kill-switch (shared/kill_switch.py).
 
     `active_gate_id` is deliberately NOT a ForeignKey to
     NodeUpgradeGate.id: the claim (this row's UPDATE) happens BEFORE the

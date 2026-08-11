@@ -96,7 +96,7 @@ def _step(iodepth, iops, lat_p99):
     return {"iodepth": iodepth, "iops": iops, "latency_avg_ms": lat_p99 / 2, "latency_p99_ms": lat_p99}
 
 
-def test_detect_knee_finds_the_operators_own_example_shape():
+def test_detect_knee_requires_two_consecutive_saturation_transitions():
     # Operator's own description: crossing the knee gets ~3% more IOPS but
     # ~14x more latency — the KNEE returned must be the step BEFORE that
     # jump (the last good one), not the blown-up one itself.
@@ -105,6 +105,7 @@ def test_detect_knee_finds_the_operators_own_example_shape():
         _step(32, 12000, 1.5),
         _step(64, 15000, 2.0),
         _step(128, 15450, 28.0),  # +3% IOPS, 14x latency vs. previous step
+        _step(256, 15500, 45.0),  # second bad transition confirms it was not noise
     ]
     knee = _detect_knee(steps)
     assert knee is not None
@@ -116,8 +117,13 @@ def test_detect_knee_returns_none_when_still_scaling_cleanly():
     assert _detect_knee(steps) is None
 
 
-def test_detect_knee_absolute_latency_cutoff_triggers_even_with_iops_still_growing():
-    steps = [_step(16, 8000, 1.0), _step(32, 9000, 25.0)]  # IOPS still +12.5%, but p99 way over cutoff
+def test_detect_knee_does_not_trigger_on_one_noisy_latency_sample():
+    steps = [_step(16, 8000, 1.0), _step(32, 8400, 25.0)]
+    assert _detect_knee(steps) is None
+
+
+def test_detect_knee_absolute_latency_needs_plateau_and_confirmation():
+    steps = [_step(16, 8000, 1.0), _step(32, 8400, 25.0), _step(64, 8450, 35.0)]
     knee = _detect_knee(steps)
     assert knee is not None
     assert knee["iodepth"] == 16
@@ -153,7 +159,13 @@ def _fake_execute_saturating(host, command):
 
 
 def test_run_happy_path_detects_knee_and_stops_early(isolated_db, monkeypatch):
-    monkeypatch.setattr(volume_perf_module, "execute_command", _fake_execute_saturating)
+    commands = []
+
+    def recording_execute(host, command):
+        commands.append(command)
+        return _fake_execute_saturating(host, command)
+
+    monkeypatch.setattr(volume_perf_module, "execute_command", recording_execute)
     write_progress, calls = _make_recording_progress_writer()
 
     action_params = {"pool": "vms", "mon_ip": "10.20.1.112", "osd_ips": ["10.20.1.95"], "requested_by": "admin"}
@@ -170,10 +182,9 @@ def test_run_happy_path_detects_knee_and_stops_early(isolated_db, monkeypatch):
         assert row.knee_iodepth == 16
         assert row.knee_iops == 16000.0
         steps = json.loads(row.steps_json)
-        # Sweep must stop shortly after CONFIRMING the knee (one extra step
-        # past where it was first detected), not run all 9 depths — real
-        # load on a real cluster, every extra step costs time.
+        assert all(step["sample_count"] == 3 for step in steps)
         assert [s["iodepth"] for s in steps] == [1, 2, 4, 8, 16, 32, 64]
+    assert any(command.startswith("if rbd info") and "then rbd rm" in command for command in commands)
 
 
 def test_run_records_no_knee_when_never_saturated(isolated_db, monkeypatch):
@@ -228,7 +239,10 @@ def test_run_fails_when_fio_not_installed(isolated_db, monkeypatch):
 def test_run_fails_when_a_sweep_step_ssh_fails(isolated_db, monkeypatch):
     from worker.executor.ssh_executor import ExecutorError
 
+    commands = []
+
     def fake_execute(host, command):
+        commands.append(command)
         if command == "command -v fio 2>/dev/null":
             return "/usr/bin/fio\n"
         if command.startswith("rbd info"):
@@ -248,21 +262,34 @@ def test_run_fails_when_a_sweep_step_ssh_fails(isolated_db, monkeypatch):
         row = session.query(VolumePerfSweep).one()
         assert row.status == "FAILED"
         assert "connection reset" in row.error_message
+    assert any(command.startswith("if rbd info") and "then rbd rm" in command for command in commands)
 
 
-def test_run_stops_before_sweep_when_kill_switch_already_on(isolated_db, monkeypatch):
-    monkeypatch.setattr(
-        volume_perf_module, "execute_command", lambda host, cmd: pytest.fail("must not run any command")
-    )
-    write_progress, calls = _make_recording_progress_writer()
+def test_run_is_failed_when_scratch_cleanup_fails(isolated_db, monkeypatch):
+    from worker.executor.ssh_executor import ExecutorError
 
-    action_params = {"pool": "vms", "mon_ip": "10.20.1.112"}
-    result = run("action-5", action_params, "incident-5", write_progress, lambda incident_id: True)
+    def fake_execute(host, command):
+        if command == "command -v fio 2>/dev/null":
+            return "/usr/bin/fio\n"
+        if command.startswith("if rbd info") and "; rbd create" in command:
+            return ""
+        if command.startswith("fio --name=sweep"):
+            depth = int(re.search(r"--iodepth=(\d+)", command).group(1))
+            return _fio_json(depth * 1000, 1.0, 1.0)
+        if command.startswith("if rbd info") and "then rbd rm" in command:
+            raise ExecutorError("rbd image still busy")
+        return ""
+
+    monkeypatch.setattr(volume_perf_module, "execute_command", fake_execute)
+    write_progress, _calls = _make_recording_progress_writer()
+
+    result = run("action-cleanup", {"pool": "vms", "mon_ip": "10.20.1.112"}, "incident", write_progress)
 
     assert result is False
     with db_module.SessionLocal() as session:
         row = session.query(VolumePerfSweep).one()
         assert row.status == "FAILED"
+        assert "không xóa được scratch image" in row.error_message
 
 
 def test_run_returns_false_when_pool_or_mon_ip_missing(isolated_db):

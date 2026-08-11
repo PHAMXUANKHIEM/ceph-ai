@@ -79,9 +79,11 @@ chỉ đổi lấy một chút IOPS nhưng khiến latency tăng vọt bất câ
 ### 3.1. Nguyên tắc an toàn: không bao giờ đụng volume thật
 
 Toàn bộ phép đo chạy trên **một scratch image riêng**
-(`_ceph_aiops_perf_probe`, 50GB, thin-provisioned nên không tốn dung lượng
-thật khi rỗi) được tạo (nếu chưa có) ngay trong pool đang đo, **tái sử dụng
-giữa các lần đo** thay vì tạo-rồi-xoá mỗi lần. Route đề xuất
+(`_ceph_aiops_perf_probe`, 50GB, thin-provisioned) được tạo mới ngay trong
+pool đang đo. Nếu còn image probe từ một lần chạy bị gián đoạn, hệ thống xóa
+nó trước rồi mới tạo lại; sau khi đo xong hoặc fio gặp lỗi, image cũng được
+xóa hẳn để không giữ các block random-write đã cấp phát. Cleanup thất bại làm
+cả lượt đo chuyển `FAILED`, thay vì âm thầm để lại image rác. Route đề xuất
 (`propose_volume_perf_sweep`) **không** nhận tham số `image` từ request —
 nên không có cách nào (kể cả bằng request thủ công) trỏ phép đo vào một
 volume thật. Đây là quyết định phạm vi tường minh của vận hành viên khi yêu
@@ -103,22 +105,26 @@ với thang `iodepth` tăng dần:
 IODEPTH_STEPS = 1, 2, 4, 8, 16, 32, 64, 128, 256
 ```
 
-Mỗi bước:
+Mỗi mức iodepth chạy **3 mẫu độc lập**, sau đó dùng median của IOPS, latency
+avg và latency p99 làm điểm đại diện. Hệ số biến thiên IOPS (CV%) cũng được
+lưu để người vận hành nhận ra một lượt đo thiếu ổn định. Mỗi mẫu chạy:
 
 ```bash
 fio --name=sweep --ioengine=rbd --pool=<pool> --rbdname=_ceph_aiops_perf_probe \
     --rw=randwrite --bs=4k --iodepth=<depth> --numjobs=1 \
     --runtime=20 --ramp_time=5 --time_based --direct=1 \
+    --invalidate=1 --randrepeat=0 --norandommap \
     --group_reporting --output-format=json
 ```
 
 - **4k random write** — cùng dạng tải benchmark chuẩn ("textbook IOPS vs.
   latency knee") mà vận hành viên đã dùng trong script riêng trước khi tính
   năng này ra đời.
-- `ramp_time=5s` để hệ thống ổn định trước khi đo, `runtime=20s` mỗi bước —
+- `ramp_time=5s` để hệ thống ổn định trước khi đo, `runtime=20s` mỗi mẫu —
   ngắn hơn kịch bản gốc (60s+10s) có chủ đích: đây là tải thật lên cluster
   production, mỗi giây đều có giá; 20s/bước (kết hợp early-stop, xem 3.4)
-  giữ một lần quét chưa bão hoà dưới ~4 phút thay vì ~10 phút.
+  ba mẫu giúp giảm ảnh hưởng của một khoảng nhiễu đơn lẻ; lượt chạy đầy đủ
+  có thể mất khoảng 11–12 phút, còn early-stop thường kết thúc sớm hơn.
 - Từ JSON `fio` trả về, hệ thống lấy 3 số cho mỗi bước: `iops`,
   `latency_avg_ms` (từ `clat_ns.mean`), `latency_p99_ms` (từ
   `clat_ns.percentile["99.000000"]`) — dùng **p99**, không dùng latency
@@ -135,16 +141,16 @@ iops_growth      = (cur.iops - prev.iops) / prev.iops
 latency_growth   = (cur.latency_p99_ms - prev.latency_p99_ms) / prev.latency_p99_ms
 ```
 
-Rồi kiểm tra **3 điều kiện**, kết hợp bằng "(A và B) hoặc C":
+Một chuyển tiếp được coi là xấu khi IOPS đã plateau **và** latency xấu:
 
 | Ký hiệu | Điều kiện | Ngưỡng | Ý nghĩa |
 |---|---|---|---|
-| A. `plateaued` | `iops_growth < 0.15` | IOPS tăng thêm dưới 15% | IOPS gần như đã đứng yên — đẩy thêm tải không còn mang lại nhiều IOPS hơn |
-| B. `latency_spiked` | `latency_growth > 3.0 × max(iops_growth, 0)` | Độ trễ tăng nhanh gấp hơn 3 lần tốc độ tăng IOPS | Đổi một chút IOPS lấy một khoản latency tăng bất cân xứng |
-| C. `absolute_bad` | `cur.latency_p99_ms >= 20.0 ms` | Ngưỡng tuyệt đối, độc lập hình dạng đường cong | Lưới an toàn: dù A/B chưa rõ ràng, p99 ≥ 20ms coi như không còn chấp nhận được với storage backend, không để sweep "cố đấm" tới tận iodepth=256 |
+| A. `plateaued` | `iops_growth < 0.10` | IOPS tăng thêm dưới 10% | Đẩy thêm tải gần như không mang lại IOPS |
+| B. tăng latency tương đối | `latency_growth >= 50%` và tăng tuyệt đối ít nhất `1ms` | Loại các dao động rất nhỏ | Tail latency xấu đi rõ rệt |
+| C. latency tuyệt đối | `cur.latency_p99_ms >= 20ms` | Chỉ có hiệu lực cùng A | Không gọi là bão hòa nếu IOPS vẫn còn scale mạnh |
 
-Nếu `(A và B)` **hoặc** `C` đúng ở bước `cur`, hệ thống kết luận: **bước
-`prev` (bước NGAY TRƯỚC đó) chính là "trần hiệu năng khả dụng"** — không
+Chỉ khi có **hai chuyển tiếp xấu liên tiếp**, hệ thống mới kết luận: bước
+ngay trước chuyển tiếp xấu đầu tiên là "trần hiệu năng khả dụng" — không
 phải bước có IOPS cao nhất trong toàn bộ sweep, mà là **điểm cuối cùng còn
 "đáng dùng"** trước khi rơi xuống vực latency. Đây đúng là cách diễn giải
 "hiệu năng tối đa" mà vận hành viên mô tả khi yêu cầu tính năng này: ví dụ
@@ -172,11 +178,8 @@ hẳn "đã tìm ra trần".
 Vòng lặp không chạy trọn cả 9 bước một cách mù quáng. Sau mỗi bước, hệ thống
 gọi lại `_detect_knee` trên toàn bộ các bước đã có:
 
-- Ngay khi knee được xác nhận lần đầu ở bước thứ `N`, hệ thống **chạy thêm
-  đúng một bước nữa** (`N+1`) để xác nhận xu hướng thật (không dừng ngay lập
-  tức chỉ vì một điểm), rồi **dừng hẳn**, không tiếp tục leo thang tới 256.
-- Kill-switch cũng được kiểm tra giữa từng bước — bật kill-switch giữa chừng
-  sẽ dừng sweep ngay, bước đó được đánh dấu "skipped".
+- Thuật toán không dừng vì một điểm xấu đơn lẻ. Nó chỉ dừng khi hai cặp mức
+  iodepth liên tiếp cùng cho thấy IOPS plateau và latency xấu đi.
 
 Nhờ vậy một sweep bão hoà sớm (vd. ở iodepth=16) kết thúc nhanh hơn nhiều so
 với việc luôn chạy đủ cả 9 mức.
@@ -250,13 +253,14 @@ mới lên cluster) nên chạy ngay từ tiến trình Dashboard, không cần 
 3. Vận hành viên bấm **Duyệt** → Dashboard chỉ đổi `Action.status`, Worker
    (`router_client.py::poll_approved_actions`) phát hiện và gọi
    `worker/executor/volume_perf.py::run()`.
-4. 3 bước thực thi, theo dõi real-time qua `/api/volumes/{pool}/perf-sweep/progress`:
+4. 4 bước thực thi, theo dõi real-time qua `/api/volumes/{pool}/perf-sweep/progress`:
 
    | Bước | Nội dung | % |
    |---|---|---|
-   | `prepare` | Kiểm tra `fio` có sẵn trên MON, tạo scratch image nếu chưa có | 10 |
-   | `sweep` | Quét tải `iodepth` 1→256 (có thể dừng sớm, xem 3.4) | 90 |
-   | `diagnostics` | Thu thập QoS notes + bottleneck notes (best-effort) | 100 |
+   | `prepare` | Kiểm tra `fio`, xóa probe cũ nếu có và tạo image mới | 10 |
+   | `sweep` | Quét `iodepth` 1→256, 3 mẫu/mức, lấy median | 85 |
+   | `diagnostics` | Thu thập QoS notes + bottleneck notes (best-effort) | 95 |
+   | `cleanup` | Xóa hẳn scratch image 50 GiB | 100 |
 
 5. Kết quả cuối được lưu bền vào bảng `VolumePerfSweep` (không chỉ nằm
    trong `Action.execution_progress`, vốn chỉ là view tạm thời của một lần

@@ -97,7 +97,6 @@ def _delete_plan_text(exec_mode: str, nodes: list[dict], wipe_osd_disks: bool) -
         f"{node_summary}\n\n"
         f"{steps}\n"
         f"Xoá dữ liệu đĩa OSD: {wipe_note}\n\n"
-        f"An toàn: đây là hành động PHÁ HUỶ, không thể hoàn tác một khi đã chạy — kill-switch được "
         f"kiểm tra lại trước MỖI bước; nếu một bước lỗi, các bước sau không chạy. Sau khi xoá thành "
         f"công, cấu hình cụm trong .env cũng được xoá theo — Dashboard sẽ không còn theo dõi cụm này."
     )

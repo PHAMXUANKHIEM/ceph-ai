@@ -13,7 +13,7 @@ import worker.backup.engine as engine
 import worker.backup.restore as restore
 from shared import db as db_module
 from shared.db import Base
-from shared.models import Action, ActionStatus, BackupJob, Incident, IncidentStatus, SystemFlag
+from shared.models import Action, ActionStatus, BackupJob, Incident, IncidentStatus
 
 
 @pytest.fixture()
@@ -30,9 +30,6 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     )
-    with db_module.SessionLocal() as session:
-        session.add(SystemFlag(key="kill_switch_enabled", value=False))
-        session.commit()
     yield test_engine
 
 
@@ -245,11 +242,11 @@ def _write_progress(action_pk, progress):
     pass
 
 
-def _kill_switch_off(incident_id):
+def _allow_execution(incident_id):
     return False
 
 
-def _kill_switch_on(incident_id):
+def _deny_execution(incident_id):
     return True
 
 
@@ -257,7 +254,7 @@ def test_first_backup_is_full_export(isolated_db):
     incident_id, action_pk = _make_incident_and_action()
 
     succeeded = engine.run(
-        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _kill_switch_off
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _allow_execution
     )
 
     assert succeeded is True
@@ -272,7 +269,7 @@ def test_first_backup_is_full_export(isolated_db):
 
 def test_second_backup_is_incremental_and_links_base_job(isolated_db):
     incident_id, action_pk = _make_incident_and_action()
-    engine.run(action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _kill_switch_off)
+    engine.run(action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _allow_execution)
 
     with db_module.SessionLocal() as session:
         # Both slots' full rows come from the SAME run — one query result
@@ -286,7 +283,7 @@ def test_second_backup_is_incremental_and_links_base_job(isolated_db):
 
     incident_id2, action_pk2 = _make_incident_and_action()
     succeeded = engine.run(
-        action_pk2, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id2, None, _write_progress, _kill_switch_off
+        action_pk2, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id2, None, _write_progress, _allow_execution
     )
 
     assert succeeded is True
@@ -307,20 +304,6 @@ def test_second_backup_is_incremental_and_links_base_job(isolated_db):
     assert len(bases) == 1
 
 
-def test_kill_switch_blocks_before_any_command(isolated_db):
-    incident_id, action_pk = _make_incident_and_action()
-    FakeSSHClient.last_cmd = None
-
-    succeeded = engine.run(
-        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _kill_switch_on
-    )
-
-    assert succeeded is False
-    assert FakeSSHClient.last_cmd is None
-    with db_module.SessionLocal() as session:
-        assert session.query(BackupJob).count() == 0
-
-
 def test_idempotent_skip_when_fresh_running_job_exists(isolated_db):
     with db_module.SessionLocal() as session:
         session.add(
@@ -339,7 +322,7 @@ def test_idempotent_skip_when_fresh_running_job_exists(isolated_db):
     FakeSSHClient.last_cmd = None
 
     succeeded = engine.run(
-        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _kill_switch_off
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _allow_execution
     )
 
     assert succeeded is True  # benign skip, not a failure
@@ -361,7 +344,7 @@ def test_stale_running_job_is_marked_failed_and_new_job_proceeds(isolated_db):
     incident_id, action_pk = _make_incident_and_action()
 
     succeeded = engine.run(
-        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _kill_switch_off
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _allow_execution
     )
 
     assert succeeded is True
@@ -378,7 +361,7 @@ def test_verify_failure_marks_job_failed(isolated_db, fake_backend_and_ssh):
     incident_id, action_pk = _make_incident_and_action()
 
     succeeded = engine.run(
-        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _kill_switch_off
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _allow_execution
     )
 
     assert succeeded is False
@@ -468,7 +451,7 @@ def test_restore_to_production_succeeds_when_full_backup_exists(isolated_db, fak
         incident_id,
         None,
         _write_progress,
-        _kill_switch_off,
+        _allow_execution,
     )
 
     assert succeeded is True
@@ -486,7 +469,7 @@ def test_restore_to_production_fails_when_no_full_backup_exists(isolated_db, fak
         incident_id,
         None,
         _write_progress,
-        _kill_switch_off,
+        _allow_execution,
     )
 
     assert succeeded is False
@@ -506,35 +489,17 @@ def test_restore_to_production_fails_when_rbd_import_exits_nonzero(isolated_db, 
         incident_id,
         None,
         _write_progress,
-        _kill_switch_off,
+        _allow_execution,
     )
 
     assert succeeded is False
-
-
-def test_restore_to_production_blocked_by_kill_switch(isolated_db, fake_backend_and_ssh):
-    _make_success_full_backup_job(fake_backend_and_ssh)
-    incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
-
-    succeeded = engine.run(
-        action_pk,
-        "restore_rbd_image_to_production",
-        {"pool": "vms", "image": "web01"},
-        incident_id,
-        None,
-        _write_progress,
-        _kill_switch_on,
-    )
-
-    assert succeeded is False
-    assert FakeSSHClient.imported_calls == []
 
 
 def test_restore_to_production_missing_pool_image_fails(isolated_db, fake_backend_and_ssh):
     incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
 
     succeeded = engine.run(
-        action_pk, "restore_rbd_image_to_production", {}, incident_id, None, _write_progress, _kill_switch_off
+        action_pk, "restore_rbd_image_to_production", {}, incident_id, None, _write_progress, _allow_execution
     )
 
     assert succeeded is False
@@ -552,7 +517,7 @@ def test_second_cluster_with_same_pool_image_gets_its_own_full_backup_not_an_inc
 
     incident_a, action_a = _make_incident_and_action(cluster_id=None)
     succeeded_a = engine.run(
-        action_a, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_a, None, _write_progress, _kill_switch_off
+        action_a, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_a, None, _write_progress, _allow_execution
     )
     assert succeeded_a is True
 
@@ -564,7 +529,7 @@ def test_second_cluster_with_same_pool_image_gets_its_own_full_backup_not_an_inc
         incident_b,
         cluster_b_id,
         _write_progress,
-        _kill_switch_off,
+        _allow_execution,
     )
     assert succeeded_b is True
     # Not "export-diff" -- cluster B's own history for (vms, web01) is

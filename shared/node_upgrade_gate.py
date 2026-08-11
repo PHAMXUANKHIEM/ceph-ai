@@ -22,8 +22,6 @@ def claim_node_upgrade_gate_lock(session: Session, gate_id: str) -> bool:
     `NodeUpgradeGate` row is inserted (see `shared/models.py::
     NodeUpgradeGateLock`'s docstring for why `active_gate_id` has no FK).
 
-    Does NOT commit -- same pattern as `shared/kill_switch.py::
-    set_kill_switch`, so the caller controls the transaction boundary.
     Returns True if this call won the claim (rowcount == 1), False if the
     lock was already held by another gate (rowcount == 0).
     """

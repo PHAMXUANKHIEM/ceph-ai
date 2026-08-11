@@ -372,10 +372,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
 def _maybe_execute_safe_action(
     incident_id: str, action_pk: str, action_id: str, envelope: dict
 ) -> None:
-    """Runs the Command for a SAFE Action, checking the kill-switch fresh
-    before EACH node (AD-4 — "trước MỌI lệnh remediation... không có ngoại
-    lệ" — a multi-node Action must not let a mid-loop kill-switch flip go
-    unnoticed for later nodes).
+    """Run a SAFE action on every target node.
 
     Deliberately never raises — an execution failure ends in Action/Incident
     status=FAILED, not a retry (AC #3: retry/DLX is for transient Router
@@ -683,7 +680,6 @@ def _set_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) 
 
 def _unset_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) -> None:
     """Always attempted after a package-based upgrade's per-host loop ends
-    — success, partial failure, or blocked by the kill-switch before any
     host ran — unsetting an already-unset flag is a harmless no-op, so
     this doesn't try to track whether _set_upgrade_osd_flags actually
     succeeded first. `;`-joined (NOT `&&`) so every flag gets its own
@@ -774,7 +770,6 @@ def _execute_package_upgrade_action(
     once per role-phase it belongs to — its MON unit in the MON phase, its
     OSD unit in the OSD phase, never both together and never twice.
 
-    Kill-switch is re-checked fresh before EVERY step across the WHOLE
     5-phase sequence (AD-4) — install and restart steps alike. A
     mid-sequence trip stops immediately: every not-yet-run step (any
     phase) is recorded `skipped`; the Action reverts to PENDING_APPROVAL
@@ -868,10 +863,8 @@ def _execute_package_upgrade_action(
         if upgrade_flags_mon_host is not None:
             _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
 
-    # Code review fix (2026-08-04): a kill-switch trip mid-sequence must
     # also block this finalize step — without `not state["stopped_mid_
     # sequence"]`, `ceph osd require-osd-release <codename>` could still
-    # run on the MON after the operator hit the emergency kill-switch.
     if state["executed_any"]:
         _finalize_package_upgrade_osd_release(action_pk, action_params, progress)
 
@@ -894,7 +887,6 @@ def _run_install_phase(
 ) -> None:
     """Phase 0 — install-only on every host, positional addressing into
     `phase_entries` (one pre-populated "pending" dict per host, same
-    order), mirroring the pre-7.2 generic per-host loop's own kill-switch/
     failure semantics exactly (just against the install-only command
     variant instead of "install && restart everything")."""
     total = len(hosts)
@@ -998,8 +990,6 @@ def _run_restart_phase(
         # Code review fix (2026-08-04): a host whose install step already
         # failed (Fix 1) must not have its unit(s) restarted here — that
         # would restart a daemon against a possibly broken/partial
-        # install. Checked before the kill-switch so it never consumes a
-        # kill-switch check and never blocks other hosts in this phase.
         if host in state["failed_install_hosts"]:
             now = datetime.utcnow().isoformat()
             if phase_entries is not None:
@@ -1188,10 +1178,7 @@ def _auto_reject_risky_during_cluster_operation(
 def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -> None:
     """Story 4.2: resolve the proposed command (best-effort — some
     action_ids have none, see worker/executor/commands.py's Epic-4 note)
-    purely for display, then park the Action/Incident at PENDING_APPROVAL.
-    Mirrors _route_to_manual_approval()'s structure (Story 3.2) — same kind
-    of "never auto-execute, wait for a human" transition, just reached via
-    Story 3.1's classification instead of a kill-switch interrupt."""
+    purely for display, then park the Action/Incident at PENDING_APPROVAL."""
     try:
         command = commands.get_command(action_id)
     except ExecutorError:
@@ -1265,10 +1252,7 @@ def _process_approved_actions_once() -> None:
 
 
 def _execute_approved_action(action_pk: str) -> None:
-    """Runs the Command for an operator-APPROVED Action, checking the
-    kill-switch fresh before EACH node — same AD-4 guarantee
-    (_maybe_execute_safe_action's docstring, Story 3.2) applies here
-    verbatim: "Safe lẫn Risky-đã-duyệt", no exceptions.
+    """Run the command for an operator-approved action.
 
     A separate function from _maybe_execute_safe_action rather than a
     shared helper: the two run from different triggers (RabbitMQ message
@@ -1338,8 +1322,7 @@ def _execute_approved_action(action_pk: str) -> None:
     # fires ONE command family identically at every host with no
     # cross-host ordering and no wait step, which cannot express "MON
     # before MGR/OSD, wait for quorum first". cluster_deploy.run() reuses
-    # _write_action_progress/_check_kill_switch_safe unchanged (both are
-    # already generic enough to accept its own step-shaped progress lists).
+    # its own step-shaped progress lists.
     if action_id_str in cluster_deploy.CLUSTER_DEPLOY_ACTION_IDS:
         if not isinstance(action_params, dict):
             logger.warning(
@@ -1362,9 +1345,7 @@ def _execute_approved_action(action_pk: str) -> None:
 
     # 2026-07-29: Volumes page "Đo hiệu năng tối đa" (load sweep) — same
     # reasoning as the cluster-deploy branch just above: this is its own
-    # multi-step orchestrator (sweeps fio iodepth 1->256, checking the
-    # kill-switch before each step), not a single command fanned out to
-    # target_nodes.
+    # multi-step orchestrator (sweeps fio iodepth 1->256) over target_nodes.
     if action_id_str in volume_perf.VOLUME_PERF_ACTION_IDS:
         if not isinstance(action_params, dict):
             logger.warning(

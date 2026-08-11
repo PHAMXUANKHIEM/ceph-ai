@@ -162,7 +162,7 @@ def _record_result(
         session.commit()
 
 
-def run(action_pk: str, action_params: dict, incident_id: str, write_progress) -> bool:
+def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *_unused) -> bool:
     drill_config = load_backup_policy().get("restore_drill") or {}
     pool = drill_config.get("pool")
     image = drill_config.get("image")

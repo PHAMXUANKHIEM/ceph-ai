@@ -219,7 +219,6 @@ safe:
   # remaining safeguards before execution: the chat confirm step itself
   # shows the fully-resolved command (real pool name/osd id baked in, see
   # dashboard/chat_client.py::resolve_command_preview) before the operator
-  # clicks "Thực hiện", and the kill-switch is still checked fresh
   # immediately before execution (AD-4, no exceptions). To require a second
   # manual approval for any of these instead, just move it to `risky:`
   # below — no code change needed (same operational-decision posture as the

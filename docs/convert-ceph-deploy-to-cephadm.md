@@ -88,7 +88,6 @@ Trang `/convert-cluster` chỉ cho phép đề xuất khi:
    tuần tự các pha bên dưới qua SSH tới từng node.
 5. Trang `/convert-cluster/progress` cho phép theo dõi tiến độ real-time
    theo từng pha, từng host.
-6. Trước MỖI pha, hệ thống kiểm tra lại kill-switch — nếu đang bật, dừng
    ngay lập tức, không chạy tiếp.
 
 ## 5. Chi tiết 10 pha thực thi

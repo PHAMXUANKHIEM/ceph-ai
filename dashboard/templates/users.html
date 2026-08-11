@@ -83,7 +83,7 @@
                       {{ "Vô hiệu hoá" if u.is_active else "Kích hoạt lại" }}
                     </button>
                     {% else %}
-                    <button type="submit" class="btn btn-sm {{ 'btn-kill-switch-on' if u.is_active else '' }}">
+                    <button type="submit" class="btn btn-sm {{ 'btn-danger' if u.is_active else '' }}">
                       {{ "Vô hiệu hoá" if u.is_active else "Kích hoạt lại" }}
                     </button>
                     {% endif %}
@@ -99,7 +99,7 @@
                     class="inline-form"
                     onsubmit="return confirm('Xoá vĩnh viễn user {{ u.username }}? Không thể hoàn tác.');"
                   >
-                    <button type="submit" class="btn btn-sm btn-kill-switch-on">Xoá</button>
+                    <button type="submit" class="btn btn-sm btn-danger">Xoá</button>
                   </form>
                   {% endif %}
                 </td>

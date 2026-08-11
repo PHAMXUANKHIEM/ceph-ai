@@ -82,16 +82,16 @@ def _write_progress(action_pk, progress):
     pass
 
 
-def _kill_switch_off(incident_id):
+def _allow_execution(incident_id):
     return False
 
 
-def _kill_switch_on(incident_id):
+def _deny_execution(incident_id):
     return True
 
 
 def test_metadata_backup_uploads_all_artifacts_and_verifies(isolated_db, fakes):
-    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _kill_switch_off)
+    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _allow_execution)
 
     assert succeeded is True
     uploaded_names = {key.rsplit("/", 1)[-1] for key in fakes.uploaded}
@@ -104,18 +104,6 @@ def test_metadata_backup_uploads_all_artifacts_and_verifies(isolated_db, fakes):
     assert all(j.pool is None and j.image is None for j in jobs)
 
 
-def test_kill_switch_blocks_before_any_command(isolated_db, fakes, monkeypatch):
-    calls = []
-    monkeypatch.setattr(metadata, "execute_command", lambda host, cmd, user=None, key_path=None: calls.append(cmd) or "")
-
-    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _kill_switch_on)
-
-    assert succeeded is False
-    assert calls == []
-    with db_module.SessionLocal() as session:
-        assert session.query(BackupJob).count() == 0
-
-
 def test_command_failure_marks_job_failed(isolated_db, fakes, monkeypatch):
     def fake_execute_command(host, cmd, user=None, key_path=None):
         if cmd == "ceph auth export":
@@ -124,7 +112,7 @@ def test_command_failure_marks_job_failed(isolated_db, fakes, monkeypatch):
 
     monkeypatch.setattr(metadata, "execute_command", fake_execute_command)
 
-    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _kill_switch_off)
+    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _allow_execution)
 
     assert succeeded is False
     with db_module.SessionLocal() as session:
@@ -137,7 +125,7 @@ def test_command_failure_marks_job_failed(isolated_db, fakes, monkeypatch):
 def test_verify_failure_marks_job_failed(isolated_db, fakes):
     fakes.fail_verify = True
 
-    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _kill_switch_off)
+    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _allow_execution)
 
     assert succeeded is False
     with db_module.SessionLocal() as session:
@@ -149,7 +137,7 @@ def test_verify_failure_marks_job_failed(isolated_db, fakes):
 def test_no_backup_targets_configured_fails(isolated_db, fakes, monkeypatch):
     monkeypatch.setattr(cluster_scope, "backup_targets_from_policy", lambda: [])
 
-    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _kill_switch_off)
+    succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _allow_execution)
 
     assert succeeded is False
 
@@ -159,14 +147,14 @@ def test_engine_dispatches_backup_metadata_run_to_metadata_module(monkeypatch):
     monkeypatch.setattr(
         engine.backup_metadata,
         "run",
-        lambda action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch: calls.append(
+        lambda action_pk, action_params, incident_id, cluster_id, write_progress: calls.append(
             action_pk
         )
         or True,
     )
 
     succeeded = engine.run(
-        "action-1", "backup_metadata_run", {}, "incident-1", None, _write_progress, _kill_switch_off
+        "action-1", "backup_metadata_run", {}, "incident-1", None, _write_progress, _allow_execution
     )
 
     assert succeeded is True

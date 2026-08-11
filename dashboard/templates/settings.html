@@ -77,7 +77,7 @@
               action="/settings/restart-dashboard"
               onsubmit="return confirm('Khởi động lại Dashboard ngay? Mọi người đang dùng sẽ bị gián đoạn vài giây.');"
             >
-              <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Dashboard</button>
+              <button type="submit" class="btn btn-danger">Khởi động lại Dashboard</button>
             </form>
           </div>
 
@@ -90,7 +90,7 @@
               action="/settings/restart-worker"
               onsubmit="return confirm('Khởi động lại Worker ngay?');"
             >
-              <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Worker</button>
+              <button type="submit" class="btn btn-danger">Khởi động lại Worker</button>
             </form>
           </div>
 
@@ -103,7 +103,7 @@
               action="/settings/restart-watcher"
               onsubmit="return confirm('Khởi động lại Watcher ngay?');"
             >
-              <button type="submit" class="btn btn-kill-switch-on">Khởi động lại Watcher</button>
+              <button type="submit" class="btn btn-danger">Khởi động lại Watcher</button>
             </form>
           </div>
         </div>
@@ -225,7 +225,7 @@
             <button type="button" class="btn btn-sm" id="db-test-btn">Kiểm tra kết nối</button>
             <span id="db-test-result" class="ai-test-result" hidden></span>
           </div>
-          <button type="submit" class="btn btn-kill-switch-on" id="db-save-btn">Lưu &amp; chuyển database</button>
+          <button type="submit" class="btn btn-danger" id="db-save-btn">Lưu &amp; chuyển database</button>
         </form>
         <div id="db-migrate-progress" hidden>
           <p class="hint" id="db-migrate-step">Đang bắt đầu...</p>
@@ -448,7 +448,7 @@
           </div>
           <div class="ai-test-row">
             <button type="button" class="btn btn-primary btn-sm" id="codex-login-btn">Đăng nhập bằng ChatGPT</button>
-            <button type="button" class="btn btn-sm btn-kill-switch-on" id="codex-logout-btn" hidden>Đăng xuất</button>
+            <button type="button" class="btn btn-sm btn-danger" id="codex-logout-btn" hidden>Đăng xuất</button>
           </div>
           <div id="codex-device-flow" hidden>
             <p>Mở <a id="codex-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Codex</a> và nhập mã:</p>
@@ -473,7 +473,7 @@
               onsubmit="return confirm('Huỷ kết nối API AI? Chatbox sẽ ngừng hoạt động cho tới khi kết nối lại.');"
               style="display:inline"
             >
-              <button type="submit" class="btn btn-sm btn-kill-switch-on">Huỷ kết nối</button>
+              <button type="submit" class="btn btn-sm btn-danger">Huỷ kết nối</button>
             </form>
           </div>
         </div>
@@ -678,7 +678,7 @@
           <p class="hint">
             File log dashboard.log không có mốc thời gian theo từng dòng (định dạng log gốc của uvicorn) — chọn mốc ngày với file này sẽ xóa toàn bộ file, không xóa được từng phần theo ngày.
           </p>
-          <button type="submit" class="btn btn-kill-switch-on">Xóa dữ liệu đã chọn</button>
+          <button type="submit" class="btn btn-danger">Xóa dữ liệu đã chọn</button>
         </form>
       </div>
     </section>

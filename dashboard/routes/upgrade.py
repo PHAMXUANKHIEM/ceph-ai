@@ -60,7 +60,6 @@ templates = make_templates()
 # dashboard/routes/chat.py uses (CHAT_REQUEST_CEPH_CODE): AuditEntry.incident_id
 # is a required FK (AD-7), and this feature has no real detected Incident
 # behind it, only an operator explicitly proposing an upgrade. Reusing the
-# existing Action/Incident/audit/kill-switch/approval pipeline (Epic 3/4)
 # this way means dashboard/routes/actions.py's approve/reject routes and
 # worker/llm/router_client.py's approved-action poller need ZERO changes to
 # support this feature.
@@ -176,11 +175,7 @@ cephadm sẽ tự động điều phối toàn bộ quá trình nâng cấp lên
    theo dõi và can thiệp thủ công nếu xảy ra. Bạn cũng có thể chủ động bấm "Tạm dừng" bất cứ
    lúc nào trong lúc nâng cấp đang chạy.
 
-An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi gửi lệnh
-`ceph orch upgrade start` ở trên (nếu kill-switch đang bật, lệnh sẽ không được gửi và đề xuất
-quay lại trạng thái chờ duyệt). Lưu ý: kill-switch chỉ chặn được việc GỬI lệnh bắt đầu — một
-khi cephadm đã bắt đầu điều phối nâng cấp, việc dừng lại giữa chừng cần bấm "Tạm dừng" ở trên,
-không phải kill-switch (xem watcher/ceph_client.py để biết lý do)."""
+khi cephadm đã bắt đầu điều phối nâng cấp, việc dừng lại giữa chừng cần bấm "Tạm dừng" ở trên."""
 
 # 2026-07-23: shared tail for both package-based (ceph-deploy) plan texts
 # below — the execution-model caveat that does NOT apply to the cephadm
@@ -189,14 +184,8 @@ không phải kill-switch (xem watcher/ceph_client.py để biết lý do)."""
 # comment on the package-based builders for the full reasoning).
 _PACKAGE_METHOD_SAFETY_NOTE = """\
 QUAN TRỌNG — khác với cephadm: KHÔNG có orchestrator tự kiểm tra sức khoẻ cụm giữa các bước.
-Nếu một bước gặp lỗi, hệ thống VẪN thử tiếp bước kế tiếp (không tự dừng lại) — cách duy nhất để
-dừng giữa chừng là bấm nút khẩn cấp (kill-switch) trên Dashboard NGAY khi phát hiện sự cố:
-kill-switch được kiểm tra lại trước MỖI bước (từng node, trong từng giai đoạn) — bước tiếp theo
-sẽ không được thử nếu kill-switch đang bật; các bước chưa chạy sẽ được ghi "Bỏ qua". Khuyến nghị
-theo dõi sát Audit Trail trong suốt quá trình, đặc biệt với cụm nhiều node.
-
-An toàn trước khi thực thi: hệ thống sẽ kiểm tra lại cờ kill-switch ngay trước khi chạy bước
-đầu tiên (nếu đang bật, đề xuất quay lại trạng thái chờ duyệt, chưa node nào bị đụng tới)."""
+Nếu một bước gặp lỗi, hệ thống VẪN thử tiếp bước kế tiếp (không tự dừng lại). Hãy theo dõi sát
+Audit Trail trong suốt quá trình, đặc biệt với cụm nhiều node."""
 
 
 def _upgrade_plan_text(target_version: str) -> str:
@@ -479,7 +468,6 @@ def is_cluster_upgrade_physically_running() -> bool:
     DB-based check above is the only signal available for it.
 
     Fails OPEN (returns False) on any error — this is a secondary
-    convenience gate, not the primary safety guarantee (the kill-switch,
     checked fresh before every remediation command, still is that). A
     transient connectivity hiccup here must not block approving every OTHER
     risky action system-wide just because the Upgrade page happened to be
@@ -1690,7 +1678,6 @@ async def unset_upgrade_osd_flags_route(user: str = Depends(require_login)):
     nosnaptrim before starting `ceph orch upgrade start`, but can't unset
     them itself (fire-and-forget; the real upgrade continues asynchronously
     in cephadm's own mgr module long after that command returns — see that
-    function's own docstring). Same self-service, not-kill-switch-gated
     posture as pause/resume just above: an operator explicitly clicking
     this once they see (via this page's own live status, `get_upgrade_
     status()`) that the upgrade has actually finished."""

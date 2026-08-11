@@ -88,9 +88,9 @@
         <form method="post" action="/telegram-alerts/{{ ch.key }}/toggle" style="display:inline">
           <input type="hidden" name="enabled" value="{{ 'false' if ch.enabled else 'true' }}">
           {% if ch.enabled %}
-            <button type="submit" class="btn btn-kill-switch-off">Tắt kênh này</button>
+            <button type="submit" class="btn btn-danger-outline">Tắt kênh này</button>
           {% else %}
-            <button type="submit" class="btn btn-kill-switch-on">Bật kênh này</button>
+            <button type="submit" class="btn btn-danger">Bật kênh này</button>
           {% endif %}
         </form>
       </div>

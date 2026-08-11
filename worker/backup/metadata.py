@@ -85,6 +85,7 @@ def run(
     incident_id: str,
     cluster_id: str | None,
     write_progress,
+    *_unused,
 ) -> bool:
     cluster = get_cluster(cluster_id)
     mon_ip = _first_mon_node(cluster)

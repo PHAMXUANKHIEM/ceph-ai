@@ -158,7 +158,6 @@ _CEPH_DEPLOY_SAFETY_NOTE = """\
 An toàn: đây là tính năng DỰNG CỤM MỚI (rủi ro cao hơn nâng cấp một cụm đang chạy) — khác với luồng
 nâng cấp bằng gói hiện có (cố ý CHẠY TIẾP sang node kế tiếp nếu một node lỗi), quá trình dựng cụm
 này DỪNG LẠI NGAY khi BẤT KỲ node nào lỗi ở các bước cài đặt/khởi tạo — không có node/daemon nào
-được đụng tới sau điểm lỗi. Kill-switch được kiểm tra lại trước MỖI bước.
 
 Bước tạo OSD sẽ GHI/ĐỊNH DẠNG THẬT lên (một hoặc nhiều) đĩa OSD đã cấu hình cho từng node
 (`ceph-volume lvm create`, một lần gọi cho MỖI đĩa) — mỗi đĩa đã được kiểm tra CHỈ ĐỌC (rỗng,
@@ -204,7 +203,6 @@ def _deploy_plan_text(method: str, version: str, nodes: list[dict], rpm_path: st
             f"bao giờ dùng --all-available-devices).\n"
             f"6. `ceph orch apply rgw` cho các node RGW{rgw_note}.\n"
             f"7. Kiểm tra `ceph -s` — dừng lại nếu HEALTH_ERR.\n\n"
-            f"An toàn: kill-switch được kiểm tra lại trước MỖI bước ở trên; nếu một bước lỗi, "
             f"các bước sau không chạy."
         )
     if method == "ceph-deploy":

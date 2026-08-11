@@ -21,7 +21,6 @@ from shared.models import (
     Cluster,
     Incident,
     IncidentStatus,
-    SystemFlag,
 )
 
 ENVELOPE = {
@@ -50,11 +49,6 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=engine, autoflush=False, autocommit=False)
     )
-    # Matches the real migration's seed default (disabled) — tests that
-    # specifically want the kill-switch ON set it explicitly.
-    with db_module.SessionLocal() as session:
-        session.add(SystemFlag(key="kill_switch_enabled", value=False))
-        session.commit()
     yield engine
 
 
@@ -637,40 +631,6 @@ def test_diagnose_incident_marks_failed_when_any_node_execution_fails(isolated_d
         assert entry.event_type == audit.EVENT_SAFE_ACTION_FAILED
 
 
-def test_diagnose_incident_skips_execution_and_routes_to_approval_when_kill_switch_on(
-    isolated_db, monkeypatch
-):
-    with db_module.SessionLocal() as session:
-        flag = session.get(SystemFlag, "kill_switch_enabled")
-        flag.value = True
-        session.commit()
-
-    execute_calls = []
-    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
-    monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(1)
-    )
-
-    _create_incident("incident-5c")
-    envelope = dict(ENVELOPE, incident_id="incident-5c")
-
-    asyncio.run(router_client.diagnose_incident("incident-5c", envelope))
-
-    assert execute_calls == []  # AD-4: no exceptions — never executes when the switch is on
-    with db_module.SessionLocal() as session:
-        incident = session.get(Incident, "incident-5c")
-        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
-        action = session.query(Action).filter_by(incident_id="incident-5c").one()
-        assert action.status == ActionStatus.PENDING_APPROVAL.value
-        entry = session.query(AuditEntry).filter_by(incident_id="incident-5c").one()
-        assert entry.event_type == audit.EVENT_SAFE_ACTION_BLOCKED_BY_KILL_SWITCH
-
-
-# --- Review Story 3.3: audit.record() must not crash when the Action/Incident
-# row it would reference doesn't exist (isolated_db now enforces FKs like
-# production does, so these would raise IntegrityError without the fix) -----
-
-
 def test_record_execution_result_missing_action_row_does_not_crash_and_still_updates_incident(
     isolated_db,
 ):
@@ -698,122 +658,6 @@ def test_record_execution_result_missing_incident_row_does_not_crash_and_skips_a
 
     with db_module.SessionLocal() as session:
         assert session.query(AuditEntry).count() == 0
-
-
-def test_route_to_manual_approval_missing_action_row_does_not_crash(isolated_db):
-    _create_incident("incident-missing-action-2")
-
-    router_client._route_to_manual_approval(
-        "incident-missing-action-2", "nonexistent-action-pk", "resync_ntp"
-    )
-
-    with db_module.SessionLocal() as session:
-        incident = session.get(Incident, "incident-missing-action-2")
-        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
-        entry = session.query(AuditEntry).filter_by(incident_id="incident-missing-action-2").one()
-        assert entry.action_id is None
-        assert entry.event_type == audit.EVENT_SAFE_ACTION_BLOCKED_BY_KILL_SWITCH
-
-
-def test_diagnose_incident_risky_action_never_executes_regardless_of_kill_switch(
-    isolated_db, monkeypatch
-):
-    async def fake_call_router(user_content):
-        return {
-            "diagnosis_text": "OSD daemon appears down",
-            "action_id": "restart_osd_daemon",
-            "rationale": "restart clears transient crash",
-        }
-
-    execute_calls = []
-    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
-    monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(1)
-    )
-
-    _create_incident("incident-5d")
-    envelope = dict(ENVELOPE, incident_id="incident-5d")
-
-    asyncio.run(router_client.diagnose_incident("incident-5d", envelope))
-
-    assert execute_calls == []
-    with db_module.SessionLocal() as session:
-        action = session.query(Action).filter_by(incident_id="incident-5d").one()
-        # Story 4.2: RISKY -> PENDING_APPROVAL, never auto-executed (FR8).
-        assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert action.rationale == "restart clears transient crash"
-        # restart_osd_daemon's command is discovered per-host (systemctl),
-        # and _route_risky_to_approval has no specific host yet at
-        # classification time — no preview command to show, None rather
-        # than a guess.
-        assert action.proposed_command is None
-
-
-def test_diagnose_incident_kill_switch_checked_before_each_node_not_just_once(
-    isolated_db, monkeypatch
-):
-    # Kill-switch flips ON after node 1 has already been checked/executed —
-    # node 2 must never run (AD-4: checked before EVERY command).
-    from shared.models import SystemFlag
-
-    execute_calls = []
-
-    def fake_execute(host, command, **kwargs):
-        execute_calls.append(host)
-        if host == "10.20.1.249":
-            # Flip the switch ON right after the first node's check passes,
-            # simulating an operator hitting the button mid-loop.
-            with db_module.SessionLocal() as session:
-                flag = session.get(SystemFlag, "kill_switch_enabled")
-                flag.value = True
-                session.commit()
-        return "ok"
-
-    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
-    monkeypatch.setattr(router_client, "execute_command", fake_execute)
-
-    _create_incident("incident-5e")
-    envelope = dict(ENVELOPE, incident_id="incident-5e", nodes=["10.20.1.249", "10.20.1.253"])
-
-    asyncio.run(router_client.diagnose_incident("incident-5e", envelope))
-
-    assert execute_calls == ["10.20.1.249"]  # second node never touched
-    with db_module.SessionLocal() as session:
-        incident = session.get(Incident, "incident-5e")
-        # Node 1 already ran for real — PENDING_APPROVAL would misrepresent
-        # that nothing happened yet, so this must surface as FAILED.
-        assert incident.status == IncidentStatus.FAILED.value
-        action = session.query(Action).filter_by(incident_id="incident-5e").one()
-        assert action.status == ActionStatus.FAILED.value
-
-
-def test_diagnose_incident_kill_switch_on_before_any_node_routes_cleanly_to_approval(
-    isolated_db, monkeypatch
-):
-    from shared.models import SystemFlag
-
-    with db_module.SessionLocal() as session:
-        flag = session.get(SystemFlag, "kill_switch_enabled")
-        flag.value = True
-        session.commit()
-
-    execute_calls = []
-    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
-    monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host)
-    )
-
-    _create_incident("incident-5f")
-    envelope = dict(ENVELOPE, incident_id="incident-5f", nodes=["10.20.1.249", "10.20.1.253"])
-
-    asyncio.run(router_client.diagnose_incident("incident-5f", envelope))
-
-    assert execute_calls == []
-    with db_module.SessionLocal() as session:
-        incident = session.get(Incident, "incident-5f")
-        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
-        action = session.query(Action).filter_by(incident_id="incident-5f").one()
-        assert action.status == ActionStatus.PENDING_APPROVAL.value
 
 
 def test_diagnose_incident_recovers_pending_action_left_by_a_crashed_prior_attempt(
@@ -1549,78 +1393,6 @@ def test_execute_approved_action_package_upgrade_colocated_host_not_double_resta
     assert all(p["host"] == host for p in phase_tagged)
 
 
-def test_execute_approved_action_package_upgrade_kill_switch_mid_phase_marks_failed_with_skips(
-    isolated_db, monkeypatch
-):
-    """I/O matrix row: kill-switch flips ON after the MON phase is done,
-    before the MGR/OSD phases run — remaining steps marked `skipped`
-    (existing Vietnamese message), Action ends FAILED (not reverted, since
-    the MON restart already ran for real)."""
-    from config.settings import settings
-
-    mon_host = "10.20.1.10"
-    mgr_host = "10.20.1.11"
-    osd_host = "10.20.1.12"
-    nodes = [mon_host, mgr_host, osd_host]
-
-    discovery_output = {
-        mon_host: "  ceph-mon@a.service   loaded active running   x\n",
-        mgr_host: "  ceph-mgr@a.service   loaded active running   x\n",
-        osd_host: "  ceph-osd@0.service   loaded active running   x\n",
-    }
-
-    def fake_execute(h, command, **kwargs):
-        if command == "systemctl --all | grep ceph || true":
-            return discovery_output.get(h, "")
-        if "systemctl restart ceph-mon" in command:
-            # Flip the kill-switch right as the MON phase's real restart
-            # runs — the fresh check ahead of the NEXT step (MGR phase)
-            # must catch it.
-            with db_module.SessionLocal() as session:
-                flag = session.get(SystemFlag, "kill_switch_enabled")
-                flag.value = True
-                session.commit()
-        return "ok"
-
-    monkeypatch.setattr(router_client, "execute_command", fake_execute)
-    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
-    monkeypatch.setattr(settings, "ceph_mon_nodes", mon_host)
-    monkeypatch.setattr(settings, "ceph_mgr_nodes", mgr_host)
-    monkeypatch.setattr(settings, "ceph_osd_nodes", osd_host)
-    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
-    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
-
-    _create_incident("incident-kill-switch-mid-phase")
-    with db_module.SessionLocal() as session:
-        action = _approved_action(
-            session,
-            "incident-kill-switch-mid-phase",
-            action_id="upgrade_ceph_cluster_package_download",
-            nodes=nodes,
-        )
-        action.action_params = json.dumps({"target_version": "15.2.17"})
-        session.commit()
-        action_pk = action.id
-
-    router_client._execute_approved_action(action_pk)
-
-    with db_module.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        assert action.status == ActionStatus.FAILED.value  # not reverted — real work already ran
-        incident = session.get(Incident, "incident-kill-switch-mid-phase")
-        assert incident.status == IncidentStatus.FAILED.value
-        progress = json.loads(action.execution_progress)
-
-    mon_step = next(p for p in progress if p.get("phase") == "mon")
-    assert mon_step["status"] == "done"
-    mgr_step = next(p for p in progress if p.get("phase") == "mgr")
-    osd_step = next(p for p in progress if p.get("phase") == "osd")
-    assert mgr_step["status"] == "skipped"
-    assert osd_step["status"] == "skipped"
-    assert "kill-switch" in mgr_step["error"].lower()
-    assert "kill-switch" in osd_step["error"].lower()
-
-
 def test_execute_approved_action_package_upgrade_restarts_leftover_rgw_host_in_final_phase(
     isolated_db, monkeypatch
 ):
@@ -1785,130 +1557,6 @@ def test_execute_approved_action_package_upgrade_skips_restart_for_host_with_fai
 
     good_mon_step = next(p for p in progress if p.get("phase") == "mon" and p["host"] == good_host)
     assert good_mon_step["status"] == "done"
-
-
-def test_execute_approved_action_package_upgrade_kill_switch_mid_sequence_skips_finalize(
-    isolated_db, monkeypatch
-):
-    """Fix 2: a kill-switch trip mid-sequence (stopped_mid_sequence=True)
-    must not run the require-osd-release finalize step, even though real
-    work already executed (executed_any=True) — `ceph osd require-osd-
-    release <codename>` must not run on the MON after the operator hit the
-    emergency kill-switch."""
-    from config.settings import settings
-
-    mon_host = "10.20.1.40"
-    mgr_host = "10.20.1.41"
-    nodes = [mon_host, mgr_host]
-
-    discovery_output = {
-        mon_host: "  ceph-mon@a.service   loaded active running   x\n",
-        mgr_host: "  ceph-mgr@a.service   loaded active running   x\n",
-    }
-
-    def fake_execute(h, command, **kwargs):
-        if command == "systemctl --all | grep ceph || true":
-            return discovery_output.get(h, "")
-        if "systemctl restart ceph-mon" in command:
-            with db_module.SessionLocal() as session:
-                flag = session.get(SystemFlag, "kill_switch_enabled")
-                flag.value = True
-                session.commit()
-        return "ok"
-
-    monkeypatch.setattr(router_client, "execute_command", fake_execute)
-    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
-    monkeypatch.setattr(settings, "ceph_mon_nodes", mon_host)
-    monkeypatch.setattr(settings, "ceph_mgr_nodes", mgr_host)
-    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
-    monkeypatch.setattr(settings, "ceph_rgw_nodes", "")
-    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
-
-    finalize_calls = []
-    monkeypatch.setattr(
-        router_client,
-        "_finalize_package_upgrade_osd_release",
-        lambda *a, **k: finalize_calls.append((a, k)),
-    )
-
-    _create_incident("incident-kill-switch-skips-finalize")
-    with db_module.SessionLocal() as session:
-        action = _approved_action(
-            session,
-            "incident-kill-switch-skips-finalize",
-            action_id="upgrade_ceph_cluster_package_download",
-            nodes=nodes,
-        )
-        action.action_params = json.dumps({"target_version": "15.2.17"})
-        session.commit()
-        action_pk = action.id
-
-    router_client._execute_approved_action(action_pk)
-
-    assert finalize_calls == []
-
-    with db_module.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        assert action.status == ActionStatus.FAILED.value
-
-
-def test_execute_approved_action_package_upgrade_mds_rgw_phase_kill_switch_records_skipped_not_silent(
-    isolated_db, monkeypatch
-):
-    """Fix 3: the MDS/RGW phase appends progress entries dynamically (only
-    for a host confirmed to have something to restart), unlike the
-    pre-populated MON/MGR/OSD phases — a mid-phase kill-switch trip must
-    still leave a `skipped` entry for every host it never reached, not
-    silently drop them from the audit trail."""
-    from config.settings import settings
-
-    rgw1 = "10.20.1.50"
-    rgw2 = "10.20.1.51"
-    nodes = [rgw1, rgw2]
-
-    def fake_execute(h, command, **kwargs):
-        if command == "systemctl --all | grep ceph || true":
-            return "  ceph-radosgw@rgw.a.service   loaded active running   x\n"
-        if "systemctl restart" in command and h == rgw1:
-            with db_module.SessionLocal() as session:
-                flag = session.get(SystemFlag, "kill_switch_enabled")
-                flag.value = True
-                session.commit()
-        return "ok"
-
-    monkeypatch.setattr(router_client, "execute_command", fake_execute)
-    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
-    monkeypatch.setattr(settings, "ceph_mon_nodes", "")
-    monkeypatch.setattr(settings, "ceph_mgr_nodes", "")
-    monkeypatch.setattr(settings, "ceph_osd_nodes", "")
-    monkeypatch.setattr(settings, "ceph_rgw_nodes", ",".join(nodes))
-    monkeypatch.setattr(settings, "ceph_exec_mode", "none")
-
-    _create_incident("incident-mds-rgw-kill-switch-skip")
-    with db_module.SessionLocal() as session:
-        action = _approved_action(
-            session,
-            "incident-mds-rgw-kill-switch-skip",
-            action_id="upgrade_ceph_cluster_package_download",
-            nodes=nodes,
-        )
-        action.action_params = json.dumps({"target_version": "15.2.17"})
-        session.commit()
-        action_pk = action.id
-
-    router_client._execute_approved_action(action_pk)
-
-    with db_module.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        assert action.status == ActionStatus.FAILED.value
-        progress = json.loads(action.execution_progress)
-
-    rgw_steps = {p["host"]: p for p in progress if p.get("phase") == "mds_rgw"}
-    assert rgw_steps[rgw1]["status"] == "done"
-    # rgw2 must still get a recorded entry — not silently missing.
-    assert rgw2 in rgw_steps
-    assert rgw_steps[rgw2]["status"] == "skipped"
-    assert "kill-switch" in rgw_steps[rgw2]["error"].lower()
 
 
 def test_execute_approved_action_package_upgrade_unexpected_exception_still_unsets_flags(
@@ -2154,73 +1802,6 @@ def test_execute_approved_action_malformed_target_nodes_marks_failed(isolated_db
         assert session.get(Action, action_pk).status == ActionStatus.FAILED.value
 
 
-def test_execute_approved_action_kill_switch_on_before_start_reverts_to_pending_approval(
-    isolated_db, monkeypatch
-):
-    with db_module.SessionLocal() as session:
-        flag = session.get(SystemFlag, "kill_switch_enabled")
-        flag.value = True
-        session.commit()
-
-    execute_calls = []
-    monkeypatch.setattr(
-        router_client, "execute_command", lambda host, command, **kwargs: execute_calls.append(host)
-    )
-
-    _create_incident("incident-7e")
-    with db_module.SessionLocal() as session:
-        action = _approved_action(session, "incident-7e")
-        action_pk = action.id
-
-    router_client._execute_approved_action(action_pk)
-
-    assert execute_calls == []
-    with db_module.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        assert action.status == ActionStatus.PENDING_APPROVAL.value
-        incident = session.get(Incident, "incident-7e")
-        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
-        entries = session.query(AuditEntry).filter_by(incident_id="incident-7e").all()
-        assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_BLOCKED_BY_KILL_SWITCH
-
-
-def test_execute_approved_action_kill_switch_mid_execution_marks_failed_not_reverted(
-    isolated_db, monkeypatch
-):
-    execute_calls = []
-
-    def fake_execute(host, command, **kwargs):
-        if command == "systemctl --all | grep ceph || true":
-            return "  ceph-fsid@osd.9.service   loaded active running   x\n"
-        execute_calls.append(host)
-        if host == "10.20.1.83":
-            with db_module.SessionLocal() as session:
-                flag = session.get(SystemFlag, "kill_switch_enabled")
-                flag.value = True
-                session.commit()
-        return "ok"
-
-    monkeypatch.setattr(router_client, "execute_command", fake_execute)
-    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
-
-    _create_incident("incident-7f")
-    with db_module.SessionLocal() as session:
-        action = _approved_action(
-            session, "incident-7f", nodes=["10.20.1.83", "10.20.1.78"]
-        )
-        action_pk = action.id
-
-    router_client._execute_approved_action(action_pk)
-
-    assert execute_calls == ["10.20.1.83"]  # second node never touched
-    with db_module.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        # Node 1 already ran for real — must surface as FAILED, not silently
-        # revert to PENDING_APPROVAL (same reasoning as the SAFE-path
-        # equivalent, test_diagnose_incident_kill_switch_checked_before_each_node_not_just_once).
-        assert action.status == ActionStatus.FAILED.value
-
-
 def test_execute_approved_action_skips_non_approved_action(isolated_db, monkeypatch):
     monkeypatch.setattr(
         router_client, "execute_command", lambda host, command, **kwargs: pytest.fail("must not execute")
@@ -2275,7 +1856,7 @@ def test_execute_approved_action_delegates_to_cluster_deploy_for_deploy_action_i
     )
     run_calls = []
 
-    def fake_run(action_pk, action_id, action_params, incident_id, write_progress, check_kill_switch):
+    def fake_run(action_pk, action_id, action_params, incident_id, write_progress):
         run_calls.append((action_pk, action_id, action_params, incident_id))
         return True
 
@@ -2368,7 +1949,7 @@ def test_execute_approved_action_delegates_to_volume_perf_for_volume_perf_sweep(
     )
     run_calls = []
 
-    def fake_run(action_pk, action_params, incident_id, write_progress, check_kill_switch):
+    def fake_run(action_pk, action_params, incident_id, write_progress):
         run_calls.append((action_pk, action_params, incident_id))
         return True
 

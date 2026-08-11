@@ -100,7 +100,7 @@
                   <button type="button" class="btn btn-sm" disabled title="Sửa qua trang Cài đặt">Cài đặt</button>
                   {% else %}
                   <form method="post" action="/clusters/{{ c.id }}/toggle-active" class="inline-form">
-                    <button type="submit" class="btn btn-sm {{ 'btn-kill-switch-on' if c.is_active else '' }}">
+                    <button type="submit" class="btn btn-sm {{ 'btn-danger' if c.is_active else '' }}">
                       {{ "Vô hiệu hoá" if c.is_active else "Kích hoạt lại" }}
                     </button>
                   </form>
@@ -110,7 +110,7 @@
                     class="inline-form"
                     onsubmit="return confirm('Xoá vĩnh viễn cụm {{ c.name }}? Toàn bộ Incident/Action/Audit Trail/backup job/heartbeat RIÊNG của cụm này sẽ bị xoá khỏi database, không thể hoàn tác. Các cụm khác không bị ảnh hưởng.');"
                   >
-                    <button type="submit" class="btn btn-sm btn-kill-switch-on">Xoá</button>
+                    <button type="submit" class="btn btn-sm btn-danger">Xoá</button>
                   </form>
                   {% endif %}
                 </td>

@@ -1210,7 +1210,6 @@ def test_unauthenticated_download_upgrade_log_redirects_to_login(dashboard_clien
 #
 # dashboard_client's DB fixture uses Base.metadata.create_all() (SQLite),
 # which does NOT run the migration's seed insert — same reasoning
-# test_set_kill_switch_creates_row_when_missing documents for SystemFlag —
 # so every test that expects a successful lock CLAIM must seed the
 # singleton row first.
 

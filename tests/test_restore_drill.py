@@ -145,11 +145,11 @@ def _write_progress(action_pk, progress):
     pass
 
 
-def _kill_switch_off(incident_id):
+def _allow_execution(incident_id):
     return False
 
 
-def _kill_switch_on(incident_id):
+def _deny_execution(incident_id):
     return True
 
 
@@ -174,7 +174,7 @@ def _make_success_full_backup_job():
 def test_restore_drill_succeeds_when_checksum_matches(isolated_db, fakes):
     _make_success_full_backup_job()
 
-    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _kill_switch_off)
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
 
     assert succeeded is True
     assert bytes(FakeSSHClient.imported_bytes) == BACKUP_CONTENT
@@ -192,7 +192,7 @@ def test_restore_drill_fails_on_checksum_mismatch_and_alerts_critical(isolated_d
     _make_success_full_backup_job()
     FakeSSHClient.export_payload = b"corrupted, different bytes entirely"
 
-    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _kill_switch_off)
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
 
     assert succeeded is False
     with db_module.SessionLocal() as session:
@@ -210,7 +210,7 @@ def test_restore_drill_fails_when_rbd_import_exits_nonzero(isolated_db, fakes):
     FakeSSHClient.import_exit_status = 1
     FakeSSHClient.import_stderr = "no space left on device"
 
-    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _kill_switch_off)
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
 
     assert succeeded is False
     with db_module.SessionLocal() as session:
@@ -222,7 +222,7 @@ def test_restore_drill_fails_when_rbd_import_exits_nonzero(isolated_db, fakes):
 
 
 def test_restore_drill_fails_when_no_successful_full_backup_exists(isolated_db, fakes):
-    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _kill_switch_off)
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
 
     assert succeeded is False
     with db_module.SessionLocal() as session:
@@ -233,20 +233,9 @@ def test_restore_drill_fails_when_no_successful_full_backup_exists(isolated_db, 
     assert fakes.alerts[0][0] == "critical"
 
 
-def test_restore_drill_blocked_by_kill_switch(isolated_db, fakes):
-    _make_success_full_backup_job()
-
-    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _kill_switch_on)
-
-    assert succeeded is False
-    with db_module.SessionLocal() as session:
-        assert session.query(BackupJob).filter(BackupJob.job_type == "restore_drill").count() == 0
-    assert fakes.cleanup_calls == []
-
-
 def test_restore_drill_not_configured_returns_false(isolated_db, fakes, monkeypatch):
     monkeypatch.setattr(restore_drill, "load_backup_policy", lambda: {"restore_drill": {}})
 
-    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _kill_switch_off)
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
 
     assert succeeded is False

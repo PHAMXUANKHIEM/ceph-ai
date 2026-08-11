@@ -13,6 +13,7 @@ type DashboardHealth = {
   mons: { up: number | null; total: number | null };
   servers: { online: number | null; total: number | null };
   utilization: { percent: number | null; bytes_used: number | null; pools: number | null };
+  metrics: { latency_ms: number | null; bandwidth_bps: number | null; iops: number | null };
   placement_groups: string;
 };
 
@@ -22,18 +23,32 @@ const emptyHealth: DashboardHealth = {
   mons: { up: null, total: null },
   servers: { online: null, total: null },
   utilization: { percent: null, bytes_used: null, pools: null },
+  metrics: { latency_ms: null, bandwidth_bps: null, iops: null },
   placement_groups: "UNKNOWN"
 };
 
 const ratio = (up: number | null, total: number | null) => String(up ?? "—") + "/" + String(total ?? "—");
 const formatUsed = (bytes: number | null) => bytes === null ? "—" : (bytes / 1_000_000_000).toFixed(2) + " GB";
+const formatRate = (bytes: number | null) => {
+  if (bytes === null) return "—";
+  if (bytes >= 1_000_000_000) return (bytes / 1_000_000_000).toFixed(2) + " GB/s";
+  if (bytes >= 1_000_000) return (bytes / 1_000_000).toFixed(2) + " MB/s";
+  if (bytes >= 1_000) return (bytes / 1_000).toFixed(2) + " KB/s";
+  return Math.round(bytes) + " B/s";
+};
+const formatIops = (iops: number | null) => iops === null ? "—" : Math.round(iops).toLocaleString();
 
 export function CephDashboard() {
   const [health, setHealth] = useState<DashboardHealth>(emptyHealth);
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/dashboard/health", { credentials: "same-origin", signal: controller.signal })
+    let controller: AbortController | null = null;
+    const load = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const cluster = new URLSearchParams(window.location.search).get("cluster");
+      const url = cluster ? "/api/dashboard/health?cluster=" + encodeURIComponent(cluster) : "/api/dashboard/health";
+      fetch(url, { credentials: "same-origin", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("Dashboard health API returned " + response.status);
         return response.json() as Promise<DashboardHealth>;
@@ -42,7 +57,10 @@ export function CephDashboard() {
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === "AbortError")) console.error(error);
       });
-    return () => controller.abort();
+    };
+    load();
+    const timer = window.setInterval(load, 10_000);
+    return () => { window.clearInterval(timer); controller?.abort(); };
   }, []);
 
   const statusCards = useMemo<StatusDatum[]>(() => [
@@ -64,9 +82,9 @@ export function CephDashboard() {
         {statusCards.map((card) => <StatusCard key={card.title} {...card} />)}
       </section>
       <section className="metrics-grid" aria-label="Ceph performance metrics">
-        <MetricPanel title="Latency" icon={Gauge} />
-        <MetricPanel title="Bandwidth" icon={ChartNoAxesCombined} />
-        <MetricPanel title="IOPS" icon={ChartNoAxesCombined} />
+        <MetricPanel title="Latency" icon={Gauge} value={health.metrics.latency_ms === null ? "—" : health.metrics.latency_ms.toFixed(2) + " ms"} subtitle="OSD average" />
+        <MetricPanel title="Bandwidth" icon={ChartNoAxesCombined} value={formatRate(health.metrics.bandwidth_bps)} subtitle="Read + write" />
+        <MetricPanel title="IOPS" icon={ChartNoAxesCombined} value={formatIops(health.metrics.iops)} subtitle="Read + write ops/s" />
         <PlacementGroupsCard value={health.placement_groups} />
       </section>
     </main>

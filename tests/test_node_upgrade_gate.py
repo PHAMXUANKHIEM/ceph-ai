@@ -39,7 +39,6 @@ def _make_action(db_session) -> str:
 def _seed_lock(db_session, active_gate_id=None):
     # Base.metadata.create_all() (the db_session fixture) doesn't run the
     # migration's seed insert — same reasoning as
-    # test_set_kill_switch_creates_row_when_missing for SystemFlag.
     db_session.add(NodeUpgradeGateLock(id=LOCK_ID, active_gate_id=active_gate_id))
     db_session.commit()
 

@@ -165,12 +165,12 @@
     }
 
     if (sweep.steps && sweep.steps.length) {
-      html += '<div class="table-wrap"><table><thead><tr><th>iodepth</th><th>IOPS</th><th>Latency avg</th><th>Latency p99</th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>iodepth</th><th>IOPS median</th><th>Độ lệch IOPS</th><th>Latency avg</th><th>Latency p99</th></tr></thead><tbody>';
       sweep.steps.forEach(function (s) {
         var isKnee = sweep.knee && s.iodepth === sweep.knee.iodepth;
         html +=
           "<tr" + (isKnee ? ' class="progress-item-failed"' : "") + "><td>" + s.iodepth + "</td><td>" +
-          fmt(s.iops, 0) + "</td><td>" + fmt(s.latency_avg_ms, 2) + "ms</td><td>" +
+          fmt(s.iops, 0) + "</td><td>" + fmt(s.iops_cv_pct, 1) + "%</td><td>" + fmt(s.latency_avg_ms, 2) + "ms</td><td>" +
           fmt(s.latency_p99_ms, 2) + "ms</td></tr>";
       });
       html += "</tbody></table></div>";

@@ -322,7 +322,6 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
     staged (settings or the node list may have changed in the meantime).
 
     Creates a synthetic Incident so the SAFE/RISKY Action pipeline that
-    already exists for detected Incidents (kill-switch checks, the RISKY
     approval screen, the Worker's approved-action poller, the audit trail)
     handles everything from here on — this endpoint deliberately does not
     execute or SSH anywhere itself (AD-3: only the Worker holds SSH executor
@@ -407,7 +406,6 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
             # the Incident-triggered path already uses — status=APPROVED
             # here (rather than a fresh PENDING nothing polls) is what makes
             # the Worker's existing poll_approved_actions() pick this row up
-            # and execute it, with its own fresh kill-switch check.
             status=ActionStatus.APPROVED.value if is_safe else ActionStatus.PENDING_APPROVAL.value,
             rationale=message.proposed_rationale,
             target_nodes=json.dumps(target_nodes),

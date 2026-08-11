@@ -22,7 +22,7 @@ import worker.backup.cluster_scope as cluster_scope
 import worker.backup.engine as engine
 from shared import db as db_module
 from shared.db import Base
-from shared.models import BackupJob, SystemFlag
+from shared.models import BackupJob
 
 
 @pytest.fixture()
@@ -36,9 +36,6 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     )
-    with db_module.SessionLocal() as session:
-        session.add(SystemFlag(key="kill_switch_enabled", value=False))
-        session.commit()
     yield test_engine
 
 
@@ -133,7 +130,7 @@ def _write_progress(action_pk, progress):
     pass
 
 
-def _kill_switch_off(incident_id):
+def _allow_execution(incident_id):
     return False
 
 
@@ -142,7 +139,7 @@ def test_verify_success_marks_backup_job_success(isolated_db, fakes):
     fakes.verify_result = True
 
     succeeded = engine.run(
-        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _kill_switch_off
+        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _allow_execution
     )
 
     assert succeeded is True
@@ -158,7 +155,7 @@ def test_verify_failure_never_marks_backup_job_success(isolated_db, fakes):
     fakes.verify_result = False
 
     succeeded = engine.run(
-        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _kill_switch_off
+        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _allow_execution
     )
 
     assert succeeded is False
@@ -177,7 +174,7 @@ def test_sha256_computed_during_streaming_not_by_rereading(isolated_db, fakes):
     which would only be true if it was computed from the actual bytes
     that flowed through, not some placeholder."""
     engine.run(
-        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _kill_switch_off
+        "action-1", "rbd_backup_run", {"pool": "vms", "image": "web01"}, "incident-1", None, _write_progress, _allow_execution
     )
 
     uploaded_content = next(iter(fakes.uploaded.values()))

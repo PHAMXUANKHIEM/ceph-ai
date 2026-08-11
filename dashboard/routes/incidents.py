@@ -66,7 +66,6 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
     2026-07-23 fix #1: `dashboard/routes/chat.py::confirm_chat_action` creates
     a synthetic Incident (ceph_code=CHAT_REQUEST_CEPH_CODE) for every
     chat-confirmed action, purely so it can reuse the existing Action/
-    kill-switch/audit pipeline (see that function's docstring) — it is NOT
     evidence of real Ceph cluster health. Before this fix, a chat action
     that failed for an unrelated reason (e.g. a bad parameter, or — as
     actually happened — the Worker process running stale code) flipped
@@ -391,7 +390,12 @@ def _resolve_selected_cluster(requested_cluster_id: str, session_cluster_id: str
     return clusters, (selected or default_cluster)
 
 
-def _dashboard_health_payload(status: dict, cluster: Cluster) -> dict:
+def _dashboard_health_payload(
+    status: dict,
+    cluster: Cluster,
+    osd_perf: dict | None = None,
+    cluster_nodes: dict | list | None = None,
+) -> dict:
     """Convert one authoritative ceph status response into card values."""
     health = status.get("health") if isinstance(status.get("health"), dict) else {}
     osdmap = status.get("osdmap") if isinstance(status.get("osdmap"), dict) else {}
@@ -399,6 +403,7 @@ def _dashboard_health_payload(status: dict, cluster: Cluster) -> dict:
     pgmap = status.get("pgmap") if isinstance(status.get("pgmap"), dict) else {}
 
     mons = monmap.get("mons") if isinstance(monmap.get("mons"), list) else []
+    mon_total = monmap.get("num_mons") if isinstance(monmap.get("num_mons"), int) else len(mons)
     quorum = status.get("quorum_names")
     if not isinstance(quorum, list):
         quorum = status.get("quorum") if isinstance(status.get("quorum"), list) else []
@@ -420,15 +425,64 @@ def _dashboard_health_payload(status: dict, cluster: Cluster) -> dict:
         for row in pg_states
     )
 
+    perf_rows = []
+    if isinstance(osd_perf, dict):
+        candidate = osd_perf.get("osd_perf_infos")
+        if isinstance(candidate, list):
+            perf_rows = candidate
+    latency_values = []
+    for row in perf_rows:
+        if not isinstance(row, dict):
+            continue
+        perf = row.get("perf_stats") if isinstance(row.get("perf_stats"), dict) else row
+        for key in ("apply_latency_ms", "commit_latency_ms"):
+            value = perf.get(key)
+            if isinstance(value, (int, float)):
+                latency_values.append(float(value))
+
+    online_hosts: set[str] = set()
+    server_total = len(configured_nodes(cluster))
+    if isinstance(cluster_nodes, list):
+        # `ceph orch host ls`: an empty status means online; offline/error
+        # hosts carry an explicit status string.
+        for row in cluster_nodes:
+            if not isinstance(row, dict):
+                continue
+            hostname = str(row.get("hostname") or row.get("host") or "").strip()
+            status_text = str(row.get("status") or "").strip().lower()
+            if hostname and status_text not in {"offline", "maintenance", "error"}:
+                online_hosts.add(hostname)
+        server_total = max(server_total, len(cluster_nodes))
+    elif isinstance(cluster_nodes, dict):
+        # `ceph node ls` works for both legacy and cephadm clusters. Its
+        # shape is role -> hostname -> daemon-id list.
+        for values in cluster_nodes.values():
+            if isinstance(values, dict):
+                online_hosts.update(str(host) for host in values if host)
+            elif isinstance(values, list):
+                online_hosts.update(str(value) for value in values if value)
+
+    read_bps = pgmap.get("read_bytes_sec")
+    write_bps = pgmap.get("write_bytes_sec")
+    read_ops = pgmap.get("read_op_per_sec")
+    write_ops = pgmap.get("write_op_per_sec")
+    bandwidth_bps = sum(value for value in (read_bps, write_bps) if isinstance(value, (int, float)))
+    iops = sum(value for value in (read_ops, write_ops) if isinstance(value, (int, float)))
+
     return {
         "health": health_value,
         "osds": {"up": osdmap.get("num_up_osds"), "total": osdmap.get("num_osds")},
-        "mons": {"up": len(quorum), "total": len(mons)},
-        "servers": {"online": None, "total": len(configured_nodes(cluster))},
+        "mons": {"up": len(quorum), "total": mon_total},
+        "servers": {"online": len(online_hosts) if cluster_nodes is not None else None, "total": server_total},
         "utilization": {
             "percent": utilization,
             "bytes_used": bytes_used if isinstance(bytes_used, (int, float)) else None,
             "pools": pools,
+        },
+        "metrics": {
+            "latency_ms": round(sum(latency_values) / len(latency_values), 2) if latency_values else None,
+            "bandwidth_bps": bandwidth_bps,
+            "iops": iops,
         },
         "placement_groups": "OKAY" if pg_okay else "WARN",
     }
@@ -455,7 +509,26 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
         )
         if not isinstance(payload, dict):
             raise CephQueryError("ceph -s returned an unexpected response")
-        return _dashboard_health_payload(payload, selected_cluster)
+        osd_perf = None
+        cluster_nodes = None
+        try:
+            _host, osd_perf = await asyncio.to_thread(
+                run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
+                ssh_key_path, exec_mode, "ceph osd perf",
+            )
+        except Exception as exc:
+            logger.info("dashboard_health: osd latency unavailable: %s", exc)
+        node_commands = ("ceph orch host ls", "ceph node ls") if exec_mode == "cephadm" else ("ceph node ls",)
+        for node_command in node_commands:
+            try:
+                _host, cluster_nodes = await asyncio.to_thread(
+                    run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
+                    ssh_key_path, exec_mode, node_command,
+                )
+                break
+            except Exception as exc:
+                logger.info("dashboard_health: server inventory unavailable via %s: %s", node_command, exc)
+        return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes)
     except CephQueryError as exc:
         logger.warning("dashboard_health: live Ceph query failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

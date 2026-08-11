@@ -458,7 +458,6 @@ def _upgrade_ceph_cluster_command(host: str | None, params: dict) -> str:
 # orchestrator here gating progress on cluster health between hosts. If one
 # host's command fails, the loop still tries the REMAINING hosts (existing,
 # unchanged behavior — see that function's docstring); the only way to halt
-# it mid-sequence is the kill-switch, checked fresh before each host (AD-4) —
 # flipping it stops any host after the current one from being attempted. The
 # Dashboard's generated plan text (dashboard/routes/upgrade.py) says this
 # explicitly before the operator approves.
@@ -582,7 +581,6 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     """Adds the official Ceph package repo for the target release
     (download.ceph.com) and installs/upgrades the `ceph` package, then
     restarts whatever this host actually runs. See this section's module
-    comment for the execution-model caveats (no orchestrator, kill-switch
     is the only mid-sequence stop).
 
     Story 7.2 (2026-08-04): `params["_phase"]` optionally selects a PHASED
@@ -848,7 +846,6 @@ def _patch_install_command(host: str | None, params: dict) -> str:
     ceph_patch_node_staging_dir), not an operator-typed path, since THIS
     pipeline is the one that put the files there in the first place. Same
     execution-model caveat as that function: no orchestrator gating
-    progress on cluster health between hosts, kill-switch is the only
     mid-sequence stop (see worker/llm/router_client.py::_execute_approved_action)."""
     _require_non_cephadm_exec_mode("patch_install")
     if host is None:

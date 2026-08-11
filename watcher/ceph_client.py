@@ -659,8 +659,6 @@ def query_cluster_health_with(
 # `ceph orch upgrade start` has been issued (see
 # worker/executor/commands.py::_upgrade_ceph_cluster_command), cephadm's own
 # mgr module drives the rest of the upgrade in the background — it is NOT
-# gated by this codebase's kill-switch or by the Worker process being alive
-# at all, so the kill-switch's normal "checked fresh before every
 # remediation command" guarantee (AD-4) does not apply to it once started.
 # Pause/resume are the operator's actual off-switch for an in-flight
 # upgrade; they are read as directly-actionable admin commands (like the
@@ -775,7 +773,6 @@ def _run_upgrade_control_command(inner_command: str) -> None:
 
 def pause_upgrade() -> None:
     """Operator's off-switch for an in-flight upgrade (see module note
-    above on why this isn't gated by the kill-switch) — pauses cephadm's
     own upgrade loop after whichever daemon it's currently mid-upgrading
     finishes; does not roll anything back."""
     _run_upgrade_control_command("ceph orch upgrade pause")
@@ -792,7 +789,6 @@ def resume_upgrade() -> None:
 # past when the command that started it already returned). This is the
 # manual cleanup step (dashboard/routes/upgrade.py's own "Bỏ noout/
 # noscrub..." button) — same self-service-control posture as pause_upgrade/
-# resume_upgrade just above, not gated by the kill-switch for the same
 # reason those aren't (an operator explicitly clicking a specific,
 # narrow-scope button, not an automated remediation).
 _UPGRADE_OSD_FLAGS = ("noout", "noscrub", "nodeep-scrub", "nosnaptrim")

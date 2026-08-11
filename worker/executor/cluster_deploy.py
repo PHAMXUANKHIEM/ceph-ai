@@ -2785,10 +2785,8 @@ def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, 
     consequence text) — no partial state, no continuing to FR-4/FR-5
     without a fresh insurance backup.
 
-    NOTE: worker.backup.metadata.run()'s own write_progress/check_kill_switch
     are stubbed here (no-op / never-tripped) — this phase function's own
     signature has no access to cluster_deploy.run()'s real callbacks
-    (only on_host_update), and AD-4's kill-switch granularity is already
     documented as PHASE-level, not finer. Known UX limitation: the
     operator sees this whole phase as one "running" step for as long as
     the nested metadata backup takes, without its own 5-artifact
@@ -3700,9 +3698,9 @@ def run(
     action_params: dict,
     incident_id: str,
     write_progress,
+    *_unused,
 ) -> bool:
     """Executes the ordered phase sequence for `action_id`, checking the
-    kill-switch fresh before EACH phase (AD-4) and persisting STEP-shaped
     progress via `write_progress(action_pk, progress)` after every status
     change — same callback `worker/llm/router_client.py::_write_action_progress`
     already provides, reused unchanged.

@@ -192,6 +192,7 @@ def run(
     incident_id: str,
     cluster_id: str | None,
     write_progress,
+    *_unused,
 ) -> bool:
     """Dispatches by `action_id` — this family has more than one member
     needing different logic (unlike volume_perf.py's single-id module),

@@ -181,7 +181,7 @@
         <p class="hint">Chưa từng đề xuất Settings lần nào.</p>
         {% endif %}
         <form method="post" action="/patch/propose-install" class="inline-form">
-          <button type="submit" class="btn btn-kill-switch-on" {% if not can_propose_install %}disabled{% endif %}>
+          <button type="submit" class="btn btn-danger" {% if not can_propose_install %}disabled{% endif %}>
             Đề xuất Settings
           </button>
         </form>

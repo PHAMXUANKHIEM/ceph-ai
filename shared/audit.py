@@ -47,7 +47,6 @@ EVENT_CHAT_ACTION_REQUESTED = "chat_action_requested"
 # dashboard/routes/upgrade.py: an in-flight upgrade's pause/resume are
 # operator-triggered commands run directly (not through the Action/approval
 # pipeline — see watcher/ceph_client.py's module note on why cephadm's own
-# upgrade loop isn't gated by the kill-switch once started), so they need
 # their own audit events distinct from the EVENT_RISKY_ACTION_* family that
 # covers the Action row's own PENDING_APPROVAL -> APPROVED -> EXECUTED
 # lifecycle (i.e. issuing the initial `ceph orch upgrade start`).

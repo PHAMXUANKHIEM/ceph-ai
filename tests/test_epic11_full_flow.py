@@ -26,7 +26,6 @@ from tests.test_dashboard_upgrade import (
 )
 from shared import db as db_module
 from shared.models import Action, ActionStatus, Incident, NodeUpgradeGate, NodeUpgradeGateLock, NodeUpgradeGateState
-from shared.kill_switch import set_kill_switch
 from shared.node_upgrade_gate import LOCK_ID
 from worker.executor import cluster_deploy as cluster_deploy_module
 from worker.llm import router_client as router_client_module
@@ -161,13 +160,6 @@ def test_full_epic11_flow_from_blocked_gate_to_resumed_cluster_upgrade(dashboard
         assert session.query(Action).count() == 0
 
     # --- Step 2: Prepare NODE_A ------------------------------------------
-    # AD-4: _execute_approved_action re-checks the kill-switch fresh before
-    # every phase — the test DB has no seeded SystemFlag row (no migration
-    # run against it), so it fails CLOSED (blocking) by default; must be
-    # explicitly turned off for this test's execution steps to proceed.
-    with db_module.SessionLocal() as session:
-        set_kill_switch(session, False)
-        session.commit()
     _seed_gate_lock(active_gate_id=None)
     dispatch, commands_run = _make_full_flow_dispatch_execute()
     monkeypatch.setattr(cluster_deploy_module, "execute_command", dispatch)

@@ -26,7 +26,9 @@ html, body { min-width: 320px; margin: 0; }
 .health-card .status-card__body strong { color: #f0b54d; }
 .health-card .status-card__body span { color: #c99339; }
 .metric-panel, .placement-card { height: 100%; }
-.metric-panel__body { height: calc(100% - 38px); display: grid; place-items:center; border-top: 0; background: #161922; color: #657084; font-size: 22px; line-height: 1; font-weight: 700; letter-spacing: .01em; }
+.metric-panel__body { height: calc(100% - 38px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; border-top: 0; background: #161922; color: #657084; line-height: 1; font-weight: 700; letter-spacing: .01em; }
+.metric-panel__body strong { color: #eef2f8; font-size: 34px; line-height: 1; }
+.metric-panel__body span { color: #7f899d; font-size: 11px; line-height: 1; font-weight: 600; }
 .placement-card { border-color: rgba(62,207,110,.30); background: rgba(62,207,110,.07); }
 .placement-card__body { height: calc(100% - 38px); display: grid; place-items: center; background: rgba(62,207,110,.045); color: #58d980; font-size: 60px; line-height: 1; font-weight: 700; letter-spacing: -.025em; }
 

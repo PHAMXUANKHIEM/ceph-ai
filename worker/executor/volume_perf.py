@@ -29,6 +29,7 @@ per-volume guarantee.
 import json
 import logging
 import shlex
+import statistics
 import uuid
 from datetime import datetime
 
@@ -41,12 +42,10 @@ logger = logging.getLogger(__name__)
 
 VOLUME_PERF_ACTION_IDS = VALID_VOLUME_PERF_ACTION_IDS
 
-# Leading underscore (2026-07-29): purely a visual "this is tool-owned, not
-# an operator's volume" signal on `rbd ls` output — Ceph itself doesn't
-# treat it specially. Reused/created-once-then-kept across sweep runs
-# (see _ensure_scratch_image) rather than created-then-deleted every time,
-# to avoid repeatedly re-provisioning a 50G image for no benefit (RBD
-# images are thin-provisioned — an unused one costs no real capacity).
+# Leading underscore: purely a visual "this is tool-owned" signal. The image
+# is deleted after every run (including failed runs), so each benchmark starts
+# from a fresh thin-provisioned image and cannot silently retain 50 GiB of
+# allocated random-write data between runs.
 SCRATCH_IMAGE_NAME = "_ceph_aiops_perf_probe"
 SCRATCH_IMAGE_SIZE_GB = 50
 
@@ -59,6 +58,7 @@ IODEPTH_STEPS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 # of ~10.
 FIO_RUNTIME_SECONDS = 20
 FIO_RAMP_SECONDS = 5
+FIO_SAMPLES_PER_DEPTH = 3
 
 # Knee-detection thresholds (see _detect_knee) — deliberately two signals
 # combined, not one: the operator's own example (~3% more IOPS for ~14x
@@ -68,14 +68,17 @@ FIO_RAMP_SECONDS = 5
 # scaling normally. The absolute cutoff is a safety net independent of
 # growth shape, so a sweep doesn't grind on toward iodepth=256 once
 # latency is already clearly unacceptable.
-_KNEE_IOPS_PLATEAU_THRESHOLD = 0.15
-_KNEE_LATENCY_GROWTH_MULTIPLE = 3.0
+_KNEE_IOPS_PLATEAU_THRESHOLD = 0.10
+_KNEE_LATENCY_GROWTH_THRESHOLD = 0.50
+_KNEE_MIN_LATENCY_DELTA_MS = 1.0
 _KNEE_ABSOLUTE_LATENCY_MS = 20.0
+_KNEE_CONFIRMING_TRANSITIONS = 2
 
 _STEP_DEFS = [
     ("prepare", "Chuẩn bị scratch image + kiểm tra fio", 10),
-    ("sweep", "Quét tải tăng dần (iodepth 1→256)", 90),
-    ("diagnostics", "Thu thập QoS / bottleneck diagnostics", 100),
+    ("sweep", "Quét tải tăng dần, lấy median 3 mẫu (iodepth 1→256)", 85),
+    ("diagnostics", "Thu thập QoS / bottleneck diagnostics", 95),
+    ("cleanup", "Xóa scratch image 50 GiB", 100),
 ]
 
 
@@ -113,12 +116,29 @@ def _check_fio_available(ip: str) -> None:
 
 def _ensure_scratch_image(ip: str, pool: str) -> None:
     spec = shlex.quote(f"{pool}/{SCRATCH_IMAGE_NAME}")
-    cmd = f"rbd info {spec} >/dev/null 2>&1 || rbd create --size {SCRATCH_IMAGE_SIZE_GB}G {spec}"
+    # A stale probe can remain after a host/network crash that prevented the
+    # previous run's cleanup. Remove it first instead of benchmarking against
+    # previously allocated/randomized blocks.
+    cmd = (
+        f"if rbd info {spec} >/dev/null 2>&1; then rbd rm {spec} || exit $?; fi; "
+        f"rbd create --size {SCRATCH_IMAGE_SIZE_GB}G {spec}"
+    )
     try:
         execute_command(ip, cmd)
     except ExecutorError as exc:
         raise VolumePerfError(
             f"{ip}: không tạo được scratch image {pool}/{SCRATCH_IMAGE_NAME}: {exc}"
+        ) from exc
+
+
+def _remove_scratch_image(ip: str, pool: str) -> None:
+    """Remove benchmark data completely; idempotent when prepare never made it."""
+    spec = shlex.quote(f"{pool}/{SCRATCH_IMAGE_NAME}")
+    try:
+        execute_command(ip, f"if rbd info {spec} >/dev/null 2>&1; then rbd rm {spec}; fi")
+    except ExecutorError as exc:
+        raise VolumePerfError(
+            f"{ip}: không xóa được scratch image {pool}/{SCRATCH_IMAGE_NAME}: {exc}"
         ) from exc
 
 
@@ -151,7 +171,7 @@ def _run_fio_step(ip: str, pool: str, iodepth: int) -> dict:
         f"--pool={shlex.quote(pool)} --rbdname={shlex.quote(SCRATCH_IMAGE_NAME)} "
         f"--rw=randwrite --bs=4k --iodepth={iodepth} --numjobs=1 "
         f"--runtime={FIO_RUNTIME_SECONDS} --ramp_time={FIO_RAMP_SECONDS} --time_based --direct=1 "
-        "--group_reporting --output-format=json"
+        "--invalidate=1 --randrepeat=0 --norandommap --group_reporting --output-format=json"
     )
     try:
         output = execute_command(ip, cmd)
@@ -160,23 +180,56 @@ def _run_fio_step(ip: str, pool: str, iodepth: int) -> dict:
     return _parse_fio_json(output, iodepth)
 
 
+def _run_fio_depth(ip: str, pool: str, iodepth: int) -> dict:
+    """Run repeated samples and use medians so one noisy interval cannot win."""
+    samples = [_run_fio_step(ip, pool, iodepth) for _ in range(FIO_SAMPLES_PER_DEPTH)]
+    iops_values = [sample["iops"] for sample in samples]
+    iops_median = statistics.median(iops_values)
+    return {
+        "iodepth": iodepth,
+        "iops": round(iops_median, 1),
+        "latency_avg_ms": round(statistics.median(s["latency_avg_ms"] for s in samples), 3),
+        "latency_p99_ms": round(statistics.median(s["latency_p99_ms"] for s in samples), 3),
+        "sample_count": len(samples),
+        "iops_cv_pct": round(
+            (statistics.stdev(iops_values) / iops_median * 100) if len(iops_values) > 1 and iops_median else 0.0,
+            2,
+        ),
+    }
+
+
+def _is_saturation_transition(prev: dict, cur: dict) -> bool:
+    if not prev["iops"]:
+        return False
+    iops_growth = (cur["iops"] - prev["iops"]) / prev["iops"]
+    prev_lat = max(prev["latency_p99_ms"], 0.001)
+    latency_growth = (cur["latency_p99_ms"] - prev_lat) / prev_lat
+    latency_delta = cur["latency_p99_ms"] - prev_lat
+    plateaued = iops_growth < _KNEE_IOPS_PLATEAU_THRESHOLD
+    latency_bad = (
+        latency_growth >= _KNEE_LATENCY_GROWTH_THRESHOLD
+        and latency_delta >= _KNEE_MIN_LATENCY_DELTA_MS
+    ) or cur["latency_p99_ms"] >= _KNEE_ABSOLUTE_LATENCY_MS
+    return plateaued and latency_bad
+
+
 def _detect_knee(steps: list[dict]) -> dict | None:
     """Returns the LAST step before the cliff (the usable ceiling — "how
     far can this be pushed before it falls off"), or None if the sweep
     never saturated within the tested range (steps[-1] is then a
     lower-bound floor, not a real ceiling)."""
+    consecutive = 0
+    first_bad_index: int | None = None
     for i in range(1, len(steps)):
-        prev, cur = steps[i - 1], steps[i]
-        iops_growth = (cur["iops"] - prev["iops"]) / prev["iops"] if prev["iops"] else 0.0
-        prev_lat = prev["latency_p99_ms"] or 0.001
-        latency_growth = (cur["latency_p99_ms"] - prev_lat) / prev_lat
-
-        plateaued = iops_growth < _KNEE_IOPS_PLATEAU_THRESHOLD
-        latency_spiked = latency_growth > _KNEE_LATENCY_GROWTH_MULTIPLE * max(iops_growth, 0.0)
-        absolute_bad = cur["latency_p99_ms"] >= _KNEE_ABSOLUTE_LATENCY_MS
-
-        if (plateaued and latency_spiked) or absolute_bad:
-            return prev
+        if _is_saturation_transition(steps[i - 1], steps[i]):
+            if consecutive == 0:
+                first_bad_index = i
+            consecutive += 1
+            if consecutive >= _KNEE_CONFIRMING_TRANSITIONS and first_bad_index is not None:
+                return steps[first_bad_index - 1]
+        else:
+            consecutive = 0
+            first_bad_index = None
     return None
 
 
@@ -224,6 +277,7 @@ def run(
     action_params: dict,
     incident_id: str,
     write_progress,
+    *_unused,
 ) -> bool:
     """Executes one load-sweep run. `action_params` must carry `pool`,
     `mon_ip` (pre-resolved by dashboard/routes/volumes.py at propose time —
@@ -262,7 +316,7 @@ def run(
         )
         session.commit()
 
-    def _record_failure(step_index: int, message: str) -> None:
+    def _record_failure(step_index: int, message: str, measured_steps: list[dict] | None = None) -> None:
         progress[step_index]["status"] = "failed"
         progress[step_index]["message"] = message
         progress[step_index]["finished_at"] = datetime.utcnow().isoformat()
@@ -272,8 +326,29 @@ def run(
             if row is not None:
                 row.status = "FAILED"
                 row.error_message = message
+                if measured_steps is not None:
+                    row.steps_json = json.dumps(measured_steps)
                 row.finished_at = datetime.utcnow()
                 session.commit()
+
+    def _cleanup() -> str | None:
+        cleanup_step = progress[3]
+        cleanup_step["status"] = "running"
+        cleanup_step["started_at"] = datetime.utcnow().isoformat()
+        write_progress(action_pk, progress)
+        try:
+            _remove_scratch_image(mon_ip, pool)
+        except VolumePerfError as exc:
+            cleanup_step["status"] = "failed"
+            cleanup_step["message"] = str(exc)
+            cleanup_step["finished_at"] = datetime.utcnow().isoformat()
+            write_progress(action_pk, progress)
+            return str(exc)
+        cleanup_step["status"] = "done"
+        cleanup_step["message"] = "Đã xóa scratch image; lần đo sau sẽ tạo image mới."
+        cleanup_step["finished_at"] = datetime.utcnow().isoformat()
+        write_progress(action_pk, progress)
+        return None
 
     # --- prepare ---
     progress[0]["status"] = "running"
@@ -283,7 +358,9 @@ def run(
         _check_fio_available(mon_ip)
         _ensure_scratch_image(mon_ip, pool)
     except VolumePerfError as exc:
-        _record_failure(0, str(exc))
+        cleanup_error = _cleanup()
+        message = str(exc) + (f"; cleanup cũng thất bại: {cleanup_error}" if cleanup_error else "")
+        _record_failure(0, message)
         return False
     progress[0]["status"] = "done"
     progress[0]["finished_at"] = datetime.utcnow().isoformat()
@@ -295,30 +372,33 @@ def run(
     write_progress(action_pk, progress)
 
     steps: list[dict] = []
-    knee_confirmed_at: int | None = None
     for depth in IODEPTH_STEPS:
         host_entry = {"host": f"iodepth={depth}", "status": "running"}
         progress[1]["hosts"].append(host_entry)
         write_progress(action_pk, progress)
 
         try:
-            step = _run_fio_step(mon_ip, pool, depth)
+            step = _run_fio_depth(mon_ip, pool, depth)
         except VolumePerfError as exc:
             host_entry["status"] = "failed"
             host_entry["message"] = str(exc)
             write_progress(action_pk, progress)
-            _record_failure(1, str(exc))
+            cleanup_error = _cleanup()
+            message = str(exc) + (f"; cleanup cũng thất bại: {cleanup_error}" if cleanup_error else "")
+            _record_failure(1, message, steps)
             return False
 
         steps.append(step)
         host_entry["status"] = "done"
-        host_entry["message"] = f"IOPS {step['iops']:.0f}, p99 {step['latency_p99_ms']:.2f}ms"
+        host_entry["message"] = (
+            f"median {step['sample_count']} mẫu: IOPS {step['iops']:.0f}, "
+            f"p99 {step['latency_p99_ms']:.2f}ms, độ lệch IOPS {step['iops_cv_pct']:.1f}%"
+        )
         write_progress(action_pk, progress)
 
-        if knee_confirmed_at is None:
-            if _detect_knee(steps) is not None:
-                knee_confirmed_at = len(steps)  # run exactly one more step to confirm, then stop
-        elif len(steps) > knee_confirmed_at:
+        # _detect_knee itself requires two consecutive bad transitions, so a
+        # non-None result is already confirmed rather than a one-sample guess.
+        if _detect_knee(steps) is not None:
             break
 
     progress[1]["status"] = "done"
@@ -344,6 +424,11 @@ def run(
     progress[2]["status"] = "done"
     progress[2]["finished_at"] = datetime.utcnow().isoformat()
     write_progress(action_pk, progress)
+
+    cleanup_error = _cleanup()
+    if cleanup_error:
+        _record_failure(3, cleanup_error, steps)
+        return False
 
     with db.SessionLocal() as session:
         row = session.get(VolumePerfSweep, sweep_id)

@@ -296,8 +296,6 @@ async def telegram_channel_toggle(
 ):
     """2026-08-07: Bật/Tắt riêng cho ĐÚNG 1 kênh — KHÔNG đụng tới Bot Token/
     Chat ID đã lưu, chỉ lật cờ `*_enabled`. Cùng "nút luôn gửi giá trị
-    NGƯỢC với trạng thái đang hiển thị" như kill-switch chính
-    (dashboard/routes/incidents.py::kill_switch_submit/templates/index.html)
     -- 1 request F5/double-submit lại trang cũ không vô tình lật lại lần
     nữa vì form đó đã render giá trị mới rồi.
 

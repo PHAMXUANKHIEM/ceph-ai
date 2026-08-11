@@ -10,7 +10,6 @@ cần dựng thêm server/checkout nào nữa cho nhu cầu quan sát thuần tu
 
 **Giới hạn quan trọng của Phase 1** (đọc kỹ trước khi thêm cụm thứ 2):
 chỉ phần **quan sát** (health/Incident feed) là multi-cluster. Chẩn đoán AI,
-tự động xử lý (remediation), backup, patch, upgrade, kill-switch, cảnh báo
 Telegram (Duyệt/Từ chối) **vẫn chỉ áp dụng cho cụm mặc định** (cụm cấu hình
 qua `.env`/trang Cài đặt) — Worker chủ động **bỏ qua** (không chạy lệnh SSH
 nào) đối với Incident đến từ cụm khác, đây là biện pháp an toàn bắt buộc
@@ -54,7 +53,6 @@ riêng thay vì 1 bộ chọn cụm trong 1 Dashboard.
 ## (Thay thế) Chạy nhiều instance riêng, mỗi instance 1 cụm
 
 ceph-aiops **cốt lõi vẫn** thiết kế 1 instance quản lý đúng 1 cụm Ceph theo
-mặc định (Worker/backup/patch/upgrade/kill-switch/Telegram — xem giới hạn
 Phase 1 ở trên), không phải giới hạn UI mà nằm ở tầng kiến trúc:
 
 - `config/settings.py` là một `Settings()` singleton nạp từ **1 file
