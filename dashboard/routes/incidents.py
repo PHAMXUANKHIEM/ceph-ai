@@ -553,10 +553,7 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
     except CephQueryError as exc:
         cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
         logger.warning("dashboard_health(%s): live Ceph query failed: %s", cluster_name, exc)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Cụm {cluster_name}: {exc}",
-        ) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/", response_class=HTMLResponse)
