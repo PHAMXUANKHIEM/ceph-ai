@@ -15,6 +15,8 @@
   var emptyClusterEl = document.getElementById("crush-map-empty-cluster");
   var errorEl = document.getElementById("crush-map-error");
   var metaEl = document.getElementById("crush-map-meta");
+  var rulesEl = document.getElementById("crush-rules-list");
+  var rulesEmptyEl = document.getElementById("crush-rules-empty");
 
   if (!treeEl) {
     return; // not on the CRUSH Map page
@@ -137,13 +139,52 @@
     });
   }
 
+  function renderRules(rules) {
+    if (!rulesEl || !rulesEmptyEl) return;
+    rulesEl.innerHTML = "";
+    rulesEmptyEl.hidden = !!(rules && rules.length);
+    rulesEl.hidden = !(rules && rules.length);
+    (rules || []).forEach(function (rule) {
+      var card = document.createElement("article");
+      card.className = "crush-rule";
+      var header = document.createElement("div");
+      header.className = "crush-rule-header";
+      var name = document.createElement("strong");
+      name.textContent = rule.rule_name || ("Rule #" + rule.rule_id);
+      header.appendChild(name);
+      var meta = document.createElement("span");
+      meta.className = "crush-rule-meta";
+      meta.textContent = "ID " + (rule.rule_id == null ? "—" : rule.rule_id) + " · " + (rule.type || "—")
+        + " · size " + (rule.min_size == null ? "—" : rule.min_size) + "–" + (rule.max_size == null ? "—" : rule.max_size);
+      header.appendChild(meta);
+      card.appendChild(header);
+      var steps = document.createElement("ol");
+      steps.className = "crush-rule-steps";
+      (rule.steps || []).forEach(function (step) {
+        var parts = [step.op || "?"];
+        if (step.item_name) parts.push(step.item_name);
+        else if (typeof step.item === "number") parts.push(String(step.item));
+        if (typeof step.num === "number") parts.push("num=" + step.num);
+        if (step.type) parts.push("type=" + step.type);
+        var item = document.createElement("li");
+        item.textContent = parts.join(" · ");
+        steps.appendChild(item);
+      });
+      card.appendChild(steps);
+      rulesEl.appendChild(card);
+    });
+  }
+
   function renderTree(data) {
     hideAllStates();
 
     if (data.state === "no_snapshot_yet") {
+      renderRules([]);
       noSnapshotEl.hidden = false;
       return;
     }
+
+    renderRules(data.rules || []);
 
     metaEl.hidden = false;
     metaEl.textContent = "Snapshot lúc " + new Date(data.created_at).toLocaleString("vi-VN");

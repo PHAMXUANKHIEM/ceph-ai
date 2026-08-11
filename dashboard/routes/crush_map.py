@@ -169,12 +169,14 @@ def _tree_has_osd(node: dict) -> bool:
 def _build_tree_response(latest: CrushStructureSnapshot) -> dict:
     tree = json.loads(latest.tree_json)
     roots = tree.get("roots") or []
+    rules = tree.get("rules") or []
 
     if not any(_tree_has_osd(root) for root in roots):
         return {
             "state": "empty_cluster",
             "snapshot_id": latest.id,
             "created_at": latest.created_at.isoformat(),
+            "rules": rules,
         }
 
     diff = json.loads(latest.diff_json) if latest.diff_json else None
@@ -190,6 +192,7 @@ def _build_tree_response(latest: CrushStructureSnapshot) -> dict:
         "snapshot_id": latest.id,
         "created_at": latest.created_at.isoformat(),
         "roots": [_augment_node(root, distribution, changes) for root in roots],
+        "rules": rules,
     }
 
 

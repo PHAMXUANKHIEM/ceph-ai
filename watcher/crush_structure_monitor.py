@@ -69,10 +69,23 @@ def _build_tree(crush_dump: dict) -> dict:
     than one root; this returns ALL of them under a synthetic top-level
     `roots` list rather than assuming exactly one.
     """
+    rules = crush_dump.get("rules")
+    normalized_rules = []
+    if isinstance(rules, list):
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            steps = rule.get("steps")
+            normalized_rules.append({
+                "rule_id": rule.get("rule_id"), "rule_name": rule.get("rule_name"),
+                "type": rule.get("type"), "min_size": rule.get("min_size"), "max_size": rule.get("max_size"),
+                "steps": [{key: step.get(key) for key in ("op", "item", "item_name", "num", "type") if key in step}
+                          for step in steps or [] if isinstance(step, dict)],
+            })
     devices = crush_dump.get("devices")
     buckets = crush_dump.get("buckets")
     if not isinstance(devices, list) or not isinstance(buckets, list):
-        return {"roots": []}
+        return {"roots": [], "rules": normalized_rules}
 
     device_names = {
         d["id"]: d.get("name") for d in devices if isinstance(d, dict) and "id" in d
@@ -123,7 +136,7 @@ def _build_tree(crush_dump: dict) -> dict:
         for b in buckets
         if isinstance(b, dict) and b.get("type_name") == "root" and "id" in b
     ]
-    return {"roots": [r for r in roots if r is not None]}
+    return {"roots": [r for r in roots if r is not None], "rules": normalized_rules}
 
 
 def _sort_tree(node: dict) -> dict:
@@ -146,7 +159,11 @@ def _canonicalize(tree: dict) -> str:
         (_sort_tree(r) for r in tree.get("roots") or []),
         key=lambda r: r.get("id") if r.get("id") is not None else 0,
     )
-    return json.dumps({"roots": roots}, sort_keys=True)
+    rules = sorted(
+        (rule for rule in tree.get("rules") or [] if isinstance(rule, dict)),
+        key=lambda rule: (rule.get("rule_id") is None, rule.get("rule_id") or 0, rule.get("rule_name") or ""),
+    )
+    return json.dumps({"roots": roots, "rules": rules}, sort_keys=True)
 
 
 def _compute_diff(old_tree: dict, new_tree: dict) -> dict:

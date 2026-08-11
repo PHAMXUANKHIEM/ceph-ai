@@ -1411,6 +1411,11 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 /* ===== CRUSH Map (Story 12.3) — DOM-drawn tree (first tree/graph UI in this
    app, no canvas chart to reuse) + change-history list/detail panel ===== */
 .crush-tree { font-size: 0.85rem; }
+.crush-rules-list { display: grid; gap: var(--space-3); }
+.crush-rule { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); background: var(--bg-surface-2); }
+.crush-rule-header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.crush-rule-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.78rem; }
+.crush-rule-steps { margin: var(--space-2) 0 0; padding-left: var(--space-5); color: var(--text-muted); font-family: var(--font-mono); font-size: 0.8rem; }
 .crush-node { margin: 2px 0; }
 .crush-node-row {
   display: flex;
@@ -1494,3 +1499,222 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .crush-history-detail-group { margin-bottom: var(--space-3); }
 .crush-history-detail-group h4 { margin: 0 0 var(--space-1); font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; }
 .crush-history-detail-group ul { margin: 0; padding-left: var(--space-4); font-size: 0.85rem; }
+
+/* =========================================================================
+   2026 UI refresh — shared visual system for every Dashboard page.
+   Kept as a final, intentional override layer so feature-specific layouts
+   above retain their behaviour while navigation, surfaces, controls, tables
+   and responsive states share one polished visual language.
+   ========================================================================= */
+:root {
+  --bg: #080d17;
+  --bg-surface: #101827;
+  --bg-surface-2: #162132;
+  --bg-surface-hover: #1c2a3e;
+  --border: rgba(148, 163, 184, 0.13);
+  --border-strong: rgba(148, 163, 184, 0.25);
+  --text: #edf3fb;
+  --text-muted: #9baabd;
+  --text-faint: #6f8096;
+  --accent: #55a7ff;
+  --accent-hover: #7bbcff;
+  --accent-bg: rgba(85, 167, 255, 0.12);
+  --healthy: #43d69a;
+  --warning: #f4b74f;
+  --critical: #ff6978;
+  --radius: 10px;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.22);
+  --focus-ring: 0 0 0 3px rgba(85, 167, 255, 0.18);
+}
+
+html { color-scheme: dark; }
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(900px 500px at 82% -10%, rgba(46, 120, 210, 0.12), transparent 65%),
+    radial-gradient(700px 420px at -10% 35%, rgba(69, 211, 157, 0.045), transparent 62%),
+    var(--bg);
+  font-size: 14px;
+  letter-spacing: 0.002em;
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.28;
+  background-image: linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(to bottom, black, transparent 72%);
+}
+
+h1, h2, h3 { line-height: 1.25; }
+h1 { font-size: 1.45rem; font-weight: 700; }
+h2 { font-size: 1rem; font-weight: 650; letter-spacing: -0.005em; }
+h3 { font-size: 0.92rem; }
+a { transition: color 140ms ease; }
+
+.mon-strip { background: rgba(8, 13, 23, 0.82); }
+.mon-strip-inner { min-height: 32px; }
+.mon-strip-label { color: var(--text-muted); }
+.topbar {
+  background: rgba(12, 19, 31, 0.88);
+  border-bottom-color: rgba(148, 163, 184, 0.16);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(16px) saturate(135%);
+}
+.topbar-inner { max-width: 1440px; gap: var(--space-5); }
+.brand { letter-spacing: -0.02em; }
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: white;
+  background: linear-gradient(145deg, #56adff 0%, #6269e8 100%);
+  box-shadow: 0 5px 16px rgba(65, 139, 255, 0.3), inset 0 1px rgba(255,255,255,.22);
+}
+.nav-link { padding: 0 7px; font-size: 0.82rem; border-bottom-width: 0; position: relative; }
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+}
+.nav-link.active::after { background: var(--accent); box-shadow: 0 0 12px rgba(85,167,255,.55); }
+.nav-link.active { border-bottom-color: transparent; color: #fff; }
+.nav-dropdown-menu {
+  padding: 7px;
+  min-width: 220px;
+  background: rgba(16, 24, 39, 0.98);
+  border-color: var(--border-strong);
+  box-shadow: 0 18px 48px rgba(0,0,0,.42);
+  backdrop-filter: blur(18px);
+}
+.nav-dropdown-item { padding: 9px 11px; border-radius: 7px; }
+.nav-dropdown-item:hover { background: var(--accent-bg); color: #fff; }
+.user-chip { padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,.025); }
+
+.page { max-width: 1440px; padding: 28px 30px 40px; gap: 18px; }
+.card {
+  position: relative;
+  background: linear-gradient(155deg, rgba(17, 27, 43, 0.98), rgba(13, 21, 34, 0.98));
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.card:hover { border-color: rgba(148, 163, 184, 0.2); box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+.card-header { min-height: 49px; padding: 13px 18px; background: rgba(255,255,255,.012); }
+.card-body { padding: 18px; }
+.card-footer { padding: 11px 18px; background: rgba(0,0,0,.08); }
+
+.tabbed-sidebar, .settings-sidebar {
+  padding: 7px;
+  background: rgba(16, 24, 39, 0.62);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.tabbed-nav-item, .settings-nav-item { padding: 9px 11px; border-radius: 8px; }
+.tabbed-nav-item.active, .settings-nav-item.active {
+  background: linear-gradient(90deg, rgba(85,167,255,.16), rgba(85,167,255,.07));
+  border-color: rgba(85,167,255,.34);
+  color: #eaf5ff;
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+.btn {
+  min-height: 36px;
+  justify-content: center;
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 2px rgba(0,0,0,.16);
+  transition: transform 120ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.btn:hover { border-color: rgba(148,163,184,.38); box-shadow: 0 5px 14px rgba(0,0,0,.16); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); box-shadow: none; }
+.btn-sm { min-height: 30px; }
+.btn-primary { color: #06111f; background: linear-gradient(180deg, #6bb5ff, #4598ee); box-shadow: 0 5px 16px rgba(54,145,235,.2); }
+.btn-primary:hover { background: linear-gradient(180deg, #82c1ff, #55a7ff); border-color: #82c1ff; }
+.btn-approve { background: linear-gradient(180deg, #52dda6, #35c38c); }
+
+.login-box input, .login-box textarea, .login-box select,
+.audit-filters input, .audit-filters select,
+.topbar-cluster-switcher select,
+.log-viewer-select {
+  min-height: 40px;
+  border-color: var(--border-strong);
+  background: rgba(5, 11, 20, 0.58);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.18);
+}
+.login-box input:hover, .login-box textarea:hover, .login-box select:hover,
+.audit-filters input:hover, .audit-filters select:hover { border-color: rgba(148,163,184,.4); }
+.login-box input:focus, .login-box textarea:focus, .login-box select:focus,
+.audit-filters input:focus, .audit-filters select:focus { box-shadow: var(--focus-ring); }
+.checkbox-label input { accent-color: var(--accent); }
+
+.table-wrap { border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+table { font-size: 0.835rem; }
+thead th { background: rgba(3, 9, 17, 0.34); padding: 11px 16px; color: #8292a8; }
+tbody td { padding: 12px 16px; transition: background 120ms ease; }
+tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
+.empty-state { padding: 42px 20px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: rgba(0,0,0,.08); }
+
+.status-pill, .severity-badge, .role-badge { box-shadow: inset 0 1px rgba(255,255,255,.05); }
+.connection-status { border-radius: var(--radius-lg); }
+.connection-ok { padding-left: 16px; background: linear-gradient(90deg, rgba(67,214,154,.055), transparent 42%); }
+.connection-lost { box-shadow: 0 8px 28px rgba(244,183,79,.06); }
+.kill-switch { box-shadow: var(--shadow-sm); }
+.pending-action-card { box-shadow: inset 0 1px rgba(255,255,255,.035); }
+.progress-bar { height: 9px; background: rgba(0,0,0,.28); }
+.progress-bar-fill { background: linear-gradient(90deg, #398ee9, #66b7ff); box-shadow: 0 0 12px rgba(85,167,255,.25); }
+
+.login-page {
+  background:
+    radial-gradient(650px 480px at 18% 5%, rgba(85,167,255,.16), transparent 68%),
+    radial-gradient(520px 420px at 92% 92%, rgba(76,92,224,.12), transparent 65%),
+    var(--bg);
+}
+.login-card {
+  max-width: 25rem;
+  padding: 38px;
+  background: rgba(16, 24, 39, 0.88);
+  border-color: var(--border-strong);
+  box-shadow: 0 30px 80px rgba(0,0,0,.38);
+  backdrop-filter: blur(18px);
+}
+.login-card h1 { font-size: 1.25rem; }
+
+.crush-rule { background: rgba(5,11,20,.32); transition: border-color 140ms ease, transform 140ms ease; }
+.crush-rule:hover { border-color: rgba(85,167,255,.32); transform: translateY(-1px); }
+.crush-history-detail { backdrop-filter: blur(6px); }
+.crush-history-detail-inner { box-shadow: 0 28px 80px rgba(0,0,0,.48); }
+
+@media (max-width: 1100px) {
+  .topbar-inner { gap: 12px; padding-inline: 18px; }
+  .nav-link { padding-inline: 5px; font-size: 0.78rem; }
+  .topbar-user { gap: 6px; }
+  .user-chip { display: none; }
+}
+@media (max-width: 760px) {
+  body { font-size: 13.5px; }
+  .page { padding: 18px 14px 30px; }
+  .card-header, .card-body { padding: 14px; }
+  .tabbed-page, .settings-page { gap: 12px; }
+  .tabbed-sidebar, .settings-sidebar { width: 100%; overflow-x: auto; flex-wrap: nowrap; }
+  .tabbed-nav-item, .settings-nav-item { white-space: nowrap; }
+  .brand { font-size: 0; }
+  .brand-mark { font-size: .62rem; }
+  /* Keep the operationally important destinations visible without making
+     the sticky header horizontally scroll (which would clip Cluster's
+     absolutely-positioned dropdown). Admin destinations remain reachable
+     on wider screens; mobile keeps Dashboard, Cluster and Settings. */
+  .main-nav > a:nth-of-type(n+3) { display: none; }
+  .topbar-user .btn { padding-inline: 8px; }
+}

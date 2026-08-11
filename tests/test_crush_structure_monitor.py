@@ -44,6 +44,9 @@ def _fake_crush_dump(host_weight=65536, osd_weight=65536, host_id=-3, osd_id=0, 
                 "items": [{"id": osd_id, "weight": osd_weight, "pos": 0}],
             },
         ],
+        "rules": [{"rule_id": 0, "rule_name": "replicated_rule", "type": 1, "min_size": 1, "max_size": 10,
+                   "steps": [{"op": "take", "item": -1, "item_name": "default"},
+                             {"op": "chooseleaf_firstn", "num": 0, "type": "host"}, {"op": "emit"}]}],
     }
 
 
@@ -73,6 +76,8 @@ def test_capture_crush_structure_builds_tree(monkeypatch):
     osd = host["children"][0]
     assert osd["type"] == "osd"
     assert osd["name"] == "osd.0"
+    assert tree["rules"][0]["rule_name"] == "replicated_rule"
+    assert tree["rules"][0]["steps"][1] == {"op": "chooseleaf_firstn", "num": 0, "type": "host"}
 
 
 # --- _canonicalize() — array order must not affect comparison (AD-26) ------

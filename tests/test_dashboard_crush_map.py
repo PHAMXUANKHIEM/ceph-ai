@@ -180,6 +180,25 @@ def test_api_tree_ok_partial_distribution_data(dashboard_client):
     assert osd1["bytes_used"] is None
 
 
+def test_api_tree_returns_crush_rules_from_snapshot(dashboard_client):
+    _login(dashboard_client)
+    tree = _sample_tree()
+    tree["rules"] = [{"rule_id": 2, "rule_name": "ssd_replicated", "type": 1, "min_size": 1, "max_size": 10,
+                     "steps": [{"op": "take", "item": -1, "item_name": "default"}, {"op": "emit"}]}]
+    _add_snapshot(tree)
+    response = dashboard_client.get("/api/crush-map/tree")
+    assert response.status_code == 200
+    assert response.json()["rules"] == tree["rules"]
+
+
+def test_api_tree_old_snapshot_without_rules_returns_empty_list(dashboard_client):
+    _login(dashboard_client)
+    _add_snapshot(_sample_tree())
+    response = dashboard_client.get("/api/crush-map/tree")
+    assert response.status_code == 200
+    assert response.json()["rules"] == []
+
+
 def test_api_tree_ok_no_distribution_data_at_all(dashboard_client):
     _login(dashboard_client)
     _add_snapshot(_sample_tree())
