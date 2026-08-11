@@ -5,6 +5,18 @@
 and runs `restart_services.sh` to pull the latest code and restart
 watcher/worker/dashboard.
 
+> `git pull` alone is not a deployment. Python/Uvicorn keeps the FastAPI
+> route table imported at process startup, so a newly-added page such as
+> `/pgs` remains 404 until Dashboard is restarted. On every server/checkout,
+> deploy code changes with:
+>
+> ```bash
+> bash scripts/deploy/restart_services.sh
+> ```
+>
+> The script now verifies `/pgs` after restart and fails loudly if an old
+> Dashboard process is still serving port 8000.
+
 ## One-time setup on this server
 
 ```bash

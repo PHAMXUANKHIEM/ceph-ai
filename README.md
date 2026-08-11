@@ -244,6 +244,12 @@ ngay trong Dashboard, không cần SSH vào server nữa (xem bước 9).
 > trên. `scripts/deploy/restart_services.sh` đã đóng gói sẵn toàn bộ quy
 > trình này (pull code mới nhất + migrate + restart) — dùng lại được cho
 > máy mới nếu muốn.
+>
+> **Quan trọng khi cập nhật code:** không chỉ chạy `git pull`. Uvicorn không
+> tự nạp router Python mới, vì vậy menu từ static JS có thể đã xuất hiện
+> nhưng endpoint mới (ví dụ `/pgs`) vẫn trả 404. Luôn chạy từ repo root:
+> `bash scripts/deploy/restart_services.sh`. Script sẽ kiểm tra `/pgs` sau
+> khi khởi động và chỉ báo deploy thành công khi Dashboard đã nạp route mới.
 
 ## 9. Cấu hình cụm Ceph / AI qua Dashboard (thay vì `.env`)
 

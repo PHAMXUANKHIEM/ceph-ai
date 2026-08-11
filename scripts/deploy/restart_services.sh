@@ -114,6 +114,37 @@ export DASHBOARD_PORT
 )
 
 sleep 3
+
+# A code pull can update static/app.js immediately while an old Uvicorn
+# process still serves the previously imported FastAPI router table. That
+# mismatch is especially confusing for newly-added pages: the navigation
+# link appears, but clicking it returns 404. Prove that the NEW Dashboard
+# process loaded the PG route before declaring this deployment successful.
+# `/pgs` is login-protected, so an unauthenticated 303 is the expected
+# healthy response; 200 is accepted for deployments whose auth policy was
+# intentionally customized.
+if [ "$DASHBOARD_HOST" = "0.0.0.0" ]; then
+  DASHBOARD_CHECK_HOST="127.0.0.1"
+else
+  DASHBOARD_CHECK_HOST="$DASHBOARD_HOST"
+fi
+DASHBOARD_CHECK_URL="http://${DASHBOARD_CHECK_HOST}:${DASHBOARD_PORT}"
+DASHBOARD_ROUTE_READY=false
+for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+  DASHBOARD_ROUTE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 "$DASHBOARD_CHECK_URL/pgs" || true)"
+  if [ "$DASHBOARD_ROUTE_STATUS" = "303" ] || [ "$DASHBOARD_ROUTE_STATUS" = "200" ]; then
+    DASHBOARD_ROUTE_READY=true
+    break
+  fi
+  sleep 1
+done
+if [ "$DASHBOARD_ROUTE_READY" != "true" ]; then
+  echo "ERROR: Dashboard did not load /pgs after restart (HTTP ${DASHBOARD_ROUTE_STATUS:-000})."
+  echo "Check /var/log/${LOG_TAG}-dashboard.log — an old process may still own port ${DASHBOARD_PORT}."
+  exit 1
+fi
+
 echo "==> Deploy complete: $(date -u +%FT%TZ)"
+echo "==> Dashboard route check: /pgs HTTP $DASHBOARD_ROUTE_STATUS"
 echo "==> Running processes:"
 pgrep -fa "$VENV_PYTHON -m (watcher|worker)\.main|$VENV_PYTHON -m uvicorn dashboard.app|$REPO_DIR/ceph-upgrade-test-runner-frontend/node_modules/.bin/vite" || echo "WARNING: no matching processes found after restart"
