@@ -2,10 +2,10 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from shared import db, heartbeat
-from shared.clusters import get_default_cluster_id
+from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.models import Incident
 
 router = APIRouter()
@@ -15,7 +15,7 @@ POLL_INTERVAL_SECONDS = 2
 WS_POLICY_VIOLATION = 1008
 
 
-def _snapshot() -> tuple[int, object, object]:
+def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) -> tuple[int, object, object]:
     """A cheap fingerprint of table state: Incident row count + latest
     update time, plus WatcherHeartbeat's polled_at (Story 5.2) — Watcher
     writes a heartbeat on EVERY poll (not just Incident-worthy transitions),
@@ -27,15 +27,16 @@ def _snapshot() -> tuple[int, object, object]:
     Watcher/Worker directly to the Dashboard.
     """
     with db.SessionLocal() as session:
-        count = session.query(func.count(Incident.id)).scalar()
-        latest_updated = session.query(func.max(Incident.updated_at)).scalar()
-        # Multi-cluster observability Phase 1: the connection-status section
-        # this feeds still only ever shows the default cluster's heartbeat
-        # (dashboard/routes/incidents.py's feed does too, until the cluster
-        # switcher lands) — Incident count/updated_at above already span
-        # every cluster unfiltered, so this remains a reasonable "did
-        # anything change" signal regardless.
-        latest_heartbeat = heartbeat.get_latest(session, get_default_cluster_id(session))
+        default_cluster = ensure_default_cluster(session)
+        effective_id = cluster_id or default_cluster.id
+        cluster_filter = (
+            or_(Incident.cluster_id == effective_id, Incident.cluster_id.is_(None))
+            if is_default_cluster
+            else Incident.cluster_id == effective_id
+        )
+        count = session.query(func.count(Incident.id)).filter(cluster_filter).scalar()
+        latest_updated = session.query(func.max(Incident.updated_at)).filter(cluster_filter).scalar()
+        latest_heartbeat = heartbeat.get_latest(session, effective_id)
         polled_at = latest_heartbeat.polled_at if latest_heartbeat is not None else None
     return count, latest_updated, polled_at
 
@@ -51,12 +52,18 @@ async def incidents_ws(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
-    last_seen = _snapshot()
+    with db.SessionLocal() as session:
+        default_cluster = ensure_default_cluster(session)
+        active = {cluster.id: cluster for cluster in list_active_clusters(session)}
+        selected = active.get(websocket.session.get("selected_cluster_id"), default_cluster)
+        selected_id = selected.id
+        selected_is_default = selected.is_default
+    last_seen = _snapshot(selected_id, selected_is_default)
     try:
         while True:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             try:
-                current = _snapshot()
+                current = _snapshot(selected_id, selected_is_default)
             except Exception:
                 logger.exception("incidents_ws: failed to poll DB, closing connection")
                 await websocket.close(code=1011)  # internal error

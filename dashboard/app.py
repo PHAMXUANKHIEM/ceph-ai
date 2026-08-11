@@ -27,6 +27,7 @@ from dashboard.routes import (
     maintenance,
     nodes,
     patch,
+    pgs,
     restore_cluster,
     settings as settings_routes,
     telegram_alerts,
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     application.include_router(patch.router)
     application.include_router(users.router)
     application.include_router(volumes.router)
+    application.include_router(pgs.router)
     application.include_router(backups.router)
     application.include_router(restore_cluster.router)
     application.include_router(bucket_access_log.router)

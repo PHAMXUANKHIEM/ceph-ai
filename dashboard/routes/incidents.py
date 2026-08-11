@@ -170,6 +170,24 @@ def _recent_backup_failure(session) -> BackupJob | None:
     )
 
 
+def _recent_backup_failure_for_cluster(
+    session, cluster_id: str, is_default_cluster: bool
+) -> BackupJob | None:
+    """Latest failure for exactly the cluster currently being viewed."""
+    cutoff = datetime.utcnow() - timedelta(hours=BACKUP_ALERT_LOOKBACK_HOURS)
+    cluster_filter = (
+        or_(BackupJob.cluster_id == cluster_id, BackupJob.cluster_id.is_(None))
+        if is_default_cluster
+        else BackupJob.cluster_id == cluster_id
+    )
+    return (
+        session.query(BackupJob)
+        .filter(BackupJob.status == "FAILED", BackupJob.created_at >= cutoff, cluster_filter)
+        .order_by(BackupJob.created_at.desc())
+        .first()
+    )
+
+
 def _parse_datetime_filter(raw: str) -> datetime | None:
     """Accepts the value an HTML <input type="datetime-local"> submits
     (`YYYY-MM-DDTHH:MM`). Returns None for blank/unparseable input rather
@@ -184,9 +202,19 @@ def _parse_datetime_filter(raw: str) -> datetime | None:
 
 
 def _query_audit_entries(
-    session, incident_id: str, since_dt: datetime | None, until_dt: datetime | None
+    session,
+    incident_id: str,
+    since_dt: datetime | None,
+    until_dt: datetime | None,
+    cluster_id: str,
+    is_default_cluster: bool,
 ) -> list[AuditEntry]:
-    query = session.query(AuditEntry)
+    cluster_filter = (
+        or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
+        if is_default_cluster
+        else Incident.cluster_id == cluster_id
+    )
+    query = session.query(AuditEntry).join(Incident, AuditEntry.incident_id == Incident.id).filter(cluster_filter)
     if incident_id:
         query = query.filter(AuditEntry.incident_id == incident_id)
     if since_dt is not None:
@@ -212,15 +240,11 @@ def _fetch_dashboard_data(
     bool,
     BackupJob | None,
     bool,
+    bool,
 ]:
     with db.SessionLocal() as session:
-        # Multi-cluster observability Phase 1: the incident feed/heartbeat
-        # are scoped to whichever cluster is selected (see index()'s
-        # cluster switcher) — everything else this function fetches
-        # (kill-switch, pending Actions, Audit Trail, backup alert) stays
-        # APP-WIDE/default-cluster-only on purpose, since Worker/backups/
-        # actions aren't multi-cluster-aware yet (see docs/multi-cluster-
-        # deployment.md's sibling architecture doc). Pre-migration Incident
+        # Every cluster-owned feed is scoped to the current selection.
+        # Pre-migration Incident
         # rows have `cluster_id IS NULL`, which means "the default cluster"
         # (Incident's own docstring) — only match those when the SELECTED
         # cluster IS the default one.
@@ -245,7 +269,9 @@ def _fetch_dashboard_data(
         # checked here — that would need a live SSH call on every Dashboard
         # page load; the authoritative gate for THAT window lives in
         # dashboard/routes/actions.py::approve_action instead).
-        upgrade_blocks_other_actions = is_cluster_upgrade_pending_or_approved(session)
+        upgrade_blocks_other_actions = (
+            is_cluster_upgrade_pending_or_approved(session) if is_default_cluster else False
+        )
         # 2026-07-23 restore: a RISKY Action — whether from the auto-diagnosis
         # pipeline OR a chat-confirmed proposal (dashboard/routes/chat.py::
         # confirm_chat_action, same Action/Incident state machine) — lands
@@ -259,20 +285,25 @@ def _fetch_dashboard_data(
         # needed.
         pending_actions_rows = (
             session.query(Action)
-            .filter_by(status=ActionStatus.PENDING_APPROVAL.value)
+            .join(Incident, Action.incident_id == Incident.id)
+            .filter(incident_cluster_filter)
+            .filter(Action.status == ActionStatus.PENDING_APPROVAL.value)
             .order_by(Action.created_at.desc())
             .all()
         )
-        # 2026-08-10 (multi-tenant remediation Phase 1): this card shows
-        # PENDING_APPROVAL Actions from EVERY cluster, not just whichever one
-        # is currently selected in the switcher — same "broadcast to every
-        # channel regardless of source" posture Telegram approval already
-        # has (docs/telegram-alerts.md mục 6.1). Their Incidents must be
-        # looked up directly here (NOT via the `incidents` list above, which
-        # IS scoped to the selected cluster) — before non-default clusters
-        # could ever have a RISKY Action (the safety guard this phase
-        # removed), that mismatch never mattered; now it would silently show
-        # "no incident" for another cluster's pending approval.
+        other_cluster_filter = (
+            Incident.cluster_id.notin_([cluster_id])
+            if is_default_cluster
+            else or_(Incident.cluster_id != cluster_id, Incident.cluster_id.is_(None))
+        )
+        has_other_cluster_pending = (
+            session.query(Action.id)
+            .join(Incident, Action.incident_id == Incident.id)
+            .filter(Action.status == ActionStatus.PENDING_APPROVAL.value, other_cluster_filter)
+            .first()
+            is not None
+        )
+        # Resolve only the selected cluster's pending action incidents.
         pending_incident_ids = {a.incident_id for a in pending_actions_rows}
         pending_incidents_by_id = (
             {
@@ -300,9 +331,11 @@ def _fetch_dashboard_data(
             pending_actions.append((action, pending_incident, cluster_label, telegram_covered))
         # Audit Trail (filters + full history) now lives directly on the
         # Dashboard — there is no separate /audit page anymore.
-        audit_entries = _query_audit_entries(session, incident_id, since_dt, until_dt)
+        audit_entries = _query_audit_entries(
+            session, incident_id, since_dt, until_dt, cluster_id, is_default_cluster
+        )
         # Epic 9, Story 9.4 (AC #2) — see _recent_backup_failure's docstring.
-        backup_alert = _recent_backup_failure(session)
+        backup_alert = _recent_backup_failure_for_cluster(session, cluster_id, is_default_cluster)
     # 2026-08-07: the "Chờ duyệt — Risky Action" card is only shown as a
     # FALLBACK now that dashboard/telegram_approval_bot.py broadcasts the
     # same proposal (with Duyệt/Từ chối buttons) to every configured
@@ -323,6 +356,7 @@ def _fetch_dashboard_data(
         upgrade_blocks_other_actions,
         backup_alert,
         telegram_configured,
+        has_other_cluster_pending,
     )
 
 
@@ -396,6 +430,7 @@ async def index(
             upgrade_blocks_other_actions,
             backup_alert,
             telegram_configured,
+            has_other_cluster_pending,
         ) = _fetch_dashboard_data(
             incident_id, since_dt, until_dt, selected_cluster.id, selected_cluster.is_default, cluster_names_by_id
         )
@@ -442,16 +477,9 @@ async def index(
             "is_admin": auth.is_admin_user(user),
             "heartbeat": latest_heartbeat,
             "heartbeat_stale": stale,
-            "cluster_mon_nodes": settings.ceph_mon_nodes,
-            "cluster_container_name": settings.ceph_container_name,
-            "cluster_exec_mode": settings.ceph_exec_mode,
-            # Multi-cluster observability Phase 1 — cluster switcher. Note
-            # cluster_mon_nodes/container_name/exec_mode above ALWAYS show
-            # the default cluster's config (unchanged from before this
-            # existed), even when a different cluster is selected — that
-            # header snapshot is deferred to a later phase, same as every
-            # other default-cluster-only limitation documented in
-            # docs/multi-cluster-deployment.md's sibling architecture doc.
+            "cluster_mon_nodes": selected_cluster.ceph_mon_nodes,
+            "cluster_container_name": selected_cluster.ceph_container_name,
+            "cluster_exec_mode": selected_cluster.ceph_exec_mode,
             "clusters": clusters,
             "selected_cluster": selected_cluster,
             "kill_switch_enabled": kill_switch_enabled,
@@ -470,6 +498,7 @@ async def index(
             # originated; the card stays as the fallback for anything that
             # isn't reachable that way.
             "telegram_approval_configured": not show_pending_card,
+            "has_other_cluster_pending": has_other_cluster_pending,
             # Sidebar tab (2026-07-24) — lands on Audit Trail if the operator
             # just used its filter form (a GET with query params, unlike
             # Settings' POST-result sections), otherwise defaults to Chờ

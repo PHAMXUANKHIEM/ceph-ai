@@ -123,6 +123,13 @@
       <p class="hint">Suy từ dữ liệu Incident đã ghi nhận — trạng thái có thể trễ tối đa vài giây so với cluster thật (theo chu kỳ poll của Watcher). Đây là tình trạng CỦA CLUSTER (vd HEALTH_WARN/HEALTH_ERR thật), khác với việc Watcher có kết nối được tới cụm hay không (xem section phía trên).</p>
     </section>
 
+    {% if has_other_cluster_pending %}
+    <section class="cross-cluster-notice">
+      <span>●</span>
+      <p><strong>Cụm khác có hành động Chờ duyệt.</strong> Chọn đúng cụm ở bộ chọn phía trên để xem và xử lý; dữ liệu chi tiết không được trộn vào cụm hiện tại.</p>
+    </section>
+    {% endif %}
+
     <div class="tabbed-page">
     <nav class="tabbed-sidebar">
       {% if not telegram_approval_configured %}

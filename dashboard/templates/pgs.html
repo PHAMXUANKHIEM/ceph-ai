@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Placement Groups — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="tabbed-page">
+      <nav class="tabbed-sidebar">
+        <div class="node-sidebar-header"><span class="hint">Chọn pool</span></div>
+        {% for pool in pools %}
+        <a href="/pgs?pool={{ pool }}" class="tabbed-nav-item {% if pool == selected_pool %}active{% endif %}">
+          <span class="node-chip-ip">{{ pool }}</span>
+        </a>
+        {% else %}
+        <p class="hint">Không tìm thấy pool RBD nào trên cluster.</p>
+        {% endfor %}
+      </nav>
+
+      <div class="tabbed-content">
+        {% if selected_pool %}
+        <section class="card">
+          <div class="card-header">
+            <div class="metrics-panel-title">
+              <span class="node-ip">{{ selected_pool }}</span>
+              <span class="pg-total">{{ pgs|length }} PGs</span>
+            </div>
+            <a href="/pgs?pool={{ selected_pool }}" class="btn btn-ghost btn-sm">Làm mới</a>
+          </div>
+          <div class="card-body">
+            <p class="hint">Placement Groups của pool, gồm trạng thái hiện tại, OSD mapping và thống kê object.</p>
+            {% if state_counts %}
+            <div class="pg-summary">
+              {% for state, count in state_counts %}
+              <span class="pg-state-chip {% if state == 'active+clean' %}is-clean{% else %}is-warning{% endif %}"><strong>{{ count }}</strong> {{ state }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </div>
+          {% if query_error %}
+          <div class="card-body"><p class="error">Không lấy được PG từ cluster: {{ query_error }}</p></div>
+          {% elif pgs %}
+          <div class="card-body table-wrap">
+            <table id="pg-list">
+              <thead><tr><th>PG ID</th><th>Trạng thái</th><th>Up Set</th><th>Acting Set</th><th>Objects</th><th>Dung lượng</th><th>Degraded</th><th>Misplaced</th><th>Unfound</th><th>Last scrub</th></tr></thead>
+              <tbody>
+                {% for pg in pgs %}
+                <tr>
+                  <td><code>{{ pg.pgid }}</code></td>
+                  <td><span class="pg-state-chip {% if pg.state == 'active+clean' %}is-clean{% else %}is-warning{% endif %}">{{ pg.state }}</span></td>
+                  <td><code>[{{ pg.up|join(', ') }}]</code></td>
+                  <td><code>[{{ pg.acting|join(', ') }}]</code></td>
+                  <td>{{ "{:,}".format(pg.objects) }}</td>
+                  <td>{{ pg.bytes|filesizeformat }}</td>
+                  <td>{{ pg.degraded }}</td><td>{{ pg.misplaced }}</td><td>{{ pg.unfound }}</td>
+                  <td>{{ pg.last_scrub }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="card-body"><div class="empty-state">Pool này chưa có Placement Group nào.</div></div>
+          {% endif %}
+        </section>
+        {% else %}
+        <section class="card"><div class="card-body"><div class="empty-node-state"><span class="empty-node-icon">◌</span><p class="empty-node-text">Chọn một pool để xem Placement Groups.</p></div></div></section>
+        {% endif %}
+      </div>
+    </div>
+  </main>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

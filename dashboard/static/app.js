@@ -106,8 +106,92 @@
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
-    "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡"
+    "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡", "/pgs": "∷"
   };
+
+  var mainNav = topbar.querySelector(".main-nav");
+  if (mainNav) {
+    var linksByPath = {};
+    mainNav.querySelectorAll("a").forEach(function (link) {
+      linksByPath[new URL(link.href, window.location.origin).pathname] = link;
+    });
+    if (!linksByPath["/pgs"]) {
+      var pgLink = document.createElement("a");
+      pgLink.href = "/pgs";
+      pgLink.className = window.location.pathname === "/pgs" ? "nav-link active" : "nav-link";
+      pgLink.textContent = "PGs";
+      linksByPath["/pgs"] = pgLink;
+    }
+
+    // Information architecture for Ceph operators. Keep permission-aware
+    // links from the server (admin-only destinations may not exist), then
+    // regroup only those that were actually rendered.
+    var navGroups = [
+      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
+      { label: "Pool", paths: ["/volumes", "/pgs"] },
+      { label: "Object Storage", paths: ["/bucket-access-log"] },
+      { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
+      { label: "Backup", paths: ["/backups", "/restore-cluster"] },
+      { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
+      { label: "System Administration", paths: ["/settings", "/clusters"] }
+    ];
+    mainNav.innerHTML = "";
+    navGroups.forEach(function (group) {
+      var available = group.paths.filter(function (path) { return linksByPath[path]; });
+      if (!available.length) return;
+      var section = document.createElement("section");
+      section.className = "nav-section";
+      var groupKey = group.label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "nav-section-toggle";
+      toggle.innerHTML = '<span class="nav-section-label"></span><span class="nav-section-chevron" aria-hidden="true">⌄</span>';
+      toggle.querySelector(".nav-section-label").textContent = group.label;
+      var items = document.createElement("div");
+      items.className = "nav-section-items";
+      items.id = "nav-group-" + groupKey;
+      toggle.setAttribute("aria-controls", items.id);
+      section.appendChild(toggle);
+      section.appendChild(items);
+      available.forEach(function (path) {
+        var link = linksByPath[path];
+        if (link.classList.contains("nav-dropdown-item-active")) link.classList.add("active");
+        link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
+        link.classList.add("nav-link");
+        if (path === "/volumes") {
+          Array.prototype.slice.call(link.childNodes).forEach(function (node) {
+            if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = "Pool";
+          });
+        }
+        items.appendChild(link);
+      });
+
+      var storageKey = "cephAiNavGroup:" + groupKey;
+      var hasActiveLink = !!items.querySelector(".active");
+      var expanded = hasActiveLink;
+      if (!hasActiveLink) {
+        try {
+          var saved = localStorage.getItem(storageKey);
+          if (saved !== null) expanded = saved === "1";
+        } catch (e) {
+          // Storage may be disabled; active group remains the useful default.
+        }
+      }
+      function setExpanded(open) {
+        items.hidden = !open;
+        section.classList.toggle("is-open", open);
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+      setExpanded(expanded);
+      toggle.addEventListener("click", function () {
+        var open = items.hidden;
+        setExpanded(open);
+        try { localStorage.setItem(storageKey, open ? "1" : "0"); } catch (e) { /* optional preference */ }
+      });
+      mainNav.appendChild(section);
+    });
+  }
+
   topbar.querySelectorAll(".main-nav a").forEach(function (link) {
     if (link.querySelector(".nav-icon")) return;
     var path = new URL(link.href, window.location.origin).pathname;

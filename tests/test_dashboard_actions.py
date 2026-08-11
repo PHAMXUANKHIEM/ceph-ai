@@ -86,18 +86,11 @@ def test_approve_action_sets_approved_and_audits_operator_as_actor(dashboard_cli
         assert entries[0].event_type == "risky_action_approved"
 
 
-def test_index_still_shows_pending_card_for_uncovered_cluster_even_with_global_telegram_configured(
+def test_index_warns_about_uncovered_pending_action_on_other_cluster_without_mixing_details(
     dashboard_client, monkeypatch
 ):
-    """2026-08-10 (multi-tenant remediation Phase 2) regression guard: before
-    this phase, configuring the 3 global Telegram channels hid the "Chờ
-    duyệt" card entirely — safe back then, since every RISKY action was
-    always default-cluster-covered by them. Now a non-default cluster can
-    have its OWN channel, which NARROWS coverage instead of the global ones
-    always covering everything — an uncovered action must still show here,
-    or it would be silently unapprovable anywhere (the exact stranding bug
-    this codebase already fixed once, see test_index_shows_pending_action_
-    card's own docstring)."""
+    """An action on cluster B must remain visible as a cross-cluster signal,
+    but its rationale/controls must not be mixed into cluster A's feed."""
     monkeypatch.setattr(telegram_bot.settings, "telegram_incident_bot_token", "global-token", raising=False)
     monkeypatch.setattr(telegram_bot.settings, "telegram_incident_chat_id", "-1", raising=False)
     with db_module.SessionLocal() as session:
@@ -141,8 +134,8 @@ def test_index_still_shows_pending_card_for_uncovered_cluster_even_with_global_t
 
     assert response.status_code == 200
     assert "Chờ duyệt" in response.text
-    assert "stuck OSD on cluster-b" in response.text
-    assert "chưa có kênh Telegram cho cụm này" in response.text
+    assert "Cụm khác có hành động Chờ duyệt" in response.text
+    assert "stuck OSD on cluster-b" not in response.text
 
 
 def test_reject_action_sets_rejected(dashboard_client):
