@@ -47,6 +47,36 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     response = dashboard_client.get("/settings")
     assert response.status_code == 200
     assert "API Key" in response.text
+    assert "Đăng nhập bằng ChatGPT" in response.text
+
+
+def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
+    async def fake_start():
+        return {"loginId": "login-1", "verificationUrl": "https://example.test/device", "userCode": "ABCD-1234"}
+
+    async def fake_account():
+        return {"email": "admin@example.test", "planType": "plus"}
+
+    monkeypatch.setattr(settings_route.codex_app_server, "start_device_login", fake_start)
+    monkeypatch.setattr(settings_route.codex_app_server, "account", fake_account)
+    monkeypatch.setattr(settings, "codex_chat_enabled", False)
+    _login(dashboard_client)
+
+    start = dashboard_client.post("/settings/codex/login/start")
+    assert start.status_code == 200
+    assert start.json()["user_code"] == "ABCD-1234"
+
+    activate = dashboard_client.post("/settings/codex/activate")
+    assert activate.status_code == 200
+    assert settings.codex_chat_enabled is True
+    assert "CODEX_CHAT_ENABLED=true" in env_config.ENV_PATH.read_text()
+
+
+def test_codex_controls_require_admin(dashboard_client):
+    _create_user("operator", "secret", is_admin=False)
+    _login_as(dashboard_client, "operator", "secret")
+    response = dashboard_client.post("/settings/codex/login/start")
+    assert response.status_code == 403
 
 
 # --- POST /settings/9router/save (Step 2 "[Lưu cấu hình]" button) ---------

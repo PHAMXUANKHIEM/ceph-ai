@@ -1,4 +1,71 @@
 (function () {
+  var codexLoginBtn = document.getElementById("codex-login-btn");
+  var codexLogoutBtn = document.getElementById("codex-logout-btn");
+  var codexStatus = document.getElementById("codex-account-status");
+  var codexFlow = document.getElementById("codex-device-flow");
+  var codexLink = document.getElementById("codex-verification-link");
+  var codexCode = document.getElementById("codex-user-code");
+  var codexPollTimer = null;
+
+  function codexRequest(url, options) {
+    return fetch(url, Object.assign({ credentials: "same-origin" }, options || {})).then(function (response) {
+      if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); });
+      return response.json();
+    });
+  }
+
+  function renderCodexStatus(data) {
+    if (!codexStatus) return;
+    if (data.authenticated) {
+      var detail = data.email || "tài khoản ChatGPT";
+      if (data.plan_type) detail += " · gói " + data.plan_type;
+      codexStatus.textContent = "✅ Đã đăng nhập " + detail + (data.enabled ? " — đang dùng cho Chat-with-AI" : "");
+      if (codexLoginBtn) codexLoginBtn.hidden = true;
+      if (codexLogoutBtn) codexLogoutBtn.hidden = false;
+      if (codexFlow) codexFlow.hidden = true;
+    } else {
+      codexStatus.textContent = data.error ? "❌ " + data.error : "Chưa đăng nhập tài khoản Codex.";
+      if (codexLoginBtn) codexLoginBtn.hidden = false;
+      if (codexLogoutBtn) codexLogoutBtn.hidden = true;
+    }
+  }
+
+  function refreshCodexStatus(activate) {
+    if (!codexStatus) return Promise.resolve();
+    return codexRequest("/settings/codex/status").then(function (data) {
+      renderCodexStatus(data);
+      if (activate && data.authenticated && !data.enabled) {
+        return codexRequest("/settings/codex/activate", { method: "POST" }).then(function () {
+          data.enabled = true;
+          renderCodexStatus(data);
+          clearInterval(codexPollTimer);
+        });
+      }
+    });
+  }
+
+  if (codexStatus) refreshCodexStatus(false);
+  if (codexLoginBtn) codexLoginBtn.addEventListener("click", function () {
+    codexLoginBtn.disabled = true;
+    codexStatus.textContent = "Đang tạo mã đăng nhập...";
+    codexRequest("/settings/codex/login/start", { method: "POST" }).then(function (data) {
+      codexLink.href = data.verification_url;
+      codexCode.textContent = data.user_code;
+      codexFlow.hidden = false;
+      codexStatus.textContent = "Đang chờ bạn hoàn tất đăng nhập...";
+      window.open(data.verification_url, "_blank", "noopener");
+      codexPollTimer = setInterval(function () { refreshCodexStatus(true); }, 2500);
+    }).catch(function (err) {
+      codexStatus.textContent = "❌ " + err.message;
+      codexLoginBtn.disabled = false;
+    });
+  });
+  if (codexLogoutBtn) codexLogoutBtn.addEventListener("click", function () {
+    codexRequest("/settings/codex/logout", { method: "POST" }).then(function () {
+      renderCodexStatus({ authenticated: false, enabled: false });
+    }).catch(function (err) { codexStatus.textContent = "❌ " + err.message; });
+  });
+
   var verifyBtn = document.getElementById("router-verify-btn");
   if (!verifyBtn) {
     return; // not on the Settings page

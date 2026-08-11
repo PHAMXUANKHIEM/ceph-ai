@@ -1,0 +1,225 @@
+"""Small async client for ``codex app-server``'s JSONL protocol.
+
+The dashboard deliberately talks to the supported app-server boundary and
+never reads ``auth.json`` or handles ChatGPT refresh tokens itself.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from pathlib import Path
+from typing import Awaitable, Callable
+
+from config.settings import settings
+
+
+class CodexAppServerError(RuntimeError):
+    pass
+
+
+ToolHandler = Callable[[str, dict], Awaitable[tuple[str, bool]]]
+
+
+class CodexAppServer:
+    def __init__(self) -> None:
+        self._process: asyncio.subprocess.Process | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._pending: dict[int, asyncio.Future] = {}
+        self._next_id = 1
+        self._start_lock = asyncio.Lock()
+        self._turn_lock = asyncio.Lock()
+        self._notifications: asyncio.Queue[dict] = asyncio.Queue()
+        self._tool_handler: ToolHandler | None = None
+
+    def _codex_home(self) -> Path:
+        value = Path(settings.codex_home).expanduser()
+        if not value.is_absolute():
+            value = Path(__file__).resolve().parent.parent / value
+        value.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            value.chmod(0o700)
+        except OSError:
+            pass
+        return value
+
+    async def _ensure_started(self) -> None:
+        async with self._start_lock:
+            if self._process and self._process.returncode is None:
+                return
+            env = os.environ.copy()
+            env["CODEX_HOME"] = str(self._codex_home())
+            try:
+                self._process = await asyncio.create_subprocess_exec(
+                    "codex", "app-server", "--stdio",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=env,
+                )
+            except FileNotFoundError as exc:
+                raise CodexAppServerError("Chưa cài Codex CLI trên server") from exc
+            self._reader_task = asyncio.create_task(self._read_loop())
+            await self._request(
+                "initialize",
+                {
+                    "clientInfo": {"name": "ceph_ai", "title": "Ceph AI", "version": "1.0"},
+                    "capabilities": {"experimentalApi": True},
+                },
+                ensure_started=False,
+            )
+            await self._send({"method": "initialized", "params": {}})
+
+    async def _send(self, message: dict) -> None:
+        if not self._process or not self._process.stdin:
+            raise CodexAppServerError("Codex App Server chưa chạy")
+        self._process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode())
+        await self._process.stdin.drain()
+
+    async def _request(
+        self, method: str, params: dict | None = None, *, timeout: float = 30, ensure_started: bool = True
+    ) -> dict:
+        if ensure_started:
+            await self._ensure_started()
+        request_id = self._next_id
+        self._next_id += 1
+        future = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        message = {"method": method, "id": request_id}
+        if params is not None:
+            message["params"] = params
+        await self._send(message)
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError as exc:
+            self._pending.pop(request_id, None)
+            raise CodexAppServerError(f"Codex không phản hồi cho {method}") from exc
+
+    async def _read_loop(self) -> None:
+        assert self._process and self._process.stdout
+        while line := await self._process.stdout.readline():
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            request_id = message.get("id")
+            if request_id in self._pending and ("result" in message or "error" in message):
+                future = self._pending.pop(request_id)
+                if "error" in message:
+                    future.set_exception(CodexAppServerError(message["error"].get("message", "Codex error")))
+                else:
+                    future.set_result(message.get("result") or {})
+                continue
+            if request_id is not None and message.get("method") == "item/tool/call":
+                asyncio.create_task(self._handle_tool_request(request_id, message.get("params") or {}))
+                continue
+            # Never permit Codex built-ins to escape the restricted sandbox.
+            if request_id is not None and message.get("method", "").endswith("requestApproval"):
+                await self._send({"id": request_id, "result": {"decision": "decline"}})
+                continue
+            await self._notifications.put(message)
+        error = CodexAppServerError("Codex App Server đã dừng")
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
+
+    async def _handle_tool_request(self, request_id: int, params: dict) -> None:
+        if self._tool_handler is None:
+            text, success = "Tool không khả dụng", False
+        else:
+            try:
+                text, success = await self._tool_handler(params.get("tool", ""), params.get("arguments") or {})
+            except Exception as exc:  # tool failures are model-visible, not server-fatal
+                text, success = str(exc), False
+        await self._send({
+            "id": request_id,
+            "result": {"contentItems": [{"type": "inputText", "text": text}], "success": success},
+        })
+
+    async def account(self) -> dict:
+        result = await self._request("account/read", {"refreshToken": False})
+        return result.get("account") or {}
+
+    async def start_device_login(self) -> dict:
+        return await self._request("account/login/start", {"type": "chatgptDeviceCode"})
+
+    async def logout(self) -> None:
+        await self._request("account/logout")
+
+    async def close(self) -> None:
+        process, task = self._process, self._reader_task
+        self._process = None
+        self._reader_task = None
+        if process and process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), 3)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def run_turn(
+        self, prompt: str, dynamic_tools: list[dict], tool_handler: ToolHandler, timeout: float = 120
+    ) -> dict:
+        async with self._turn_lock:
+            await self._ensure_started()
+            while not self._notifications.empty():
+                self._notifications.get_nowait()
+            self._tool_handler = tool_handler
+            tools = [
+                {
+                    "type": "function",
+                    "name": tool["function"]["name"],
+                    "description": tool["function"].get("description", ""),
+                    "inputSchema": tool["function"].get("parameters", {"type": "object"}),
+                }
+                for tool in dynamic_tools
+            ]
+            thread = await self._request(
+                "thread/start",
+                {
+                    "cwd": "/tmp",
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {
+                        "type": "readOnly",
+                        "access": {"type": "restricted", "includePlatformDefaults": False, "readableRoots": []},
+                    },
+                    "dynamicTools": tools,
+                    "serviceName": "ceph-ai-dashboard",
+                },
+            )
+            thread_id = thread["thread"]["id"]
+            await self._request(
+                "turn/start",
+                {"threadId": thread_id, "input": [{"type": "text", "text": prompt}]},
+            )
+            final_text = ""
+            try:
+                while True:
+                    message = await asyncio.wait_for(self._notifications.get(), timeout)
+                    method = message.get("method")
+                    params = message.get("params") or {}
+                    if method == "item/completed":
+                        item = params.get("item") or {}
+                        if item.get("type") == "agentMessage" and item.get("phase") in (None, "final_answer"):
+                            final_text = item.get("text") or final_text
+                    elif method == "error":
+                        raise CodexAppServerError((params.get("error") or {}).get("message", "Codex error"))
+                    elif method == "turn/completed":
+                        turn = params.get("turn") or {}
+                        if turn.get("status") == "failed":
+                            raise CodexAppServerError((turn.get("error") or {}).get("message", "Codex turn thất bại"))
+                        return {"reply_text": final_text.strip() or "Codex không trả về nội dung"}
+            finally:
+                self._tool_handler = None
+
+
+codex_app_server = CodexAppServer()

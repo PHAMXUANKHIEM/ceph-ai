@@ -20,3 +20,4 @@ ceph-upgrade-test-runner-frontend/dist/
 # data, not source; saved under the project root by dashboard/routes/
 # test_runner.py's baseline-upload route.
 test_runner_baselines/
+.codex-account/

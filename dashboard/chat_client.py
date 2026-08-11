@@ -6,6 +6,7 @@ from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationErro
 
 from config.settings import settings
 from shared.cluster_nodes import configured_nodes
+from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics
 from worker.executor import commands as executor_commands
@@ -55,7 +56,7 @@ TOOL_PROPOSE_ACTION = "propose_action"
 # clickable "[Vào Cài đặt →]" link (dashboard/static/chat_widget.js), since
 # the persisted ChatMessage.content itself stays plain text (no HTML/markup
 # is ever put in a chat bubble — every bubble is rendered via textContent).
-MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối API AI. Vào Settings để kết nối."
+MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API hoặc tài khoản Codex."
 
 # AD-5's "action_id/command_id đóng từ structured output, không parse free
 # text" applies here exactly as it does to worker/llm/router_client.py's
@@ -416,6 +417,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     tools only — a staged propose_action isn't a "query"), for the
     frontend's "🔧 Đã dùng: ..." badge.
     """
+    if settings.codex_chat_enabled:
+        return await _run_codex_chat_turn(history, user_text)
+
     try:
         client = _get_client()
     except RouterNotConfiguredError as exc:
@@ -523,3 +527,37 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
         reply_text = "Đã ghi nhận đề xuất hành động bên dưới." if proposal is not None else "(không có phản hồi)"
 
     return {"reply_text": reply_text, "proposal": proposal, "tools_used": tools_used}
+
+
+async def _run_codex_chat_turn(history: list[dict], user_text: str) -> dict:
+    """Run chat through Codex while retaining ceph-ai's guarded tools."""
+    transcript = []
+    for message in history[-MAX_HISTORY_MESSAGES:]:
+        role = "Người dùng" if message["role"] == "user" else "Trợ lý"
+        transcript.append(f"{role}: {message['content']}")
+    prompt = SYSTEM_PROMPT + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
+    prompt += f"\n\nNgười dùng: {user_text}\nTrợ lý:"
+    proposal: dict | None = None
+    tools_used: list[str] = []
+
+    async def handle_tool(name: str, args: dict) -> tuple[str, bool]:
+        nonlocal proposal
+        if name == TOOL_PROPOSE_ACTION:
+            try:
+                proposal = _validate_proposal(args)
+                proposal["command_preview"] = resolve_command_preview(
+                    proposal["action_id"], proposal["target_nodes"], proposal["params"]
+                )
+                return "Đề xuất đã tạo và đang chờ operator xác nhận trên giao diện.", True
+            except (ChatToolError, TypeError, ValueError) as exc:
+                return f"Đề xuất không hợp lệ: {exc}", False
+        text, is_error = _run_tool(name, args)
+        if not is_error:
+            tools_used.append(name)
+        return text, not is_error
+
+    try:
+        result = await codex_app_server.run_turn(prompt, _tool_schemas(), handle_tool)
+    except CodexAppServerError as exc:
+        raise ChatTurnError(f"Codex: {exc}") from exc
+    return {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}

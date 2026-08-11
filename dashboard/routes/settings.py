@@ -27,6 +27,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db, env_config
+from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -48,6 +49,7 @@ ROUTER_MODEL_ENV_NAME = "ROUTER_MODEL"
 ROUTER_BASE_URL_ENV_NAME = "ROUTER_BASE_URL"
 ROUTER_ENABLED_ENV_NAME = "ROUTER_ENABLED"
 ROUTER_PROVIDER_ENV_NAME = "ROUTER_PROVIDER"
+CODEX_CHAT_ENABLED_ENV_NAME = "CODEX_CHAT_ENABLED"
 
 # API AI connection-type presets shown on the Settings page (2026-07-24).
 # Every entry still ends up going through the exact same generic
@@ -749,6 +751,7 @@ def _settings_context(
             and settings.router_base_url
             and settings.router_model
         ),
+        "codex_chat_enabled": settings.codex_chat_enabled,
         "error": error,
         "success": success,
         "worker_restart_error": worker_restart_error,
@@ -867,6 +870,66 @@ def _normalize_provider(raw: str) -> str:
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_form(request: Request, user: str = Depends(require_login)):
     return templates.TemplateResponse(request, "settings.html", _settings_context(user))
+
+
+@router.get("/settings/codex/status")
+async def settings_codex_status(user: str = Depends(require_login)):
+    try:
+        account = await codex_app_server.account()
+    except CodexAppServerError as exc:
+        return {"authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
+    authenticated = bool(account)
+    return {
+        "authenticated": authenticated,
+        "enabled": settings.codex_chat_enabled,
+        "email": account.get("email"),
+        "plan_type": account.get("planType") or account.get("plan_type"),
+    }
+
+
+@router.post("/settings/codex/login/start")
+async def settings_codex_login_start(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        result = await codex_app_server.start_device_login()
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "login_id": result.get("loginId"),
+        "verification_url": result.get("verificationUrl"),
+        "user_code": result.get("userCode"),
+    }
+
+
+@router.post("/settings/codex/activate")
+async def settings_codex_activate(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        account = await codex_app_server.account()
+        if not account:
+            raise HTTPException(status_code=409, detail="Đăng nhập Codex chưa hoàn tất")
+        _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "true")
+        settings.codex_chat_enabled = True
+    except HTTPException:
+        raise
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("settings_codex_activate: cannot persist setting")
+        raise HTTPException(status_code=500, detail="Không ghi được file cấu hình") from exc
+    return {"enabled": True}
+
+
+@router.post("/settings/codex/logout")
+async def settings_codex_logout(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        await codex_app_server.logout()
+        _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "false")
+        settings.codex_chat_enabled = False
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": False}
 
 
 @router.post("/settings/9router/verify")

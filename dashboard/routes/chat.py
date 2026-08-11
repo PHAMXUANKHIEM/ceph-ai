@@ -264,7 +264,8 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     # text dashboard/static/chat_widget.js matches on to render a clickable
     # "[Vào Cài đặt →]" link — the message bubble itself stays plain text
     # either way (no HTML in ChatMessage.content).
-    if not (settings.router_enabled and settings.router_api_key and settings.router_base_url):
+    api_ready = settings.router_enabled and settings.router_api_key and settings.router_base_url
+    if not (settings.codex_chat_enabled or api_ready):
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
                 session_id=session_id, role="assistant", content=MISSING_AI_CONFIG_MESSAGE

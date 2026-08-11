@@ -38,6 +38,7 @@ from dashboard.routes import (
 )
 from dashboard.ws import router as ws_router
 from shared import db
+from shared.codex_app_server import codex_app_server
 from shared.clusters import ensure_default_cluster
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -80,7 +81,10 @@ async def _lifespan(_app: FastAPI):
     # blank slate. Idempotent, same TestClient-re-entry posture as the two
     # calls above (a fresh load just overwrites _run_states again).
     test_runner._load_persisted_run_states()
-    yield
+    try:
+        yield
+    finally:
+        await codex_app_server.close()
 
 
 def create_app() -> FastAPI:

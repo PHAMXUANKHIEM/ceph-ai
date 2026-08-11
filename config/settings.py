@@ -189,6 +189,12 @@ class Settings(BaseSettings):
     # unreachable" without treating a blank api_key as the only signal.
     router_enabled: bool = False
 
+    # Optional ChatGPT subscription-backed Codex connection used by the
+    # dashboard chat only.  Credentials are owned/refreshed by Codex CLI in
+    # codex_home; ceph-ai never copies OAuth tokens into .env or the DB.
+    codex_chat_enabled: bool = False
+    codex_home: str = ".codex-account"
+
     # Worker (Story 4.3): how often the Worker checks for Actions an
     # operator just approved on the Dashboard. Separate from RabbitMQ
     # entirely — an approval isn't a queue message, so nothing redelivers
@@ -347,4 +353,3 @@ class Settings(BaseSettings):
     database_size_scan_interval_seconds: int = 3600
 
 settings = Settings()
-
