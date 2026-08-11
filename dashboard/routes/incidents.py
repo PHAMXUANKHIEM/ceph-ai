@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -17,8 +18,10 @@ from dashboard.telegram_approval_bot import channels_for_incident, has_configure
 from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.clusters import ensure_default_cluster, list_active_clusters
+from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
 from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
+from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +394,76 @@ def _resolve_selected_cluster(requested_cluster_id: str, session_cluster_id: str
     if selected is None and session_cluster_id:
         selected = by_id.get(session_cluster_id)
     return clusters, (selected or default_cluster)
+
+
+def _dashboard_health_payload(status: dict, cluster: Cluster) -> dict:
+    """Convert one authoritative ceph status response into card values."""
+    health = status.get("health") if isinstance(status.get("health"), dict) else {}
+    osdmap = status.get("osdmap") if isinstance(status.get("osdmap"), dict) else {}
+    monmap = status.get("monmap") if isinstance(status.get("monmap"), dict) else {}
+    pgmap = status.get("pgmap") if isinstance(status.get("pgmap"), dict) else {}
+
+    mons = monmap.get("mons") if isinstance(monmap.get("mons"), list) else []
+    quorum = status.get("quorum_names")
+    if not isinstance(quorum, list):
+        quorum = status.get("quorum") if isinstance(status.get("quorum"), list) else []
+
+    bytes_used = pgmap.get("bytes_used")
+    bytes_total = pgmap.get("bytes_total")
+    utilization = None
+    if isinstance(bytes_used, (int, float)) and isinstance(bytes_total, (int, float)) and bytes_total > 0:
+        utilization = round(bytes_used * 100 / bytes_total)
+
+    health_value = str(health.get("status") or "UNKNOWN").removeprefix("HEALTH_")
+    pools = osdmap.get("num_pools")
+    if not isinstance(pools, int):
+        pools = pgmap.get("num_pools") if isinstance(pgmap.get("num_pools"), int) else None
+
+    pg_states = pgmap.get("pgs_by_state") if isinstance(pgmap.get("pgs_by_state"), list) else []
+    pg_okay = bool(pg_states) and all(
+        isinstance(row, dict) and set(str(row.get("state_name") or "").split("+")) <= {"active", "clean"}
+        for row in pg_states
+    )
+
+    return {
+        "health": health_value,
+        "osds": {"up": osdmap.get("num_up_osds"), "total": osdmap.get("num_osds")},
+        "mons": {"up": len(quorum), "total": len(mons)},
+        "servers": {"online": None, "total": len(configured_nodes(cluster))},
+        "utilization": {
+            "percent": utilization,
+            "bytes_used": bytes_used if isinstance(bytes_used, (int, float)) else None,
+            "pools": pools,
+        },
+        "placement_groups": "OKAY" if pg_okay else "WARN",
+    }
+
+
+@router.get("/api/dashboard/health")
+async def dashboard_health(request: Request, _user: str = Depends(require_login)):
+    """Return live card data for the cluster selected in this session."""
+    try:
+        _clusters, selected_cluster = _resolve_selected_cluster(
+            request.query_params.get("cluster", "").strip(),
+            request.session.get("selected_cluster_id", ""),
+        )
+        mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
+        ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
+        _host, payload = await asyncio.to_thread(
+            run_ceph_json_command_with,
+            mon_nodes,
+            container_name,
+            ssh_user,
+            ssh_key_path,
+            exec_mode,
+            "ceph -s",
+        )
+        if not isinstance(payload, dict):
+            raise CephQueryError("ceph -s returned an unexpected response")
+        return _dashboard_health_payload(payload, selected_cluster)
+    except CephQueryError as exc:
+        logger.warning("dashboard_health: live Ceph query failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/", response_class=HTMLResponse)

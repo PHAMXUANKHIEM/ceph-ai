@@ -119,6 +119,15 @@ _ROLE_TO_PACKAGES_APT = {
     "rgw": ("radosgw",),
 }
 
+# Paramiko's exec_command starts a non-login shell. On several EL/Rocky
+# installations that shell's PATH does not contain /usr/sbin even though
+# ceph-osd correctly installed ceph-volume there. Keep the host's existing
+# PATH, but make the standard administrator binary directories explicit for
+# every ceph-volume invocation/check. This avoids misdiagnosing a PATH issue
+# as a missing package (exit 127) and does not pull an unversioned package
+# from a different repository.
+_CEPH_VOLUME_PATH_PREFIX = "export PATH=/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+
 # Standalone RGW default: one shared service id/port for every RGW node
 # this module creates, matching the traditional `ceph-deploy rgw create`
 # default (beast frontend, port 7480 — the well-known RGW default port,
@@ -993,6 +1002,17 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
         # install right after doesn't hit the cross-version librados2 wall
         # — see _remove_conflicting_ceph_install_snippet's own docstring.
         full_command = f"{_remove_conflicting_ceph_install_snippet(version)} && {install_command}"
+        if "osd" in roles:
+            # Fail in the package phase with an actionable message instead
+            # of reaching the destructive OSD phase and failing with the
+            # opaque `bash: ceph-volume: command not found` error. On RPM
+            # systems ceph-volume is supplied by ceph-osd; on Debian it is
+            # the separate package included in apt_packages above.
+            full_command += (
+                f" && {_CEPH_VOLUME_PATH_PREFIX}"
+                " && (command -v ceph-volume >/dev/null 2>&1"
+                " || { echo 'ceph-volume is missing after installing Ceph OSD packages' >&2; exit 127; })"
+            )
         # Only used for progress display text — the ACTUAL install command
         # correctly differs per package manager above (apt_package_list
         # includes ceph-volume, rpm_package_list never does).
@@ -1300,7 +1320,11 @@ def _phase_ceph_deploy_osd_create(nodes: list[dict], action_params: dict, on_hos
                 # step; osd_disk was already proven empty/unmounted by the
                 # ssh_check phase's read-only check before ANY phase
                 # (including this one) ran.
-                execute_command(ip, f"ceph-volume lvm create --data {shlex.quote(osd_disk)}")
+                execute_command(
+                    ip,
+                    f"{_CEPH_VOLUME_PATH_PREFIX} && "
+                    f"ceph-volume lvm create --data {shlex.quote(osd_disk)}",
+                )
         except (ExecutorError, DeployPhaseError) as exc:
             host_status[i]["status"] = "failed"
             on_host_update(list(host_status))

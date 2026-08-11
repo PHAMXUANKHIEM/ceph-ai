@@ -47,6 +47,8 @@ echo "==> Installing dependencies"
 source .venv/bin/activate
 pip install -e . --quiet
 npm --prefix ceph-upgrade-test-runner-frontend install --silent
+npm --prefix ceph-health-dashboard install --silent
+npm --prefix ceph-health-dashboard run build --silent
 
 echo "==> Applying DB migrations"
 # "heads" (plural), not "head" — 2026-08-07: this repo can legitimately have

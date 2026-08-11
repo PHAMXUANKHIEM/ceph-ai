@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ceph AIOps Dashboard</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}">
 </head>
 <body>
   <div class="mon-strip">
@@ -74,6 +75,8 @@
 
   <div class="app-body">
   <main class="page">
+    <div id="ceph-dashboard-root"></div>
+    <div hidden>
     <section class="kill-switch {% if kill_switch_enabled %}kill-switch-active{% endif %}">
       <form method="post" action="/kill-switch">
         <input type="hidden" name="enabled" value="{{ 'false' if kill_switch_enabled else 'true' }}">
@@ -259,6 +262,7 @@
     </section>
     </div>
     </div>
+    </div>
   </main>
 
   <aside class="chat-panel" id="chat-panel">
@@ -311,5 +315,6 @@
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/chat_widget.js?v={{ static_version }}"></script>
+  <script type="module" src="/static/ceph-health/app.js?v={{ static_version }}"></script>
 </body>
 </html>

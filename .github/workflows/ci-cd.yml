@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: pip install -e .[dev]
 
+      - name: Build Ceph Health dashboard
+        run: npm --prefix ceph-health-dashboard install && npm --prefix ceph-health-dashboard run build
+
       - name: Run tests
         run: pytest
         # `-m 'not live'` is already pytest's default (pyproject.toml

@@ -16,6 +16,12 @@ scripts/deploy/deploy.local.env
 ceph-upgrade-test-runner-frontend/node_modules/
 ceph-upgrade-test-runner-frontend/dist/
 
+# Ceph Health dashboard build dependencies/cache. The deterministic
+# production bundle under dashboard/static/ceph-health is committed so a
+# checkout can serve the page immediately; node_modules is always rebuilt.
+ceph-health-dashboard/node_modules/
+ceph-health-dashboard/*.tsbuildinfo
+
 # Epic 10 Story 10.2: uploaded baseline files (checksums/dumps) -- operator
 # data, not source; saved under the project root by dashboard/routes/
 # test_runner.py's baseline-upload route.

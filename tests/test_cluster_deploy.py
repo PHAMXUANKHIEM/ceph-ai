@@ -1012,6 +1012,29 @@ def test_ceph_deploy_osd_create_runs_one_lvm_create_per_disk_on_same_node(monkey
     assert any("/dev/vdc" in cmd for cmd in lvm_create_commands)
     assert any("/dev/vdd" in cmd for cmd in lvm_create_commands)
     assert len(lvm_create_commands) == 2
+    assert all("/usr/sbin" in cmd and "/sbin" in cmd for cmd in lvm_create_commands)
+
+
+def test_ceph_deploy_packages_verifies_ceph_volume_with_system_sbin_path(monkeypatch):
+    """Non-login Paramiko shells may omit /usr/sbin, where RPM installs
+    ceph-volume. Package setup must expose that path and fail before OSD
+    creation if the executable is genuinely absent."""
+    seen_commands = []
+
+    def fake(host, command):
+        seen_commands.append(command)
+        return ""
+
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake)
+    cluster_deploy_module._phase_ceph_deploy_packages(
+        [{"ip": "10.3.53.136", "roles": ["osd"]}],
+        {"version": "17.2.2"},
+        lambda status: None,
+    )
+
+    assert len(seen_commands) == 1
+    assert "export PATH=/usr/local/sbin:/usr/sbin:/sbin:$PATH" in seen_commands[0]
+    assert "command -v ceph-volume" in seen_commands[0]
 
 
 def test_ceph_deploy_rgw_create_skips_cleanly_when_no_rgw_nodes(monkeypatch):
