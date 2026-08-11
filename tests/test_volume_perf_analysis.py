@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import dashboard.volume_perf_analysis as volume_perf_analysis
+from config.settings import settings
 from dashboard.volume_perf_analysis import VolumePerfAnalysisError, analyze_volume_perf_sweep
 from shared.router_client import RouterNotConfiguredError
 
@@ -76,6 +77,30 @@ def test_analyze_returns_parsed_conclusion(monkeypatch):
     result = _run(analyze_volume_perf_sweep(_SWEEP))
 
     assert result == _CONCLUSION
+
+
+def test_analyze_uses_codex_when_enabled_without_router_api(monkeypatch):
+    monkeypatch.setattr(settings, "codex_chat_enabled", True)
+    monkeypatch.setattr(
+        volume_perf_analysis,
+        "_get_client",
+        lambda: pytest.fail("Router API must not be used when Codex is enabled"),
+    )
+    calls = []
+
+    async def fake_run_turn(prompt, tools, handler, timeout):
+        calls.append((prompt, tools, timeout))
+        _text, succeeded = await handler(volume_perf_analysis.TOOL_NAME, dict(_CONCLUSION))
+        assert succeeded is True
+        return {"reply_text": "done"}
+
+    monkeypatch.setattr(volume_perf_analysis.codex_app_server, "run_turn", fake_run_turn)
+
+    result = _run(analyze_volume_perf_sweep(_SWEEP))
+
+    assert result == _CONCLUSION
+    assert len(calls) == 1
+    assert calls[0][1][0]["function"]["name"] == volume_perf_analysis.TOOL_NAME
 
 
 def test_analyze_raises_when_router_not_configured(monkeypatch):

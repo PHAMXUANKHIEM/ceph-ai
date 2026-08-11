@@ -1685,6 +1685,20 @@ a { transition: color 140ms ease; }
   color: #718096;
   font-size: 0.72rem;
 }
+.settings-nav-group { display: grid; gap: 4px; }
+.settings-nav-group + .settings-nav-group { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
+.settings-nav-group-toggle {
+  width: 100%; min-height: 34px; padding: 7px 9px; border: 0; border-radius: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: transparent; color: var(--text-muted); font: inherit; font-size: .72rem;
+  font-weight: 700; letter-spacing: .055em; text-transform: uppercase; cursor: pointer;
+}
+.settings-nav-group-toggle:hover { background: var(--bg-surface-hover); color: var(--text); }
+.settings-nav-group-caret { font-size: 1rem; line-height: 1; transition: transform .16s ease; }
+.settings-nav-group-toggle[aria-expanded="false"] .settings-nav-group-caret { transform: rotate(-90deg); }
+.settings-nav-group-items { display: grid; gap: 4px; }
+.settings-nav-group-items[hidden] { display: none; }
+.settings-nav-group-items .settings-nav-item { width: 100%; }
 .settings-page .settings-nav-item {
   min-height: 42px;
   display: flex;

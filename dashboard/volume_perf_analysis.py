@@ -25,6 +25,7 @@ import logging
 import httpx
 
 from config.settings import settings
+from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,31 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
     unchanged (already validated against _REQUIRED_FIELDS)."""
     if not sweep.get("steps"):
         raise VolumePerfAnalysisError("Không có dữ liệu bước đo nào để phân tích.")
+    if settings.codex_chat_enabled:
+        captured: dict = {}
+
+        async def capture_conclusion(tool_name: str, arguments: dict) -> tuple[str, bool]:
+            if tool_name != TOOL_NAME:
+                return f"Tool không được phép: {tool_name}", False
+            captured.update(arguments)
+            return "Đã ghi nhận kết luận hiệu năng.", True
+
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nBạn BẮT BUỘC gọi tool report_volume_perf_conclusion đúng một lần; "
+              "không trả kết luận chỉ bằng văn bản.\n\n"
+            + _build_user_content(sweep)
+        )
+        try:
+            await codex_app_server.run_turn(
+                prompt, [_tool_schema()], capture_conclusion, timeout=ROUTER_TIMEOUT_SECONDS
+            )
+        except CodexAppServerError as exc:
+            raise VolumePerfAnalysisError(f"Codex: {exc}") from exc
+        if not _REQUIRED_FIELDS.issubset(captured):
+            raise VolumePerfAnalysisError(f"Codex thiếu trường bắt buộc: {captured!r}")
+        return captured
+
     try:
         client = _get_client()
     except RouterNotConfiguredError as exc:

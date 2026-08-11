@@ -439,6 +439,26 @@
   // without a page reload.
   var settingsNavItems = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-item"));
   var settingsPanels = Array.prototype.slice.call(document.querySelectorAll(".settings-panel"));
+  var settingsGroups = Array.prototype.slice.call(document.querySelectorAll(".settings-nav-group"));
+  settingsGroups.forEach(function (group) {
+    var toggle = group.querySelector(".settings-nav-group-toggle");
+    var items = group.querySelector(".settings-nav-group-items");
+    if (!toggle || !items) return;
+    var storageKey = "settingsGroup:" + group.getAttribute("data-settings-group");
+    var hasActiveItem = !!items.querySelector(".settings-nav-item.active");
+    var saved = null;
+    try { saved = localStorage.getItem(storageKey); } catch (e) { /* ignore */ }
+    var expanded = hasActiveItem || saved === "1";
+    if (!hasActiveItem && saved === "0") expanded = false;
+    items.hidden = !expanded;
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    toggle.addEventListener("click", function () {
+      expanded = items.hidden;
+      items.hidden = !expanded;
+      toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      try { localStorage.setItem(storageKey, expanded ? "1" : "0"); } catch (e) { /* ignore */ }
+    });
+  });
   if (settingsNavItems.length && settingsPanels.length) {
     settingsNavItems.forEach(function (item) {
       item.addEventListener("click", function () {
@@ -449,6 +469,12 @@
         settingsPanels.forEach(function (panel) {
           panel.hidden = panel.getAttribute("data-panel") !== section;
         });
+        var parentItems = item.closest(".settings-nav-group-items");
+        if (parentItems) {
+          parentItems.hidden = false;
+          var parentToggle = parentItems.parentElement.querySelector(".settings-nav-group-toggle");
+          if (parentToggle) parentToggle.setAttribute("aria-expanded", "true");
+        }
       });
     });
 

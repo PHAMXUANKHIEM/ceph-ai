@@ -48,15 +48,43 @@
         <small>Quản lý kết nối và dịch vụ</small>
       </div>
       {% if is_admin %}
-      <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch Ceph</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Lưu trữ Backup</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
+      <section class="settings-nav-group" data-settings-group="system">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'database', 'server-log'] else 'false' }}">
+          <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'database', 'server-log'] %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
+        </div>
+      </section>
+      <section class="settings-nav-group" data-settings-group="storage">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['patch-pipeline', 'backup-targets'] else 'false' }}">
+          <span>Pipeline &amp; lưu trữ</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'backup-targets'] %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Lưu trữ Backup</button>
+        </div>
+      </section>
       {% endif %}
-      <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Kết nối cụm Ceph</button>
-      <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Dọn dẹp log &amp; dữ liệu cũ</button>
+      <section class="settings-nav-group" data-settings-group="connections">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cluster'] else 'false' }}">
+          <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cluster'] %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Kết nối cụm Ceph</button>
+        </div>
+      </section>
+      <section class="settings-nav-group" data-settings-group="maintenance">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section == 'cleanup' else 'false' }}">
+          <span>Bảo trì</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
+        </button>
+        <div class="settings-nav-group-items" {% if active_section != 'cleanup' %}hidden{% endif %}>
+          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Dọn dẹp log &amp; dữ liệu</button>
+        </div>
+      </section>
     </nav>
     <div class="settings-content">
     {% if is_admin %}
