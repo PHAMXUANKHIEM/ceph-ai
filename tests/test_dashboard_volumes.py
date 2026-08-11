@@ -194,6 +194,35 @@ def test_volumes_page_lists_auto_discovered_pools_when_none_configured(dashboard
     assert "backups" in response.text
 
 
+def test_pool_discovery_uses_selected_non_default_cluster_credentials(monkeypatch):
+    cluster = type("ClusterConfig", (), {
+        "id": "cluster-b", "is_default": False,
+        "ceph_mon_nodes": "10.0.0.21,10.0.0.22", "ssh_user": "ceph-b",
+        "ssh_key_path": "/keys/b", "ceph_exec_mode": "cephadm",
+        "ceph_container_name": "mon-b",
+    })()
+    request = type("Request", (), {
+        "query_params": {}, "session": {"selected_cluster_id": "cluster-b"},
+    })()
+    monkeypatch.setattr(volumes_route, "_resolve_selected_cluster", lambda *_: ([cluster], cluster))
+    calls = []
+
+    def fake_query(*args):
+        calls.append(args)
+        return "10.0.0.21", [
+            {"pool_name": "rbd-b", "application_metadata": {"rbd": {}}},
+            {"pool_name": "cephfs-b", "application_metadata": {"cephfs": {}}},
+        ]
+
+    monkeypatch.setattr(volumes_route, "run_ceph_json_command_with", fake_query)
+
+    assert volumes_route._rbd_pools_for_request(request) == ["rbd-b"]
+    assert calls[0] == (
+        ["10.0.0.21", "10.0.0.22"], "mon-b", "ceph-b", "/keys/b",
+        "cephadm", "ceph osd pool ls detail",
+    )
+
+
 def test_iostat_api_returns_samples_for_configured_pool(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _login(dashboard_client)

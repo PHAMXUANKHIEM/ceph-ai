@@ -501,12 +501,15 @@ def _dashboard_health_payload(
 @router.get("/api/dashboard/health")
 async def dashboard_health(request: Request, _user: str = Depends(require_login)):
     """Return live card data for the cluster selected in this session."""
+    selected_cluster = None
     try:
         _clusters, selected_cluster = _resolve_selected_cluster(
             request.query_params.get("cluster", "").strip(),
             request.session.get("selected_cluster_id", ""),
         )
         mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
+        if not mon_nodes:
+            raise CephQueryError("Cụm chưa cấu hình MON node")
         ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
         _host, payload = await asyncio.to_thread(
             run_ceph_json_command_with,
@@ -548,8 +551,12 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
                 logger.info("dashboard_health: server inventory unavailable via %s: %s", node_command, exc)
         return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
     except CephQueryError as exc:
-        logger.warning("dashboard_health: live Ceph query failed: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
+        logger.warning("dashboard_health(%s): live Ceph query failed: %s", cluster_name, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cụm {cluster_name}: {exc}",
+        ) from exc
 
 
 @router.get("/", response_class=HTMLResponse)

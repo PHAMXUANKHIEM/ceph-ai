@@ -40,6 +40,8 @@ const formatIops = (iops: number | null) => iops === null ? "—" : Math.round(i
 
 export function CephDashboard() {
   const [health, setHealth] = useState<DashboardHealth>(emptyHealth);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let controller: AbortController | null = null;
@@ -50,14 +52,27 @@ export function CephDashboard() {
       const url = cluster ? "/api/dashboard/health?cluster=" + encodeURIComponent(cluster) : "/api/dashboard/health";
       fetch(url, { credentials: "same-origin", signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Dashboard health API returned " + response.status);
+        if (!response.ok) {
+          let detail = "HTTP " + response.status;
+          try {
+            const body = await response.json() as { detail?: string };
+            if (body.detail) detail = body.detail;
+          } catch {
+            // A proxy may return HTML/plain text. The status still gives the
+            // operator a useful, visible failure instead of an empty board.
+          }
+          throw new Error(detail);
+        }
         return response.json() as Promise<DashboardHealth>;
       })
-        .then((next) => setHealth((current) =>
-          JSON.stringify(current) === JSON.stringify(next) ? current : next
-        ))
+        .then((next) => {
+          setLoadError(null);
+          setHealth((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+        })
       .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) console.error(error);
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.error(error);
+        setLoadError(error instanceof Error ? error.message : "Không xác định được lỗi kết nối");
       });
     };
     load();
@@ -70,7 +85,7 @@ export function CephDashboard() {
       window.removeEventListener("ceph-dashboard-refresh", load);
       controller?.abort();
     };
-  }, []);
+  }, [reloadToken]);
 
   const statusCards = useMemo<StatusDatum[]>(() => [
     { title: "OSDs", value: ratio(health.osds.up, health.osds.total), subtitle: "Up", icon: HardDrive },
@@ -86,6 +101,12 @@ export function CephDashboard() {
 
   return (
     <main className="ceph-dashboard">
+      {loadError && (
+        <div className="dashboard-live-error" role="alert">
+          <span><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</span>
+          <button type="button" onClick={() => setReloadToken((value) => value + 1)}>Thử lại</button>
+        </div>
+      )}
       <section className="status-grid" aria-label="Ceph status overview">
         <CephHealthCard value={health.health} />
         {statusCards.map((card) => <StatusCard key={card.title} {...card} />)}

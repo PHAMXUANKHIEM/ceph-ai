@@ -10,10 +10,11 @@ from config.settings import settings
 from dashboard import volume_perf_analysis
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
-from dashboard.routes.incidents import OPEN_STATUSES
+from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db
+from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import (
     Action,
     ActionClassification,
@@ -24,7 +25,7 @@ from shared.models import (
     VolumePerfSweep,
 )
 from watcher import ceph_client
-from watcher.ceph_client import CephQueryError
+from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.volume_monitor import ceph_code_for
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -42,6 +43,45 @@ logger = logging.getLogger(__name__)
 # plotted time-series is bounded.
 _DEFAULT_HISTORY_HOURS = 6
 _MAX_HISTORY_HOURS = 168
+
+
+def _pool_names_from_detail(payload: dict | list) -> list[str]:
+    rows = payload if isinstance(payload, list) else payload.get("pools") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    names = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("pool_name") or row.get("poolname")
+        applications = row.get("application_metadata")
+        if name and isinstance(applications, dict) and "rbd" in applications:
+            names.append(str(name))
+    return sorted(set(names))
+
+
+def _rbd_pools_for_request(request: Request) -> list[str]:
+    """Return RBD pools for the cluster selected in this browser session."""
+    _clusters, cluster = _resolve_selected_cluster(
+        request.query_params.get("cluster", "").strip(),
+        request.session.get("selected_cluster_id", ""),
+    )
+    if cluster.is_default:
+        # Preserve the default cluster's explicit allow-list and its tested
+        # auto-discovery fallback. Only additional clusters need the
+        # credential-scoped query below.
+        return ceph_client.configured_rbd_pools()
+    mon_nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
+    ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
+    try:
+        _host, payload = run_ceph_json_command_with(
+            mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+            "ceph osd pool ls detail",
+        )
+        return _pool_names_from_detail(payload)
+    except CephQueryError as exc:
+        logger.warning("_rbd_pools_for_request: cluster %s discovery failed: %s", cluster.id, exc)
+        return []
 
 router = APIRouter()
 templates = make_templates()
@@ -111,6 +151,7 @@ def _in_flight_trash_actions(pool: str) -> dict[str, Action]:
 def _volumes_page_context(
     user: str,
     pool: str | None,
+    pools: list[str],
     *,
     purge_error: str | None = None,
     purge_success: str | None = None,
@@ -120,7 +161,6 @@ def _volumes_page_context(
     unlike propose_rbd_trash_remove's redirect, a purge-all's own result
     has nothing left to look up after the fact via a GET, it only exists
     as this response's own purge_error/purge_success)."""
-    pools = ceph_client.configured_rbd_pools()
     trash_entries: list[dict] = []
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
@@ -150,7 +190,7 @@ def _volumes_page_context(
 
 @router.get("/volumes", response_class=HTMLResponse)
 async def volumes_page(request: Request, user: str = Depends(require_login)):
-    pools = ceph_client.configured_rbd_pools()
+    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
     requested_pool = request.query_params.get("pool")
     if requested_pool and requested_pool not in pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
@@ -158,7 +198,7 @@ async def volumes_page(request: Request, user: str = Depends(require_login)):
     # dashboard/routes/nodes.py's selected_host (landing on /volumes with
     # no ?pool= shows the empty "chọn một pool" state).
     return templates.TemplateResponse(
-        request, "volumes.html", _volumes_page_context(user, requested_pool)
+        request, "volumes.html", _volumes_page_context(user, requested_pool, pools)
     )
 
 
@@ -686,7 +726,8 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
     feature in this app keeps, even though this one skips approval itself.
     """
     _require_admin_privilege(user)
-    allowed_pools = set(ceph_client.configured_rbd_pools())
+    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
+    allowed_pools = set(pools)
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
 
@@ -698,7 +739,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
             request,
             "volumes.html",
             _volumes_page_context(
-                user, pool, purge_error=f"Không lấy được danh sách trash: {exc}"
+                user, pool, pools, purge_error=f"Không lấy được danh sách trash: {exc}"
             ),
         )
 
@@ -706,7 +747,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         return templates.TemplateResponse(
             request,
             "volumes.html",
-            _volumes_page_context(user, pool, purge_success="Trash của pool này đang trống, không có gì để xoá."),
+            _volumes_page_context(user, pool, pools, purge_success="Trash của pool này đang trống, không có gì để xoá."),
         )
 
     failures = [r for r in results if r["error"]]
@@ -754,6 +795,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         _volumes_page_context(
             user,
             pool,
+            pools,
             purge_error=summary if failures else None,
             purge_success=None if failures else summary,
         ),
