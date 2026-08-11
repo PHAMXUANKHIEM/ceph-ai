@@ -273,21 +273,6 @@ class Action(Base):
     )
 
 
-class SystemFlag(Base):
-    """v1 (Story 3.2): minimal schema for AD-4's kill-switch — just enough
-    for Worker to read `kill_switch_enabled` before every remediation
-    command. Story 4.1 only needs to UPDATE the existing row from a
-    Dashboard button; no new schema."""
-
-    __tablename__ = "system_flags"
-
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-
 class AuditEntry(Base):
     """Append-only (AD-7) — `shared/audit.py::record()` is the only place
     that ever inserts a row here, and nothing in this codebase ever

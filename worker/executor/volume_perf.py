@@ -224,7 +224,6 @@ def run(
     action_params: dict,
     incident_id: str,
     write_progress,
-    check_kill_switch,
 ) -> bool:
     """Executes one load-sweep run. `action_params` must carry `pool`,
     `mon_ip` (pre-resolved by dashboard/routes/volumes.py at propose time —
@@ -277,9 +276,6 @@ def run(
                 session.commit()
 
     # --- prepare ---
-    if check_kill_switch(incident_id):
-        _record_failure(0, "Kill-switch đang bật — dừng lại trước khi bắt đầu")
-        return False
     progress[0]["status"] = "running"
     progress[0]["started_at"] = datetime.utcnow().isoformat()
     write_progress(action_pk, progress)
@@ -301,13 +297,6 @@ def run(
     steps: list[dict] = []
     knee_confirmed_at: int | None = None
     for depth in IODEPTH_STEPS:
-        if check_kill_switch(incident_id):
-            progress[1]["hosts"].append(
-                {"host": f"iodepth={depth}", "status": "skipped", "message": "Kill-switch bật — dừng giữa chừng"}
-            )
-            write_progress(action_pk, progress)
-            break
-
         host_entry = {"host": f"iodepth={depth}", "status": "running"}
         progress[1]["hosts"].append(host_entry)
         write_progress(action_pk, progress)

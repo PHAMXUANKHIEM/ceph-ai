@@ -2823,7 +2823,6 @@ def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, 
             {},
             action_params["incident_id"],
             lambda *_a, **_k: None,
-            lambda _incident_id: False,
         )
         if not ok:
             host_status[0]["status"] = "failed"
@@ -3701,7 +3700,6 @@ def run(
     action_params: dict,
     incident_id: str,
     write_progress,
-    check_kill_switch,
 ) -> bool:
     """Executes the ordered phase sequence for `action_id`, checking the
     kill-switch fresh before EACH phase (AD-4) and persisting STEP-shaped
@@ -3724,20 +3722,6 @@ def run(
     write_progress(action_pk, progress)
 
     for index, (step_key, _label, _pct, fn) in enumerate(phases):
-        if check_kill_switch(incident_id):
-            progress[index]["status"] = "failed"
-            progress[index]["message"] = "Kill-switch đang bật — dừng lại trước bước này"
-            progress[index]["finished_at"] = datetime.utcnow().isoformat()
-            write_progress(action_pk, progress)
-            logger.warning(
-                "cluster_deploy.run: kill-switch ON before phase %s, stopping action %s",
-                step_key,
-                action_pk,
-            )
-            if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
-                _fail_node_upgrade_gate(action_params)
-            return False
-
         progress[index]["status"] = "running"
         progress[index]["started_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)

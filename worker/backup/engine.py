@@ -192,7 +192,6 @@ def run(
     incident_id: str,
     cluster_id: str | None,
     write_progress,
-    check_kill_switch,
 ) -> bool:
     """Dispatches by `action_id` — this family has more than one member
     needing different logic (unlike volume_perf.py's single-id module),
@@ -207,20 +206,20 @@ def run(
     default-cluster-only this phase (explicit narrowing, see this
     session's plan)."""
     if action_id == "rbd_backup_run":
-        return _run_rbd_backup(action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch)
+        return _run_rbd_backup(action_pk, action_params, incident_id, cluster_id, write_progress)
     if action_id == "retention_sweep_delete":
         return _run_retention_sweep(
-            action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch
+            action_pk, action_params, incident_id, cluster_id, write_progress
         )
     if action_id == "backup_metadata_run":
         return backup_metadata.run(
-            action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch
+            action_pk, action_params, incident_id, cluster_id, write_progress
         )
     if action_id == "restore_drill_execute":
-        return restore_drill.run(action_pk, action_params, incident_id, write_progress, check_kill_switch)
+        return restore_drill.run(action_pk, action_params, incident_id, write_progress)
     if action_id == "restore_rbd_image_to_production":
         return _run_restore_to_production(
-            action_pk, action_params, incident_id, cluster_id, write_progress, check_kill_switch
+            action_pk, action_params, incident_id, cluster_id, write_progress
         )
     logger.error(
         "backup_engine.run: action_id=%s is registered in backup_action_ids but not yet "
@@ -231,18 +230,12 @@ def run(
 
 
 def _run_rbd_backup(
-    action_pk: str, action_params: dict, incident_id: str, cluster_id: str | None, write_progress, check_kill_switch
+    action_pk: str, action_params: dict, incident_id: str, cluster_id: str | None, write_progress
 ) -> bool:
     pool = action_params.get("pool")
     image = action_params.get("image")
     if not pool or not image:
         logger.error("backup_engine._run_rbd_backup: missing pool/image in action_params for action %s", action_pk)
-        return False
-
-    if check_kill_switch(incident_id):
-        logger.warning(
-            "backup_engine._run_rbd_backup: kill-switch is ON — skipping backup for %s/%s", pool, image
-        )
         return False
 
     cluster = get_cluster(cluster_id)
@@ -500,7 +493,6 @@ def _run_restore_to_production(
     incident_id: str,
     cluster_id: str | None,
     write_progress,
-    check_kill_switch,
 ) -> bool:
     """`restore_rbd_image_to_production` (Story 9.7, Task 3) — restores ONE
     image OVER its own live production data (unlike `restore_drill_execute`,
@@ -518,14 +510,6 @@ def _run_restore_to_production(
             action_pk,
         )
         return False
-    if check_kill_switch(incident_id):
-        logger.warning(
-            "backup_engine._run_restore_to_production: kill-switch is ON — skipping restore for %s/%s",
-            pool,
-            image,
-        )
-        return False
-
     progress = [{"step": "restore", "status": "running", "started_at": datetime.utcnow().isoformat()}]
     write_progress(action_pk, progress)
 
@@ -561,7 +545,7 @@ def _run_restore_to_production(
 
 
 def _run_retention_sweep(
-    action_pk: str, action_params: dict, incident_id: str, cluster_id: str | None, write_progress, check_kill_switch
+    action_pk: str, action_params: dict, incident_id: str, cluster_id: str | None, write_progress
 ) -> bool:
     """Manual/on-demand retention sweep entry point (same underlying
     `_sweep_retention_after_success` the automatic post-backup sweep uses)
@@ -570,8 +554,6 @@ def _run_retention_sweep(
     image = action_params.get("image")
     if not pool or not image:
         logger.error("backup_engine._run_retention_sweep: missing pool/image in action_params for %s", action_pk)
-        return False
-    if check_kill_switch(incident_id):
         return False
     progress = [{"step": "retention", "status": "running", "started_at": datetime.utcnow().isoformat()}]
     write_progress(action_pk, progress)

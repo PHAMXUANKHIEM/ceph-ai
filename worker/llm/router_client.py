@@ -10,7 +10,6 @@ import yaml
 
 from config.settings import settings
 from shared import audit, db
-from shared.kill_switch import is_kill_switch_enabled
 from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.ceph_releases import codename_for_version
 from shared.cluster_nodes import configured_nodes
@@ -370,22 +369,6 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
 
 
-def _check_kill_switch_safe(incident_id: str) -> bool:
-    """AD-4: fresh read, fresh session, every time this is called. Fails
-    CLOSED (returns True / blocked) on any error reading it — "can't tell"
-    must mean "don't execute", not "go ahead"."""
-    try:
-        with db.SessionLocal() as session:
-            return is_kill_switch_enabled(session)
-    except Exception:
-        logger.exception(
-            "diagnose_incident: failed to read kill-switch state for incident %s — "
-            "failing closed (treated as ON)",
-            incident_id,
-        )
-        return True
-
-
 def _maybe_execute_safe_action(
     incident_id: str, action_pk: str, action_id: str, envelope: dict
 ) -> None:
@@ -432,25 +415,6 @@ def _maybe_execute_safe_action(
     last_command: str | None = None
 
     for host in nodes:
-        if _check_kill_switch_safe(incident_id):
-            if executed_any:
-                # Real execution already happened on an earlier node — this
-                # is no longer a clean "nothing ran yet, awaiting approval"
-                # state. PENDING_APPROVAL would misrepresent that. Surface
-                # it as FAILED so a human looks at exactly what's now
-                # inconsistent across nodes.
-                logger.warning(
-                    "diagnose_incident: kill-switch turned ON mid-execution for incident %s "
-                    "(action_id=%s) after at least one node already ran — marking FAILED, "
-                    "not PENDING_APPROVAL",
-                    incident_id,
-                    action_id,
-                )
-                all_succeeded = False
-                break
-            _route_to_manual_approval(incident_id, action_pk, action_id)
-            return
-
         try:
             command = commands.get_command(action_id, host)
         except ExecutorError:
@@ -485,52 +449,6 @@ def _maybe_execute_safe_action(
     _record_execution_result(
         incident_id, action_pk, command=last_command, succeeded=all_succeeded and executed_any
     )
-
-
-def _route_to_manual_approval(incident_id: str, action_pk: str, action_id: str) -> None:
-    logger.warning(
-        "diagnose_incident: kill-switch is ON — routing SAFE action %s for incident %s "
-        "to manual approval instead of auto-executing",
-        action_id,
-        incident_id,
-    )
-    with db.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        incident = session.get(Incident, incident_id)
-        if action is None:
-            logger.warning(
-                "diagnose_incident: no Action row for pk=%s (incident %s) while routing "
-                "to manual approval",
-                action_pk,
-                incident_id,
-            )
-        else:
-            action.status = ActionStatus.PENDING_APPROVAL.value
-        if incident is None:
-            # AuditEntry.incident_id is a required FK — there is nothing
-            # valid to attach an audit row to, so skip it too (an
-            # unconditional audit.record() here would insert a row
-            # referencing a nonexistent Incident, and under production's
-            # PRAGMA foreign_keys=ON that raises IntegrityError on commit,
-            # rolling back this Action's status update too).
-            logger.warning(
-                "diagnose_incident: no Incident row for id=%s while routing to manual "
-                "approval — skipping audit.record() too (no valid Incident to attach it to)",
-                incident_id,
-            )
-        else:
-            incident.status = IncidentStatus.PENDING_APPROVAL.value
-            audit.record(
-                session,
-                incident_id=incident_id,
-                # action_id must reference a real row when non-None (FK) —
-                # fall back to None (the model supports this) rather than
-                # the stale action_pk if the Action row doesn't exist.
-                action_id=action_pk if action is not None else None,
-                event_type=audit.EVENT_SAFE_ACTION_BLOCKED_BY_KILL_SWITCH,
-                actor=audit.ACTOR_SYSTEM,
-            )
-        session.commit()
 
 
 def _record_execution_result(
@@ -833,7 +751,6 @@ _ROLE_RESTART_PHASES = (
     (_UPGRADE_PHASE_OSD, "OSD", ("osd",)),
 )
 
-_KILL_SWITCH_SKIPPED_MESSAGE = "Bị chặn bởi kill-switch giữa chừng — chưa chạy trên node này"
 _NOTHING_TO_RESTART_MESSAGE = "Không tìm thấy systemd unit nào cần khởi động lại trên node này"
 # Code review fix (2026-08-04, Story 7.2): a host whose install step failed
 # must not have its later MON/MGR/OSD/MDS-RGW unit restarted — that would
@@ -898,8 +815,6 @@ def _execute_package_upgrade_action(
     state = {
         "executed_any": False,
         "all_succeeded": True,
-        "blocked_before_start": False,
-        "stopped_mid_sequence": False,
         "last_command": None,
         # Code review fix (2026-08-04): hosts whose install step failed —
         # every later restart phase (MON/MGR/OSD, and the MDS/RGW dynamic
@@ -914,9 +829,7 @@ def _execute_package_upgrade_action(
     # Decisions on why the bracket's scope is the full upgrade window).
     mon_nodes_cfg = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
     upgrade_flags_mon_host: str | None = None
-    if _check_kill_switch_safe(incident_id):
-        state["blocked_before_start"] = True
-    elif mon_nodes_cfg:
+    if mon_nodes_cfg:
         upgrade_flags_mon_host = mon_nodes_cfg[0]
         _set_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
     else:
@@ -935,52 +848,31 @@ def _execute_package_upgrade_action(
     # the deliberate fix — NOT widening the except clauses inside the phase
     # functions, which would silently swallow real bugs instead.
     try:
-        if not state["blocked_before_start"]:
-            install_entries = [p for p in progress if p.get("phase") == _UPGRADE_PHASE_INSTALL]
-            _run_install_phase(
-                action_pk, action_id_str, nodes, install_entries, action_params, progress, incident_id, state
-            )
+        install_entries = [p for p in progress if p.get("phase") == _UPGRADE_PHASE_INSTALL]
+        _run_install_phase(
+            action_pk, action_id_str, nodes, install_entries, action_params, progress, incident_id, state
+        )
 
-        if not state["blocked_before_start"] and not state["stopped_mid_sequence"]:
-            for phase_name, role, daemon_types in _ROLE_RESTART_PHASES:
-                if state["blocked_before_start"] or state["stopped_mid_sequence"]:
-                    break
-                phase_entries = [p for p in progress if p.get("phase") == phase_name]
-                _run_restart_phase(
-                    action_pk, action_id_str, phase_name, role_hosts[role], phase_entries,
-                    daemon_types, action_params, progress, incident_id, state,
-                )
-
-        if not state["blocked_before_start"] and not state["stopped_mid_sequence"]:
+        for phase_name, role, daemon_types in _ROLE_RESTART_PHASES:
+            phase_entries = [p for p in progress if p.get("phase") == phase_name]
             _run_restart_phase(
-                action_pk, action_id_str, _UPGRADE_PHASE_MDS_RGW, nodes, None,
-                ("mds", "rgw"), action_params, progress, incident_id, state,
+                action_pk, action_id_str, phase_name, role_hosts[role], phase_entries,
+                daemon_types, action_params, progress, incident_id, state,
             )
-    finally:
-        if state["stopped_mid_sequence"]:
-            # Every step that never got a chance to run (this phase's own
-            # not-yet-visited candidates, AND every host in a phase that
-            # never even started) is still "pending" at this point — flip
-            # all of them to "skipped" in one pass, same message the
-            # pre-7.2 per-host loop already used.
-            for entry in progress:
-                if entry["status"] == "pending":
-                    entry["status"] = "skipped"
-                    entry["error"] = _KILL_SWITCH_SKIPPED_MESSAGE
-            _write_action_progress(action_pk, progress)
 
+        _run_restart_phase(
+            action_pk, action_id_str, _UPGRADE_PHASE_MDS_RGW, nodes, None,
+            ("mds", "rgw"), action_params, progress, incident_id, state,
+        )
+    finally:
         if upgrade_flags_mon_host is not None:
             _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
-
-    if state["blocked_before_start"]:
-        _revert_approved_action_to_pending(incident_id, action_pk)
-        return
 
     # Code review fix (2026-08-04): a kill-switch trip mid-sequence must
     # also block this finalize step — without `not state["stopped_mid_
     # sequence"]`, `ceph osd require-osd-release <codename>` could still
     # run on the MON after the operator hit the emergency kill-switch.
-    if state["executed_any"] and not state["stopped_mid_sequence"]:
+    if state["executed_any"]:
         _finalize_package_upgrade_osd_release(action_pk, action_params, progress)
 
     _record_approved_execution_result(
@@ -1008,14 +900,6 @@ def _run_install_phase(
     total = len(hosts)
     for index, host in enumerate(hosts):
         entry = phase_entries[index]
-        if _check_kill_switch_safe(incident_id):
-            if state["executed_any"]:
-                state["all_succeeded"] = False
-                state["stopped_mid_sequence"] = True
-            else:
-                state["blocked_before_start"] = True
-            return
-
         try:
             command = commands.get_command(
                 action_id_str, host, dict(action_params, _phase="install_only")
@@ -1135,34 +1019,6 @@ def _run_restart_phase(
                 )
             _write_action_progress(action_pk, progress)
             continue
-
-        if _check_kill_switch_safe(incident_id):
-            if state["executed_any"]:
-                state["all_succeeded"] = False
-                state["stopped_mid_sequence"] = True
-            else:
-                state["blocked_before_start"] = True
-            if phase_entries is None:
-                # Code review fix (2026-08-04): the MDS/RGW phase's entries
-                # are appended dynamically, only for a host confirmed to
-                # have something to restart — without this, a host never
-                # reached because of a mid-phase kill-switch trip would
-                # vanish from the audit trail entirely instead of being
-                # recorded as skipped (the MON/MGR/OSD phases avoid this
-                # because their pre-populated "pending" placeholders already
-                # get flipped to "skipped" by the outer cleanup loop, which
-                # this dynamic phase has nothing for it to flip).
-                for later_host in candidate_hosts[index:]:
-                    progress.append(
-                        {
-                            "host": later_host,
-                            "phase": phase_name,
-                            "status": "skipped",
-                            "error": _KILL_SWITCH_SKIPPED_MESSAGE,
-                        }
-                    )
-                _write_action_progress(action_pk, progress)
-            return
 
         try:
             discovered = commands._discover_ceph_units(host)
@@ -1500,7 +1356,6 @@ def _execute_approved_action(action_pk: str) -> None:
             action_params,
             incident_id,
             _write_action_progress,
-            _check_kill_switch_safe,
         )
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
@@ -1525,7 +1380,6 @@ def _execute_approved_action(action_pk: str) -> None:
             action_params,
             incident_id,
             _write_action_progress,
-            _check_kill_switch_safe,
         )
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
@@ -1554,7 +1408,6 @@ def _execute_approved_action(action_pk: str) -> None:
             incident_id,
             cluster_id,
             _write_action_progress,
-            _check_kill_switch_safe,
         )
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
@@ -1576,7 +1429,6 @@ def _execute_approved_action(action_pk: str) -> None:
 
     executed_any = False
     all_succeeded = True
-    blocked_before_start = False
     # Resolved per-host below (not once up front) — restart_osd_daemon's
     # cephadm-mode command depends on which host's OSD daemon name(s) get
     # discovered (see worker/executor/commands.py::get_command). Every
@@ -1587,28 +1439,6 @@ def _execute_approved_action(action_pk: str) -> None:
     _write_action_progress(action_pk, progress)
 
     for node_index, host in enumerate(nodes, start=1):
-        if blocked_before_start:
-            break
-        if _check_kill_switch_safe(incident_id):
-            if executed_any:
-                logger.warning(
-                    "_execute_approved_action: kill-switch turned ON mid-execution for "
-                    "action %s (incident %s) after at least one node already ran — "
-                    "marking FAILED, not reverting to PENDING_APPROVAL",
-                    action_pk,
-                    incident_id,
-                )
-                all_succeeded = False
-                # Remaining nodes never ran — record why, so the step log
-                # doesn't just show them stuck at "pending" forever with no
-                # explanation.
-                for later in progress[node_index - 1 :]:
-                    later["status"] = "skipped"
-                    later["error"] = "Bị chặn bởi kill-switch giữa chừng — chưa chạy trên node này"
-                _write_action_progress(action_pk, progress)
-            else:
-                blocked_before_start = True
-            break
 
         try:
             command = commands.get_command(action_id_str, host, action_params)
@@ -1690,47 +1520,9 @@ def _execute_approved_action(action_pk: str) -> None:
             action_pk,
         )
 
-    if blocked_before_start:
-        _revert_approved_action_to_pending(incident_id, action_pk)
-        return
-
     _record_approved_execution_result(
         action_pk, command=last_command, succeeded=all_succeeded and executed_any
     )
-
-
-def _revert_approved_action_to_pending(incident_id: str, action_pk: str) -> None:
-    """AD-4, no exceptions: even an action a human already approved must not
-    run while the kill-switch is on. Reverting to PENDING_APPROVAL (rather
-    than leaving it APPROVED) means the poller won't just immediately retry
-    it next tick — an operator has to look at it again."""
-    logger.warning(
-        "_execute_approved_action: kill-switch is ON — reverting approved action %s "
-        "(incident %s) to PENDING_APPROVAL instead of executing",
-        action_pk,
-        incident_id,
-    )
-    with db.SessionLocal() as session:
-        action = session.get(Action, action_pk)
-        incident = session.get(Incident, incident_id)
-        if action is not None:
-            action.status = ActionStatus.PENDING_APPROVAL.value
-        if incident is None:
-            logger.warning(
-                "_revert_approved_action_to_pending: no Incident row for id=%s — "
-                "skipping audit.record() too (no valid Incident to attach it to)",
-                incident_id,
-            )
-        else:
-            incident.status = IncidentStatus.PENDING_APPROVAL.value
-            audit.record(
-                session,
-                incident_id=incident_id,
-                action_id=action_pk if action is not None else None,
-                event_type=audit.EVENT_RISKY_ACTION_BLOCKED_BY_KILL_SWITCH,
-                actor=audit.ACTOR_SYSTEM,
-            )
-        session.commit()
 
 
 def _write_action_progress(action_pk: str, progress: list[dict]) -> None:

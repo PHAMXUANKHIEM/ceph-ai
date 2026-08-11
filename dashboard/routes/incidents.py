@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,7 +19,6 @@ from dashboard.templating import make_templates
 from shared import db, heartbeat
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.kill_switch import is_kill_switch_enabled, set_kill_switch
 from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 
@@ -172,7 +171,6 @@ def _recent_backup_failure(session) -> BackupJob | None:
         .first()
     )
 
-
 def _recent_backup_failure_for_cluster(
     session, cluster_id: str, is_default_cluster: bool
 ) -> BackupJob | None:
@@ -237,7 +235,6 @@ def _fetch_dashboard_data(
 ) -> tuple[
     list[Incident],
     WatcherHeartbeat | None,
-    bool,
     list[tuple[Action, Incident | None, str, bool]],
     list[AuditEntry],
     bool,
@@ -263,7 +260,6 @@ def _fetch_dashboard_data(
             .all()
         )
         latest_heartbeat = heartbeat.get_latest(session, cluster_id)
-        kill_switch_enabled = is_kill_switch_enabled(session)
         # Cheap DB-only signal (no SSH) for disabling "Duyệt" on every OTHER
         # pending risky action while a cluster upgrade is proposed/approved —
         # see dashboard/routes/upgrade.py::is_cluster_upgrade_pending_or_approved
@@ -353,7 +349,6 @@ def _fetch_dashboard_data(
     return (
         incidents,
         latest_heartbeat,
-        kill_switch_enabled,
         pending_actions,
         audit_entries,
         upgrade_blocks_other_actions,
@@ -497,7 +492,6 @@ async def index(
         (
             incidents,
             latest_heartbeat,
-            kill_switch_enabled,
             pending_actions_with_incident,
             audit_entries,
             upgrade_blocks_other_actions,
@@ -555,7 +549,6 @@ async def index(
             "cluster_exec_mode": selected_cluster.ceph_exec_mode,
             "clusters": clusters,
             "selected_cluster": selected_cluster,
-            "kill_switch_enabled": kill_switch_enabled,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
             "filter_incident_id": incident_id,
@@ -584,21 +577,3 @@ async def index(
             ),
         },
     )
-
-
-@router.post("/kill-switch", response_class=HTMLResponse)
-async def kill_switch_submit(
-    request: Request, user: str = Depends(require_login), enabled: str = Form(...)
-):
-    """Story 4.1: the Dashboard's emergency kill-switch — Worker re-reads
-    this fresh before every remediation command (AD-4, NFR2), so flipping
-    it here takes effect immediately, no restart needed. `enabled` is a
-    literal "true"/"false" hidden form field (see templates/index.html) —
-    the same button always posts the OPPOSITE of the currently-displayed
-    state, so a stale/double-submitted page can't silently re-apply a value
-    the operator no longer intends.
-    """
-    with db.SessionLocal() as session:
-        set_kill_switch(session, enabled.strip().lower() == "true")
-        session.commit()
-    return RedirectResponse(url="/", status_code=303)

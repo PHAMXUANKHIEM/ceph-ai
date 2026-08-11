@@ -6,7 +6,6 @@ ACTOR_SYSTEM = "system"
 
 EVENT_SAFE_ACTION_EXECUTED = "safe_action_executed"
 EVENT_SAFE_ACTION_FAILED = "safe_action_failed"
-EVENT_SAFE_ACTION_BLOCKED_BY_KILL_SWITCH = "safe_action_blocked_by_kill_switch"
 
 # Story 4.2/4.3: RISKY-action lifecycle (FR8/FR9, AD-4).
 EVENT_RISKY_ACTION_PENDING_APPROVAL = "risky_action_pending_approval"
@@ -14,7 +13,6 @@ EVENT_RISKY_ACTION_APPROVED = "risky_action_approved"
 EVENT_RISKY_ACTION_REJECTED = "risky_action_rejected"
 EVENT_RISKY_ACTION_EXECUTED = "risky_action_executed"
 EVENT_RISKY_ACTION_FAILED = "risky_action_failed"
-EVENT_RISKY_ACTION_BLOCKED_BY_KILL_SWITCH = "risky_action_blocked_by_kill_switch"
 # 2026-07-23: fired by dashboard/routes/actions.py::approve_action instead
 # of EVENT_RISKY_ACTION_APPROVED when the action_id has no automated
 # command at all (investigate_manually, pg_repair_force — see
@@ -71,7 +69,7 @@ def record(
     """AD-7: the ONLY place that ever inserts an AuditEntry row. Does NOT
     commit — the caller controls the transaction boundary, so this write is
     always atomic with the Action/Incident status change it describes
-    (same pattern as shared/kill_switch.py::is_kill_switch_enabled)."""
+    in the same transaction as the state change."""
     session.add(
         AuditEntry(
             incident_id=incident_id,

@@ -162,11 +162,7 @@ def _record_result(
         session.commit()
 
 
-def run(action_pk: str, action_params: dict, incident_id: str, write_progress, check_kill_switch) -> bool:
-    if check_kill_switch(incident_id):
-        logger.warning("restore_drill.run: kill-switch is ON — skipping drill")
-        return False
-
+def run(action_pk: str, action_params: dict, incident_id: str, write_progress) -> bool:
     drill_config = load_backup_policy().get("restore_drill") or {}
     pool = drill_config.get("pool")
     image = drill_config.get("image")

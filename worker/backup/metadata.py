@@ -85,12 +85,7 @@ def run(
     incident_id: str,
     cluster_id: str | None,
     write_progress,
-    check_kill_switch,
 ) -> bool:
-    if check_kill_switch(incident_id):
-        logger.warning("backup_metadata.run: kill-switch is ON — skipping metadata backup")
-        return False
-
     cluster = get_cluster(cluster_id)
     mon_ip = _first_mon_node(cluster)
     prefix = f"metadata/{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
