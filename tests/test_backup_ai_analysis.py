@@ -170,7 +170,40 @@ def test_analyze_backup_job_calls_ai_and_alerts_critical_for_failed_job(isolated
     assert len(alerts) == 1
     assert alerts[0][0] == "critical"
     assert "Hết dung lượng đích" in alerts[0][1]
+    assert "🤖 Phân tích AI" in alerts[0][1]
+    assert "🔧 Giải pháp đề xuất" in alerts[0][1]
     assert alerts[0][2] == job.id
+
+
+def test_failed_job_classified_warning_still_sends_ai_solution(isolated_db, monkeypatch):
+    job = _make_job(None, None, "metadata", "FAILED", error_message="python encoding error")
+    monkeypatch.setattr(
+        ai_analysis,
+        "analyze",
+        lambda context: _async_return(
+            {
+                "root_cause_summary_vi": "Ceph CLI Python 2 không giải mã được Unicode",
+                "severity": "warning",
+                "suggested_action_vi": "Ép locale C.UTF-8 hoặc loại ký tự Unicode khỏi output",
+            }
+        ),
+    )
+    alerts = []
+    monkeypatch.setattr(
+        ai_analysis.alerting,
+        "send_alert",
+        lambda severity, message, backup_job_id=None: alerts.append((severity, message)),
+    )
+
+    ai_analysis.analyze_backup_job(job)
+
+    assert alerts == [
+        (
+            "warning",
+            "🤖 Phân tích AI: Ceph CLI Python 2 không giải mã được Unicode\n"
+            "🔧 Giải pháp đề xuất: Ép locale C.UTF-8 hoặc loại ký tự Unicode khỏi output",
+        )
+    ]
 
 
 def test_analyze_backup_job_skips_ai_for_ordinary_success(isolated_db, monkeypatch):
@@ -209,7 +242,7 @@ def test_analyze_backup_job_calls_ai_for_success_with_anomaly(isolated_db, monke
     assert alerts == []
 
 
-def test_analyze_backup_job_downgrades_to_warning_when_already_recovered(isolated_db, monkeypatch):
+def test_analyze_backup_job_downgrades_recovered_failure_to_warning_alert(isolated_db, monkeypatch):
     """AC #3: a later SUCCESS for the same (pool, image, job_type) already
     exists — the AI said "critical" but this must be downgraded, and no
     critical alert sent."""
@@ -237,7 +270,7 @@ def test_analyze_backup_job_downgrades_to_warning_when_already_recovered(isolate
 
     ai_analysis.analyze_backup_job(job)
 
-    assert alerts == []  # downgraded to warning -> no immediate critical alert
+    assert alerts == ["warning"]
 
 
 def test_analyze_backup_job_falls_back_when_ai_call_fails(isolated_db, monkeypatch):

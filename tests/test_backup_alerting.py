@@ -169,7 +169,7 @@ def _add_fresh_metadata_success(session):
     session.add(BackupJob(run_id="meta", job_type="metadata", status="SUCCESS", created_at=datetime.utcnow()))
 
 
-def test_check_overdue_and_failed_backups_alerts_on_failure(isolated_db, monkeypatch):
+def test_check_overdue_and_failed_backups_does_not_repeat_ai_analyzed_failure(isolated_db, monkeypatch):
     monkeypatch.setattr(
         alerting,
         "load_backup_policy",
@@ -190,9 +190,7 @@ def test_check_overdue_and_failed_backups_alerts_on_failure(isolated_db, monkeyp
 
     alerting.check_overdue_and_failed_backups()
 
-    assert len(alerts) == 1
-    assert alerts[0][0] == "warning"
-    assert "disk full" in alerts[0][1]
+    assert alerts == []
 
 
 def test_check_overdue_and_failed_backups_alerts_when_stale(isolated_db, monkeypatch):

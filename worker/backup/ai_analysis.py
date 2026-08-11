@@ -284,13 +284,19 @@ def analyze_backup_job(job: BackupJob, anomaly: dict | None = None) -> None:
             )
             session.commit()
 
-    message = f"{result['root_cause_summary_vi']} — Gợi ý: {result['suggested_action_vi']}"
-    if severity == "critical":
+    message = (
+        f"🤖 Phân tích AI: {result['root_cause_summary_vi']}\n"
+        f"🔧 Giải pháp đề xuất: {result['suggested_action_vi']}"
+    )
+    if job.status == "FAILED":
+        # Every failed job needs one actionable notification immediately.
+        # Previously a failure classified WARNING was only logged, then the
+        # periodic checker sent a separate raw traceback with no AI result.
+        alerting.send_alert(severity, message, backup_job_id=job.id)
+    elif severity == "critical":
         alerting.send_alert("critical", message, backup_job_id=job.id)
     else:
-        # warning/info: NOT alerted immediately — accumulated for
-        # BackupDigest (Task 4/AC #4's "gộp vào BackupDigest thay vì cảnh
-        # báo ngay"). Still logged so it's visible in the Worker's own log.
+        # Non-critical anomalies on successful jobs stay digest-only.
         logger.log(
             logging.WARNING if severity == "warning" else logging.INFO,
             "backup analysis [%s]: %s (backup_job_id=%s)",

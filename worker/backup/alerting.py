@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 RPO_HOURS = 24
 WEBHOOK_TIMEOUT_SECONDS = 10
+_MAX_TELEGRAM_MESSAGE_CHARS = 700
 
 # Prefixed onto every Telegram message so a severity is readable at a
 # glance in a phone notification preview, before the operator even opens
@@ -93,9 +94,14 @@ def _send_telegram_alert(
         cluster_name = settings.cluster_name.strip()
 
     prefix = _TELEGRAM_SEVERITY_PREFIX.get(severity, severity.upper())
-    text = f"{prefix}\n{message}"
+    compact_message = "\n".join(
+        " ".join(line.split()) for line in message.splitlines() if line.strip()
+    )
+    if len(compact_message) > _MAX_TELEGRAM_MESSAGE_CHARS:
+        compact_message = compact_message[: _MAX_TELEGRAM_MESSAGE_CHARS - 1].rstrip() + "…"
+    text = f"{prefix}\n{compact_message}"
     if backup_job_id:
-        text += f"\nBackupJob: {backup_job_id}"
+        text += f"\n🆔 Job: {backup_job_id[:8]}"
     # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
     # _with_cluster_prefix — this module has its own independent Backup
     # channel/send path (see module docstring), so it needs its own copy
@@ -168,12 +174,10 @@ def _check_target(
         send_alert("warning", f"Chưa từng có backup thành công nào cho {label}", cluster=cluster)
         return
     if latest.status == "FAILED":
-        send_alert(
-            "warning",
-            f"Backup gần nhất cho {label} thất bại: {latest.error_message or 'không rõ nguyên nhân'}",
-            backup_job_id=latest.id,
-            cluster=cluster,
-        )
+        # The failure path calls ai_analysis.analyze_backup_job immediately
+        # after persisting the row and already sends one concise AI analysis.
+        # Do not periodically resend the raw traceback without its solution.
+        logger.info("backup alert: latest %s job %s is FAILED and was already analyzed", label, latest.id)
         return
     if latest.created_at < cutoff:
         send_alert(
