@@ -68,7 +68,13 @@ def test_volume_perf_action_ids_registered():
 def test_parse_fio_json_extracts_iops_and_latency():
     output = _fio_json(1000, 2.5, 9.8)
     step = volume_perf_module._parse_fio_json(output, iodepth=8)
-    assert step == {"iodepth": 8, "iops": 1000.0, "latency_avg_ms": 2.5, "latency_p99_ms": 9.8}
+    assert step == {
+        "iodepth": 8,
+        "iops": 1000.0,
+        "latency_avg_ms": 2.5,
+        "latency_p99_ms": 9.8,
+        "bandwidth_mib_s": 3.91,
+    }
 
 
 def test_parse_fio_json_skips_leading_banner_noise():
@@ -127,6 +133,26 @@ def test_detect_knee_absolute_latency_needs_plateau_and_confirmation():
     knee = _detect_knee(steps)
     assert knee is not None
     assert knee["iodepth"] == 16
+
+
+def test_run_fio_depth_collects_two_extra_samples_when_initial_cv_is_high(monkeypatch):
+    iops = iter([1000, 1600, 1000, 1010, 990])
+
+    def fake_step(_ip, _pool, depth):
+        return {
+            "iodepth": depth,
+            "iops": next(iops),
+            "latency_avg_ms": 2.0,
+            "latency_p99_ms": 5.0,
+            "bandwidth_mib_s": 4.0,
+        }
+
+    monkeypatch.setattr(volume_perf_module, "_run_fio_step", fake_step)
+    result = volume_perf_module._run_fio_depth("host", "pool", 8)
+
+    assert result["sample_count"] == 5
+    assert result["iops"] == 1000
+    assert result["bandwidth_mib_s"] == 4.0
 
 
 def test_detect_knee_needs_at_least_two_steps():

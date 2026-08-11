@@ -51,14 +51,19 @@ SCRATCH_IMAGE_SIZE_GB = 50
 
 # Same iodepth ladder the operator's own proven script used.
 IODEPTH_STEPS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
-# Shorter than a textbook 60s+10s ramp per step (the operator's own script)
-# — this sweep can run up to 9 steps, and every second here is real load on
-# a production cluster; 25s/step (with early-stop once the knee is found,
-# see run() below) keeps a full unsaturated sweep under ~4 minutes instead
-# of ~10.
-FIO_RUNTIME_SECONDS = 20
-FIO_RAMP_SECONDS = 5
+# p99 from a 20-second window was too sensitive to short-lived recovery/
+# scrub bursts. 30 seconds of measured traffic after a 10-second ramp is a
+# better compromise for an operator-triggered ceiling test. With 3 samples
+# this is intentionally a thorough test (up to ~18 minutes for all 9 depths,
+# normally shorter because the sweep stops after a confirmed knee).
+FIO_RUNTIME_SECONDS = 30
+FIO_RAMP_SECONDS = 10
 FIO_SAMPLES_PER_DEPTH = 3
+# If the first 3 IOPS samples disagree by more than this, take 2 more and
+# use the median of 5. A noisy cluster gets more evidence automatically;
+# a stable cluster does not pay that extra load/time.
+FIO_SAMPLE_CV_RETRY_PERCENT = 7.5
+FIO_EXTRA_SAMPLES_ON_NOISE = 2
 
 # Knee-detection thresholds (see _detect_knee) — deliberately two signals
 # combined, not one: the operator's own example (~3% more IOPS for ~14x
@@ -68,15 +73,15 @@ FIO_SAMPLES_PER_DEPTH = 3
 # scaling normally. The absolute cutoff is a safety net independent of
 # growth shape, so a sweep doesn't grind on toward iodepth=256 once
 # latency is already clearly unacceptable.
-_KNEE_IOPS_PLATEAU_THRESHOLD = 0.10
-_KNEE_LATENCY_GROWTH_THRESHOLD = 0.50
-_KNEE_MIN_LATENCY_DELTA_MS = 1.0
+_KNEE_IOPS_PLATEAU_THRESHOLD = 0.08
+_KNEE_LATENCY_GROWTH_THRESHOLD = 1.00
+_KNEE_MIN_LATENCY_DELTA_MS = 2.0
 _KNEE_ABSOLUTE_LATENCY_MS = 20.0
 _KNEE_CONFIRMING_TRANSITIONS = 2
 
 _STEP_DEFS = [
     ("prepare", "Chuẩn bị scratch image + kiểm tra fio", 10),
-    ("sweep", "Quét tải tăng dần, lấy median 3 mẫu (iodepth 1→256)", 85),
+    ("sweep", "Quét tải tăng dần, median 3 mẫu; tự tăng 5 mẫu khi nhiễu (iodepth 1→256)", 85),
     ("diagnostics", "Thu thập QoS / bottleneck diagnostics", 95),
     ("cleanup", "Xóa scratch image 50 GiB", 100),
 ]
@@ -155,6 +160,10 @@ def _parse_fio_json(output: str, iodepth: int) -> dict:
         iops = float(write["iops"])
         lat_avg_ms = float(write["clat_ns"]["mean"]) / 1_000_000
         lat_p99_ms = float(write["clat_ns"]["percentile"]["99.000000"]) / 1_000_000
+        # fio 3.x exposes bytes/s here. Older builds/tests may omit it, so
+        # keep this backward-compatible instead of rejecting an otherwise
+        # valid latency/IOPS sample.
+        bandwidth_bytes_s = float(write.get("bw_bytes", iops * 4096))
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise VolumePerfError(f"fio JSON thiếu trường cần thiết ở iodepth={iodepth}: {exc}") from exc
     return {
@@ -162,6 +171,7 @@ def _parse_fio_json(output: str, iodepth: int) -> dict:
         "iops": round(iops, 1),
         "latency_avg_ms": round(lat_avg_ms, 3),
         "latency_p99_ms": round(lat_p99_ms, 3),
+        "bandwidth_mib_s": round(bandwidth_bytes_s / 1024 / 1024, 2),
     }
 
 
@@ -171,7 +181,8 @@ def _run_fio_step(ip: str, pool: str, iodepth: int) -> dict:
         f"--pool={shlex.quote(pool)} --rbdname={shlex.quote(SCRATCH_IMAGE_NAME)} "
         f"--rw=randwrite --bs=4k --iodepth={iodepth} --numjobs=1 "
         f"--runtime={FIO_RUNTIME_SECONDS} --ramp_time={FIO_RAMP_SECONDS} --time_based --direct=1 "
-        "--invalidate=1 --randrepeat=0 --norandommap --group_reporting --output-format=json"
+        "--invalidate=1 --randrepeat=0 --norandommap --thread=1 --group_reporting "
+        "--lat_percentiles=1 --percentile_list=99 --output-format=json"
     )
     try:
         output = execute_command(ip, cmd)
@@ -180,21 +191,29 @@ def _run_fio_step(ip: str, pool: str, iodepth: int) -> dict:
     return _parse_fio_json(output, iodepth)
 
 
+def _coefficient_of_variation_percent(values: list[float]) -> float:
+    median = statistics.median(values)
+    return (statistics.stdev(values) / median * 100) if len(values) > 1 and median else 0.0
+
+
 def _run_fio_depth(ip: str, pool: str, iodepth: int) -> dict:
-    """Run repeated samples and use medians so one noisy interval cannot win."""
+    """Use median samples; automatically gather more evidence when noisy."""
     samples = [_run_fio_step(ip, pool, iodepth) for _ in range(FIO_SAMPLES_PER_DEPTH)]
     iops_values = [sample["iops"] for sample in samples]
+    if _coefficient_of_variation_percent(iops_values) > FIO_SAMPLE_CV_RETRY_PERCENT:
+        samples.extend(
+            _run_fio_step(ip, pool, iodepth) for _ in range(FIO_EXTRA_SAMPLES_ON_NOISE)
+        )
+        iops_values = [sample["iops"] for sample in samples]
     iops_median = statistics.median(iops_values)
     return {
         "iodepth": iodepth,
         "iops": round(iops_median, 1),
         "latency_avg_ms": round(statistics.median(s["latency_avg_ms"] for s in samples), 3),
         "latency_p99_ms": round(statistics.median(s["latency_p99_ms"] for s in samples), 3),
+        "bandwidth_mib_s": round(statistics.median(s["bandwidth_mib_s"] for s in samples), 2),
         "sample_count": len(samples),
-        "iops_cv_pct": round(
-            (statistics.stdev(iops_values) / iops_median * 100) if len(iops_values) > 1 and iops_median else 0.0,
-            2,
-        ),
+        "iops_cv_pct": round(_coefficient_of_variation_percent(iops_values), 2),
     }
 
 

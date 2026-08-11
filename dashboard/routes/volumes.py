@@ -471,8 +471,8 @@ async def propose_volume_perf_sweep(pool: str, user: str = Depends(require_login
             status=ActionStatus.PENDING_APPROVAL.value,
             rationale=(
                 f"Quét tải fio tăng dần (iodepth 1→256) trên scratch image riêng trong pool {pool} "
-                f"để tìm điểm bão hoà hiệu năng thực tế — không đụng tới volume thật, nhưng tạo tải "
-                f"I/O thật lên cluster trong vài phút khi chạy."
+                f"để tìm điểm bão hoà IOPS ghi ngẫu nhiên 4K — không đụng tới volume thật, nhưng tạo "
+                f"tải I/O thật lên cluster khoảng 10–20 phút khi chạy (có thể lâu hơn nếu mẫu nhiễu)."
             ),
             target_nodes=json.dumps([mon_nodes[0]]),
             action_params=json.dumps(action_params),

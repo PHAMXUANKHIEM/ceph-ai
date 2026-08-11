@@ -148,7 +148,7 @@
         {% elif perf_sweep_action and perf_sweep_action.status == "APPROVED" %}
         <p class="hint">● Đang đo hiệu năng — xem tiến độ bên dưới...</p>
         {% elif is_admin %}
-        <button type="button" class="btn btn-primary btn-sm" id="perf-sweep-run-btn">Đo hiệu năng tối đa</button>
+        <button type="button" class="btn btn-primary btn-sm" id="perf-sweep-run-btn">Đo trần IOPS ghi ngẫu nhiên 4K</button>
         {% endif %}
 
         <p class="error" id="perf-sweep-error" hidden></p>
