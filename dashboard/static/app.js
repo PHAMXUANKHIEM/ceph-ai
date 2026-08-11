@@ -45,6 +45,81 @@
 })();
 
 (function () {
+  // Shared application shell.  The server-rendered navigation remains the
+  // source of truth; this layer only enriches it with a responsive menu,
+  // compact product identity and page context so every route gets the same
+  // control-plane layout without duplicating presentation markup.
+  var topbar = document.querySelector(".topbar");
+  var main = document.querySelector("main.page");
+  if (!topbar || !main) return;
+
+  document.body.classList.add("app-shell");
+
+  var brand = topbar.querySelector(".brand");
+  if (brand && !brand.querySelector(".brand-copy")) {
+    var brandText = Array.prototype.slice.call(brand.childNodes).filter(function (node) {
+      return node.nodeType === Node.TEXT_NODE && node.textContent.trim();
+    });
+    brandText.forEach(function (node) { node.remove(); });
+    var copy = document.createElement("span");
+    copy.className = "brand-copy";
+    copy.innerHTML = "<strong>Ceph AI</strong><small>Autonomous operations</small>";
+    brand.appendChild(copy);
+  }
+
+  var menuButton = document.createElement("button");
+  menuButton.type = "button";
+  menuButton.className = "shell-menu-toggle";
+  menuButton.setAttribute("aria-label", "Mở menu điều hướng");
+  menuButton.setAttribute("aria-expanded", "false");
+  menuButton.innerHTML = "<span></span><span></span><span></span>";
+  topbar.querySelector(".topbar-inner").insertBefore(menuButton, topbar.querySelector(".main-nav"));
+
+  function setMenu(open) {
+    document.body.classList.toggle("nav-open", open);
+    menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+    menuButton.setAttribute("aria-label", open ? "Đóng menu điều hướng" : "Mở menu điều hướng");
+  }
+  menuButton.addEventListener("click", function () {
+    setMenu(!document.body.classList.contains("nav-open"));
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") setMenu(false);
+  });
+  window.addEventListener("resize", function () {
+    if (window.innerWidth >= 1024) setMenu(false);
+  });
+
+  var title = document.title.split("—")[0].trim()
+    .replace("Ceph AIOps Dashboard", "Operations overview");
+  var heading = document.createElement("header");
+  heading.className = "page-heading";
+  heading.innerHTML =
+    '<div><span class="page-eyebrow">CEPH AI · CONTROL PLANE</span>' +
+    '<h1></h1><p>Giám sát, phân tích và vận hành hạ tầng Ceph trong một không gian thống nhất.</p></div>' +
+    '<span class="page-live"><i></i> SYSTEM LIVE</span>';
+  heading.querySelector("h1").textContent = title;
+  main.insertBefore(heading, main.firstChild);
+
+  var iconByPath = {
+    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/settings": "⚙",
+    "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
+    "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
+    "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
+    "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡"
+  };
+  topbar.querySelectorAll(".main-nav a").forEach(function (link) {
+    if (link.querySelector(".nav-icon")) return;
+    var path = new URL(link.href, window.location.origin).pathname;
+    var icon = document.createElement("span");
+    icon.className = "nav-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = iconByPath[path] || "·";
+    link.insertBefore(icon, link.firstChild);
+  });
+})();
+
+(function () {
   if (!document.getElementById("incident-feed")) {
     return; // not on the dashboard page (e.g. login page)
   }
