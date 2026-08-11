@@ -127,6 +127,27 @@ def test_notify_broadcasts_to_every_configured_channel(dashboard_client, monkeyp
         assert action.telegram_notified_at is not None
 
 
+def test_volume_perf_approval_goes_only_to_incident_channel(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "backup", token="tb", chat_id="-1")
+    _configure_channel(monkeypatch, "incident", token="ti", chat_id="-2")
+    _configure_channel(monkeypatch, "node", token="tn", chat_id="-3")
+    action_id = _pending_action("inc-volume-perf", action_id="volume_perf_sweep")
+    calls = []
+    monkeypatch.setattr(
+        bot,
+        "send_telegram_message_with_keyboard",
+        lambda token, chat_id, text, buttons: calls.append((token, chat_id)) or 222,
+    )
+
+    bot._notify_pending_actions()
+
+    assert calls == [("ti", "-2")]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert json.loads(action.telegram_message_ids) == {"incident": 222}
+
+
 def test_notify_does_not_resend_to_a_channel_already_notified(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "incident", token="ti", chat_id="-3")

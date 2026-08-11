@@ -9,7 +9,9 @@ independent Telegram channels (config/settings.py), each with its own Bot
 Token + Chat ID, and Duyệt/Từ chối is a DEFAULT capability of EVERY one of
 them: a PENDING_APPROVAL Action's request is BROADCAST to every channel
 that has a token+chat id configured, simultaneously — approving/rejecting
-from any one of them resolves the Action everywhere. There is no separate
+from any one of them resolves the Action everywhere. Since 2026-08-11,
+action families may narrow that legacy broadcast via `channels_for_action`
+(Volume Performance routes only to Lỗi cụm/Incident). There is no separate
 on/off switch for this — "a channel is configured" IS "that channel can
 approve/reject".
 
@@ -107,6 +109,7 @@ from shared.telegram_client import (
     get_telegram_updates,
     send_telegram_message_with_keyboard,
 )
+from worker.policy.gate import VALID_VOLUME_PERF_ACTION_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +215,30 @@ def channels_for_incident(incident: Incident | None, session) -> list[tuple[str,
                 own_channel = _cluster_channel(cluster)
                 return [own_channel] if own_channel is not None else []
     return _configured_channels()
+
+
+def channels_for_action(
+    action: Action | None, incident: Incident | None, session
+) -> list[tuple[str, str, str]]:
+    """Return only the approval channel(s) relevant to this action.
+
+    A non-default cluster's own channel remains the strongest routing rule.
+    For the default cluster, Volume Performance is an operator-requested
+    cluster/storage workload, neither a backup event nor a node-hardware
+    alarm, so it belongs only in the Incident channel. Other action families
+    retain the legacy broadcast behavior until they get an explicit routing
+    classification of their own.
+    """
+    channels = channels_for_incident(incident, session)
+    if action is not None and action.action_id in VALID_VOLUME_PERF_ACTION_IDS:
+        # A per-cluster channel is already a single namespaced destination;
+        # never filter it by one of the three global channel keys.
+        if incident is not None and incident.cluster_id is not None:
+            default_cluster_id = get_default_cluster_id(session)
+            if incident.cluster_id != default_cluster_id:
+                return channels
+        return [channel for channel in channels if channel[0] == "incident"]
+    return channels
 
 
 # 2026-08-10 (multi-tenant remediation Phase 2): `_listen_supervisor_loop`'s
@@ -375,7 +402,9 @@ def _notify_pending_actions() -> None:
             if action is None or action.status != ActionStatus.PENDING_APPROVAL.value:
                 continue
             incident = session.get(Incident, action.incident_id)
-            target_channels = channels_for_incident(incident, session)
+            # Action-aware routing prevents a storage benchmark approval
+            # from leaking into unrelated Backup and Hardware channels.
+            target_channels = channels_for_action(action, incident, session)
             if not target_channels:
                 continue
             sent = _load_message_ids(action)
@@ -477,7 +506,10 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         incident_for_trust = (
             session.get(Incident, action_for_trust.incident_id) if action_for_trust is not None else None
         )
-        legit_chat_ids = {str(chat_id) for _, _, chat_id in channels_for_incident(incident_for_trust, session)}
+        legit_chat_ids = {
+            str(chat_id)
+            for _, _, chat_id in channels_for_action(action_for_trust, incident_for_trust, session)
+        }
 
     if not legit_chat_ids or incoming_chat_id not in legit_chat_ids:
         logger.warning(
