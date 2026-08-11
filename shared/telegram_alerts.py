@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 # a slow-ops list) can run to several KB, well past what's useful to read
 # in a phone notification, and needlessly close to Telegram's own 4096-char
 # message limit once the rest of the text is added.
-_MAX_EXCERPT_CHARS = 800
+_MAX_EXCERPT_CHARS = 320
+_MAX_FOLLOWUP_FIELD_CHARS = 240
 
 _INCIDENT_SEVERITY_PREFIX = {
     "HEALTH_ERR": "\U0001f534 HEALTH_ERR",  # red circle
@@ -64,6 +65,13 @@ def _with_cluster_prefix(text: str, cluster_name: str | None = None) -> str:
     if not name:
         return text
     return f"\U0001f4cd Cụm: {name}\n{text}"
+
+
+def _compact(value: str | None, limit: int) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
 
 
 def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: str | None = None) -> None:
@@ -111,9 +119,7 @@ def send_incident_alert(
     caller, unchanged) means "use the global settings.telegram_incident_*
     exactly as before this param existed"."""
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
-    excerpt = (log_excerpt or "").strip()
-    if len(excerpt) > _MAX_EXCERPT_CHARS:
-        excerpt = excerpt[:_MAX_EXCERPT_CHARS] + "…"
+    excerpt = _compact(log_excerpt, _MAX_EXCERPT_CHARS)
     text = f"{prefix} Cụm Ceph: {ceph_code}"
     if excerpt:
         text += f"\n{excerpt}"
@@ -132,7 +138,7 @@ def send_node_alert(host: str, message: str) -> None:
     — only when a new Incident is created, not resent on every scan a host
     stays flagged). No-op if the Phần cứng channel's bot token/chat id
     aren't configured yet (same reasoning as send_incident_alert above)."""
-    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Phần cứng node {host}\n{message}")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Node {host}: {_compact(message, _MAX_EXCERPT_CHARS)}")
 
 
 def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
@@ -143,7 +149,7 @@ def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
     Phần cứng channel with send_node_alert — see this module's own
     docstring for why there's no separate 4th channel for this."""
     label = f"osd.{osd_id}" + (f" ({host})" if host else "")
-    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 OSD chậm bất thường: {label}\n{message}")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 OSD chậm: {label}\n{_compact(message, _MAX_EXCERPT_CHARS)}")
 
 
 def send_crush_skew_alert(signal: str, entity_label: str, message: str) -> None:
@@ -160,7 +166,7 @@ def send_crush_skew_alert(signal: str, entity_label: str, message: str) -> None:
     meaningful osd_id, so a single already-formatted label avoids an
     always-None parameter on half of all calls."""
     label = f"{entity_label} ({signal})"
-    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Lệch tải CRUSH: {label}\n{message}")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Lệch CRUSH: {label}\n{_compact(message, _MAX_EXCERPT_CHARS)}")
 
 
 def send_database_size_alert(message: str) -> None:
@@ -173,7 +179,7 @@ def send_database_size_alert(message: str) -> None:
     a Ceph-cluster check, same reasoning AD-31 already established for not
     opening a 4th channel. No entity/label parameter -- there is only ever
     one database, unlike the per-osd/per-host/per-CRUSH-entity alerts above."""
-    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Database ceph-aiops gần đầy\n{message}")
+    _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Database ceph-aiops gần đầy\n{_compact(message, _MAX_EXCERPT_CHARS)}")
 
 
 def send_auto_remediation_alert(
@@ -206,11 +212,11 @@ def send_auto_remediation_alert(
     prefix = "\u2705 Đã tự động xử lý" if succeeded else "\u274c Tự động xử lý thất bại"
     lines = [f"{prefix}: {ceph_code}"]
     if diagnosis_text:
-        lines.append(f"Chẩn đoán: {diagnosis_text}")
+        lines.append(f"⚠️ Chẩn đoán: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if rationale:
-        lines.append(f"Hành động: {rationale}")
+        lines.append(f"🔧 Giải pháp: {_compact(rationale, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if command:
-        lines.append(f"Lệnh đã chạy:\n{command}")
+        lines.append(f"💻 Lệnh: {_compact(command, _MAX_FOLLOWUP_FIELD_CHARS)}")
     _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,

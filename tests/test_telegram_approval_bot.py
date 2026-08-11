@@ -82,6 +82,30 @@ def test_known_chat_ids_aggregates_every_configured_channel(monkeypatch):
 # --- _notify_pending_actions() — broadcast to every configured channel -----
 
 
+def test_action_message_is_compact_and_shows_proposed_solution(dashboard_client):
+    action_id = _pending_action("inc-message", rationale="Khởi động lại OSD để phục hồi quorum.")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        incident = session.get(Incident, "inc-message")
+        incident.diagnosis_text = "OSD mất kết nối. " * 80
+        text = bot._action_message_text(action, incident, session)
+
+    assert "🔧 Giải pháp đề xuất: Khởi động lại OSD" in text
+    assert "💻 Lệnh: docker restart ceph-osd-B" in text
+    assert f"🆔 {action_id[:8]}" in text
+    assert len(text) < 900
+
+
+def test_action_message_has_solution_fallback_when_rationale_missing(dashboard_client):
+    action_id = _pending_action("inc-fallback", rationale="")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        incident = session.get(Incident, "inc-fallback")
+        text = bot._action_message_text(action, incident, session)
+
+    assert "🔧 Giải pháp đề xuất: Khởi động lại daemon OSD bị lỗi." in text
+
+
 def test_notify_broadcasts_to_every_configured_channel(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "backup", token="tb", chat_id="-1")
@@ -193,7 +217,7 @@ def test_notify_one_action_failure_does_not_block_another_action(dashboard_clien
     ok_id = _pending_action("inc-ok")
 
     def fake_send(token, chat_id, text, buttons):
-        if failing_id in text:
+        if failing_id[:8] in text:
             raise bot.TelegramSendError("boom")
         return 999
 

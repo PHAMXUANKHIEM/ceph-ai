@@ -79,6 +79,18 @@ def test_send_incident_alert_truncates_long_excerpt(monkeypatch):
     assert len(calls[0]) < 1000
 
 
+def test_send_incident_alert_compacts_multiline_metrics(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("SLOW_OPS", "HEALTH_WARN", "IOPS: 10\n\n latency:   25 ms")
+
+    assert "IOPS: 10 latency: 25 ms" in calls[0]
+
+
 def test_send_incident_alert_swallows_send_failure(monkeypatch):
     _configure_incident(monkeypatch)
 

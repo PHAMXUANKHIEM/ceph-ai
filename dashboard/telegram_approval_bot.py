@@ -121,6 +121,17 @@ _LONG_POLL_TIMEOUT_SECONDS = 30
 # change on the "Alert Telegram" page should take effect quickly) but not
 # zero (must never busy-loop).
 _IDLE_BACKOFF_SECONDS = 5
+_MAX_DIAGNOSIS_CHARS = 240
+_MAX_SOLUTION_CHARS = 240
+_MAX_COMMAND_CHARS = 320
+
+_ACTION_SOLUTION_LABELS = {
+    "restart_osd_daemon": "Khởi động lại daemon OSD bị lỗi.",
+    "resync_ntp": "Đồng bộ lại thời gian hệ thống bằng chrony.",
+    "crash_archive_all": "Lưu trữ các crash report đã được kiểm tra.",
+    "pg_repair_force": "Kiểm tra PG và thực hiện repair thủ công sau khi xác minh dữ liệu.",
+    "investigate_manually": "Điều tra thủ công; chưa có thao tác tự động đủ an toàn.",
+}
 
 # (channel_key, bot_token field, chat_id field, enabled field) on
 # config.settings.Settings — the single source of truth for which 3
@@ -256,6 +267,14 @@ def _all_configured_tokens() -> set[str]:
     return {token for _, token, _ in _configured_channels()} | _cluster_tokens_cached()
 
 
+def _compact_text(value: str | None, limit: int) -> str:
+    """Turn verbose model/command output into one phone-friendly line."""
+    compact = " ".join((value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
 def _action_message_text(action: Action, incident: Incident | None, session) -> str:
     lines = []
     # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
@@ -281,7 +300,7 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
         cluster_name = settings.cluster_name.strip()
     if cluster_name:
         lines.append(f"\U0001f4cd Cụm: {cluster_name}")
-    lines.append(f"📋 Đề xuất chờ duyệt: {action.action_id}")
+    lines.append(f"📋 Chờ duyệt: {action.action_id}")
     # incident.diagnosis_text is the router's plain-language root-cause
     # explanation (worker/llm/router_client.py::diagnose_incident) — the
     # SAME field the Dashboard's own "Chờ duyệt" card prefers over
@@ -289,14 +308,18 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
     # only ever send `rationale` (a short "why this action_id" note) and
     # never the diagnosis itself — the actual "giải pháp" an operator asked
     # about lived only on the Dashboard. Show both when they differ.
-    diagnosis = (incident.diagnosis_text if incident else None) or None
+    diagnosis = _compact_text(incident.diagnosis_text if incident else None, _MAX_DIAGNOSIS_CHARS)
     if diagnosis:
-        lines.append(f"Chẩn đoán: {diagnosis}")
-    if action.rationale and action.rationale != diagnosis:
-        lines.append(f"Lý do chọn hành động: {action.rationale}")
+        lines.append(f"⚠️ Chẩn đoán: {diagnosis}")
+    solution = _compact_text(action.rationale, _MAX_SOLUTION_CHARS)
+    if not solution:
+        solution = _ACTION_SOLUTION_LABELS.get(
+            action.action_id, f"Thực hiện hành động {action.action_id}."
+        )
+    lines.append(f"🔧 Giải pháp đề xuất: {solution}")
     if action.proposed_command:
-        lines.append(f"\nLệnh xem trước:\n{action.proposed_command}")
-    lines.append(f"\nAction ID: {action.id}")
+        lines.append(f"💻 Lệnh: {_compact_text(action.proposed_command, _MAX_COMMAND_CHARS)}")
+    lines.append(f"🆔 {action.id[:8]}")
     return "\n".join(lines)
 
 
