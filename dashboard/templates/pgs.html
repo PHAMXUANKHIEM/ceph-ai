@@ -50,53 +50,17 @@
   </header>
 
   <main class="page">
-    <div class="tabbed-page">
-      <nav class="tabbed-sidebar">
-        <div class="node-sidebar-header"><span class="hint">Chọn pool</span></div>
-        {% for pool in pools %}
-        <a href="/pgs?pool={{ pool }}" class="tabbed-nav-item {% if pool == selected_pool %}active{% endif %}">
-          <span class="node-chip-ip">{{ pool }}</span>
-        </a>
-        {% else %}
-        <p class="hint">Không tìm thấy pool RBD nào trên cluster.</p>
-        {% endfor %}
-      </nav>
-
-      <div class="tabbed-content">
-        {% if is_admin %}
-        <section class="card">
-          <div class="card-header"><div class="metrics-panel-title">Tạo pool trên {{ selected_cluster.name }}</div></div>
-          <div class="card-body">
-            {% if create_success %}<p class="success">{{ create_success }}</p>{% endif %}
-            <form method="post" action="/pgs/pools/create" class="audit-filters">
-              <input type="hidden" name="cluster_id" value="{{ selected_cluster.id }}">
-              <input type="hidden" name="return_to" value="pgs">
-              <label>Tên pool
-                <input type="text" name="pool_name" required maxlength="128" placeholder="vd: rbd-data" pattern="[A-Za-z0-9_.-]+">
-              </label>
-              <label>Application
-                <select name="app_name"><option value="rbd" selected>RBD</option><option value="cephfs">CephFS</option><option value="rgw">RGW</option></select>
-              </label>
-              <label>Số Placement Groups
-                <input type="number" name="pg_num" value="32" min="1" max="32768" required>
-              </label>
-              <button type="submit" class="btn btn-primary btn-sm">Tạo pool</button>
-            </form>
-            <p class="hint">Yêu cầu được ghi vào audit và Worker sẽ thực thi trên MON của đúng cụm đang chọn.</p>
-          </div>
-        </section>
-        {% endif %}
-        {% if selected_pool %}
+    <div>
         <section class="card">
           <div class="card-header">
             <div class="metrics-panel-title">
-              <span class="node-ip">{{ selected_pool }}</span>
+              <span class="node-ip">Placement Groups — {{ selected_cluster.name }}</span>
               <span class="pg-total">{{ pgs|length }} PGs</span>
             </div>
-            <a href="/pgs?pool={{ selected_pool }}" class="btn btn-ghost btn-sm">Làm mới</a>
+            <a href="/pgs?cluster={{ selected_cluster.id }}" class="btn btn-ghost btn-sm">Làm mới</a>
           </div>
           <div class="card-body">
-            <p class="hint">Placement Groups của pool, gồm trạng thái hiện tại, OSD mapping và thống kê object.</p>
+            <p class="hint">Toàn bộ Placement Groups hiện có trên cụm, tự động cập nhật khi tải trang.</p>
             {% if state_counts %}
             <div class="pg-summary">
               {% for state, count in state_counts %}
@@ -110,31 +74,27 @@
           {% elif pgs %}
           <div class="card-body table-wrap">
             <table id="pg-list">
-              <thead><tr><th>PG ID</th><th>Trạng thái</th><th>Up Set</th><th>Acting Set</th><th>Objects</th><th>Dung lượng</th><th>Degraded</th><th>Misplaced</th><th>Unfound</th><th>Last scrub</th></tr></thead>
+              <thead><tr><th>PG ID</th><th>State</th><th>Pool</th><th>Acting</th><th>Up</th><th>Primary</th><th>Last scrub</th><th>Last deep scrub</th></tr></thead>
               <tbody>
                 {% for pg in pgs %}
                 <tr>
                   <td><code>{{ pg.pgid }}</code></td>
                   <td><span class="pg-state-chip {% if pg.state == 'active+clean' %}is-clean{% else %}is-warning{% endif %}">{{ pg.state }}</span></td>
-                  <td><code>[{{ pg.up|join(', ') }}]</code></td>
+                  <td>{{ pg.pool }}</td>
                   <td><code>[{{ pg.acting|join(', ') }}]</code></td>
-                  <td>{{ "{:,}".format(pg.objects) }}</td>
-                  <td>{{ pg.bytes|filesizeformat }}</td>
-                  <td>{{ pg.degraded }}</td><td>{{ pg.misplaced }}</td><td>{{ pg.unfound }}</td>
+                  <td><code>[{{ pg.up|join(', ') }}]</code></td>
+                  <td><code>{{ pg.primary }}</code></td>
                   <td>{{ pg.last_scrub }}</td>
+                  <td>{{ pg.last_deep_scrub }}</td>
                 </tr>
                 {% endfor %}
               </tbody>
             </table>
           </div>
           {% else %}
-          <div class="card-body"><div class="empty-state">Pool này chưa có Placement Group nào.</div></div>
+          <div class="card-body"><div class="empty-state">Cụm chưa có Placement Group nào.</div></div>
           {% endif %}
         </section>
-        {% else %}
-        <section class="card"><div class="card-body"><div class="empty-node-state"><span class="empty-node-icon">◌</span><p class="empty-node-text">Chọn một pool để xem Placement Groups.</p></div></div></section>
-        {% endif %}
-      </div>
     </div>
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>

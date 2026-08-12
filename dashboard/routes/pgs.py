@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import shlex
 from collections import Counter
 from datetime import datetime
 
@@ -16,7 +15,6 @@ from shared import audit, db
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
-from dashboard.routes.volumes import _pool_names_from_detail
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -27,8 +25,17 @@ templates = make_templates()
 POOL_CREATE_CEPH_CODE = "POOL_CREATE_REQUEST"
 
 
-def _normalize_pg_rows(payload: dict | list) -> list[dict]:
-    """Normalize `ceph pg ls-by-pool --format json` across Ceph releases."""
+def _pool_names_by_id(payload: dict | list) -> dict[str, str]:
+    raw_rows = payload if isinstance(payload, list) else payload.get("pools", []) if isinstance(payload, dict) else []
+    return {
+        str(row["pool"]): str(row.get("pool_name") or row.get("poolname") or row["pool"])
+        for row in raw_rows
+        if isinstance(row, dict) and "pool" in row
+    }
+
+
+def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None = None) -> list[dict]:
+    """Normalize the cluster-wide ``ceph pg dump pgs`` response."""
     if isinstance(payload, list):
         raw_rows = payload
     elif isinstance(payload, dict):
@@ -40,19 +47,25 @@ def _normalize_pg_rows(payload: dict | list) -> list[dict]:
     for pg in raw_rows:
         if not isinstance(pg, dict):
             continue
-        stats = pg.get("stat_sum") if isinstance(pg.get("stat_sum"), dict) else {}
+        pgid = str(pg.get("pgid", "—"))
+        pool_id = pgid.split(".", 1)[0] if "." in pgid else ""
+        acting = pg.get("acting") if isinstance(pg.get("acting"), list) else []
+        up = pg.get("up") if isinstance(pg.get("up"), list) else []
+        primary = pg.get("acting_primary")
+        if primary is None:
+            primary = pg.get("up_primary")
+        if primary is None:
+            primary = acting[0] if acting else "—"
         rows.append(
             {
-                "pgid": pg.get("pgid", "—"),
+                "pgid": pgid,
                 "state": pg.get("state", "unknown"),
-                "up": pg.get("up") if isinstance(pg.get("up"), list) else [],
-                "acting": pg.get("acting") if isinstance(pg.get("acting"), list) else [],
-                "objects": stats.get("num_objects", 0),
-                "bytes": stats.get("num_bytes", 0),
-                "degraded": stats.get("num_objects_degraded", 0),
-                "misplaced": stats.get("num_objects_misplaced", 0),
-                "unfound": stats.get("num_objects_unfound", 0),
+                "pool": (pool_names or {}).get(pool_id, pool_id or "—"),
+                "up": up,
+                "acting": acting,
+                "primary": primary,
                 "last_scrub": pg.get("last_scrub_stamp") or "—",
+                "last_deep_scrub": pg.get("last_deep_scrub_stamp") or "—",
             }
         )
     return sorted(rows, key=lambda row: str(row["pgid"]))
@@ -62,34 +75,24 @@ def _normalize_pg_rows(payload: dict | list) -> list[dict]:
 async def pgs_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     connection = cluster_connection(cluster)
-    if cluster.is_default:
-        pools = ceph_client.configured_rbd_pools()
-    else:
-        try:
+    rows: list[dict] = []
+    query_error: str | None = None
+    try:
+        query = ceph_client.run_ceph_json_command if cluster.is_default else None
+        if query is not None:
+            _host, pool_payload = await asyncio.to_thread(query, "ceph osd pool ls detail")
+            _host, pg_payload = await asyncio.to_thread(query, "ceph pg dump pgs")
+        else:
             _host, pool_payload = await asyncio.to_thread(
                 run_ceph_json_command_with, *connection, "ceph osd pool ls detail"
             )
-            pools = _pool_names_from_detail(pool_payload)
-        except CephQueryError as exc:
-            logger.warning("pgs_page: pool discovery failed for cluster %s: %s", cluster.id, exc)
-            pools = []
-    selected_pool = request.query_params.get("pool")
-    if selected_pool and selected_pool not in pools:
-        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
-
-    rows: list[dict] = []
-    query_error: str | None = None
-    if selected_pool:
-        try:
-            command = f"ceph pg ls-by-pool {shlex.quote(selected_pool)}"
-            if cluster.is_default:
-                _host, payload = await asyncio.to_thread(ceph_client.run_ceph_json_command, command)
-            else:
-                _host, payload = await asyncio.to_thread(run_ceph_json_command_with, *connection, command)
-            rows = _normalize_pg_rows(payload)
-        except CephQueryError as exc:
-            logger.warning("pgs_page: failed to query pool %r: %s", selected_pool, exc)
-            query_error = str(exc)
+            _host, pg_payload = await asyncio.to_thread(
+                run_ceph_json_command_with, *connection, "ceph pg dump pgs"
+            )
+        rows = _normalize_pg_rows(pg_payload, _pool_names_by_id(pool_payload))
+    except CephQueryError as exc:
+        logger.warning("pgs_page: failed to query all PGs for cluster %s: %s", cluster.id, exc)
+        query_error = str(exc)
 
     state_counts = Counter(row["state"] for row in rows)
     return templates.TemplateResponse(
@@ -98,18 +101,11 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
         {
             "user": user,
             "is_admin": auth.is_admin_user(user),
-            "pools": pools,
-            "selected_pool": selected_pool,
             "pgs": rows,
             "state_counts": sorted(state_counts.items()),
             "query_error": query_error,
             "clusters": clusters,
             "selected_cluster": cluster,
-            "create_success": (
-                "Yêu cầu tạo pool đã được gửi tới Worker."
-                if request.query_params.get("create_success") == "1"
-                else None
-            ),
         },
     )
 
