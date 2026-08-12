@@ -576,5 +576,64 @@
     if (initialItem) {
       initialItem.click();
     }
+    window.addEventListener("hashchange", function () {
+      var section = window.location.hash.replace(/^#/, "");
+      var item = settingsNavItems.filter(function (candidate) {
+        return candidate.getAttribute("data-section") === section;
+      })[0];
+      if (item) item.click();
+    });
+  }
+
+  // Settings control-plane navigation on mobile.
+  var controlMenuToggle = document.querySelector(".control-menu-toggle");
+  if (controlMenuToggle) {
+    controlMenuToggle.addEventListener("click", function () {
+      var open = document.body.classList.toggle("control-nav-open");
+      controlMenuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        document.body.classList.remove("control-nav-open");
+        controlMenuToggle.setAttribute("aria-expanded", "false");
+      }
+    });
+  }
+
+  // Service restart confirmation uses the existing POST forms/endpoints.
+  // Only the presentation is enhanced: confirmation is contextual and the
+  // initiating button exposes an in-progress state before navigation.
+  var restartDialog = document.getElementById("restart-service-dialog");
+  var pendingRestartButton = null;
+  if (restartDialog && typeof restartDialog.showModal === "function") {
+    var dialogTitle = document.getElementById("restart-dialog-title");
+    var dialogDescription = document.getElementById("restart-dialog-description");
+    var dialogConfirm = restartDialog.querySelector("[data-dialog-confirm]");
+    var dialogCancel = restartDialog.querySelector("[data-dialog-cancel]");
+    document.querySelectorAll("[data-restart-service]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        pendingRestartButton = button;
+        var service = button.getAttribute("data-restart-service");
+        dialogTitle.textContent = "Restart " + service + "?";
+        dialogDescription.textContent = button.getAttribute("data-restart-warning") || "This service will be briefly unavailable.";
+        dialogConfirm.textContent = "Restart " + service;
+        restartDialog.showModal();
+      });
+    });
+    dialogCancel.addEventListener("click", function () { restartDialog.close(); });
+    restartDialog.addEventListener("click", function (event) {
+      if (event.target === restartDialog) restartDialog.close();
+    });
+    dialogConfirm.addEventListener("click", function () {
+      if (!pendingRestartButton) return;
+      var service = pendingRestartButton.getAttribute("data-restart-service");
+      var form = document.getElementById("restart-form-" + service.toLowerCase());
+      if (!form) return;
+      dialogConfirm.disabled = true;
+      dialogConfirm.textContent = "Restarting...";
+      pendingRestartButton.classList.add("is-loading");
+      pendingRestartButton.innerHTML = "<span>↻</span> Restarting...";
+      form.submit();
+    });
   }
 })();

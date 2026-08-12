@@ -6,63 +6,33 @@
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
-<body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-      <nav class="main-nav">
-        <a href="/" class="nav-link">Dashboard</a>
-        <div class="nav-dropdown">
-          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
-          <div class="nav-dropdown-menu">
-            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
-            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
-            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
-            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
-            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
-            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
-            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
-            <a href="/backups" class="nav-dropdown-item">Backup</a>
-            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
-            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
-          </div>
-        </div>
-        <div class="nav-dropdown">
-          <button type="button" class="nav-link nav-dropdown-toggle">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
-          <div class="nav-dropdown-menu">
-            <a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a>
-          </div>
-        </div>
-        <a href="/settings" class="nav-link active">Settings</a>
-        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
-        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
-        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
-        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
+<body class="settings-control-plane">
+  <div class="control-plane-shell">
+    <aside class="control-sidebar" id="control-sidebar">
+      <div class="control-brand"><span class="control-brand-mark">CA</span><span><strong>Ceph AI</strong><small>Control Plane</small></span></div>
+      <div class="control-workspace"><span class="settings-status-dot"></span><span><small>Workspace</small><strong>Production</strong></span><em>PROD</em></div>
+      <nav class="control-nav" aria-label="Điều hướng chính">
+        <a href="/"><span class="control-nav-icon">⌁</span>Overview</a>
+        <a href="/nodes"><span class="control-nav-icon">◇</span>Cluster</a>
+        <a href="/volumes"><span class="control-nav-icon">▱</span>Storage</a>
+        <a href="/settings#router"><span class="control-nav-icon control-nav-icon-text">AI</span>AI</a>
+        <a href="/nodes"><span class="control-nav-icon">◉</span>Monitoring</a>
+        <a href="/settings" class="active"><span class="control-nav-icon">⚙</span>Settings</a>
       </nav>
-      <form method="post" action="/logout" class="topbar-user">
-        <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
-      </form>
-    </div>
-  </header>
-
-  <main class="page settings-page">
-    <header class="settings-overview">
-      <div>
-        <span class="settings-eyebrow">System workspace</span>
-        <h1>Cài đặt</h1>
-        <p>Quản lý dịch vụ, kết nối hạ tầng và các tác vụ bảo trì tại một nơi.</p>
+      <div class="control-sidebar-footer">
+        <div class="control-system-status"><span class="settings-status-dot"></span><span><strong>All systems operational</strong><small>Control plane healthy</small></span></div>
+        <div class="control-user"><span class="control-avatar">{{ user[:1]|upper }}</span><span><strong>{{ user }}</strong><small>{{ 'Administrator' if is_admin else 'Operator' }}</small></span><form method="post" action="/logout"><button type="submit" aria-label="Đăng xuất">↗</button></form></div>
+        <span class="control-version">Ceph AI · v1.0</span>
       </div>
-      <div class="settings-overview-status" aria-label="Phạm vi cấu hình">
-        <span class="settings-status-dot" aria-hidden="true"></span>
-        <span><small>Đang cấu hình</small><strong>Ceph AIOps</strong></span>
-      </div>
-    </header>
+    </aside>
+    <div class="control-main">
+      <header class="control-mobile-header"><button type="button" class="control-menu-toggle" aria-controls="control-sidebar" aria-expanded="false">☰</button><strong>Ceph AI</strong><span>Settings</span></header>
+  <main class="settings-page">
     <nav class="settings-sidebar">
       <div class="settings-sidebar-heading">
         <span class="settings-sidebar-kicker">CEPH-AI</span>
-        <strong>Cài đặt hệ thống</strong>
-        <small>Quản lý kết nối và dịch vụ</small>
+        <strong>Settings</strong>
+        <small>Manage infrastructure, integrations and system operations.</small>
       </div>
       {% if is_admin %}
       <section class="settings-nav-group" data-settings-group="system">
@@ -70,9 +40,9 @@
           <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'database', 'server-log'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">Tiến trình hệ thống</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Kết nối Database</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Log Server</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">System Processes</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">
@@ -80,8 +50,8 @@
           <span>Pipeline &amp; lưu trữ</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'backup-targets'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Build &amp; Copy Patch</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Lưu trữ Backup</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Storage Configuration</button>
         </div>
       </section>
       {% endif %}
@@ -90,9 +60,9 @@
           <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['router', 'cluster', 'openstack'] %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
-          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Kết nối cụm Ceph</button>
-          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">Cấu hình OpenStack</button>{% endif %}
+          <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">AI API</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Ceph Cluster</button>
+          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="maintenance">
@@ -100,59 +70,50 @@
           <span>Bảo trì</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
         <div class="settings-nav-group-items" {% if active_section != 'cleanup' %}hidden{% endif %}>
-          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">Dọn dẹp log &amp; dữ liệu</button>
+          <a href="/backups" class="settings-nav-item">Backup &amp; Restore</a>
+          <button type="button" class="settings-nav-item {% if active_section == 'cleanup' %}active{% endif %}" data-section="cleanup">System Maintenance</button>
         </div>
       </section>
     </nav>
     <div class="settings-content">
     {% if is_admin %}
-    <section class="card settings-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
-      <div class="card-header"><h2>Tiến trình hệ thống</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Chỉ tài khoản admin thấy mục này. Khởi động lại một tiến trình để áp dụng code mới nhất —
-          không cần quyền truy cập terminal server nữa.
-        </p>
-
-        <div class="restart-controls-row">
-          <div class="restart-control">
-            {% if dashboard_restart_error %}<p class="error">{{ dashboard_restart_error }}</p>{% endif %}
-            <p class="hint">Dashboard — gây gián đoạn vài giây cho TẤT CẢ người đang dùng.</p>
-            <form
-              method="post"
-              action="/settings/restart-dashboard"
-              onsubmit="return confirm('Khởi động lại Dashboard ngay? Mọi người đang dùng sẽ bị gián đoạn vài giây.');"
-            >
-              <button type="submit" class="btn btn-danger">Khởi động lại Dashboard</button>
-            </form>
-          </div>
-
-          <div class="restart-control">
-            {% if manual_worker_restart_success %}<p class="success">{{ manual_worker_restart_success }}</p>{% endif %}
-            {% if manual_worker_restart_error %}<p class="error">{{ manual_worker_restart_error }}</p>{% endif %}
-            <p class="hint">Worker — áp dụng thay đổi ở worker/ (vd action_id/Command mới) mà không cần đổi cấu hình API AI.</p>
-            <form
-              method="post"
-              action="/settings/restart-worker"
-              onsubmit="return confirm('Khởi động lại Worker ngay?');"
-            >
-              <button type="submit" class="btn btn-danger">Khởi động lại Worker</button>
-            </form>
-          </div>
-
-          <div class="restart-control">
-            {% if manual_watcher_restart_success %}<p class="success">{{ manual_watcher_restart_success }}</p>{% endif %}
-            {% if manual_watcher_restart_error %}<p class="error">{{ manual_watcher_restart_error }}</p>{% endif %}
-            <p class="hint">Watcher — áp dụng thay đổi ở watcher/ mà không cần đổi cấu hình kết nối cụm.</p>
-            <form
-              method="post"
-              action="/settings/restart-watcher"
-              onsubmit="return confirm('Khởi động lại Watcher ngay?');"
-            >
-              <button type="submit" class="btn btn-danger">Khởi động lại Watcher</button>
-            </form>
-          </div>
-        </div>
+    <section class="settings-panel process-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
+      <div class="settings-content-header">
+        <div><span class="settings-breadcrumb">Settings / System / Processes</span><h1>System Processes</h1><p>Manage and restart core services running the Ceph AI control plane. <span class="sr-only">Tiến trình hệ thống</span></p></div>
+        <span class="system-health-badge"><i></i>All systems operational</span>
+      </div>
+      {% if dashboard_restart_error %}<div class="settings-toast is-error">{{ dashboard_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      {% if manual_worker_restart_success %}<div class="settings-toast is-success">{{ manual_worker_restart_success }}</div>{% endif %}
+      {% if manual_worker_restart_error %}<div class="settings-toast is-error">{{ manual_worker_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      {% if manual_watcher_restart_success %}<div class="settings-toast is-success">{{ manual_watcher_restart_success }}</div>{% endif %}
+      {% if manual_watcher_restart_error %}<div class="settings-toast is-error">{{ manual_watcher_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      <div class="service-grid">
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">▦</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Dashboard</h2><p>Web control plane used by administrators and operators.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Control plane · HTTP</span><button type="button" class="service-restart-button" data-restart-service="Dashboard" data-restart-action="/settings/restart-dashboard" data-restart-warning="The dashboard will be unavailable for approximately 5–10 seconds. Active users may temporarily lose connection."><span>↻</span> Restart</button></div>
+        </article>
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">⌘</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Worker</h2><p>Executes background jobs and applies configuration changes.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Background executor</span><button type="button" class="service-restart-button" data-restart-service="Worker" data-restart-action="/settings/restart-worker" data-restart-warning="Running jobs may pause briefly while the worker process restarts."><span>↻</span> Restart</button></div>
+        </article>
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">◎</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>Watcher</h2><p>Monitors cluster state and configuration changes.</p></div>
+          <div class="service-card-footer"><span class="service-meta">Cluster monitor</span><button type="button" class="service-restart-button" data-restart-service="Watcher" data-restart-action="/settings/restart-watcher" data-restart-warning="Cluster monitoring will pause briefly while the watcher restarts."><span>↻</span> Restart</button></div>
+        </article>
+      </div>
+      <dialog class="restart-dialog" id="restart-service-dialog">
+        <form method="dialog" class="restart-dialog-card">
+          <div class="restart-dialog-icon">!</div><div><h2 id="restart-dialog-title">Restart service?</h2><p id="restart-dialog-description"></p></div>
+          <div class="restart-dialog-actions"><button type="button" class="btn btn-ghost" data-dialog-cancel>Cancel</button><button type="button" class="btn btn-danger" data-dialog-confirm>Restart</button></div>
+        </form>
+      </dialog>
+      <div hidden>
+        <form method="post" action="/settings/restart-dashboard" id="restart-form-dashboard"></form>
+        <form method="post" action="/settings/restart-worker" id="restart-form-worker"></form>
+        <form method="post" action="/settings/restart-watcher" id="restart-form-watcher"></form>
       </div>
     </section>
     {% endif %}
@@ -801,6 +762,8 @@
     </section>
     </div>
   </main>
+    </div>
+  </div>
   <script src="/static/settings.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>
