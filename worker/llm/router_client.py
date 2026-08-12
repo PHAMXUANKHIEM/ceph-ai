@@ -1405,10 +1405,24 @@ def _execute_approved_action(action_pk: str) -> None:
         action_id_str = action.action_id
         target_nodes_raw = action.target_nodes
         action_params_raw = action.action_params
+        # Atomic execution claim: multiple Worker processes may poll the same
+        # APPROVED row at once. The first one transitions its Incident to
+        # EXECUTING; every contender then observes rowcount=0 and must leave
+        # before performing any SSH side effect.
+        claimed = (
+            session.query(Incident)
+            .filter(Incident.id == incident_id)
+            .filter(Incident.status != IncidentStatus.EXECUTING.value)
+            .update({Incident.status: IncidentStatus.EXECUTING.value}, synchronize_session=False)
+        )
+        session.commit()
+        if claimed != 1:
+            logger.info(
+                "_execute_approved_action: action %s was already claimed by another Worker",
+                action_pk,
+            )
+            return
         incident = session.get(Incident, incident_id)
-        if incident is not None:
-            incident.status = IncidentStatus.EXECUTING.value
-            session.commit()
         # 2026-08-10 (multi-tenant remediation Phase 1): resolve THIS
         # Incident's own cluster's SSH creds here, inside the same session —
         # by the time this function runs (a DB poll, long after the RabbitMQ

@@ -833,6 +833,25 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
 
 
+def test_execute_approved_action_skips_when_another_worker_claimed_incident(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        router_client, "execute_command", lambda *args, **kwargs: calls.append(args) or "ok"
+    )
+    _create_incident("incident-already-claimed")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-already-claimed")
+        incident.status = IncidentStatus.EXECUTING.value
+        action = _approved_action(session, incident.id)
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert calls == []
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.APPROVED.value
+
+
 def test_execute_approved_action_uses_incidents_own_cluster_creds_not_default(isolated_db, monkeypatch):
     """2026-08-10 (multi-tenant remediation Phase 1) regression guard: by the
     time an operator approves a RISKY action, the original RabbitMQ envelope
