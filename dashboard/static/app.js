@@ -102,7 +102,7 @@
   main.insertBefore(heading, main.firstChild);
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -123,6 +123,13 @@
       pgLink.textContent = "PGs";
       linksByPath["/pgs"] = pgLink;
     }
+    if (!linksByPath["/block-storage"]) {
+      var blockStorageLink = document.createElement("a");
+      blockStorageLink.href = "/block-storage";
+      blockStorageLink.className = window.location.pathname === "/block-storage" ? "nav-link active" : "nav-link";
+      blockStorageLink.textContent = "Block Storage";
+      linksByPath["/block-storage"] = blockStorageLink;
+    }
     if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/auth-user/create"]) {
       var createAuthLink = document.createElement("a");
       createAuthLink.href = "/openstack/auth-user/create";
@@ -138,6 +145,7 @@
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
       { label: "Pool", paths: ["/volumes", "/pgs"] },
       { label: "Object Storage", paths: ["/bucket-access-log"] },
+      { label: "Block Storage", paths: ["/block-storage"] },
       { label: "OpenStack", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/restore-cluster"] },

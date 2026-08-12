@@ -16,6 +16,7 @@ from dashboard.routes import (
     actions,
     auth,
     backups,
+    block_storage,
     bucket_access_log,
     chat,
     clusters as clusters_routes,
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router)
     application.include_router(incidents.router)
     application.include_router(nodes.router)
+    application.include_router(block_storage.router)
     application.include_router(openstack.router)
     application.include_router(settings_routes.router)
     application.include_router(maintenance.router)
