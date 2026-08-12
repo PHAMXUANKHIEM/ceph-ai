@@ -54,8 +54,19 @@ def _caps_command(entity: str, pool: str, access: str, current_caps: dict) -> st
     return " ".join(shlex.quote(piece) for piece in pieces)
 
 
-@router.get("/openstack/auth-pool", response_class=HTMLResponse)
-async def auth_pool_page(request: Request, user: str = Depends(require_login)):
+def _create_auth_command(entity: str, pool: str, access: str) -> str:
+    if not _ENTITY_RE.fullmatch(entity) or not _POOL_RE.fullmatch(pool):
+        raise ValueError("User hoặc pool không hợp lệ")
+    profile = "rbd-read-only" if access == "read" else "rbd"
+    pieces = [
+        "ceph", "auth", "get-or-create", entity,
+        "mon", "profile rbd",
+        "osd", f"profile {profile} pool={pool}",
+    ]
+    return " ".join(shlex.quote(piece) for piece in pieces)
+
+
+async def _auth_page_context(request: Request, user: str, active_view: str) -> dict:
     clusters, cluster = cluster_selection(request)
     connection = cluster_connection(cluster)
     pools: list[str] = []
@@ -70,7 +81,7 @@ async def auth_pool_page(request: Request, user: str = Depends(require_login)):
         users = _auth_rows(auth_payload)
     except CephQueryError as exc:
         error = str(exc)
-    return templates.TemplateResponse(request, "openstack_auth_pool.html", {
+    return {
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "clusters": clusters,
@@ -79,7 +90,23 @@ async def auth_pool_page(request: Request, user: str = Depends(require_login)):
         "auth_users": users,
         "error": error,
         "success": request.query_params.get("saved") == "1",
-    })
+        "created": request.query_params.get("created") == "1",
+        "active_view": active_view,
+    }
+
+
+@router.get("/openstack/auth-pool", response_class=HTMLResponse)
+async def auth_pool_page(request: Request, user: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        request, "openstack_auth_pool.html", await _auth_page_context(request, user, "auth-pool")
+    )
+
+
+@router.get("/openstack/auth-user/create", response_class=HTMLResponse)
+async def create_auth_user_page(request: Request, user: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        request, "openstack_auth_pool.html", await _auth_page_context(request, user, "create-user")
+    )
 
 
 @router.post("/openstack/auth-pool")
@@ -119,3 +146,46 @@ async def grant_auth_pool(
     except (ValueError, ExecutorError, IndexError) as exc:
         raise HTTPException(status_code=502, detail=f"Không cấp được quyền: {exc}") from exc
     return RedirectResponse(f"/openstack/auth-pool?cluster={cluster.id}&saved=1", status_code=303)
+
+
+@router.post("/openstack/auth-user/create")
+async def create_auth_user(
+    request: Request,
+    user: str = Depends(require_login),
+    entity_name: str = Form(""),
+    pool: str = Form(""),
+    access: str = Form("write"),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được tạo Ceph auth user")
+    _clusters, cluster = cluster_selection(request)
+    connection = cluster_connection(cluster)
+    entity = entity_name.strip()
+    if not entity.startswith("client."):
+        entity = f"client.{entity}"
+    if access not in {"read", "write"}:
+        raise HTTPException(status_code=400, detail="Quyền truy cập không hợp lệ")
+    try:
+        _host, pool_payload = await asyncio.to_thread(
+            run_ceph_json_command_with, *connection, "ceph osd pool ls detail"
+        )
+        _host, auth_payload = await asyncio.to_thread(
+            run_ceph_json_command_with, *connection, "ceph auth ls"
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được cấu hình Ceph: {exc}") from exc
+    if pool not in _pool_names(pool_payload):
+        raise HTTPException(status_code=400, detail="Pool không tồn tại trong cụm đang chọn")
+    if entity in {str(row.get("entity")) for row in _auth_rows(auth_payload)}:
+        raise HTTPException(status_code=409, detail="Ceph auth user đã tồn tại")
+    try:
+        inner_command = _create_auth_command(entity, pool, access)
+        command = build_exec_command(connection[4], connection[1], inner_command)
+        await asyncio.to_thread(
+            execute_command, connection[0][0], command, user=connection[2], key_path=connection[3]
+        )
+    except (ValueError, ExecutorError, IndexError) as exc:
+        raise HTTPException(status_code=502, detail=f"Không tạo được auth user: {exc}") from exc
+    return RedirectResponse(
+        f"/openstack/auth-user/create?cluster={cluster.id}&created=1", status_code=303
+    )

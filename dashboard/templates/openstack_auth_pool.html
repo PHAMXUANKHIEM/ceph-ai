@@ -13,17 +13,30 @@
       <a href="/nodes" class="nav-link">Cluster</a>
       <div class="nav-dropdown">
         <button type="button" class="nav-link nav-dropdown-toggle active">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
-        <div class="nav-dropdown-menu"><a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a></div>
+        <div class="nav-dropdown-menu"><a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a><a href="/openstack/auth-user/create" class="nav-dropdown-item">Create Auth User</a></div>
       </div>
       <a href="/settings" class="nav-link">Settings</a>
     </nav>
-    {% if clusters|length > 1 %}<form method="get" action="/openstack/auth-pool" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}</option>{% endfor %}</select></form>{% endif %}
+    {% if clusters|length > 1 %}<form method="get" action="{{ '/openstack/auth-user/create' if active_view == 'create-user' else '/openstack/auth-pool' }}" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}</option>{% endfor %}</select></form>{% endif %}
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
   </div></header>
   <main class="page">
     <section class="card">
-      <div class="card-header"><h2>OpenStack Auth-Pool — {{ selected_cluster.name }}</h2></div>
+      <div class="card-header"><h2>{{ 'Tạo Ceph Auth User' if active_view == 'create-user' else 'OpenStack Auth-Pool' }} — {{ selected_cluster.name }}</h2></div>
       <div class="card-body">
+        {% if active_view == 'create-user' %}
+        <p class="hint">Tạo mới Ceph auth user và cấp ngay quyền RBD trên pool đã chọn.</p>
+        {% if created %}<p class="success">Đã tạo auth user và cấp quyền pool thành công.</p>{% endif %}
+        {% if error %}<p class="error">Không tải được dữ liệu: {{ error }}</p>{% endif %}
+        {% if is_admin and not error %}
+        <form method="post" action="/openstack/auth-user/create?cluster={{ selected_cluster.id }}" class="audit-filters">
+          <label>Tên auth user<input type="text" name="entity_name" required maxlength="128" pattern="(?:client\.)?[A-Za-z0-9_.-]+" placeholder="cinder hoặc client.cinder"></label>
+          <label>Pool<select name="pool" required>{% for name in pools %}<option value="{{ name }}">{{ name }}</option>{% endfor %}</select></label>
+          <label>Quyền<select name="access"><option value="write">Đọc/Ghi</option><option value="read">Chỉ đọc</option></select></label>
+          <button type="submit" class="btn btn-primary">Tạo Auth User</button>
+        </form>
+        {% endif %}
+        {% else %}
         <p class="hint">Cấp capability RBD của một Ceph auth user cho pool. Các capability hiện có của user được giữ nguyên.</p>
         {% if error %}<p class="error">Không tải được dữ liệu: {{ error }}</p>{% endif %}
         {% if success %}<p class="success">Đã cấp quyền pool thành công.</p>{% endif %}
@@ -34,6 +47,7 @@
           <label>Quyền<select name="access"><option value="write">Đọc/Ghi</option><option value="read">Chỉ đọc</option></select></label>
           <button type="submit" class="btn btn-primary">Cấp quyền</button>
         </form>
+        {% endif %}
         {% endif %}
       </div>
       {% if auth_users %}<div class="card-body table-wrap"><table><thead><tr><th>User</th><th>MON caps</th><th>OSD caps</th></tr></thead><tbody>{% for item in auth_users %}<tr><td><code>{{ item.entity }}</code></td><td><code>{{ item.caps.mon or '—' }}</code></td><td><code>{{ item.caps.osd or '—' }}</code></td></tr>{% endfor %}</tbody></table></div>{% endif %}

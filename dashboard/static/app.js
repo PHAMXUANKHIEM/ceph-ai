@@ -107,7 +107,7 @@
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
     "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡", "/pgs": "∷",
-    "/openstack/auth-pool": "◈"
+    "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+"
   };
 
   var mainNav = topbar.querySelector(".main-nav");
@@ -123,6 +123,13 @@
       pgLink.textContent = "PGs";
       linksByPath["/pgs"] = pgLink;
     }
+    if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/auth-user/create"]) {
+      var createAuthLink = document.createElement("a");
+      createAuthLink.href = "/openstack/auth-user/create";
+      createAuthLink.className = window.location.pathname === createAuthLink.pathname ? "nav-link active" : "nav-link";
+      createAuthLink.textContent = "Create Auth User";
+      linksByPath["/openstack/auth-user/create"] = createAuthLink;
+    }
 
     // Information architecture for Ceph operators. Keep permission-aware
     // links from the server (admin-only destinations may not exist), then
@@ -131,7 +138,7 @@
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
       { label: "Pool", paths: ["/volumes", "/pgs"] },
       { label: "Object Storage", paths: ["/bucket-access-log"] },
-      { label: "OpenStack", paths: ["/openstack/auth-pool"] },
+      { label: "OpenStack", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },

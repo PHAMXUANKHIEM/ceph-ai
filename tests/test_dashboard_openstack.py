@@ -42,6 +42,15 @@ def test_caps_command_supports_read_only_and_rejects_injection():
         raise AssertionError("unsafe entity must be rejected")
 
 
+def test_create_auth_command_builds_executable_rbd_caps():
+    assert openstack_route._create_auth_command("client.cinder", "volumes", "write") == (
+        "ceph auth get-or-create client.cinder mon 'profile rbd' osd 'profile rbd pool=volumes'"
+    )
+    assert "profile rbd-read-only pool=images" in openstack_route._create_auth_command(
+        "client.glance", "images", "read"
+    )
+
+
 def test_auth_pool_page_loads_users_and_pools(dashboard_client, monkeypatch):
     def fake_query(*args):
         if args[-1] == "ceph osd pool ls detail":
@@ -65,7 +74,50 @@ def test_main_sidebar_defines_openstack_group():
     app_js = (openstack_route.templates.env.loader.searchpath[0] + "/../static/app.js")
     with open(app_js, encoding="utf-8") as source:
         content = source.read()
-    assert '{ label: "OpenStack", paths: ["/openstack/auth-pool"] }' in content
+    assert (
+        '{ label: "OpenStack", paths: ["/openstack/auth-pool", '
+        '"/openstack/auth-user/create"] }'
+    ) in content
+
+
+def test_create_auth_user_page_has_create_form(dashboard_client, monkeypatch):
+    def fake_query(*args):
+        if args[-1] == "ceph osd pool ls detail":
+            return "mon1", [{"pool_id": 1, "pool_name": "volumes"}]
+        return "mon1", {"auth_dump": []}
+
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
+    _login(dashboard_client)
+    response = dashboard_client.get("/openstack/auth-user/create")
+    assert response.status_code == 200
+    assert "Tạo Ceph Auth User" in response.text
+    assert 'action="/openstack/auth-user/create?' in response.text
+
+
+def test_create_auth_user_executes_on_selected_cluster(dashboard_client, monkeypatch):
+    def fake_query(*args):
+        if args[-1] == "ceph osd pool ls detail":
+            return "mon1", [{"pool_id": 1, "pool_name": "volumes"}]
+        return "mon1", {"auth_dump": []}
+
+    executed = []
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
+    monkeypatch.setattr(
+        openstack_route,
+        "execute_command",
+        lambda host, command, **kwargs: executed.append((host, command, kwargs)) or "created",
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/openstack/auth-user/create",
+        data={"entity_name": "cinder", "pool": "volumes", "access": "write"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "created=1" in response.headers["location"]
+    assert len(executed) == 1
+    assert "ceph auth get-or-create client.cinder" in executed[0][1]
+    assert "profile rbd pool=volumes" in executed[0][1]
 
 
 def test_settings_saves_openstack_nodes(dashboard_client):
