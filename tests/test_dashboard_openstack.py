@@ -58,6 +58,8 @@ def test_auth_pool_page_loads_users_and_pools(dashboard_client, monkeypatch):
     assert "client.cinder" in response.text
     assert "volumes" in response.text
     assert "Controller" not in response.text
+    assert 'class="tabbed-sidebar"' in response.text
+    assert 'class="tabbed-nav-item active"' in response.text
 
 
 def test_settings_saves_openstack_nodes(dashboard_client):
