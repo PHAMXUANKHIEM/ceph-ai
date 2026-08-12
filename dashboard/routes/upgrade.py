@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from openai import APIError, APIConnectionError, AuthenticationError
+from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
@@ -40,12 +41,18 @@ from shared.router_client import RouterNotConfiguredError, build_router_client, 
 from watcher.ceph_client import (
     CephQueryError,
     get_upgrade_status,
+    get_upgrade_status_with,
     pause_upgrade,
+    pause_upgrade_with,
     propose_next_version,
     resume_upgrade,
+    resume_upgrade_with,
     run_ceph_json_command,
+    run_ceph_json_command_with,
     summarize_cluster_versions,
+    summarize_versions_payload,
     unset_upgrade_osd_flags,
+    unset_upgrade_osd_flags_with,
 )
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError, read_os_release
@@ -55,6 +62,43 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = make_templates()
+
+
+# Imported lazily because dashboard.routes.incidents imports this module's
+# upgrade gate helpers; importing cluster_scope here would form a cycle.
+def _cluster_selection(request: Request):
+    from dashboard.cluster_scope import cluster_selection
+
+    return cluster_selection(request)
+
+
+def _selected_cluster(request: Request):
+    from dashboard.cluster_scope import selected_cluster
+
+    return selected_cluster(request)
+
+
+def _cluster_connection(cluster):
+    from dashboard.cluster_scope import cluster_connection
+
+    return cluster_connection(cluster)
+
+
+def _effective_exec_mode(cluster) -> str:
+    return settings.ceph_exec_mode if cluster.is_default else cluster.ceph_exec_mode
+
+
+def _effective_nodes(cluster) -> list[dict]:
+    return configured_nodes() if cluster.is_default else configured_nodes(cluster)
+
+
+def _effective_mon_nodes(cluster) -> list[str]:
+    raw = settings.ceph_mon_nodes if cluster.is_default else cluster.ceph_mon_nodes
+    return [host.strip() for host in raw.split(",") if host.strip()]
+
+
+def _upgrade_url(cluster) -> str:
+    return "/upgrade" if cluster.is_default else f"/upgrade?cluster={cluster.id}"
 
 # Synthetic Incident.ceph_code for this feature — same trick
 # dashboard/routes/chat.py uses (CHAT_REQUEST_CEPH_CODE): AuditEntry.incident_id
@@ -481,13 +525,18 @@ def is_cluster_upgrade_physically_running() -> bool:
         return False
 
 
-def _latest_upgrade_action(session) -> tuple[Action | None, Incident | None]:
-    action = (
+def _latest_upgrade_action(session, cluster=None) -> tuple[Action | None, Incident | None]:
+    query = (
         session.query(Action)
+        .join(Incident, Incident.id == Action.incident_id)
         .filter(Action.action_id.in_(CLUSTER_UPGRADE_ACTION_IDS))
-        .order_by(Action.created_at.desc())
-        .first()
     )
+    if cluster is not None:
+        if cluster.is_default:
+            query = query.filter(or_(Incident.cluster_id == cluster.id, Incident.cluster_id.is_(None)))
+        else:
+            query = query.filter(Incident.cluster_id == cluster.id)
+    action = query.order_by(Action.created_at.desc()).first()
     if action is None:
         return None, None
     return action, session.get(Incident, action.incident_id)
@@ -672,12 +721,13 @@ def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str
 
 
 @router.get("/upgrade/log.md")
-async def download_upgrade_log(user: str = Depends(require_login)):
+async def download_upgrade_log(request: Request, user: str = Depends(require_login)):
     """Downloadable .md counterpart to the inline "Nhật ký nâng cấp" card on
     /upgrade — same build_upgrade_log_markdown() output, just served as a
     file instead of rendered in the page."""
     with db.SessionLocal() as session:
-        action, incident = _latest_upgrade_action(session)
+        cluster = _selected_cluster(request)
+        action, incident = _latest_upgrade_action(session, cluster)
         if action is None:
             raise HTTPException(status_code=404, detail="Chưa có lần nâng cấp cụm nào được đề xuất.")
         markdown = build_upgrade_log_markdown(action, incident)
@@ -689,8 +739,8 @@ async def download_upgrade_log(user: str = Depends(require_login)):
     )
 
 
-def _reject_duplicate_proposal(session) -> None:
-    existing, _ = _latest_upgrade_action(session)
+def _reject_duplicate_proposal(session, cluster=None) -> None:
+    existing, _ = _latest_upgrade_action(session, cluster)
     if existing is not None and existing.status in _IN_FLIGHT_ACTION_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -701,8 +751,9 @@ def _reject_duplicate_proposal(session) -> None:
 @router.get("/upgrade", response_class=HTMLResponse)
 async def upgrade_page(request: Request, user: str = Depends(require_login), tab: str = "upgrade"):
     try:
+        clusters, cluster = _cluster_selection(request)
         with db.SessionLocal() as session:
-            last_action, last_incident = _latest_upgrade_action(session)
+            last_action, last_incident = _latest_upgrade_action(session, cluster)
             procedure_document = _get_upgrade_procedure_document(session)
     except SQLAlchemyError:
         logger.exception("upgrade_page: failed to query DB")
@@ -711,7 +762,7 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             detail="Không kết nối được database — đã chạy `alembic upgrade head` chưa?",
         )
 
-    exec_mode = settings.ceph_exec_mode
+    exec_mode = _effective_exec_mode(cluster)
     supports_cephadm = exec_mode == "cephadm"
     supports_package = exec_mode == "none"
     upgrade_unsupported = not supports_cephadm and not supports_package
@@ -781,7 +832,13 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
     suggested_target = None
     if (supports_cephadm or supports_package) and pending_action is None:
         try:
-            current_versions = summarize_cluster_versions()
+            if cluster.is_default:
+                current_versions = summarize_cluster_versions()
+            else:
+                _, versions_payload = run_ceph_json_command_with(
+                    *_cluster_connection(cluster), "ceph versions"
+                )
+                current_versions = summarize_versions_payload(versions_payload)
             if current_versions.get("current_version"):
                 suggested_target = propose_next_version(current_versions["current_version"])
         except CephQueryError as exc:
@@ -791,17 +848,22 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
     progress_error = None
     if supports_cephadm:
         try:
-            upgrade_progress = get_upgrade_status()
+            upgrade_progress = (
+                get_upgrade_status() if cluster.is_default else get_upgrade_status_with(*_cluster_connection(cluster))
+            )
         except CephQueryError as exc:
             progress_error = str(exc)
 
-    package_nodes = [n["host"] for n in configured_nodes()] if supports_package else []
+    package_nodes = [n["host"] for n in _effective_nodes(cluster)] if supports_package else []
 
     return templates.TemplateResponse(
         request,
         "upgrade.html",
         {
             "user": user,
+            "clusters": clusters,
+            "selected_cluster": cluster,
+            "upgrade_cluster_query": "" if cluster.is_default else f"?cluster={cluster.id}",
             "is_admin": auth.is_admin_user(user),
             "active_tab": tab if tab in ("docs", "upgrade") else "upgrade",
             "ceph_exec_mode": exec_mode,
@@ -836,7 +898,7 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
 
 
 @router.post("/upgrade/propose")
-async def propose_upgrade(target_version: str = Form(...), user: str = Depends(require_login)):
+async def propose_upgrade(request: Request, target_version: str = Form(...), user: str = Depends(require_login)):
     """cephadm path — creates a PENDING_APPROVAL Action the exact same way
     dashboard/routes/chat.py::confirm_chat_action does for a chat proposal —
     a synthetic Incident, an Action row, one audit.record() call. From here
@@ -848,20 +910,23 @@ async def propose_upgrade(target_version: str = Form(...), user: str = Depends(r
     target_version = target_version.strip()
     if not _TARGET_VERSION_RE.match(target_version):
         raise HTTPException(status_code=400, detail="Phiên bản không hợp lệ (định dạng x.y.z, vd 19.2.0)")
-    if settings.ceph_exec_mode != "cephadm":
+    cluster = _selected_cluster(request)
+    if _effective_exec_mode(cluster) != "cephadm":
         raise HTTPException(
             status_code=400,
             detail="Chỉ hỗ trợ nâng cấp qua cephadm cho cụm dùng ceph_exec_mode=cephadm",
         )
 
     with db.SessionLocal() as session:
-        _reject_duplicate_proposal(session)
+        _reject_duplicate_proposal(session, cluster)
 
-        mon_nodes = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+        mon_nodes = _effective_mon_nodes(cluster)
         if not mon_nodes:
             raise HTTPException(status_code=400, detail="Chưa cấu hình MON node nào (xem trang Cài đặt)")
         target_node = mon_nodes[0]
         action_params = {"target_version": target_version}
+        if not cluster.is_default:
+            action_params["_cluster_exec_mode"] = cluster.ceph_exec_mode
 
         try:
             resolved_command = executor_commands.get_command(
@@ -873,6 +938,7 @@ async def propose_upgrade(target_version: str = Form(...), user: str = Depends(r
         classification = gate.classify_action(CLUSTER_UPGRADE_ACTION_ID)  # always RISKY (AD-5)
 
         incident = Incident(
+            cluster_id=None if cluster.is_default else cluster.id,
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất nâng cấp cụm (cephadm) lên {target_version} bởi {user}",
@@ -903,7 +969,7 @@ async def propose_upgrade(target_version: str = Form(...), user: str = Depends(r
         )
         session.commit()
 
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url=_upgrade_url(cluster), status_code=303)
 
 
 async def _build_os_upgrade_gate_context(
@@ -1431,9 +1497,10 @@ async def propose_package_download_upgrade(
     this form again themselves.
     """
     target_version = target_version.strip()
+    cluster = _selected_cluster(request)
     if not _TARGET_VERSION_RE.match(target_version):
         raise HTTPException(status_code=400, detail="Phiên bản không hợp lệ (định dạng x.y.z, vd 19.2.0)")
-    if settings.ceph_exec_mode != "none":
+    if _effective_exec_mode(cluster) != "none":
         raise HTTPException(
             status_code=400,
             detail="Chỉ áp dụng cho cụm kiểu ceph-deploy (ceph_exec_mode=none)",
@@ -1446,9 +1513,9 @@ async def propose_package_download_upgrade(
         )
 
     with db.SessionLocal() as session:
-        _reject_duplicate_proposal(session)
+        _reject_duplicate_proposal(session, cluster)
 
-        target_nodes = [n["host"] for n in configured_nodes()]
+        target_nodes = [n["host"] for n in _effective_nodes(cluster)]
         if not target_nodes:
             raise HTTPException(status_code=400, detail="Chưa cấu hình node nào (xem trang Cài đặt)")
 
@@ -1460,6 +1527,8 @@ async def propose_package_download_upgrade(
             return templates.TemplateResponse(request, "os_upgrade_gate.html", context)
 
         action_params = {"target_version": target_version}
+        if not cluster.is_default:
+            action_params["_cluster_exec_mode"] = cluster.ceph_exec_mode
         preview_command = await asyncio.to_thread(
             _safe_command_preview, PACKAGE_DOWNLOAD_ACTION_ID, target_nodes[0], action_params
         )
@@ -1467,6 +1536,7 @@ async def propose_package_download_upgrade(
             action_params[RUN_TEST_SUITE_PARAM_KEY] = True
 
         incident = Incident(
+            cluster_id=None if cluster.is_default else cluster.id,
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=(
@@ -1500,11 +1570,12 @@ async def propose_package_download_upgrade(
         )
         session.commit()
 
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url=_upgrade_url(cluster), status_code=303)
 
 
 @router.post("/upgrade/propose-package-local")
 async def propose_package_local_upgrade(
+    request: Request,
     package_dir: str = Form(...),
     run_test_suite: bool = Form(False),
     user: str = Depends(require_login),
@@ -1515,25 +1586,28 @@ async def propose_package_local_upgrade(
     every configured node beforehand). See propose_package_download_upgrade's
     own docstring for `run_test_suite`'s Story 7.2 semantics."""
     package_dir = package_dir.strip()
+    cluster = _selected_cluster(request)
     if not _PACKAGE_DIR_RE.match(package_dir):
         raise HTTPException(
             status_code=400,
             detail="Đường dẫn không hợp lệ (phải là đường dẫn tuyệt đối, vd /opt/ceph-packages)",
         )
-    if settings.ceph_exec_mode != "none":
+    if _effective_exec_mode(cluster) != "none":
         raise HTTPException(
             status_code=400,
             detail="Chỉ áp dụng cho cụm kiểu ceph-deploy (ceph_exec_mode=none)",
         )
 
     with db.SessionLocal() as session:
-        _reject_duplicate_proposal(session)
+        _reject_duplicate_proposal(session, cluster)
 
-        target_nodes = [n["host"] for n in configured_nodes()]
+        target_nodes = [n["host"] for n in _effective_nodes(cluster)]
         if not target_nodes:
             raise HTTPException(status_code=400, detail="Chưa cấu hình node nào (xem trang Cài đặt)")
 
         action_params = {"package_dir": package_dir}
+        if not cluster.is_default:
+            action_params["_cluster_exec_mode"] = cluster.ceph_exec_mode
         preview_command = await asyncio.to_thread(
             _safe_command_preview, PACKAGE_LOCAL_ACTION_ID, target_nodes[0], action_params
         )
@@ -1541,6 +1615,7 @@ async def propose_package_local_upgrade(
             action_params[RUN_TEST_SUITE_PARAM_KEY] = True
 
         incident = Incident(
+            cluster_id=None if cluster.is_default else cluster.id,
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=(
@@ -1573,7 +1648,7 @@ async def propose_package_local_upgrade(
         )
         session.commit()
 
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url=_upgrade_url(cluster), status_code=303)
 
 
 @router.post("/upgrade/procedure/upload")
@@ -1632,13 +1707,14 @@ async def resummarize_upgrade_procedure(user: str = Depends(require_login)):
 
 
 @router.post("/upgrade/pause")
-async def pause_upgrade_route(user: str = Depends(require_login)):
+async def pause_upgrade_route(request: Request, user: str = Depends(require_login)):
+    cluster = _selected_cluster(request)
     try:
-        pause_upgrade()
+        pause_upgrade() if cluster.is_default else pause_upgrade_with(*_cluster_connection(cluster))
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không tạm dừng được: {exc}")
     with db.SessionLocal() as session:
-        _, incident = _latest_upgrade_action(session)
+        _, incident = _latest_upgrade_action(session, cluster)
         if incident is not None:
             audit.record(
                 session,
@@ -1648,17 +1724,18 @@ async def pause_upgrade_route(user: str = Depends(require_login)):
                 actor=user,
             )
             session.commit()
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url=_upgrade_url(cluster), status_code=303)
 
 
 @router.post("/upgrade/resume")
-async def resume_upgrade_route(user: str = Depends(require_login)):
+async def resume_upgrade_route(request: Request, user: str = Depends(require_login)):
+    cluster = _selected_cluster(request)
     try:
-        resume_upgrade()
+        resume_upgrade() if cluster.is_default else resume_upgrade_with(*_cluster_connection(cluster))
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không tiếp tục được: {exc}")
     with db.SessionLocal() as session:
-        _, incident = _latest_upgrade_action(session)
+        _, incident = _latest_upgrade_action(session, cluster)
         if incident is not None:
             audit.record(
                 session,
@@ -1668,11 +1745,11 @@ async def resume_upgrade_route(user: str = Depends(require_login)):
                 actor=user,
             )
             session.commit()
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url=_upgrade_url(cluster), status_code=303)
 
 
 @router.post("/upgrade/unset-osd-flags")
-async def unset_upgrade_osd_flags_route(user: str = Depends(require_login)):
+async def unset_upgrade_osd_flags_route(request: Request, user: str = Depends(require_login)):
     """Manual cleanup for the cephadm path — worker/executor/commands.py::
     _upgrade_ceph_cluster_command sets noout/noscrub/nodeep-scrub/
     nosnaptrim before starting `ceph orch upgrade start`, but can't unset
@@ -1681,12 +1758,14 @@ async def unset_upgrade_osd_flags_route(user: str = Depends(require_login)):
     posture as pause/resume just above: an operator explicitly clicking
     this once they see (via this page's own live status, `get_upgrade_
     status()`) that the upgrade has actually finished."""
+    cluster = _selected_cluster(request)
     try:
-        unset_upgrade_osd_flags()
+        (unset_upgrade_osd_flags() if cluster.is_default else
+         unset_upgrade_osd_flags_with(*_cluster_connection(cluster)))
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không bỏ được các cờ noout/noscrub: {exc}")
     with db.SessionLocal() as session:
-        _, incident = _latest_upgrade_action(session)
+        _, incident = _latest_upgrade_action(session, cluster)
         if incident is not None:
             audit.record(
                 session,
@@ -1696,4 +1775,4 @@ async def unset_upgrade_osd_flags_route(user: str = Depends(require_login)):
                 actor=user,
             )
             session.commit()
-    return RedirectResponse(url="/upgrade", status_code=303)
+    return RedirectResponse(url=_upgrade_url(cluster), status_code=303)

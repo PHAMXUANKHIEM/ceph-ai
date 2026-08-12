@@ -42,6 +42,15 @@
         {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
         {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
       </nav>
+      {% if clusters|length > 1 %}
+      <form method="get" action="/upgrade" class="topbar-cluster-switcher">
+        <select name="cluster" aria-label="Chọn cụm" onchange="this.form.submit()">
+          {% for c in clusters %}
+          <option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
         <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
@@ -223,7 +232,7 @@
           Nhập phiên bản Ceph muốn nâng cấp lên (định dạng x.y.z, vd 19.2.0). Hệ thống sẽ hiển thị
           quy trình nâng cấp trước khi thực hiện — chỉ tự động gửi lệnh sau khi bạn bấm "Duyệt".
         </p>
-        <form method="post" action="/upgrade/propose" class="login-box version-picker-form">
+        <form method="post" action="/upgrade/propose{{ upgrade_cluster_query }}" class="login-box version-picker-form">
           <label>
             Dòng release
             <select class="version-picker-codename">
@@ -264,7 +273,7 @@
           <div class="upgrade-method">
             <h3>Tải từ download.ceph.com</h3>
             <p class="hint">Tự thêm repo Ceph chính thức theo phiên bản nhập, rồi cài/nâng cấp gói trên từng node.</p>
-            <form method="post" action="/upgrade/propose-package-download" class="login-box version-picker-form">
+            <form method="post" action="/upgrade/propose-package-download{{ upgrade_cluster_query }}" class="login-box version-picker-form">
               <label>
                 Dòng release
                 <select class="version-picker-codename">
@@ -298,7 +307,7 @@
               Cài từ các gói .deb/.rpm đã có sẵn tại CÙNG một đường dẫn trên mọi node — không tải
               gì từ Internet.
             </p>
-            <form method="post" action="/upgrade/propose-package-local" class="login-box">
+            <form method="post" action="/upgrade/propose-package-local{{ upgrade_cluster_query }}" class="login-box">
               <label>
                 Đường dẫn thư mục chứa gói (trên từng node)
                 <input type="text" name="package_dir" placeholder="/opt/ceph-packages" required>
@@ -333,7 +342,7 @@
         {% endif %}
         <pre class="upgrade-plan-text">{{ upgrade_log_markdown }}</pre>
         <div class="pending-action-buttons">
-          <a href="/upgrade/log.md" class="btn btn-sm" download>Tải nhật ký (.md)</a>
+          <a href="/upgrade/log.md?cluster={{ selected_cluster.id }}" class="btn btn-sm" download>Tải nhật ký (.md)</a>
         </div>
       </div>
     </section>
@@ -360,11 +369,11 @@
           {% endif %}
           <div class="pending-action-buttons">
             {% if upgrade_progress.is_paused %}
-            <form method="post" action="/upgrade/resume" class="inline-form">
+            <form method="post" action="/upgrade/resume{{ upgrade_cluster_query }}" class="inline-form">
               <button type="submit" class="btn btn-approve">Tiếp tục nâng cấp</button>
             </form>
             {% else %}
-            <form method="post" action="/upgrade/pause" class="inline-form">
+            <form method="post" action="/upgrade/pause{{ upgrade_cluster_query }}" class="inline-form">
               <button type="submit" class="btn btn-reject">Tạm dừng</button>
             </form>
             {% endif %}
@@ -382,7 +391,7 @@
           (không đồng bộ), hệ thống không tự biết lúc nào để bỏ lại các cờ này. Sau khi nâng cấp
           xong (mục "Không có tiến trình nâng cấp nào" ở trên), bấm nút dưới đây để bỏ:
         </p>
-        <form method="post" action="/upgrade/unset-osd-flags" class="inline-form">
+        <form method="post" action="/upgrade/unset-osd-flags{{ upgrade_cluster_query }}" class="inline-form">
           <button type="submit" class="btn btn-sm">Bỏ noout/noscrub/nodeep-scrub/nosnaptrim</button>
         </form>
       </div>

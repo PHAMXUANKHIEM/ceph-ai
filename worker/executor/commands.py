@@ -435,10 +435,11 @@ def _upgrade_ceph_cluster_command(host: str | None, params: dict) -> str:
     signature (see the package-based builders below, which DO need it).
     """
     target_version = _require_target_version(params)
-    if settings.ceph_exec_mode != "cephadm":
+    exec_mode = params.get("_cluster_exec_mode", settings.ceph_exec_mode)
+    if exec_mode != "cephadm":
         raise ExecutorError(
             f"upgrade_ceph_cluster requires ceph_exec_mode=cephadm (currently "
-            f"{settings.ceph_exec_mode!r}) — non-cephadm deployments have no orchestrator "
+            f"{exec_mode!r}) — non-cephadm deployments have no orchestrator "
             "to drive `ceph orch upgrade`"
         )
     set_flag_commands = [f"ceph osd set {flag}" for flag in _UPGRADE_OSD_FLAGS]
@@ -489,11 +490,12 @@ def _require_package_dir(params: dict) -> str:
     return package_dir
 
 
-def _require_non_cephadm_exec_mode(action_id: str) -> None:
-    if settings.ceph_exec_mode != "none":
+def _require_non_cephadm_exec_mode(action_id: str, params: dict | None = None) -> None:
+    exec_mode = (params or {}).get("_cluster_exec_mode", settings.ceph_exec_mode)
+    if exec_mode != "none":
         raise ExecutorError(
             f"{action_id} is for ceph_exec_mode=none (ceph-deploy/traditional package install) "
-            f"clusters only — currently configured as {settings.ceph_exec_mode!r}"
+            f"clusters only — currently configured as {exec_mode!r}"
         )
 
 
@@ -601,7 +603,7 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     caller — `dashboard/routes/upgrade.py`'s propose-time preview, every
     pre-7.2 test) keeps the ORIGINAL un-phased behavior unchanged.
     """
-    _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_download")
+    _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_download", params)
     if host is None:
         raise ExecutorError(
             "upgrade_ceph_cluster_package_download needs a specific host to discover its "
@@ -728,7 +730,7 @@ def _upgrade_ceph_cluster_package_local_command(host: str | None, params: dict) 
     `_upgrade_ceph_cluster_package_download_command` above — see its
     docstring.
     """
-    _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_local")
+    _require_non_cephadm_exec_mode("upgrade_ceph_cluster_package_local", params)
     if host is None:
         raise ExecutorError(
             "upgrade_ceph_cluster_package_local needs a specific host to discover its Ceph "

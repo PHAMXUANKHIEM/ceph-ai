@@ -723,6 +723,11 @@ def summarize_cluster_versions() -> dict:
     query_cluster_health/run_ceph_json_command).
     """
     _, payload = run_ceph_json_command("ceph versions")
+    return summarize_versions_payload(payload)
+
+
+def summarize_versions_payload(payload: dict | list) -> dict:
+    """Build the Upgrade-page version summary from an already scoped query."""
     per_type: dict[str, list[str]] = {}
     distinct: set[str] = set()
     if isinstance(payload, dict):
@@ -785,6 +790,21 @@ def get_upgrade_status() -> dict:
     return payload
 
 
+def get_upgrade_status_with(
+    mon_nodes: list[str], container_name: str, ssh_user: str, ssh_key_path: str, exec_mode: str
+) -> dict:
+    """Cluster-scoped counterpart of :func:`get_upgrade_status`."""
+    if exec_mode != "cephadm":
+        raise CephQueryError("ceph orch upgrade status requires ceph_exec_mode=cephadm")
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode, "ceph orch upgrade status"
+    )
+    if not isinstance(payload, dict):
+        return {"raw_output": payload}
+    payload["progress_percent"] = _upgrade_progress_percent(payload.get("progress"))
+    return payload
+
+
 def _run_upgrade_control_command(inner_command: str) -> None:
     if settings.ceph_exec_mode != "cephadm":
         raise CephQueryError(f"{inner_command} requires ceph_exec_mode=cephadm")
@@ -803,6 +823,26 @@ def _run_upgrade_control_command(inner_command: str) -> None:
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
 
+def _run_upgrade_control_command_with(
+    mon_nodes: list[str], container_name: str, ssh_user: str, ssh_key_path: str,
+    exec_mode: str, inner_command: str,
+) -> None:
+    if exec_mode != "cephadm":
+        raise CephQueryError(f"{inner_command} requires ceph_exec_mode=cephadm")
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured for this cluster")
+    command = build_exec_command(exec_mode, container_name, inner_command)
+    errors = []
+    for host in mon_nodes:
+        try:
+            _run_remote_command_with(host, command, ssh_user, ssh_key_path, CEPHADM_COMMAND_TIMEOUT_SECONDS)
+            return
+        except Exception as exc:
+            logger.warning("_run_upgrade_control_command: %s failed: %s", host, exc)
+            errors.append(f"{host}: {exc}")
+    raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
+
+
 def pause_upgrade() -> None:
     """Operator's off-switch for an in-flight upgrade (see module note
     own upgrade loop after whichever daemon it's currently mid-upgrading
@@ -812,6 +852,14 @@ def pause_upgrade() -> None:
 
 def resume_upgrade() -> None:
     _run_upgrade_control_command("ceph orch upgrade resume")
+
+
+def pause_upgrade_with(*connection) -> None:
+    _run_upgrade_control_command_with(*connection, "ceph orch upgrade pause")
+
+
+def resume_upgrade_with(*connection) -> None:
+    _run_upgrade_control_command_with(*connection, "ceph orch upgrade resume")
 
 
 # 2026-08-04: worker/executor/commands.py::_upgrade_ceph_cluster_command
@@ -839,6 +887,11 @@ def unset_upgrade_osd_flags() -> None:
     unset_commands = "; ".join(f"ceph osd unset {flag}" for flag in _UPGRADE_OSD_FLAGS)
     inner_command = f"bash -c {shlex.quote(unset_commands)}"
     _run_upgrade_control_command(inner_command)
+
+
+def unset_upgrade_osd_flags_with(*connection) -> None:
+    unset_commands = "; ".join(f"ceph osd unset {flag}" for flag in _UPGRADE_OSD_FLAGS)
+    _run_upgrade_control_command_with(*connection, f"bash -c {shlex.quote(unset_commands)}")
 
 
 def list_osds() -> list[dict]:
