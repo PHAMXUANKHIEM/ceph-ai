@@ -35,6 +35,14 @@ from shared.codex_app_server import (
     refresh_app_server_after_cli_login,
     start_cli_device_login,
 )
+from shared.claude_cli import (
+    ClaudeCLIError,
+    claude_executable,
+    claude_logout,
+    claude_status,
+    install_claude_cli,
+    start_claude_login,
+)
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -57,6 +65,7 @@ ROUTER_BASE_URL_ENV_NAME = "ROUTER_BASE_URL"
 ROUTER_ENABLED_ENV_NAME = "ROUTER_ENABLED"
 ROUTER_PROVIDER_ENV_NAME = "ROUTER_PROVIDER"
 CODEX_CHAT_ENABLED_ENV_NAME = "CODEX_CHAT_ENABLED"
+CLAUDE_CHAT_ENABLED_ENV_NAME = "CLAUDE_CHAT_ENABLED"
 
 # API AI connection-type presets shown on the Settings page (2026-07-24).
 # Every entry still ends up going through the exact same generic
@@ -759,6 +768,7 @@ def _settings_context(
             and settings.router_model
         ),
         "codex_chat_enabled": settings.codex_chat_enabled,
+        "claude_chat_enabled": settings.claude_chat_enabled,
         "error": error,
         "success": success,
         "worker_restart_error": worker_restart_error,
@@ -931,7 +941,9 @@ async def settings_codex_activate(user: str = Depends(require_login)):
         if not account:
             raise HTTPException(status_code=409, detail="Đăng nhập Codex chưa hoàn tất")
         _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "true")
+        _update_env_file(CLAUDE_CHAT_ENABLED_ENV_NAME, "false")
         settings.codex_chat_enabled = True
+        settings.claude_chat_enabled = False
     except HTTPException:
         raise
     except CodexAppServerError as exc:
@@ -950,6 +962,65 @@ async def settings_codex_logout(user: str = Depends(require_login)):
         _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "false")
         settings.codex_chat_enabled = False
     except CodexAppServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": False}
+
+
+@router.get("/settings/claude/status")
+async def settings_claude_status(user: str = Depends(require_login)):
+    try:
+        result = await claude_status()
+    except ClaudeCLIError as exc:
+        return {"installed": claude_executable() is not None, "authenticated": False,
+                "enabled": settings.claude_chat_enabled, "error": str(exc)}
+    result["enabled"] = settings.claude_chat_enabled
+    return result
+
+
+@router.post("/settings/claude/install")
+async def settings_claude_install(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        return await install_claude_cli()
+    except ClaudeCLIError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/settings/claude/login/start")
+async def settings_claude_login_start(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        return await start_claude_login()
+    except ClaudeCLIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/settings/claude/activate")
+async def settings_claude_activate(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        status = await claude_status()
+        if not status.get("authenticated"):
+            raise HTTPException(status_code=409, detail="Đăng nhập Claude chưa hoàn tất")
+        _update_env_file(CLAUDE_CHAT_ENABLED_ENV_NAME, "true")
+        _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "false")
+        settings.claude_chat_enabled = True
+        settings.codex_chat_enabled = False
+    except HTTPException:
+        raise
+    except ClaudeCLIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": True}
+
+
+@router.post("/settings/claude/logout")
+async def settings_claude_logout(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    try:
+        await claude_logout()
+        _update_env_file(CLAUDE_CHAT_ENABLED_ENV_NAME, "false")
+        settings.claude_chat_enabled = False
+    except ClaudeCLIError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"enabled": False}
 

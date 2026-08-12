@@ -486,6 +486,32 @@
           {% endif %}
         </div>
 
+        <div class="login-box" id="claude-account-box">
+          <h3>Tài khoản Claude</h3>
+          <p class="hint">
+            Dùng Claude Code với tài khoản Claude Pro/Max hoặc Anthropic Console. Credential OAuth
+            do Claude CLI quản lý trong thư mục riêng trên server, không ghi vào <code>.env</code>.
+          </p>
+          <p id="claude-account-status" class="hint">Đang kiểm tra trạng thái...</p>
+          {% if is_admin %}
+          <div id="claude-install-prompt" hidden>
+            <p><strong>Claude Code CLI chưa được cài trên server. Bạn có muốn cài đặt ngay không?</strong></p>
+            <div class="ai-test-row">
+              <button type="button" class="btn btn-primary btn-sm" id="claude-install-yes-btn">Có, cài đặt</button>
+              <button type="button" class="btn btn-sm" id="claude-install-no-btn">Không</button>
+            </div>
+          </div>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-primary btn-sm" id="claude-login-btn">Đăng nhập bằng Claude</button>
+            <button type="button" class="btn btn-sm btn-danger" id="claude-logout-btn" hidden>Đăng xuất</button>
+          </div>
+          <div id="claude-device-flow" hidden>
+            <p>Mở <a id="claude-verification-link" href="#" target="_blank" rel="noopener">trang xác thực Claude</a> và hoàn tất đăng nhập.</p>
+            <p class="hint">Trang này sẽ tự kiểm tra và kích hoạt Claude sau khi đăng nhập xong.</p>
+          </div>
+          {% endif %}
+        </div>
+
         <hr>
 
         <div id="router-connected-view" {% if not router_connected %}hidden{% endif %}>

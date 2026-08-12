@@ -1,0 +1,181 @@
+"""Server-side Claude Code authentication and non-interactive inference."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import shutil
+from pathlib import Path
+
+from config.settings import settings
+
+
+class ClaudeCLIError(RuntimeError):
+    pass
+
+
+CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash"
+_install_lock = asyncio.Lock()
+_login_lock = asyncio.Lock()
+_login_process: asyncio.subprocess.Process | None = None
+_login_url: str | None = None
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+_URL_RE = re.compile(r"https?://[^\s<>\]\[()]+")
+
+
+def claude_executable() -> str | None:
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidate = Path.home() / ".local" / "bin" / "claude"
+    return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+def _config_dir() -> Path:
+    value = Path(settings.claude_config_dir).expanduser()
+    if not value.is_absolute():
+        value = Path(__file__).resolve().parent.parent / value
+    value.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        value.chmod(0o700)
+    except OSError:
+        pass
+    return value
+
+
+def _env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["CLAUDE_CONFIG_DIR"] = str(_config_dir())
+    env["DISABLE_AUTOUPDATER"] = "1"
+    return env
+
+
+async def install_claude_cli() -> dict:
+    async with _install_lock:
+        existing = claude_executable()
+        if existing:
+            return {"installed": True, "path": existing, "already_installed": True}
+        if shutil.which("curl") is None or shutil.which("sh") is None:
+            raise ClaudeCLIError("Server cần có curl và sh để cài Claude Code")
+        process = await asyncio.create_subprocess_exec(
+            "sh", "-c", CLAUDE_INSTALL_COMMAND,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 180)
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise ClaudeCLIError("Cài Claude Code quá 3 phút và đã bị dừng") from exc
+        installed = claude_executable()
+        text = output.decode(errors="replace")[-6000:]
+        if process.returncode or not installed:
+            raise ClaudeCLIError(f"Cài Claude Code thất bại: {text.strip() or process.returncode}")
+        return {"installed": True, "path": installed, "already_installed": False}
+
+
+async def claude_status() -> dict:
+    executable = claude_executable()
+    if not executable:
+        return {"installed": False, "authenticated": False}
+    process = await asyncio.create_subprocess_exec(
+        executable, "auth", "status", "--json",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_env(),
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), 12)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise ClaudeCLIError("Claude CLI không phản hồi khi kiểm tra đăng nhập") from exc
+    clean = _ANSI_RE.sub("", output.decode(errors="replace")).strip()
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError:
+        data = {}
+    authenticated = bool(data.get("loggedIn") or data.get("authenticated"))
+    return {
+        "installed": True,
+        "authenticated": authenticated,
+        "email": data.get("email"),
+        "auth_method": data.get("authMethod") or data.get("auth_method"),
+        "error": None if authenticated or process.returncode in (0, 1) else clean[-1000:],
+    }
+
+
+async def start_claude_login() -> dict:
+    """Start Claude's OAuth login and return the browser URL it prints."""
+    global _login_process, _login_url
+    async with _login_lock:
+        if _login_process and _login_process.returncode is None and _login_url:
+            return {"verification_url": _login_url}
+        executable = claude_executable()
+        if not executable:
+            raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")
+        _login_process = await asyncio.create_subprocess_exec(
+            executable, "auth", "login",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            env={**_env(), "BROWSER": "true"},
+        )
+        output = ""
+        assert _login_process.stdout
+        try:
+            while len(output) < 16000:
+                chunk = await asyncio.wait_for(_login_process.stdout.read(512), 30)
+                if not chunk:
+                    break
+                output += chunk.decode(errors="replace")
+                urls = _URL_RE.findall(_ANSI_RE.sub("", output))
+                if urls:
+                    _login_url = urls[-1].rstrip(".,;'")
+                    asyncio.create_task(_login_process.communicate())
+                    return {"verification_url": _login_url}
+        except asyncio.TimeoutError as exc:
+            _login_process.terminate()
+            await _login_process.wait()
+            _login_process = None
+            raise ClaudeCLIError("Claude CLI không in URL đăng nhập trong 30 giây") from exc
+        rc = await _login_process.wait()
+        _login_process = None
+        raise ClaudeCLIError(f"Không lấy được URL đăng nhập Claude (exit {rc}): {_ANSI_RE.sub('', output)[-2000:]}")
+
+
+async def claude_logout() -> None:
+    executable = claude_executable()
+    if not executable:
+        return
+    process = await asyncio.create_subprocess_exec(
+        executable, "auth", "logout", stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, env=_env(),
+    )
+    output, _ = await asyncio.wait_for(process.communicate(), 15)
+    if process.returncode:
+        raise ClaudeCLIError(_ANSI_RE.sub("", output.decode(errors="replace")).strip())
+
+
+async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
+    executable = claude_executable()
+    if not executable:
+        raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")
+    process = await asyncio.create_subprocess_exec(
+        executable, "-p", prompt, "--output-format", "json", "--tools", "",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=_env(), cwd="/tmp",
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise ClaudeCLIError("Claude phản hồi quá thời gian cho phép") from exc
+    if process.returncode:
+        detail = _ANSI_RE.sub("", (stderr or stdout).decode(errors="replace")).strip()
+        raise ClaudeCLIError(detail[-3000:] or f"Claude CLI exit {process.returncode}")
+    raw = stdout.decode(errors="replace").strip()
+    try:
+        data = json.loads(raw)
+        return str(data.get("result") or data.get("text") or "").strip()
+    except json.JSONDecodeError:
+        return _ANSI_RE.sub("", raw).strip()

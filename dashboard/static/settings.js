@@ -93,6 +93,90 @@
     }).catch(function (err) { codexStatus.textContent = "❌ " + err.message; });
   });
 
+  var claudeLoginBtn = document.getElementById("claude-login-btn");
+  var claudeLogoutBtn = document.getElementById("claude-logout-btn");
+  var claudeStatus = document.getElementById("claude-account-status");
+  var claudeFlow = document.getElementById("claude-device-flow");
+  var claudeLink = document.getElementById("claude-verification-link");
+  var claudeInstallPrompt = document.getElementById("claude-install-prompt");
+  var claudeInstallYesBtn = document.getElementById("claude-install-yes-btn");
+  var claudeInstallNoBtn = document.getElementById("claude-install-no-btn");
+  var claudePollTimer = null;
+
+  function renderClaudeStatus(data) {
+    if (!claudeStatus) return;
+    if (data.installed === false) {
+      claudeStatus.textContent = "⚠️ Chưa cài Claude Code CLI trên server.";
+      if (claudeInstallPrompt) claudeInstallPrompt.hidden = false;
+      if (claudeLoginBtn) claudeLoginBtn.hidden = true;
+      if (claudeLogoutBtn) claudeLogoutBtn.hidden = true;
+    } else if (data.authenticated) {
+      if (claudeInstallPrompt) claudeInstallPrompt.hidden = true;
+      var detail = data.email || data.auth_method || "tài khoản Claude";
+      claudeStatus.textContent = "✅ Đã đăng nhập " + detail + (data.enabled ? " — đang dùng cho Chat và phân tích hiệu năng" : "");
+      if (claudeLoginBtn) claudeLoginBtn.hidden = true;
+      if (claudeLogoutBtn) claudeLogoutBtn.hidden = false;
+      if (claudeFlow) claudeFlow.hidden = true;
+    } else {
+      if (claudeInstallPrompt) claudeInstallPrompt.hidden = true;
+      claudeStatus.textContent = data.error ? "❌ " + data.error : "Chưa đăng nhập tài khoản Claude.";
+      if (claudeLoginBtn) { claudeLoginBtn.hidden = false; claudeLoginBtn.disabled = false; }
+      if (claudeLogoutBtn) claudeLogoutBtn.hidden = true;
+    }
+  }
+
+  function refreshClaudeStatus(activate) {
+    if (!claudeStatus) return Promise.resolve();
+    return codexRequest("/settings/claude/status").then(function (data) {
+      renderClaudeStatus(data);
+      if (activate && data.authenticated && !data.enabled) {
+        return codexRequest("/settings/claude/activate", { method: "POST" }).then(function () {
+          data.enabled = true;
+          renderClaudeStatus(data);
+          clearInterval(claudePollTimer);
+          refreshCodexStatus(false);
+        });
+      }
+    });
+  }
+
+  if (claudeStatus) refreshClaudeStatus(false);
+  if (claudeInstallNoBtn) claudeInstallNoBtn.addEventListener("click", function () {
+    claudeInstallPrompt.hidden = true;
+    claudeStatus.textContent = "Chưa cài Claude Code. Bạn có thể cài sau bằng cách tải lại trang.";
+  });
+  if (claudeInstallYesBtn) claudeInstallYesBtn.addEventListener("click", function () {
+    claudeInstallYesBtn.disabled = true;
+    claudeInstallNoBtn.disabled = true;
+    claudeStatus.textContent = "Đang tải và cài Claude Code từ Anthropic...";
+    codexRequest("/settings/claude/install", { method: "POST" }).then(function () {
+      return refreshClaudeStatus(false);
+    }).catch(function (err) {
+      claudeStatus.textContent = "❌ " + err.message;
+      claudeInstallYesBtn.disabled = false;
+      claudeInstallNoBtn.disabled = false;
+    });
+  });
+  if (claudeLoginBtn) claudeLoginBtn.addEventListener("click", function () {
+    claudeLoginBtn.disabled = true;
+    claudeStatus.textContent = "Đang tạo phiên đăng nhập Claude...";
+    codexRequest("/settings/claude/login/start", { method: "POST" }).then(function (data) {
+      claudeLink.href = data.verification_url;
+      claudeFlow.hidden = false;
+      claudeStatus.textContent = "Đang chờ bạn hoàn tất đăng nhập...";
+      window.open(data.verification_url, "_blank", "noopener");
+      claudePollTimer = setInterval(function () { refreshClaudeStatus(true); }, 2500);
+    }).catch(function (err) {
+      claudeStatus.textContent = "❌ " + err.message;
+      claudeLoginBtn.disabled = false;
+    });
+  });
+  if (claudeLogoutBtn) claudeLogoutBtn.addEventListener("click", function () {
+    codexRequest("/settings/claude/logout", { method: "POST" }).then(function () {
+      renderClaudeStatus({ installed: true, authenticated: false, enabled: false });
+    }).catch(function (err) { claudeStatus.textContent = "❌ " + err.message; });
+  });
+
   var verifyBtn = document.getElementById("router-verify-btn");
   if (!verifyBtn) {
     return; // not on the Settings page

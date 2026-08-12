@@ -113,6 +113,39 @@ def test_non_admin_cannot_install_codex(dashboard_client, monkeypatch):
     assert called["value"] is False
 
 
+def test_claude_login_and_activate_disables_codex(dashboard_client, monkeypatch):
+    async def fake_start():
+        return {"verification_url": "https://claude.example.test/oauth"}
+
+    async def fake_status():
+        return {"installed": True, "authenticated": True, "email": "admin@example.test"}
+
+    monkeypatch.setattr(settings_route, "start_claude_login", fake_start)
+    monkeypatch.setattr(settings_route, "claude_status", fake_status)
+    monkeypatch.setattr(settings, "claude_chat_enabled", False)
+    monkeypatch.setattr(settings, "codex_chat_enabled", True)
+    _login(dashboard_client)
+
+    start = dashboard_client.post("/settings/claude/login/start")
+    assert start.status_code == 200
+    assert start.json()["verification_url"] == "https://claude.example.test/oauth"
+
+    activate = dashboard_client.post("/settings/claude/activate")
+    assert activate.status_code == 200
+    assert settings.claude_chat_enabled is True
+    assert settings.codex_chat_enabled is False
+    env_text = env_config.ENV_PATH.read_text()
+    assert "CLAUDE_CHAT_ENABLED=true" in env_text
+    assert "CODEX_CHAT_ENABLED=false" in env_text
+
+
+def test_claude_controls_require_admin(dashboard_client, monkeypatch):
+    _create_user("claude-operator", "secret", is_admin=False)
+    _login_as(dashboard_client, "claude-operator", "secret")
+    response = dashboard_client.post("/settings/claude/login/start")
+    assert response.status_code == 403
+
+
 # --- POST /settings/9router/save (Step 2 "[Lưu cấu hình]" button) ---------
 
 

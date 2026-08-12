@@ -362,6 +362,7 @@ def test_post_chat_message_without_ai_key_shows_settings_prompt_without_calling_
     monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)
     monkeypatch.setattr(chat_module.settings, "router_api_key", "")
     monkeypatch.setattr(chat_module.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(chat_module.settings, "claude_chat_enabled", False)
     _login(dashboard_client)
 
     response = dashboard_client.post("/api/chat/messages", json={"content": "cụm có bao nhiêu pool?"})
@@ -382,6 +383,20 @@ def test_post_chat_message_allows_codex_without_api_key(dashboard_client, monkey
     response = dashboard_client.post("/api/chat/messages", json={"content": "health?"})
     assert response.status_code == 200
     assert response.json()["assistant_message"]["content"] == "Trả lời từ Codex"
+
+
+def test_post_chat_message_allows_claude_without_api_key(dashboard_client, monkeypatch):
+    async def fake_run_chat_turn(history, user_text, actor):
+        return {"reply_text": "Trả lời từ Claude", "proposal": None, "tools_used": []}
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)
+    monkeypatch.setattr(chat_module.settings, "router_api_key", "")
+    monkeypatch.setattr(chat_module.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(chat_module.settings, "claude_chat_enabled", True)
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/chat/messages", json={"content": "health?"})
+    assert response.status_code == 200
+    assert response.json()["assistant_message"]["content"] == "Trả lời từ Claude"
 
 
 # --- POST /api/chat/messages/{id}/confirm-action -------------------------------

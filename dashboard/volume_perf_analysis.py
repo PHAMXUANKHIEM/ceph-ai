@@ -21,11 +21,13 @@ Worker's propose/approve/execute machinery at all.
 
 import json
 import logging
+import re
 
 import httpx
 
 from config.settings import settings
 from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 
 logger = logging.getLogger(__name__)
@@ -157,6 +159,27 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
         if not _REQUIRED_FIELDS.issubset(captured):
             raise VolumePerfAnalysisError(f"Codex thiếu trường bắt buộc: {captured!r}")
         return captured
+
+    if settings.claude_chat_enabled:
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nChỉ trả về một JSON object hợp lệ, không markdown, với đúng các trường: "
+              "max_iops (number), max_iops_basis ('saturation_knee' hoặc "
+              "'highest_tested_not_saturated'), confidence ('high', 'medium' hoặc 'low'), "
+              "conclusion_vi (string), caveats_vi (string).\n\n"
+            + _build_user_content(sweep)
+        )
+        try:
+            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            clean = raw.strip()
+            if clean.startswith("```"):
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.IGNORECASE)
+            result = json.loads(clean)
+        except (ClaudeCLIError, json.JSONDecodeError) as exc:
+            raise VolumePerfAnalysisError(f"Claude: {exc}") from exc
+        if not _REQUIRED_FIELDS.issubset(result):
+            raise VolumePerfAnalysisError(f"Claude thiếu trường bắt buộc: {result!r}")
+        return result
 
     try:
         client = _get_client()

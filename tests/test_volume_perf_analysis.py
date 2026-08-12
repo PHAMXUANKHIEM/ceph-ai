@@ -103,6 +103,23 @@ def test_analyze_uses_codex_when_enabled_without_router_api(monkeypatch):
     assert calls[0][1][0]["function"]["name"] == volume_perf_analysis.TOOL_NAME
 
 
+def test_analyze_uses_claude_json_when_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(settings, "claude_chat_enabled", True)
+    monkeypatch.setattr(
+        volume_perf_analysis,
+        "_get_client",
+        lambda: pytest.fail("Router API must not be used when Claude is enabled"),
+    )
+
+    async def fake_prompt(prompt, timeout):
+        assert "max_iops_basis" in prompt
+        return __import__("json").dumps(_CONCLUSION)
+
+    monkeypatch.setattr(volume_perf_analysis, "run_claude_prompt", fake_prompt)
+    assert _run(analyze_volume_perf_sweep(_SWEEP)) == _CONCLUSION
+
+
 def test_analyze_raises_when_router_not_configured(monkeypatch):
     def broken():
         raise RouterNotConfiguredError("Chưa cấu hình API AI")

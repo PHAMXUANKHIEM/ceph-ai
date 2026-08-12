@@ -7,6 +7,7 @@ from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationErro
 from config.settings import settings
 from shared.cluster_nodes import configured_nodes
 from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics
 from worker.executor import commands as executor_commands
@@ -56,7 +57,7 @@ TOOL_PROPOSE_ACTION = "propose_action"
 # clickable "[Vào Cài đặt →]" link (dashboard/static/chat_widget.js), since
 # the persisted ChatMessage.content itself stays plain text (no HTML/markup
 # is ever put in a chat bubble — every bubble is rendered via textContent).
-MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API hoặc tài khoản Codex."
+MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API, Codex hoặc Claude."
 
 # AD-5's "action_id/command_id đóng từ structured output, không parse free
 # text" applies here exactly as it does to worker/llm/router_client.py's
@@ -419,6 +420,8 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     """
     if settings.codex_chat_enabled:
         return await _run_codex_chat_turn(history, user_text)
+    if settings.claude_chat_enabled:
+        return await _run_claude_chat_turn(history, user_text)
 
     try:
         client = _get_client()
@@ -561,3 +564,24 @@ async def _run_codex_chat_turn(history: list[dict], user_text: str) -> dict:
     except CodexAppServerError as exc:
         raise ChatTurnError(f"Codex: {exc}") from exc
     return {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
+
+
+async def _run_claude_chat_turn(history: list[dict], user_text: str) -> dict:
+    """Run a guarded, text-only turn through the authenticated Claude CLI."""
+    transcript = []
+    for message in history[-MAX_HISTORY_MESSAGES:]:
+        role = "Người dùng" if message["role"] == "user" else "Trợ lý"
+        transcript.append(f"{role}: {message['content']}")
+    prompt = (
+        SYSTEM_PROMPT
+        + "\n\nBạn đang chạy ở chế độ chỉ đọc và không có tool trong lượt Claude này. "
+          "Không được tuyên bố đã kiểm tra hoặc thay đổi cụm nếu không có dữ liệu trong hội thoại. "
+          "Không tạo đề xuất hành động có thể thực thi; hãy hướng dẫn operator xác minh khi cần."
+        + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
+        + f"\n\nNgười dùng: {user_text}\nTrợ lý:"
+    )
+    try:
+        reply = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+    except ClaudeCLIError as exc:
+        raise ChatTurnError(f"Claude: {exc}") from exc
+    return {"reply_text": reply or "Claude không trả về nội dung", "proposal": None, "tools_used": []}
