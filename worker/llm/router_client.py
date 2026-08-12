@@ -52,6 +52,20 @@ def _load_valid_action_ids() -> frozenset[str]:
 
 
 VALID_ACTION_IDS = _load_valid_action_ids()
+_POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
+_POOL_NAME_PATTERNS = (
+    re.compile(r"pool ['\"]([^'\"]+)['\"]", re.IGNORECASE),
+    re.compile(r"pool\s+([A-Za-z0-9_.-]+)", re.IGNORECASE),
+)
+
+
+def _pool_name_from_snapshot(envelope: dict) -> str | None:
+    text = json.dumps(envelope.get("cluster_snapshot") or {}, ensure_ascii=False)
+    for pattern in _POOL_NAME_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _warn_if_missing_api_key(api_key: str) -> None:
@@ -348,6 +362,15 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 return
         else:
             classification = gate.classify_action(action_id)
+            pool_choice_required = (
+                incident.ceph_code == _POOL_APP_CODE and action_id == "enable_pool_application"
+            )
+            pool_name = _pool_name_from_snapshot(envelope) if pool_choice_required else None
+            if pool_choice_required:
+                # RBD/CephFS/RGW cannot be inferred safely from the warning.
+                # Park this as a Telegram choice even though the generic
+                # policy classifies the metadata update as SAFE.
+                classification = ActionClassification.RISKY
             nodes = envelope.get("nodes")
             action = Action(
                 incident_id=incident_id,
@@ -359,6 +382,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # (Story 4.3), which runs from a DB poll long after this
                 # envelope is gone, still knows which host(s) to target.
                 target_nodes=json.dumps(nodes) if isinstance(nodes, list) else None,
+                action_params=(json.dumps({"pool_name": pool_name}) if pool_name else None),
             )
             session.add(action)
             session.commit()

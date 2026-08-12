@@ -106,6 +106,22 @@ def test_action_message_has_solution_fallback_when_rationale_missing(dashboard_c
     assert "🔧 Giải pháp đề xuất: Khởi động lại daemon OSD bị lỗi." in text
 
 
+def test_pool_application_action_has_three_choice_buttons(dashboard_client):
+    action_id = _pending_action("inc-pool-app")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        action.action_id = "enable_pool_application"
+        action.action_params = json.dumps({"pool_name": "rbd-data"})
+        session.commit()
+        buttons = bot._approval_keyboard(action)
+
+    assert buttons[:3] == [
+        ("💾 RBD", f"poolapp:rbd:{action_id}"),
+        ("📁 CephFS", f"poolapp:cephfs:{action_id}"),
+        ("🌐 RGW", f"poolapp:rgw:{action_id}"),
+    ]
+
+
 def test_notify_broadcasts_to_every_configured_channel(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "backup", token="tb", chat_id="-1")

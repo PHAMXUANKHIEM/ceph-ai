@@ -115,6 +115,7 @@ logger = logging.getLogger(__name__)
 
 APPROVE_CALLBACK_PREFIX = "approve:"
 REJECT_CALLBACK_PREFIX = "reject:"
+POOL_APP_CALLBACK_PREFIX = "poolapp:"
 # Telegram holds the getUpdates HTTP connection open for up to this long
 # waiting for a new update — this IS each listener thread's own pacing, no
 # separate sleep needed between iterations while updates keep arriving.
@@ -344,6 +345,13 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
             action.action_id, f"Thực hiện hành động {action.action_id}."
         )
     lines.append(f"🔧 Giải pháp đề xuất: {solution}")
+    if action.action_id == "enable_pool_application":
+        try:
+            pool_params = json.loads(action.action_params or "{}")
+        except ValueError:
+            pool_params = {}
+        if pool_params.get("pool_name") and not pool_params.get("app_name"):
+            lines.append(f"🏊 Pool: {pool_params['pool_name']} — hãy chọn application bên dưới")
     if action.proposed_command:
         lines.append(f"💻 Lệnh: {_compact_text(action.proposed_command, _MAX_COMMAND_CHARS)}")
     lines.append(f"🆔 {action.id[:8]}")
@@ -355,6 +363,22 @@ def _keyboard_for(action_id: str) -> list[tuple[str, str]]:
         ("✅ Duyệt", f"{APPROVE_CALLBACK_PREFIX}{action_id}"),
         ("❌ Từ chối", f"{REJECT_CALLBACK_PREFIX}{action_id}"),
     ]
+
+
+def _approval_keyboard(action: Action) -> list[tuple[str, str]]:
+    if action.action_id == "enable_pool_application":
+        try:
+            params = json.loads(action.action_params or "{}")
+        except ValueError:
+            params = {}
+        if params.get("pool_name") and not params.get("app_name"):
+            return [
+                ("💾 RBD", f"{POOL_APP_CALLBACK_PREFIX}rbd:{action.id}"),
+                ("📁 CephFS", f"{POOL_APP_CALLBACK_PREFIX}cephfs:{action.id}"),
+                ("🌐 RGW", f"{POOL_APP_CALLBACK_PREFIX}rgw:{action.id}"),
+                ("❌ Từ chối", f"{REJECT_CALLBACK_PREFIX}{action.id}"),
+            ]
+    return _keyboard_for(action.id)
 
 
 def _load_message_ids(action: Action) -> dict:
@@ -420,7 +444,7 @@ def _notify_pending_actions() -> None:
                         bot_token,
                         chat_id,
                         message_text,
-                        _keyboard_for(action.id),
+                        _approval_keyboard(action),
                     )
                 except TelegramSendError:
                     logger.exception(
@@ -479,7 +503,15 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     message_id = message.get("message_id")
     incoming_chat_id = str((message.get("chat") or {}).get("id", ""))
 
-    if data.startswith(APPROVE_CALLBACK_PREFIX):
+    selected_pool_app = None
+    if data.startswith(POOL_APP_CALLBACK_PREFIX):
+        remainder = data[len(POOL_APP_CALLBACK_PREFIX):]
+        selected_pool_app, separator, action_id = remainder.partition(":")
+        if not separator or selected_pool_app not in {"rbd", "cephfs", "rgw"}:
+            logger.warning("telegram_approval_bot: invalid pool application callback=%r", data)
+            return
+        core_fn = approve_action_core
+    elif data.startswith(APPROVE_CALLBACK_PREFIX):
         action_id = data[len(APPROVE_CALLBACK_PREFIX):]
         core_fn = approve_action_core
     elif data.startswith(REJECT_CALLBACK_PREFIX):
@@ -526,6 +558,20 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
 
     actor = _actor_for(callback_query)
     try:
+        if selected_pool_app is not None:
+            with db.SessionLocal() as session:
+                choice_action = session.get(Action, action_id)
+                if choice_action is None:
+                    raise ActionNotFoundError(action_id)
+                try:
+                    params = json.loads(choice_action.action_params or "{}")
+                except ValueError:
+                    params = {}
+                if not params.get("pool_name"):
+                    raise ActionConflictError("Không xác định được tên pool")
+                params["app_name"] = selected_pool_app
+                choice_action.action_params = json.dumps(params)
+                session.commit()
         result = core_fn(action_id, actor)
         edit_suffix = _OUTCOME_EDIT_SUFFIX[result.outcome]
         toast = _OUTCOME_TOAST[result.outcome]

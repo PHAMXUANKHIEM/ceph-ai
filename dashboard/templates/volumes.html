@@ -83,13 +83,13 @@
       <div class="card-header"><div class="metrics-panel-title">Tạo pool trên {{ selected_cluster.name }}</div></div>
       <div class="card-body">
         {% if create_success %}<p class="success">{{ create_success }}</p>{% endif %}
-        <form method="post" action="/pgs/pools/create" class="form-grid">
+        <form method="post" action="/pgs/pools/create" class="audit-filters">
           <input type="hidden" name="cluster_id" value="{{ selected_cluster.id }}">
           <input type="hidden" name="return_to" value="volumes">
           <label>Tên pool<input type="text" name="pool_name" required maxlength="128" placeholder="vd: rbd-data" pattern="[A-Za-z0-9_.-]+"></label>
           <label>Số Placement Groups<input type="number" name="pg_num" value="32" min="1" max="32768" required></label>
           <label>Application<select name="app_name"><option value="rbd" selected>RBD</option><option value="cephfs">CephFS</option><option value="rgw">RGW</option></select></label>
-          <div><button type="submit" class="btn btn-primary">Tạo pool</button></div>
+          <button type="submit" class="btn btn-primary btn-sm">Tạo pool</button>
         </form>
         <p class="hint">Worker tạo pool và bật application trong cùng một yêu cầu trên đúng cụm đang chọn.</p>
       </div>
