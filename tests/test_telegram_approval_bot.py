@@ -122,6 +122,23 @@ def test_pool_application_action_has_three_choice_buttons(dashboard_client):
     ]
 
 
+def test_legacy_pool_warning_has_three_choice_buttons(dashboard_client):
+    action_id = _pending_action("inc-pool-legacy", action_id="investigate_manually")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        incident = session.get(Incident, "inc-pool-legacy")
+        incident.ceph_code = "POOL_APP_NOT_ENABLED"
+        incident.diagnosis_text = "pool 'images' chưa được gắn nhãn ứng dụng"
+        session.commit()
+        buttons = bot._approval_keyboard(action, incident)
+
+    assert buttons[:3] == [
+        ("💾 RBD", f"poolapp:rbd:{action_id}"),
+        ("📁 CephFS", f"poolapp:cephfs:{action_id}"),
+        ("🌐 RGW", f"poolapp:rgw:{action_id}"),
+    ]
+
+
 def test_notify_broadcasts_to_every_configured_channel(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "backup", token="tb", chat_id="-1")
@@ -355,6 +372,28 @@ def test_handle_callback_acknowledges_action_with_no_command(dashboard_client, m
         action = session.get(Action, action_id)
         assert action.status == ActionStatus.EXECUTED.value
     assert answer_calls == ["Đã xác nhận"]
+
+
+def test_handle_callback_converts_legacy_pool_choice_to_executable_action(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    action_id = _pending_action("inc-pool-choice", action_id="investigate_manually")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "inc-pool-choice")
+        incident.ceph_code = "POOL_APP_NOT_ENABLED"
+        incident.diagnosis_text = "pool 'images' chưa được gắn nhãn ứng dụng"
+        session.commit()
+    monkeypatch.setattr(bot, "edit_telegram_message", lambda *a: None)
+    monkeypatch.setattr(bot, "answer_telegram_callback", lambda *a, **kw: None)
+
+    bot._handle_callback_query(_callback_query(action_id, "poolapp:rbd"), "123:ABC")
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.action_id == "enable_pool_application"
+        assert action.status == ActionStatus.APPROVED.value
+        assert json.loads(action.action_params) == {"pool_name": "images", "app_name": "rbd"}
+        assert action.proposed_command == "ceph osd pool application enable images rbd --yes-i-really-mean-it"
 
 
 def test_handle_callback_ignores_wrong_chat_id(dashboard_client, monkeypatch):

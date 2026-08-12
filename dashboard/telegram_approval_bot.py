@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -97,6 +98,7 @@ from dashboard.routes.actions import (
     ActionNotFoundError,
     ApprovalOutcome,
     approve_action_core,
+    _prepare_pool_application_choice,
     reject_action_core,
 )
 from shared import db
@@ -345,11 +347,8 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
             action.action_id, f"Thực hiện hành động {action.action_id}."
         )
     lines.append(f"🔧 Giải pháp đề xuất: {solution}")
-    if action.action_id == "enable_pool_application":
-        try:
-            pool_params = json.loads(action.action_params or "{}")
-        except ValueError:
-            pool_params = {}
+    if _needs_pool_application_choice(action, incident):
+        pool_params = _pool_application_params(action, incident)
         if pool_params.get("pool_name") and not pool_params.get("app_name"):
             lines.append(f"🏊 Pool: {pool_params['pool_name']} — hãy chọn application bên dưới")
     if action.proposed_command:
@@ -365,12 +364,33 @@ def _keyboard_for(action_id: str) -> list[tuple[str, str]]:
     ]
 
 
-def _approval_keyboard(action: Action) -> list[tuple[str, str]]:
-    if action.action_id == "enable_pool_application":
-        try:
-            params = json.loads(action.action_params or "{}")
-        except ValueError:
-            params = {}
+def _pool_application_params(action: Action, incident: Incident | None) -> dict:
+    """Return choice parameters for both new and legacy pool warnings."""
+    try:
+        params = json.loads(action.action_params or "{}")
+    except (TypeError, ValueError):
+        params = {}
+    if not isinstance(params, dict):
+        params = {}
+    if not params.get("pool_name") and incident is not None and incident.ceph_code == "POOL_APP_NOT_ENABLED":
+        evidence = " ".join(filter(None, (incident.diagnosis_text, action.rationale, incident.log_excerpt)))
+        match = re.search(r"pool\s+['\"]([^'\"]+)['\"]", evidence, re.IGNORECASE)
+        if match:
+            params["pool_name"] = match.group(1)
+    return params
+
+
+def _needs_pool_application_choice(action: Action, incident: Incident | None) -> bool:
+    return (
+        action.action_id == "enable_pool_application"
+        or (action.action_id == "investigate_manually" and incident is not None
+            and incident.ceph_code == "POOL_APP_NOT_ENABLED")
+    )
+
+
+def _approval_keyboard(action: Action, incident: Incident | None = None) -> list[tuple[str, str]]:
+    if _needs_pool_application_choice(action, incident):
+        params = _pool_application_params(action, incident)
         if params.get("pool_name") and not params.get("app_name"):
             return [
                 ("💾 RBD", f"{POOL_APP_CALLBACK_PREFIX}rbd:{action.id}"),
@@ -432,6 +452,19 @@ def _notify_pending_actions() -> None:
             if not target_channels:
                 continue
             sent = _load_message_ids(action)
+            # Actions created before pool-application choices were supported
+            # already have a generic Telegram message id. Re-broadcast those
+            # exactly once with the new three-choice keyboard.
+            pool_params = _pool_application_params(action, incident)
+            is_legacy_pool_choice = (
+                action.action_id == "investigate_manually"
+                and _needs_pool_application_choice(action, incident)
+                and bool(pool_params.get("pool_name"))
+            )
+            if is_legacy_pool_choice and not pool_params.get("telegram_pool_choices_sent"):
+                sent = {}
+                pool_params["telegram_pool_choices_sent"] = True
+                action.action_params = json.dumps(pool_params)
             missing = [ch for ch in target_channels if ch[0] not in sent]
             if not missing:
                 continue
@@ -444,7 +477,7 @@ def _notify_pending_actions() -> None:
                         bot_token,
                         chat_id,
                         message_text,
-                        _approval_keyboard(action),
+                        _approval_keyboard(action, incident),
                     )
                 except TelegramSendError:
                     logger.exception(
@@ -563,15 +596,24 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
                 choice_action = session.get(Action, action_id)
                 if choice_action is None:
                     raise ActionNotFoundError(action_id)
-                try:
-                    params = json.loads(choice_action.action_params or "{}")
-                except ValueError:
-                    params = {}
-                if not params.get("pool_name"):
-                    raise ActionConflictError("Không xác định được tên pool")
-                params["app_name"] = selected_pool_app
-                choice_action.action_params = json.dumps(params)
-                session.commit()
+                choice_incident = session.get(Incident, choice_action.incident_id)
+                is_legacy_choice = (
+                    choice_action.action_id == "investigate_manually"
+                    and choice_incident is not None
+                    and choice_incident.ceph_code == "POOL_APP_NOT_ENABLED"
+                )
+                if not is_legacy_choice:
+                    try:
+                        params = json.loads(choice_action.action_params or "{}")
+                    except ValueError:
+                        params = {}
+                    if not params.get("pool_name"):
+                        raise ActionConflictError("Không xác định được tên pool")
+                    params["app_name"] = selected_pool_app
+                    choice_action.action_params = json.dumps(params)
+                    session.commit()
+            if is_legacy_choice:
+                _prepare_pool_application_choice(action_id, selected_pool_app)
         result = core_fn(action_id, actor)
         edit_suffix = _OUTCOME_EDIT_SUFFIX[result.outcome]
         toast = _OUTCOME_TOAST[result.outcome]
