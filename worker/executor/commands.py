@@ -278,6 +278,16 @@ def _enable_pool_application_command(params: dict) -> str:
     )
 
 
+def _finalize_pacific_osd_release_command(params: dict) -> str:
+    """Raise the cluster compatibility floor only after all OSDs are Pacific+.
+
+    The precondition is intentionally checked from live cluster evidence by
+    Chat before proposal. Ceph performs its own authoritative validation when
+    this command runs, and the action remains RISKY/approval-gated.
+    """
+    return "ceph osd require-osd-release pacific --yes-i-really-mean-it"
+
+
 def _rbd_trash_remove_command(params: dict) -> str:
     """Permanently deletes an RBD image an operator already soft-deleted
     into a pool's trash (dashboard/routes/volumes.py's "Xoá" button on the
@@ -300,6 +310,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "mark_osd_in": lambda params: _mark_osd_command("in", params),
     "mark_osd_down": lambda params: _mark_osd_command("down", params),
     "enable_pool_application": _enable_pool_application_command,
+    "finalize_pacific_osd_release": _finalize_pacific_osd_release_command,
     "rbd_trash_remove": _rbd_trash_remove_command,
 }
 

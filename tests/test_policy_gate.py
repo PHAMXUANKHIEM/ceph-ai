@@ -63,6 +63,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
         "mark_osd_down",
         "enable_pool_application",
         "rbd_trash_remove",
+        "finalize_pacific_osd_release",
     }
 
 
@@ -88,6 +89,10 @@ def test_rbd_trash_remove_is_classified_risky():
     # the Volumes page — AD-5's conservative default applies, must always
     # require explicit Dashboard approval.
     assert classify_action("rbd_trash_remove") == ActionClassification.RISKY
+
+
+def test_finalize_pacific_osd_release_is_classified_risky():
+    assert classify_action("finalize_pacific_osd_release") == ActionClassification.RISKY
 
 
 def test_management_action_ids_disjoint_from_incident_diagnosis_action_ids():

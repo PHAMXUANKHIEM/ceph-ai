@@ -645,6 +645,33 @@ def test_confirm_action_management_action_rejects_more_than_one_target_node(dash
         assert session.query(Incident).filter_by(ceph_code="CHAT_REQUEST").count() == 0
 
 
+def test_confirm_bluestore_quick_fix_is_revalidated_and_waits_for_approval(
+    dashboard_client, monkeypatch
+):
+    monkeypatch.setattr(chat_module.settings, "ceph_exec_mode", "none")
+    message_id = _stage_proposal(
+        action_id="bluestore_omap_quick_fix",
+        target_nodes=[A_MON_HOST],
+        params={"osd_id": 3},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/api/chat/messages/{message_id}/confirm-action")
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        message = session.get(ChatMessage, message_id)
+        incident = session.get(Incident, message.proposed_incident_id)
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.proposed_command == (
+            "systemctl stop ceph-osd@3.service && "
+            "ceph-bluestore-tool quick-fix --path /var/lib/ceph/osd/ceph-3 && "
+            "systemctl start ceph-osd@3.service"
+        )
+
+
 # --- GET /api/chat/sessions (history list) --------------------------------------
 
 

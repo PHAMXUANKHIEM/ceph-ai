@@ -664,6 +664,13 @@ def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("create_pool") is True
     assert commands_module.has_command("enable_pool_application") is True
     assert commands_module.has_command("rbd_trash_remove") is True
+    assert commands_module.has_command("finalize_pacific_osd_release") is True
+
+
+def test_get_command_finalize_pacific_osd_release():
+    assert commands_module.get_command("finalize_pacific_osd_release") == (
+        "ceph osd require-osd-release pacific --yes-i-really-mean-it"
+    )
 
 
 def test_has_command_false_for_action_ids_with_no_automated_remediation():

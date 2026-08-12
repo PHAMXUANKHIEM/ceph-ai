@@ -16,7 +16,7 @@ from watcher.ceph_client import CephQueryError, query_rbd_trash
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.llm.router_client import VALID_ACTION_IDS
-from worker.policy.gate import VALID_MANAGEMENT_ACTION_IDS
+from worker.policy.gate import VALID_BLUESTORE_ACTION_IDS, VALID_MANAGEMENT_ACTION_IDS
 
 from dashboard.ceph_tools import (
     FIXED_TOOL_COMMANDS,
@@ -39,6 +39,12 @@ MAX_TOOL_ITERATIONS = 6
 # long-lived operational chat doesn't need its entire history re-sent on
 # every message.
 MAX_HISTORY_MESSAGES = 20
+
+# rbd_trash_remove shares the management command-builder family but belongs
+# to the Volumes page, not free-form Chat. The remaining management actions
+# and the approval-gated BlueStore repair are valid Chat proposals.
+CHAT_MANAGEMENT_ACTION_IDS = VALID_MANAGEMENT_ACTION_IDS - {"rbd_trash_remove"}
+CHAT_ACTION_IDS = VALID_ACTION_IDS | CHAT_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS
 
 # A tool_result this large fed a well-behaved model into replying with a
 # single token and finish_reason="stop" (NOT "length" — it wasn't cut off,
@@ -155,7 +161,12 @@ def system_prompt(*, ceph_restricted: bool = True, ai_name: str = "AI") -> str:
     "set_pool_size (cần pool_name, size), set_pool_pg_num (cần pool_name, "
     "pg_num), mark_osd_out/mark_osd_in/mark_osd_down (cần osd_id), "
     "enable_pool_application (cần pool_name, app_name — dùng để xoá cảnh "
-    "báo POOL_APP_NOT_ENABLED, app_name thường là rbd/cephfs/rgw). "
+    "báo POOL_APP_NOT_ENABLED, app_name thường là rbd/cephfs/rgw), "
+    "finalize_pacific_osd_release (không cần tham số; chỉ đề xuất sau khi "
+    "get_health_detail xác nhận tất cả OSD đã chạy Pacific hoặc mới hơn), và "
+    "bluestore_omap_quick_fix (cần osd_id và đúng host chứa OSD; dừng OSD để "
+    "chạy quick-fix nên luôn cần admin duyệt). Với TOO_FEW_PGS, đọc pool thực "
+    "tế rồi đề xuất set_pool_pg_num cho từng pool; không tự đoán pg_num. "
     "propose_action KHÔNG thực thi gì cả — chỉ tạo đề xuất kèm lệnh sẽ chạy, "
     "hiển thị cho operator xem và tự bấm xác nhận. Bạn không bao giờ được tự "
     "nhận là đã chạy/khắc phục/tạo/xoá xong việc gì — bạn chỉ tra cứu và đề "
@@ -206,7 +217,7 @@ class ChatTurnError(Exception):
 
 def _tool_schemas() -> list[dict]:
     hosts = sorted(n["host"] for n in configured_nodes())
-    action_ids = sorted(VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS)
+    action_ids = sorted(CHAT_ACTION_IDS)
 
     def _fn(name: str, description: str, parameters: dict | None = None) -> dict:
         return {
@@ -278,7 +289,8 @@ def _tool_schemas() -> list[dict]:
             TOOL_PROPOSE_ACTION,
             "Stage a remediation OR cluster-management action for the operator to "
             "review and explicitly confirm. Does not execute anything by itself. "
-            "For management action_ids, target_nodes must contain exactly ONE host "
+            "For cluster-wide management and BlueStore action_ids, target_nodes "
+            "must contain exactly ONE host "
             "(any configured node — the command is cluster-wide, not per-host) and "
             "the matching parameter(s) must be set: create_pool needs pool_name+"
             "pg_num; delete_pool needs pool_name; set_pool_size needs pool_name+"
@@ -286,6 +298,8 @@ def _tool_schemas() -> list[dict]:
             "mark_osd_in/mark_osd_down need osd_id; enable_pool_application needs "
             "pool_name+app_name (clears Ceph's POOL_APP_NOT_ENABLED warning — "
             "app_name is usually rbd/cephfs/rgw, but any name is accepted). "
+            "finalize_pacific_osd_release needs no parameter. "
+            "bluestore_omap_quick_fix needs osd_id and the host that owns it. "
             "Leave unused parameters null.",
             {
                 "type": "object",
@@ -395,6 +409,8 @@ _MANAGEMENT_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "mark_osd_in": ("osd_id",),
     "mark_osd_down": ("osd_id",),
     "enable_pool_application": ("pool_name", "app_name"),
+    "finalize_pacific_osd_release": (),
+    "bluestore_omap_quick_fix": ("osd_id",),
 }
 _MANAGEMENT_PARAM_IS_INT: dict[str, bool] = {
     "pool_name": False,
@@ -415,7 +431,7 @@ def _validate_proposal(args: dict) -> dict:
     # guarantee (a model can technically emit anything as tool input; only
     # code that actually validates before acting is a guarantee, same
     # posture as worker/llm/router_client.py's own action_id re-check).
-    if action_id not in VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS:
+    if action_id not in CHAT_ACTION_IDS:
         raise ChatToolError(f"action_id {action_id!r} không hợp lệ")
     if not isinstance(target_nodes, list) or not target_nodes or not all(
         isinstance(h, str) and h in allowed_hosts for h in target_nodes
@@ -425,7 +441,7 @@ def _validate_proposal(args: dict) -> dict:
         raise ChatToolError("rationale không được để trống")
 
     params: dict | None = None
-    if action_id in VALID_MANAGEMENT_ACTION_IDS:
+    if action_id in CHAT_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS:
         # Cluster-wide command (create/delete pool, mark OSD in/out/down) —
         # not per-host like restart_osd_daemon/resync_ntp, so looping it
         # over multiple target_nodes would just run the exact same `ceph

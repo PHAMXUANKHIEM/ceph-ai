@@ -31,7 +31,7 @@ from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.llm.router_client import VALID_ACTION_IDS
 from worker.policy import gate
-from worker.policy.gate import VALID_MANAGEMENT_ACTION_IDS
+from worker.policy.gate import VALID_BLUESTORE_ACTION_IDS, VALID_MANAGEMENT_ACTION_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -411,9 +411,12 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
             action_params = None
 
         is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
+        is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
+        is_parameterized_action = is_management_action or is_bluestore_action
         allowed_hosts = {n["host"] for n in configured_nodes()}
         if (
-            action_id not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS)
+            action_id
+            not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS)
             or not isinstance(target_nodes, list)
             or not target_nodes
             or not all(isinstance(host, str) and host in allowed_hosts for host in target_nodes)
@@ -421,7 +424,7 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
             # restart_osd_daemon/resync_ntp) — same single-node requirement
             # dashboard/chat_client.py::_validate_proposal already enforces
             # at proposal time, re-checked here from scratch.
-            or (is_management_action and len(target_nodes) != 1)
+            or (is_parameterized_action and len(target_nodes) != 1)
         ):
             raise HTTPException(
                 status_code=400,
@@ -429,7 +432,7 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
             )
 
         resolved_command = message.proposed_command_preview
-        if is_management_action:
+        if is_parameterized_action:
             # Authoritative re-validation of action_params (pool name
             # charset, pg_num/size/osd_id bounds — see
             # worker/executor/commands.py's builders) from scratch at

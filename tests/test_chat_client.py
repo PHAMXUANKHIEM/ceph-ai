@@ -199,6 +199,40 @@ def test_validate_proposal_accepts_enable_pool_application_with_required_params(
     assert result["params"] == {"pool_name": "test", "app_name": "rbd"}
 
 
+def test_validate_proposal_accepts_finalize_pacific_release_without_params():
+    result = chat_client._validate_proposal(
+        {
+            "action_id": "finalize_pacific_osd_release",
+            "target_nodes": [A_MON_HOST],
+            "rationale": "all OSDs are Pacific or newer",
+        }
+    )
+    assert result["params"] == {}
+
+
+def test_validate_proposal_accepts_bluestore_quick_fix_with_osd_id():
+    result = chat_client._validate_proposal(
+        {
+            "action_id": "bluestore_omap_quick_fix",
+            "target_nodes": [AN_OSD_HOST],
+            "rationale": "legacy omap stats on osd.3",
+            "osd_id": 3,
+        }
+    )
+    assert result["params"] == {"osd_id": 3}
+
+
+def test_validate_proposal_rejects_bluestore_quick_fix_without_osd_id():
+    with pytest.raises(chat_client.ChatToolError, match="osd_id"):
+        chat_client._validate_proposal(
+            {
+                "action_id": "bluestore_omap_quick_fix",
+                "target_nodes": [AN_OSD_HOST],
+                "rationale": "legacy omap stats",
+            }
+        )
+
+
 def test_resolve_command_preview_bakes_in_real_params_for_enable_pool_application():
     preview = chat_client.resolve_command_preview(
         "enable_pool_application", [A_MON_HOST], {"pool_name": "test", "app_name": "rbd"}
