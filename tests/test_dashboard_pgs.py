@@ -14,6 +14,14 @@ def test_unauthenticated_pgs_page_redirects_to_login(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
+def test_pool_name_mapping_supports_ceph_json_key_variants():
+    assert pgs_route._pool_names_by_id([
+        {"pool_id": 1, "pool_name": "rbd"},
+        {"pool": 2, "poolname": "cephfs"},
+        {"poolnum": 3, "name": "rgw"},
+    ]) == {"1": "rbd", "2": "cephfs", "3": "rgw"}
+
+
 def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, monkeypatch):
     calls = []
 
@@ -21,8 +29,8 @@ def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, 
         calls.append(command)
         if command == "ceph osd pool ls detail":
             return "mon1", [
-                {"pool": 1, "pool_name": "vms"},
-                {"pool": 2, "pool_name": "backups"},
+                {"pool_id": 1, "pool_name": "vms"},
+                {"pool_id": 2, "pool_name": "backups"},
             ]
         if command == "ceph pg dump pgs":
             return "mon1", {
@@ -93,7 +101,7 @@ def test_pgs_page_uses_selected_additional_cluster(dashboard_client, monkeypatch
     def fake_query(*args):
         calls.append(args)
         if args[-1] == "ceph osd pool ls detail":
-            return "10.0.0.21", [{"pool": 9, "pool_name": "rbd-b"}]
+            return "10.0.0.21", [{"pool_id": 9, "pool_name": "rbd-b"}]
         return "10.0.0.21", {
             "pg_stats": [{"pgid": "9.a", "state": "active+clean", "acting": [2], "up": [2]}]
         }

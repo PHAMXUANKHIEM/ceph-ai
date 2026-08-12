@@ -27,11 +27,19 @@ POOL_CREATE_CEPH_CODE = "POOL_CREATE_REQUEST"
 
 def _pool_names_by_id(payload: dict | list) -> dict[str, str]:
     raw_rows = payload if isinstance(payload, list) else payload.get("pools", []) if isinstance(payload, dict) else []
-    return {
-        str(row["pool"]): str(row.get("pool_name") or row.get("poolname") or row["pool"])
-        for row in raw_rows
-        if isinstance(row, dict) and "pool" in row
-    }
+    names: dict[str, str] = {}
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        pool_id = row.get("pool_id")
+        if pool_id is None:
+            pool_id = row.get("pool")
+        if pool_id is None:
+            pool_id = row.get("poolnum")
+        pool_name = row.get("pool_name") or row.get("poolname") or row.get("name")
+        if pool_id is not None and pool_name:
+            names[str(pool_id)] = str(pool_name)
+    return names
 
 
 def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None = None) -> list[dict]:
@@ -48,7 +56,12 @@ def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None =
         if not isinstance(pg, dict):
             continue
         pgid = str(pg.get("pgid", "—"))
-        pool_id = pgid.split(".", 1)[0] if "." in pgid else ""
+        pool_id = pg.get("pool_id")
+        if pool_id is None:
+            pool_id = pg.get("pool")
+        if pool_id is None:
+            pool_id = pgid.split(".", 1)[0] if "." in pgid else ""
+        pool_id = str(pool_id)
         acting = pg.get("acting") if isinstance(pg.get("acting"), list) else []
         up = pg.get("up") if isinstance(pg.get("up"), list) else []
         primary = pg.get("acting_primary")
