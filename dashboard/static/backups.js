@@ -68,6 +68,48 @@
   poll();
   setInterval(poll, POLL_INTERVAL_MS);
 
+  function postRunNow(url, payload, button) {
+    button.disabled = true;
+    fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (data) {
+            throw new Error(data.detail || "HTTP " + response.status);
+          });
+        }
+        return response.json();
+      })
+      .then(function () { window.location.reload(); })
+      .catch(function (err) {
+        button.disabled = false;
+        window.alert(err.message || "Không tạo được job backup");
+      });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll(".btn-backup-now"), function (btn) {
+    btn.addEventListener("click", function () {
+      var pool = btn.getAttribute("data-pool");
+      var image = btn.getAttribute("data-image");
+      if (window.confirm("Chạy backup ngay cho " + pool + "/" + image + "?")) {
+        postRunNow("/backups/run-now", { pool: pool, image: image }, btn);
+      }
+    });
+  });
+
+  var metadataBtn = document.getElementById("btn-backup-metadata-now");
+  if (metadataBtn) {
+    metadataBtn.addEventListener("click", function () {
+      if (window.confirm("Chạy backup metadata cụm ngay?")) {
+        postRunNow("/backups/metadata/run-now", {}, metadataBtn);
+      }
+    });
+  }
+
   // --- Khôi phục 1 volume (Story 9.7, restore_rbd_image_to_production) ---
 
   Array.prototype.forEach.call(document.querySelectorAll(".btn-restore-image"), function (btn) {

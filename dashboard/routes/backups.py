@@ -33,7 +33,16 @@ from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from config.settings import settings
 from shared import audit, db
-from shared.models import Action, ActionStatus, BackupAnomaly, BackupDigestLog, BackupJob, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionClassification,
+    ActionStatus,
+    BackupAnomaly,
+    BackupDigestLog,
+    BackupJob,
+    Incident,
+    IncidentStatus,
+)
 from worker.backup.policy_config import load_backup_policy
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -73,6 +82,12 @@ ANOMALY_LIMIT = 20
 # a tracked image and clicking "Khôi phục").
 RESTORE_CEPH_CODE = "RESTORE_RBD_IMAGE_TO_PRODUCTION"
 RESTORE_ACTION_ID = "restore_rbd_image_to_production"
+MANUAL_BACKUP_CEPH_CODE = "BACKUP_MANUAL"
+
+
+def _require_admin_privilege(user: str) -> None:
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản admin được vận hành backup.")
 
 
 def _latest_running_backup_action() -> Action | None:
@@ -142,11 +157,22 @@ def _queue(tracked: list[dict]) -> list[dict]:
                 .order_by(BackupJob.created_at.desc())
                 .first()
             )
+            latest_success = (
+                session.query(BackupJob)
+                .filter(
+                    BackupJob.pool == pool,
+                    BackupJob.image == image,
+                    BackupJob.job_type.in_(("full", "incremental")),
+                    BackupJob.status == "SUCCESS",
+                )
+                .order_by(BackupJob.created_at.desc())
+                .first()
+            )
             entries.append(
                 {
                     "pool": pool,
                     "image": image,
-                    "last_run_at": latest.created_at if latest else None,
+                    "last_run_at": latest_success.created_at if latest_success else None,
                     "last_status": latest.status if latest else None,
                 }
             )
@@ -260,6 +286,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
     Always Risky (action_policy.yaml) — needs a separate Dashboard approval
     (`/actions/{id}/approve`) before Worker ever touches anything, same as
     every other cluster/backup-lifecycle propose route."""
+    _require_admin_privilege(user)
     body = await request.json()
     pool = str(body.get("pool", "")).strip()
     image = str(body.get("image", "")).strip()
@@ -269,6 +296,24 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
         raise HTTPException(
             status_code=400,
             detail=f"{pool}/{image} không nằm trong tracked_images đã cấu hình — không thể đề xuất khôi phục",
+        )
+
+    with db.SessionLocal() as session:
+        has_full_backup = (
+            session.query(BackupJob.id)
+            .filter(
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                BackupJob.job_type == "full",
+                BackupJob.status == "SUCCESS",
+            )
+            .first()
+            is not None
+        )
+    if not has_full_backup:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Chưa có bản full backup thành công cho {pool}/{image} — không thể khôi phục.",
         )
 
     # target_nodes MUST be a non-empty single-host list — same requirement
@@ -336,6 +381,77 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
         session.commit()
         action_pk = action.id
 
+    return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+def _create_manual_backup_action(action_id: str, action_params: dict, user: str) -> str:
+    mon_nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
+    if not mon_nodes:
+        raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
+
+    with db.SessionLocal() as session:
+        existing = (
+            session.query(Action)
+            .filter(
+                Action.action_id.in_(("rbd_backup_run", "backup_metadata_run")),
+                Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+            )
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Đã có một backup đang chờ hoặc đang chạy.")
+
+        label = (
+            f"Backup RBD thủ công cho {action_params['pool']}/{action_params['image']}"
+            if action_id == "rbd_backup_run"
+            else "Backup metadata cụm thủ công"
+        )
+        incident = Incident(
+            ceph_code=MANUAL_BACKUP_CEPH_CODE,
+            status=IncidentStatus.EXECUTING.value,
+            log_excerpt=f"{label} bởi {user}",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.APPROVED.value,
+            rationale=label,
+            target_nodes=json.dumps([mon_nodes[0]]),
+            action_params=json.dumps(action_params),
+        )
+        session.add(action)
+        session.flush()
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_BACKUP_MANUAL_REQUESTED,
+            actor=user,
+        )
+        session.commit()
+        return action.id
+
+
+@router.post("/backups/run-now")
+async def run_backup_now(request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    body = await request.json()
+    pool = str(body.get("pool", "")).strip()
+    image = str(body.get("image", "")).strip()
+    if not any(t["pool"] == pool and t["image"] == image for t in _tracked_images()):
+        raise HTTPException(status_code=400, detail="Image không nằm trong tracked_images.")
+    action_pk = _create_manual_backup_action("rbd_backup_run", {"pool": pool, "image": image}, user)
+    return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.post("/backups/metadata/run-now")
+async def run_metadata_backup_now(user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    action_pk = _create_manual_backup_action("backup_metadata_run", {}, user)
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 

@@ -61,6 +61,10 @@ EVENT_CLUSTER_UPGRADE_OSD_FLAGS_UNSET = "cluster_upgrade_osd_flags_unset"
 # the sweep, not a None/synthetic pair (AuditEntry.incident_id is a
 # mandatory FK — AD-7 requires every write to be a real, attributable row).
 EVENT_BACKUP_RETENTION_DELETE = "backup_retention_delete"
+# Dashboard backup page: records who explicitly requested an immediate RBD
+# or metadata backup, separately from the Worker's eventual success/failure
+# event for the SAFE action.
+EVENT_BACKUP_MANUAL_REQUESTED = "backup_manual_requested"
 
 
 def record(

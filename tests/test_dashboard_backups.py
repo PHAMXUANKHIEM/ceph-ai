@@ -3,7 +3,16 @@ from datetime import datetime, timedelta
 
 import dashboard.routes.backups as backups_route
 from shared import db as db_module
-from shared.models import Action, ActionStatus, BackupAnomaly, BackupDigestLog, BackupJob, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionStatus,
+    AuditEntry,
+    BackupAnomaly,
+    BackupDigestLog,
+    BackupJob,
+    Incident,
+    IncidentStatus,
+)
 
 
 def _login(client):
@@ -37,6 +46,24 @@ def _create_running_action(session, action_id, progress):
     session.add(action)
     session.commit()
     return action.id
+
+
+def _seed_successful_full(pool="vms", image="disk1"):
+    with db_module.SessionLocal() as session:
+        session.add(
+            BackupJob(
+                run_id=f"full-{pool}-{image}",
+                pool=pool,
+                image=image,
+                job_type="full",
+                status="SUCCESS",
+                backup_target_slot="a",
+                remote_key=f"{pool}/{image}/full.bin",
+                created_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
 
 
 def test_unauthenticated_get_backups_redirects_to_login(dashboard_client):
@@ -80,6 +107,29 @@ def test_backups_page_lists_queue_and_history(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert "vms/disk1" in response.text
     assert "SUCCESS" in response.text
+
+
+def test_queue_success_time_does_not_get_replaced_by_newer_failed_run(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    success_at = datetime.utcnow() - timedelta(hours=2)
+    with db_module.SessionLocal() as session:
+        session.add_all(
+            [
+                BackupJob(
+                    run_id="ok", pool="vms", image="disk1", job_type="full", status="SUCCESS",
+                    created_at=success_at, finished_at=success_at,
+                ),
+                BackupJob(
+                    run_id="failed", pool="vms", image="disk1", job_type="incremental", status="FAILED",
+                    created_at=datetime.utcnow(), finished_at=datetime.utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+
+    entry = backups_route._queue([{"pool": "vms", "image": "disk1"}])[0]
+    assert entry["last_run_at"] == success_at
+    assert entry["last_status"] == "FAILED"
 
 
 def test_backups_page_renders_with_no_digests_or_anomalies(dashboard_client, monkeypatch):
@@ -247,6 +297,7 @@ def test_restore_propose_rejects_image_not_in_tracked_images(dashboard_client, m
 def test_restore_propose_creates_pending_risky_action(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _seed_successful_full()
     _login(dashboard_client)
 
     response = dashboard_client.post("/backups/restore/propose", json={"pool": "vms", "image": "disk1"})
@@ -265,6 +316,8 @@ def test_restore_propose_creates_pending_risky_action(dashboard_client, monkeypa
 def test_restore_propose_rejects_second_proposal_while_one_pending(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}, {"pool": "vms", "image": "disk2"}])
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _seed_successful_full(image="disk1")
+    _seed_successful_full(image="disk2")
     _login(dashboard_client)
 
     first = dashboard_client.post("/backups/restore/propose", json={"pool": "vms", "image": "disk1"})
@@ -277,6 +330,7 @@ def test_restore_propose_rejects_second_proposal_while_one_pending(dashboard_cli
 def test_restore_propose_requires_ceph_mon_nodes_configured(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "", raising=False)
+    _seed_successful_full()
     _login(dashboard_client)
 
     response = dashboard_client.post("/backups/restore/propose", json={"pool": "vms", "image": "disk1"})
@@ -287,6 +341,7 @@ def test_restore_propose_requires_ceph_mon_nodes_configured(dashboard_client, mo
 def test_backups_page_shows_pending_restore_action_with_approve_reject(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _seed_successful_full()
     _login(dashboard_client)
 
     propose = dashboard_client.post("/backups/restore/propose", json={"pool": "vms", "image": "disk1"})
@@ -299,3 +354,54 @@ def test_backups_page_shows_pending_restore_action_with_approve_reject(dashboard
     assert f"/actions/{action_id}/reject" in response.text
     # The restore button for other tracked images is disabled while one is pending.
     assert "btn-restore-image" in response.text
+
+
+def test_restore_propose_rejects_when_no_successful_full_exists(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/restore/propose", json={"pool": "vms", "image": "disk1"})
+
+    assert response.status_code == 409
+    assert "full backup" in response.json()["detail"]
+
+
+def test_admin_can_queue_manual_rbd_backup(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/run-now", json={"pool": "vms", "image": "disk1"})
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_backup_run"
+        assert action.status == ActionStatus.APPROVED.value
+        assert json.loads(action.action_params) == {"pool": "vms", "image": "disk1"}
+        audit_entry = session.query(AuditEntry).filter_by(action_id=action.id).one()
+        assert audit_entry.event_type == "backup_manual_requested"
+        assert audit_entry.actor == "admin"
+
+
+def test_admin_can_queue_manual_metadata_backup(dashboard_client, monkeypatch):
+    monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/metadata/run-now", json={})
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "backup_metadata_run"
+        assert action.status == ActionStatus.APPROVED.value
+
+
+def test_backup_operations_reject_non_admin(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(backups_route.auth, "is_admin_user", lambda _user: False)
+
+    assert dashboard_client.post("/backups/run-now", json={}).status_code == 403
+    assert dashboard_client.post("/backups/metadata/run-now", json={}).status_code == 403
+    assert dashboard_client.post("/backups/restore/propose", json={}).status_code == 403

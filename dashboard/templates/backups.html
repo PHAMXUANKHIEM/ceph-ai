@@ -53,7 +53,7 @@
       <div class="card-body">
         <p><strong>Kế hoạch:</strong></p>
         <pre class="upgrade-plan-text">{{ pending_restore_action.rationale }}</pre>
-        {% if pending_restore_action.status == "PENDING_APPROVAL" %}
+        {% if pending_restore_action.status == "PENDING_APPROVAL" and is_admin %}
         <div class="pending-action-buttons">
           <form method="post" action="/actions/{{ pending_restore_action.id }}/approve" class="inline-form">
             <button type="submit" class="btn btn-approve">Duyệt — bắt đầu khôi phục</button>
@@ -62,8 +62,10 @@
             <button type="submit" class="btn btn-reject">Từ chối</button>
           </form>
         </div>
-        {% else %}
+        {% elif pending_restore_action.status != "PENDING_APPROVAL" %}
         <p class="hint">Xem tiến độ ở mục "Đang chạy" bên dưới.</p>
+        {% else %}
+        <p class="hint">Đề xuất đang chờ tài khoản admin duyệt.</p>
         {% endif %}
       </div>
     </section>
@@ -88,7 +90,10 @@
     </section>
 
     <section class="card">
-      <div class="card-header"><h2>Hàng đợi</h2></div>
+      <div class="card-header">
+        <h2>Hàng đợi</h2>
+        {% if is_admin %}<button type="button" class="btn btn-sm" id="btn-backup-metadata-now">Backup metadata ngay</button>{% endif %}
+      </div>
       <div class="card-body">
         {% if queue %}
         <div class="table-wrap">
@@ -101,7 +106,10 @@
                 <td>{% if item.last_run_at %}{{ item.last_run_at|vntime }}{% else %}<span class="hint">Chưa từng chạy</span>{% endif %}</td>
                 <td>{{ item.last_status or "—" }}</td>
                 <td>
-                  <button type="button" class="btn btn-sm btn-restore-image" data-pool="{{ item.pool }}" data-image="{{ item.image }}" {% if pending_restore_action %}disabled{% endif %}>Khôi phục</button>
+                  {% if is_admin %}
+                  <button type="button" class="btn btn-sm btn-backup-now" data-pool="{{ item.pool }}" data-image="{{ item.image }}">Backup ngay</button>
+                  <button type="button" class="btn btn-sm btn-restore-image" data-pool="{{ item.pool }}" data-image="{{ item.image }}" {% if pending_restore_action or not item.last_run_at %}disabled{% endif %}>Khôi phục</button>
+                  {% endif %}
                 </td>
               </tr>
               {% endfor %}
