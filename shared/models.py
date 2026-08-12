@@ -752,95 +752,6 @@ class BackupDigestLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
-class TestRunnerConfig(Base):
-    """Epic 10 (Ceph Upgrade Test Runner) Story 10.2 -- the config the
-    future 63-test-case engine (Stories 10.3-10.5) reads from: RGW test
-    endpoints, which test groups (A/B/C/D)/priorities (P1/P2/P3) to run,
-    and which of the 7 fixed baseline files have been uploaded.
-
-    Deliberately a SINGLETON row (this app manages one cluster at a time,
-    same posture config/settings.py already established for cluster/SSH
-    config -- see shared/cluster_nodes.py::configured_nodes()) -- NOT one
-    row per test run. Story 10.8 (SQLite persistence/auto-save) is the one
-    that introduces per-run history/results, not this story.
-
-    Node list, roles, and SSH user/key are deliberately NOT duplicated
-    here -- they live in config/settings.py and are read live via
-    configured_nodes(); this table only holds what's genuinely new for
-    Epic 10 and has no existing home.
-    """
-
-    __tablename__ = "test_runner_configs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    rgw_endpoint_zone_a: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    rgw_endpoint_zone_b: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    rgw_endpoint_vip: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # JSON-encoded list of strings, e.g. '["A", "B", "C", "D"]' -- same
-    # JSON-as-Text pattern as Action.execution_progress elsewhere in this
-    # module (project convention for flexible structured data without a
-    # dedicated child table). Nullable/absent means "nothing selected yet",
-    # distinct from an empty list (explicitly unchecked-all-and-saved).
-    test_groups: Mapped[str | None] = mapped_column(Text, nullable=True)
-    priorities: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # JSON-encoded dict mapping each of the 7 fixed baseline keys (see
-    # dashboard/routes/test_runner.py::BASELINE_FILE_KEYS) to the relative
-    # path it was stored at under test_runner_baselines/ (or absent/None
-    # if never uploaded) -- only the path is stored here, never file bytes.
-    baseline_files: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Story 10.3 addition: SSH target for Group A's client-side I/O test
-    # cases (TC-RUN-001/010, docs/ceph-upgrade-test-cases.md) -- a machine
-    # with an already-mapped RBD device / mounted CephFS / configured aws
-    # cli, distinct from the MON/MGR/OSD/RGW cluster nodes configured_nodes()
-    # returns. Not anticipated by Story 10.2's frozen spec (which only
-    # covers cluster-node config); added here since Group A's test cases are
-    # the first to actually need it, keeping the same "extend the one
-    # singleton config row" posture rather than a new table.
-    client_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-
-class TestRunResult(Base):
-    """Epic 10 Story 10.8 -- durable projection of
-    `dashboard/routes/test_runner.py`'s in-memory `_run_states[test_id]`,
-    auto-saved on every write (run completion, poll reaching a terminal
-    status, manual override, cancel) so a Dashboard restart mid-campaign
-    doesn't wipe results back to a blank slate. One row per `test_id`
-    (upserted, latest-known-only -- same posture as
-    shared/models.py::CrushOsdDistribution, not an append-only history).
-
-    Deliberately NEVER stores a background TestCase's opaque
-    `background_state` -- for most background tests that dict's own
-    "handle" key wraps a live `BackgroundCommandHandle`
-    (worker/executor/ssh_executor.py), itself wrapping an open
-    paramiko.Channel/SSH socket. There is no operation anywhere in this
-    codebase that can serialize a live network connection and reconstruct
-    it after a restart, so a test that was RUNNING at the exact moment the
-    process died is NOT resumable -- dashboard/routes/test_runner.py's
-    `_load_persisted_run_states()` normalizes any such row to ERROR with an
-    explanatory note on load rather than pretending it can still be polled.
-    This is a deliberate, disclosed scope boundary, not an oversight -- see
-    that story's own Dev Notes for the full reasoning.
-    """
-
-    __tablename__ = "test_run_results"
-
-    test_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
-    criteria_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    override_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-
 class NodeUpgradeGateState(str, enum.Enum):
     PREPARING = "PREPARING"
     PREPARED = "PREPARED"
@@ -887,7 +798,7 @@ class NodeUpgradeGate(Base):
     target_version: Mapped[str] = mapped_column(String(32), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default=NodeUpgradeGateState.PREPARING.value)
     # JSON-encoded list, e.g. '["mon", "osd"]' -- same JSON-as-Text
-    # convention as Action.execution_progress/TestRunnerConfig.test_groups.
+    # convention as Action.execution_progress.
     # Populated by node_os_gate_prepare (Story 11.3) from the node's actual
     # roles at Prepare time, so Recovery (Story 11.4) knows what to restore.
     roles_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)

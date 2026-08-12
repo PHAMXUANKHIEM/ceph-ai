@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Redeploys this exact checkout: pulls latest main, installs any new
 # dependencies, applies pending DB migrations, and restarts the four
-# long-running services (watcher, worker, dashboard, test-runner-frontend)
+# long-running services (watcher, worker, dashboard)
 # the same way they've always been run here — plain `nohup ... & disown`
 # background processes, no systemd unit exists on this host.
 #
@@ -46,7 +46,6 @@ git reset --hard origin/main
 echo "==> Installing dependencies"
 source .venv/bin/activate
 pip install -e . --quiet
-npm --prefix ceph-upgrade-test-runner-frontend install --silent
 npm --prefix ceph-health-dashboard install --silent
 npm --prefix ceph-health-dashboard run build --silent
 
@@ -70,7 +69,6 @@ echo "==> Stopping existing services (if running)"
 pkill -f "$VENV_PYTHON -m watcher.main" || true
 pkill -f "$VENV_PYTHON -m worker.main" || true
 pkill -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
-pkill -f "$REPO_DIR/ceph-upgrade-test-runner-frontend/node_modules/.bin/vite" || true
 sleep 2
 
 echo "==> Starting services"
@@ -79,7 +77,7 @@ echo "==> Starting services"
 # address) — e.g. `echo 'DASHBOARD_HOST=103.69.193.220' >
 # scripts/deploy/deploy.local.env` once, on this server only. When running
 # a 2nd cluster's checkout on the SAME server, its own deploy.local.env
-# MUST set a different DASHBOARD_PORT (and TEST_RUNNER_PORT, see below) —
+# MUST set a different DASHBOARD_PORT —
 # otherwise the two instances fight over the same port.
 if [ -f "$REPO_DIR/scripts/deploy/deploy.local.env" ]; then
   # shellcheck disable=SC1091
@@ -87,7 +85,6 @@ if [ -f "$REPO_DIR/scripts/deploy/deploy.local.env" ]; then
 fi
 DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
-TEST_RUNNER_PORT="${TEST_RUNNER_PORT:-5173}"
 
 nohup "$VENV_PYTHON" -m watcher.main >> "/var/log/${LOG_TAG}-watcher.log" 2>&1 &
 disown
@@ -96,24 +93,6 @@ disown
 nohup "$VENV_PYTHON" -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
   >> "/var/log/${LOG_TAG}-dashboard.log" 2>&1 &
 disown
-
-# Test Runner UI (ceph-upgrade-test-runner-frontend) is a Vite dev server
-# whose /api proxy target is DASHBOARD_HOST/DASHBOARD_PORT (see
-# ceph-upgrade-test-runner-frontend/vite.config.js) -- it MUST get the same
-# values just used for uvicorn above, exported via env rather than hardcoded
-# `localhost`. When DASHBOARD_HOST is overridden to a specific bind address
-# (deploy.local.env, e.g. 103.69.193.220) the dashboard isn't reachable on
-# localhost at all, and a mismatched proxy target here silently breaks every
-# /api call with ECONNREFUSED -- surfaced in the UI as a misleading "Không
-# có test case nào" empty state that looks like a Group/Priority filter bug.
-export DASHBOARD_HOST
-export DASHBOARD_PORT
-(
-  cd ceph-upgrade-test-runner-frontend
-  nohup ./node_modules/.bin/vite --host 0.0.0.0 --port "$TEST_RUNNER_PORT" \
-    >> "/var/log/${LOG_TAG}-test-runner-frontend.log" 2>&1 &
-  disown
-)
 
 sleep 3
 
@@ -149,4 +128,4 @@ fi
 echo "==> Deploy complete: $(date -u +%FT%TZ)"
 echo "==> Dashboard route check: /pgs HTTP $DASHBOARD_ROUTE_STATUS"
 echo "==> Running processes:"
-pgrep -fa "$VENV_PYTHON -m (watcher|worker)\.main|$VENV_PYTHON -m uvicorn dashboard.app|$REPO_DIR/ceph-upgrade-test-runner-frontend/node_modules/.bin/vite" || echo "WARNING: no matching processes found after restart"
+pgrep -fa "$VENV_PYTHON -m (watcher|worker)\.main|$VENV_PYTHON -m uvicorn dashboard.app" || echo "WARNING: no matching processes found after restart"

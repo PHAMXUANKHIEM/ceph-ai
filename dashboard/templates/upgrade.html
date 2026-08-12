@@ -130,14 +130,6 @@
             {% elif pending_action.status == "APPROVED" %}Đã duyệt — Worker sẽ gửi lệnh trong giây lát
             {% else %}{{ pending_action.status }}{% endif %}
           </p>
-          {% if run_test_suite_requested %}
-          <div class="test-suite-blurb hint">
-            <p><strong>Bộ test sau nâng cấp (Epic 10):</strong> đã chọn chạy bộ test kiểm thử sau
-              khi nâng cấp xong. Hệ thống này KHÔNG tự động chạy test nào — sau khi nâng cấp hoàn
-              tất, mở ứng dụng Test Runner riêng để cấu hình và chạy các test case:
-              <a href="{{ test_runner_frontend_url }}" target="_blank" rel="noopener noreferrer">{{ test_runner_frontend_url }}</a></p>
-          </div>
-          {% endif %}
           {% if package_upgrade_progress %}
           {# Story 7.2 only phased the 2 package-based action_ids — cephadm's
              own progress rendering (action_id == "upgrade_ceph_cluster")
@@ -293,10 +285,6 @@
                 Phiên bản đích
                 <input type="text" name="target_version" class="version-picker-input" value="{{ suggested_target or '' }}" placeholder="vd 19.2.0" pattern="\d+\.\d+\.\d+" required>
               </label>
-              <label class="checkbox-label">
-                <input type="checkbox" name="run_test_suite" value="true">
-                Chạy bộ test sau nâng cấp (Epic 10 — chỉ hiển thị liên kết, không tự chạy)
-              </label>
               <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
             </form>
           </div>
@@ -311,10 +299,6 @@
               <label>
                 Đường dẫn thư mục chứa gói (trên từng node)
                 <input type="text" name="package_dir" placeholder="/opt/ceph-packages" required>
-              </label>
-              <label class="checkbox-label">
-                <input type="checkbox" name="run_test_suite" value="true">
-                Chạy bộ test sau nâng cấp (Epic 10 — chỉ hiển thị liên kết, không tự chạy)
               </label>
               <button type="submit" class="btn btn-primary">Xem quy trình nâng cấp &amp; Đề xuất</button>
             </form>
@@ -332,14 +316,6 @@
         <p class="hint">
           Ghi lại toàn bộ các bước và lỗi (nếu có) của lần nâng cấp gần nhất, dạng Markdown.
         </p>
-        {% if run_test_suite_requested %}
-        <div class="test-suite-blurb hint">
-          <p><strong>Bộ test sau nâng cấp (Epic 10):</strong> đã chọn chạy bộ test kiểm thử sau
-            khi nâng cấp xong. Hệ thống này KHÔNG tự động chạy test nào — mở ứng dụng Test Runner
-            riêng để cấu hình và chạy các test case:
-            <a href="{{ test_runner_frontend_url }}" target="_blank" rel="noopener noreferrer">{{ test_runner_frontend_url }}</a></p>
-        </div>
-        {% endif %}
         <pre class="upgrade-plan-text">{{ upgrade_log_markdown }}</pre>
         <div class="pending-action-buttons">
           <a href="/upgrade/log.md?cluster={{ selected_cluster.id }}" class="btn btn-sm" download>Tải nhật ký (.md)</a>

@@ -141,19 +141,6 @@ class Settings(BaseSettings):
     # have an existing value for), so it ships with a sensible default.
     ceph_patch_node_staging_dir: str = "/opt/ceph-aiops-patch-staging"
 
-    # Code review fix (2026-08-04, Story 7.2): where the operator has
-    # actually deployed the separate Epic 10 React app
-    # (ceph-upgrade-test-runner-frontend/) — dashboard/routes/upgrade.py
-    # only ever links out to it (never makes an HTTP call to it itself, see
-    # that module's own TEST_RUNNER_FRONTEND_URL comment), but hardcoding
-    # "http://localhost:5173" there was broken by construction for the
-    # normal deployment topology, where the operator's browser isn't on the
-    # same machine as the Dashboard backend. Deliberately blank — same
-    # "app falls back to its own dev-server default when unset" posture as
-    # leaving this unset entirely; set via .env/Settings page once deployed
-    # somewhere real.
-    test_runner_frontend_url: str = ""
-
     # Worker (Story 2.1): total number of processing attempts (including the
     # first) before an Incident is marked FAILED and its message dead-lettered
     # — NOT the count of retries after the first attempt.

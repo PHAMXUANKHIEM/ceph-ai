@@ -88,7 +88,6 @@ trong kiến trúc — field `cluster_name` (trang **Alert Telegram**, xem
 | Database riêng | `DATABASE_URL` trỏ file SQLite khác, ví dụ `sqlite:///./ceph_aiops_clusterb.db` | Luôn bắt buộc |
 | RabbitMQ namespace riêng | `RABBITMQ_URL` dùng **vhost khác** cho mỗi cụm, ví dụ `amqp://guest:guest@localhost/clusterb` — hàng đợi `incidents` (`shared/mq.py::QUEUE_NAME`) là tên cố định, dùng chung 1 vhost sẽ khiến 2 instance tranh nhau đọc cùng 1 hàng đợi | Bắt buộc nếu chạy chung 1 RabbitMQ broker |
 | Port Dashboard riêng | `scripts/deploy/deploy.local.env` (server-local, không commit) — set `DASHBOARD_PORT=8001` cho instance thứ 2 | Bắt buộc nếu chạy chung 1 server |
-| Port Test Runner UI riêng | Cùng file trên — set `TEST_RUNNER_PORT=5174` | Bắt buộc nếu chạy chung 1 server |
 | Tên cụm hiển thị trên Telegram | Trang **Alert Telegram** → "Tên cụm" (hoặc `CLUSTER_NAME` trong `.env`) | Khuyến nghị nếu nhiều cụm gửi chung 1 chat |
 
 Nếu mỗi cụm chạy trên **server riêng** (mô hình phổ biến nhất — mỗi cụm
@@ -112,7 +111,7 @@ deployment đang chạy. Một checkout thứ 2 đặt tên `ceph-aiops-clusterb
 tự động có log riêng (`ceph-aiops-clusterb-watcher.log`...) và không bao
 giờ kill nhầm tiến trình của checkout đầu, không cần cấu hình gì thêm.
 
-Vẫn cần tự đặt `DASHBOARD_PORT`/`TEST_RUNNER_PORT` khác nhau qua
+Vẫn cần tự đặt `DASHBOARD_PORT` khác nhau qua
 `deploy.local.env` của từng checkout — script không tự đoán được port
 trống.
 

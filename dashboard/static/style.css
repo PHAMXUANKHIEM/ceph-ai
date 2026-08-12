@@ -125,11 +125,6 @@ code {
    separate heading per phase. */
 .phase-tag { color: var(--text-muted); font-size: 0.85em; }
 
-/* Story 7.2: "run test suite after upgrade" blurb + external link to the
-   separate Epic 10 React app — a plain highlighted note, not a full card,
-   since it's just a pointer, nothing this app itself executes. */
-.test-suite-blurb { border-left: 3px solid var(--accent); padding: var(--space-2) var(--space-3); margin: var(--space-2) 0; background: var(--accent-bg); }
-
 /* ===== Mini cluster status bar (very top strip) ===== */
 .mon-strip {
   background: var(--bg-surface-2);

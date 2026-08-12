@@ -33,7 +33,6 @@ from dashboard.routes import (
     restore_cluster,
     settings as settings_routes,
     telegram_alerts,
-    test_runner,
     upgrade,
     users,
     volumes,
@@ -75,12 +74,6 @@ async def _lifespan(_app: FastAPI):
     # The .env-backed Settings form is the source of truth for this row.
     with db.SessionLocal() as session:
         sync_default_cluster_from_settings(session)
-    # Epic 10 Story 10.8 — rebuilds dashboard/routes/test_runner.py's
-    # in-memory `_run_states` from the durable `TestRunResult` table so a
-    # Dashboard restart doesn't wipe upgrade-test-runner results back to a
-    # blank slate. Idempotent, same TestClient-re-entry posture as the two
-    # calls above (a fresh load just overwrites _run_states again).
-    test_runner._load_persisted_run_states()
     try:
         yield
     finally:
@@ -113,7 +106,6 @@ def create_app() -> FastAPI:
     application.include_router(restore_cluster.router)
     application.include_router(bucket_access_log.router)
     application.include_router(telegram_alerts.router)
-    application.include_router(test_runner.router)
     application.include_router(crush_map.router)
     application.include_router(clusters_routes.router)
     application.include_router(ws_router)

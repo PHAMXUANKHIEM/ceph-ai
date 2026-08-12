@@ -382,7 +382,7 @@ def _purge_cluster_data(session, cluster_id: str) -> dict[str, int]:
     (Incident, WatcherHeartbeat, BackupJob — see shared/models.py; every
     OTHER table in this app is still default-cluster-only, per Cluster's
     own docstring: patch/upgrade/RestoreDrill/digest/CRUSH-monitor/
-    volume-monitor/node-diagnostics/test-runner never run for an
+    volume-monitor/node-diagnostics never run for an
     additional cluster). So this is NOT a generic "cascade delete
     anything that might reference this row" helper — it is exactly these
     3 tables' rows, deleted in FK-dependency order (children before

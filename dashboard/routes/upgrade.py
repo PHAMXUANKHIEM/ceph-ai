@@ -140,23 +140,6 @@ _PACKAGE_DIR_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 
-# Story 7.2 (2026-08-04): "chạy bộ test sau nâng cấp" checkbox — package-
-# based propose forms only (see propose_package_download_upgrade/
-# propose_package_local_upgrade below), never the cephadm one. Purely a
-# flag + a link out to the SEPARATE Epic 10 React app
-# (ceph-aiops/ceph-upgrade-test-runner-frontend/, not yet wired to any real
-# backend test-execution call — Stories 10.3-10.7) — this app never makes
-# an HTTP call to it. Dev server URL per that app's own vite.config.js
-# (`npm run dev`, port 5173) — a DEFAULT/FALLBACK only, used when
-# settings.test_runner_frontend_url is unset (code review fix, 2026-08-04:
-# this used to be hardcoded with no way to override it, which is broken by
-# construction whenever the operator's browser isn't on the same machine as
-# this Dashboard backend). An operator running a real build sets
-# settings.test_runner_frontend_url (.env/Settings page) to wherever
-# they've actually deployed it.
-TEST_RUNNER_FRONTEND_URL = "http://localhost:5173"
-RUN_TEST_SUITE_PARAM_KEY = "run_test_suite"
-
 # Story 7.2: `Action.execution_progress` entries gained a `phase` key
 # (install/mon/mgr/osd/mds_rgw — see worker/llm/router_client.py's
 # _UPGRADE_PHASE_* constants). Entries written before this story shipped
@@ -881,13 +864,6 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
             "last_action": last_action,
             "last_action_target_version": last_action_params.get("target_version"),
             "last_action_package_dir": last_action_params.get("package_dir"),
-            # Story 7.2: only ever True for the two package-based action_ids
-            # (the cephadm propose form has no checkbox at all — see
-            # RUN_TEST_SUITE_PARAM_KEY's own comment) — reused for both the
-            # still-pending screen (pending_action IS last_action while
-            # in-flight) and the resolved-result screen.
-            "run_test_suite_requested": bool(last_action_params.get(RUN_TEST_SUITE_PARAM_KEY)),
-            "test_runner_frontend_url": settings.test_runner_frontend_url or TEST_RUNNER_FRONTEND_URL,
             "upgrade_log_markdown": upgrade_log_markdown,
             "package_nodes": package_nodes,
             "procedure_document": procedure_document,
@@ -1464,7 +1440,6 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
 async def propose_package_download_upgrade(
     request: Request,
     target_version: str = Form(...),
-    run_test_suite: bool = Form(False),
     user: str = Depends(require_login),
 ):
     """ceph-deploy path, option 1 — download the target release from
@@ -1474,11 +1449,6 @@ async def propose_package_download_upgrade(
     `_upgrade_ceph_cluster_package_download_command` for the actual
     per-host command, and this module's `_PACKAGE_METHOD_SAFETY_NOTE` for
     why this has no cephadm-style orchestrator gating between nodes.
-
-    Story 7.2: `run_test_suite` is UI/flag-only (see RUN_TEST_SUITE_PARAM_KEY's
-    own comment) — stored on the Action only when checked (an unchecked box
-    omits the key entirely, keeping action_params identical to before this
-    checkbox existed), never wired to an actual test-execution call here.
 
     Story 11.1 (OS Upgrade Gate, AD-20): if one or more target nodes fail
     the OS-compatibility preflight, this now renders the dedicated
@@ -1532,9 +1502,6 @@ async def propose_package_download_upgrade(
         preview_command = await asyncio.to_thread(
             _safe_command_preview, PACKAGE_DOWNLOAD_ACTION_ID, target_nodes[0], action_params
         )
-        if run_test_suite:
-            action_params[RUN_TEST_SUITE_PARAM_KEY] = True
-
         incident = Incident(
             cluster_id=None if cluster.is_default else cluster.id,
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
@@ -1577,14 +1544,12 @@ async def propose_package_download_upgrade(
 async def propose_package_local_upgrade(
     request: Request,
     package_dir: str = Form(...),
-    run_test_suite: bool = Form(False),
     user: str = Depends(require_login),
 ):
     """ceph-deploy path, option 2 — install from a directory of packages
     already staged on each node (no download, no scp — the operator is
     responsible for having put the right packages at the SAME path on
-    every configured node beforehand). See propose_package_download_upgrade's
-    own docstring for `run_test_suite`'s Story 7.2 semantics."""
+    every configured node beforehand)."""
     package_dir = package_dir.strip()
     cluster = _selected_cluster(request)
     if not _PACKAGE_DIR_RE.match(package_dir):
@@ -1611,9 +1576,6 @@ async def propose_package_local_upgrade(
         preview_command = await asyncio.to_thread(
             _safe_command_preview, PACKAGE_LOCAL_ACTION_ID, target_nodes[0], action_params
         )
-        if run_test_suite:
-            action_params[RUN_TEST_SUITE_PARAM_KEY] = True
-
         incident = Incident(
             cluster_id=None if cluster.is_default else cluster.id,
             ceph_code=CLUSTER_UPGRADE_CEPH_CODE,
