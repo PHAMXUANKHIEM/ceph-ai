@@ -223,6 +223,23 @@ def test_pool_discovery_uses_selected_non_default_cluster_credentials(monkeypatc
     )
 
 
+def test_volumes_page_shows_cluster_switcher_for_multiple_clusters(dashboard_client, monkeypatch):
+    default = type("ClusterConfig", (), {"id": "cluster-a", "name": "cluster-a", "is_default": True})()
+    selected = type("ClusterConfig", (), {"id": "cluster-b", "name": "cluster-b", "is_default": False})()
+    monkeypatch.setattr(volumes_route, "cluster_selection", lambda request: ([default, selected], selected))
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["rbd-b"])
+    monkeypatch.setattr(volumes_route, "_cluster_for_request", lambda request: selected)
+    monkeypatch.setattr(volumes_route, "cluster_connection", lambda cluster: ([], "", "", "", "none"))
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash_with", lambda pool, *args: [])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volumes?pool=rbd-b")
+
+    assert response.status_code == 200
+    assert 'aria-label="Chọn cluster"' in response.text
+    assert '<option value="cluster-b" selected>cluster-b</option>' in response.text
+
+
 def test_iostat_api_returns_samples_for_configured_pool(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _login(dashboard_client)

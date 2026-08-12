@@ -9,7 +9,7 @@ from sqlalchemy import or_
 
 from config.settings import settings
 from dashboard import volume_perf_analysis
-from dashboard.cluster_scope import cluster_connection, selected_cluster
+from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
@@ -179,6 +179,8 @@ def _volumes_page_context(
     *,
     purge_error: str | None = None,
     purge_success: str | None = None,
+    clusters: list | None = None,
+    selected_cluster=None,
 ) -> dict:
     """Shared by the GET page load and the "Xoá tất cả trash" POST below
     (which re-renders this same page directly rather than redirecting —
@@ -215,11 +217,19 @@ def _volumes_page_context(
         "perf_sweep_action": perf_sweep_action,
         "purge_error": purge_error,
         "purge_success": purge_success,
+        "clusters": clusters or [],
+        "selected_cluster": selected_cluster,
+        "create_success": (
+            "Yêu cầu tạo pool đã được gửi tới Worker."
+            if request.query_params.get("create_success") == "1"
+            else None
+        ),
     }
 
 
 @router.get("/volumes", response_class=HTMLResponse)
 async def volumes_page(request: Request, user: str = Depends(require_login)):
+    clusters, cluster = cluster_selection(request)
     pools = await asyncio.to_thread(_rbd_pools_for_request, request)
     requested_pool = request.query_params.get("pool")
     if requested_pool and requested_pool not in pools:
@@ -228,7 +238,9 @@ async def volumes_page(request: Request, user: str = Depends(require_login)):
     # dashboard/routes/nodes.py's selected_host (landing on /volumes with
     # no ?pool= shows the empty "chọn một pool" state).
     return templates.TemplateResponse(
-        request, "volumes.html", _volumes_page_context(request, user, requested_pool, pools)
+        request, "volumes.html", _volumes_page_context(
+            request, user, requested_pool, pools, clusters=clusters, selected_cluster=cluster
+        )
     )
 
 

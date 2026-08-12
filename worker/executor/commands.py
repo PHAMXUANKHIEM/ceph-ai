@@ -185,7 +185,16 @@ def _require_int(params: dict, key: str, bounds: tuple[int, int]) -> int:
 def _create_pool_command(params: dict) -> str:
     pool_name = _require_pool_name(params)
     pg_num = _require_int(params, "pg_num", _PG_NUM_RANGE)
-    return f"ceph osd pool create {shlex.quote(pool_name)} {pg_num}"
+    command = f"ceph osd pool create {shlex.quote(pool_name)} {pg_num}"
+    app_name = params.get("app_name")
+    if app_name is not None:
+        if app_name not in {"rbd", "cephfs", "rgw"}:
+            raise ExecutorError(f"invalid app_name: {app_name!r}")
+        command += (
+            " && ceph osd pool application enable "
+            f"{shlex.quote(pool_name)} {shlex.quote(app_name)}"
+        )
+    return command
 
 
 def _delete_pool_command(params: dict) -> str:

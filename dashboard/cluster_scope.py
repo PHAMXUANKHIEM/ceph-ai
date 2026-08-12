@@ -17,6 +17,16 @@ def selected_cluster(request: Request) -> Cluster:
     return cluster
 
 
+def cluster_selection(request: Request) -> tuple[list[Cluster], Cluster]:
+    """Return switcher choices and persist the selected cluster."""
+    clusters, cluster = _resolve_selected_cluster(
+        request.query_params.get("cluster", "").strip(),
+        request.session.get("selected_cluster_id", ""),
+    )
+    request.session["selected_cluster_id"] = cluster.id
+    return clusters, cluster
+
+
 def cluster_connection(cluster: Cluster) -> tuple[list[str], str, str, str, str]:
     """Return arguments accepted by ``run_ceph_json_command_with``."""
     nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]

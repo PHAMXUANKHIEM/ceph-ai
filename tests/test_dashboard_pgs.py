@@ -1,7 +1,7 @@
 import dashboard.routes.pgs as pgs_route
 from config.settings import settings
 from shared import db as db_module
-from shared.models import Cluster
+from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident
 from watcher.ceph_client import CephQueryError
 
 
@@ -110,7 +110,69 @@ def test_pgs_page_uses_selected_additional_cluster(dashboard_client, monkeypatch
 
     assert response.status_code == 200
     assert "9.a" in response.text
+    assert 'aria-label="Chọn cluster"' in response.text
+    assert "cluster-b" in response.text
     assert calls[0] == (
         ["10.0.0.21"], "mon-b", "ceph-b", "/keys/b", "cephadm",
         "ceph osd pool ls detail",
     )
+
+
+def test_create_pool_targets_selected_additional_cluster(dashboard_client):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-create", ceph_mon_nodes="10.0.0.31,10.0.0.32",
+            ceph_container_name="", ssh_user="ceph", ssh_key_path="/keys/create",
+            ceph_exec_mode="cephadm", is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+
+    _login(dashboard_client)
+    dashboard_client.get(f"/?cluster={cluster_id}")
+    response = dashboard_client.post(
+        "/pgs/pools/create",
+        data={"cluster_id": cluster_id, "pool_name": "rbd-new", "pg_num": "64"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert f"cluster={cluster_id}" in response.headers["location"]
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(cluster_id=cluster_id).one()
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        audit_row = session.query(AuditEntry).filter_by(action_id=action.id).one()
+        assert action.action_id == "create_pool"
+        assert action.status == ActionStatus.APPROVED.value
+        assert action.proposed_command == (
+            "ceph osd pool create rbd-new 64 && "
+            "ceph osd pool application enable rbd-new rbd"
+        )
+        assert action.target_nodes == '["10.0.0.31"]'
+        assert audit_row.event_type == "pool_create_requested"
+
+
+def test_create_pool_rejects_cluster_different_from_session_selection(dashboard_client):
+    with db_module.SessionLocal() as session:
+        clusters = session.query(Cluster).all()
+        selected = clusters[0]
+        other = Cluster(
+            name="other", ceph_mon_nodes="10.0.0.41", ceph_container_name="",
+            ssh_user="ceph", ssh_key_path="/keys/other", ceph_exec_mode="cephadm",
+            is_default=False, is_active=True,
+        )
+        session.add(other)
+        session.commit()
+        selected_id, other_id = selected.id, other.id
+
+    _login(dashboard_client)
+    dashboard_client.get(f"/?cluster={selected_id}")
+    response = dashboard_client.post(
+        "/pgs/pools/create",
+        data={"cluster_id": other_id, "pool_name": "wrong-cluster", "pg_num": "32"},
+    )
+
+    assert response.status_code == 400
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(action_id="create_pool").count() == 0

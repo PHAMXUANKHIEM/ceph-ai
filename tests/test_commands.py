@@ -513,6 +513,16 @@ def test_get_command_create_pool_builds_expected_command():
     assert command == "ceph osd pool create rbd_data 128"
 
 
+def test_get_command_create_pool_can_enable_application_atomically():
+    command = get_command(
+        "create_pool", params={"pool_name": "rbd_data", "pg_num": 128, "app_name": "rbd"}
+    )
+    assert command == (
+        "ceph osd pool create rbd_data 128 && "
+        "ceph osd pool application enable rbd_data rbd"
+    )
+
+
 def test_get_command_create_pool_raises_without_pg_num():
     with pytest.raises(ExecutorError, match="pg_num"):
         get_command("create_pool", params={"pool_name": "rbd_data"})

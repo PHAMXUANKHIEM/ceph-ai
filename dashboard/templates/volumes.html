@@ -33,6 +33,15 @@
         {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
         {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
       </nav>
+      {% if clusters|length > 1 %}
+      <form method="get" action="/volumes" class="topbar-cluster-switcher">
+        <select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">
+          {% for c in clusters %}
+          <option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
         <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
@@ -69,6 +78,23 @@
     </nav>
 
     <div class="tabbed-content">
+    {% if is_admin %}
+    <section class="card">
+      <div class="card-header"><div class="metrics-panel-title">Tạo pool trên {{ selected_cluster.name }}</div></div>
+      <div class="card-body">
+        {% if create_success %}<p class="success">{{ create_success }}</p>{% endif %}
+        <form method="post" action="/pgs/pools/create" class="form-grid">
+          <input type="hidden" name="cluster_id" value="{{ selected_cluster.id }}">
+          <input type="hidden" name="return_to" value="volumes">
+          <label>Tên pool<input type="text" name="pool_name" required maxlength="128" placeholder="vd: rbd-data" pattern="[A-Za-z0-9_.-]+"></label>
+          <label>Số Placement Groups<input type="number" name="pg_num" value="32" min="1" max="32768" required></label>
+          <label>Application<select name="app_name"><option value="rbd" selected>RBD</option><option value="cephfs">CephFS</option><option value="rgw">RGW</option></select></label>
+          <div><button type="submit" class="btn btn-primary">Tạo pool</button></div>
+        </form>
+        <p class="hint">Worker tạo pool và bật application trong cùng một yêu cầu trên đúng cụm đang chọn.</p>
+      </div>
+    </section>
+    {% endif %}
     {% if selected_pool %}
     <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
       <div class="card-header">

@@ -43,6 +43,7 @@ EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS = (
 # the audit trail can tell "this Action originated from a chat request" from
 # "this Action originated from a real detected Incident".
 EVENT_CHAT_ACTION_REQUESTED = "chat_action_requested"
+EVENT_POOL_CREATE_REQUESTED = "pool_create_requested"
 
 # dashboard/routes/upgrade.py: an in-flight upgrade's pause/resume are
 # operator-triggered commands run directly (not through the Action/approval
