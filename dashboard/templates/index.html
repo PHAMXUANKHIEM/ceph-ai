@@ -282,19 +282,25 @@
 
     <div class="chat-panel-body" id="chat-panel-body">
       <div class="chat-history-list-view" id="chat-history-list-view" hidden>
+        <div class="chat-view-header">
+          <span class="chat-view-icon" aria-hidden="true">↶</span>
+          <div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3><p>Xem và quản lý các phiên trò chuyện gần đây.</p></div>
+        </div>
         <div class="chat-history-list" id="chat-history-list"></div>
       </div>
 
       <div class="chat-settings-view" id="chat-settings-view" hidden>
         <form class="chat-settings-form" id="chat-settings-form">
-          <div>
-            <h3>Cấu hình AI</h3>
-            <p>Đặt tên riêng cho người yêu AI của bạn.</p>
+          <div class="chat-view-header">
+            <span class="chat-view-icon" aria-hidden="true">AI</span>
+            <div><span class="chat-view-eyebrow">Chat / Cài đặt</span><h3>Cấu hình AI</h3><p>Cá nhân hoá cách trợ lý xuất hiện trong cuộc trò chuyện.</p></div>
           </div>
-          <label for="chat-ai-name">Tên AI</label>
-          <input id="chat-ai-name" name="ai_name" type="text" maxlength="64" autocomplete="off" required>
-          <p class="chat-settings-hint">AI sẽ xưng “em” và gọi bạn là “mình yêu” trong mọi câu trả lời.</p>
-          <button type="submit" class="btn btn-sm">Lưu cấu hình</button>
+          <div class="chat-settings-card">
+            <label for="chat-ai-name"><span>Tên hiển thị của AI</span><small>Tối đa 64 ký tự</small></label>
+            <input id="chat-ai-name" name="ai_name" type="text" maxlength="64" autocomplete="off" placeholder="Ví dụ: Bé Mây" required>
+            <div class="chat-persona-note"><span aria-hidden="true">♡</span><p class="chat-settings-hint">AI sẽ xưng “em” và gọi bạn là “mình yêu” trong mọi câu trả lời.</p></div>
+          </div>
+          <div class="chat-settings-actions"><button type="submit" class="btn btn-sm">Lưu thay đổi</button></div>
           <p class="chat-settings-success" id="chat-settings-success" hidden></p>
         </form>
       </div>

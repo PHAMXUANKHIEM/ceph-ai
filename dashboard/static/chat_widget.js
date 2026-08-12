@@ -385,6 +385,14 @@
     if (settingsViewEl) settingsViewEl.hidden = mode !== "settings";
     messagesEl.hidden = mode !== "closed";
     formEl.hidden = mode !== "closed";
+    if (historyBtn) {
+      historyBtn.classList.toggle("is-active", mode === "list");
+      historyBtn.setAttribute("aria-pressed", mode === "list" ? "true" : "false");
+    }
+    if (settingsBtn) {
+      settingsBtn.classList.toggle("is-active", mode === "settings");
+      settingsBtn.setAttribute("aria-pressed", mode === "settings" ? "true" : "false");
+    }
   }
 
   function buildHistoryRow(entry) {
@@ -528,6 +536,11 @@
     settingsFormEl.addEventListener("submit", function (event) {
       event.preventDefault();
       clearError();
+      var submitBtn = settingsFormEl.querySelector('button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Đang lưu…";
+      }
       fetch("/api/chat/preferences", {
         method: "PUT",
         credentials: "same-origin",
@@ -552,6 +565,12 @@
         })
         .catch(function (err) {
           if (err.message !== "unauthenticated") showError(err.message);
+        })
+        .finally(function () {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Lưu thay đổi";
+          }
         });
     });
   }
