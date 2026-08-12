@@ -102,6 +102,33 @@ def test_send_incident_alert_swallows_send_failure(monkeypatch):
     telegram_alerts.send_incident_alert("MON_DOWN", "HEALTH_ERR", "mon.a is down")  # must not raise
 
 
+def test_send_ai_incident_alert_sends_diagnosis_and_rationale(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts,
+        "send_telegram_message",
+        lambda token, chat_id, text: calls.append((token, chat_id, text)),
+    )
+
+    telegram_alerts.send_ai_incident_alert(
+        "POOL_TOO_FEW_PGS",
+        "HEALTH_WARN",
+        "Pool đang có số PG thấp.",
+        "Kiểm tra pg_num và tăng dần theo tải.",
+        cluster_name="CS-LAB",
+    )
+
+    assert len(calls) == 1
+    token, chat_id, text = calls[0]
+    assert token == "123:ABC"
+    assert chat_id == "-100999"
+    assert "Cụm: CS-LAB" in text
+    assert "Ý kiến AI: Pool đang có số PG thấp." in text
+    assert "Đề xuất: Kiểm tra pg_num và tăng dần theo tải." in text
+
+
 # --- send_node_alert ---------------------------------------------------------
 
 

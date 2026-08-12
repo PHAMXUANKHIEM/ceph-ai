@@ -152,6 +152,13 @@ def send_ai_incident_alert(
             f"🔧 Đề xuất: {_compact(rationale, _MAX_FOLLOWUP_FIELD_CHARS)}",
         )
     )
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
 
 
 def send_ai_unavailable_alert(
