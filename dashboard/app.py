@@ -26,6 +26,7 @@ from dashboard.routes import (
     incidents,
     maintenance,
     nodes,
+    openstack,
     patch,
     pgs,
     restore_cluster,
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router)
     application.include_router(incidents.router)
     application.include_router(nodes.router)
+    application.include_router(openstack.router)
     application.include_router(settings_routes.router)
     application.include_router(maintenance.router)
     application.include_router(actions.router)

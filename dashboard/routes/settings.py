@@ -44,6 +44,7 @@ from shared.claude_cli import (
     start_claude_login,
 )
 from shared.clusters import sync_default_cluster_from_settings
+from shared.models import Cluster
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -727,6 +728,8 @@ def _settings_context(
     backup_target_error: str | None = None,
     backup_target_success: str | None = None,
     backup_target_values: dict | None = None,
+    openstack_error: str | None = None,
+    openstack_success: str | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -797,7 +800,13 @@ def _settings_context(
         "patch_pipeline_success": patch_pipeline_success,
         "backup_target_error": backup_target_error,
         "backup_target_success": backup_target_success,
+        "openstack_error": openstack_error,
+        "openstack_success": openstack_success,
     }
+    with db.SessionLocal() as session:
+        default_cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        context["openstack_controller_nodes"] = default_cluster.openstack_controller_nodes if default_cluster else ""
+        context["openstack_compute_nodes"] = default_cluster.openstack_compute_nodes if default_cluster else ""
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
     context.update(
@@ -868,6 +877,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "patch-pipeline"
     if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
         return "backup-targets"
+    if any(context.get(k) for k in ("openstack_error", "openstack_success")):
+        return "openstack"
     # Fresh GET /settings, nothing to react to yet — land on the first
     # section this account can actually see.
     return "restart-controls" if is_admin else "router"
@@ -890,6 +901,34 @@ def _normalize_provider(raw: str) -> str:
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_form(request: Request, user: str = Depends(require_login)):
     return templates.TemplateResponse(request, "settings.html", _settings_context(user))
+
+
+@router.post("/settings/openstack", response_class=HTMLResponse)
+async def openstack_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    controller_nodes: str = Form(""),
+    compute_nodes: str = Form(""),
+):
+    _require_admin_privilege(user)
+    controllers = ",".join(_parse_node_list(controller_nodes))
+    computes = ",".join(_parse_node_list(compute_nodes))
+    if not controllers:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, openstack_error="Vui lòng cấu hình ít nhất một OpenStack Controller node."
+        ))
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        if cluster is None:
+            return templates.TemplateResponse(request, "settings.html", _settings_context(
+                user, openstack_error="Chưa có cụm Ceph mặc định để gắn cấu hình OpenStack."
+            ))
+        cluster.openstack_controller_nodes = controllers
+        cluster.openstack_compute_nodes = computes
+        session.commit()
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user, openstack_success="Đã lưu cấu hình OpenStack Controller và Compute nodes."
+    ))
 
 
 @router.get("/settings/codex/status")

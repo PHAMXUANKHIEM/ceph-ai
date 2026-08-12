@@ -27,6 +27,12 @@
             <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
           </div>
         </div>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a>
+          </div>
+        </div>
         <a href="/settings" class="nav-link active">Settings</a>
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
@@ -69,12 +75,13 @@
       </section>
       {% endif %}
       <section class="settings-nav-group" data-settings-group="connections">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cluster'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cluster', 'openstack'] else 'false' }}">
           <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cluster'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cluster', 'openstack'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">Cấu hình API AI</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Kết nối cụm Ceph</button>
+          {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">Cấu hình OpenStack</button>{% endif %}
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="maintenance">
@@ -605,6 +612,26 @@
         </div>
       </div>
     </section>
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="openstack" {% if active_section != 'openstack' %}hidden{% endif %}>
+      <div class="card-header"><h2>Cấu hình OpenStack</h2></div>
+      <div class="card-body">
+        <p class="hint">Khai báo các node OpenStack dùng chung với cụm Ceph mặc định. Nhập IP hoặc hostname, phân cách bằng dấu phẩy.</p>
+        {% if openstack_error %}<p class="error">{{ openstack_error }}</p>{% endif %}
+        {% if openstack_success %}<p class="success">{{ openstack_success }}</p>{% endif %}
+        <form method="post" action="/settings/openstack" class="settings-form">
+          <label>Controller nodes
+            <input type="text" name="controller_nodes" value="{{ openstack_controller_nodes }}" required placeholder="10.0.0.10,10.0.0.11">
+          </label>
+          <label>Compute nodes
+            <input type="text" name="compute_nodes" value="{{ openstack_compute_nodes }}" placeholder="10.0.0.20,10.0.0.21">
+          </label>
+          <button type="submit" class="btn btn-primary">Lưu cấu hình OpenStack</button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
 
     <section class="card settings-panel" data-panel="cluster" {% if active_section != 'cluster' %}hidden{% endif %}>
       <div class="card-header"><h2>Kết nối cụm Ceph</h2></div>
