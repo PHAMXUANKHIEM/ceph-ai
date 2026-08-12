@@ -11,7 +11,9 @@ from dashboard.chat_client import (
     MAX_HISTORY_MESSAGES,
     MISSING_AI_CONFIG_MESSAGE,
     run_chat_turn,
+    with_romantic_address,
 )
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.vntime import to_utc_iso
 from shared import audit, db
@@ -21,6 +23,7 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     ChatMessage,
+    ChatPreference,
     Incident,
     IncidentStatus,
 )
@@ -57,6 +60,41 @@ SESSION_PREVIEW_MAX_CHARS = 80
 # is enough to tell a chat-originated Incident apart from a detected one if
 # ever needed, on top of the EVENT_CHAT_ACTION_REQUESTED audit entry.
 CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
+MAX_AI_NAME_LENGTH = 64
+
+
+def _validated_ai_name(value) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Tên AI không được để trống")
+    if len(name) > MAX_AI_NAME_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Tên AI tối đa {MAX_AI_NAME_LENGTH} ký tự")
+    if not all(ch.isalnum() or ch in " -_." for ch in name):
+        raise HTTPException(
+            status_code=400,
+            detail="Tên AI chỉ được chứa chữ, số, khoảng trắng, dấu gạch, dấu chấm hoặc gạch dưới",
+        )
+    return name
+
+
+@router.get("/api/chat/preferences")
+async def get_chat_preferences(user: str = Depends(require_login)):
+    return {"ai_name": auth.chat_ai_name(user)}
+
+
+@router.put("/api/chat/preferences")
+async def update_chat_preferences(request: Request, user: str = Depends(require_login)):
+    body = await request.json()
+    ai_name = _validated_ai_name(body.get("ai_name"))
+    with db.SessionLocal() as session:
+        preference = session.get(ChatPreference, user)
+        if preference is None:
+            preference = ChatPreference(username=user, ai_name=ai_name)
+            session.add(preference)
+        else:
+            preference.ai_name = ai_name
+        session.commit()
+    return {"ai_name": ai_name}
 
 
 def _message_to_dict(message: ChatMessage) -> dict:
@@ -275,9 +313,13 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     # either way (no HTML in ChatMessage.content).
     api_ready = settings.router_enabled and settings.router_api_key and settings.router_base_url
     if not (settings.codex_chat_enabled or settings.claude_chat_enabled or api_ready):
+        ai_name = auth.chat_ai_name(user)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
-                session_id=session_id, role="assistant", content=MISSING_AI_CONFIG_MESSAGE, actor=user
+                session_id=session_id,
+                role="assistant",
+                content=with_romantic_address(MISSING_AI_CONFIG_MESSAGE, ai_name),
+                actor=user,
             )
             session.add(assistant_message)
             session.commit()
@@ -289,9 +331,13 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         result = await run_chat_turn(history, text, user)
     except ChatTurnError as exc:
         logger.warning("post_chat_message: %s", exc)
+        ai_name = auth.chat_ai_name(user)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
-                session_id=session_id, role="assistant", content=str(exc), actor=user
+                session_id=session_id,
+                role="assistant",
+                content=with_romantic_address(str(exc), ai_name),
+                actor=user,
             )
             session.add(assistant_message)
             session.commit()

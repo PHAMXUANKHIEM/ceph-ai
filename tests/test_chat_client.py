@@ -289,7 +289,7 @@ def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch)
     result = asyncio.run(chat_client.run_chat_turn([], "Thời tiết hôm nay thế nào?", "admin"))
 
     assert result == {
-        "reply_text": chat_client.OUT_OF_SCOPE_MESSAGE,
+        "reply_text": chat_client.with_romantic_address(chat_client.OUT_OF_SCOPE_MESSAGE, "AI"),
         "proposal": None,
         "tools_used": [],
     }
@@ -297,6 +297,7 @@ def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch)
 
 def test_run_chat_turn_unrestricted_user_can_ask_non_ceph_question(monkeypatch):
     monkeypatch.setattr(chat_client.auth, "is_ceph_chat_restricted", lambda actor: False)
+    monkeypatch.setattr(chat_client.auth, "chat_ai_name", lambda actor: "Bé Mây")
     captured = {}
 
     class FakeCompletions:
@@ -314,10 +315,12 @@ def test_run_chat_turn_unrestricted_user_can_ask_non_ceph_question(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "Thời tiết hôm nay?", "admin"))
 
-    assert result["reply_text"] == "Câu trả lời tự do"
+    assert result["reply_text"] == "Mình yêu ơi, em là Bé Mây. Câu trả lời tự do"
     prompt = captured["messages"][0]["content"]
     assert "Được trả lời cả câu hỏi ngoài lĩnh vực Ceph" in prompt
     assert "CHỈ trả lời hoặc thao tác nội dung liên quan Ceph" not in prompt
+    assert "Tên của bạn là 'Bé Mây'" in prompt
+    assert "gọi người dùng là 'mình yêu'" in prompt
 
 
 def test_ceph_scope_allows_contextual_follow_up():
@@ -331,7 +334,11 @@ def test_run_chat_turn_plain_text_answer(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "cluster có khoẻ không?", "admin"))
 
-    assert result == {"reply_text": "Cluster đang HEALTH_OK.", "proposal": None, "tools_used": []}
+    assert result == {
+        "reply_text": "Mình yêu ơi, em là AI. Cluster đang HEALTH_OK.",
+        "proposal": None,
+        "tools_used": [],
+    }
 
 
 # --- run_chat_turn: local tools (list_nodes, get_node_metrics) --------------
@@ -371,7 +378,7 @@ def test_run_chat_turn_list_nodes_tracks_tools_used(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "cụm có bao nhiêu node?", "admin"))
 
-    assert result["reply_text"] == "Cụm có 4 node đã cấu hình."
+    assert result["reply_text"] == "Mình yêu ơi, em là AI. Cụm có 4 node đã cấu hình."
     assert result["tools_used"] == ["list_nodes"]
 
 
@@ -394,7 +401,7 @@ def test_run_chat_turn_calls_fixed_ceph_tool_and_tracks_tools_used(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "cụm có bao nhiêu pool?", "admin"))
 
-    assert result["reply_text"] == "Cụm có 1 pool: volumes."
+    assert result["reply_text"] == "Mình yêu ơi, em là AI. Cụm có 1 pool: volumes."
     assert result["tools_used"] == ["get_pool_list"]
 
 
@@ -436,7 +443,7 @@ def test_run_chat_turn_can_query_rbd_trash(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "kiểm tra RBD trash pool volumes", "admin"))
 
-    assert result["reply_text"] == "Pool volumes có 1 image trong trash: old-volume."
+    assert result["reply_text"] == "Mình yêu ơi, em là AI. Pool volumes có 1 image trong trash: old-volume."
     assert result["tools_used"] == ["get_rbd_trash"]
 
 
@@ -474,7 +481,7 @@ def test_run_chat_turn_blocked_ceph_command_is_not_counted_as_tools_used(monkeyp
     # itself decides to refuse, based on the {"blocked": true, ...} content
     # it reads back, not on tools_used bookkeeping.
     assert result["tools_used"] == ["run_ceph_command"]
-    assert result["reply_text"] == "Tôi không thể thực hiện lệnh xóa pool."
+    assert result["reply_text"] == "Mình yêu ơi, em là AI. Tôi không thể thực hiện lệnh xóa pool."
 
 
 # --- run_chat_turn: propose_action -------------------------------------------
@@ -500,7 +507,7 @@ def test_run_chat_turn_stages_valid_proposal_with_command_preview(monkeypatch):
 
     result = asyncio.run(chat_client.run_chat_turn([], "sửa lỗi lệch giờ giúp tôi", "admin"))
 
-    assert result["reply_text"] == "MON node bị lệch giờ, đề xuất resync NTP."
+    assert result["reply_text"] == "Mình yêu ơi, em là AI. MON node bị lệch giờ, đề xuất resync NTP."
     assert result["proposal"]["action_id"] == "resync_ntp"
     assert result["proposal"]["target_nodes"] == [A_MON_HOST]
     assert result["proposal"]["rationale"] == "clock skew detected"

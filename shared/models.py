@@ -487,6 +487,20 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class ChatPreference(Base):
+    """Per-login chat persona, including the `.env` root admin which has
+    no User row. The username is deliberately not a foreign key for that
+    reason; chat routes scope every read/write to the authenticated login."""
+
+    __tablename__ = "chat_preferences"
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ai_name: Mapped[str] = mapped_column(String(64), nullable=False, default="AI")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class PatchDocument(Base):
     """Singleton (id always 1, upserted) — the operator's currently-staged
     Ceph source patch, uploaded via the "Vá lỗi Ceph" page

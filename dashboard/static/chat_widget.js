@@ -2,6 +2,7 @@
   var panelEl = document.getElementById("chat-panel");
   var bodyEl = document.getElementById("chat-panel-body");
   var historyBtn = document.getElementById("chat-panel-history");
+  var settingsBtn = document.getElementById("chat-panel-settings");
   var newSessionBtn = document.getElementById("chat-panel-new-session");
   var minimizeBtn = document.getElementById("chat-panel-minimize");
   var closeBtn = document.getElementById("chat-panel-close");
@@ -9,6 +10,11 @@
   var formEl = document.getElementById("chat-form");
   var historyListViewEl = document.getElementById("chat-history-list-view");
   var historyListEl = document.getElementById("chat-history-list");
+  var settingsViewEl = document.getElementById("chat-settings-view");
+  var settingsFormEl = document.getElementById("chat-settings-form");
+  var aiNameInputEl = document.getElementById("chat-ai-name");
+  var settingsSuccessEl = document.getElementById("chat-settings-success");
+  var panelAiNameEl = document.getElementById("chat-panel-ai-name");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
     return; // not on a page with the chat panel
   }
@@ -20,6 +26,7 @@
   // treats a missing/blank session_id on send as "start a new session too",
   // so this is never required to be non-null before sending.
   var currentSessionId = null;
+  var aiName = "AI";
 
   var inputEl = document.getElementById("chat-input");
   var sendBtn = document.getElementById("chat-send-btn");
@@ -206,11 +213,11 @@
     meta.className = "chat-msg-meta";
     meta.textContent = isUser
       ? "Bạn · " + (message.actor || "?") + " · " + formatTimestamp(message.created_at)
-      : "🤖 AI · " + formatTimestamp(message.created_at); // 🤖 AI · HH:MM:SS
+      : "🤖 " + aiName + " · " + formatTimestamp(message.created_at);
     container.appendChild(meta);
 
     var bubble;
-    if (!isUser && message.content === MISSING_AI_CONFIG_MESSAGE) {
+    if (!isUser && message.content.indexOf(MISSING_AI_CONFIG_MESSAGE) !== -1) {
       bubble = buildMissingAiConfigNotice();
     } else {
       bubble = document.createElement("div");
@@ -255,7 +262,7 @@
 
     var meta = document.createElement("div");
     meta.className = "chat-msg-meta";
-    meta.textContent = "🤖 AI";
+    meta.textContent = "🤖 " + aiName;
     container.appendChild(meta);
 
     var bubble = document.createElement("div");
@@ -306,7 +313,23 @@
       });
   }
 
-  loadHistory();
+  function loadPreferences() {
+    return fetch("/api/chat/preferences", { credentials: "same-origin" })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        aiName = data.ai_name || "AI";
+        if (aiNameInputEl) aiNameInputEl.value = aiName;
+        if (panelAiNameEl) panelAiNameEl.textContent = aiName;
+      });
+  }
+
+  loadPreferences()
+    .catch(function () {})
+    .then(loadHistory);
 
   // --- new session (Đoạn chat mới) --------------------------------------------
 
@@ -348,7 +371,7 @@
 
   // --- session history (list / delete past sessions) --------------------------
   //
-  // Two view modes, tracked in `historyMode`:
+  // Three view modes, tracked in `historyMode`:
   //   "closed" — normal live chat (.chat-messages + .chat-form visible)
   //   "list"   — browsing past sessions (.chat-history-list-view visible),
   //              each row deletable but not openable — no read-only
@@ -359,7 +382,8 @@
   function applyViewMode(mode) {
     historyMode = mode;
     historyListViewEl.hidden = mode !== "list";
-    messagesEl.hidden = mode === "list";
+    if (settingsViewEl) settingsViewEl.hidden = mode !== "settings";
+    messagesEl.hidden = mode !== "closed";
     formEl.hidden = mode !== "closed";
   }
 
@@ -480,6 +504,55 @@
       } else {
         openHistoryList();
       }
+    });
+  }
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", function () {
+      clearError();
+      if (historyMode === "settings") {
+        closeHistoryView();
+        return;
+      }
+      if (settingsSuccessEl) settingsSuccessEl.hidden = true;
+      loadPreferences()
+        .then(function () {
+          applyViewMode("settings");
+          if (aiNameInputEl) aiNameInputEl.focus();
+        })
+        .catch(function (err) {
+          if (err.message !== "unauthenticated") showError(err.message);
+        });
+    });
+  }
+  if (settingsFormEl) {
+    settingsFormEl.addEventListener("submit", function (event) {
+      event.preventDefault();
+      clearError();
+      fetch("/api/chat/preferences", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ai_name: aiNameInputEl.value })
+      })
+        .then(handleAuthRedirect)
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+            return data;
+          });
+        })
+        .then(function (data) {
+          aiName = data.ai_name;
+          aiNameInputEl.value = aiName;
+          if (panelAiNameEl) panelAiNameEl.textContent = aiName;
+          if (settingsSuccessEl) {
+            settingsSuccessEl.textContent = "Đã lưu tên " + aiName + ".";
+            settingsSuccessEl.hidden = false;
+          }
+        })
+        .catch(function (err) {
+          if (err.message !== "unauthenticated") showError(err.message);
+        });
     });
   }
   historyListEl.addEventListener("click", function (event) {

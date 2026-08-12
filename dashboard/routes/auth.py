@@ -4,11 +4,12 @@ from collections import defaultdict
 import bcrypt
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import User
+from shared.models import ChatPreference, User
 
 router = APIRouter()
 templates = make_templates()
@@ -104,6 +105,18 @@ def is_ceph_chat_restricted(username: str) -> bool:
     if db_user is None:
         return True
     return False if db_user.is_admin else db_user.ceph_chat_restricted
+
+
+def chat_ai_name(username: str) -> str:
+    """Return this login's configured assistant display/persona name."""
+    try:
+        with db.SessionLocal() as session:
+            preference = session.get(ChatPreference, username)
+            return preference.ai_name if preference is not None else "AI"
+    except SQLAlchemyError:
+        # Rolling deployment safety: old DB schema remains usable until the
+        # migration step creates chat_preferences.
+        return "AI"
 
 
 async def require_login(request: Request) -> str:

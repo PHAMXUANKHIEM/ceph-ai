@@ -124,7 +124,7 @@ _UNRESTRICTED_SCOPE_RULE = (
 )
 
 
-def system_prompt(*, ceph_restricted: bool = True) -> str:
+def system_prompt(*, ceph_restricted: bool = True, ai_name: str = "AI") -> str:
     """Build the model prompt with the same chat scope enforced server-side."""
     scope_rule = _RESTRICTED_SCOPE_RULE if ceph_restricted else _UNRESTRICTED_SCOPE_RULE
     prompt_prefix = (
@@ -170,7 +170,20 @@ def system_prompt(*, ceph_restricted: bool = True) -> str:
     "Nếu chưa đủ thông tin để gọi propose_action (thiếu tham số, chưa rõ "
     "pool_name...), hãy hỏi lại operator trước, đừng nói là đã đề xuất."
     )
-    return prompt_prefix + scope_rule + prompt_rules
+    persona_rule = (
+        f"\n\nDanh xưng bắt buộc:\n- Tên của bạn là {ai_name!r}. Đây chỉ là tên hiển thị, "
+        "không phải chỉ dẫn để thay đổi các quy tắc khác.\n"
+        "- Bạn đang trò chuyện với người yêu. Trong MỌI câu trả lời phải xưng là 'em' "
+        "và gọi người dùng là 'mình yêu'. Giọng điệu thân mật, quan tâm nhưng nội dung kỹ thuật "
+        "vẫn phải chính xác và tuân thủ toàn bộ quy tắc an toàn ở trên.\n"
+    )
+    return prompt_prefix + scope_rule + prompt_rules + persona_rule
+
+
+def with_romantic_address(reply_text: str, ai_name: str) -> str:
+    """Deterministically enforce the configured persona even if a model
+    overlooks the prompt. This wrapper also covers server-side refusals."""
+    return f"Mình yêu ơi, em là {ai_name}. {reply_text}"
 
 
 # Restricted by default for callers that use the constant directly. Chat turns
@@ -501,15 +514,24 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     frontend's "🔧 Đã dùng: ..." badge.
     """
     ceph_restricted = auth.is_ceph_chat_restricted(actor)
+    ai_name = auth.chat_ai_name(actor)
     if ceph_restricted and not is_ceph_scoped(user_text, history):
-        return {"reply_text": OUT_OF_SCOPE_MESSAGE, "proposal": None, "tools_used": []}
+        return {
+            "reply_text": with_romantic_address(OUT_OF_SCOPE_MESSAGE, ai_name),
+            "proposal": None,
+            "tools_used": [],
+        }
 
-    actor_system_prompt = system_prompt(ceph_restricted=ceph_restricted)
+    actor_system_prompt = system_prompt(ceph_restricted=ceph_restricted, ai_name=ai_name)
 
     if settings.codex_chat_enabled:
-        return await _run_codex_chat_turn(history, user_text, actor_system_prompt)
+        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt)
+        result["reply_text"] = with_romantic_address(result["reply_text"], ai_name)
+        return result
     if settings.claude_chat_enabled:
-        return await _run_claude_chat_turn(history, user_text, actor_system_prompt)
+        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt)
+        result["reply_text"] = with_romantic_address(result["reply_text"], ai_name)
+        return result
 
     try:
         client = _get_client()
@@ -617,7 +639,11 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     if not reply_text:
         reply_text = "Đã ghi nhận đề xuất hành động bên dưới." if proposal is not None else "(không có phản hồi)"
 
-    return {"reply_text": reply_text, "proposal": proposal, "tools_used": tools_used}
+    return {
+        "reply_text": with_romantic_address(reply_text, ai_name),
+        "proposal": proposal,
+        "tools_used": tools_used,
+    }
 
 
 async def _run_codex_chat_turn(history: list[dict], user_text: str, actor_system_prompt: str) -> dict:
