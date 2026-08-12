@@ -111,7 +111,6 @@ from shared.telegram_client import (
     get_telegram_updates,
     send_telegram_message_with_keyboard,
 )
-from worker.policy.gate import VALID_VOLUME_PERF_ACTION_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -226,22 +225,19 @@ def channels_for_action(
     """Return only the approval channel(s) relevant to this action.
 
     A non-default cluster's own channel remains the strongest routing rule.
-    For the default cluster, Volume Performance is an operator-requested
-    cluster/storage workload, neither a backup event nor a node-hardware
-    alarm, so it belongs only in the Incident channel. Other action families
-    retain the legacy broadcast behavior until they get an explicit routing
-    classification of their own.
+    For the default cluster, an Incident approval belongs only in the
+    ``incident`` (Lỗi cụm) channel. The old broadcast-to-all fallback caused
+    one Ceph warning (notably POOL_APP_NOT_ENABLED) to appear in Backup,
+    Lỗi cụm and Phần cứng at the same time.
     """
     channels = channels_for_incident(incident, session)
-    if action is not None and action.action_id in VALID_VOLUME_PERF_ACTION_IDS:
-        # A per-cluster channel is already a single namespaced destination;
-        # never filter it by one of the three global channel keys.
-        if incident is not None and incident.cluster_id is not None:
-            default_cluster_id = get_default_cluster_id(session)
-            if incident.cluster_id != default_cluster_id:
-                return channels
-        return [channel for channel in channels if channel[0] == "incident"]
-    return channels
+    # A per-cluster channel is already a single namespaced destination;
+    # never filter it by one of the three global channel keys.
+    if incident is not None and incident.cluster_id is not None:
+        default_cluster_id = get_default_cluster_id(session)
+        if incident.cluster_id != default_cluster_id:
+            return channels
+    return [channel for channel in channels if channel[0] == "incident"]
 
 
 # 2026-08-10 (multi-tenant remediation Phase 2): `_listen_supervisor_loop`'s
@@ -556,10 +552,9 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
 
     # TRUST MODEL (per-cluster scoped, 2026-08-10) — see this module's own
     # docstring: resolve the chat ids LEGITIMATELY covering THIS SPECIFIC
-    # action's cluster via `channels_for_incident` — the SAME function
-    # `_notify_pending_actions` used to decide where to broadcast this very
-    # action, so the set of chats that CAN approve is always exactly the
-    # set it was SENT to. A chat configured for a DIFFERENT cluster's own
+    # action's cluster via `channels_for_incident`. Global configured chats
+    # remain trusted for callbacks (including old messages sent before
+    # category routing was narrowed), while a chat configured for a DIFFERENT cluster's own
     # channel (or one of the 3 global channels, when this action's cluster
     # has its own) is no longer trusted just for being "some configured
     # channel somewhere" — unlike before Phase 2. An action_id that no
@@ -573,7 +568,7 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         )
         legit_chat_ids = {
             str(chat_id)
-            for _, _, chat_id in channels_for_action(action_for_trust, incident_for_trust, session)
+            for _, _, chat_id in channels_for_incident(incident_for_trust, session)
         }
 
     if not legit_chat_ids or incoming_chat_id not in legit_chat_ids:

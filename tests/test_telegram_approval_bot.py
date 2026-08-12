@@ -139,24 +139,25 @@ def test_legacy_pool_warning_has_three_choice_buttons(dashboard_client):
     ]
 
 
-def test_notify_broadcasts_to_every_configured_channel(dashboard_client, monkeypatch):
+def test_cluster_approval_goes_only_to_incident_channel(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "backup", token="tb", chat_id="-1")
-    _configure_channel(monkeypatch, "node", token="tn", chat_id="-2")
+    _configure_channel(monkeypatch, "incident", token="ti", chat_id="-2")
+    _configure_channel(monkeypatch, "node", token="tn", chat_id="-3")
     action_id = _pending_action("inc-1")
     calls = []
     monkeypatch.setattr(
         bot,
         "send_telegram_message_with_keyboard",
-        lambda token, chat_id, text, buttons: calls.append((token, chat_id)) or (111 if token == "tb" else 222),
+        lambda token, chat_id, text, buttons: calls.append((token, chat_id)) or 222,
     )
 
     bot._notify_pending_actions()
 
-    assert set(calls) == {("tb", "-1"), ("tn", "-2")}
+    assert calls == [("ti", "-2")]
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_id)
-        assert json.loads(action.telegram_message_ids) == {"backup": 111, "node": 222}
+        assert json.loads(action.telegram_message_ids) == {"incident": 222}
         assert action.telegram_notified_at is not None
 
 
@@ -199,11 +200,7 @@ def test_notify_does_not_resend_to_a_channel_already_notified(dashboard_client, 
     assert calls == []
 
 
-def test_notify_sends_to_a_channel_configured_after_the_action_already_existed(dashboard_client, monkeypatch):
-    """A channel added/fixed AFTER an Action was already broadcast to other
-    channels must still pick it up on the next scan — no restart, no "too
-    late" window (this is the whole point of "phê duyệt là mặc định của
-    mọi kênh đang bật")."""
+def test_notify_does_not_backfill_cluster_action_to_unrelated_channel(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "incident", token="ti", chat_id="-3")
     action_id = _pending_action("inc-1")
@@ -221,9 +218,9 @@ def test_notify_sends_to_a_channel_configured_after_the_action_already_existed(d
 
     bot._notify_pending_actions()
 
-    assert calls == ["tn"]
+    assert calls == []
     with db_module.SessionLocal() as session:
-        assert json.loads(session.get(Action, action_id).telegram_message_ids) == {"incident": 1, "node": 2}
+        assert json.loads(session.get(Action, action_id).telegram_message_ids) == {"incident": 1}
 
 
 def test_notify_skips_an_action_that_is_not_pending_approval(dashboard_client, monkeypatch):
@@ -243,15 +240,15 @@ def test_notify_skips_an_action_that_is_not_pending_approval(dashboard_client, m
     assert calls == []
 
 
-def test_notify_one_channel_failure_does_not_block_another_channel(dashboard_client, monkeypatch):
+def test_notify_ignores_unrelated_configured_channels(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "backup", token="tb", chat_id="-1")
+    _configure_channel(monkeypatch, "incident", token="ti", chat_id="-3")
     _configure_channel(monkeypatch, "node", token="tn", chat_id="-2")
     action_id = _pending_action("inc-1")
 
     def fake_send(token, chat_id, text, buttons):
-        if token == "tb":
-            raise bot.TelegramSendError("boom")
+        assert token == "ti"
         return 999
 
     monkeypatch.setattr(bot, "send_telegram_message_with_keyboard", fake_send)
@@ -259,9 +256,7 @@ def test_notify_one_channel_failure_does_not_block_another_channel(dashboard_cli
     bot._notify_pending_actions()
 
     with db_module.SessionLocal() as session:
-        # node succeeded and was recorded; backup failed and is left out so
-        # it's retried on the next scan.
-        assert json.loads(session.get(Action, action_id).telegram_message_ids) == {"node": 999}
+        assert json.loads(session.get(Action, action_id).telegram_message_ids) == {"incident": 999}
 
 
 def test_notify_one_action_failure_does_not_block_another_action(dashboard_client, monkeypatch):
