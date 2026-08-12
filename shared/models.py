@@ -326,11 +326,9 @@ class NodeDiagnosticRun(Base):
 
 
 class ChatMessage(Base):
-    """One global chat log (Dashboard has a single static account — AD:
-    no RBAC/multi-tenant concept anywhere else in this codebase either, e.g.
-    a per-user table. `session_id` groups messages into conversations
-    within that single log — "the current session" is just whichever
-    session_id the most recently created row has (dashboard/routes/chat.py),
+    """Chat messages isolated by login account. `session_id` groups messages
+    into conversations within one account — "the current session" is the
+    most recently created row for that actor (dashboard/routes/chat.py),
     no separate session table needed. Starting a new session
     (`POST /api/chat/sessions`) doesn't write anything by itself; it only
     hands the frontend a fresh id to tag its next message with — a session
@@ -363,8 +361,9 @@ class ChatMessage(Base):
     session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # Who sent it (a "user" row) — None for "assistant" rows, same nullable
-    # convention as AuditEntry.action_id for "not applicable to this row".
+    # Conversation owner. New user AND assistant rows always carry the login
+    # username so every read/write can enforce account isolation. Nullable
+    # only for compatibility with assistant rows created before this rule.
     actor: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     proposed_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

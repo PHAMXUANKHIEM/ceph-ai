@@ -1,5 +1,6 @@
 import json
 
+import bcrypt
 import dashboard.routes.chat as chat_module
 from shared import audit
 from shared import db as db_module
@@ -11,6 +12,7 @@ from shared.models import (
     ChatMessage,
     Incident,
     IncidentStatus,
+    User,
 )
 
 # Matches tests/conftest.py's TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES.
@@ -35,6 +37,7 @@ def _stage_proposal(
                 id=message_id,
                 role="assistant",
                 content="Đề xuất resync NTP.",
+                actor="admin",
                 proposed_action_id=action_id,
                 proposed_target_nodes=json.dumps(target_nodes if target_nodes is not None else [A_MON_HOST]),
                 proposed_action_params=json.dumps(params) if params else None,
@@ -91,9 +94,59 @@ def test_get_chat_messages_empty_when_no_history(dashboard_client):
     assert response.json() == {"messages": [], "session_id": None}
 
 
+def test_chat_history_is_isolated_between_login_users(dashboard_client):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username="alice",
+                password_hash=bcrypt.hashpw(b"alice-pass", bcrypt.gensalt()).decode(),
+                is_admin=False,
+                is_active=True,
+                created_by="admin",
+            )
+        )
+        session.add_all([
+            ChatMessage(
+                id="admin-private", session_id="admin-session", role="user",
+                content="Ceph admin secret", actor="admin",
+            ),
+            ChatMessage(
+                id="alice-private", session_id="alice-session", role="user",
+                content="Ceph alice secret", actor="alice",
+            ),
+            ChatMessage(
+                id="alice-proposal", session_id="alice-session", role="assistant",
+                content="Đề xuất riêng của Alice", actor="alice",
+                proposed_action_id="resync_ntp",
+                proposed_target_nodes=json.dumps([A_MON_HOST]),
+                proposed_rationale="clock skew",
+                proposed_status="PENDING",
+            ),
+        ])
+        session.commit()
+
+    _login(dashboard_client)
+    admin_body = dashboard_client.get("/api/chat/messages").json()
+    assert [message["id"] for message in admin_body["messages"]] == ["admin-private"]
+    assert dashboard_client.delete("/api/chat/sessions/alice-session").status_code == 404
+    assert dashboard_client.post(
+        "/api/chat/messages/alice-proposal/confirm-action"
+    ).status_code == 404
+
+    dashboard_client.post("/logout")
+    login = dashboard_client.post(
+        "/login", data={"username": "alice", "password": "alice-pass"}, follow_redirects=False
+    )
+    assert login.status_code == 303
+    alice_body = dashboard_client.get("/api/chat/messages").json()
+    assert [message["id"] for message in alice_body["messages"]] == [
+        "alice-private", "alice-proposal"
+    ]
+
+
 def test_get_chat_messages_scopes_to_the_latest_session_only(dashboard_client):
     with db_module.SessionLocal() as session:
-        session.add(ChatMessage(id="old-1", session_id="sess-old", role="user", content="tin nhắn cũ"))
+        session.add(ChatMessage(id="old-1", session_id="sess-old", role="user", content="tin nhắn cũ", actor="admin"))
         session.commit()
         from datetime import datetime, timedelta
 
@@ -101,7 +154,7 @@ def test_get_chat_messages_scopes_to_the_latest_session_only(dashboard_client):
         old.created_at = datetime.utcnow() - timedelta(minutes=5)
         session.commit()
 
-        session.add(ChatMessage(id="new-1", session_id="sess-new", role="user", content="tin nhắn mới"))
+        session.add(ChatMessage(id="new-1", session_id="sess-new", role="user", content="tin nhắn mới", actor="admin"))
         session.commit()
     _login(dashboard_client)
 
@@ -118,7 +171,7 @@ def test_get_chat_messages_returns_legacy_null_session_history(dashboard_client)
     # a real string too, but the None case specifically must not be
     # mistaken for "no history at all" (see _latest_session_id's docstring).
     with db_module.SessionLocal() as session:
-        session.add(ChatMessage(id="legacy-1", session_id=None, role="user", content="tin nhắn cũ"))
+        session.add(ChatMessage(id="legacy-1", session_id=None, role="user", content="tin nhắn cũ", actor="admin"))
         session.commit()
     _login(dashboard_client)
 
@@ -165,7 +218,7 @@ def test_create_chat_session_writes_nothing_until_a_message_is_sent(dashboard_cl
 def test_new_session_message_does_not_see_previous_session_as_context(dashboard_client, monkeypatch):
     with db_module.SessionLocal() as session:
         session.add(ChatMessage(id="old-1", session_id="sess-old", role="user", content="hỏi cũ", actor="admin"))
-        session.add(ChatMessage(id="old-2", session_id="sess-old", role="assistant", content="trả lời cũ"))
+        session.add(ChatMessage(id="old-2", session_id="sess-old", role="assistant", content="trả lời cũ", actor="admin"))
         session.commit()
 
     received_history = {}
@@ -264,7 +317,7 @@ def test_post_chat_message_with_prior_history_passes_plain_dicts_not_orm_rows(
             ChatMessage(id="h1", session_id=session_id, role="user", content="tin nhắn trước đó", actor="admin")
         )
         db_session.add(
-            ChatMessage(id="h2", session_id=session_id, role="assistant", content="trả lời trước đó")
+            ChatMessage(id="h2", session_id=session_id, role="assistant", content="trả lời trước đó", actor="admin")
         )
         db_session.commit()
 
@@ -417,7 +470,7 @@ def test_confirm_action_unknown_message_returns_404(dashboard_client):
 
 def test_confirm_action_message_without_proposal_returns_400(dashboard_client):
     with db_module.SessionLocal() as session:
-        session.add(ChatMessage(id="plain-1", role="assistant", content="chỉ là câu trả lời"))
+        session.add(ChatMessage(id="plain-1", role="assistant", content="chỉ là câu trả lời", actor="admin"))
         session.commit()
     _login(dashboard_client)
 
@@ -578,7 +631,7 @@ def _seed_two_sessions():
                 id="s1-u1", session_id="sess-1", role="user", content="hỏi về pool đầu tiên", actor="admin"
             )
         )
-        session.add(ChatMessage(id="s1-a1", session_id="sess-1", role="assistant", content="trả lời 1"))
+        session.add(ChatMessage(id="s1-a1", session_id="sess-1", role="assistant", content="trả lời 1", actor="admin"))
         session.add(
             ChatMessage(
                 id="s2-u1", session_id="sess-2", role="user", content="hỏi về OSD sau đó", actor="admin"

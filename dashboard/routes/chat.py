@@ -84,10 +84,9 @@ def _message_to_dict(message: ChatMessage) -> dict:
 _NO_MESSAGES_YET = object()  # sentinel — distinct from "the latest row's session_id happens to be None"
 
 
-def _latest_session_id(session):
-    """"The current session" is defined as whichever session_id the most
-    recently created ChatMessage row has — there is no separate session
-    table to go out of sync with the messages themselves.
+def _latest_session_id(session, actor: str):
+    """"The current session" is the latest session owned by ``actor``.
+    There is no separate session table to go out of sync with the messages.
 
     Returns `_NO_MESSAGES_YET` when the table is empty (fresh install, or
     right after a brand new session id was handed out but nothing's been
@@ -99,7 +98,12 @@ def _latest_session_id(session):
     conflating the two here made get_chat_messages() incorrectly report an
     empty conversation for the latter case.
     """
-    latest = session.query(ChatMessage).order_by(ChatMessage.created_at.desc()).first()
+    latest = (
+        session.query(ChatMessage)
+        .filter(ChatMessage.actor == actor)
+        .order_by(ChatMessage.created_at.desc())
+        .first()
+    )
     return _NO_MESSAGES_YET if latest is None else latest.session_id
 
 
@@ -116,8 +120,8 @@ async def create_chat_session(user: str = Depends(require_login)):
     return {"session_id": str(uuid.uuid4())}
 
 
-def _build_session_summaries(session) -> list[dict]:
-    """One summary dict per distinct session_id, newest-active first —
+def _build_session_summaries(session, actor: str) -> list[dict]:
+    """One summary per session owned by ``actor``, newest-active first —
     powers the chat panel's history list. Scans only the most recent
     SESSION_LIST_SCAN_LIMIT messages (bounds cost regardless of how large
     this table eventually grows).
@@ -131,6 +135,7 @@ def _build_session_summaries(session) -> list[dict]:
     """
     rows = (
         session.query(ChatMessage)
+        .filter(ChatMessage.actor == actor)
         .order_by(ChatMessage.created_at.desc())
         .limit(SESSION_LIST_SCAN_LIMIT)
         .all()
@@ -163,12 +168,12 @@ def _build_session_summaries(session) -> list[dict]:
 
 @router.get("/api/chat/sessions")
 async def list_chat_sessions(user: str = Depends(require_login)):
-    """Powers the chat panel's history view — one row per past conversation,
+    """Powers the per-login chat history — one row per past conversation,
     most-recently-active first, so the operator can browse or delete an old
     session without it ever having to be "the current one" again."""
     with db.SessionLocal() as session:
-        summaries = _build_session_summaries(session)
-        current = _latest_session_id(session)
+        summaries = _build_session_summaries(session, user)
+        current = _latest_session_id(session, user)
         for entry in summaries:
             entry["is_current"] = entry["session_id"] == current
         return {"sessions": summaries}
@@ -187,7 +192,11 @@ async def delete_chat_session(session_id: str, user: str = Depends(require_login
     deleting these rows can never leave anything else dangling.
     """
     with db.SessionLocal() as session:
-        deleted = session.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+        deleted = (
+            session.query(ChatMessage)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
+            .delete()
+        )
         session.commit()
     if deleted == 0:
         raise HTTPException(status_code=404, detail="Không tìm thấy đoạn chat")
@@ -204,12 +213,12 @@ async def get_chat_messages(user: str = Depends(require_login)):
     sessions still exist in the DB, just not shown once a newer one has a
     message in it."""
     with db.SessionLocal() as session:
-        session_id = _latest_session_id(session)
+        session_id = _latest_session_id(session, user)
         if session_id is _NO_MESSAGES_YET:
             return {"messages": [], "session_id": None}
         rows = (
             session.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
             .order_by(ChatMessage.created_at.asc())
             .limit(CHAT_WIDGET_HISTORY_LIMIT)
             .all()
@@ -248,7 +257,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
             {"role": m.role, "content": m.content}
             for m in reversed(
                 session.query(ChatMessage)
-                .filter(ChatMessage.session_id == session_id)
+                .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
                 .order_by(ChatMessage.created_at.desc())
                 .limit(MAX_HISTORY_MESSAGES)
                 .all()
@@ -268,7 +277,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     if not (settings.codex_chat_enabled or settings.claude_chat_enabled or api_ready):
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
-                session_id=session_id, role="assistant", content=MISSING_AI_CONFIG_MESSAGE
+                session_id=session_id, role="assistant", content=MISSING_AI_CONFIG_MESSAGE, actor=user
             )
             session.add(assistant_message)
             session.commit()
@@ -281,7 +290,9 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     except ChatTurnError as exc:
         logger.warning("post_chat_message: %s", exc)
         with db.SessionLocal() as session:
-            assistant_message = ChatMessage(session_id=session_id, role="assistant", content=str(exc))
+            assistant_message = ChatMessage(
+                session_id=session_id, role="assistant", content=str(exc), actor=user
+            )
             session.add(assistant_message)
             session.commit()
             session.refresh(assistant_message)
@@ -295,6 +306,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
             session_id=session_id,
             role="assistant",
             content=result["reply_text"],
+            actor=user,
             proposed_action_id=proposal["action_id"] if proposal else None,
             proposed_target_nodes=json.dumps(proposal["target_nodes"]) if proposal else None,
             proposed_action_params=(
@@ -329,7 +341,7 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
     """
     with db.SessionLocal() as session:
         message = session.get(ChatMessage, message_id)
-        if message is None:
+        if message is None or message.actor != user:
             raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn")
         if message.role != "assistant" or message.proposed_action_id is None:
             raise HTTPException(status_code=400, detail="Tin nhắn này không có đề xuất hành động")
