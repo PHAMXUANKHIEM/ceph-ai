@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pty
 import re
 import shutil
 from pathlib import Path
@@ -28,10 +29,14 @@ _install_lock = asyncio.Lock()
 _device_login_lock = asyncio.Lock()
 _device_login_process: asyncio.subprocess.Process | None = None
 _device_login_result: dict | None = None
+_device_login_drain_task: asyncio.Task | None = None
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _URL_RE = re.compile(r"https?://[^\s<>\]\[()]+")
-_DEVICE_CODE_RE = re.compile(r"\b[A-Z0-9]{4}(?:-[A-Z0-9]{4})+\b", re.IGNORECASE)
+_DEVICE_CODE_RE = re.compile(
+    r"\b(?=[A-Z0-9-]*\d)[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+\b",
+    re.IGNORECASE,
+)
 
 
 def codex_executable() -> str | None:
@@ -77,7 +82,7 @@ async def start_cli_device_login() -> dict:
     once the operator grants access. Repeated clicks reuse the still-valid
     flow instead of spawning competing login processes for the same home.
     """
-    global _device_login_process, _device_login_result
+    global _device_login_process, _device_login_result, _device_login_drain_task
     async with _device_login_lock:
         if _device_login_process and _device_login_process.returncode is None and _device_login_result:
             return _device_login_result
@@ -87,18 +92,33 @@ async def start_cli_device_login() -> dict:
             raise CodexAppServerError("Chưa cài Codex CLI trên server")
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_app_server._codex_home())
-        _device_login_process = await asyncio.create_subprocess_exec(
-            executable, "login", "--device-auth",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-        )
+        # Codex buffers this short prompt when stdout is a regular pipe. Give
+        # it a pseudo-terminal so the URL/code are flushed immediately, just
+        # as they are when the command is run in an interactive shell.
+        master_fd, slave_fd = pty.openpty()
+        try:
+            try:
+                _device_login_process = await asyncio.create_subprocess_exec(
+                    executable, "login", "--device-auth",
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    env=env,
+                )
+            except BaseException:
+                os.close(master_fd)
+                raise
+        finally:
+            os.close(slave_fd)
+
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        master_pipe = os.fdopen(master_fd, "rb", buffering=0)
+        await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, master_pipe)
 
         output = ""
-        assert _device_login_process.stdout is not None
         try:
             while len(output) < 16_000:
-                line = await asyncio.wait_for(_device_login_process.stdout.readline(), 15)
+                line = await asyncio.wait_for(reader.readline(), 15)
                 if not line:
                     break
                 output += line.decode(errors="replace")
@@ -113,15 +133,25 @@ async def start_cli_device_login() -> dict:
                     }
                     # Continue draining output while the CLI waits, otherwise
                     # a full pipe could prevent it from completing login.
-                    asyncio.create_task(_device_login_process.communicate())
+                    async def drain_login_output() -> None:
+                        try:
+                            while await reader.read(4096):
+                                pass
+                        except OSError:
+                            # Linux PTYs report EIO when the slave closes.
+                            pass
+
+                    _device_login_drain_task = asyncio.create_task(drain_login_output())
                     return _device_login_result
         except asyncio.TimeoutError as exc:
             _device_login_process.terminate()
             await _device_login_process.wait()
+            master_pipe.close()
             _device_login_process = None
             raise CodexAppServerError("Codex CLI không in device code trong 15 giây") from exc
 
         return_code = await _device_login_process.wait()
+        master_pipe.close()
         _device_login_process = None
         detail = _ANSI_ESCAPE_RE.sub("", output).strip()[-3000:]
         raise CodexAppServerError(
