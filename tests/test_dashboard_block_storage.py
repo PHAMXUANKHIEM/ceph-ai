@@ -46,7 +46,7 @@ def test_query_block_storage_discovers_rbd_pools_and_namespaces(monkeypatch):
         if command == "rbd namespace list --pool volumes":
             return "mon1", ["openstack"]
         if command == "rbd ls --long --pool volumes":
-            return "mon1", [{"name": "base", "size": 1024}]
+            return "mon1", [{"image": "base", "id": "abc123", "size": 1024, "format": 2}]
         if command == "rbd ls --long --pool volumes --namespace openstack":
             return "mon1", [{"name": "vm-1", "size": 2147483648}]
         raise AssertionError(command)

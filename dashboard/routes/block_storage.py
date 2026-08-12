@@ -45,7 +45,14 @@ def _image_rows(payload: dict | list, pool: str, namespace: str) -> list[dict]:
     for row in rows:
         if isinstance(row, str):
             row = {"name": row}
-        if not isinstance(row, dict) or not row.get("name"):
+        if not isinstance(row, dict):
+            continue
+        # `rbd ls --long --format json` uses `image` on Ceph Reef (the
+        # production payload), while some older/newer CLI builds and test
+        # fixtures expose `name`. Accept both instead of silently dropping
+        # every real image from the inventory.
+        image_name = row.get("image") or row.get("name")
+        if not image_name:
             continue
         size = row.get("size", 0)
         try:
@@ -53,7 +60,7 @@ def _image_rows(payload: dict | list, pool: str, namespace: str) -> list[dict]:
         except (TypeError, ValueError):
             size_bytes = 0
         result.append({
-            "name": str(row["name"]),
+            "name": str(image_name),
             "pool": pool,
             "namespace": namespace,
             "size_bytes": size_bytes,
