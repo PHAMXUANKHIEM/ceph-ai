@@ -706,6 +706,12 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
     )
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", lambda envelope: _noop_coro())
+    telegram_calls = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_alert",
+        lambda *args, **kwargs: telegram_calls.append((args, kwargs)),
+    )
 
     # 2026-08-10 (multi-tenant remediation Phase 1): log collection now runs
     # for observed clusters too — assert it uses THIS cluster's own SSH
@@ -734,6 +740,16 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
         assert row.success is True
 
     assert collect_calls == [("10.30.1.20", "root", "/root/.ssh/key")]
+    assert len(telegram_calls) == 1
+    args, kwargs = telegram_calls[0]
+    assert args[:2] == ("OSD_DOWN", "HEALTH_WARN")
+    assert "osd log tail" in args[2]
+    assert kwargs == {
+        "cluster_name": "cluster-b",
+        "bot_token": None,
+        "chat_id": None,
+        "enabled": None,
+    }
 
 
 async def _noop_coro():

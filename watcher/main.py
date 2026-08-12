@@ -31,7 +31,7 @@ from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
-from shared import db, heartbeat
+from shared import db, heartbeat, telegram_alerts
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Cluster, Incident, IncidentStatus
 
@@ -294,18 +294,12 @@ def build_and_publish_incident(
             session.refresh(incident)
             incident_id = incident.id
 
-        # 2026-08-05: "cảnh báo lỗi cụm" Telegram channel (shared/
-        # telegram_alerts.py) — its own independent bot token/chat id
-        # (telegram_incident_bot_token/telegram_incident_chat_id), checked
-        # inside send_incident_alert itself. One message per ceph_code check,
-        # matching the one-Incident-per-check granularity above. Best-
-        # effort/never raises (see that module's own docstring) — placed
-        # OUTSIDE the DB session block above on purpose, same "don't hold a
-        # DB connection open across unrelated network I/O" reasoning this
-        # function's own docstring already gives for log collection.
-        # No explicit cluster_name here — this function is default-cluster
-        # only (see its own docstring), so the fallback to
-        # settings.cluster_name inside send_incident_alert is correct.
+        # Alert immediately; AI diagnosis is an enrichment and must never be
+        # a delivery dependency. send_incident_alert is best-effort and
+        # swallows Telegram failures, so RabbitMQ publishing still proceeds.
+        telegram_alerts.send_incident_alert(
+            ceph_code, check_detail.get("severity"), log_excerpt
+        )
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,
@@ -657,13 +651,16 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             session.refresh(incident)
             incident_id = incident.id
 
-        # 2026-08-10 (multi-tenant remediation Phase 2): pass this cluster's
-        # OWN Telegram channel when it has configured one — narrows delivery
-        # to just that chat instead of the 3 global channels (shared/
-        # telegram_alerts.py::send_incident_alert's own docstring). Both
-        # bot_token/chat_id must be set (an empty chat_id alone is not a
-        # usable channel); `None`/`None`/`None` falls back to global exactly
-        # like every other caller.
+        has_cluster_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
+        telegram_alerts.send_incident_alert(
+            ceph_code,
+            check_detail.get("severity"),
+            log_excerpt,
+            cluster_name=cluster.name,
+            bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+            chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+            enabled=cluster.telegram_enabled if has_cluster_channel else None,
+        )
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,
