@@ -21,17 +21,6 @@
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
   </div></header>
   <main class="page">
-    <div class="tabbed-page">
-      <nav class="tabbed-sidebar" aria-label="Chức năng OpenStack">
-        <div class="node-sidebar-header">
-          <span class="hint">OPENSTACK</span>
-          <strong>Quản lý tích hợp</strong>
-        </div>
-        <a href="/openstack/auth-pool?cluster={{ selected_cluster.id }}" class="tabbed-nav-item active">
-          Auth-Pool
-        </a>
-      </nav>
-      <div class="tabbed-content">
     <section class="card">
       <div class="card-header"><h2>OpenStack Auth-Pool — {{ selected_cluster.name }}</h2></div>
       <div class="card-body">
@@ -49,8 +38,6 @@
       </div>
       {% if auth_users %}<div class="card-body table-wrap"><table><thead><tr><th>User</th><th>MON caps</th><th>OSD caps</th></tr></thead><tbody>{% for item in auth_users %}<tr><td><code>{{ item.entity }}</code></td><td><code>{{ item.caps.mon or '—' }}</code></td><td><code>{{ item.caps.osd or '—' }}</code></td></tr>{% endfor %}</tbody></table></div>{% endif %}
     </section>
-      </div>
-    </div>
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body></html>

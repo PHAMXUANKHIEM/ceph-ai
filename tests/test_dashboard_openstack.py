@@ -58,8 +58,14 @@ def test_auth_pool_page_loads_users_and_pools(dashboard_client, monkeypatch):
     assert "client.cinder" in response.text
     assert "volumes" in response.text
     assert "Controller" not in response.text
-    assert 'class="tabbed-sidebar"' in response.text
-    assert 'class="tabbed-nav-item active"' in response.text
+    assert 'class="tabbed-sidebar"' not in response.text
+
+
+def test_main_sidebar_defines_openstack_group():
+    app_js = (openstack_route.templates.env.loader.searchpath[0] + "/../static/app.js")
+    with open(app_js, encoding="utf-8") as source:
+        content = source.read()
+    assert '{ label: "OpenStack", paths: ["/openstack/auth-pool"] }' in content
 
 
 def test_settings_saves_openstack_nodes(dashboard_client):

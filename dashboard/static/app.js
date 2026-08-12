@@ -106,7 +106,8 @@
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
-    "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡", "/pgs": "∷"
+    "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡", "/pgs": "∷",
+    "/openstack/auth-pool": "◈"
   };
 
   var mainNav = topbar.querySelector(".main-nav");
@@ -130,6 +131,7 @@
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
       { label: "Pool", paths: ["/volumes", "/pgs"] },
       { label: "Object Storage", paths: ["/bucket-access-log"] },
+      { label: "OpenStack", paths: ["/openstack/auth-pool"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
@@ -156,6 +158,7 @@
       available.forEach(function (path) {
         var link = linksByPath[path];
         if (link.classList.contains("nav-dropdown-item-active")) link.classList.add("active");
+        if (window.location.pathname === path) link.classList.add("active");
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
         if (path === "/volumes") {
