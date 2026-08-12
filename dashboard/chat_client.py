@@ -11,6 +11,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics
+from watcher.ceph_client import CephQueryError, query_rbd_trash
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.llm.router_client import VALID_ACTION_IDS
@@ -51,6 +52,8 @@ MAX_TOOL_RESULT_CHARS = 4000
 TOOL_LIST_NODES = "list_nodes"
 TOOL_GET_NODE_METRICS = "get_node_metrics"
 TOOL_PROPOSE_ACTION = "propose_action"
+TOOL_GET_RBD_TRASH = "get_rbd_trash"
+_POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Shown as the assistant's message content (never raised as a generic error)
 # when the API AI connection isn't configured — dashboard/routes/chat.py
@@ -127,7 +130,7 @@ SYSTEM_PROMPT = (
     "sửa lệnh ceph trực tiếp) → giải thích và từ chối\n\n"
     "Ngoài các tool tra cứu (list_nodes, get_node_metrics, get_cluster_status, "
     "get_osd_stat, get_osd_tree, get_pool_list, get_pg_stat, get_df, "
-    "get_health_detail, get_mon_stat, run_ceph_command), bạn có thể gọi "
+    "get_health_detail, get_mon_stat, get_rbd_trash, run_ceph_command), bạn có thể gọi "
     "propose_action để ĐỀ XUẤT một hành động từ danh mục cố định — gồm cả "
     "hành động khắc phục sự cố (restart_osd_daemon, resync_ntp, "
     "pg_repair_force) VÀ hành động quản lý cluster: create_pool (cần "
@@ -208,6 +211,18 @@ def _tool_schemas() -> list[dict]:
             },
         ),
         *fixed_query_tools,
+        _fn(
+            TOOL_GET_RBD_TRASH,
+            "Liệt kê RBD images đang nằm trong trash của một pool. Đây là truy vấn read-only.",
+            {
+                "type": "object",
+                "properties": {
+                    "pool": {"type": "string", "description": "Tên RBD pool cần kiểm tra."}
+                },
+                "required": ["pool"],
+                "additionalProperties": False,
+            },
+        ),
         _fn(
             RUN_CEPH_COMMAND_TOOL,
             "Chạy lệnh ceph CLI bất kỳ (read-only, đã qua kiểm tra an toàn). "
@@ -299,6 +314,16 @@ def _run_get_node_metrics(args: dict) -> str:
     except NodeMetricsError as exc:
         raise ChatToolError(f"Không lấy được metrics từ {host}: {exc}") from exc
     return json.dumps(metrics)
+
+
+def _run_get_rbd_trash(args: dict) -> str:
+    pool = str(args.get("pool") or "").strip()
+    if not _POOL_NAME_RE.fullmatch(pool):
+        raise ChatToolError("pool RBD không hợp lệ")
+    try:
+        return json.dumps(query_rbd_trash(pool))
+    except CephQueryError as exc:
+        raise ChatToolError(f"Không đọc được RBD trash của pool {pool}: {exc}") from exc
 
 
 def resolve_command_preview(
@@ -415,6 +440,8 @@ def _run_tool(name: str, args: dict) -> tuple[str, bool]:
             result_text, is_error = _run_list_nodes(), False
         elif name == TOOL_GET_NODE_METRICS:
             result_text, is_error = _run_get_node_metrics(args), False
+        elif name == TOOL_GET_RBD_TRASH:
+            result_text, is_error = _run_get_rbd_trash(args), False
         elif name in FIXED_TOOL_COMMANDS:
             result_text, is_error = json.dumps(run_fixed_tool(name)), False
         elif name == RUN_CEPH_COMMAND_TOOL:

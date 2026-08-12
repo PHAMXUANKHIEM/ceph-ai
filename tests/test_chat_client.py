@@ -394,6 +394,35 @@ def test_run_chat_turn_run_ceph_command_tool_tracks_tools_used(monkeypatch):
     assert result["tools_used"] == ["run_ceph_command"]
 
 
+def test_run_chat_turn_can_query_rbd_trash(monkeypatch):
+    monkeypatch.setattr(
+        chat_client,
+        "query_rbd_trash",
+        lambda pool: [{"id": "trash-1", "name": "old-volume", "deletion_time": "", "status": ""}],
+    )
+    _install_fake_client(
+        monkeypatch,
+        [
+            _tool_call_completion(("get_rbd_trash", {"pool": "volumes"})),
+            _text_completion("Pool volumes có 1 image trong trash: old-volume."),
+        ],
+    )
+
+    result = asyncio.run(chat_client.run_chat_turn([], "kiểm tra RBD trash pool volumes", "admin"))
+
+    assert result["reply_text"] == "Pool volumes có 1 image trong trash: old-volume."
+    assert result["tools_used"] == ["get_rbd_trash"]
+
+
+def test_rbd_trash_tool_rejects_invalid_pool_without_querying(monkeypatch):
+    monkeypatch.setattr(chat_client, "query_rbd_trash", lambda pool: (_ for _ in ()).throw(AssertionError()))
+
+    result, is_error = chat_client._run_tool("get_rbd_trash", {"pool": "volumes; id"})
+
+    assert is_error is True
+    assert "không hợp lệ" in result
+
+
 def test_run_chat_turn_blocked_ceph_command_is_not_counted_as_tools_used(monkeypatch):
     monkeypatch.setattr(
         chat_client,
