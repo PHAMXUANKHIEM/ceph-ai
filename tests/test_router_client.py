@@ -555,6 +555,14 @@ def test_valid_action_ids_loaded_from_policy_yaml_non_empty():
     assert "crash_archive_all" in router_client.VALID_ACTION_IDS
 
 
+def test_ai_schema_only_offers_executable_actions():
+    action_enum = router_client._tool_schema()["function"]["parameters"]["properties"]["action_id"]["enum"]
+    assert "investigate_manually" not in action_enum
+    assert "pg_repair_force" not in action_enum
+    assert "enable_pool_application" in action_enum
+    assert all(router_client.commands.has_command(action_id) for action_id in action_enum)
+
+
 # --- Story 3.2: Safe Action execution ---------------------------------------
 
 
@@ -755,11 +763,9 @@ def test_diagnose_incident_risky_action_records_pending_approval_audit_entry(
         assert entries[0].action_id == action.id
 
 
-def test_diagnose_incident_risky_action_with_no_defined_command_leaves_proposed_command_none(
+def test_diagnose_incident_rejects_action_with_no_executable_command(
     isolated_db, monkeypatch
 ):
-    # pg_repair_force is RISKY but deliberately has no Command defined
-    # (worker/executor/commands.py) — must not crash, just show nothing.
     async def fake_call_router(user_content):
         return {
             "diagnosis_text": "PG stuck inconsistent",
@@ -771,12 +777,11 @@ def test_diagnose_incident_risky_action_with_no_defined_command_leaves_proposed_
 
     _create_incident("incident-6b")
     envelope = dict(ENVELOPE, incident_id="incident-6b")
-    asyncio.run(router_client.diagnose_incident("incident-6b", envelope))
+    with pytest.raises(router_client.RouterDiagnosisError):
+        asyncio.run(router_client.diagnose_incident("incident-6b", envelope))
 
     with db_module.SessionLocal() as session:
-        action = session.query(Action).filter_by(incident_id="incident-6b").one()
-        assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert action.proposed_command is None
+        assert session.query(Action).filter_by(incident_id="incident-6b").count() == 0
 
 
 # --- Story 4.3: execute an operator-approved RISKY action ------------------

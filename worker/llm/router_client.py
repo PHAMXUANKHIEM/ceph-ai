@@ -52,6 +52,13 @@ def _load_valid_action_ids() -> frozenset[str]:
 
 
 VALID_ACTION_IDS = _load_valid_action_ids()
+# Incident AI must never recommend a placeholder that the executor cannot
+# actually run. Management actions normally stay out of this schema, except
+# enable_pool_application: POOL_APP_NOT_ENABLED has a dedicated parameter
+# selection flow before execution.
+AI_EXECUTABLE_ACTION_IDS = frozenset(
+    action_id for action_id in VALID_ACTION_IDS if commands.has_command(action_id)
+) | frozenset({"enable_pool_application"})
 _POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
 _POOL_NAME_PATTERNS = (
     re.compile(r"pool ['\"]([^'\"]+)['\"]", re.IGNORECASE),
@@ -93,7 +100,9 @@ SYSTEM_PROMPT = (
     "incident (error code, relevant daemon log excerpt, cluster snapshot), "
     "diagnose the likely root cause in plain language an operator without "
     "deep Ceph internals knowledge can understand, and recommend exactly one "
-    "remediation action from the fixed set provided in the tool schema."
+    "remediation action from the fixed set provided in the tool schema. "
+    "Every recommendation must be a concrete action the system can execute; "
+    "never recommend manual investigation or a generic diagnostic check."
 )
 
 # Story 3.2: when a redelivered message finds an Action that's already
@@ -147,7 +156,7 @@ def _tool_schema() -> dict:
                     },
                     "action_id": {
                         "type": "string",
-                        "enum": sorted(VALID_ACTION_IDS),
+                        "enum": sorted(AI_EXECUTABLE_ACTION_IDS),
                         "description": "The single recommended remediation action.",
                     },
                     "rationale": {
@@ -223,7 +232,7 @@ async def _call_router(user_content: str) -> dict:
             SYSTEM_PROMPT
             + "\n\nChỉ trả về một JSON object hợp lệ, không markdown, với đúng các trường "
             "diagnosis_text, action_id, rationale. action_id phải là một trong: "
-            + ", ".join(sorted(VALID_ACTION_IDS))
+            + ", ".join(sorted(AI_EXECUTABLE_ACTION_IDS))
             + "\n\n"
             + user_content
         )
@@ -293,7 +302,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     diagnosis_text = (result.get("diagnosis_text") or "").strip()
     action_id = (result.get("action_id") or "").strip()
     rationale = (result.get("rationale") or "").strip()
-    if not diagnosis_text or not rationale or action_id not in VALID_ACTION_IDS:
+    if not diagnosis_text or not rationale or action_id not in AI_EXECUTABLE_ACTION_IDS:
         raise RouterDiagnosisError(
             f"invalid router response for incident {incident_id}: "
             f"action_id={action_id!r}, diagnosis_text={diagnosis_text!r}, rationale={rationale!r}"
