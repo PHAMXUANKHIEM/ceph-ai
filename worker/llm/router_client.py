@@ -13,7 +13,7 @@ from config.settings import settings
 from shared import audit, db
 from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.ceph_releases import codename_for_version
-from shared.cluster_nodes import configured_nodes
+from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.router_client import build_router_client
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
@@ -661,7 +661,7 @@ _PACKAGE_UPGRADE_ACTION_IDS = frozenset(
 
 
 def _finalize_package_upgrade_osd_release(
-    action_pk: str, action_params: dict, progress: list[dict]
+    action_pk: str, action_params: dict, progress: list[dict], cluster: Cluster | None = None
 ) -> None:
     """Runs `ceph osd require-osd-release <codename>` once, via the first
     configured MON node, after every target node's install+restart step
@@ -683,7 +683,8 @@ def _finalize_package_upgrade_osd_release(
         )
         return
 
-    mon_nodes = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+    mon_raw = settings.ceph_mon_nodes if cluster is None else cluster.ceph_mon_nodes
+    mon_nodes = [h.strip() for h in mon_raw.split(",") if h.strip()]
     if not mon_nodes:
         logger.warning(
             "_finalize_package_upgrade_osd_release: no MON node configured — skipping "
@@ -704,7 +705,7 @@ def _finalize_package_upgrade_osd_release(
     _write_action_progress(action_pk, progress)
 
     try:
-        execute_command(mon_host, command)
+        _execute_for_cluster(mon_host, command, cluster)
     except ExecutorError as exc:
         logger.warning(
             "_finalize_package_upgrade_osd_release: %s failed on %s (action %s) — cluster "
@@ -733,7 +734,9 @@ def _finalize_package_upgrade_osd_release(
 _UPGRADE_OSD_FLAGS = ("noout", "noscrub", "nodeep-scrub", "nosnaptrim")
 
 
-def _set_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) -> None:
+def _set_upgrade_osd_flags(
+    action_pk: str, mon_host: str, progress: list[dict], cluster: Cluster | None = None
+) -> None:
     """Sets _UPGRADE_OSD_FLAGS before a package-based upgrade's per-host
     loop starts. `&&`-chained (stop at the first failure) — if the MON
     can't even take a `ceph osd set` right now, something more fundamental
@@ -761,7 +764,7 @@ def _set_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) 
     _write_action_progress(action_pk, progress)
 
     try:
-        execute_command(mon_host, command)
+        _execute_for_cluster(mon_host, command, cluster)
     except ExecutorError as exc:
         logger.warning(
             "_set_upgrade_osd_flags: %s failed on %s (action %s) — proceeding with the "
@@ -779,7 +782,9 @@ def _set_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) 
     _write_action_progress(action_pk, progress)
 
 
-def _unset_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]) -> None:
+def _unset_upgrade_osd_flags(
+    action_pk: str, mon_host: str, progress: list[dict], cluster: Cluster | None = None
+) -> None:
     """Always attempted after a package-based upgrade's per-host loop ends
     host ran — unsetting an already-unset flag is a harmless no-op, so
     this doesn't try to track whether _set_upgrade_osd_flags actually
@@ -802,7 +807,7 @@ def _unset_upgrade_osd_flags(action_pk: str, mon_host: str, progress: list[dict]
     _write_action_progress(action_pk, progress)
 
     try:
-        execute_command(mon_host, command)
+        _execute_for_cluster(mon_host, command, cluster)
     except ExecutorError as exc:
         logger.warning(
             "_unset_upgrade_osd_flags: %s failed on %s (action %s) — noout/noscrub/"
@@ -855,12 +860,27 @@ _NOTHING_TO_RESTART_MESSAGE = "Không tìm thấy systemd unit nào cần khởi
 _INSTALL_FAILED_SKIP_MESSAGE = "Bỏ qua vì cài đặt gói thất bại trên node này"
 
 
+def _execute_for_cluster(host: str, command: str, cluster: Cluster | None = None) -> str:
+    if cluster is None:
+        return execute_command(host, command)
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    return execute_command(host, command, ssh_user, ssh_key_path)
+
+
+def _discover_units_for_cluster(host: str, cluster: Cluster | None = None) -> dict[str, list[str]]:
+    if cluster is None:
+        return commands._discover_ceph_units(host)
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    return commands._discover_ceph_units(host, ssh_user, ssh_key_path)
+
+
 def _execute_package_upgrade_action(
     action_pk: str,
     action_id_str: str,
     nodes: list[str],
     action_params: dict | None,
     incident_id: str,
+    cluster: Cluster | None = None,
 ) -> None:
     """The package-based Cluster Upgrade's 5-phase executor — install-only
     on every configured host, then restart MON-role hosts' MON units, then
@@ -893,7 +913,9 @@ def _execute_package_upgrade_action(
     # needed to PLAN these 3 phases, unlike the MDS/RGW leftover phase
     # below, whose membership can only be learned by actually discovering
     # each host's systemd units.
-    roles_by_host: dict[str, set[str]] = {n["host"]: set(n["roles"]) for n in configured_nodes()}
+    roles_by_host: dict[str, set[str]] = {
+        n["host"]: set(n["roles"]) for n in configured_nodes(cluster)
+    }
     role_hosts = {
         role: [h for h in nodes if role in roles_by_host.get(h, ())]
         for _phase_name, role, _daemon_types in _ROLE_RESTART_PHASES
@@ -923,11 +945,12 @@ def _execute_package_upgrade_action(
     # after the whole sequence (or an early stop), never per-phase (see
     # this function's own docstring / epic-7-context.md's Technical
     # Decisions on why the bracket's scope is the full upgrade window).
-    mon_nodes_cfg = [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+    mon_raw = settings.ceph_mon_nodes if cluster is None else cluster.ceph_mon_nodes
+    mon_nodes_cfg = [h.strip() for h in mon_raw.split(",") if h.strip()]
     upgrade_flags_mon_host: str | None = None
     if mon_nodes_cfg:
         upgrade_flags_mon_host = mon_nodes_cfg[0]
-        _set_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
+        _set_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress, cluster)
     else:
         logger.warning(
             "_execute_package_upgrade_action: no MON node configured — skipping "
@@ -946,28 +969,29 @@ def _execute_package_upgrade_action(
     try:
         install_entries = [p for p in progress if p.get("phase") == _UPGRADE_PHASE_INSTALL]
         _run_install_phase(
-            action_pk, action_id_str, nodes, install_entries, action_params, progress, incident_id, state
+            action_pk, action_id_str, nodes, install_entries, action_params, progress,
+            incident_id, state, cluster,
         )
 
         for phase_name, role, daemon_types in _ROLE_RESTART_PHASES:
             phase_entries = [p for p in progress if p.get("phase") == phase_name]
             _run_restart_phase(
                 action_pk, action_id_str, phase_name, role_hosts[role], phase_entries,
-                daemon_types, action_params, progress, incident_id, state,
+                daemon_types, action_params, progress, incident_id, state, cluster,
             )
 
         _run_restart_phase(
             action_pk, action_id_str, _UPGRADE_PHASE_MDS_RGW, nodes, None,
-            ("mds", "rgw"), action_params, progress, incident_id, state,
+            ("mds", "rgw"), action_params, progress, incident_id, state, cluster,
         )
     finally:
         if upgrade_flags_mon_host is not None:
-            _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress)
+            _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress, cluster)
 
     # also block this finalize step — without `not state["stopped_mid_
     # sequence"]`, `ceph osd require-osd-release <codename>` could still
     if state["executed_any"]:
-        _finalize_package_upgrade_osd_release(action_pk, action_params, progress)
+        _finalize_package_upgrade_osd_release(action_pk, action_params, progress, cluster)
 
     _record_approved_execution_result(
         action_pk,
@@ -985,6 +1009,7 @@ def _run_install_phase(
     progress: list[dict],
     incident_id: str,
     state: dict,
+    cluster: Cluster | None = None,
 ) -> None:
     """Phase 0 — install-only on every host, positional addressing into
     `phase_entries` (one pre-populated "pending" dict per host, same
@@ -1027,7 +1052,7 @@ def _run_install_phase(
         _write_action_progress(action_pk, progress)
 
         try:
-            execute_command(host, command)
+            _execute_for_cluster(host, command, cluster)
             state["executed_any"] = True
         except ExecutorError as exc:
             logger.exception(
@@ -1067,6 +1092,7 @@ def _run_restart_phase(
     progress: list[dict],
     incident_id: str,
     state: dict,
+    cluster: Cluster | None = None,
 ) -> None:
     """Restarts `daemon_types`' systemd units on each host in
     `candidate_hosts` that ACTUALLY has one discovered — a host listed for
@@ -1112,7 +1138,7 @@ def _run_restart_phase(
             continue
 
         try:
-            discovered = commands._discover_ceph_units(host)
+            discovered = _discover_units_for_cluster(host, cluster)
         except ExecutorError as exc:
             state["all_succeeded"] = False
             now = datetime.utcnow().isoformat()
@@ -1145,10 +1171,16 @@ def _run_restart_phase(
             continue  # dynamic (MDS/RGW) phase: nothing to restart here -> no entry at all
 
         try:
+            command_params = dict(
+                action_params, _phase="restart_only", _phase_daemon_types=list(daemon_types)
+            )
+            if cluster is not None:
+                ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+                command_params.update(_ssh_user=ssh_user, _ssh_key_path=ssh_key_path)
             command = commands.get_command(
                 action_id_str,
                 host,
-                dict(action_params, _phase="restart_only", _phase_daemon_types=list(daemon_types)),
+                command_params,
             )
         except ExecutorError as exc:
             state["all_succeeded"] = False
@@ -1191,7 +1223,7 @@ def _run_restart_phase(
         _write_action_progress(action_pk, progress)
 
         try:
-            execute_command(host, command)
+            _execute_for_cluster(host, command, cluster)
             state["executed_any"] = True
         except ExecutorError as exc:
             state["all_succeeded"] = False
@@ -1384,6 +1416,7 @@ def _execute_approved_action(action_pk: str) -> None:
         # envelope itself is unavailable, so Incident.cluster_id -> Cluster
         # is the only place left to look them up. None means the default
         # cluster (execute_command()'s own settings.* fallback applies).
+        cluster = None
         if incident is not None and incident.cluster_id is not None:
             cluster = session.get(Cluster, incident.cluster_id)
             ssh_user = cluster.ssh_user if cluster is not None else None
@@ -1506,7 +1539,9 @@ def _execute_approved_action(action_pk: str) -> None:
     # _PACKAGE_UPGRADE_ACTION_IDS and falls through to the generic loop
     # completely unchanged, per this story's explicit boundary.
     if action_id_str in _PACKAGE_UPGRADE_ACTION_IDS:
-        _execute_package_upgrade_action(action_pk, action_id_str, nodes, action_params, incident_id)
+        _execute_package_upgrade_action(
+            action_pk, action_id_str, nodes, action_params, incident_id, cluster
+        )
         return
 
     executed_any = False

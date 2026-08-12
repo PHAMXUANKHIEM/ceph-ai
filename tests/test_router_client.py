@@ -884,6 +884,69 @@ def test_execute_approved_action_uses_incidents_own_cluster_creds_not_default(is
     assert execute_calls == [("10.30.1.20", "other-cluster-user", "/root/.ssh/other-cluster-key")]
 
 
+def test_package_upgrade_uses_incidents_cluster_nodes_roles_and_credentials(isolated_db, monkeypatch):
+    """A selected non-default cluster must never inherit the old default
+    cluster's MON/role list during phased package execution."""
+    monkeypatch.setattr(router_client.settings, "ceph_mon_nodes", "10.3.55.153")
+    monkeypatch.setattr(router_client.settings, "ceph_mgr_nodes", "10.3.55.153")
+    monkeypatch.setattr(router_client.settings, "ceph_osd_nodes", "10.3.55.153")
+    monkeypatch.setattr(router_client.settings, "ceph_exec_mode", "none")
+    calls = []
+
+    def fake_execute(host, command, user=None, key_path=None):
+        calls.append((host, command, user, key_path))
+        if command == "systemctl --all | grep ceph || true":
+            return f"  ceph-mon@{host}.service   loaded active running x\n"
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
+
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="new-cluster",
+            ceph_mon_nodes="10.3.53.136",
+            ceph_mgr_nodes="10.3.55.91",
+            ceph_osd_nodes="10.3.52.26",
+            ssh_user="new-user",
+            ssh_key_path="/keys/new-cluster",
+            ceph_exec_mode="none",
+            is_default=False,
+            is_active=True,
+        )
+        session.add(cluster)
+        session.flush()
+        incident = Incident(
+            id="incident-package-new-cluster",
+            cluster_id=cluster.id,
+            ceph_code="CLUSTER_UPGRADE",
+            status=IncidentStatus.APPROVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = _approved_action(
+            session,
+            incident.id,
+            action_id="upgrade_ceph_cluster_package_download",
+            nodes=["10.3.53.136", "10.3.55.91", "10.3.52.26"],
+        )
+        action.action_params = json.dumps(
+            {"target_version": "15.2.17", "_cluster_exec_mode": "none"}
+        )
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert calls
+    assert all(host != "10.3.55.153" for host, *_rest in calls)
+    assert all((user, key) == ("new-user", "/keys/new-cluster") for _h, _c, user, key in calls)
+    with db_module.SessionLocal() as session:
+        progress = json.loads(session.get(Action, action_pk).execution_progress)
+    assert all(step["host"] != "10.3.55.153" for step in progress)
+
+
 def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_restarts(
     isolated_db, monkeypatch
 ):

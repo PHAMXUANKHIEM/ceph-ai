@@ -71,7 +71,9 @@ def _classify_ceph_unit(unit_name: str) -> str | None:
     return None
 
 
-def _discover_ceph_units(host: str) -> dict[str, list[str]]:
+def _discover_ceph_units(
+    host: str, user: str | None = None, key_path: str | None = None
+) -> dict[str, list[str]]:
     """Discovers this host's Ceph systemd units via `systemctl --all | grep
     ceph`, classified by daemon type (osd/mon/mgr) — works regardless of HOW
     this cluster is deployed (cephadm, a traditional systemd package
@@ -96,7 +98,10 @@ def _discover_ceph_units(host: str) -> dict[str, list[str]]:
     have zero matching lines — without it, execute_command would raise
     ExecutorError for a perfectly legitimate "no ceph units here" result.
     """
-    output = execute_command(host, "systemctl --all | grep ceph || true")
+    if user is None and key_path is None:
+        output = execute_command(host, "systemctl --all | grep ceph || true")
+    else:
+        output = execute_command(host, "systemctl --all | grep ceph || true", user, key_path)
     units: dict[str, list[str]] = {"osd": [], "mon": [], "mgr": [], "mds": [], "rgw": []}
     for line in output.splitlines():
         match = _SYSTEMCTL_UNIT_RE.match(line)
@@ -499,7 +504,9 @@ def _require_non_cephadm_exec_mode(action_id: str, params: dict | None = None) -
         )
 
 
-def _restart_discovered_units_snippet(host: str) -> str | None:
+def _restart_discovered_units_snippet(
+    host: str, user: str | None = None, key_path: str | None = None
+) -> str | None:
     """Restarts every Ceph systemd unit `_discover_ceph_units` finds on
     `host`, across ALL daemon types (not just OSD, unlike
     _restart_osd_daemon_command) — a package upgrade updates every Ceph
@@ -510,7 +517,7 @@ def _restart_discovered_units_snippet(host: str) -> str | None:
     though none of this app's configured roles describe one) is not an
     error, just has no restart step.
     """
-    discovered = _discover_ceph_units(host)
+    discovered = _discover_ceph_units(host, user, key_path)
     all_units = [name for units in discovered.values() for name in units]
     if not all_units:
         return None
@@ -542,7 +549,9 @@ _PHASE_INSTALL_ONLY = "install_only"
 _PHASE_RESTART_ONLY = "restart_only"
 
 
-def _restart_units_by_type_snippet(host: str, daemon_types: list[str]) -> str | None:
+def _restart_units_by_type_snippet(
+    host: str, daemon_types: list[str], user: str | None = None, key_path: str | None = None
+) -> str | None:
     """Like _restart_discovered_units_snippet, but restarts ONLY the
     systemd units classified under one of `daemon_types` (e.g. ["mon"]) —
     every other discovered unit on this host (e.g. its OSD unit, if
@@ -555,7 +564,7 @@ def _restart_units_by_type_snippet(host: str, daemon_types: list[str]) -> str | 
     no ACTUAL mon systemd unit found is not an error, just nothing to do
     for that phase on that host.
     """
-    discovered = _discover_ceph_units(host)
+    discovered = _discover_ceph_units(host, user, key_path)
     matching_units = [
         name for daemon_type in daemon_types for name in discovered.get(daemon_type, [])
     ]
@@ -612,7 +621,9 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     phase = params.get("_phase")
     if phase == _PHASE_RESTART_ONLY:
         daemon_types = params.get("_phase_daemon_types") or []
-        restart_snippet = _restart_units_by_type_snippet(host, daemon_types)
+        restart_snippet = _restart_units_by_type_snippet(
+            host, daemon_types, params.get("_ssh_user"), params.get("_ssh_key_path")
+        )
         if restart_snippet is None:
             raise ExecutorError(
                 f"{host}: no matching Ceph systemd unit(s) for daemon type(s) "
@@ -714,7 +725,9 @@ def _upgrade_ceph_cluster_package_download_command(host: str | None, params: dic
     if phase == _PHASE_INSTALL_ONLY:
         return install_command
 
-    restart_snippet = _restart_discovered_units_snippet(host)
+    restart_snippet = _restart_discovered_units_snippet(
+        host, params.get("_ssh_user"), params.get("_ssh_key_path")
+    )
     if restart_snippet is None:
         return install_command
     return f"{install_command} && {restart_snippet}"
@@ -739,7 +752,9 @@ def _upgrade_ceph_cluster_package_local_command(host: str | None, params: dict) 
     phase = params.get("_phase")
     if phase == _PHASE_RESTART_ONLY:
         daemon_types = params.get("_phase_daemon_types") or []
-        restart_snippet = _restart_units_by_type_snippet(host, daemon_types)
+        restart_snippet = _restart_units_by_type_snippet(
+            host, daemon_types, params.get("_ssh_user"), params.get("_ssh_key_path")
+        )
         if restart_snippet is None:
             raise ExecutorError(
                 f"{host}: no matching Ceph systemd unit(s) for daemon type(s) "
@@ -760,7 +775,9 @@ def _upgrade_ceph_cluster_package_local_command(host: str | None, params: dict) 
     if phase == _PHASE_INSTALL_ONLY:
         return install_command
 
-    restart_snippet = _restart_discovered_units_snippet(host)
+    restart_snippet = _restart_discovered_units_snippet(
+        host, params.get("_ssh_user"), params.get("_ssh_key_path")
+    )
     if restart_snippet is None:
         return install_command
     return f"{install_command} && {restart_snippet}"
