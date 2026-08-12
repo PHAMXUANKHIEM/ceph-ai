@@ -459,6 +459,40 @@ def test_call_router_extracts_args_from_matching_tool_call(monkeypatch):
     assert result == {"diagnosis_text": "d", "action_id": "resync_ntp", "rationale": "r"}
 
 
+def test_call_router_uses_codex_when_enabled(monkeypatch):
+    monkeypatch.setattr(router_client.settings, "codex_chat_enabled", True)
+    monkeypatch.setattr(router_client.settings, "claude_chat_enabled", False)
+
+    async def fake_run_turn(prompt, tools, handler, timeout):
+        await handler(
+            router_client.TOOL_NAME,
+            {"diagnosis_text": "d", "action_id": "resync_ntp", "rationale": "r"},
+        )
+        return {}
+
+    monkeypatch.setattr(router_client.codex_app_server, "run_turn", fake_run_turn)
+    monkeypatch.setattr(router_client, "_get_client", lambda: pytest.fail("router must not be used"))
+
+    result = asyncio.run(router_client._call_router("some content"))
+
+    assert result == {"diagnosis_text": "d", "action_id": "resync_ntp", "rationale": "r"}
+
+
+def test_call_router_uses_claude_when_enabled(monkeypatch):
+    monkeypatch.setattr(router_client.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(router_client.settings, "claude_chat_enabled", True)
+
+    async def fake_prompt(prompt, timeout):
+        return '```json\n{"diagnosis_text":"d","action_id":"resync_ntp","rationale":"r"}\n```'
+
+    monkeypatch.setattr(router_client, "run_claude_prompt", fake_prompt)
+    monkeypatch.setattr(router_client, "_get_client", lambda: pytest.fail("router must not be used"))
+
+    result = asyncio.run(router_client._call_router("some content"))
+
+    assert result == {"diagnosis_text": "d", "action_id": "resync_ntp", "rationale": "r"}
+
+
 def test_call_router_ignores_tool_call_with_wrong_name(monkeypatch):
     _install_fake_client(monkeypatch, _completion(("some_other_tool", {"x": 1})))
 

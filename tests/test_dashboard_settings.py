@@ -59,6 +59,7 @@ def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
 
     monkeypatch.setattr(settings_route, "start_cli_device_login", fake_start)
     monkeypatch.setattr(settings_route.codex_app_server, "account", fake_account)
+    monkeypatch.setattr(settings_route, "restart_worker", lambda: {"restarted": True})
     monkeypatch.setattr(settings, "codex_chat_enabled", False)
     _login(dashboard_client)
 
@@ -122,6 +123,7 @@ def test_claude_login_and_activate_disables_codex(dashboard_client, monkeypatch)
 
     monkeypatch.setattr(settings_route, "start_claude_login", fake_start)
     monkeypatch.setattr(settings_route, "claude_status", fake_status)
+    monkeypatch.setattr(settings_route, "restart_worker", lambda: {"restarted": True})
     monkeypatch.setattr(settings, "claude_chat_enabled", False)
     monkeypatch.setattr(settings, "codex_chat_enabled", True)
     _login(dashboard_client)

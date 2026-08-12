@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from shared.models import Action, ActionClassification, ActionStatus, Cluster, I
 from shared.ceph_releases import codename_for_version
 from shared.cluster_nodes import configured_nodes
 from shared.router_client import build_router_client
+from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.telegram_alerts import send_ai_incident_alert, send_auto_remediation_alert
 from worker.backup import engine as backup_engine
 from worker.executor import cluster_deploy, commands, volume_perf
@@ -181,6 +184,43 @@ async def _call_router(user_content: str) -> dict:
     unchanged against a real non-streaming-only OpenAI-compatible endpoint
     too.
     """
+    if settings.codex_chat_enabled:
+        captured: dict = {}
+
+        async def capture(tool_name: str, arguments: dict) -> tuple[str, bool]:
+            if tool_name != TOOL_NAME:
+                return f"Tool không được phép: {tool_name}", False
+            captured.update(arguments)
+            return "Đã ghi nhận chẩn đoán.", True
+
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nBạn BẮT BUỘC gọi tool report_diagnosis đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
+            + user_content
+        )
+        try:
+            await codex_app_server.run_turn(prompt, [_tool_schema()], capture, timeout=ROUTER_TIMEOUT_SECONDS)
+        except CodexAppServerError as exc:
+            raise RouterDiagnosisError(f"Codex call failed: {exc}") from exc
+        return captured
+
+    if settings.claude_chat_enabled:
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nChỉ trả về một JSON object hợp lệ, không markdown, với đúng các trường "
+            "diagnosis_text, action_id, rationale. action_id phải là một trong: "
+            + ", ".join(sorted(VALID_ACTION_IDS))
+            + "\n\n"
+            + user_content
+        )
+        try:
+            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+            result = json.loads(clean)
+        except (ClaudeCLIError, json.JSONDecodeError) as exc:
+            raise RouterDiagnosisError(f"Claude call failed: {exc}") from exc
+        return result
+
     client = _get_client()
     try:
         async with client.chat.completions.stream(

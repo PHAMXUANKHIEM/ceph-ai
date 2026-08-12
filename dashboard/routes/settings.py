@@ -317,6 +317,8 @@ def _start_worker() -> int:
         ROUTER_MODEL_ENV_NAME: settings.router_model,
         ROUTER_BASE_URL_ENV_NAME: settings.router_base_url,
         ROUTER_ENABLED_ENV_NAME: "true" if settings.router_enabled else "false",
+        CODEX_CHAT_ENABLED_ENV_NAME: "true" if settings.codex_chat_enabled else "false",
+        CLAUDE_CHAT_ENABLED_ENV_NAME: "true" if settings.claude_chat_enabled else "false",
         **{env_name: getattr(settings, field) for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()},
         **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},
     }
@@ -945,6 +947,7 @@ async def settings_codex_activate(user: str = Depends(require_login)):
         _update_env_file(CLAUDE_CHAT_ENABLED_ENV_NAME, "false")
         settings.codex_chat_enabled = True
         settings.claude_chat_enabled = False
+        restart_result = await asyncio.to_thread(restart_worker)
     except HTTPException:
         raise
     except CodexAppServerError as exc:
@@ -952,7 +955,7 @@ async def settings_codex_activate(user: str = Depends(require_login)):
     except Exception as exc:
         logger.exception("settings_codex_activate: cannot persist setting")
         raise HTTPException(status_code=500, detail="Không ghi được file cấu hình") from exc
-    return {"enabled": True}
+    return {"enabled": True, "worker_restarted": restart_result["restarted"]}
 
 
 @router.post("/settings/codex/logout")
@@ -1007,11 +1010,12 @@ async def settings_claude_activate(user: str = Depends(require_login)):
         _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "false")
         settings.claude_chat_enabled = True
         settings.codex_chat_enabled = False
+        restart_result = await asyncio.to_thread(restart_worker)
     except HTTPException:
         raise
     except ClaudeCLIError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"enabled": True}
+    return {"enabled": True, "worker_restarted": restart_result["restarted"]}
 
 
 @router.post("/settings/claude/logout")
