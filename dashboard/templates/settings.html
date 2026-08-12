@@ -47,6 +47,17 @@
   </header>
 
   <main class="page settings-page">
+    <header class="settings-overview">
+      <div>
+        <span class="settings-eyebrow">System workspace</span>
+        <h1>Cài đặt</h1>
+        <p>Quản lý dịch vụ, kết nối hạ tầng và các tác vụ bảo trì tại một nơi.</p>
+      </div>
+      <div class="settings-overview-status" aria-label="Phạm vi cấu hình">
+        <span class="settings-status-dot" aria-hidden="true"></span>
+        <span><small>Đang cấu hình</small><strong>Ceph AIOps</strong></span>
+      </div>
+    </header>
     <nav class="settings-sidebar">
       <div class="settings-sidebar-heading">
         <span class="settings-sidebar-kicker">CEPH-AI</span>
@@ -615,19 +626,44 @@
 
     {% if is_admin %}
     <section class="card settings-panel" data-panel="openstack" {% if active_section != 'openstack' %}hidden{% endif %}>
-      <div class="card-header"><h2>Cấu hình OpenStack</h2></div>
+      <div class="card-header settings-panel-header">
+        <div class="settings-panel-title">
+          <span class="settings-panel-icon settings-panel-icon-openstack" aria-hidden="true">OS</span>
+          <div><h2>Cấu hình OpenStack</h2><p>Khai báo các node tích hợp với cụm Ceph mặc định</p></div>
+        </div>
+        <span class="settings-scope-badge">Default cluster</span>
+      </div>
       <div class="card-body">
-        <p class="hint">Khai báo các node OpenStack dùng chung với cụm Ceph mặc định. Nhập IP hoặc hostname, phân cách bằng dấu phẩy.</p>
+        <div class="openstack-settings-intro">
+          <div>
+            <span class="settings-eyebrow">OpenStack integration</span>
+            <h3>Kết nối hạ tầng compute với Ceph</h3>
+            <p>Danh sách node được lưu theo cụm Ceph mặc định và dùng cho các luồng tích hợp OpenStack.</p>
+          </div>
+          <div class="openstack-node-summary">
+            <span><strong>{{ openstack_controller_nodes.split(',')|reject('equalto', '')|list|length }}</strong> Controller</span>
+            <span><strong>{{ openstack_compute_nodes.split(',')|reject('equalto', '')|list|length }}</strong> Compute</span>
+          </div>
+        </div>
         {% if openstack_error %}<p class="error">{{ openstack_error }}</p>{% endif %}
         {% if openstack_success %}<p class="success">{{ openstack_success }}</p>{% endif %}
-        <form method="post" action="/settings/openstack" class="settings-form">
-          <label>Controller nodes
-            <input type="text" name="controller_nodes" value="{{ openstack_controller_nodes }}" required placeholder="10.0.0.10,10.0.0.11">
-          </label>
-          <label>Compute nodes
-            <input type="text" name="compute_nodes" value="{{ openstack_compute_nodes }}" placeholder="10.0.0.20,10.0.0.21">
-          </label>
-          <button type="submit" class="btn btn-primary">Lưu cấu hình OpenStack</button>
+        <form method="post" action="/settings/openstack" class="settings-form openstack-settings-form">
+          <div class="settings-field-grid">
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Controller nodes</strong><em>Bắt buộc</em></span>
+              <input type="text" name="controller_nodes" value="{{ openstack_controller_nodes }}" required placeholder="10.0.0.10, 10.0.0.11" autocomplete="off">
+              <small>IP hoặc hostname của các Controller, phân cách bằng dấu phẩy.</small>
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Compute nodes</strong><em class="is-optional">Tuỳ chọn</em></span>
+              <input type="text" name="compute_nodes" value="{{ openstack_compute_nodes }}" placeholder="10.0.0.20, 10.0.0.21" autocomplete="off">
+              <small>IP hoặc hostname của các Compute cần truy cập storage Ceph.</small>
+            </label>
+          </div>
+          <div class="settings-form-actions">
+            <p><strong>Lưu ý:</strong> Lưu cấu hình không thực thi lệnh trên các node.</p>
+            <button type="submit" class="btn btn-primary">Lưu cấu hình OpenStack</button>
+          </div>
         </form>
       </div>
     </section>
