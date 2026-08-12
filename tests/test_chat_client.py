@@ -279,6 +279,7 @@ def test_resolve_command_preview_returns_none_for_management_action_missing_para
 
 
 def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch):
+    monkeypatch.setattr(chat_client.auth, "is_ceph_chat_restricted", lambda actor: True)
     monkeypatch.setattr(
         chat_client,
         "_get_client",
@@ -292,6 +293,15 @@ def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch)
         "proposal": None,
         "tools_used": [],
     }
+
+
+def test_run_chat_turn_unrestricted_user_can_ask_non_ceph_question(monkeypatch):
+    monkeypatch.setattr(chat_client.auth, "is_ceph_chat_restricted", lambda actor: False)
+    _install_fake_client(monkeypatch, [_text_completion("Câu trả lời tự do")])
+
+    result = asyncio.run(chat_client.run_chat_turn([], "Thời tiết hôm nay?", "admin"))
+
+    assert result["reply_text"] == "Câu trả lời tự do"
 
 
 def test_ceph_scope_allows_contextual_follow_up():

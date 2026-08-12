@@ -59,6 +59,7 @@
         {% if user_toggle_error %}
           <p class="error">{{ user_toggle_error }}</p>
         {% endif %}
+        {% if user_chat_scope_success %}<p class="success">{{ user_chat_scope_success }}</p>{% endif %}
         {% if user_delete_error %}
           <p class="error">{{ user_delete_error }}</p>
         {% endif %}
@@ -72,17 +73,25 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Username</th><th>Vai trò</th><th>Trạng thái</th><th>Người tạo</th><th>Ngày tạo</th><th></th></tr>
+              <tr><th>Username</th><th>Vai trò</th><th>Phạm vi AI</th><th>Trạng thái</th><th>Người tạo</th><th>Ngày tạo</th><th></th></tr>
             </thead>
             <tbody>
               {% for u in users %}
               <tr>
                 <td>{{ u.username }}</td>
                 <td>{{ "Admin" if u.is_admin else "User" }}</td>
+                <td>{{ "Không giới hạn" if u.is_admin or not u.ceph_chat_restricted else "Chỉ Ceph" }}</td>
                 <td>{{ "Đang hoạt động" if u.is_active else "Đã vô hiệu hoá" }}</td>
                 <td>{{ u.created_by }}</td>
                 <td>{{ u.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
                 <td>
+                  <form method="post" action="/users/{{ u.id }}/toggle-ceph-chat-scope" class="inline-form">
+                    {% if u.is_admin %}
+                    <button type="submit" class="btn btn-sm" disabled title="Admin luôn không bị giới hạn">AI: Không giới hạn</button>
+                    {% else %}
+                    <button type="submit" class="btn btn-sm">{{ "Mở rộng AI" if u.ceph_chat_restricted else "Giới hạn Ceph" }}</button>
+                    {% endif %}
+                  </form>
                   <form method="post" action="/users/{{ u.id }}/toggle-active" class="inline-form">
                     {% if u.username == user %}
                     <button type="submit" class="btn btn-sm" disabled title="Không thể tự vô hiệu hoá chính mình">
@@ -111,7 +120,7 @@
                 </td>
               </tr>
               {% else %}
-              <tr class="empty-row"><td colspan="6" class="empty-state">Chưa có user nào được tạo.</td></tr>
+              <tr class="empty-row"><td colspan="7" class="empty-state">Chưa có user nào được tạo.</td></tr>
               {% endfor %}
             </tbody>
           </table>

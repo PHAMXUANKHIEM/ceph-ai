@@ -91,6 +91,21 @@ def is_admin_user(username: str) -> bool:
     return db_user is not None and db_user.is_admin
 
 
+def is_ceph_chat_restricted(username: str) -> bool:
+    """Whether chat must reject questions outside Ceph for this login.
+
+    Every admin is always unrestricted, including the root account from
+    ``.env``. Missing/inactive accounts fail closed because this helper is
+    also safe to call independently of the login dependency.
+    """
+    if username == settings.dashboard_username:
+        return False
+    db_user = _find_active_user(username)
+    if db_user is None:
+        return True
+    return False if db_user.is_admin else db_user.ceph_chat_restricted
+
+
 async def require_login(request: Request) -> str:
     user = request.session.get("user")
     if not user:

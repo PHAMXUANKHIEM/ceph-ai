@@ -6,6 +6,7 @@ import httpx
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
 
 from config.settings import settings
+from dashboard.routes import auth
 from shared.cluster_nodes import configured_nodes
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
@@ -480,7 +481,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     tools only — a staged propose_action isn't a "query"), for the
     frontend's "🔧 Đã dùng: ..." badge.
     """
-    if not is_ceph_scoped(user_text, history):
+    if auth.is_ceph_chat_restricted(actor) and not is_ceph_scoped(user_text, history):
         return {"reply_text": OUT_OF_SCOPE_MESSAGE, "proposal": None, "tools_used": []}
 
     if settings.codex_chat_enabled:

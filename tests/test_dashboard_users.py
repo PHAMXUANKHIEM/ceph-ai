@@ -91,6 +91,36 @@ def test_create_user_success_shows_in_list(dashboard_client):
     assert response.status_code == 200
     assert "Đã tạo user" in response.text
     assert "newbie" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.query(User).filter_by(username="newbie").one().ceph_chat_restricted is True
+
+
+def test_admin_can_toggle_regular_users_ceph_chat_restriction(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    with db_module.SessionLocal() as session:
+        target = session.query(User).filter_by(username="regular").one()
+        target_id = target.id
+        assert target.ceph_chat_restricted is True
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/users/{target_id}/toggle-ceph-chat-scope")
+
+    assert response.status_code == 200
+    assert "không giới hạn" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.get(User, target_id).ceph_chat_restricted is False
+
+
+def test_admin_chat_scope_cannot_be_restricted(dashboard_client):
+    _create_user("otheradmin", "s3cret-pw", is_admin=True)
+    with db_module.SessionLocal() as session:
+        target_id = session.query(User).filter_by(username="otheradmin").one().id
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/users/{target_id}/toggle-ceph-chat-scope")
+
+    assert response.status_code == 200
+    assert "admin luôn được hỏi AI không giới hạn" in response.text
 
 
 def test_created_admin_user_can_manage_other_users(dashboard_client):

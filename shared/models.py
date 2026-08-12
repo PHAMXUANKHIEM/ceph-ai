@@ -482,6 +482,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(72), nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    ceph_chat_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 

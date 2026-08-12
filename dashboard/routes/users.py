@@ -37,6 +37,7 @@ def _users_context(
     user_create_error: str | None = None,
     user_create_success: str | None = None,
     user_toggle_error: str | None = None,
+    user_chat_scope_success: str | None = None,
     user_delete_error: str | None = None,
     user_delete_success: str | None = None,
 ) -> dict:
@@ -47,6 +48,7 @@ def _users_context(
         "user_create_error": user_create_error,
         "user_create_success": user_create_success,
         "user_toggle_error": user_toggle_error,
+        "user_chat_scope_success": user_chat_scope_success,
         "user_delete_error": user_delete_error,
         "user_delete_success": user_delete_success,
     }
@@ -102,6 +104,7 @@ async def create_user(
                         password_hash=bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode(),
                         is_admin=is_admin_flag,
                         is_active=True,
+                        ceph_chat_restricted=not is_admin_flag,
                         created_by=user,
                     )
                 )
@@ -141,6 +144,34 @@ async def toggle_user_active(request: Request, user_id: str, user: str = Depends
         session.commit()
 
     return templates.TemplateResponse(request, "users.html", _users_context(user))
+
+
+@router.post("/users/{user_id}/toggle-ceph-chat-scope", response_class=HTMLResponse)
+async def toggle_ceph_chat_scope(
+    request: Request, user_id: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    with db.SessionLocal() as session:
+        target = session.get(User, user_id)
+        if target is None:
+            return templates.TemplateResponse(
+                request, "users.html",
+                _users_context(user, user_toggle_error="Không tìm thấy user."),
+            )
+        if target.is_admin:
+            return templates.TemplateResponse(
+                request, "users.html",
+                _users_context(user, user_toggle_error="Tài khoản admin luôn được hỏi AI không giới hạn."),
+            )
+        target.ceph_chat_restricted = not target.ceph_chat_restricted
+        restricted = target.ceph_chat_restricted
+        username = target.username
+        session.commit()
+    state = "chỉ được hỏi về Ceph" if restricted else "được hỏi AI không giới hạn"
+    return templates.TemplateResponse(
+        request, "users.html",
+        _users_context(user, user_chat_scope_success=f"User {username!r} hiện {state}."),
+    )
 
 
 @router.post("/users/{user_id}/delete", response_class=HTMLResponse)
