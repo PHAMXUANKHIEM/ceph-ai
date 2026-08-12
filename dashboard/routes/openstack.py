@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import posixpath
 import re
 import shlex
 
@@ -64,6 +66,57 @@ def _create_auth_command(entity: str, pool: str, access: str) -> str:
         "osd", f"profile {profile} pool={pool}",
     ]
     return " ".join(shlex.quote(piece) for piece in pieces)
+
+
+def _openstack_nodes(cluster) -> list[str]:
+    raw_nodes = f"{cluster.openstack_controller_nodes},{cluster.openstack_compute_nodes}"
+    return list(dict.fromkeys(node.strip() for node in raw_nodes.split(",") if node.strip()))
+
+
+def _export_ceph_integration_files(cluster, connection, entity: str) -> dict[str, str]:
+    """Export the three files on a Ceph MON and return their contents.
+
+    The user/admin keyrings are deliberately materialised under /tmp on the
+    MON with their final names before being copied to OpenStack. This keeps
+    the operational flow equivalent across native, container and cephadm
+    clusters while avoiding a dependency on an SSH private key inside the
+    Ceph container.
+    """
+    filename = f"ceph.{entity}.keyring"
+    inner_commands = {
+        filename: f"ceph auth get {shlex.quote(entity)} -o {shlex.quote('/tmp/' + filename)} && cat {shlex.quote('/tmp/' + filename)}",
+        "ceph.client.admin.keyring": (
+            "ceph auth get client.admin -o /tmp/ceph.client.admin.keyring "
+            "&& cat /tmp/ceph.client.admin.keyring"
+        ),
+        "ceph.conf": "cat /etc/ceph/ceph.conf",
+    }
+    files: dict[str, str] = {}
+    for name, inner_command in inner_commands.items():
+        # build_exec_command does not imply a shell inside Docker/Podman;
+        # explicitly wrap compound commands so `&& cat` runs in the same
+        # Ceph execution environment where the /tmp file was created.
+        shell_command = f"sh -c {shlex.quote(inner_command)}"
+        command = build_exec_command(connection[4], connection[1], shell_command)
+        files[name] = execute_command(
+            connection[0][0], command, user=connection[2], key_path=connection[3]
+        )
+    return files
+
+
+def _copy_ceph_files_to_openstack(cluster, connection, files: dict[str, str]) -> None:
+    destination = (cluster.openstack_ceph_config_path or "/etc/ceph").rstrip("/")
+    destination_q = shlex.quote(destination)
+    writes = [f"mkdir -p {destination_q}", "umask 077"]
+    for name, content in files.items():
+        target = shlex.quote(posixpath.join(destination, name))
+        encoded = shlex.quote(base64.b64encode(content.encode()).decode())
+        mode = "0644" if name == "ceph.conf" else "0600"
+        writes.append(f"printf %s {encoded} | base64 -d > {target}")
+        writes.append(f"chmod {mode} {target}")
+    command = " && ".join(writes)
+    for host in _openstack_nodes(cluster):
+        execute_command(host, command, user=connection[2], key_path=connection[3])
 
 
 async def _auth_page_context(request: Request, user: str, active_view: str) -> dict:
@@ -184,8 +237,14 @@ async def create_auth_user(
         await asyncio.to_thread(
             execute_command, connection[0][0], command, user=connection[2], key_path=connection[3]
         )
+        if _openstack_nodes(cluster):
+            files = await asyncio.to_thread(_export_ceph_integration_files, cluster, connection, entity)
+            await asyncio.to_thread(_copy_ceph_files_to_openstack, cluster, connection, files)
     except (ValueError, ExecutorError, IndexError) as exc:
-        raise HTTPException(status_code=502, detail=f"Không tạo được auth user: {exc}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Không thể hoàn tất tạo auth user và chuyển đủ file Ceph: {exc}",
+        ) from exc
     return RedirectResponse(
         f"/openstack/auth-user/create?cluster={cluster.id}&created=1", status_code=303
     )

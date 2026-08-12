@@ -44,7 +44,7 @@
       <div class="card-body">
         {% if active_view == 'create-user' %}
         <p class="hint">Tạo mới Ceph auth user và cấp ngay quyền RBD trên pool đã chọn.</p>
-        {% if created %}<p class="success">Đã tạo auth user và cấp quyền pool thành công.</p>{% endif %}
+        {% if created %}<p class="success">Đã tạo auth user, cấp quyền pool và chuyển các file Ceph sang OpenStack thành công.</p>{% endif %}
         {% if error %}<p class="error">Không tải được dữ liệu: {{ error }}</p>{% endif %}
         {% if is_admin and not error %}
         <form method="post" action="/openstack/auth-user/create?cluster={{ selected_cluster.id }}" class="audit-filters">

@@ -814,6 +814,9 @@ def _settings_context(
         default_cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
         context["openstack_controller_nodes"] = default_cluster.openstack_controller_nodes if default_cluster else ""
         context["openstack_compute_nodes"] = default_cluster.openstack_compute_nodes if default_cluster else ""
+        context["openstack_ceph_config_path"] = (
+            default_cluster.openstack_ceph_config_path if default_cluster else "/etc/ceph"
+        )
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
     context.update(
@@ -916,13 +919,19 @@ async def openstack_settings_submit(
     user: str = Depends(require_login),
     controller_nodes: str = Form(""),
     compute_nodes: str = Form(""),
+    ceph_config_path: str = Form("/etc/ceph"),
 ):
     _require_admin_privilege(user)
     controllers = ",".join(_parse_node_list(controller_nodes))
     computes = ",".join(_parse_node_list(compute_nodes))
+    destination = ceph_config_path.strip().rstrip("/") or "/etc/ceph"
     if not controllers:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
             user, openstack_error="Vui lòng cấu hình ít nhất một OpenStack Controller node."
+        ))
+    if not destination.startswith("/") or "\x00" in destination:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, openstack_error="Đường dẫn nhận file Ceph phải là đường dẫn tuyệt đối."
         ))
     with db.SessionLocal() as session:
         cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
@@ -932,9 +941,10 @@ async def openstack_settings_submit(
             ))
         cluster.openstack_controller_nodes = controllers
         cluster.openstack_compute_nodes = computes
+        cluster.openstack_ceph_config_path = destination
         session.commit()
     return templates.TemplateResponse(request, "settings.html", _settings_context(
-        user, openstack_success="Đã lưu cấu hình OpenStack Controller và Compute nodes."
+        user, openstack_success="Đã lưu cấu hình OpenStack và đường dẫn nhận file Ceph."
     ))
 
 

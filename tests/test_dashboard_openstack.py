@@ -127,6 +127,7 @@ def test_settings_saves_openstack_nodes(dashboard_client):
     response = dashboard_client.post("/settings/openstack", data={
         "controller_nodes": "10.0.0.10, 10.0.0.11",
         "compute_nodes": "10.0.0.20, 10.0.0.21",
+        "ceph_config_path": "/etc/ceph/openstack",
     })
     assert response.status_code == 200
     assert "Đã lưu cấu hình OpenStack" in response.text
@@ -134,3 +135,47 @@ def test_settings_saves_openstack_nodes(dashboard_client):
         cluster = session.query(Cluster).filter_by(is_default=True).one()
         assert cluster.openstack_controller_nodes == "10.0.0.10,10.0.0.11"
         assert cluster.openstack_compute_nodes == "10.0.0.20,10.0.0.21"
+        assert cluster.openstack_ceph_config_path == "/etc/ceph/openstack"
+
+
+def test_create_auth_user_exports_and_copies_ceph_files(dashboard_client, monkeypatch):
+    def fake_query(*args):
+        if args[-1] == "ceph osd pool ls detail":
+            return "mon1", [{"pool_id": 1, "pool_name": "volumes"}]
+        return "mon1", {"auth_dump": []}
+
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        cluster.openstack_controller_nodes = "controller1"
+        cluster.openstack_compute_nodes = "compute1"
+        cluster.openstack_ceph_config_path = "/etc/ceph"
+        session.commit()
+
+    executed = []
+
+    def fake_execute(host, command, **kwargs):
+        executed.append((host, command, kwargs))
+        if "client.admin" in command:
+            return "[client.admin]\n key = admin-secret\n"
+        if "auth get client.cinder" in command:
+            return "[client.cinder]\n key = user-secret\n"
+        if "cat /etc/ceph/ceph.conf" in command:
+            return "[global]\n fsid = test\n"
+        return "created"
+
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
+    monkeypatch.setattr(openstack_route, "execute_command", fake_execute)
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/openstack/auth-user/create",
+        data={"entity_name": "cinder", "pool": "volumes", "access": "write"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert any("-o /tmp/ceph.client.cinder.keyring" in command for _, command, _ in executed)
+    for host in ("controller1", "compute1"):
+        target_command = next(command for called_host, command, _ in executed if called_host == host)
+        assert "/etc/ceph/ceph.client.cinder.keyring" in target_command
+        assert "/etc/ceph/ceph.client.admin.keyring" in target_command
+        assert "/etc/ceph/ceph.conf" in target_command

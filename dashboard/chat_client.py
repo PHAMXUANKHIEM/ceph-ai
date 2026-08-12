@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 import httpx
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
@@ -58,6 +59,36 @@ TOOL_PROPOSE_ACTION = "propose_action"
 # the persisted ChatMessage.content itself stays plain text (no HTML/markup
 # is ever put in a chat bubble — every bubble is rendered via textContent).
 MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API, Codex hoặc Claude."
+OUT_OF_SCOPE_MESSAGE = "Tôi ko có quyền hạn thao tác trong lĩnh vực này. Xin liên hệ anh Khiêm để mở rộng"
+
+# This is an enforcement boundary, not merely prompt guidance. Keep the
+# vocabulary focused on Ceph itself and the infrastructure concepts that
+# operators necessarily use while diagnosing a Ceph cluster.
+_CEPH_SCOPE_RE = re.compile(
+    r"(?i)(?:\bceph\b|\brados\b|\brbd\b|\brgw\b|\bcephfs\b|\bosd(?:\.\d+)?\b|"
+    r"\bmon(?:itor)?\b|\bmgr\b|\bmds\b|\bcrush\b|\bbluestore\b|\brocksdb\b|"
+    r"\bpool\b|\bplacement\s+group\b|\bpg(?:s|\.\w+)?\b|\bquorum\b|"
+    r"\bscrub\b|\bbackfill\b|\brecover(?:y|ing)?\b|\brebalance\b|\bkeyring\b|"
+    r"\bceph\.conf\b|\bcluster\b|\bstorage\b|\bvolume\b|\bsnapshot\b|"
+    r"\biops\b|\bthroughput\b|\blatency\b|\bdaemons?\b|\bnodes?\b|\bhosts?\b|"
+    r"cụm|lưu trữ|ổ đĩa|đĩa|dung lượng|độ trễ|lệch giờ|đồng bộ giờ|ntp|"
+    r"sức khoẻ|sức khỏe|phục hồi dữ liệu)"
+)
+_FOLLOW_UP_RE = re.compile(
+    r"(?i)^\s*(?:tại sao|vì sao|giải thích|chi tiết|tiếp tục|làm đi|thực hiện đi|"
+    r"sửa đi|khắc phục đi|còn gì nữa|như thế nào|kiểm tra thêm|đúng không|ok|ừ|có)\b"
+)
+
+
+def is_ceph_scoped(user_text: str, history: list[dict] | None = None) -> bool:
+    if _CEPH_SCOPE_RE.search(user_text or ""):
+        return True
+    if not _FOLLOW_UP_RE.search(user_text or ""):
+        return False
+    for message in reversed((history or [])[-MAX_HISTORY_MESSAGES:]):
+        if message.get("role") == "user":
+            return bool(_CEPH_SCOPE_RE.search(str(message.get("content", ""))))
+    return False
 
 # AD-5's "action_id/command_id đóng từ structured output, không parse free
 # text" applies here exactly as it does to worker/llm/router_client.py's
@@ -83,6 +114,8 @@ SYSTEM_PROMPT = (
     "Bạn là trợ lý AI quản trị cụm Ceph trong hệ thống CA Ceph AIOps. "
     "Bạn có thể gọi tool để lấy dữ liệu THỰC TẾ từ cụm Ceph đang chạy.\n\n"
     "Quy tắc:\n"
+    f"- CHỈ trả lời hoặc thao tác nội dung liên quan Ceph. Nếu ngoài lĩnh vực Ceph, "
+    f"chỉ trả đúng nguyên văn: {OUT_OF_SCOPE_MESSAGE}\n"
     "- Trả lời bằng tiếng Việt, ngắn gọn và chính xác\n"
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
     "- Khi muốn thực hiện lệnh Ceph bất kỳ (read-only) → dùng run_ceph_command\n"
@@ -418,6 +451,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     tools only — a staged propose_action isn't a "query"), for the
     frontend's "🔧 Đã dùng: ..." badge.
     """
+    if not is_ceph_scoped(user_text, history):
+        return {"reply_text": OUT_OF_SCOPE_MESSAGE, "proposal": None, "tools_used": []}
+
     if settings.codex_chat_enabled:
         return await _run_codex_chat_turn(history, user_text)
     if settings.claude_chat_enabled:

@@ -278,6 +278,28 @@ def test_resolve_command_preview_returns_none_for_management_action_missing_para
 # --- run_chat_turn: plain text, no tools -------------------------------------
 
 
+def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch):
+    monkeypatch.setattr(
+        chat_client,
+        "_get_client",
+        lambda: pytest.fail("out-of-scope questions must not call the AI provider"),
+    )
+
+    result = asyncio.run(chat_client.run_chat_turn([], "Thời tiết hôm nay thế nào?", "admin"))
+
+    assert result == {
+        "reply_text": chat_client.OUT_OF_SCOPE_MESSAGE,
+        "proposal": None,
+        "tools_used": [],
+    }
+
+
+def test_ceph_scope_allows_contextual_follow_up():
+    history = [{"role": "user", "content": "Ceph cluster đang HEALTH_WARN"}]
+    assert chat_client.is_ceph_scoped("giải thích chi tiết", history) is True
+    assert chat_client.is_ceph_scoped("giải thích chi tiết", []) is False
+
+
 def test_run_chat_turn_plain_text_answer(monkeypatch):
     _install_fake_client(monkeypatch, [_text_completion("Cluster đang HEALTH_OK.")])
 
@@ -439,7 +461,7 @@ def test_run_chat_turn_drops_proposal_with_invalid_host(monkeypatch):
         ],
     )
 
-    result = asyncio.run(chat_client.run_chat_turn([], "sửa giúp tôi", "admin"))
+    result = asyncio.run(chat_client.run_chat_turn([], "sửa Ceph giúp tôi", "admin"))
 
     assert result["proposal"] is None
     assert "không hợp lệ" in result["reply_text"]
@@ -462,7 +484,7 @@ def test_run_chat_turn_stops_after_max_iterations(monkeypatch):
 def test_run_chat_turn_length_finish_reason_appends_truncation_note_and_stops(monkeypatch):
     _install_fake_client(monkeypatch, [_length_truncated_completion("Cluster đang")])
 
-    result = asyncio.run(chat_client.run_chat_turn([], "giải thích chi tiết", "admin"))
+    result = asyncio.run(chat_client.run_chat_turn([], "giải thích chi tiết Ceph cluster", "admin"))
 
     assert "Cluster đang" in result["reply_text"]
     assert "cắt do vượt giới hạn token" in result["reply_text"]
@@ -475,7 +497,7 @@ def test_run_chat_turn_wraps_api_errors(monkeypatch):
     _install_fake_client(monkeypatch, [RuntimeError("connection refused")])
 
     with pytest.raises(chat_client.ChatTurnError):
-        asyncio.run(chat_client.run_chat_turn([], "hi", "admin"))
+        asyncio.run(chat_client.run_chat_turn([], "Ceph status", "admin"))
 
 
 def test_run_chat_turn_reports_invalid_api_key_with_friendly_message(monkeypatch):
@@ -484,7 +506,7 @@ def test_run_chat_turn_reports_invalid_api_key_with_friendly_message(monkeypatch
     _install_fake_client(monkeypatch, [auth_error])
 
     with pytest.raises(chat_client.ChatTurnError, match="API key không hợp lệ"):
-        asyncio.run(chat_client.run_chat_turn([], "hi", "admin"))
+        asyncio.run(chat_client.run_chat_turn([], "Ceph status", "admin"))
 
 
 def test_run_chat_turn_reports_connection_error_with_host_port_hint(monkeypatch):
@@ -492,7 +514,7 @@ def test_run_chat_turn_reports_connection_error_with_host_port_hint(monkeypatch)
     _install_fake_client(monkeypatch, [conn_error])
 
     with pytest.raises(chat_client.ChatTurnError, match="Kiểm tra host/port"):
-        asyncio.run(chat_client.run_chat_turn([], "hi", "admin"))
+        asyncio.run(chat_client.run_chat_turn([], "Ceph status", "admin"))
 
 
 def test_run_chat_turn_reports_missing_router_config_as_chat_turn_error_not_raw_exception(
@@ -507,4 +529,4 @@ def test_run_chat_turn_reports_missing_router_config_as_chat_turn_error_not_raw_
     monkeypatch.setattr(chat_client.settings, "router_base_url", "", raising=False)
 
     with pytest.raises(chat_client.ChatTurnError):
-        asyncio.run(chat_client.run_chat_turn([], "hi", "admin"))
+        asyncio.run(chat_client.run_chat_turn([], "Ceph status", "admin"))
