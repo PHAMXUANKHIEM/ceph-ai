@@ -92,6 +92,8 @@ def test_create_auth_user_page_has_create_form(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert "Tạo Ceph Auth User" in response.text
     assert 'action="/openstack/auth-user/create?' in response.text
+    assert 'href="/volumes"' in response.text
+    assert 'href="/pgs"' not in response.text  # app.js adds PGs without deleting Pool/Volumes
 
 
 def test_create_auth_user_executes_on_selected_cluster(dashboard_client, monkeypatch):
