@@ -297,11 +297,27 @@ def test_run_chat_turn_rejects_non_ceph_question_without_calling_ai(monkeypatch)
 
 def test_run_chat_turn_unrestricted_user_can_ask_non_ceph_question(monkeypatch):
     monkeypatch.setattr(chat_client.auth, "is_ceph_chat_restricted", lambda actor: False)
-    _install_fake_client(monkeypatch, [_text_completion("Câu trả lời tự do")])
+    captured = {}
+
+    class FakeCompletions:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeStream(_text_completion("Câu trả lời tự do"))
+
+    class FakeClient:
+        class FakeChat:
+            completions = FakeCompletions()
+
+        chat = FakeChat()
+
+    monkeypatch.setattr(chat_client, "_get_client", lambda: FakeClient())
 
     result = asyncio.run(chat_client.run_chat_turn([], "Thời tiết hôm nay?", "admin"))
 
     assert result["reply_text"] == "Câu trả lời tự do"
+    prompt = captured["messages"][0]["content"]
+    assert "Được trả lời cả câu hỏi ngoài lĩnh vực Ceph" in prompt
+    assert "CHỈ trả lời hoặc thao tác nội dung liên quan Ceph" not in prompt
 
 
 def test_ceph_scope_allows_contextual_follow_up():

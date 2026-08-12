@@ -114,12 +114,25 @@ def is_ceph_scoped(user_text: str, history: list[dict] | None = None) -> bool:
 # the chat widget is a single click straight to Worker execution; the
 # resolved command preview (with the real pool_name/osd_id baked in) is
 # what the operator actually reviews before that click, not this prompt.
-SYSTEM_PROMPT = (
+_RESTRICTED_SCOPE_RULE = (
+    f"- CHỈ trả lời hoặc thao tác nội dung liên quan Ceph. Nếu ngoài lĩnh vực Ceph, "
+    f"chỉ trả đúng nguyên văn: {OUT_OF_SCOPE_MESSAGE}\n"
+)
+_UNRESTRICTED_SCOPE_RULE = (
+    "- Được trả lời cả câu hỏi ngoài lĩnh vực Ceph. Các tool và thao tác hệ thống "
+    "vẫn chỉ dùng cho cụm Ceph theo các quy tắc an toàn bên dưới.\n"
+)
+
+
+def system_prompt(*, ceph_restricted: bool = True) -> str:
+    """Build the model prompt with the same chat scope enforced server-side."""
+    scope_rule = _RESTRICTED_SCOPE_RULE if ceph_restricted else _UNRESTRICTED_SCOPE_RULE
+    prompt_prefix = (
     "Bạn là trợ lý AI quản trị cụm Ceph trong hệ thống CA Ceph AIOps. "
     "Bạn có thể gọi tool để lấy dữ liệu THỰC TẾ từ cụm Ceph đang chạy.\n\n"
     "Quy tắc:\n"
-    f"- CHỈ trả lời hoặc thao tác nội dung liên quan Ceph. Nếu ngoài lĩnh vực Ceph, "
-    f"chỉ trả đúng nguyên văn: {OUT_OF_SCOPE_MESSAGE}\n"
+    )
+    prompt_rules = (
     "- Trả lời bằng tiếng Việt, ngắn gọn và chính xác\n"
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
     "- Khi muốn thực hiện lệnh Ceph bất kỳ (read-only) → dùng run_ceph_command\n"
@@ -156,7 +169,13 @@ SYSTEM_PROMPT = (
     "rằng có một đề xuất đang chờ trong khi thực ra không có gì được tạo. "
     "Nếu chưa đủ thông tin để gọi propose_action (thiếu tham số, chưa rõ "
     "pool_name...), hãy hỏi lại operator trước, đừng nói là đã đề xuất."
-)
+    )
+    return prompt_prefix + scope_rule + prompt_rules
+
+
+# Restricted by default for callers that use the constant directly. Chat turns
+# select the appropriate prompt from the authenticated actor below.
+SYSTEM_PROMPT = system_prompt()
 
 
 class ChatToolError(Exception):
@@ -481,20 +500,23 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     tools only — a staged propose_action isn't a "query"), for the
     frontend's "🔧 Đã dùng: ..." badge.
     """
-    if auth.is_ceph_chat_restricted(actor) and not is_ceph_scoped(user_text, history):
+    ceph_restricted = auth.is_ceph_chat_restricted(actor)
+    if ceph_restricted and not is_ceph_scoped(user_text, history):
         return {"reply_text": OUT_OF_SCOPE_MESSAGE, "proposal": None, "tools_used": []}
 
+    actor_system_prompt = system_prompt(ceph_restricted=ceph_restricted)
+
     if settings.codex_chat_enabled:
-        return await _run_codex_chat_turn(history, user_text)
+        return await _run_codex_chat_turn(history, user_text, actor_system_prompt)
     if settings.claude_chat_enabled:
-        return await _run_claude_chat_turn(history, user_text)
+        return await _run_claude_chat_turn(history, user_text, actor_system_prompt)
 
     try:
         client = _get_client()
     except RouterNotConfiguredError as exc:
         raise ChatTurnError(str(exc)) from exc
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": actor_system_prompt}]
     for m in history[-MAX_HISTORY_MESSAGES:]:
         messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": user_text})
@@ -598,13 +620,13 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     return {"reply_text": reply_text, "proposal": proposal, "tools_used": tools_used}
 
 
-async def _run_codex_chat_turn(history: list[dict], user_text: str) -> dict:
+async def _run_codex_chat_turn(history: list[dict], user_text: str, actor_system_prompt: str) -> dict:
     """Run chat through Codex while retaining ceph-ai's guarded tools."""
     transcript = []
     for message in history[-MAX_HISTORY_MESSAGES:]:
         role = "Người dùng" if message["role"] == "user" else "Trợ lý"
         transcript.append(f"{role}: {message['content']}")
-    prompt = SYSTEM_PROMPT + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
+    prompt = actor_system_prompt + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
     prompt += f"\n\nNgười dùng: {user_text}\nTrợ lý:"
     proposal: dict | None = None
     tools_used: list[str] = []
@@ -632,14 +654,14 @@ async def _run_codex_chat_turn(history: list[dict], user_text: str) -> dict:
     return {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
 
 
-async def _run_claude_chat_turn(history: list[dict], user_text: str) -> dict:
+async def _run_claude_chat_turn(history: list[dict], user_text: str, actor_system_prompt: str) -> dict:
     """Run a guarded, text-only turn through the authenticated Claude CLI."""
     transcript = []
     for message in history[-MAX_HISTORY_MESSAGES:]:
         role = "Người dùng" if message["role"] == "user" else "Trợ lý"
         transcript.append(f"{role}: {message['content']}")
     prompt = (
-        SYSTEM_PROMPT
+        actor_system_prompt
         + "\n\nBạn đang chạy ở chế độ chỉ đọc và không có tool trong lượt Claude này. "
           "Không được tuyên bố đã kiểm tra hoặc thay đổi cụm nếu không có dữ liệu trong hội thoại. "
           "Không tạo đề xuất hành động có thể thực thi; hãy hướng dẫn operator xác minh khi cần."
