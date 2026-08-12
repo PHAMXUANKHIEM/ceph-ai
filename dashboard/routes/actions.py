@@ -1,22 +1,63 @@
 import asyncio
+import json
+import re
 import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
 
 from dashboard.routes import patch as patch_routes
 from dashboard.routes import upgrade as upgrade_routes
 from dashboard.routes.auth import require_login
+from worker.executor import commands as executor_commands
+from worker.executor.ssh_executor import ExecutorError
 from shared import audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending
-from worker.executor import commands as executor_commands
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
+_POOL_NAME_RE = re.compile(r"pool\s+['\"]([^'\"]+)['\"]", re.IGNORECASE)
+_ALLOWED_POOL_APPS = {"rbd", "cephfs", "rgw"}
+
+
+def _prepare_pool_application_choice(action_id: str, app_name: str) -> None:
+    """Turn a pending manual pool warning into an executable action."""
+    app_name = app_name.strip().lower()
+    if app_name not in _ALLOWED_POOL_APPS:
+        raise HTTPException(status_code=400, detail="Application phải là RBD, CephFS hoặc RGW")
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        if action is None:
+            raise ActionNotFoundError(action_id)
+        incident = session.get(Incident, action.incident_id)
+        if incident is None or incident.ceph_code != _POOL_APP_CODE:
+            raise HTTPException(status_code=400, detail="Action này không phải cảnh báo application của pool")
+        if action.status != ActionStatus.PENDING_APPROVAL.value:
+            raise ActionConflictError("Action không còn ở trạng thái chờ duyệt")
+        params = json.loads(action.action_params) if action.action_params else {}
+        pool_name = str(params.get("pool_name") or "").strip()
+        if not pool_name:
+            evidence = " ".join(filter(None, (incident.diagnosis_text, action.rationale, incident.log_excerpt)))
+            match = _POOL_NAME_RE.search(evidence)
+            pool_name = match.group(1) if match else ""
+        if not pool_name:
+            raise HTTPException(status_code=400, detail="Không xác định được tên pool từ cảnh báo")
+        params = {"pool_name": pool_name, "app_name": app_name}
+        try:
+            command = executor_commands.get_command("enable_pool_application", "", params)
+        except ExecutorError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        action.action_id = "enable_pool_application"
+        action.action_params = json.dumps(params)
+        action.proposed_command = command
+        action.rationale = f"Bật application {app_name} cho pool {pool_name} theo lựa chọn của operator"
+        session.commit()
 
 
 class ActionNotFoundError(Exception):
@@ -202,8 +243,14 @@ def reject_action_core(action_id: str, actor: str) -> ApprovalResult:
 
 
 @router.post("/actions/{action_id}/approve")
-async def approve_action(action_id: str, user: str = Depends(require_login)):
+async def approve_action(
+    action_id: str,
+    user: str = Depends(require_login),
+    pool_app: str = Form(""),
+):
     try:
+        if pool_app:
+            await asyncio.to_thread(_prepare_pool_application_choice, action_id, pool_app)
         await asyncio.to_thread(approve_action_core, action_id, user)
     except ActionNotFoundError:
         raise HTTPException(status_code=404, detail="Không tìm thấy Action")

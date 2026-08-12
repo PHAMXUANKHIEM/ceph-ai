@@ -155,6 +155,7 @@
           <p><strong>Hành động đề xuất:</strong> <code>{{ action.action_id }}</code></p>
           <p><strong>Lệnh sẽ chạy:</strong>
             {% if action.proposed_command %}<code>{{ action.proposed_command }}</code>
+            {% elif incident and incident.ceph_code == "POOL_APP_NOT_ENABLED" and action.action_id == "investigate_manually" %}<span class="hint">Chọn application bên dưới; hệ thống sẽ tạo và chạy lệnh bật nhãn cho pool sau khi duyệt.</span>
             {% else %}<span class="hint">Không có lệnh tự động cho hành động này — bấm Duyệt sẽ đóng sự cố lại (ghi nhận đã xử lý thủ công), không có lệnh nào được chạy.</span>{% endif %}
           </p>
           {% if not action.action_id.startswith("upgrade_ceph_cluster") and upgrade_blocks_other_actions %}
@@ -168,6 +169,11 @@
           {% else %}
           <div class="pending-action-buttons">
             <form method="post" action="/actions/{{ action.id }}/approve" class="inline-form">
+              {% if incident and incident.ceph_code == "POOL_APP_NOT_ENABLED" and action.action_id == "investigate_manually" %}
+              <label><input type="radio" name="pool_app" value="rbd" required> RBD</label>
+              <label><input type="radio" name="pool_app" value="cephfs"> CephFS</label>
+              <label><input type="radio" name="pool_app" value="rgw"> RGW</label>
+              {% endif %}
               <button type="submit" class="btn btn-approve">Duyệt</button>
             </form>
             <form method="post" action="/actions/{{ action.id }}/reject" class="inline-form">

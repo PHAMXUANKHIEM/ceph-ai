@@ -215,6 +215,42 @@ def test_approve_action_with_no_command_closes_out_without_worker_execution(dash
         assert entries[0].event_type == "risky_action_acknowledged_no_command"
 
 
+def test_pool_application_choice_converts_manual_action_before_approval(dashboard_client):
+    action_id = _pending_action_with_no_command("inc-pool-app-choice")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        action.rationale = "Xác định đúng ứng dụng đang sử dụng pool 'images' rồi bật nhãn."
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        f"/actions/{action_id}/approve",
+        data={"pool_app": "rbd"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.action_id == "enable_pool_application"
+        assert action.status == ActionStatus.APPROVED.value
+        assert action.action_params == '{"pool_name": "images", "app_name": "rbd"}'
+        assert action.proposed_command == (
+            "ceph osd pool application enable images rbd --yes-i-really-mean-it"
+        )
+
+
+def test_pool_application_choice_rejects_invalid_value(dashboard_client):
+    action_id = _pending_action_with_no_command("inc-pool-app-invalid")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        f"/actions/{action_id}/approve", data={"pool_app": "--force"}
+    )
+
+    assert response.status_code == 400
+
+
 def test_approve_action_with_no_command_pg_repair_force_also_closes_out(dashboard_client):
     action_id = _pending_action_with_no_command("inc-pg-repair", "pg_repair_force")
     _login(dashboard_client)
