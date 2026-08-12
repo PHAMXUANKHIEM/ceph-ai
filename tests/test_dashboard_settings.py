@@ -844,6 +844,24 @@ def test_find_watcher_pids_uses_correct_pgrep_pattern_with_double_dash(monkeypat
     assert captured_args == [["pgrep", "-f", "--", settings_route.WATCHER_PGREP_PATTERN]]
 
 
+def test_find_worker_pids_accepts_relative_python_path_but_scopes_by_cwd(monkeypatch):
+    class FakeResult:
+        returncode = 0
+        stdout = "111\n222\n"
+        stderr = ""
+
+    monkeypatch.setattr(settings_route.subprocess, "run", lambda *args, **kwargs: FakeResult())
+    monkeypatch.setattr(
+        settings_route.os,
+        "readlink",
+        lambda path: str(settings_route.PROJECT_ROOT) if path == "/proc/111/cwd" else "/srv/other-ceph-ai",
+    )
+
+    assert settings_route._find_worker_pids() == [111]
+    assert "worker\\.main" in settings_route.WORKER_PGREP_PATTERN
+    assert settings_route.sys.executable not in settings_route.WORKER_PGREP_PATTERN
+
+
 @pytest.mark.live
 def test_watcher_process_management_against_a_real_spawned_process(monkeypatch):
     """Real OS-level test, mirrors test_worker_process_management_against_a_real_spawned_process —

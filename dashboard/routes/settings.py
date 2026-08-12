@@ -104,21 +104,19 @@ DEFAULT_PROVIDER = "9router"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Multi-cluster deployment (docs/multi-cluster-deployment.md): a 2nd Ceph
 # cluster is monitored by a 2nd full checkout of this repo, sometimes on the
-# SAME host as this one. LOG_TAG (this checkout's own directory name) scopes
-# this instance's log filenames, and _INSTANCE_PROC_PREFIX (this instance's
-# OWN venv interpreter, `sys.executable` — never a bare "python" that a
-# sibling checkout's venv would match too) scopes WORKER_PGREP_PATTERN /
-# WATCHER_PGREP_PATTERN below — without it, clicking "Khởi động lại
-# Worker/Watcher" on THIS cluster's Settings page could find and kill/
-# restart a DIFFERENT cluster's Worker/Watcher process running from a
-# sibling checkout on the same host, since a plain `-m worker.main` pattern
-# matches every checkout's process alike. For the existing single-instance
+# SAME host as this one. LOG_TAG scopes log filenames. Process discovery
+# deliberately matches the module independently of the spelling of argv[0]
+# (absolute `/root/.../.venv/bin/python`, `.venv/bin/python`, or `python`),
+# then verifies `/proc/<pid>/cwd` equals this checkout's PROJECT_ROOT. The
+# old absolute-interpreter regex silently missed relative-path processes
+# and every Settings save leaked another Worker/Watcher/Codex child. CWD
+# scoping still prevents killing an instance from a sibling checkout.
+# For the existing single-instance
 # deployment (checkout named "ceph-aiops") LOG_TAG reproduces the exact same
 # /var/log/ceph-aiops-*.log paths as before.
 LOG_TAG = PROJECT_ROOT.name
-_INSTANCE_PROC_PREFIX = re.escape(sys.executable) + r"\s+"
 WORKER_MODULE = "worker.main"
-WORKER_PGREP_PATTERN = _INSTANCE_PROC_PREFIX + r"-m\s+worker\.main"
+WORKER_PGREP_PATTERN = r"(?:^|\s)-m\s+worker\.main(?:\s|$)"
 WORKER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-worker.log")
 WORKER_STOP_TIMEOUT_SECONDS = 5.0
 WORKER_START_CHECK_DELAY_SECONDS = 1.5
@@ -127,7 +125,7 @@ PGREP_TIMEOUT_SECONDS = 5.0
 # Story 5.1: same process-management pattern as Worker above, applied to
 # Watcher so a cluster-connection config change takes effect immediately.
 WATCHER_MODULE = "watcher.main"
-WATCHER_PGREP_PATTERN = _INSTANCE_PROC_PREFIX + r"-m\s+watcher\.main"
+WATCHER_PGREP_PATTERN = r"(?:^|\s)-m\s+watcher\.main(?:\s|$)"
 WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-watcher.log")
 
 # Restarting the Dashboard itself — unlike Worker/Watcher, this is the very
@@ -210,7 +208,16 @@ def _find_pids(pgrep_pattern: str) -> list[int]:
     )
     if result.returncode not in (0, 1):
         raise RuntimeError(f"pgrep failed (exit {result.returncode}): {result.stderr.strip()}")
-    return [int(pid) for pid in result.stdout.split()]
+    matching: list[int] = []
+    for raw_pid in result.stdout.split():
+        pid = int(raw_pid)
+        try:
+            process_cwd = Path(os.readlink(f"/proc/{pid}/cwd")).resolve()
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            continue
+        if process_cwd == PROJECT_ROOT.resolve():
+            matching.append(pid)
+    return matching
 
 
 def _find_worker_pids() -> list[int]:
