@@ -98,6 +98,8 @@
   var claudeStatus = document.getElementById("claude-account-status");
   var claudeFlow = document.getElementById("claude-device-flow");
   var claudeLink = document.getElementById("claude-verification-link");
+  var claudeAuthenticationCode = document.getElementById("claude-authentication-code");
+  var claudeConnectBtn = document.getElementById("claude-connect-btn");
   var claudeInstallPrompt = document.getElementById("claude-install-prompt");
   var claudeInstallYesBtn = document.getElementById("claude-install-yes-btn");
   var claudeInstallNoBtn = document.getElementById("claude-install-no-btn");
@@ -117,6 +119,7 @@
       if (claudeLoginBtn) claudeLoginBtn.hidden = true;
       if (claudeLogoutBtn) claudeLogoutBtn.hidden = false;
       if (claudeFlow) claudeFlow.hidden = true;
+      if (claudeAuthenticationCode) claudeAuthenticationCode.value = "";
     } else {
       if (claudeInstallPrompt) claudeInstallPrompt.hidden = true;
       claudeStatus.textContent = data.error ? "❌ " + data.error : "Chưa đăng nhập tài khoản Claude.";
@@ -163,12 +166,36 @@
     codexRequest("/settings/claude/login/start", { method: "POST" }).then(function (data) {
       claudeLink.href = data.verification_url;
       claudeFlow.hidden = false;
-      claudeStatus.textContent = "Đang chờ bạn hoàn tất đăng nhập...";
+      claudeStatus.textContent = "Đang chờ Authentication code từ trang Claude...";
       window.open(data.verification_url, "_blank", "noopener");
-      claudePollTimer = setInterval(function () { refreshClaudeStatus(true); }, 2500);
     }).catch(function (err) {
       claudeStatus.textContent = "❌ " + err.message;
       claudeLoginBtn.disabled = false;
+    });
+  });
+  if (claudeConnectBtn) claudeConnectBtn.addEventListener("click", function () {
+    var authenticationCode = (claudeAuthenticationCode.value || "").trim();
+    if (!authenticationCode) {
+      claudeStatus.textContent = "❌ Vui lòng nhập Authentication code.";
+      claudeAuthenticationCode.focus();
+      return;
+    }
+    claudeConnectBtn.disabled = true;
+    claudeAuthenticationCode.disabled = true;
+    claudeStatus.textContent = "Đang gửi mã và kết nối tới Claude...";
+    var body = new URLSearchParams();
+    body.set("authentication_code", authenticationCode);
+    codexRequest("/settings/claude/login/complete", { method: "POST", body: body }).then(function () {
+      return codexRequest("/settings/claude/activate", { method: "POST" });
+    }).then(function () {
+      return refreshClaudeStatus(false);
+    }).then(function () {
+      refreshCodexStatus(false);
+    }).catch(function (err) {
+      claudeStatus.textContent = "❌ " + err.message;
+      claudeConnectBtn.disabled = false;
+      claudeAuthenticationCode.disabled = false;
+      claudeAuthenticationCode.focus();
     });
   });
   if (claudeLogoutBtn) claudeLogoutBtn.addEventListener("click", function () {

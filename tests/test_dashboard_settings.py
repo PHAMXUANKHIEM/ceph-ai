@@ -141,10 +141,49 @@ def test_claude_login_and_activate_disables_codex(dashboard_client, monkeypatch)
     assert "CODEX_CHAT_ENABLED=false" in env_text
 
 
+def test_claude_authentication_code_is_submitted_to_active_login(dashboard_client, monkeypatch):
+    captured = []
+
+    async def fake_submit(code):
+        captured.append(code)
+        return {"installed": True, "authenticated": True, "email": "admin@example.test"}
+
+    monkeypatch.setattr(settings_route, "submit_claude_authentication_code", fake_submit)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/claude/login/complete",
+        data={"authentication_code": "  claude-auth-code  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert captured == ["  claude-auth-code  "]
+
+
+def test_claude_authentication_code_error_is_returned_to_ui(dashboard_client, monkeypatch):
+    async def fake_submit(_code):
+        raise settings_route.ClaudeCLIError("Authentication code không hợp lệ")
+
+    monkeypatch.setattr(settings_route, "submit_claude_authentication_code", fake_submit)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/claude/login/complete", data={"authentication_code": "bad-code"}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Authentication code không hợp lệ"
+
+
 def test_claude_controls_require_admin(dashboard_client, monkeypatch):
     _create_user("claude-operator", "secret", is_admin=False)
     _login_as(dashboard_client, "claude-operator", "secret")
     response = dashboard_client.post("/settings/claude/login/start")
+    assert response.status_code == 403
+    response = dashboard_client.post(
+        "/settings/claude/login/complete", data={"authentication_code": "secret"}
+    )
     assert response.status_code == 403
 
 

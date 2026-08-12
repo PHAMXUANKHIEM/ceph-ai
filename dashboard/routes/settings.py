@@ -42,6 +42,7 @@ from shared.claude_cli import (
     claude_status,
     install_claude_cli,
     start_claude_login,
+    submit_claude_authentication_code,
 )
 from shared.clusters import sync_default_cluster_from_settings
 from shared.models import Cluster
@@ -1072,6 +1073,18 @@ async def settings_claude_activate(user: str = Depends(require_login)):
     except ClaudeCLIError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"enabled": True, "worker_restarted": restart_result["restarted"]}
+
+
+@router.post("/settings/claude/login/complete")
+async def settings_claude_login_complete(
+    authentication_code: str = Form(""), user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    try:
+        status = await submit_claude_authentication_code(authentication_code)
+    except ClaudeCLIError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return status
 
 
 @router.post("/settings/claude/logout")

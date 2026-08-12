@@ -21,6 +21,7 @@ _install_lock = asyncio.Lock()
 _login_lock = asyncio.Lock()
 _login_process: asyncio.subprocess.Process | None = None
 _login_url: str | None = None
+_login_drain_task: asyncio.Task[tuple[bytes, bytes | None]] | None = None
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _URL_RE = re.compile(r"https?://[^\s<>\]\[()]+")
 
@@ -107,7 +108,7 @@ async def claude_status() -> dict:
 
 async def start_claude_login() -> dict:
     """Start Claude's OAuth login and return the browser URL it prints."""
-    global _login_process, _login_url
+    global _login_process, _login_url, _login_drain_task
     async with _login_lock:
         if _login_process and _login_process.returncode is None and _login_url:
             return {"verification_url": _login_url}
@@ -116,6 +117,7 @@ async def start_claude_login() -> dict:
             raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")
         _login_process = await asyncio.create_subprocess_exec(
             executable, "auth", "login",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             env={**_env(), "BROWSER": "true"},
         )
@@ -130,7 +132,7 @@ async def start_claude_login() -> dict:
                 urls = _URL_RE.findall(_ANSI_RE.sub("", output))
                 if urls:
                     _login_url = urls[-1].rstrip(".,;'")
-                    asyncio.create_task(_login_process.communicate())
+                    _login_drain_task = asyncio.create_task(_login_process.communicate())
                     return {"verification_url": _login_url}
         except asyncio.TimeoutError as exc:
             _login_process.terminate()
@@ -140,6 +142,47 @@ async def start_claude_login() -> dict:
         rc = await _login_process.wait()
         _login_process = None
         raise ClaudeCLIError(f"Không lấy được URL đăng nhập Claude (exit {rc}): {_ANSI_RE.sub('', output)[-2000:]}")
+
+
+async def submit_claude_authentication_code(authentication_code: str) -> dict:
+    """Submit the browser-issued code to the active ``claude auth login`` process."""
+    global _login_process, _login_url, _login_drain_task
+    code = authentication_code.strip()
+    if not code:
+        raise ClaudeCLIError("Vui lòng nhập Authentication code")
+
+    async with _login_lock:
+        process = _login_process
+        if process is None or process.returncode is not None or process.stdin is None:
+            raise ClaudeCLIError("Phiên đăng nhập Claude không còn hiệu lực; hãy bắt đầu lại")
+        try:
+            process.stdin.write((code + "\n").encode())
+            await process.stdin.drain()
+            process.stdin.close()
+            drain_task = _login_drain_task
+            if drain_task is not None:
+                output, _ = await asyncio.wait_for(asyncio.shield(drain_task), 60)
+            else:
+                output, _ = await asyncio.wait_for(process.communicate(), 60)
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise ClaudeCLIError("Claude không xác nhận Authentication code trong 60 giây") from exc
+        except (BrokenPipeError, ConnectionError) as exc:
+            raise ClaudeCLIError("Phiên đăng nhập Claude đã kết thúc; hãy bắt đầu lại") from exc
+        finally:
+            _login_process = None
+            _login_url = None
+            _login_drain_task = None
+
+    if process.returncode:
+        # Do not include CLI output here: some versions echo terminal input,
+        # which could expose the one-time authentication code in the UI/logs.
+        raise ClaudeCLIError("Authentication code không được Claude chấp nhận")
+    status = await claude_status()
+    if not status.get("authenticated"):
+        raise ClaudeCLIError("Claude CLI chưa xác nhận đăng nhập; hãy thử tạo phiên mới")
+    return status
 
 
 async def claude_logout() -> None:
