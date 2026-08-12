@@ -14,7 +14,9 @@ Two kinds of tools:
   above, by design, not an oversight).
 """
 
-from watcher.ceph_client import CephQueryError, run_ceph_json_command
+import re
+
+from watcher.ceph_client import CephQueryError, query_rbd_trash, run_ceph_json_command
 
 FIXED_TOOL_COMMANDS: dict[str, str] = {
     "get_cluster_status": "ceph status",
@@ -28,6 +30,10 @@ FIXED_TOOL_COMMANDS: dict[str, str] = {
 }
 
 RUN_CEPH_COMMAND_TOOL = "run_ceph_command"
+_LEGACY_RBD_TRASH_RE = re.compile(
+    r"^ceph\s+rbd\s+trash\s+(?:ls|list)\s+(?:--pool\s+)?([A-Za-z0-9_.-]+)\s*$",
+    re.IGNORECASE,
+)
 
 # Substring match, case-insensitive — deliberately over-inclusive (a false
 # positive just makes a legitimate read-only command get rejected with a
@@ -108,6 +114,16 @@ def run_ceph_command_tool(command: str) -> dict:
     anything when refused — never raises for a blocked command, since a
     hostile/malformed command from the model is an expected, handleable
     outcome, not a bug."""
+    # Some models incorrectly prefix the standalone RBD CLI with `ceph`.
+    # Translate only this exact read-only query to the dedicated helper;
+    # arbitrary RBD commands remain unavailable.
+    legacy_rbd_match = _LEGACY_RBD_TRASH_RE.fullmatch(command.strip())
+    if legacy_rbd_match:
+        try:
+            return {"result": query_rbd_trash(legacy_rbd_match.group(1))}
+        except CephQueryError as exc:
+            return {"error": str(exc)}
+
     reason = _blocked_reason(command)
     if reason is not None:
         return {"blocked": True, "reason": reason}

@@ -129,6 +129,19 @@ def test_run_ceph_command_tool_wraps_a_bare_list_result(fake_ssh, monkeypatch):
     assert result == {"result": [{"pool": "a"}, {"pool": "b"}]}
 
 
+def test_run_ceph_command_tool_translates_hallucinated_ceph_rbd_trash(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        "dashboard.ceph_tools.query_rbd_trash",
+        lambda pool: captured.append(pool) or [{"id": "trash-1", "name": "old-volume"}],
+    )
+
+    result = run_ceph_command_tool("ceph rbd trash ls volumes")
+
+    assert captured == ["volumes"]
+    assert result == {"result": [{"id": "trash-1", "name": "old-volume"}]}
+
+
 # --- run_ceph_command_tool: blocked commands --------------------------------
 
 

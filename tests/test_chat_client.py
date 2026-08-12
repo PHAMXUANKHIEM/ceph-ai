@@ -423,6 +423,10 @@ def test_rbd_trash_tool_rejects_invalid_pool_without_querying(monkeypatch):
     assert "không hợp lệ" in result
 
 
+def test_prompt_requires_dedicated_rbd_trash_tool():
+    assert "BẮT BUỘC dùng get_rbd_trash" in chat_client.SYSTEM_PROMPT
+
+
 def test_run_chat_turn_blocked_ceph_command_is_not_counted_as_tools_used(monkeypatch):
     monkeypatch.setattr(
         chat_client,
