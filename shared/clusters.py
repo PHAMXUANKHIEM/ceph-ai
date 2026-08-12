@@ -11,6 +11,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CLUSTER_NAME_FALLBACK = "Cụm mặc định"
 
+_DEFAULT_CLUSTER_SETTING_FIELDS = (
+    "ceph_mon_nodes",
+    "ceph_mgr_nodes",
+    "ceph_osd_nodes",
+    "ceph_rgw_nodes",
+    "ceph_container_name",
+    "ceph_rgw_container_name",
+    "ceph_mon_hostnames",
+    "ceph_osd_container_name",
+    "ssh_user",
+    "ssh_key_path",
+    "ceph_exec_mode",
+)
+
 
 def ensure_default_cluster(session: Session) -> Cluster:
     """Idempotently seeds the one `is_default=True` Cluster row from the
@@ -58,6 +72,23 @@ def ensure_default_cluster(session: Session) -> Cluster:
             raise
         logger.info("ensure_default_cluster: lost startup race to another process, reusing its row")
         return existing
+    session.refresh(cluster)
+    return cluster
+
+
+def sync_default_cluster_from_settings(session: Session) -> Cluster:
+    """Persist the current .env-backed default-cluster connection in DB.
+
+    ``ensure_default_cluster`` intentionally remains an idempotent seed: read
+    paths must not unexpectedly write on every request.  Settings mutations
+    call this explicit synchronizer so the DB row used by the multi-cluster
+    dashboard/watcher cannot retain an older connection.
+    """
+    cluster = ensure_default_cluster(session)
+    cluster.name = settings.cluster_name.strip() or DEFAULT_CLUSTER_NAME_FALLBACK
+    for field in _DEFAULT_CLUSTER_SETTING_FIELDS:
+        setattr(cluster, field, getattr(settings, field))
+    session.commit()
     session.refresh(cluster)
     return cluster
 

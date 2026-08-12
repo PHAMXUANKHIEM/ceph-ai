@@ -43,6 +43,7 @@ from shared.claude_cli import (
     install_claude_cli,
     start_claude_login,
 )
+from shared.clusters import sync_default_cluster_from_settings
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -1367,8 +1368,13 @@ async def cluster_settings_submit(
         )
         for field in CLUSTER_ENV_NAMES:
             setattr(settings, field, submitted[field])
+        # Dashboard and the multi-cluster Watcher resolve the default
+        # cluster through this DB row, not directly through ``settings``.
+        # Keep that mirror current before either process is restarted.
+        with db.SessionLocal() as session:
+            sync_default_cluster_from_settings(session)
     except Exception:
-        logger.exception("cluster_settings_submit: failed to persist cluster config to .env")
+        logger.exception("cluster_settings_submit: failed to persist cluster config")
         return templates.TemplateResponse(
             request,
             "settings.html",

@@ -1,4 +1,10 @@
-from shared.clusters import ensure_default_cluster, get_default_cluster_id, list_active_clusters
+from shared.clusters import (
+    ensure_default_cluster,
+    get_default_cluster_id,
+    list_active_clusters,
+    sync_default_cluster_from_settings,
+)
+from config.settings import settings
 from shared.models import Cluster
 
 
@@ -31,6 +37,20 @@ def test_ensure_default_cluster_is_idempotent(db_session):
     second = ensure_default_cluster(db_session)
 
     assert first.id == second.id
+    assert db_session.query(Cluster).filter_by(is_default=True).count() == 1
+
+
+def test_sync_default_cluster_updates_existing_row_from_settings(db_session, monkeypatch):
+    cluster = ensure_default_cluster(db_session)
+    old_id = cluster.id
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.99.0.1,10.99.0.2")
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm")
+
+    synced = sync_default_cluster_from_settings(db_session)
+
+    assert synced.id == old_id
+    assert synced.ceph_mon_nodes == "10.99.0.1,10.99.0.2"
+    assert synced.ceph_exec_mode == "cephadm"
     assert db_session.query(Cluster).filter_by(is_default=True).count() == 1
 
 

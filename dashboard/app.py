@@ -39,7 +39,7 @@ from dashboard.routes import (
 from dashboard.ws import router as ws_router
 from shared import db
 from shared.codex_app_server import codex_app_server
-from shared.clusters import ensure_default_cluster
+from shared.clusters import sync_default_cluster_from_settings
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
@@ -69,12 +69,10 @@ async def _lifespan(_app: FastAPI):
     # every `with TestClient(app) as client:` block across this project's
     # whole test suite, all sharing the same cached `app` singleton.
     telegram_approval_bot.start()
-    # Multi-cluster observability Phase 1 — idempotent, same "safe to
-    # re-enter on every TestClient block" property as telegram_approval_bot
-    # .start() above (shared/clusters.py::ensure_default_cluster re-queries
-    # rather than blindly inserting).
+    # Seed the default row and repair stale mirrors left by older versions.
+    # The .env-backed Settings form is the source of truth for this row.
     with db.SessionLocal() as session:
-        ensure_default_cluster(session)
+        sync_default_cluster_from_settings(session)
     # Epic 10 Story 10.8 — rebuilds dashboard/routes/test_runner.py's
     # in-memory `_run_states` from the durable `TestRunResult` table so a
     # Dashboard restart doesn't wipe upgrade-test-runner results back to a

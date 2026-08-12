@@ -9,7 +9,7 @@ import dashboard.routes.settings as settings_route
 from config.settings import settings
 from shared import db as db_module
 from shared import env_config
-from shared.models import User
+from shared.models import Cluster, User
 from watcher.ceph_client import CephQueryError
 
 
@@ -1072,6 +1072,10 @@ def test_post_cluster_settings_success_persists_updates_settings_and_restarts_wa
     assert "SSH_KEY_PATH" not in env_text
     assert settings.ceph_mon_nodes == "9.9.9.1, 9.9.9.2"
     assert settings.ssh_key_path == str(key_file)
+    with db_module.SessionLocal() as session:
+        default_cluster = session.query(Cluster).filter_by(is_default=True).one()
+        assert default_cluster.ceph_mon_nodes == "9.9.9.1, 9.9.9.2"
+        assert default_cluster.ssh_key_path == str(key_file)
 
 
 def test_post_cluster_settings_watcher_restart_failure_still_reports_saved(
