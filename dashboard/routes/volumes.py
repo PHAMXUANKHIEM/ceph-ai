@@ -68,11 +68,6 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
         request.query_params.get("cluster", "").strip(),
         request.session.get("selected_cluster_id", ""),
     )
-    if cluster.is_default:
-        # Preserve the default cluster's explicit allow-list and its tested
-        # auto-discovery fallback. Only additional clusters need the
-        # credential-scoped query below.
-        return ceph_client.configured_rbd_pools()
     mon_nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
     ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
     try:
@@ -83,7 +78,9 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
         return _pool_names_from_detail(payload)
     except CephQueryError as exc:
         logger.warning("_rbd_pools_for_request: cluster %s discovery failed: %s", cluster.id, exc)
-        return []
+        # The live cluster is authoritative. The configured list is only a
+        # continuity fallback for the default cluster during an SSH outage.
+        return ceph_client.configured_rbd_pools() if cluster.is_default else []
 
 
 def _cluster_for_request(request: Request):

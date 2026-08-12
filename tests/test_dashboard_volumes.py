@@ -43,6 +43,7 @@ def _login_as(client, username, password):
 
 def _configure_pools(monkeypatch):
     monkeypatch.setattr(settings, "ceph_rbd_pools", "vms,backups")
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["vms", "backups"])
 
 
 def _stub_no_trash(monkeypatch):
@@ -221,6 +222,29 @@ def test_pool_discovery_uses_selected_non_default_cluster_credentials(monkeypatc
         ["10.0.0.21", "10.0.0.22"], "mon-b", "ceph-b", "/keys/b",
         "cephadm", "ceph osd pool ls detail",
     )
+
+
+def test_default_cluster_live_pool_list_overrides_stale_config(monkeypatch):
+    cluster = type("ClusterConfig", (), {
+        "id": "cluster-a", "is_default": True,
+        "ceph_mon_nodes": "10.0.0.11", "ssh_user": "ceph-a",
+        "ssh_key_path": "/keys/a", "ceph_exec_mode": "none",
+        "ceph_container_name": "",
+    })()
+    request = type("Request", (), {"query_params": {}, "session": {}})()
+    monkeypatch.setattr(volumes_route, "_resolve_selected_cluster", lambda *_: ([cluster], cluster))
+    monkeypatch.setattr(settings, "ceph_rbd_pools", "stale-pool")
+    monkeypatch.setattr(volumes_route, "resolve_ssh_creds", lambda c: ("ceph-a", "/keys/a", "none", ""))
+    monkeypatch.setattr(
+        volumes_route,
+        "run_ceph_json_command_with",
+        lambda *args: ("10.0.0.11", [
+            {"pool_name": "live-rbd", "application_metadata": {"rbd": {}}},
+            {"pool_name": "not-rbd", "application_metadata": {}},
+        ]),
+    )
+
+    assert volumes_route._rbd_pools_for_request(request) == ["live-rbd"]
 
 
 def test_volumes_page_shows_cluster_switcher_for_multiple_clusters(dashboard_client, monkeypatch):
