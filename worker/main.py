@@ -9,7 +9,8 @@ from aio_pika.abc import AbstractIncomingMessage
 from config.settings import settings
 from shared import db
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
-from shared.models import Incident, IncidentStatus
+from shared.models import Cluster, Incident, IncidentStatus
+from shared.telegram_alerts import send_ai_unavailable_alert
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,32 @@ async def _set_incident_status(incident_id: str, status: IncidentStatus) -> None
             return
         incident.status = status.value
         session.commit()
+
+
+def _notify_ai_diagnosis_failed(incident_id: str) -> None:
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        if incident is None:
+            return
+        cluster_name = None
+        bot_token = chat_id = None
+        enabled = None
+        if incident.cluster_id is not None:
+            cluster = session.get(Cluster, incident.cluster_id)
+            if cluster is not None:
+                cluster_name = cluster.name
+                if cluster.telegram_bot_token and cluster.telegram_chat_id:
+                    bot_token, chat_id = cluster.telegram_bot_token, cluster.telegram_chat_id
+                    enabled = cluster.telegram_enabled
+        ceph_code, severity = incident.ceph_code, incident.severity
+    send_ai_unavailable_alert(
+        ceph_code,
+        severity,
+        cluster_name=cluster_name,
+        bot_token=bot_token,
+        chat_id=chat_id,
+        enabled=enabled,
+    )
 
 
 async def _republish_with_incremented_retry(
@@ -144,6 +171,7 @@ async def _handle_message(
         try:
             if retry_count + 1 >= max_retries:
                 await _set_incident_status(incident_id, IncidentStatus.FAILED)
+                _notify_ai_diagnosis_failed(incident_id)
                 # Dead-lettered via the queue's x-dead-letter-exchange (declared
                 # once, in shared/mq.py::declare_topology — AD-2).
                 await message.reject(requeue=False)

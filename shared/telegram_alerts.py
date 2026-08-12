@@ -132,6 +132,62 @@ def send_incident_alert(
     )
 
 
+def send_ai_incident_alert(
+    ceph_code: str,
+    severity: str | None,
+    diagnosis_text: str,
+    rationale: str,
+    *,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> None:
+    """Send the primary cluster alert after AI diagnosis is available."""
+    prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
+    text = "\n".join(
+        (
+            f"{prefix} Cụm Ceph: {ceph_code}",
+            f"🧠 Ý kiến AI: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}",
+            f"🔧 Đề xuất: {_compact(rationale, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        )
+    )
+
+
+def send_ai_unavailable_alert(
+    ceph_code: str,
+    severity: str | None,
+    *,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> None:
+    """Make exhausted AI diagnosis failures visible to the operator."""
+    prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
+    text = "\n".join(
+        (
+            f"{prefix} Cụm Ceph: {ceph_code}",
+            "🧠 Ý kiến AI: Không thể phân tích sau nhiều lần thử.",
+            "🔧 Đề xuất tạm thời: kiểm tra `ceph health detail` và log daemon liên quan; không tự động thay đổi cụm khi chưa xác định nguyên nhân.",
+        )
+    )
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+
+
 def send_node_alert(host: str, message: str) -> None:
     """Called once per NEWLY-flagged node resource problem
     (watcher/node_health_monitor.py::create_or_resolve_node_health_incidents

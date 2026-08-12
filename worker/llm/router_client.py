@@ -14,7 +14,7 @@ from shared.models import Action, ActionClassification, ActionStatus, Cluster, I
 from shared.ceph_releases import codename_for_version
 from shared.cluster_nodes import configured_nodes
 from shared.router_client import build_router_client
-from shared.telegram_alerts import send_auto_remediation_alert
+from shared.telegram_alerts import send_ai_incident_alert, send_auto_remediation_alert
 from worker.backup import engine as backup_engine
 from worker.executor import cluster_deploy, commands, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
@@ -254,6 +254,20 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
             return
         incident.diagnosis_text = diagnosis_text
+        alert_ceph_code = incident.ceph_code
+        alert_severity = incident.severity
+        alert_cluster_name = None
+        alert_bot_token = None
+        alert_chat_id = None
+        alert_enabled = None
+        if incident.cluster_id is not None:
+            alert_cluster = session.get(Cluster, incident.cluster_id)
+            if alert_cluster is not None:
+                alert_cluster_name = alert_cluster.name
+                if alert_cluster.telegram_bot_token and alert_cluster.telegram_chat_id:
+                    alert_bot_token = alert_cluster.telegram_bot_token
+                    alert_chat_id = alert_cluster.telegram_chat_id
+                    alert_enabled = alert_cluster.telegram_enabled
 
         # Guard against duplicate/conflicting Action rows if this incident
         # gets diagnosed more than once (e.g. a message redelivered after
@@ -310,6 +324,20 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             session.commit()
             action_pk = action.id  # read while session is still open
             resolved_action_id = action_id
+
+    # The old Watcher alert was deliberately sent before AI ran, leaving
+    # operators with a raw log-only warning.  This is now the primary alert;
+    # SAFE execution outcomes and RISKY approval cards remain follow-ups.
+    send_ai_incident_alert(
+        alert_ceph_code,
+        alert_severity,
+        diagnosis_text,
+        rationale,
+        cluster_name=alert_cluster_name,
+        bot_token=alert_bot_token,
+        chat_id=alert_chat_id,
+        enabled=alert_enabled,
+    )
 
     if classification == ActionClassification.SAFE:
         try:

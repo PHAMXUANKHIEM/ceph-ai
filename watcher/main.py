@@ -34,7 +34,6 @@ from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Cluster, Incident, IncidentStatus
-from shared.telegram_alerts import send_incident_alert
 
 logger = logging.getLogger(__name__)
 
@@ -307,8 +306,6 @@ def build_and_publish_incident(
         # No explicit cluster_name here — this function is default-cluster
         # only (see its own docstring), so the fallback to
         # settings.cluster_name inside send_incident_alert is correct.
-        send_incident_alert(ceph_code, check_detail.get("severity"), log_excerpt)
-
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,
@@ -667,17 +664,6 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
         # bot_token/chat_id must be set (an empty chat_id alone is not a
         # usable channel); `None`/`None`/`None` falls back to global exactly
         # like every other caller.
-        has_own_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
-        send_incident_alert(
-            ceph_code,
-            check_detail.get("severity"),
-            log_excerpt,
-            cluster_name=cluster.name,
-            bot_token=cluster.telegram_bot_token if has_own_channel else None,
-            chat_id=cluster.telegram_chat_id if has_own_channel else None,
-            enabled=cluster.telegram_enabled if has_own_channel else None,
-        )
-
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,

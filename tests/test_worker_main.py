@@ -123,8 +123,10 @@ def test_handle_message_failure_below_threshold_republishes_with_incremented_ret
         assert incident.status == IncidentStatus.DIAGNOSING.value  # not FAILED yet
 
 
-def test_handle_message_failure_at_threshold_marks_failed_and_dead_letters(isolated_db):
+def test_handle_message_failure_at_threshold_marks_failed_alerts_and_dead_letters(isolated_db, monkeypatch):
     _create_incident(db_module.SessionLocal, "incident-3")
+    alerts = []
+    monkeypatch.setattr(worker_main, "_notify_ai_diagnosis_failed", alerts.append)
     # retry_count=2 -> this would be the 3rd attempt; max_retries=3 -> exhausted.
     message = _make_message("incident-3", retry_count=2)
     channel = FakeChannel()
@@ -137,6 +139,7 @@ def test_handle_message_failure_at_threshold_marks_failed_and_dead_letters(isola
     assert message.ack_calls == 0
     assert message.reject_calls == [False]
     assert channel.default_exchange.published == []
+    assert alerts == ["incident-3"]
 
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-3")

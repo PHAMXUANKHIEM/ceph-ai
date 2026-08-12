@@ -282,7 +282,7 @@ def test_incident_created_and_published_on_transition_to_warn(isolated_db, monke
     assert envelope["log_excerpt"] == "mon2 log excerpt"
 
 
-def test_incident_creation_sends_telegram_alert_per_check(isolated_db, monkeypatch):
+def test_incident_creation_defers_telegram_until_ai_diagnosis(isolated_db, monkeypatch):
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
     monkeypatch.setattr(
         watcher_main.collector,
@@ -290,18 +290,14 @@ def test_incident_creation_sends_telegram_alert_per_check(isolated_db, monkeypat
         lambda code, detail: ([], "mon2 log excerpt"),
     )
     calls = []
-    monkeypatch.setattr(watcher_main, "send_incident_alert", lambda code, severity, excerpt: calls.append((code, severity, excerpt)))
-
     watcher_main.build_and_publish_incident(None, HEALTH_WARN_PAYLOAD)
 
-    assert calls == [("MON_CLOCK_SKEW", "HEALTH_WARN", "mon2 log excerpt")]
+    assert calls == []
 
 
 def test_no_telegram_alert_sent_on_recovery_to_health_ok(isolated_db, monkeypatch):
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
     calls = []
-    monkeypatch.setattr(watcher_main, "send_incident_alert", lambda *a: calls.append(a))
-
     watcher_main.build_and_publish_incident("HEALTH_WARN", HEALTH_OK_PAYLOAD)
 
     assert calls == []
