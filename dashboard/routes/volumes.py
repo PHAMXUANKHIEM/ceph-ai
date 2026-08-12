@@ -5,9 +5,11 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import or_
 
 from config.settings import settings
 from dashboard import volume_perf_analysis
+from dashboard.cluster_scope import cluster_connection, selected_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
@@ -83,6 +85,27 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
         logger.warning("_rbd_pools_for_request: cluster %s discovery failed: %s", cluster.id, exc)
         return []
 
+
+def _cluster_for_request(request: Request):
+    return selected_cluster(request)
+
+
+def _allowed_pools_for_request(request: Request) -> tuple[object, set[str]]:
+    cluster = _cluster_for_request(request)
+    return cluster, set(_rbd_pools_for_request(request))
+
+
+def _cluster_row_filter(column, cluster):
+    """Legacy NULL rows belong to the default cluster."""
+    return or_(column == cluster.id, column.is_(None)) if cluster.is_default else column == cluster.id
+
+
+def _require_default_cluster_operation(request: Request):
+    cluster = _cluster_for_request(request)
+    if not cluster.is_default:
+        raise HTTPException(status_code=409, detail="Thao tác ghi trên Pool hiện chỉ hỗ trợ cluster mặc định")
+    return cluster
+
 router = APIRouter()
 templates = make_templates()
 
@@ -149,6 +172,7 @@ def _in_flight_trash_actions(pool: str) -> dict[str, Action]:
 
 
 def _volumes_page_context(
+    request: Request,
     user: str,
     pool: str | None,
     pools: list[str],
@@ -167,12 +191,18 @@ def _volumes_page_context(
     perf_sweep_action: Action | None = None
     if pool:
         try:
-            trash_entries = ceph_client.query_rbd_trash(pool)
+            cluster = _cluster_for_request(request)
+            trash_entries = (
+                ceph_client.query_rbd_trash(pool)
+                if cluster.is_default
+                else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
+            )
         except CephQueryError as exc:
             logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", pool, exc)
             trash_error = str(exc)
-        trash_pending = _in_flight_trash_actions(pool)
-        perf_sweep_action = _latest_perf_sweep_action(pool)
+        if _cluster_for_request(request).is_default:
+            trash_pending = _in_flight_trash_actions(pool)
+            perf_sweep_action = _latest_perf_sweep_action(pool)
 
     return {
         "user": user,
@@ -198,21 +228,23 @@ async def volumes_page(request: Request, user: str = Depends(require_login)):
     # dashboard/routes/nodes.py's selected_host (landing on /volumes with
     # no ?pool= shows the empty "chọn một pool" state).
     return templates.TemplateResponse(
-        request, "volumes.html", _volumes_page_context(user, requested_pool, pools)
+        request, "volumes.html", _volumes_page_context(request, user, requested_pool, pools)
     )
 
 
 @router.get("/api/volumes/{pool}/iostat")
-async def volume_iostat_api(pool: str, user: str = Depends(require_login)):
+async def volume_iostat_api(request: Request, pool: str, user: str = Depends(require_login)):
     # `pool` is attacker-reachable input feeding into an `rbd` command run
     # over SSH — same SSRF-via-SSH whitelist posture as
     # dashboard/routes/nodes.py::node_metrics_api's `host` check. Only pools
     # the operator already configured (settings.ceph_rbd_pools) are queryable.
-    allowed_pools = set(ceph_client.configured_rbd_pools())
+    cluster, allowed_pools = _allowed_pools_for_request(request)
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
-        samples = ceph_client.query_rbd_iostat(pool)
+        samples = ceph_client.query_rbd_iostat(pool) if cluster.is_default else ceph_client.query_rbd_iostat_with(
+            pool, *cluster_connection(cluster)
+        )
     except CephQueryError as exc:
         logger.warning("volume_iostat_api: %s", exc)
         raise HTTPException(status_code=502, detail=f"Không lấy được iostat từ cụm: {exc}")
@@ -226,6 +258,7 @@ async def volume_iostat_api(pool: str, user: str = Depends(require_login)):
             incident.ceph_code
             for incident in session.query(Incident)
             .filter(Incident.ceph_code.like("VOLUME_SATURATED:%"))
+            .filter(_cluster_row_filter(Incident.cluster_id, cluster))
             .filter(Incident.status.in_(OPEN_STATUSES))
             .all()
         }
@@ -244,7 +277,7 @@ async def volume_iostat_api(pool: str, user: str = Depends(require_login)):
 
 
 @router.get("/api/volumes/{pool}/images")
-async def volume_known_images_api(pool: str, user: str = Depends(require_login)):
+async def volume_known_images_api(request: Request, pool: str, user: str = Depends(require_login)):
     """Backs the volume-search box's autocomplete on the Volumes page —
     2026-07-29: that page used to list every volume's numbers directly, a
     live `rbd perf image iostat` table; it now asks the operator to search
@@ -259,17 +292,21 @@ async def volume_known_images_api(pool: str, user: str = Depends(require_login))
     first few seconds of life). Best-effort on the live half: a transient
     SSH failure here must not block finding a volume that already has
     plenty of persisted history."""
-    allowed_pools = set(ceph_client.configured_rbd_pools())
+    cluster, allowed_pools = _allowed_pools_for_request(request)
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
 
     images: set[str] = set()
     with db.SessionLocal() as session:
-        rows = session.query(VolumeMetric.image).filter(VolumeMetric.pool == pool).distinct().all()
+        rows = session.query(VolumeMetric.image).filter(
+            VolumeMetric.pool == pool, _cluster_row_filter(VolumeMetric.cluster_id, cluster)
+        ).distinct().all()
         images.update(row[0] for row in rows)
 
     try:
-        samples = ceph_client.query_rbd_iostat(pool)
+        samples = ceph_client.query_rbd_iostat(pool) if cluster.is_default else ceph_client.query_rbd_iostat_with(
+            pool, *cluster_connection(cluster)
+        )
     except CephQueryError as exc:
         logger.warning("volume_known_images_api: live iostat failed, using history only: %s", exc)
     else:
@@ -280,7 +317,8 @@ async def volume_known_images_api(pool: str, user: str = Depends(require_login))
 
 @router.get("/api/volumes/{pool}/{image}/history")
 async def volume_history_api(
-    pool: str, image: str, hours: int = _DEFAULT_HISTORY_HOURS, user: str = Depends(require_login)
+    request: Request, pool: str, image: str, hours: int = _DEFAULT_HISTORY_HOURS,
+    user: str = Depends(require_login)
 ):
     """Powers the performance chart on the Volumes page — persisted
     VolumeMetric history for exactly one (pool, image), not a live SSH
@@ -292,7 +330,7 @@ async def volume_history_api(
     volume regardless of `hours`, since "hiệu năng tối đa từng đạt được"
     (peak performance ever achieved) must survive collapsing/scrolling the
     visible chart window."""
-    allowed_pools = set(ceph_client.configured_rbd_pools())
+    cluster, allowed_pools = _allowed_pools_for_request(request)
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     hours = max(1, min(hours, _MAX_HISTORY_HOURS))
@@ -301,7 +339,7 @@ async def volume_history_api(
     with db.SessionLocal() as session:
         rows = (
             session.query(VolumeMetric)
-            .filter(VolumeMetric.pool == pool, VolumeMetric.image == image)
+            .filter(_cluster_row_filter(VolumeMetric.cluster_id, cluster), VolumeMetric.pool == pool, VolumeMetric.image == image)
             .filter(VolumeMetric.polled_at >= since)
             .order_by(VolumeMetric.polled_at.asc())
             .all()
@@ -327,7 +365,7 @@ async def volume_history_api(
         def _peak(field: str) -> dict | None:
             row = (
                 session.query(VolumeMetric)
-                .filter(VolumeMetric.pool == pool, VolumeMetric.image == image)
+                .filter(_cluster_row_filter(VolumeMetric.cluster_id, cluster), VolumeMetric.pool == pool, VolumeMetric.image == image)
                 .order_by(getattr(VolumeMetric, field).desc())
                 .first()
             )
@@ -347,7 +385,7 @@ async def volume_history_api(
         # a close-but-not-authoritative proxy).
         saturated_now = (
             session.query(Incident)
-            .filter(Incident.ceph_code == ceph_code_for(pool, image))
+            .filter(_cluster_row_filter(Incident.cluster_id, cluster), Incident.ceph_code == ceph_code_for(pool, image))
             .filter(Incident.status.in_(OPEN_STATUSES))
             .first()
             is not None
@@ -409,7 +447,7 @@ def _with_step_display_times(progress: list) -> list:
 
 
 @router.post("/volumes/{pool}/perf-sweep/propose")
-async def propose_volume_perf_sweep(pool: str, user: str = Depends(require_login)):
+async def propose_volume_perf_sweep(request: Request, pool: str, user: str = Depends(require_login)):
     """"Đo hiệu năng tối đa (Load sweep)" button — admin-gated (same
     posture as purge_all_rbd_trash below): unlike the per-image Trash
     "Xoá" button, this WRITES REAL I/O LOAD to the cluster for several
@@ -422,6 +460,7 @@ async def propose_volume_perf_sweep(pool: str, user: str = Depends(require_login
     parameter from the request, so there is no way to point this at a
     real volume even by a crafted request."""
     _require_admin_privilege(user)
+    _require_default_cluster_operation(request)
     allowed_pools = set(ceph_client.configured_rbd_pools())
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
@@ -611,7 +650,7 @@ async def volume_perf_sweep_analyze_api(pool: str, user: str = Depends(require_l
 
 
 @router.post("/volumes/{pool}/trash/{trash_id}/propose")
-async def propose_rbd_trash_remove(pool: str, trash_id: str, user: str = Depends(require_login)):
+async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, user: str = Depends(require_login)):
     """"Xoá" button on the Volumes page's Trash section — creates a
     PENDING_APPROVAL Action the operator must separately approve (via the
     already-generic POST /actions/{id}/approve — no new approval logic
@@ -622,6 +661,7 @@ async def propose_rbd_trash_remove(pool: str, trash_id: str, user: str = Depends
     none of which auto-execute even a SAFE action_id; only Chat-with-AI's
     confirm flow does that.
     """
+    _require_default_cluster_operation(request)
     allowed_pools = set(ceph_client.configured_rbd_pools())
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
@@ -726,6 +766,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
     feature in this app keeps, even though this one skips approval itself.
     """
     _require_admin_privilege(user)
+    _require_default_cluster_operation(request)
     pools = await asyncio.to_thread(_rbd_pools_for_request, request)
     allowed_pools = set(pools)
     if pool not in allowed_pools:
@@ -739,7 +780,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
             request,
             "volumes.html",
             _volumes_page_context(
-                user, pool, pools, purge_error=f"Không lấy được danh sách trash: {exc}"
+                request, user, pool, pools, purge_error=f"Không lấy được danh sách trash: {exc}"
             ),
         )
 
@@ -747,7 +788,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         return templates.TemplateResponse(
             request,
             "volumes.html",
-            _volumes_page_context(user, pool, pools, purge_success="Trash của pool này đang trống, không có gì để xoá."),
+            _volumes_page_context(request, user, pool, pools, purge_success="Trash của pool này đang trống, không có gì để xoá."),
         )
 
     failures = [r for r in results if r["error"]]
@@ -793,6 +834,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         request,
         "volumes.html",
         _volumes_page_context(
+            request,
             user,
             pool,
             pools,

@@ -8,9 +8,11 @@ from fastapi.responses import HTMLResponse
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
+from dashboard.cluster_scope import cluster_connection, selected_cluster
 from dashboard.templating import make_templates
 from watcher import ceph_client
-from watcher.ceph_client import CephQueryError
+from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
+from dashboard.routes.volumes import _pool_names_from_detail
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,7 +52,19 @@ def _normalize_pg_rows(payload: dict | list) -> list[dict]:
 
 @router.get("/pgs", response_class=HTMLResponse)
 async def pgs_page(request: Request, user: str = Depends(require_login)):
-    pools = ceph_client.configured_rbd_pools()
+    cluster = selected_cluster(request)
+    connection = cluster_connection(cluster)
+    if cluster.is_default:
+        pools = ceph_client.configured_rbd_pools()
+    else:
+        try:
+            _host, pool_payload = await asyncio.to_thread(
+                run_ceph_json_command_with, *connection, "ceph osd pool ls detail"
+            )
+            pools = _pool_names_from_detail(pool_payload)
+        except CephQueryError as exc:
+            logger.warning("pgs_page: pool discovery failed for cluster %s: %s", cluster.id, exc)
+            pools = []
     selected_pool = request.query_params.get("pool")
     if selected_pool and selected_pool not in pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
@@ -59,10 +73,11 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
     query_error: str | None = None
     if selected_pool:
         try:
-            _host, payload = await asyncio.to_thread(
-                ceph_client.run_ceph_json_command,
-                f"ceph pg ls-by-pool {shlex.quote(selected_pool)}",
-            )
+            command = f"ceph pg ls-by-pool {shlex.quote(selected_pool)}"
+            if cluster.is_default:
+                _host, payload = await asyncio.to_thread(ceph_client.run_ceph_json_command, command)
+            else:
+                _host, payload = await asyncio.to_thread(run_ceph_json_command_with, *connection, command)
             rows = _normalize_pg_rows(payload)
         except CephQueryError as exc:
             logger.warning("pgs_page: failed to query pool %r: %s", selected_pool, exc)

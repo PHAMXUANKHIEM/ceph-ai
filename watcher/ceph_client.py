@@ -189,6 +189,22 @@ def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
     degrades to "no data this poll" rather than crashing the Watcher loop.
     """
     _, payload = run_ceph_json_command(f"rbd perf image iostat {shlex.quote(pool)}")
+    return _normalize_rbd_iostat(pool, payload)
+
+
+def query_rbd_iostat_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> list[VolumeIoSample]:
+    """Cluster-scoped counterpart to :func:`query_rbd_iostat`."""
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd perf image iostat {shlex.quote(pool)}",
+    )
+    return _normalize_rbd_iostat(pool, payload)
+
+
+def _normalize_rbd_iostat(pool: str, payload: dict | list) -> list[VolumeIoSample]:
     raw_entries = payload if isinstance(payload, list) else payload.get("images") if isinstance(payload, dict) else None
     if not isinstance(raw_entries, list):
         logger.warning(
@@ -253,6 +269,22 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
     unexpected-shape response, same defensive posture as
     query_rbd_iostat."""
     _, payload = run_ceph_json_command(f"rbd trash ls {shlex.quote(pool)}")
+    return _normalize_rbd_trash(pool, payload)
+
+
+def query_rbd_trash_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> list[TrashEntry]:
+    """Cluster-scoped counterpart to :func:`query_rbd_trash`."""
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd trash ls {shlex.quote(pool)}",
+    )
+    return _normalize_rbd_trash(pool, payload)
+
+
+def _normalize_rbd_trash(pool: str, payload: dict | list) -> list[TrashEntry]:
     if not isinstance(payload, list):
         logger.warning(
             "query_rbd_trash: unexpected response shape for pool %r — treating as no data",

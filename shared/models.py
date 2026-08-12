@@ -540,9 +540,11 @@ class VolumeMetric(Base):
     __tablename__ = "volume_metrics"
     __table_args__ = (
         Index("ix_volume_metrics_pool_image_polled_at", "pool", "image", "polled_at"),
+        Index("ix_volume_metrics_cluster_id", "cluster_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
     pool: Mapped[str] = mapped_column(String(64), nullable=False)
     image: Mapped[str] = mapped_column(String(128), nullable=False)
     iops: Mapped[float] = mapped_column(Float, nullable=False)
