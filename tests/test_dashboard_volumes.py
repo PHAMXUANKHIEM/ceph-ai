@@ -87,7 +87,7 @@ def test_trash_is_top_level_page_not_pool_sidebar_item(dashboard_client, monkeyp
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert "<h2>Trash</h2>" in response.text
+    assert "<h2>Trash theo Pool</h2>" in response.text
     assert 'id="pool-selector"' not in response.text
     assert 'href="/volumes?view=trash"' not in response.text
 
@@ -100,6 +100,42 @@ def test_legacy_volumes_trash_url_redirects_to_top_level_trash(dashboard_client,
 
     assert response.status_code == 307
     assert response.headers["location"] == "/trash"
+
+
+def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+
+    def fake_query(pool):
+        if pool == "vms":
+            return [_fake_trash_entry(), _fake_trash_entry("id-2", "old-disk-2")]
+        return []
+
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fake_query)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash")
+
+    assert response.status_code == 200
+    assert 'href="/trash?pool=vms"' in response.text
+    assert 'href="/trash?pool=backups"' in response.text
+    assert "2.0 GiB" in response.text
+    assert "old-disk" not in response.text
+
+
+def test_trash_pool_page_only_lists_selected_pools_entries(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_trash",
+        lambda pool: [_fake_trash_entry(name=f"{pool}-deleted")],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert "vms-deleted" in response.text
+    assert "backups-deleted" not in response.text
 
 
 def test_volumes_page_with_no_pool_selects_nothing_and_shows_empty_state(dashboard_client, monkeypatch):
@@ -987,7 +1023,7 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     )
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?view=trash")
+    response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
     assert "old-disk" in response.text
@@ -999,10 +1035,11 @@ def test_volumes_page_shows_empty_trash_hint(dashboard_client, monkeypatch):
     _stub_no_trash(monkeypatch)
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?view=trash")
+    response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
-    assert "Trash đang trống" in response.text
+    assert "Trash của pool" in response.text
+    assert "đang trống" in response.text
 
 
 def test_volumes_page_shows_trash_error_without_crashing(dashboard_client, monkeypatch):
@@ -1014,7 +1051,7 @@ def test_volumes_page_shows_trash_error_without_crashing(dashboard_client, monke
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fake_query)
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?view=trash")
+    response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
     assert "Một số pool không đọc được Trash" in response.text
@@ -1027,7 +1064,7 @@ def test_volumes_page_shows_xoa_button_when_no_pending_action(dashboard_client, 
     )
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?view=trash")
+    response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
     assert 'action="/volumes/vms/trash/1234567890ab/propose"' in response.text
@@ -1060,7 +1097,7 @@ def test_volumes_page_shows_pending_approval_state_instead_of_xoa_button(dashboa
         session.commit()
         action_id = action.id
 
-    response = dashboard_client.get("/volumes?view=trash")
+    response = dashboard_client.get("/trash?pool=vms")
 
     assert response.status_code == 200
     assert "Duyệt xoá" in response.text
@@ -1083,7 +1120,7 @@ def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, 
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/trash"
+    assert response.headers["location"] == "/trash?pool=vms"
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value

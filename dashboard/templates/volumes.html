@@ -41,6 +41,7 @@
       </nav>
       {% if clusters|length > 1 %}
       <form method="get" action="{{ '/trash' if selected_view == 'trash' else '/volumes' }}" class="topbar-cluster-switcher">
+        {% if selected_view == 'trash' and selected_pool %}<input type="hidden" name="pool" value="{{ selected_pool }}">{% endif %}
         <select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">
           {% for c in clusters %}
           <option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>
@@ -103,7 +104,7 @@
       </div>
     </section>
     {% endif %}
-    {% if selected_pool %}
+    {% if selected_view == "pools" and selected_pool %}
     <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
       <div class="card-header">
         <div class="metrics-panel-title">
@@ -250,18 +251,43 @@
 
     {% elif selected_view == "trash" %}
     <section class="card">
-      <div class="card-header"><h2>Trash</h2></div>
+      <div class="card-header"><h2>Trash theo Pool</h2></div>
       <div class="card-body">
-        <p class="hint metrics-panel-desc">Toàn bộ Volume đã xoá mềm trong các RBD pool. Chọn Volume để xem thông tin; thao tác xoá vĩnh viễn luôn cần duyệt.</p>
+        <p class="hint metrics-panel-desc">Chọn một pool để xem các Volume đã xoá mềm. Tổng dung lượng là tổng kích thước logic Ceph báo cho các image đang nằm trong trash.</p>
+        {% if trash_pool_summaries %}
+        <div class="table-wrap"><table id="trash-pool-list">
+          <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Tổng dung lượng Trash</th><th></th></tr></thead>
+          <tbody>{% for summary in trash_pool_summaries %}
+            <tr class="{% if summary.pool == selected_pool %}progress-item-failed{% endif %}">
+              <td><code>{{ summary.pool }}</code></td>
+              {% if summary.error %}
+              <td colspan="2"><span class="error">Không đọc được: {{ summary.error }}</span></td>
+              {% else %}
+              <td>{{ summary.entry_count }}</td><td>{{ summary.total_size_human }}</td>
+              {% endif %}
+              <td><a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a></td>
+            </tr>
+          {% endfor %}</tbody>
+        </table></div>
+        {% else %}
+        <p class="hint">Không tìm thấy RBD pool nào.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if selected_pool %}
+    <section class="card">
+      <div class="card-header"><div class="metrics-panel-title"><h2>Trash — {{ selected_pool }}</h2><a href="/trash" class="btn btn-ghost btn-sm">Chọn pool khác</a></div></div>
+      <div class="card-body">
+        <p class="hint metrics-panel-desc">Chỉ hiển thị Volume đã xoá mềm thuộc pool <code>{{ selected_pool }}</code>; thao tác xoá vĩnh viễn luôn cần duyệt.</p>
         {% if purge_error %}<p class="error">{{ purge_error }}</p>{% endif %}
         {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
         {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
         {% if trash_entries %}
         <div class="table-wrap"><table>
-          <thead><tr><th>Pool</th><th>Volume</th><th>ID</th><th>Dung lượng</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
+          <thead><tr><th>Volume</th><th>ID</th><th>Dung lượng</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
           <tbody>{% for entry in trash_entries %}
           <tr id="trash-{{ entry.id }}">
-            <td><code>{{ entry.pool }}</code></td>
             <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Dung lượng: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
             <td><code>{{ entry.id }}</code></td><td>{{ entry.size_human }}</td>
             <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.status or "—" }}</td>
@@ -275,9 +301,10 @@
             </td>
           </tr>{% endfor %}</tbody>
         </table></div>
-        {% else %}<p class="hint">Trash đang trống.</p>{% endif %}
+        {% else %}<p class="hint">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>{% endif %}
       </div>
     </section>
+    {% endif %}
     {% else %}
     <section class="empty-node-state">
       <span class="empty-node-icon" aria-hidden="true">&#128421;</span>

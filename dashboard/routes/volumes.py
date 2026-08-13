@@ -204,6 +204,7 @@ def _volumes_page_context(
     has nothing left to look up after the fact via a GET, it only exists
     as this response's own purge_error/purge_success)."""
     trash_entries: list[dict] = []
+    trash_pool_summaries: list[dict] = []
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
     perf_sweep_action: Action | None = None
@@ -217,7 +218,19 @@ def _volumes_page_context(
                     if cluster.is_default
                     else ceph_client.query_rbd_trash_with(trash_pool, *cluster_connection(cluster))
                 )
+                total_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
+                trash_pool_summaries.append(
+                    {
+                        "pool": trash_pool,
+                        "entry_count": len(rows),
+                        "total_size_bytes": total_size_bytes,
+                        "total_size_human": _format_bytes(total_size_bytes),
+                        "error": None,
+                    }
+                )
                 for row in rows:
+                    if trash_pool != pool:
+                        continue
                     item = dict(row)
                     item["pool"] = trash_pool
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
@@ -225,8 +238,17 @@ def _volumes_page_context(
             except CephQueryError as exc:
                 logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", trash_pool, exc)
                 trash_error = f"{trash_pool}: {exc}"
+                trash_pool_summaries.append(
+                    {
+                        "pool": trash_pool,
+                        "entry_count": None,
+                        "total_size_bytes": None,
+                        "total_size_human": "—",
+                        "error": str(exc),
+                    }
+                )
         if cluster.is_default:
-            for trash_pool in pools:
+            for trash_pool in ([pool] if pool else []):
                 for trash_id, action in _in_flight_trash_actions(trash_pool).items():
                     trash_pending[f"{trash_pool}/{trash_id}"] = action
     elif pool:
@@ -241,6 +263,7 @@ def _volumes_page_context(
         "selected_pool": pool,
         "selected_view": selected_view,
         "trash_entries": trash_entries,
+        "trash_pool_summaries": trash_pool_summaries,
         "trash_error": trash_error,
         "trash_pending": trash_pending,
         "perf_sweep_action": perf_sweep_action,
@@ -297,13 +320,16 @@ async def trash_page(request: Request, user: str = Depends(require_login)):
     """Top-level Pool navigation peer of /volumes and /pgs."""
     clusters, cluster = cluster_selection(request)
     pools = await asyncio.to_thread(_rbd_pools_for_request, request)
+    requested_pool = request.query_params.get("pool", "").strip() or None
+    if requested_pool and requested_pool not in pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     return templates.TemplateResponse(
         request,
         "volumes.html",
         _volumes_page_context(
             request,
             user,
-            None,
+            requested_pool,
             pools,
             clusters=clusters,
             selected_cluster=cluster,
@@ -911,7 +937,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
         )
         session.commit()
 
-    return RedirectResponse(url="/trash", status_code=303)
+    return RedirectResponse(url=f"/trash?pool={pool}", status_code=303)
 
 
 @router.post("/volumes/{pool}/trash/purge-all", response_class=HTMLResponse)
@@ -953,7 +979,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
             request,
             "volumes.html",
             _volumes_page_context(
-                request, user, None, pools, purge_error=f"Không lấy được danh sách trash: {exc}",
+                request, user, pool, pools, purge_error=f"Không lấy được danh sách trash: {exc}",
                 selected_view="trash",
             ),
         )
@@ -962,7 +988,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         return templates.TemplateResponse(
             request,
             "volumes.html",
-            _volumes_page_context(request, user, None, pools, purge_success="Trash của pool này đang trống, không có gì để xoá.", selected_view="trash"),
+            _volumes_page_context(request, user, pool, pools, purge_success="Trash của pool này đang trống, không có gì để xoá.", selected_view="trash"),
         )
 
     failures = [r for r in results if r["error"]]
@@ -1010,7 +1036,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         _volumes_page_context(
             request,
             user,
-            None,
+            pool,
             pools,
             purge_error=summary if failures else None,
             purge_success=None if failures else summary,
