@@ -23,7 +23,13 @@ commit gần nhất. Không đánh dấu hoàn thành nếu tiêu chí nghiệm 
   - [x] Dùng chung output contract cho Router API, Codex và Claude.
   - [x] Kiểm thử persistence, lỗi AI, JSON xấu và không rò rỉ credential.
   - [ ] Mở rộng sau: PG chi tiết, correlation metric và lifecycle incident tự động.
-- [ ] **2. Baseline động và phát hiện bất thường** theo cluster/pool/OSD/volume/khung giờ.
+- [x] **2. Baseline động và phát hiện bất thường** theo cluster/pool/OSD/volume/khung giờ.
+  - [x] Chuẩn hoá metric cho bốn loại entity, không đưa credential vào sample.
+  - [x] Median/MAD robust, ngưỡng tương đối và ngưỡng sàn chống nhiễu/outlier.
+  - [x] Ưu tiên baseline cùng khung giờ khi đủ mẫu, fallback cửa sổ gần nhất.
+  - [x] Không coi lần tải đầu tiên sau baseline idle là IOPS/bandwidth anomaly.
+  - [x] Lifecycle `OPEN/RESOLVED`, persistence, Telegram transition và Dashboard API/UI.
+  - [x] Retention dùng chung chính sách metric Vitastor.
 - [ ] **3. Dự báo đầy dung lượng** và thời gian tới các mốc 80/90/95%.
 - [ ] **4. AI lập kế hoạch bảo trì OSD** với dry-run, reweight, theo dõi rebalance và duyệt.
 - [ ] **5. Trợ lý tối ưu pool và PG** với mô phỏng tác động trước thay đổi.
@@ -62,6 +68,7 @@ Command preview chỉ là văn bản; endpoint chẩn đoán không có khả n�
 | Ngày | Mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---:|---|---|---|---|
 | 2026-08-13 | 1 | Hoàn thành bản lõi | DiagnosticRun, migration, evidence read-only, provider-neutral JSON contract, API và Dashboard UI | `25 passed` (Vitastor diagnosis/dashboard/client/monitor), JS syntax, compileall, Alembic 1 head | Chưa commit |
+| 2026-08-13 | 2 | Hoàn thành | Baseline median/MAD theo entity và khung giờ, anomaly lifecycle, Telegram, API và Dashboard table | `19 passed` tập trung; JS syntax, compileall, Alembic 1 head | Chưa commit |
 
 ## Ghi chú bàn giao
 
