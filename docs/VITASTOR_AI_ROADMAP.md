@@ -68,7 +68,7 @@ Command preview chỉ là văn bản; endpoint chẩn đoán không có khả n�
 | Ngày | Mục | Trạng thái | Thay đổi | Kiểm thử | Commit |
 |---|---:|---|---|---|---|
 | 2026-08-13 | 1 | Hoàn thành bản lõi | DiagnosticRun, migration, evidence read-only, provider-neutral JSON contract, API và Dashboard UI | `25 passed` (Vitastor diagnosis/dashboard/client/monitor), JS syntax, compileall, Alembic 1 head | Chưa commit |
-| 2026-08-13 | 2 | Hoàn thành | Baseline median/MAD theo entity và khung giờ, anomaly lifecycle, Telegram, API và Dashboard table | `19 passed` tập trung; JS syntax, compileall, Alembic 1 head | Chưa commit |
+| 2026-08-13 | 2 | Hoàn thành | Baseline median/MAD theo entity và khung giờ, anomaly lifecycle, Telegram, API và Dashboard table | `45 passed` tập trung; JS syntax, compileall, Alembic 1 head | Chưa commit |
 
 ## Ghi chú bàn giao
 

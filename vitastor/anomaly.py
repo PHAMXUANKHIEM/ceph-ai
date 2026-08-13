@@ -75,7 +75,7 @@ def is_anomaly(metric: str, current: float, values: list[float]) -> tuple[bool, 
 
 def detect_and_record(cluster_id: str, entities: list[dict], now: datetime | None = None) -> dict:
     """Detect against prior samples, persist lifecycle, then append current samples."""
-    now = now or datetime.utcnow(); active_keys = set(); opened = []; resolved = []
+    now = now or datetime.utcnow(); opened = []; resolved = []
     with db.SessionLocal() as session:
         for entity in entities:
             rows = session.query(VitastorEntityMetricSample).filter_by(
@@ -91,7 +91,7 @@ def detect_and_record(cluster_id: str, entities: list[dict], now: datetime | Non
                 key = (entity["type"], entity["name"], metric)
                 event = session.query(VitastorAnomalyEvent).filter_by(cluster_id=cluster_id, entity_type=key[0], entity_name=key[1], metric=key[2], status="OPEN").first()
                 if abnormal:
-                    active_keys.add(key); severity = "CRITICAL" if ratio >= settings.vitastor_anomaly_relative_multiplier * 2 else "WARNING"
+                    severity = "CRITICAL" if ratio >= settings.vitastor_anomaly_relative_multiplier * 2 else "WARNING"
                     explanation = f"{key[0]} {key[1]}: {metric}={current:.2f}, baseline={baseline:.2f}, lệch {ratio:.2f}x ({len(values)} mẫu, baseline theo khung giờ khi đủ dữ liệu)"
                     if event is None:
                         event = VitastorAnomalyEvent(cluster_id=cluster_id, entity_type=key[0], entity_name=key[1], metric=metric, severity=severity, current_value=current, baseline_value=baseline, deviation_ratio=ratio, sample_count=len(values), explanation=explanation, detected_at=now, last_seen_at=now)
