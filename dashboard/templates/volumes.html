@@ -59,7 +59,7 @@
     <div class="tabbed-page">
     <nav class="tabbed-sidebar" id="pool-selector">
       <div class="node-sidebar-header">
-        <span class="hint">Chọn pool</span>
+        <span class="hint">Pool</span>
       </div>
       {% if pools %}
         {% for pool in pools %}
@@ -81,10 +81,16 @@
           khởi động lại Watcher.
         </p>
       {% endif %}
+      <div class="node-sidebar-header">
+        <span class="hint">Quản lý</span>
+      </div>
+      <a href="/volumes?view=trash" class="tabbed-nav-item {% if selected_view == 'trash' %}active{% endif %}">
+        <span class="node-chip-ip">Trash</span>
+      </a>
     </nav>
 
     <div class="tabbed-content">
-    {% if is_admin %}
+    {% if is_admin and selected_view == "pools" %}
     <section class="card">
       <div class="card-header"><div class="metrics-panel-title">Tạo pool trên {{ selected_cluster.name }}</div></div>
       <div class="card-body">
@@ -189,84 +195,34 @@
       </div>
     </section>
 
+    {% elif selected_view == "trash" %}
     <section class="card">
-      <div class="card-header">
-        <h2>Trash</h2>
-        {% if is_admin and trash_entries %}
-        <form
-          method="post"
-          action="/volumes/{{ selected_pool }}/trash/purge-all"
-          class="inline-form"
-          onsubmit="return confirm('Xoá VĨNH VIỄN toàn bộ {{ trash_entries|length }} volume trong trash của pool {{ selected_pool }}? Dùng --force (bỏ qua kiểm tra image còn đang được VM dùng), KHÔNG qua duyệt, KHÔNG thể hoàn tác.');"
-        >
-          <button type="submit" class="btn btn-reject btn-sm">Xoá tất cả trash (force, không qua duyệt)</button>
-        </form>
-        {% endif %}
-      </div>
+      <div class="card-header"><h2>Trash</h2></div>
       <div class="card-body">
-        <p class="hint metrics-panel-desc">
-          Các volume đã bị xoá mềm (<code>rbd trash mv</code>) trong pool này, Ceph vẫn giữ lại chờ
-          khôi phục. Bấm "Xoá" trên từng dòng để xoá vĩnh viễn một volume — <strong>không thể hoàn
-          tác</strong>, cần duyệt riêng trước khi thực thi thật. Nút "Xoá tất cả trash" phía trên
-          (chỉ admin thấy) xoá NGAY toàn bộ, không cần duyệt, và dùng <code>--force</code>.
-        </p>
-        {% if purge_error %}
-        <p class="error">{{ purge_error }}</p>
-        {% endif %}
-        {% if purge_success %}
-        <p class="success">{{ purge_success }}</p>
-        {% endif %}
-        {% if trash_error %}
-        <p class="error">Không lấy được danh sách trash: {{ trash_error }}</p>
-        {% elif trash_entries %}
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Tên</th>
-                <th>ID</th>
-                <th>Thời điểm xoá mềm</th>
-                <th>Trạng thái</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for entry in trash_entries %}
-              <tr>
-                <td><code>{{ entry.name }}</code></td>
-                <td><code>{{ entry.id }}</code></td>
-                <td>{{ entry.deletion_time or "—" }}</td>
-                <td>{{ entry.status or "—" }}</td>
-                <td>
-                  {% set pending_action = trash_pending.get(entry.id) %}
-                  {% if pending_action %}
-                    {% if pending_action.status == "PENDING_APPROVAL" %}
-                    <div class="pending-action-buttons">
-                      <span class="hint">Chờ duyệt</span>
-                      <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
-                        <button type="submit" class="btn btn-approve btn-sm">Duyệt — xoá vĩnh viễn</button>
-                      </form>
-                      <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
-                        <button type="submit" class="btn btn-reject btn-sm">Từ chối</button>
-                      </form>
-                    </div>
-                    {% else %}
-                    <span class="hint">Đã duyệt — đang chờ Worker thực thi</span>
-                    {% endif %}
-                  {% else %}
-                  <form method="post" action="/volumes/{{ selected_pool }}/trash/{{ entry.id }}/propose" class="inline-form">
-                    <button type="submit" class="btn btn-reject btn-sm">Xoá</button>
-                  </form>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-        <p class="hint">Trash của pool này đang trống.</p>
-        {% endif %}
+        <p class="hint metrics-panel-desc">Toàn bộ Volume đã xoá mềm trong các RBD pool. Chọn Volume để xem thông tin; thao tác xoá vĩnh viễn luôn cần duyệt.</p>
+        {% if purge_error %}<p class="error">{{ purge_error }}</p>{% endif %}
+        {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
+        {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
+        {% if trash_entries %}
+        <div class="table-wrap"><table>
+          <thead><tr><th>Pool</th><th>Volume</th><th>ID</th><th>Dung lượng</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
+          <tbody>{% for entry in trash_entries %}
+          <tr id="trash-{{ entry.id }}">
+            <td><code>{{ entry.pool }}</code></td>
+            <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Dung lượng: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
+            <td><code>{{ entry.id }}</code></td><td>{{ entry.size_human }}</td>
+            <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.status or "—" }}</td>
+            <td>
+              {% set pending_action = trash_pending.get(entry.pool ~ '/' ~ entry.id) %}
+              {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
+              <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button class="btn btn-approve btn-sm">Duyệt xoá</button></form>
+              <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
+              {% elif pending_action %}<span class="hint">Đang chờ Worker</span>
+              {% else %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>{% endif %}
+            </td>
+          </tr>{% endfor %}</tbody>
+        </table></div>
+        {% else %}<p class="hint">Trash đang trống.</p>{% endif %}
       </div>
     </section>
     {% else %}

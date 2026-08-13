@@ -1058,6 +1058,7 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
                 "name": "old-disk",
                 "deletion_time": "2026-07-28 10:00:00",
                 "status": "expired",
+                "size": 1073741824,
             }
         ]
     }
@@ -1070,6 +1071,7 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
             "name": "old-disk",
             "deletion_time": "2026-07-28 10:00:00",
             "status": "expired",
+            "size_bytes": 1073741824,
         }
     ]
 

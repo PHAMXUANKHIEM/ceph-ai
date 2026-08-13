@@ -90,6 +90,12 @@ def _fast_volume_monitor_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fast_trash_capacity_monitor_default(monkeypatch):
+    """Keep Watcher-loop tests off the real per-pool Trash SSH path."""
+    monkeypatch.setattr(watcher_main.trash_capacity_monitor, "check_and_alert", lambda: {})
+
+
+@pytest.fixture(autouse=True)
 def _fast_bluestore_omap_monitor_default(monkeypatch):
     """2026-08-06: run() now also calls bluestore_omap_monitor.
     create_or_resolve_bluestore_incidents() every poll cycle (gated to once

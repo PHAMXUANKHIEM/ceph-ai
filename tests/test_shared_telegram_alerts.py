@@ -129,6 +129,19 @@ def test_send_ai_incident_alert_sends_diagnosis_and_rationale(monkeypatch):
     assert "Đề xuất: Kiểm tra pg_num và tăng dần theo tải." in text
 
 
+def test_send_trash_capacity_alert_uses_incident_channel(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *args: calls.append(args))
+
+    telegram_alerts.send_trash_capacity_alert(25, 100, 0.25, 3)
+
+    assert len(calls) == 1
+    assert "vượt ngưỡng 20%" in calls[0][2]
+    assert "Đề xuất" in calls[0][2]
+
+
 # --- send_node_alert ---------------------------------------------------------
 
 

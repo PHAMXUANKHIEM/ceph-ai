@@ -256,6 +256,7 @@ class TrashEntry(TypedDict):
     name: str
     deletion_time: str
     status: str
+    size_bytes: int
 
 
 def query_rbd_trash(pool: str) -> list[TrashEntry]:
@@ -269,7 +270,7 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
     goes through. Returns an empty list (not an error) on an
     unexpected-shape response, same defensive posture as
     query_rbd_iostat."""
-    _, payload = run_ceph_json_command(f"rbd trash ls {shlex.quote(pool)}")
+    _, payload = run_ceph_json_command(f"rbd trash ls --long {shlex.quote(pool)}")
     return _normalize_rbd_trash(pool, payload)
 
 
@@ -280,7 +281,7 @@ def query_rbd_trash_with(
     """Cluster-scoped counterpart to :func:`query_rbd_trash`."""
     _, payload = run_ceph_json_command_with(
         mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
-        f"rbd trash ls {shlex.quote(pool)}",
+        f"rbd trash ls --long {shlex.quote(pool)}",
     )
     return _normalize_rbd_trash(pool, payload)
 
@@ -306,6 +307,7 @@ def _normalize_rbd_trash(pool: str, payload: dict | list) -> list[TrashEntry]:
                 name=str(entry.get("name") or "?"),
                 deletion_time=str(entry.get("deletion_time") or ""),
                 status=str(entry.get("status") or ""),
+                size_bytes=max(0, int(_as_float(entry.get("size")))),
             )
         )
     return entries

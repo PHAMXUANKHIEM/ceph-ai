@@ -21,6 +21,7 @@ from watcher import (
     node_health_monitor,
     osd_latency_monitor,
     publisher,
+    trash_capacity_monitor,
     volume_monitor,
 )
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
@@ -393,6 +394,7 @@ def run(
     last_osd_latency_scan_at: Optional[datetime] = None
     last_crush_scan_at: Optional[datetime] = None
     last_database_size_scan_at: Optional[datetime] = None
+    last_trash_capacity_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -466,6 +468,19 @@ def run(
             volume_monitor.create_or_resolve_volume_incidents(current_saturated)
         except Exception:
             logger.exception("run: volume saturation check failed")
+
+        # Aggregate Trash needs one query per RBD pool plus `ceph df`, so
+        # cap it at once per minute even when the main poll is faster.
+        trash_now = datetime.utcnow()
+        if (
+            last_trash_capacity_scan_at is None
+            or (trash_now - last_trash_capacity_scan_at).total_seconds() >= 60
+        ):
+            try:
+                trash_capacity_monitor.check_and_alert()
+            except Exception:
+                logger.exception("run: trash capacity check failed")
+            last_trash_capacity_scan_at = trash_now
 
         # 2026-08-01 (Story C): DeviceHealth-driven evacuation-proposal scan
         # — own independent try/except (same isolation reasoning as the

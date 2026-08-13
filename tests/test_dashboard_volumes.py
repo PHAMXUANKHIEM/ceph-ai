@@ -892,7 +892,7 @@ def test_analyze_perf_sweep_returns_502_when_analysis_fails(dashboard_client, mo
 
 
 def _fake_trash_entry(entry_id="1234567890ab", name="old-disk"):
-    return {"id": entry_id, "name": name, "deletion_time": "2026-07-28 10:00:00", "status": "expired"}
+    return {"id": entry_id, "name": name, "deletion_time": "2026-07-28 10:00:00", "status": "expired", "size_bytes": 1073741824}
 
 
 def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
@@ -902,7 +902,7 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     )
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volumes?view=trash")
 
     assert response.status_code == 200
     assert "old-disk" in response.text
@@ -914,10 +914,10 @@ def test_volumes_page_shows_empty_trash_hint(dashboard_client, monkeypatch):
     _stub_no_trash(monkeypatch)
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volumes?view=trash")
 
     assert response.status_code == 200
-    assert "Trash của pool này đang trống" in response.text
+    assert "Trash đang trống" in response.text
 
 
 def test_volumes_page_shows_trash_error_without_crashing(dashboard_client, monkeypatch):
@@ -929,10 +929,10 @@ def test_volumes_page_shows_trash_error_without_crashing(dashboard_client, monke
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fake_query)
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volumes?view=trash")
 
     assert response.status_code == 200
-    assert "Không lấy được danh sách trash" in response.text
+    assert "Một số pool không đọc được Trash" in response.text
 
 
 def test_volumes_page_shows_xoa_button_when_no_pending_action(dashboard_client, monkeypatch):
@@ -942,7 +942,7 @@ def test_volumes_page_shows_xoa_button_when_no_pending_action(dashboard_client, 
     )
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volumes?view=trash")
 
     assert response.status_code == 200
     assert 'action="/volumes/vms/trash/1234567890ab/propose"' in response.text
@@ -975,10 +975,10 @@ def test_volumes_page_shows_pending_approval_state_instead_of_xoa_button(dashboa
         session.commit()
         action_id = action.id
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volumes?view=trash")
 
     assert response.status_code == 200
-    assert "Chờ duyệt" in response.text
+    assert "Duyệt xoá" in response.text
     assert f'action="/actions/{action_id}/approve"' in response.text
     assert 'action="/volumes/vms/trash/1234567890ab/propose"' not in response.text
 
@@ -998,7 +998,7 @@ def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, 
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/volumes?pool=vms"
+    assert response.headers["location"] == "/volumes?view=trash"
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value

@@ -204,6 +204,24 @@ def send_node_alert(host: str, message: str) -> None:
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Node {host}: {_compact(message, _MAX_EXCERPT_CHARS)}")
 
 
+def send_trash_capacity_alert(trash_bytes: int, total_bytes: int, ratio: float, entry_count: int) -> None:
+    """Send RBD Trash capacity warnings through the cluster Alert channel."""
+    gib = 1024 ** 3
+    text = "\n".join(
+        (
+            "🟡 HEALTH_WARN RBD Trash vượt ngưỡng 20% dung lượng cụm",
+            f"🗑 Trash: {trash_bytes / gib:.2f} GiB / {total_bytes / gib:.2f} GiB ({ratio * 100:.1f}%), {entry_count} volume.",
+            "🔧 Đề xuất: kiểm tra các volume trong mục Trash và duyệt xoá vĩnh viễn những volume không còn cần khôi phục.",
+        )
+    )
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        text,
+    )
+
+
 def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
     """Called once per NEWLY-flagged OSD latency outlier
     (watcher/osd_latency_monitor.py::create_or_resolve_osd_latency_incidents
