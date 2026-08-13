@@ -42,6 +42,85 @@ def _pool_names_by_id(payload: dict | list) -> dict[str, str]:
     return names
 
 
+def _payload_rows(payload: dict | list, *keys: str) -> list[dict]:
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = []
+        for key in keys:
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                rows = candidate
+                break
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _normalize_pool_rows(
+    detail_payload: dict | list,
+    df_payload: dict | list,
+    stats_payload: dict | list,
+    rules_payload: dict | list,
+) -> list[dict]:
+    """Join Ceph's pool configuration, capacity and live I/O responses."""
+    df_by_name = {
+        str(row.get("name") or row.get("pool_name")): row.get("stats") or {}
+        for row in _payload_rows(df_payload, "pools")
+        if row.get("name") or row.get("pool_name")
+    }
+    io_by_name = {
+        str(row.get("pool_name") or row.get("name")): row.get("client_io_rate") or row.get("stats") or {}
+        for row in _payload_rows(stats_payload, "pool_stats", "pools")
+        if row.get("pool_name") or row.get("name")
+    }
+    rule_names = {
+        str(row.get("rule_id")): str(row.get("rule_name") or row.get("name"))
+        for row in _payload_rows(rules_payload, "rules")
+        if row.get("rule_id") is not None and (row.get("rule_name") or row.get("name"))
+    }
+
+    rows = []
+    for pool in _payload_rows(detail_payload, "pools"):
+        name = pool.get("pool_name") or pool.get("poolname") or pool.get("name")
+        if not name:
+            continue
+        name = str(name)
+        df_stats = df_by_name.get(name, {})
+        io_stats = io_by_name.get(name, {})
+        size = pool.get("size")
+        ec_profile = pool.get("erasure_code_profile")
+        redundancy = f"EC · {ec_profile}" if ec_profile else (f"{size} replicas" if size is not None else "—")
+        rule_id = pool.get("crush_rule")
+        rows.append(
+            {
+                "name": name,
+                "redundancy": redundancy,
+                "pgs": pool.get("pg_num") if pool.get("pg_num") is not None else pool.get("pg_num_target", "—"),
+                "crush_rule": rule_names.get(str(rule_id), str(rule_id) if rule_id is not None else "—"),
+                "used_bytes": df_stats.get("stored", df_stats.get("bytes_used", 0)) or 0,
+                "objects": df_stats.get("objects", 0) or 0,
+                "read_iops": io_stats.get("read_op_per_sec", io_stats.get("read_iops", 0)) or 0,
+                "write_iops": io_stats.get("write_op_per_sec", io_stats.get("write_iops", 0)) or 0,
+            }
+        )
+    return sorted(rows, key=lambda row: row["name"])
+
+
+def _format_bytes(value) -> str:
+    try:
+        amount = max(0.0, float(value))
+    except (TypeError, ValueError):
+        return "—"
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+
+
 def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None = None) -> list[dict]:
     """Normalize the cluster-wide ``ceph pg dump pgs`` response."""
     if isinstance(payload, list):
@@ -116,6 +195,48 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
             "is_admin": auth.is_admin_user(user),
             "pgs": rows,
             "state_counts": sorted(state_counts.items()),
+            "query_error": query_error,
+            "clusters": clusters,
+            "selected_cluster": cluster,
+        },
+    )
+
+
+@router.get("/pools", response_class=HTMLResponse)
+async def pools_page(request: Request, user: str = Depends(require_login)):
+    clusters, cluster = cluster_selection(request)
+    connection = cluster_connection(cluster)
+    rows: list[dict] = []
+    query_error: str | None = None
+    commands = (
+        "ceph osd pool ls detail",
+        "ceph df detail",
+        "ceph osd pool stats",
+        "ceph osd crush rule dump",
+    )
+    try:
+        query = ceph_client.run_ceph_json_command if cluster.is_default else None
+        payloads = []
+        for command in commands:
+            if query is not None:
+                _host, payload = await asyncio.to_thread(query, command)
+            else:
+                _host, payload = await asyncio.to_thread(run_ceph_json_command_with, *connection, command)
+            payloads.append(payload)
+        rows = _normalize_pool_rows(*payloads)
+        for row in rows:
+            row["used"] = _format_bytes(row.pop("used_bytes"))
+    except CephQueryError as exc:
+        logger.warning("pools_page: failed to query pools for cluster %s: %s", cluster.id, exc)
+        query_error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "pools.html",
+        {
+            "user": user,
+            "is_admin": auth.is_admin_user(user),
+            "pools": rows,
             "query_error": query_error,
             "clusters": clusters,
             "selected_cluster": cluster,

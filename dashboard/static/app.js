@@ -102,7 +102,7 @@
   main.insertBefore(heading, main.firstChild);
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -122,6 +122,13 @@
       pgLink.className = window.location.pathname === "/pgs" ? "nav-link active" : "nav-link";
       pgLink.textContent = "PGs";
       linksByPath["/pgs"] = pgLink;
+    }
+    if (!linksByPath["/pools"]) {
+      var poolsLink = document.createElement("a");
+      poolsLink.href = "/pools";
+      poolsLink.className = window.location.pathname === "/pools" ? "nav-link active" : "nav-link";
+      poolsLink.textContent = "Pools";
+      linksByPath["/pools"] = poolsLink;
     }
     if (!linksByPath["/trash"]) {
       var trashLink = document.createElement("a");
@@ -149,8 +156,8 @@
     // links from the server (admin-only destinations may not exist), then
     // regroup only those that were actually rendered.
     var navGroups = [
-      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
-      { label: "Pool", paths: ["/volumes", "/pgs", "/trash"] },
+      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/volumes", "/crush-map"] },
+      { label: "Pool", paths: ["/pools", "/pgs", "/trash"] },
       { label: "Object Storage", paths: ["/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage"] },
       { label: "OpenStack", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
@@ -183,11 +190,7 @@
         if (window.location.pathname === path) link.classList.add("active");
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
-        if (path === "/volumes") {
-          Array.prototype.slice.call(link.childNodes).forEach(function (node) {
-            if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = "Pool";
-          });
-        }
+        if (path === "/volumes") link.textContent = "Volume Performance";
         items.appendChild(link);
       });
 
