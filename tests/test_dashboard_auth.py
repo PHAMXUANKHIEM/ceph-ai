@@ -25,6 +25,61 @@ def test_unauthenticated_redirects_to_login(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
+def test_login_first_shows_product_selector(dashboard_client):
+    response = dashboard_client.get("/login")
+
+    assert response.status_code == 200
+    assert "Chọn hệ thống bạn muốn quản trị" in response.text
+    assert 'value="ceph"' in response.text
+    assert 'value="vitastor"' in response.text
+
+
+def test_select_ceph_then_shows_ceph_login(dashboard_client):
+    response = dashboard_client.post(
+        "/product/select", data={"product": "ceph"}, follow_redirects=True
+    )
+
+    assert response.status_code == 200
+    assert "CEPH AIOPS PLATFORM" in response.text
+    assert 'name="product" value="ceph"' in response.text
+
+
+def test_select_vitastor_then_shows_independent_login(dashboard_client):
+    response = dashboard_client.post(
+        "/product/select", data={"product": "vitastor"}, follow_redirects=True
+    )
+
+    assert response.status_code == 200
+    assert "VITASTOR CONTROL PLANE" in response.text
+    assert "không gian quản trị Vitastor độc lập" in response.text
+    assert 'name="product" value="vitastor"' in response.text
+
+
+def test_vitastor_login_reaches_vitastor_only(dashboard_client):
+    response = dashboard_client.post(
+        "/login",
+        data={"username": "admin", "password": "admin", "product": "vitastor"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert response.url.path == "/vitastor"
+    assert "Vitastor Management" in response.text
+
+    ceph_page = dashboard_client.get("/", follow_redirects=False)
+    assert ceph_page.status_code == 303
+    assert ceph_page.headers["location"] == "/vitastor"
+
+
+def test_ceph_login_cannot_open_vitastor_namespace(dashboard_client):
+    dashboard_client.post(
+        "/login", data={"username": "admin", "password": "admin", "product": "ceph"}
+    )
+
+    response = dashboard_client.get("/vitastor", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+
+
 def test_wrong_password_is_rejected(dashboard_client):
     response = dashboard_client.post(
         "/login",

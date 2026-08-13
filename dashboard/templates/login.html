@@ -3,24 +3,33 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login — Ceph AIOps</title>
+  <title>Đăng nhập — {{ "Vitastor" if product == "vitastor" else "Ceph AIOps" }}</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
-<body class="login-page">
-  <div class="login-card">
+<body class="login-page product-login product-login-{{ product }}">
+  <div class="login-card product-auth-card">
+    <a class="product-back" href="/login?change=1">← Chọn hệ thống khác</a>
+    {% if product == "vitastor" %}
+    <div class="product-login-eyebrow">VITASTOR CONTROL PLANE</div>
+    <h1><span class="vitastor-brand-mark">V</span> Vitastor</h1>
+    <p class="subtitle">Đăng nhập vào không gian quản trị Vitastor độc lập.</p>
+    {% else %}
+    <div class="product-login-eyebrow">CEPH AIOPS PLATFORM</div>
     <h1><span class="brand-mark">CA</span> Ceph AIOps</h1>
-    <p class="subtitle">Login để quản lý và giám sát cụm Ceph.</p>
+    <p class="subtitle">Đăng nhập để quản lý và giám sát cụm Ceph.</p>
+    {% endif %}
     {% if error %}
       <p class="error">{{ error }}</p>
     {% endif %}
     <form class="login-box" method="post" action="/login">
+      <input type="hidden" name="product" value="{{ product }}">
       <label>Tên đăng nhập
         <input type="text" name="username" autofocus required>
       </label>
       <label>Mật khẩu
         <input type="password" name="password" required>
       </label>
-      <button type="submit" class="btn btn-primary btn-block">Login</button>
+      <button type="submit" class="btn btn-primary btn-block">Đăng nhập {{ "Vitastor" if product == "vitastor" else "Ceph" }}</button>
     </form>
   </div>
 </body>

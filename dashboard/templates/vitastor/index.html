@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vitastor Control Plane</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body class="vitastor-app">
+  <header class="vitastor-topbar">
+    <a href="/vitastor" class="vitastor-brand"><span class="vitastor-brand-mark">V</span><span>Vitastor <small>CONTROL PLANE</small></span></a>
+    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Đăng xuất</button></form>
+  </header>
+  <main class="vitastor-shell">
+    <section class="vitastor-hero">
+      <span class="product-suite-label">INDEPENDENT STORAGE WORKSPACE</span>
+      <h1>Vitastor Management</h1>
+      <p>Không gian Vitastor đã được khởi tạo độc lập. Các module cluster, OSD, pool, volume và cảnh báo sẽ được xây mới trong namespace này.</p>
+    </section>
+    <section class="vitastor-empty-grid">
+      <article><span>01</span><strong>Clusters</strong><p>Chưa cấu hình cụm Vitastor.</p></article>
+      <article><span>02</span><strong>Block Storage</strong><p>Volume Vitastor sẽ xuất hiện tại đây.</p></article>
+      <article><span>03</span><strong>Operations</strong><p>Giám sát và workflow riêng, không phụ thuộc Ceph.</p></article>
+    </section>
+  </main>
+</body>
+</html>

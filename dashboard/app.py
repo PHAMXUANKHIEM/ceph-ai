@@ -35,6 +35,7 @@ from dashboard.routes import (
     telegram_alerts,
     upgrade,
     users,
+    vitastor,
     volumes,
 )
 from dashboard.ws import router as ws_router
@@ -83,6 +84,24 @@ async def _lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     _warn_if_using_dev_defaults()
     application = FastAPI(title="Ceph AIOps Dashboard", lifespan=_lifespan)
+    @application.middleware("http")
+    async def isolate_product_namespaces(request, call_next):
+        """Keep authenticated Ceph and Vitastor sessions in separate UIs."""
+        user = request.session.get("user")
+        product = request.session.get("product")
+        path = request.url.path
+        shared_path = path.startswith("/static/") or path in {"/logout", "/login"}
+        if user and not shared_path:
+            if product == "vitastor" and not path.startswith("/vitastor"):
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse("/vitastor", status_code=303)
+            if product != "vitastor" and path.startswith("/vitastor"):
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse("/", status_code=303)
+        return await call_next(request)
+
+    # Added after the product middleware so SessionMiddleware wraps it and
+    # `request.session` is available inside the namespace guard.
     application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key)
     application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     application.include_router(auth.router)
@@ -108,6 +127,7 @@ def create_app() -> FastAPI:
     application.include_router(telegram_alerts.router)
     application.include_router(crush_map.router)
     application.include_router(clusters_routes.router)
+    application.include_router(vitastor.router)
     application.include_router(ws_router)
     return application
 

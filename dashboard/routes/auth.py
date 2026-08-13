@@ -13,6 +13,15 @@ from shared.models import ChatPreference, User
 
 router = APIRouter()
 templates = make_templates()
+VALID_PRODUCTS = {"ceph", "vitastor"}
+
+
+def _product_home(product: str | None) -> str:
+    return "/vitastor" if product == "vitastor" else "/"
+
+
+def _login_context(product: str, error: str | None = None) -> dict:
+    return {"error": error, "product": product}
 
 # A hash of a value nobody will ever submit as a real password — used to keep
 # bcrypt.checkpw's (deliberately slow) cost constant regardless of whether the
@@ -132,20 +141,46 @@ async def require_login(request: Request) -> str:
 @router.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request):
     if request.session.get("user"):
-        return RedirectResponse("/", status_code=303)
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+        return RedirectResponse(_product_home(request.session.get("product")), status_code=303)
+    if request.query_params.get("change") == "1":
+        request.session.pop("login_product", None)
+        return templates.TemplateResponse(request, "product_select.html", {})
+    requested_product = request.query_params.get("product", "").strip().lower()
+    if requested_product:
+        if requested_product not in VALID_PRODUCTS:
+            raise HTTPException(status_code=404, detail="Hệ thống không hợp lệ")
+        request.session["login_product"] = requested_product
+    else:
+        requested_product = request.session.get("login_product", "")
+    if requested_product not in VALID_PRODUCTS:
+        return templates.TemplateResponse(request, "product_select.html", {})
+    return templates.TemplateResponse(request, "login.html", _login_context(requested_product))
+
+
+@router.post("/product/select")
+async def select_product(request: Request, product: str = Form(...)):
+    product = product.strip().lower()
+    if product not in VALID_PRODUCTS:
+        raise HTTPException(status_code=400, detail="Hệ thống không hợp lệ")
+    request.session.clear()
+    request.session["login_product"] = product
+    return RedirectResponse(f"/login?product={product}", status_code=303)
 
 
 @router.post("/login")
 async def login_submit(
-    request: Request, username: str = Form(...), password: str = Form(...)
+    request: Request, username: str = Form(...), password: str = Form(...),
+    product: str = Form("ceph"),
 ):
+    product = product.strip().lower()
+    if product not in VALID_PRODUCTS:
+        raise HTTPException(status_code=400, detail="Hệ thống không hợp lệ")
     client_key = _client_key(request)
     if _is_locked_out(client_key):
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"error": "Quá nhiều lần đăng nhập sai — thử lại sau ít phút"},
+            _login_context(product, "Quá nhiều lần đăng nhập sai — thử lại sau ít phút"),
             status_code=429,
         )
 
@@ -154,13 +189,15 @@ async def login_submit(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"error": "Sai tên đăng nhập hoặc mật khẩu"},
+            _login_context(product, "Sai tên đăng nhập hoặc mật khẩu"),
             status_code=401,
         )
 
     _clear_failures(client_key)
+    request.session.clear()
     request.session["user"] = username
-    return RedirectResponse("/", status_code=303)
+    request.session["product"] = product
+    return RedirectResponse(_product_home(product), status_code=303)
 
 
 @router.post("/logout")

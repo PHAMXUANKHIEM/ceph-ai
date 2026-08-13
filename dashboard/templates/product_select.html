@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chọn hệ thống quản trị</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body class="login-page product-select-page">
+  <main class="product-select-shell">
+    <div class="product-select-heading">
+      <span class="product-suite-label">STORAGE OPERATIONS</span>
+      <h1>Chọn hệ thống bạn muốn quản trị</h1>
+      <p>Ceph và Vitastor là hai không gian độc lập. Dữ liệu, cấu hình và luồng vận hành không dùng chung.</p>
+    </div>
+    <div class="product-choice-grid">
+      <form method="post" action="/product/select" class="product-choice product-choice-ceph">
+        <input type="hidden" name="product" value="ceph">
+        <span class="product-choice-icon brand-mark">CA</span>
+        <span class="product-choice-kicker">DISTRIBUTED STORAGE</span>
+        <strong>Ceph AIOps</strong>
+        <span>Tiếp tục vào hệ thống giám sát và vận hành Ceph hiện tại.</span>
+        <button type="submit">Chọn Ceph <b>→</b></button>
+      </form>
+      <form method="post" action="/product/select" class="product-choice product-choice-vitastor">
+        <input type="hidden" name="product" value="vitastor">
+        <span class="product-choice-icon vitastor-brand-mark">V</span>
+        <span class="product-choice-kicker">LOW-LATENCY BLOCK STORAGE</span>
+        <strong>Vitastor</strong>
+        <span>Đi vào control plane Vitastor mới, tách biệt hoàn toàn với Ceph.</span>
+        <button type="submit">Chọn Vitastor <b>→</b></button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

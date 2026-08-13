@@ -44,7 +44,7 @@ async def incidents_ws(websocket: WebSocket) -> None:
     # cookie used by the HTTP routes (Starlette applies session middleware
     # to the "websocket" scope too) — same require_login check as / , just
     # not expressible as a FastAPI Depends on a websocket route.
-    if not websocket.session.get("user"):
+    if not websocket.session.get("user") or websocket.session.get("product") == "vitastor":
         await websocket.close(code=WS_POLICY_VIOLATION)
         return
 

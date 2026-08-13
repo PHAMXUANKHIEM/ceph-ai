@@ -2167,6 +2167,50 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 }
 .login-card h1 { font-size: 1.25rem; }
 
+/* ===== Product gateway: Ceph / Vitastor ===== */
+.product-select-page { overflow-x: hidden; }
+.product-select-shell { width: min(980px, 100%); }
+.product-select-heading { max-width: 650px; margin-bottom: 34px; }
+.product-suite-label, .product-login-eyebrow { display: block; color: #68d9c4; font: 700 .68rem/1.4 var(--font-mono); letter-spacing: .16em; margin-bottom: 10px; }
+.product-select-heading h1 { margin: 0 0 10px; font-size: clamp(1.8rem, 4vw, 3rem); letter-spacing: -.035em; }
+.product-select-heading p { color: var(--text-muted); max-width: 610px; line-height: 1.65; }
+.product-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.product-choice { position: relative; min-height: 310px; padding: 28px; border: 1px solid var(--border-strong); border-radius: 20px; background: rgba(16,24,39,.88); display: flex; flex-direction: column; align-items: flex-start; overflow: hidden; transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
+.product-choice::after { content: ""; position: absolute; width: 230px; height: 230px; border-radius: 50%; right: -105px; top: -105px; background: rgba(85,167,255,.08); pointer-events: none; }
+.product-choice:hover { transform: translateY(-4px); border-color: rgba(85,167,255,.52); box-shadow: 0 24px 70px rgba(0,0,0,.3); }
+.product-choice-vitastor:hover { border-color: rgba(62,225,190,.55); }
+.product-choice-icon { width: 50px; height: 50px; margin-bottom: 34px; }
+.vitastor-brand-mark { width: 38px; height: 38px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: #061812; background: linear-gradient(145deg,#79f2d4,#27bf9f); font: 900 1rem/1 var(--font-mono); box-shadow: 0 0 28px rgba(55,218,183,.2); }
+.product-choice-kicker { color: var(--text-faint); font: 700 .62rem/1.4 var(--font-mono); letter-spacing: .12em; }
+.product-choice strong { margin: 7px 0 8px; font-size: 1.45rem; }
+.product-choice > span:not(.product-choice-icon):not(.product-choice-kicker) { color: var(--text-muted); line-height: 1.55; font-size: .84rem; }
+.product-choice button { width: 100%; margin-top: auto; padding: 11px 13px; border: 0; border-radius: 9px; background: rgba(85,167,255,.13); color: #bcdcff; font-weight: 700; text-align: left; cursor: pointer; }
+.product-choice button b { float: right; font-size: 1.1rem; }
+.product-choice-vitastor button { background: rgba(55,218,183,.12); color: #8aefd9; }
+.product-auth-card { position: relative; }
+.product-back { display: inline-block; margin-bottom: 28px; color: var(--text-muted); font-size: .75rem; text-decoration: none; }
+.product-back:hover { color: var(--text); }
+.product-login-vitastor { background: radial-gradient(650px 480px at 18% 5%, rgba(55,218,183,.15), transparent 68%), radial-gradient(520px 420px at 92% 92%, rgba(20,110,100,.14), transparent 65%), #07110f; }
+.product-login-vitastor .login-card { background: rgba(8,24,21,.91); border-color: rgba(82,216,187,.25); }
+.product-login-vitastor .login-box input:focus { border-color: #42d7b7; box-shadow: 0 0 0 3px rgba(55,218,183,.12); }
+.product-login-vitastor .btn-primary { background: #2bc5a5; border-color: #2bc5a5; color: #061812; }
+
+/* Vitastor owns its visual shell; it intentionally does not use Ceph nav. */
+.vitastor-app { min-height: 100vh; color: #e7f4f1; background: radial-gradient(850px 480px at 70% -10%, rgba(48,210,178,.12), transparent 66%), #07110f; }
+.vitastor-topbar { height: 68px; padding: 0 30px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(108,190,173,.15); background: rgba(7,17,15,.82); backdrop-filter: blur(16px); }
+.vitastor-brand { display: flex; gap: 11px; align-items: center; color: #e7f4f1; text-decoration: none; font-weight: 750; }
+.vitastor-brand small { display: block; margin-top: 2px; color: #6e9b91; font: 600 .56rem/1 var(--font-mono); letter-spacing: .12em; }
+.vitastor-shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 72px 0; }
+.vitastor-hero { max-width: 720px; }
+.vitastor-hero h1 { margin: 5px 0 14px; font-size: clamp(2.2rem,5vw,4rem); letter-spacing: -.05em; }
+.vitastor-hero p { color: #8fa8a2; line-height: 1.7; }
+.vitastor-empty-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-top: 50px; }
+.vitastor-empty-grid article { min-height: 170px; padding: 22px; border: 1px solid rgba(108,190,173,.14); border-radius: 14px; background: rgba(12,31,27,.62); }
+.vitastor-empty-grid article span { color: #4ccfb3; font: 700 .65rem/1 var(--font-mono); }
+.vitastor-empty-grid article strong { display: block; margin: 28px 0 8px; }
+.vitastor-empty-grid article p { margin: 0; color: #78938d; font-size: .8rem; }
+@media (max-width: 720px) { .product-choice-grid, .vitastor-empty-grid { grid-template-columns: 1fr; } .product-choice { min-height: 270px; } .vitastor-topbar { padding: 0 16px; } }
+
 .crush-rule { background: rgba(5,11,20,.32); transition: border-color 140ms ease, transform 140ms ease; }
 .crush-rule:hover { border-color: rgba(85,167,255,.32); transform: translateY(-1px); }
 .crush-history-detail { backdrop-filter: blur(6px); }
