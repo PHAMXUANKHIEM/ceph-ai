@@ -208,6 +208,8 @@
     setText("vita-diagnosis-commands",(result.commands_preview||[]).join("\n")||"Không có command preview");
     const safety=byId("vita-diagnosis-safety");if(safety){safety.replaceChildren();(result.safety_notes||[]).forEach(item=>safety.append(child("span",item,"is-warning")));}
   }
+  function renderAnomalies(items){const root=byId("vita-anomaly-table");if(!root)return;root.replaceChildren();setText("vita-anomaly-count",`${items.length} open`);if(!items.length){root.append(emptyRow(7,"Không có bất thường đang mở hoặc chưa đủ dữ liệu baseline"));return;}items.forEach(item=>{const row=child("tr");row.append(cell(`${item.entity_type} · ${item.entity_name}`,"vitastor-mono"),cell(item.metric),cell(item.severity,item.severity==="CRITICAL"?"is-down":"health-warning"),cell(number(item.current,2)),cell(number(item.baseline,2)),cell(`${number(item.ratio,2)}x`),cell(number(item.samples)));row.title=item.explanation;root.append(row);});}
+  async function loadAnomalies(){if(!select)return;try{const response=await fetch(`/vitastor/api/anomalies?cluster_id=${encodeURIComponent(select.value)}`);const data=await response.json();if(response.ok)renderAnomalies(data.anomalies||[]);}catch(_){renderAnomalies([]);}}
   async function loadLatestDiagnosis(){if(!select)return;try{const response=await fetch(`/vitastor/api/diagnostics/latest?cluster_id=${encodeURIComponent(select.value)}`);const data=await response.json();if(response.ok)renderDiagnosis(data.diagnostic);}catch(_){renderDiagnosis(null);}}
 
   function renderHardware(nodes) {
@@ -261,6 +263,6 @@
   });
   byId("vitastor-refresh")?.addEventListener("click", loadOverview);
   byId("vita-diagnose")?.addEventListener("click",async(event)=>{const button=event.currentTarget;if(!select)return;button.disabled=true;button.textContent="AI đang phân tích…";showNotice("Đang thu thập evidence read-only và chẩn đoán…");try{const form=new FormData();form.append("cluster_id",select.value);const response=await fetch("/vitastor/api/diagnostics",{method:"POST",body:form});const data=await response.json();if(!response.ok)throw new Error(data.detail||"Chẩn đoán thất bại");renderDiagnosis(data.diagnostic);showNotice("");}catch(error){showNotice(error.message||"AI chẩn đoán thất bại","critical");await loadLatestDiagnosis();}finally{button.disabled=false;button.textContent="Phân tích bằng AI";}});
-  select?.addEventListener("change",()=>{loadOverview();loadLatestDiagnosis();});
-  if (select) { loadOverview(); loadLatestDiagnosis(); window.setInterval(loadOverview, 30000); }
+  select?.addEventListener("change",()=>{loadOverview();loadLatestDiagnosis();loadAnomalies();});
+  if (select) { loadOverview(); loadLatestDiagnosis(); loadAnomalies(); window.setInterval(()=>{loadOverview();loadAnomalies();}, 30000); }
 })();
