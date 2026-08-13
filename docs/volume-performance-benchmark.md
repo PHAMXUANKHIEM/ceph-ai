@@ -2,198 +2,317 @@
 
 ## 1. Câu hỏi cần trả lời
 
-Không thể suy ra trần hiệu năng chỉ từ peak IOPS của traffic thật. Muốn tìm trần khả dụng phải chủ động tăng tải có kiểm soát và tìm **knee**: điểm cuối còn đáng dùng trước khi IOPS gần như phẳng nhưng tail latency tăng bất cân xứng.
+Làm sao biết một RBD volume hoặc pool Ceph đã đạt hiệu năng tối đa?
 
-Knee không nhất thiết là điểm có IOPS lớn nhất. Nếu sweep chưa tạo được hình dạng knee đủ rõ, kết quả phải là **chưa tìm thấy ceiling**, không được lấy điểm cuối hoặc peak IOPS làm trần.
+Câu trả lời ngắn gọn: không thể biết chỉ bằng cách quan sát traffic đang chạy. Phải chủ động tăng tải có kiểm soát, đo IOPS cùng tail latency và tìm **điểm gối** (*knee*) của đường cong IOPS–latency.
 
-## 2. Peak quan sát thụ động không phải ceiling
+Knee là điểm cuối cùng còn đáng sử dụng trước khi:
 
-Peak lịch sử chỉ cho biết workload đã từng yêu cầu bao nhiêu IOPS:
+- tăng thêm tải không tạo ra nhiều IOPS hơn;
+- latency, đặc biệt p99, tăng nhanh bất cân xứng.
 
-- workload nhẹ làm peak thấp hơn khả năng thật;
-- recovery, scrub hoặc cạnh tranh tài nguyên làm peak/latency bị nhiễu;
-- thay đổi số OSD, CRUSH, PG, QoS hoặc traffic làm ceiling thay đổi.
+Đây là **trần hiệu năng khả dụng**, không nhất thiết là IOPS lớn nhất xuất hiện trong toàn bộ phép đo.
 
-Biểu đồ lịch sử hữu ích để quan sát vận hành. Load sweep mới là phép đo chủ động dùng để tìm ceiling.
+## 2. Vì sao peak IOPS quan sát được không phải ceiling
 
-## 3. Phạm vi và an toàn dữ liệu
+Theo dõi thụ động chỉ trả lời: “workload đã từng sử dụng tối đa bao nhiêu IOPS?”. Nó không trả lời: “hạ tầng có thể chịu tối đa bao nhiêu IOPS?”.
 
-Ứng dụng không benchmark volume sản xuất. Worker:
+Nếu ứng dụng chưa từng phát đủ tải, peak lịch sử sẽ thấp hơn khả năng thật. Nếu peak xuất hiện lúc recovery, scrub hoặc có workload khác cạnh tranh, kết quả lại phản ánh điều kiện bất thường.
 
-1. xoá probe cũ nếu lần chạy trước bị gián đoạn;
-2. tạo RBD image `_ceph_aiops_perf_probe` dung lượng logic 50 GiB;
-3. chạy fio trực tiếp qua librbd;
-4. thu thập chẩn đoán;
-5. xoá probe kể cả khi sweep lỗi.
+Muốn tìm ceiling cần phép đo chủ động:
 
-RBD image mặc định là thin-provisioned. Với Ceph Pacific, không dùng `--thin-provision`; tùy chọn tồn tại là `--thick-provision` để làm điều ngược lại.
+1. tạo tải nhẹ;
+2. tăng tải từng bước;
+3. đo phản ứng IOPS và latency;
+4. tìm nơi IOPS bắt đầu plateau nhưng latency tăng mạnh;
+5. xác nhận bằng một bước tải bổ sung.
 
-Scratch image trong một pool phản ánh năng lực khả dụng của pool/cluster tại thời điểm đo. Nó không phải ceiling riêng cố định của từng volume, trừ khi không có tải cạnh tranh và mọi volume dùng cùng đường dữ liệu/chính sách.
+## 3. Hiểu đúng đối tượng được đo
 
-Không chạy khi PG không `active+clean`, OSD recovery/backfill, cluster gần đầy hoặc production đang cao tải. Nếu cluster HEALTH_WARN, phải lưu trạng thái đó cùng kết quả.
+Một scratch image trong pool không tạo ra “ceiling riêng vĩnh viễn” cho image đó. Kết quả phản ánh năng lực khả dụng của toàn bộ đường I/O tại thời điểm đo:
 
-## 4. Workload chuẩn trong ứng dụng
+```text
+fio → librbd → network → primary OSD → replica OSD → storage media
+```
+
+Kết quả chịu ảnh hưởng bởi:
+
+- số lượng và loại OSD;
+- replication/erasure coding;
+- CRUSH placement và số PG;
+- network client/cluster;
+- recovery, backfill, scrub;
+- QoS của image/pool;
+- traffic đồng thời;
+- block size, read/write mix, numjobs và iodepth.
+
+Vì vậy ceiling luôn phải đi kèm workload profile và điều kiện cluster lúc đo.
+
+## 4. Nguyên tắc an toàn
+
+Không benchmark random-write trên volume chứa dữ liệu thật. Dùng một scratch image riêng trong cùng pool:
+
+```bash
+rbd create <pool>/perf_probe --size 50G
+```
+
+RBD image mặc định là thin-provisioned; không cần tùy chọn `--thin-provision`.
+
+Scratch image nên được xoá sau mỗi sweep để:
+
+- không giữ dữ liệu random-write;
+- tránh lần đo sau dùng lại vùng đã cấp phát;
+- bảo đảm mỗi lần đo bắt đầu từ trạng thái xác định.
+
+Không chạy sweep khi:
+
+- PG không `active+clean`;
+- OSD down/out hoặc đang recovery/backfill;
+- cluster gần đầy;
+- đang scrub/deep-scrub diện rộng;
+- production đang ở giờ cao tải;
+- cluster mất quorum hoặc có lỗi health ảnh hưởng đường I/O.
+
+## 5. Phương pháp load sweep
+
+### 5.1 Tăng tải bằng iodepth
+
+Giữ nguyên workload và tăng queue depth theo cấp số nhân:
+
+```text
+1, 2, 4, 8, 16, 32, 64, 128, 256
+```
+
+Thang nhân đôi bao phủ dải tải rộng với ít bước. Khi đã tìm thấy vùng knee, có thể chạy sweep tinh hơn quanh vùng đó nếu cần.
+
+### 5.2 Workload chuẩn
 
 ```bash
 fio --name=sweep \
-  --ioengine=rbd --pool="$POOL" --rbdname=_ceph_aiops_perf_probe \
-  --rw=randwrite --bs=4k --iodepth="$DEPTH" --numjobs=1 \
-  --runtime=30 --ramp_time=10 --time_based --direct=1 \
-  --invalidate=1 --randrepeat=0 --norandommap --thread=1 \
-  --group_reporting --lat_percentiles=1 --percentile_list=99 \
+  --ioengine=rbd --pool="$POOL" --rbdname=perf_probe \
+  --rw=randwrite --bs=4k \
+  --iodepth="$DEPTH" --numjobs=1 \
+  --ramp_time=10 --runtime=30 --time_based \
+  --direct=1 --group_reporting \
+  --lat_percentiles=1 --percentile_list=99 \
   --output-format=json
 ```
 
-Dải depth: `1, 2, 4, 8, 16, 32, 64, 128, 256`.
+Ý nghĩa các lựa chọn:
 
-Mỗi depth lấy median ba mẫu. Nếu hệ số biến thiên IOPS lớn hơn 7,5%, hệ thống lấy thêm hai mẫu và dùng median năm mẫu. Ramp 10 giây không tính vào cửa sổ đo 30 giây.
+| Tham số | Mục đích |
+|---|---|
+| `--rw=randwrite --bs=4k` | Workload nhạy với giới hạn IOPS và tail latency |
+| `--ioengine=rbd` | Đi trực tiếp qua librbd, không qua filesystem |
+| `--direct=1` | Không để page cache che hiệu năng storage |
+| `--ramp_time=10` | Bỏ giai đoạn warm-up khỏi cửa sổ đo |
+| `--runtime=30 --time_based` | Tạo đủ mẫu để percentile ổn định hơn |
+| `--numjobs=1` | Chỉ thay đổi iodepth, tránh đổi nhiều biến cùng lúc |
+| `--percentile_list=99` | Thu p99 completion latency |
 
-Các chỉ số lưu lại:
+Workload 4K random-write không đại diện cho mọi ứng dụng. Muốn đánh giá workload đọc, tuần tự hoặc block lớn phải chạy profile riêng; không dùng ceiling của profile này thay cho profile khác.
 
-| Chỉ số | Nguồn fio | Cách dùng |
-|---|---|---|
-| IOPS | `jobs[0].write.iops` | Khả năng phục vụ tải |
-| Average latency | `clat_ns.mean / 1e6` | Quan sát tổng quát |
-| p99 latency | `clat_ns.percentile["99.000000"] / 1e6` | Tín hiệu chính để tìm knee |
-| Bandwidth | `bw_bytes / 1024 / 1024` | MiB/s của workload 4K |
-| IOPS CV | độ lệch chuẩn / median | Phát hiện mẫu nhiễu |
+## 6. Vì sao dùng p99 thay vì chỉ dùng average latency
 
-## 5. Thuật toán knee thực tế
+Average latency dễ che tail latency. Ví dụ, phần lớn I/O vẫn nhanh nhưng một nhóm nhỏ bắt đầu chờ rất lâu thì average chỉ tăng nhẹ, trong khi người dùng thực tế đã gặp request chậm.
 
-Với mỗi cặp `(prev, cur)`:
+p99 trả lời: 99% I/O hoàn tất nhanh hơn giá trị này và 1% còn lại chậm hơn. Khi queue bắt đầu bão hoà, p99 thường xấu đi trước và rõ hơn average.
+
+Nên lưu cả hai:
+
+- average để quan sát xu hướng tổng thể;
+- p99 làm tín hiệu chính để phát hiện knee.
+
+## 7. Giảm nhiễu trước khi tìm knee
+
+Một mẫu ở mỗi depth không đủ tin cậy trên cluster đang hoạt động. Nên:
+
+1. đo ít nhất ba lần/depth;
+2. dùng median IOPS, median average latency và median p99;
+3. tính hệ số biến thiên IOPS:
 
 ```text
-iops_growth    = (cur.iops - prev.iops) / prev.iops
-latency_growth = (cur.p99  - prev.p99)  / prev.p99
-latency_delta  = cur.p99 - prev.p99
+CV (%) = standard_deviation(IOPS samples) / median(IOPS samples) × 100
 ```
 
-Transition được xem là dấu hiệu saturation khi đồng thời:
+Nếu CV vượt ngưỡng cho phép, lấy thêm mẫu. Ví dụ ứng dụng hiện tại lấy thêm hai mẫu khi CV lớn hơn 7,5%, rồi dùng median của năm mẫu.
+
+Median giảm ảnh hưởng của một spike recovery hoặc network ngắn hạn tốt hơn arithmetic mean.
+
+## 8. Thuật toán tìm knee
+
+### 8.1 Tính mức tăng giữa hai bước
+
+Với hai điểm liên tiếp `prev` và `cur`:
 
 ```text
-iops_growth < 0.15
-AND latency_delta >= 2 ms
-AND latency_growth > 3 × max(iops_growth, 0)
+iops_growth = (cur.iops - prev.iops) / prev.iops
+
+latency_growth =
+    (cur.latency_p99_ms - prev.latency_p99_ms)
+    / prev.latency_p99_ms
+
+latency_delta_ms =
+    cur.latency_p99_ms - prev.latency_p99_ms
 ```
 
-Khi thấy transition xấu đầu tiên, hệ thống chạy thêm một depth. Điểm xác nhận được so lại với cùng bước tốt cuối cùng; nếu IOPS vẫn plateau và p99 vẫn tăng bất cân xứng so với bước tốt đó, knee được xác nhận. Cách này không bắt latency phải tiếp tục tăng lần thứ hai: latency duy trì trên một plateau cao vẫn xác nhận cliff. Knee là bước tốt cuối cùng trước transition xấu đầu tiên.
+### 8.2 Xác định transition xấu
 
-### Vì sao p99 ≥ 20 ms không tự tạo knee
+Một transition là ứng viên saturation khi đồng thời:
 
-`p99 >= 20 ms` là cảnh báo vận hành/SLA. Nó không phải bằng chứng độc lập của ceiling vật lý. Nếu p99 đã 25 ms ở depth 1 nhưng IOPS vẫn tăng gần tuyến tính tới depth 16, kết luận depth 1 là ceiling sẽ sai.
+```text
+A. iops_growth < 0.15
 
-Vì vậy code tách hai khái niệm:
+B. latency_delta_ms >= 2
 
-- p99 cao: baseline/SLA đang xấu, cần cảnh báo;
-- knee: IOPS plateau **và** p99 tăng bất cân xứng, được xác nhận qua bước tiếp theo.
+C. latency_growth > 3 × max(iops_growth, 0)
+```
 
-## 6. Early stop
+Ý nghĩa:
 
-Sau mỗi depth, Worker chạy lại `_detect_knee()` trên toàn bộ điểm đã có. Khi transition xấu và một depth bổ sung xác nhận vẫn ở phía bên kia cùng điểm tốt cuối, Worker dừng; không tiếp tục tới 256.
+- A: IOPS tăng dưới 15%, bắt đầu plateau;
+- B: latency phải tăng đủ lớn để không bắt nhiễu vài phần nhỏ millisecond;
+- C: latency tăng nhanh hơn ít nhất ba lần lợi ích IOPS nhận được.
 
-Nếu chạy hết depth 256 mà không xác nhận được knee:
+Nếu IOPS giảm, `max(iops_growth, 0)` bằng 0. Khi đó transition vẫn cần latency tăng thực sự ít nhất 2 ms mới được xem là xấu.
 
-- `knee_iodepth` và `knee_iops` là `NULL`;
-- điểm cuối chỉ là tải cao nhất đã thử;
-- không được gọi điểm cuối là ceiling;
-- có thể cần `numjobs > 1` hoặc dải tải cao hơn, nhưng chỉ sau đánh giá an toàn.
+### 8.3 Knee nằm ở đâu
 
-## 7. Chẩn đoán bổ sung
+Khi transition `prev → cur` là xấu, `prev` là **ứng viên knee** vì đó là điểm cuối trước cliff latency.
 
-Sau sweep, Worker lấy best-effort:
+Không trả kết quả ngay. Chạy thêm một depth và so điểm xác nhận với cùng `prev`:
+
+- nếu IOPS vẫn plateau và p99 vẫn xấu bất cân xứng so với `prev`, xác nhận `prev` là knee;
+- nếu IOPS phục hồi mạnh hoặc latency trở lại bình thường, coi tín hiệu đầu là nhiễu và tiếp tục sweep.
+
+So với cùng điểm tốt cuối rất quan trọng. Latency có thể nhảy lên một plateau cao rồi giữ nguyên ở bước xác nhận; không cần bắt nó tăng mạnh lần thứ hai mới công nhận cliff.
+
+### 8.4 Pseudocode
+
+```python
+def bad_transition(prev, cur):
+    iops_growth = (cur.iops - prev.iops) / prev.iops
+    latency_growth = (cur.p99 - prev.p99) / prev.p99
+    latency_delta = cur.p99 - prev.p99
+
+    return (
+        iops_growth < 0.15
+        and latency_delta >= 2.0
+        and latency_growth > 3.0 * max(iops_growth, 0.0)
+    )
+
+
+def detect_knee(steps):
+    for i in range(1, len(steps)):
+        candidate = steps[i - 1]
+        first_bad = steps[i]
+
+        if not bad_transition(candidate, first_bad):
+            continue
+
+        if i + 1 >= len(steps):
+            return None  # cần thêm một depth xác nhận
+
+        confirmation = steps[i + 1]
+        if bad_transition(candidate, confirmation):
+            return candidate
+
+    return None
+```
+
+## 9. Không dùng ngưỡng latency tuyệt đối để suy ra ceiling
+
+Một ngưỡng như `p99 >= 20 ms` hữu ích để cảnh báo SLA hoặc dừng phép đo vì an toàn. Tuy nhiên nó không đủ để chứng minh ceiling vật lý.
+
+Nếu p99 đã cao ngay tại depth 1 nhưng IOPS vẫn tăng gần tuyến tính qua các depth tiếp theo, kết luận depth 1 là ceiling là sai. Tình huống đó cho biết baseline của cluster đã xấu, không cho biết đường cong đã plateau.
+
+Phải tách rõ:
+
+- **latency/SLA violation:** dịch vụ đang chậm hơn mục tiêu;
+- **IOPS knee:** tăng tải không còn tạo thêm IOPS tương xứng và làm p99 xấu đi.
+
+Một hệ thống có thể vi phạm SLA trước khi đạt ceiling vật lý. Khi đó “ceiling theo SLA” và “ceiling vật lý” là hai kết quả khác nhau.
+
+## 10. Early stop
+
+Sau mỗi depth:
+
+1. chạy lại thuật toán trên tất cả điểm đã đo;
+2. nếu mới có một transition xấu, chạy thêm đúng một depth;
+3. nếu bước bổ sung xác nhận cùng knee, dừng;
+4. nếu không xác nhận, tiếp tục thang tải.
+
+Early-stop giảm thời gian gây tải cho cluster nhưng vẫn tránh kết luận từ một điểm nhiễu.
+
+## 11. Trường hợp không tìm thấy knee
+
+Nếu chạy hết dải thử nghiệm mà không xác nhận được knee:
+
+```text
+knee_iodepth = NULL
+knee_iops = NULL
+```
+
+Điều này không có nghĩa hệ thống không có trần. Nó chỉ có nghĩa cluster chưa bão hoà rõ ràng trong phạm vi đã thử hoặc dữ liệu quá nhiễu để xác nhận.
+
+Điểm cuối chỉ là:
+
+> Tải cao nhất đã được thử thành công trong phép đo này.
+
+Nó không phải ceiling. Có thể cần đo lại trong điều kiện ổn định hơn, tăng `numjobs`, mở rộng dải tải hoặc chạy sweep tinh quanh vùng nghi ngờ.
+
+## 12. Kiểm tra nguyên nhân trước khi kết luận
+
+### 12.1 QoS
 
 ```bash
-rbd config image list "$POOL/_ceph_aiops_perf_probe" | grep -i qos
+rbd config image list "$POOL/perf_probe" | grep -i qos
+```
+
+Nếu image/pool có `rbd_qos_iops_limit` hoặc `rbd_qos_bps_limit`, knee có thể là giới hạn nhân tạo thay vì giới hạn vật lý.
+
+### 12.2 OSD và thiết bị
+
+```bash
 ceph osd perf
 iostat -x 1 2
 ```
 
-QoS có thể tạo ceiling nhân tạo. `ceph osd perf` và `iostat` giúp khoanh vùng OSD/host nghẽn, nhưng được lấy ngay sau tải nặng nhất nên chỉ là bằng chứng gần thời điểm đo, không phải đo đồng thời tuyệt đối.
+Các chỉ số cần chú ý:
 
-## 8. Benchmark thực tế ngày 13/08/2026
+- commit/apply latency bất thường trên một OSD;
+- `%util` gần 100%;
+- `await` tăng mạnh;
+- queue sâu trên một thiết bị;
+- một OSD chậm kéo cả replicated write xuống.
 
-### 8.1 Môi trường
+Các lệnh lấy sau sweep chỉ là bằng chứng gần thời điểm tải. Muốn phân tích nguyên nhân chính xác hơn cần thu thập đồng thời trong lúc fio chạy.
 
-| Thành phần | Giá trị |
+## 13. Cách diễn giải kết quả
+
+| Kết quả | Cách hiểu |
 |---|---|
-| Server | `10.3.53.136` (`rnd-khiempx-ceph1.novalocal`) |
-| Ceph | 16.2.15 Pacific |
-| Pool | `volumes`, replicated `size=3`, `min_size=2`, 16 PG |
-| OSD | 3 up / 3 in, HDD, tổng raw 60 GiB |
-| fio | 3.19, `ioengine=rbd` |
-| Probe | `volumes/_ceph_aiops_docs_probe`, 4 GiB logic |
-| Thời gian | 14:08:15–14:11:12, Asia/Ho_Chi_Minh |
-| Phương pháp xác minh | ramp 5 giây, runtime 15 giây, một mẫu/depth |
+| Có knee | Điểm cuối còn hiệu quả trước cliff latency trong workload và điều kiện đã đo |
+| Không có knee | Chưa xác nhận được ceiling trong dải thử nghiệm |
+| p99 cao nhưng không có knee | Baseline/SLA xấu, chưa đủ bằng chứng về ceiling vật lý |
+| Knee trùng QoS cap | Có thể là ceiling nhân tạo |
+| Kết quả dao động mạnh | Điều kiện đo không ổn định; cần đo lại hoặc tăng số mẫu |
 
-Hai volume production có watcher từ `10.3.52.250` nên không được dùng làm đích benchmark. Probe đã được xác nhận xoá sau sweep.
+Luôn công bố cùng kết quả:
 
-Cụm ở `HEALTH_WARN`: 1/3 MON down, BlueStore legacy OMAP trên `osd.0`, `require_osd_release < pacific`, và hai pool bị cảnh báo thiếu PG. Toàn bộ 49 PG vẫn `active+clean`.
+- Ceph health;
+- profile fio;
+- số mẫu và cách tổng hợp;
+- trạng thái recovery/scrub;
+- tải cạnh tranh;
+- QoS;
+- cấu hình pool và OSD.
 
-### 8.2 Số liệu thật
+## 14. Kết luận
 
-| iodepth | IOPS | MiB/s | Avg ms | p99 ms |
-|---:|---:|---:|---:|---:|
-| 1 | 32,6 | 0,13 | 30,627 | 254,804 |
-| 2 | 75,7 | 0,30 | 26,592 | 212,861 |
-| 4 | 90,4 | 0,35 | 44,524 | 467,665 |
-| 8 | 158,9 | 0,62 | 50,817 | 346,030 |
-| 16 | 136,5 | 0,54 | 116,415 | 1.044,382 |
-| 32 | 215,4 | 0,85 | 150,099 | 467,665 |
-| 64 | 261,4 | 1,04 | 245,367 | 859,832 |
-| 128 | 246,2 | 0,99 | 511,046 | 1.166,017 |
+Trần hiệu năng khả dụng của Ceph RBD không phải peak IOPS. Nó là điểm knee được xác định từ hai tín hiệu đi cùng nhau:
 
-### 8.3 Kết luận đúng từ bộ dữ liệu này
+1. IOPS bắt đầu plateau;
+2. p99 latency tăng bất cân xứng.
 
-Không xác nhận được knee:
-
-- transition 8→16 xấu nhưng depth 32 tăng IOPS mạnh so với điểm tốt depth 8, nên không xác nhận cliff;
-- transition 64→128 xấu nhưng không có depth 256 để xác nhận tiếp;
-- phép xác minh chỉ có một mẫu/depth, trong khi ứng dụng dùng median ba hoặc năm mẫu.
-
-Do đó kết quả chính xác là:
-
-> **Chưa tìm thấy IOPS ceiling đáng tin cậy. Baseline latency của cụm đang rất xấu và dữ liệu có nhiễu lớn.**
-
-Không được công bố `iodepth=8`, `158,9 IOPS` hay peak `261,4 IOPS` là ceiling. Chúng chỉ là các điểm đã quan sát trong một sweep ngắn trên cluster HEALTH_WARN.
-
-## 9. Hậu kiểm
-
-- Probe `_ceph_aiops_docs_probe` đã được xoá.
-- 3/3 OSD vẫn up/in.
-- 49 PG vẫn `active+clean`.
-- Dung lượng trở về khoảng 15 GiB đã dùng / 45 GiB còn trống.
-- Cảnh báo health không thay đổi so với trước benchmark.
-
-## 10. Khuyến nghị đo lại
-
-1. Khôi phục MON `rnd-khiempx-ceph1.novalocal` vào quorum.
-2. Xử lý BlueStore legacy OMAP trong maintenance window.
-3. Hoàn tất `require_osd_release pacific` sau khi xác minh version.
-4. Đánh giá tăng PG `images` và `volumes` từ 16 lên mức Ceph đề xuất.
-5. Chạy sweep chuẩn từ giao diện: 30 giây × median 3/5 mẫu.
-6. Chỉ công bố ceiling khi tín hiệu đầu tiên được một depth bổ sung xác nhận so với cùng điểm tốt cuối.
-
-## 11. Runbook thủ công an toàn
-
-```bash
-POOL=volumes
-IMAGE=_ceph_aiops_perf_probe
-
-cleanup() { rbd rm "$POOL/$IMAGE" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
-
-rbd rm "$POOL/$IMAGE" 2>/dev/null || true
-rbd create --size 50G "$POOL/$IMAGE"
-
-for DEPTH in 1 2 4 8 16 32 64 128 256; do
-  fio --name=sweep \
-    --ioengine=rbd --pool="$POOL" --rbdname="$IMAGE" \
-    --rw=randwrite --bs=4k --iodepth="$DEPTH" --numjobs=1 \
-    --runtime=30 --ramp_time=10 --time_based --direct=1 \
-    --invalidate=1 --randrepeat=0 --norandommap --thread=1 \
-    --group_reporting --lat_percentiles=1 --percentile_list=99 \
-    --output-format=json --output="sweep_depth${DEPTH}.json"
-done
-```
-
-Runbook minh họa chỉ chạy một mẫu. Muốn kết quả tương đương ứng dụng phải lặp ba lần/depth, tính median và lấy thêm hai mẫu khi IOPS CV vượt 7,5%.
+Knee phải được xác nhận bằng một bước tải bổ sung, trên scratch image, với nhiều mẫu và trong điều kiện cluster ổn định. Nếu không có đủ bằng chứng, kết luận đúng là “chưa tìm thấy ceiling”, không phải lấy điểm IOPS cao nhất làm trần.
