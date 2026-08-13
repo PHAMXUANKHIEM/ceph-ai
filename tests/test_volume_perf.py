@@ -102,7 +102,7 @@ def _step(iodepth, iops, lat_p99):
     return {"iodepth": iodepth, "iops": iops, "latency_avg_ms": lat_p99 / 2, "latency_p99_ms": lat_p99}
 
 
-def test_detect_knee_requires_two_consecutive_saturation_transitions():
+def test_detect_knee_requires_one_additional_depth_to_confirm_saturation():
     # Operator's own description: crossing the knee gets ~3% more IOPS but
     # ~14x more latency — the KNEE returned must be the step BEFORE that
     # jump (the last good one), not the blown-up one itself.
@@ -111,7 +111,7 @@ def test_detect_knee_requires_two_consecutive_saturation_transitions():
         _step(32, 12000, 1.5),
         _step(64, 15000, 2.0),
         _step(128, 15450, 28.0),  # +3% IOPS, 14x latency vs. previous step
-        _step(256, 15500, 45.0),  # second bad transition confirms it was not noise
+        _step(256, 15500, 45.0),  # still beyond depth=64; confirms it was not noise
     ]
     knee = _detect_knee(steps)
     assert knee is not None
@@ -128,11 +128,29 @@ def test_detect_knee_does_not_trigger_on_one_noisy_latency_sample():
     assert _detect_knee(steps) is None
 
 
-def test_detect_knee_absolute_latency_needs_plateau_and_confirmation():
-    steps = [_step(16, 8000, 1.0), _step(32, 8400, 25.0), _step(64, 8450, 35.0)]
-    knee = _detect_knee(steps)
-    assert knee is not None
-    assert knee["iodepth"] == 16
+def test_detect_knee_absolute_latency_alone_does_not_claim_physical_ceiling():
+    # p99 is already above the operational 20 ms threshold at depth=1, but
+    # IOPS continues to scale strongly. This is a bad baseline/SLA warning,
+    # not evidence that the physical IOPS ceiling is depth=1.
+    steps = [_step(1, 1000, 25.0), _step(2, 1950, 28.0), _step(4, 3800, 31.0)]
+    assert _detect_knee(steps) is None
+
+
+def test_detect_knee_matches_real_lab_sample_without_overclaiming():
+    # 2026-08-13, 10.3.53.136: two isolated bad transitions (8->16 and
+    # 64->128), not two consecutive transitions. One short/noisy sample per
+    # depth is insufficient to claim a measured ceiling.
+    steps = [
+        _step(1, 32.6, 254.804),
+        _step(2, 75.7, 212.861),
+        _step(4, 90.4, 467.665),
+        _step(8, 158.9, 346.030),
+        _step(16, 136.5, 1044.382),
+        _step(32, 215.4, 467.665),
+        _step(64, 261.4, 859.832),
+        _step(128, 246.2, 1166.017),
+    ]
+    assert _detect_knee(steps) is None
 
 
 def test_run_fio_depth_collects_two_extra_samples_when_initial_cv_is_high(monkeypatch):

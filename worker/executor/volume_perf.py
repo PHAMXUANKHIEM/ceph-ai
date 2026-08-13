@@ -73,8 +73,8 @@ FIO_EXTRA_SAMPLES_ON_NOISE = 2
 # scaling normally. The absolute cutoff is a safety net independent of
 # growth shape, so a sweep doesn't grind on toward iodepth=256 once
 # latency is already clearly unacceptable.
-_KNEE_IOPS_PLATEAU_THRESHOLD = 0.08
-_KNEE_LATENCY_GROWTH_THRESHOLD = 1.00
+_KNEE_IOPS_PLATEAU_THRESHOLD = 0.15
+_KNEE_LATENCY_TO_IOPS_GROWTH_RATIO = 3.0
 _KNEE_MIN_LATENCY_DELTA_MS = 2.0
 _KNEE_ABSOLUTE_LATENCY_MS = 20.0
 _KNEE_CONFIRMING_TRANSITIONS = 2
@@ -225,11 +225,17 @@ def _is_saturation_transition(prev: dict, cur: dict) -> bool:
     latency_growth = (cur["latency_p99_ms"] - prev_lat) / prev_lat
     latency_delta = cur["latency_p99_ms"] - prev_lat
     plateaued = iops_growth < _KNEE_IOPS_PLATEAU_THRESHOLD
-    latency_bad = (
-        latency_growth >= _KNEE_LATENCY_GROWTH_THRESHOLD
-        and latency_delta >= _KNEE_MIN_LATENCY_DELTA_MS
-    ) or cur["latency_p99_ms"] >= _KNEE_ABSOLUTE_LATENCY_MS
-    return plateaued and latency_bad
+    # A knee is a SHAPE in the IOPS/latency curve, not merely an SLA
+    # violation. A high absolute p99 at depth=1 means the cluster baseline
+    # is already unhealthy; it does not prove that depth=1 is its physical
+    # IOPS ceiling. Therefore the 20 ms threshold is surfaced separately as
+    # an operational warning and never creates a knee by itself.
+    latency_disproportionate = (
+        latency_delta >= _KNEE_MIN_LATENCY_DELTA_MS
+        and latency_growth
+        > _KNEE_LATENCY_TO_IOPS_GROWTH_RATIO * max(iops_growth, 0.0)
+    )
+    return plateaued and latency_disproportionate
 
 
 def _detect_knee(steps: list[dict]) -> dict | None:
@@ -237,18 +243,19 @@ def _detect_knee(steps: list[dict]) -> dict | None:
     far can this be pushed before it falls off"), or None if the sweep
     never saturated within the tested range (steps[-1] is then a
     lower-bound floor, not a real ceiling)."""
-    consecutive = 0
-    first_bad_index: int | None = None
     for i in range(1, len(steps)):
-        if _is_saturation_transition(steps[i - 1], steps[i]):
-            if consecutive == 0:
-                first_bad_index = i
-            consecutive += 1
-            if consecutive >= _KNEE_CONFIRMING_TRANSITIONS and first_bad_index is not None:
-                return steps[first_bad_index - 1]
-        else:
-            consecutive = 0
-            first_bad_index = None
+        knee_candidate = steps[i - 1]
+        if not _is_saturation_transition(knee_candidate, steps[i]):
+            continue
+        # One additional depth confirms that performance remains beyond the
+        # same last-good point. We compare confirmation to knee_candidate,
+        # not to the already-bad sample: latency may stay on a high plateau
+        # instead of increasing again, and that still confirms the cliff.
+        confirmation_index = i + _KNEE_CONFIRMING_TRANSITIONS - 1
+        if confirmation_index < len(steps) and _is_saturation_transition(
+            knee_candidate, steps[confirmation_index]
+        ):
+            return knee_candidate
     return None
 
 
@@ -415,8 +422,8 @@ def run(
         )
         write_progress(action_pk, progress)
 
-        # _detect_knee itself requires two consecutive bad transitions, so a
-        # non-None result is already confirmed rather than a one-sample guess.
+        # _detect_knee requires the first bad transition plus one additional
+        # depth that remains beyond the same last-good point.
         if _detect_knee(steps) is not None:
             break
 
