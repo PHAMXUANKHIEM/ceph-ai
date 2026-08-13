@@ -972,6 +972,48 @@ def test_query_rbd_iostat_parses_dict_with_images_key(fake_ssh, monkeypatch):
     assert samples[0]["iops"] == 15.0
 
 
+def test_query_rbd_iostat_converts_native_latency_nanoseconds_to_milliseconds(
+    fake_ssh, monkeypatch
+):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {
+                "image": "disk-1",
+                "read_ops": 1,
+                "write_ops": 1,
+                "read_latency": 10_713_909.24,
+                "write_latency": 22_095_527,
+            }
+        ]
+    }
+
+    sample = query_rbd_iostat("vms")[0]
+
+    assert sample["read_latency_ms"] == pytest.approx(10.71390924)
+    assert sample["write_latency_ms"] == pytest.approx(22.095527)
+
+
+def test_query_rbd_iostat_prefers_explicit_millisecond_latency(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    fake_ssh.behavior = {
+        "10.20.1.150": [
+            {
+                "image": "disk-1",
+                "read_latency_ms": 1.25,
+                "read_latency": 99_000_000,
+                "write_latency_ms": 0,
+                "write_latency": 88_000_000,
+            }
+        ]
+    }
+
+    sample = query_rbd_iostat("vms")[0]
+
+    assert sample["read_latency_ms"] == 1.25
+    assert sample["write_latency_ms"] == 0
+
+
 def test_query_rbd_iostat_returns_empty_list_for_unexpected_shape(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     fake_ssh.behavior = {"10.20.1.150": {"unexpected": "shape"}}

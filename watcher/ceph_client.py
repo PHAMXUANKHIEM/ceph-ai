@@ -154,16 +154,10 @@ def configured_rbd_pools() -> list[str]:
         return []
 
 
-# 2026-07-28: NOT verified against a real cluster yet (no RBD-backed pool
-# was ever created in this project's own lab cluster) — `rbd perf image
-# iostat --format json`'s exact key names below are a best-effort guess
-# based on how every other Ceph JSON command in this codebase names things
-# (snake_case, nested per-metric dicts with read/write/read_bytes/
-# write_bytes/read_latency/write_latency), NOT a confirmed schema. Kept
-# isolated in this one function so fixing it against real output later
-# only ever touches this one place — every caller (watcher/volume_monitor.py)
-# only sees the already-normalized list[VolumeIoSample] shape below, never
-# the raw payload.
+# `rbd perf image iostat --format json` reports the native `read_latency`
+# and `write_latency` counters in nanoseconds. Keep support for an explicit
+# *_latency_ms key (useful for adapters/tests), but never label the native
+# counter as milliseconds without converting it first.
 class VolumeIoSample(TypedDict):
     pool: str
     image: str
@@ -223,8 +217,8 @@ def _normalize_rbd_iostat(pool: str, payload: dict | list) -> list[VolumeIoSampl
             continue
         read_ops = _as_float(entry.get("read_ops") or entry.get("read_iops"))
         write_ops = _as_float(entry.get("write_ops") or entry.get("write_iops"))
-        read_latency_ms = _as_float(entry.get("read_latency_ms") or entry.get("read_latency"))
-        write_latency_ms = _as_float(entry.get("write_latency_ms") or entry.get("write_latency"))
+        read_latency_ms = _rbd_latency_ms(entry, "read_latency_ms", "read_latency")
+        write_latency_ms = _rbd_latency_ms(entry, "write_latency_ms", "write_latency")
         samples.append(
             VolumeIoSample(
                 pool=pool,
@@ -235,6 +229,13 @@ def _normalize_rbd_iostat(pool: str, payload: dict | list) -> list[VolumeIoSampl
             )
         )
     return samples
+
+
+def _rbd_latency_ms(entry: dict, milliseconds_key: str, nanoseconds_key: str) -> float:
+    """Normalize RBD latency while preserving an explicit millisecond key."""
+    if milliseconds_key in entry and entry[milliseconds_key] is not None:
+        return _as_float(entry[milliseconds_key])
+    return _as_float(entry.get(nanoseconds_key)) / 1_000_000
 
 
 def _as_float(value: object) -> float:
