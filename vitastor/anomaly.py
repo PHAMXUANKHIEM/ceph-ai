@@ -19,9 +19,15 @@ def _latency_ms(value) -> float:
     return _number(value) / 1000
 
 
+def _direction(stats: dict, name: str) -> dict:
+    value = stats.get(name) or stats.get(f"primary_{name}") or {}
+    return value if isinstance(value, dict) else {}
+
+
 def extract_entities(datasets: dict, summary: dict) -> list[dict]:
     """Normalize current telemetry without carrying credentials or connection data."""
-    read, write = (summary.get("io") or {}).get("read") or {}, (summary.get("io") or {}).get("write") or {}
+    summary_io = summary.get("io") or {}
+    read, write = _direction(summary_io, "read"), _direction(summary_io, "write")
     entities = [{"type": "cluster", "name": "cluster", "metrics": {
         "read_latency_ms": _latency_ms(read.get("lat")), "write_latency_ms": _latency_ms(write.get("lat")),
         "read_iops": _number(read.get("iops")), "write_iops": _number(write.get("iops")),
@@ -30,7 +36,7 @@ def extract_entities(datasets: dict, summary: dict) -> list[dict]:
     for item in datasets.get("osds") or []:
         if not isinstance(item, dict) or item.get("type") != "osd": continue
         io = item.get("op_stats") if isinstance(item.get("op_stats"), dict) else {}
-        r, w = io.get("read") or {}, io.get("write") or {}
+        r, w = _direction(io, "read"), _direction(io, "write")
         entities.append({"type": "osd", "name": str(item.get("name") or item.get("id") or "unknown"), "metrics": {
             "read_latency_ms": _latency_ms(r.get("lat")), "write_latency_ms": _latency_ms(w.get("lat")),
             "read_iops": _number(r.get("iops")), "write_iops": _number(w.get("iops")),
