@@ -6,6 +6,7 @@
 * { box-sizing: border-box; }
 html, body { min-width: 320px; margin: 0; }
 #ceph-dashboard-root { width: 100%; min-width: 0; }
+#pools-dashboard-root { width: 100%; min-width: 0; font-family: Roboto, Inter, Arial, ui-sans-serif, system-ui, sans-serif; }
 
 .ceph-dashboard { position: relative; width: 100%; min-height: 569px; padding: 8px; display: grid; grid-template-rows: 192px 363px; gap: 14px; border: 1px solid #262b38; border-radius: 13px; background: #11151d; }
 .dashboard-live-error { position: absolute; z-index: 2; top: 16px; left: 50%; width: min(760px, calc(100% - 32px)); transform: translateX(-50%); display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 13px; border: 1px solid rgba(248,113,113,.55); border-radius: 9px; background: rgba(69,10,10,.96); box-shadow: 0 8px 30px rgba(0,0,0,.35); color: #fecaca; font-size: 13px; }

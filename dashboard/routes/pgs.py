@@ -240,6 +240,9 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
             "query_error": query_error,
             "clusters": clusters,
             "selected_cluster": cluster,
+            "create_success": request.query_params.get("create_success") == "1",
+            "selected_pool": request.query_params.get("pool", "").strip() or None,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         },
     )
 
@@ -252,7 +255,6 @@ async def create_pool(
     pool_name: str = Form(""),
     pg_num: int = Form(32),
     app_name: str = Form("rbd"),
-    return_to: str = Form("pgs"),
 ):
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ tài khoản admin mới được tạo pool")
@@ -309,6 +311,6 @@ async def create_pool(
         session.commit()
 
     return RedirectResponse(
-        url=f"/{'volumes' if return_to == 'volumes' else 'pgs'}?cluster={cluster.id}&create_success=1",
+        url=f"/pools?cluster={cluster.id}&create_success=1",
         status_code=303,
     )

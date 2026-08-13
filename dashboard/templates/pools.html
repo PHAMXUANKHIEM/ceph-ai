@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pools — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+  <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}">
 </head>
 <body>
   <header class="topbar">
@@ -50,30 +51,18 @@
     </div>
   </header>
 
-  <main class="page">
-    <section class="card">
-      <div class="card-header">
-        <div class="metrics-panel-title"><span class="node-ip">Pools — {{ selected_cluster.name }}</span><span class="pg-total">{{ pools|length }} pools</span></div>
-        <a href="/pools?cluster={{ selected_cluster.id }}" class="btn btn-ghost btn-sm">Làm mới</a>
-      </div>
-      {% if query_error %}
-      <div class="card-body"><p class="error">Không lấy được dữ liệu Pool từ cluster: {{ query_error }}</p></div>
-      {% elif pools %}
-      <div class="card-body table-wrap">
-        <table id="pool-list">
-          <thead><tr><th>Pool Name</th><th>Redundancy</th><th>PGs</th><th>Crush Rules</th><th>Used disk space</th><th>Object</th><th>Read IOPS</th><th>Write IOPS</th></tr></thead>
-          <tbody>
-            {% for pool in pools %}
-            <tr><td><strong>{{ pool.name }}</strong></td><td>{{ pool.redundancy }}</td><td>{{ pool.pgs }}</td><td><code>{{ pool.crush_rule }}</code></td><td>{{ pool.used }}</td><td>{{ pool.objects }}</td><td>{{ pool.read_iops }}</td><td>{{ pool.write_iops }}</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <div class="card-body"><div class="empty-state">Cụm chưa có Pool nào.</div></div>
-      {% endif %}
-    </section>
-  </main>
+  <main class="page"><div id="pools-dashboard-root"></div></main>
+  <script id="pools-bootstrap-data" type="application/json">{{ {
+    "pools": pools,
+    "selectedPool": selected_pool,
+    "updatedAt": updated_at,
+    "updatedAgo": "Updated 2 seconds ago",
+    "isAdmin": is_admin,
+    "clusterId": selected_cluster.id,
+    "createSuccess": create_success,
+    "queryError": query_error
+  } | tojson }}</script>
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script type="module" src="/static/ceph-health/app.js?v={{ static_version }}"></script>
 </body>
 </html>

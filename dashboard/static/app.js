@@ -99,7 +99,9 @@
     '<h1></h1><p>Giám sát, phân tích và vận hành hạ tầng Ceph trong một không gian thống nhất.</p></div>' +
     '<span class="page-live"><i></i> SYSTEM LIVE</span>';
   heading.querySelector("h1").textContent = title;
-  main.insertBefore(heading, main.firstChild);
+  // The React Pools workspace owns its breadcrumb/header inside the panel.
+  // Avoid rendering the generic shell heading above it a second time.
+  if (window.location.pathname !== "/pools") main.insertBefore(heading, main.firstChild);
 
   var iconByPath = {
     "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",

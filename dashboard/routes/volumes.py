@@ -272,11 +272,6 @@ def _volumes_page_context(
         "purge_success": purge_success,
         "clusters": clusters or [],
         "selected_cluster": selected_cluster,
-        "create_success": (
-            "Yêu cầu tạo pool đã được gửi tới Worker."
-            if request.query_params.get("create_success") == "1"
-            else None
-        ),
     }
 
 

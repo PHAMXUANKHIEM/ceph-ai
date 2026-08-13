@@ -38,11 +38,41 @@ def test_pools_page_renders_requested_columns(dashboard_client, monkeypatch):
     response = dashboard_client.get("/pools")
 
     assert response.status_code == 200
-    for heading in ("Pool Name", "Redundancy", "PGs", "Crush Rules", "Used disk space", "Object", "Read IOPS", "Write IOPS"):
-        assert heading in response.text
+    assert 'id="pools-dashboard-root"' in response.text
+    assert 'id="pools-bootstrap-data"' in response.text
+    assert '/static/ceph-health/app.js' in response.text
     assert "volumes" in response.text
     assert "replicated_rule" in response.text
     assert "2.0 KiB" in response.text
+
+
+def test_volume_performance_does_not_render_create_pool(dashboard_client, monkeypatch):
+    monkeypatch.setattr("dashboard.routes.volumes._rbd_pools_for_request", lambda request: ["volumes"])
+    _login(dashboard_client)
+    response = dashboard_client.get("/volumes?pool=volumes")
+    assert response.status_code == 200
+    assert 'action="/pgs/pools/create"' not in response.text
+    assert 'id="pool-create-open"' not in response.text
+
+
+def test_pools_page_shows_create_success_message(dashboard_client, monkeypatch):
+    monkeypatch.setattr(pools_route.ceph_client, "run_ceph_json_command", lambda command: ("mon1", []))
+    _login(dashboard_client)
+    response = dashboard_client.get("/pools?create_success=1")
+    assert response.status_code == 200
+    assert '"createSuccess": true' in response.text
+
+
+def test_pools_react_component_contains_requested_toolbar_and_table():
+    source = open("ceph-health-dashboard/src/components/PoolsPage.tsx", encoding="utf-8").read()
+    for label in ("Metrics", "Create", "Edit", "Scrub", "Details", "Delete", "Search", "Columns"):
+        assert f'label="{label}"' in source
+    for heading in ("Pool Name", "Redundancy", "#PGs", "Crush Rule", "Used disk space", "Objects", "Read IOPS", "Write IOPS"):
+        assert heading in source
+    assert "1 selected" in source
+    assert "Rows per page:" in source
+    assert 'action="/pgs/pools/create"' in source
+    assert 'name="cluster_id"' in source
 
 
 def test_navigation_places_volume_performance_under_monitoring():
