@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 from shared import db as db_module
-from shared.models import VitastorCluster, VitastorDiagnosticRun, VitastorMetricSample, VitastorOsdMetricSample
+from shared.models import VitastorAnomalyEvent, VitastorCluster, VitastorDiagnosticRun, VitastorMetricSample, VitastorOsdMetricSample
 import dashboard.routes.vitastor as route
 
 
@@ -140,3 +140,14 @@ def test_ai_failure_keeps_evidence_and_failed_state(dashboard_client, monkeypatc
         row = session.query(VitastorDiagnosticRun).one()
         assert row.status == "FAILED"
         assert json.loads(row.evidence_json)["status"]["osd_count"] == 2
+
+
+def test_anomaly_api_is_scoped_to_selected_cluster(dashboard_client):
+    _login(dashboard_client); cluster_id = _cluster(); other_id = _cluster(name="other")
+    with db_module.SessionLocal() as session:
+        session.add(VitastorAnomalyEvent(cluster_id=cluster_id, entity_type="osd", entity_name="1", metric="read_latency_ms", severity="WARNING", current_value=12, baseline_value=1, deviation_ratio=12, sample_count=20, explanation="OSD latency anomaly"))
+        session.add(VitastorAnomalyEvent(cluster_id=other_id, entity_type="osd", entity_name="2", metric="read_latency_ms", severity="CRITICAL", current_value=20, baseline_value=1, deviation_ratio=20, sample_count=20, explanation="Other cluster"))
+        session.commit()
+    payload = dashboard_client.get(f"/vitastor/api/anomalies?cluster_id={cluster_id}").json()
+    assert len(payload["anomalies"]) == 1
+    assert payload["anomalies"][0]["entity_name"] == "1"
