@@ -4,6 +4,10 @@ Tài liệu này mô tả cách ceph-aiops xác định **hiệu năng tối đa
 một Volume (RBD image) / pool, đặc biệt là thuật toán dùng để nhận biết khi
 nào một Volume đã **chạm trần hiệu năng**.
 
+Nếu RBD image là disk của VM và cần phân biệt phép đo phía Ceph với phép đo
+end-to-end trong guest, xem [Lý thuyết đo hiệu năng từ bên trong VM sử dụng Ceph
+RBD](vm-performance-measurement.md).
+
 Nguồn: `worker/executor/volume_perf.py`, `dashboard/routes/volumes.py`,
 `dashboard/volume_perf_analysis.py`, `watcher/volume_monitor.py`,
 `shared/models.py` (`VolumeMetric`, `VolumePerfSweep`).

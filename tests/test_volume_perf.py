@@ -59,7 +59,7 @@ def _fio_json(iops, lat_avg_ms, lat_p99_ms):
 
 
 def test_volume_perf_action_ids_registered():
-    assert VOLUME_PERF_ACTION_IDS == {"volume_perf_sweep"}
+    assert VOLUME_PERF_ACTION_IDS == {"volume_perf_sweep", "vm_perf_benchmark"}
 
 
 # --- _parse_fio_json -------------------------------------------------------

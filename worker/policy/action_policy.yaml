@@ -160,6 +160,7 @@ cluster_deploy_action_ids:
 # with real traffic on real data.
 volume_perf_action_ids:
   - volume_perf_sweep
+  - vm_perf_benchmark
 
 # 2026-07-30 (Epic 9, Story 9.1): Ceph Backup & Disaster Recovery — an
 # EIGHTH family, same reasoning as cluster_deploy_action_ids/
@@ -314,6 +315,9 @@ risky:
   # several minutes — always requires explicit approval, no exceptions,
   # same conservative default as the rest of this file.
   - volume_perf_sweep
+  # Chạy fio read-only trên raw block device từ bên trong VM. Vẫn cần duyệt
+  # vì tạo tải thật lên VM/Ceph và có thể ảnh hưởng workload production.
+  - vm_perf_benchmark
   # 2026-07-30 (Epic 9, Story 9.1/9.4): restore_rbd_image_to_production
   # (Story 9.4, restores a backup OVER a live production image) and
   # backup_delete_manual (deleting a backup outside the automatic

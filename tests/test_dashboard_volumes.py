@@ -532,6 +532,68 @@ def test_propose_perf_sweep_rejects_non_admin(dashboard_client, monkeypatch):
     assert response.status_code == 403
 
 
+def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volumes?pool=vms")
+
+    assert response.status_code == 200
+    assert 'name="vm_ip"' in response.text
+    assert 'name="ssh_key_path"' in response.text
+    assert 'value="/dev/vdb"' in response.text
+    assert 'value="/dev/vdc"' in response.text
+    assert "READ-ONLY" in response.text
+
+
+def test_propose_vm_perf_creates_risky_pending_action(dashboard_client, tmp_path):
+    key = tmp_path / "vm-key"
+    key.write_text("test key")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/volumes/vm-perf/propose",
+        json={
+            "vm_ip": "10.20.1.50",
+            "ssh_user": "ubuntu",
+            "ssh_key_path": str(key),
+            "device": "/dev/vdb",
+        },
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "vm_perf_benchmark"
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.classification == "RISKY"
+        assert json.loads(action.target_nodes) == ["10.20.1.50"]
+        params = json.loads(action.action_params)
+        assert params["ssh_user"] == "ubuntu"
+        assert params["ssh_key_path"] == str(key)
+        assert params["device"] == "/dev/vdb"
+        assert str(key) not in action.proposed_command
+
+
+def test_propose_vm_perf_rejects_bad_ip_device_or_missing_key(dashboard_client, tmp_path):
+    _login(dashboard_client)
+    base = {
+        "vm_ip": "not-an-ip",
+        "ssh_user": "root",
+        "ssh_key_path": str(tmp_path / "missing"),
+        "device": "/dev/vdb;reboot",
+    }
+    assert dashboard_client.post("/volumes/vm-perf/propose", json=base).status_code == 400
+
+    base["vm_ip"] = "10.20.1.50"
+    assert dashboard_client.post("/volumes/vm-perf/propose", json=base).status_code == 400
+
+    base["device"] = "/dev/vdb"
+    response = dashboard_client.post("/volumes/vm-perf/propose", json=base)
+    assert response.status_code == 400
+    assert "SSH key" in response.json()["detail"]
+
+
 def test_propose_perf_sweep_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _login(dashboard_client)

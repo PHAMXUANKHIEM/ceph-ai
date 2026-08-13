@@ -2046,12 +2046,14 @@ def test_execute_approved_action_cluster_deploy_malformed_action_params_marks_fa
 # same split as the cluster-deploy family above.)
 
 
-def _approved_volume_perf_action(session, incident_id: str, action_params: dict | None) -> Action:
+def _approved_volume_perf_action(
+    session, incident_id: str, action_params: dict | None, action_id: str = "volume_perf_sweep"
+) -> Action:
     import json as _json
 
     action = Action(
         incident_id=incident_id,
-        action_id="volume_perf_sweep",
+        action_id=action_id,
         classification=ActionClassification.RISKY.value,
         status=ActionStatus.APPROVED.value,
         target_nodes=_json.dumps(["10.20.1.112"]),
@@ -2109,6 +2111,40 @@ def test_execute_approved_action_volume_perf_failure_marks_failed(isolated_db, m
         assert action.status == ActionStatus.FAILED.value
         incident = session.get(Incident, "incident-9b")
         assert incident.status == IncidentStatus.FAILED.value
+
+
+def test_execute_approved_action_delegates_vm_benchmark_to_vm_executor(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        router_client.vm_perf,
+        "run",
+        lambda action_pk, params, incident_id, write_progress: calls.append(
+            (action_pk, params, incident_id)
+        ) or True,
+    )
+    monkeypatch.setattr(
+        router_client.volume_perf,
+        "run",
+        lambda *args: pytest.fail("VM benchmark must not use Ceph-side executor"),
+    )
+    _create_incident("incident-vm-perf")
+    params = {
+        "vm_ip": "10.20.1.50",
+        "ssh_user": "ubuntu",
+        "ssh_key_path": "/key",
+        "device": "/dev/vdb",
+    }
+    with db_module.SessionLocal() as session:
+        action = _approved_volume_perf_action(
+            session, "incident-vm-perf", params, action_id="vm_perf_benchmark"
+        )
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert calls == [(action_pk, params, "incident-vm-perf")]
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.EXECUTED.value
 
 
 def test_execute_approved_action_volume_perf_malformed_action_params_marks_failed(

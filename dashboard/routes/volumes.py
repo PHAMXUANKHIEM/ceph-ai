@@ -1,7 +1,11 @@
 import asyncio
+import ipaddress
 import json
 import logging
+import os
+import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -129,6 +133,10 @@ RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
 # own `volume_perf_action_ids` family (see that yaml's own comment).
 VOLUME_PERF_SWEEP_CEPH_CODE = "VOLUME_PERF_SWEEP"
 VOLUME_PERF_SWEEP_ACTION_ID = "volume_perf_sweep"
+VM_PERF_BENCHMARK_CEPH_CODE = "VM_PERF_BENCHMARK"
+VM_PERF_BENCHMARK_ACTION_ID = "vm_perf_benchmark"
+_SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
+_VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 
@@ -168,6 +176,16 @@ def _in_flight_trash_actions(pool: str) -> dict[str, Action]:
     return result
 
 
+def _latest_vm_perf_action() -> Action | None:
+    with db.SessionLocal() as session:
+        return (
+            session.query(Action)
+            .filter(Action.action_id == VM_PERF_BENCHMARK_ACTION_ID)
+            .order_by(Action.created_at.desc())
+            .first()
+        )
+
+
 def _volumes_page_context(
     request: Request,
     user: str,
@@ -189,6 +207,7 @@ def _volumes_page_context(
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
     perf_sweep_action: Action | None = None
+    vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
         for trash_pool in pools:
@@ -213,6 +232,7 @@ def _volumes_page_context(
     elif pool:
         if _cluster_for_request(request).is_default:
             perf_sweep_action = _latest_perf_sweep_action(pool)
+            vm_perf_action = _latest_vm_perf_action()
 
     return {
         "user": user,
@@ -224,6 +244,7 @@ def _volumes_page_context(
         "trash_error": trash_error,
         "trash_pending": trash_pending,
         "perf_sweep_action": perf_sweep_action,
+        "vm_perf_action": vm_perf_action,
         "purge_error": purge_error,
         "purge_success": purge_success,
         "clusters": clusters or [],
@@ -436,6 +457,99 @@ async def volume_history_api(
         "peak": peak,
         "saturated": saturated_now,
     }
+
+
+# --- End-to-end VM disk benchmark -----------------------------------------
+
+
+@router.post("/volumes/vm-perf/propose")
+async def propose_vm_perf_benchmark(request: Request, user: str = Depends(require_login)):
+    """Create an approval-gated, read-only fio benchmark inside one VM."""
+    _require_admin_privilege(user)
+    _require_default_cluster_operation(request)
+    try:
+        payload = await request.json()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Dữ liệu yêu cầu không hợp lệ")
+
+    vm_ip = str(payload.get("vm_ip") or "").strip()
+    ssh_user = str(payload.get("ssh_user") or "").strip()
+    ssh_key_path = str(payload.get("ssh_key_path") or "").strip()
+    device = str(payload.get("device") or "").strip()
+    try:
+        ipaddress.ip_address(vm_ip)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="IP của VM không hợp lệ")
+    if not _SSH_USER_RE.fullmatch(ssh_user):
+        raise HTTPException(status_code=400, detail="SSH user không hợp lệ")
+    if not _VM_DEVICE_RE.fullmatch(device):
+        raise HTTPException(status_code=400, detail="Ổ đĩa phải có dạng /dev/vdb, /dev/vdc, ...")
+
+    key = Path(ssh_key_path).expanduser()
+    if not key.is_absolute() or not key.is_file() or not os.access(key, os.R_OK):
+        raise HTTPException(
+            status_code=400,
+            detail="SSH key phải là đường dẫn tuyệt đối tới private key đọc được trên máy chạy ceph-ai Worker",
+        )
+
+    previous = _latest_vm_perf_action()
+    if previous is not None and previous.status in _IN_FLIGHT_ACTION_STATUSES:
+        raise HTTPException(status_code=409, detail="Đã có một lượt đo VM đang chờ duyệt hoặc đang chạy")
+
+    params = {
+        "vm_ip": vm_ip,
+        "ssh_user": ssh_user,
+        "ssh_key_path": str(key),
+        "device": device,
+        "requested_by": user,
+    }
+    preview = executor_commands.get_command(VM_PERF_BENCHMARK_ACTION_ID, vm_ip, params)
+    with db.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=VM_PERF_BENCHMARK_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"Đề xuất đo read-only từ trong VM {vm_ip}, ổ {device}, bởi {user}.",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=VM_PERF_BENCHMARK_ACTION_ID,
+            classification=gate.classify_action(VM_PERF_BENCHMARK_ACTION_ID).value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=(
+                f"SSH vào VM {vm_ip} và chạy fio 4K random-read trên {device}. Phép đo không ghi dữ liệu "
+                "nhưng tạo tải đọc thật, có thể làm chậm workload đang chạy."
+            ),
+            target_nodes=json.dumps([vm_ip]),
+            action_params=json.dumps(params),
+            proposed_command=preview,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(
+            session,
+            incident_id=incident.id,
+            action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+            actor=user,
+        )
+        session.commit()
+        action_id = action.id
+    return JSONResponse({"action_id": action_id}, status_code=201)
+
+
+@router.get("/api/volumes/vm-perf/progress")
+async def vm_perf_progress_api(user: str = Depends(require_login)):
+    action = _latest_vm_perf_action()
+    if action is None:
+        return {"status": None, "progress": []}
+    try:
+        progress = json.loads(action.execution_progress) if action.execution_progress else []
+    except (TypeError, ValueError):
+        progress = []
+    return {"status": action.status, "progress": _with_step_display_times(progress)}
 
 
 # --- "Đo hiệu năng tối đa" load sweep (2026-07-29) ------------------------

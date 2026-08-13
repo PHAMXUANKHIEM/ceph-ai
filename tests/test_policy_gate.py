@@ -182,7 +182,7 @@ def test_cluster_deploy_action_ids_disjoint_from_other_families():
 def test_volume_perf_action_ids_loaded_from_policy_yaml():
     import worker.policy.gate as gate
 
-    assert gate.VALID_VOLUME_PERF_ACTION_IDS == {"volume_perf_sweep"}
+    assert gate.VALID_VOLUME_PERF_ACTION_IDS == {"volume_perf_sweep", "vm_perf_benchmark"}
 
 
 def test_volume_perf_sweep_is_classified_risky():
@@ -190,6 +190,7 @@ def test_volume_perf_sweep_is_classified_risky():
     # several minutes — must never be Safe, same conservative default as
     # every other action_id family in this file.
     assert classify_action("volume_perf_sweep") == ActionClassification.RISKY
+    assert classify_action("vm_perf_benchmark") == ActionClassification.RISKY
 
 
 def test_volume_perf_action_ids_disjoint_from_other_families():

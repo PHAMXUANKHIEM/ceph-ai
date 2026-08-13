@@ -966,6 +966,24 @@ def test_has_command_true_for_volume_perf_sweep():
     assert commands_module.has_command("volume_perf_sweep") is True
 
 
+def test_vm_perf_preview_is_read_only_and_hides_key_path():
+    command = get_command(
+        "vm_perf_benchmark",
+        "10.20.1.50",
+        {
+            "vm_ip": "10.20.1.50",
+            "ssh_user": "ubuntu",
+            "ssh_key_path": "/secret/vm-key",
+            "device": "/dev/vdb",
+        },
+    )
+    assert "ubuntu@10.20.1.50" in command
+    assert "/dev/vdb" in command
+    assert "READ-ONLY" in command
+    assert "/secret/vm-key" not in command
+    assert commands_module.has_command("vm_perf_benchmark") is True
+
+
 def test_get_command_evacuate_predicted_failing_osd_reuses_mark_osd_out_shape():
     command = get_command("evacuate_predicted_failing_osd", None, {"osd_id": 7})
     assert command == "ceph osd out 7"

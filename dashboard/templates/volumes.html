@@ -152,6 +152,63 @@
       </div>
     </section>
 
+    <section class="card" id="vm-perf-panel" data-status="{{ vm_perf_action.status if vm_perf_action else '' }}">
+      <div class="card-header">
+        <h2>Đo hiệu năng từ trong VM</h2>
+      </div>
+      <div class="card-body">
+        <p class="hint metrics-panel-desc">
+          Worker SSH trực tiếp vào VM và chạy <code>fio</code> READ-ONLY trên ổ đã chọn. Kết quả
+          bao gồm toàn bộ đường đi guest → virtio/QEMU → network → Ceph. Private key phải tồn tại
+          trên máy chạy Worker; hệ thống chỉ lưu đường dẫn, không nhận nội dung key qua trình duyệt.
+        </p>
+        <div class="vitastor-live-notice">
+          <strong>Cảnh báo:</strong> phép đo không ghi dữ liệu nhưng tạo tải đọc thật và có thể làm
+          chậm VM/cluster. Không chọn <code>/dev/vda</code> theo thói quen; hãy kiểm tra bằng
+          <code>lsblk</code>. Các data disk thường là <code>/dev/vdb</code>, <code>/dev/vdc</code>…
+        </div>
+
+        {% if vm_perf_action and vm_perf_action.status == "PENDING_APPROVAL" %}
+        <pre class="upgrade-plan-text">{{ vm_perf_action.proposed_command }}</pre>
+        <div class="pending-action-buttons">
+          <span class="hint">Chờ duyệt — benchmark sẽ tạo tải đọc thật trong VM.</span>
+          <form method="post" action="/actions/{{ vm_perf_action.id }}/approve" class="inline-form">
+            <button type="submit" class="btn btn-approve btn-sm">Duyệt — bắt đầu đo VM</button>
+          </form>
+          <form method="post" action="/actions/{{ vm_perf_action.id }}/reject" class="inline-form">
+            <button type="submit" class="btn btn-reject btn-sm">Từ chối</button>
+          </form>
+        </div>
+        {% elif vm_perf_action and vm_perf_action.status == "APPROVED" %}
+        <p class="hint">● Đang SSH vào VM và đo hiệu năng...</p>
+        {% elif is_admin %}
+        <form id="vm-perf-form" class="login-box">
+          <label>IP của VM
+            <input name="vm_ip" required inputmode="decimal" placeholder="vd: 10.20.1.50">
+          </label>
+          <label>SSH user
+            <input name="ssh_user" required value="root" placeholder="root hoặc ubuntu">
+          </label>
+          <label>SSH private key path trên Worker
+            <input name="ssh_key_path" required placeholder="/root/.ssh/vm_benchmark_ed25519">
+          </label>
+          <label>Ổ cứng trong VM
+            <input name="device" required list="vm-device-suggestions" value="/dev/vdb" placeholder="/dev/vdb">
+            <datalist id="vm-device-suggestions">
+              <option value="/dev/vdb"></option><option value="/dev/vdc"></option>
+              <option value="/dev/vdd"></option><option value="/dev/sdb"></option>
+              <option value="/dev/nvme1n1"></option>
+            </datalist>
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Đề xuất đo từ VM</button>
+        </form>
+        {% endif %}
+        <p class="error" id="vm-perf-error" hidden></p>
+        <div id="vm-perf-progress" hidden></div>
+        <div id="vm-perf-result"></div>
+      </div>
+    </section>
+
     <section
       class="card"
       id="perf-sweep-panel"
@@ -238,5 +295,6 @@
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/volumes.js?v={{ static_version }}"></script>
   <script src="/static/volume_perf_sweep.js?v={{ static_version }}"></script>
+  <script src="/static/vm_perf.js?v={{ static_version }}"></script>
 </body>
 </html>

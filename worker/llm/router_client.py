@@ -19,7 +19,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.telegram_alerts import send_ai_incident_alert, send_auto_remediation_alert
 from worker.backup import engine as backup_engine
-from worker.executor import cluster_deploy, commands, volume_perf
+from worker.executor import cluster_deploy, commands, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.redaction import default_redactor
@@ -1504,12 +1504,8 @@ def _execute_approved_action(action_pk: str) -> None:
             )
             _record_approved_execution_result(action_pk, command=None, succeeded=False)
             return
-        succeeded = volume_perf.run(
-            action_pk,
-            action_params,
-            incident_id,
-            _write_action_progress,
-        )
+        executor = vm_perf if action_id_str == vm_perf.VM_PERF_ACTION_ID else volume_perf
+        succeeded = executor.run(action_pk, action_params, incident_id, _write_action_progress)
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
 

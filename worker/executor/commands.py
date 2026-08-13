@@ -1072,6 +1072,16 @@ def _volume_perf_sweep_preview_command(host: str | None, params: dict) -> str:
     )
 
 
+def _vm_perf_benchmark_preview_command(host: str | None, params: dict) -> str:
+    vm_ip = params.get("vm_ip") or host or "<vm-ip>"
+    device = params.get("device", "<device>")
+    ssh_user = params.get("ssh_user", "<ssh-user>")
+    return (
+        f"SSH {ssh_user}@{vm_ip}, chạy fio READ-ONLY 4K random-read trên {device} "
+        "từ bên trong VM; không chạy write benchmark và không hiển thị nội dung SSH key"
+    )
+
+
 # 2026-07-29 fix (verified live): dashboard/routes/actions.py::approve_action
 # checks has_command(action_id) BEFORE ever setting Action.status=APPROVED —
 # without an entry here, has_command("volume_perf_sweep") returned False
@@ -1085,6 +1095,7 @@ def _volume_perf_sweep_preview_command(host: str | None, params: dict) -> str:
 # silently redirected to "/" with no sweep ever starting.
 _VOLUME_PERF_COMMAND_BUILDERS = {
     "volume_perf_sweep": _volume_perf_sweep_preview_command,
+    "vm_perf_benchmark": _vm_perf_benchmark_preview_command,
 }
 
 
