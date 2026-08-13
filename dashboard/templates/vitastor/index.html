@@ -43,6 +43,8 @@
           <article class="vitastor-stat-card"><span class="vitastor-card-icon">U</span><div><span>Utilization</span><strong id="vita-utilization">—</strong><small id="vita-utilization-note">— in — pools</small></div></article>
         </section>
 
+        <section class="vitastor-monitor-card vitastor-anomaly-card"><header><div><span class="vitastor-card-kicker">DYNAMIC BASELINE</span><h2>Phát hiện bất thường</h2></div><span class="vitastor-inline-status" id="vita-anomaly-count">0 open</span></header><p class="vitastor-muted">Baseline robust theo từng cluster, OSD, pool, volume và khung giờ; chỉ kích hoạt sau khi đủ mẫu lịch sử.</p><div class="vitastor-table-wrap"><table><thead><tr><th>Entity</th><th>Metric</th><th>Severity</th><th>Hiện tại</th><th>Baseline</th><th>Độ lệch</th><th>Số mẫu</th></tr></thead><tbody id="vita-anomaly-table"></tbody></table></div></section>
+
         <section class="vitastor-metrics-strip">
           <article class="vitastor-monitor-card vitastor-parity-metric"><span>Latency</span><strong id="vita-latency">—</strong><small>OSD average</small></article>
           <article class="vitastor-monitor-card vitastor-parity-metric"><span>Bandwidth</span><strong id="vita-bandwidth">—</strong><small>Read + write</small></article>
