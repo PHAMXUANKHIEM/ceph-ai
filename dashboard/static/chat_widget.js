@@ -27,6 +27,9 @@
   // so this is never required to be non-null before sending.
   var currentSessionId = null;
   var aiName = "AI";
+  var apiPrefix = panelEl.getAttribute("data-api-prefix") || "/api/chat";
+  var settingsUrl = panelEl.getAttribute("data-settings-url") || "/settings";
+  var productName = panelEl.getAttribute("data-product-name") || "Ceph";
 
   var inputEl = document.getElementById("chat-input");
   var sendBtn = document.getElementById("chat-send-btn");
@@ -40,7 +43,7 @@
   // — the backend sends this as plain text (chat bubbles never carry HTML),
   // so the frontend detects this exact known sentinel to render an actual
   // clickable Settings link instead of just the raw text.
-  var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API hoặc tài khoản Codex.";
+  var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API, Codex hoặc Claude.";
   var NETWORK_ERROR_MESSAGE = "Không thể kết nối server. Thử lại sau.";
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
@@ -161,7 +164,7 @@
     p.className = "chat-msg-bubble";
     p.appendChild(document.createTextNode("⚙️ Chưa kết nối AI. "));
     var link = document.createElement("a");
-    link.href = "/settings";
+    link.href = settingsUrl;
     link.textContent = "Vào Settings →";
     p.appendChild(link);
     return p;
@@ -297,7 +300,7 @@
   // --- history load -----------------------------------------------------------
 
   function loadHistory() {
-    fetch("/api/chat/messages", { credentials: "same-origin" })
+    fetch(apiPrefix + "/messages", { credentials: "same-origin" })
       .then(handleAuthRedirect)
       .then(function (response) { return response.json(); })
       .then(function (data) {
@@ -314,7 +317,7 @@
   }
 
   function loadPreferences() {
-    return fetch("/api/chat/preferences", { credentials: "same-origin" })
+    return fetch(apiPrefix + "/preferences", { credentials: "same-origin" })
       .then(handleAuthRedirect)
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
@@ -340,14 +343,14 @@
     empty.id = "chat-empty-state";
     empty.innerHTML =
       '<span class="chat-empty-icon" aria-hidden="true">&#129302;</span>' +
-      '<p class="chat-empty-text">Hỏi tôi về trạng thái cụm Ceph</p>' +
-      '<p class="chat-empty-subtext">VD: cụm có bao nhiêu pool? OSD nào đang down?</p>';
+      '<p class="chat-empty-text">Hỏi tôi về ' + productName + '</p>' +
+      '<p class="chat-empty-subtext">Trợ lý có thể giải thích cấu hình, vận hành và sự cố.</p>';
     messagesEl.appendChild(empty);
   }
 
   function startNewSession() {
     clearError();
-    fetch("/api/chat/sessions", { method: "POST", credentials: "same-origin" })
+    fetch(apiPrefix + "/sessions", { method: "POST", credentials: "same-origin" })
       .then(handleAuthRedirect)
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
@@ -445,7 +448,7 @@
 
   function openHistoryList() {
     clearError();
-    fetch("/api/chat/sessions", { credentials: "same-origin" })
+    fetch(apiPrefix + "/sessions", { credentials: "same-origin" })
       .then(handleAuthRedirect)
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
@@ -471,7 +474,7 @@
 
   function deleteHistorySession(sessionId, rowEl) {
     if (!window.confirm("Xoá vĩnh viễn đoạn chat này? Không thể hoàn tác.")) return;
-    fetch("/api/chat/sessions/" + encodeURIComponent(sessionId), {
+    fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), {
       method: "DELETE",
       credentials: "same-origin",
     })
@@ -541,7 +544,7 @@
         submitBtn.disabled = true;
         submitBtn.textContent = "Đang lưu…";
       }
-      fetch("/api/chat/preferences", {
+      fetch(apiPrefix + "/preferences", {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
@@ -664,7 +667,7 @@
     // wait, not a fixed-duration decoration.
     showTypingIndicator();
 
-    fetch("/api/chat/messages", {
+    fetch(apiPrefix + "/messages", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
@@ -713,7 +716,7 @@
     btn.disabled = true;
     btn.textContent = "Đang xử lý...";
 
-    fetch("/api/chat/messages/" + encodeURIComponent(messageId) + "/confirm-action", {
+    fetch(apiPrefix + "/messages/" + encodeURIComponent(messageId) + "/confirm-action", {
       method: "POST",
       credentials: "same-origin",
     })

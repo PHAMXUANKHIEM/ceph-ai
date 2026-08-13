@@ -2200,6 +2200,9 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .vitastor-topbar { height: 68px; padding: 0 30px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(108,190,173,.15); background: rgba(7,17,15,.82); backdrop-filter: blur(16px); }
 .vitastor-brand { display: flex; gap: 11px; align-items: center; color: #e7f4f1; text-decoration: none; font-weight: 750; }
 .vitastor-brand small { display: block; margin-top: 2px; color: #6e9b91; font: 600 .56rem/1 var(--font-mono); letter-spacing: .12em; }
+.vitastor-nav { display: flex; align-items: center; gap: 5px; margin-right: auto; margin-left: 42px; }
+.vitastor-nav a { padding: 8px 12px; border-radius: 8px; color: #78938d; text-decoration: none; font-size: .78rem; font-weight: 650; }
+.vitastor-nav a:hover, .vitastor-nav a.active { color: #a9f3e3; background: rgba(55,218,183,.09); }
 .vitastor-shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 72px 0; }
 .vitastor-hero { max-width: 720px; }
 .vitastor-hero h1 { margin: 5px 0 14px; font-size: clamp(2.2rem,5vw,4rem); letter-spacing: -.05em; }
@@ -2209,7 +2212,18 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .vitastor-empty-grid article span { color: #4ccfb3; font: 700 .65rem/1 var(--font-mono); }
 .vitastor-empty-grid article strong { display: block; margin: 28px 0 8px; }
 .vitastor-empty-grid article p { margin: 0; color: #78938d; font-size: .8rem; }
-@media (max-width: 720px) { .product-choice-grid, .vitastor-empty-grid { grid-template-columns: 1fr; } .product-choice { min-height: 270px; } .vitastor-topbar { padding: 0 16px; } }
+.vitastor-users-shell { padding-top: 48px; }
+.vitastor-section-heading { margin-bottom: 26px; }
+.vitastor-section-heading h1 { margin: 0 0 8px; font-size: 2.2rem; }
+.vitastor-section-heading p, .vitastor-create-user > div p { color: #78938d; }
+.vitastor-panel { padding: 24px; margin-bottom: 18px; border: 1px solid rgba(108,190,173,.14); border-radius: 15px; background: rgba(12,31,27,.62); }
+.vitastor-panel table { background: transparent; }
+.vitastor-panel th { color: #6e9b91; }
+.vitastor-create-user { display: grid; grid-template-columns: minmax(220px,.8fr) minmax(300px,1.2fr); gap: 48px; }
+.vitastor-create-user h2 { margin: 0; }
+.vitastor-create-user .login-box { max-width: none; }
+.vitastor-app .btn-primary { color: #061812; background: #2bc5a5; border-color: #2bc5a5; }
+@media (max-width: 720px) { .product-choice-grid, .vitastor-empty-grid, .vitastor-create-user { grid-template-columns: 1fr; } .product-choice { min-height: 270px; } .vitastor-topbar { padding: 0 16px; } .vitastor-nav { margin-left: 14px; } }
 
 .crush-rule { background: rgba(5,11,20,.32); transition: border-color 140ms ease, transform 140ms ease; }
 .crush-rule:hover { border-color: rgba(85,167,255,.32); transform: translateY(-1px); }
@@ -2516,3 +2530,51 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 @media (prefers-reduced-motion: reduce) {
   .app-shell .main-nav { transition: none; }
 }
+
+/* Vitastor live monitoring dashboard */
+.vitastor-workspace { display: flex; min-height: calc(100vh - 68px); }
+.vitastor-dashboard { min-width: 0; flex: 1; padding: 30px clamp(18px, 2.5vw, 38px) 52px; overflow: hidden; }
+.vitastor-dashboard-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 22px; padding-bottom: 20px; border-bottom: 1px solid rgba(108,190,173,.14); }
+.vitastor-dashboard-head h1 { margin: 3px 0 7px; font-size: clamp(1.45rem,2.5vw,2.1rem); letter-spacing: -.04em; }
+.vitastor-dashboard-head p { margin: 0; color: #78938d; font-size: .82rem; }
+.vitastor-dashboard-actions { display: flex; align-items: flex-end; gap: 9px; }
+.vitastor-cluster-picker { display: grid; gap: 5px; color: #6e9b91; font: 700 .59rem/1 var(--font-mono); letter-spacing: .09em; text-transform: uppercase; }
+.vitastor-cluster-picker select { min-width: 180px; height: 34px; border: 1px solid rgba(108,190,173,.2); border-radius: 8px; background: #0b1c19; color: #d9ede8; padding: 0 30px 0 10px; }
+.vitastor-live-notice { margin: 0 0 16px; padding: 10px 13px; border: 1px solid rgba(69,202,174,.22); border-radius: 9px; background: rgba(43,197,165,.08); color: #8aefd9; font-size: .76rem; }
+.vitastor-live-notice.is-warning { border-color: rgba(244,183,79,.28); background: rgba(244,183,79,.08); color: #f4c66f; }
+.vitastor-live-notice.is-critical { border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.08); color: #fca5a5; }
+.vitastor-onboarding { margin-top: 70px; padding: 54px 24px; border: 1px dashed rgba(108,190,173,.25); border-radius: 16px; background: rgba(12,31,27,.45); text-align: center; }
+.vitastor-onboarding-icon { display: block; color: #49d2b5; font-size: 2rem; }.vitastor-onboarding h2 { margin: 12px 0 7px; }.vitastor-onboarding p { margin: 0 auto 22px; max-width: 570px; color: #78938d; }
+.vitastor-health-strip { display: grid; grid-template-columns: 1.3fr repeat(4,1fr); gap: 11px; margin-bottom: 14px; }
+.vitastor-metrics-strip { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 11px; margin-bottom: 14px; }
+.vitastor-parity-metric { min-height: 142px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.vitastor-parity-metric > span { color: #78938d; font-size: .72rem; font-weight: 650; }
+.vitastor-parity-metric > strong { margin: 18px 0 10px; color: #eef8f5; font: 750 clamp(1.35rem,2vw,2rem)/1 var(--font-mono); }
+.vitastor-parity-metric > small { color: #66827b; font-size: .65rem; }
+.vitastor-parity-metric.is-pg { border-color: rgba(72,218,178,.32); background: rgba(38,153,124,.1); }
+.vitastor-parity-metric.is-pg > strong { color: #61dfbf; }
+.vitastor-operational-strip { display: flex; gap: 24px; margin: -3px 0 14px; padding: 9px 13px; border: 1px solid rgba(108,190,173,.12); border-radius: 9px; background: rgba(8,25,21,.62); color: #78938d; font-size: .68rem; }
+.vitastor-operational-strip strong { margin-left: 6px; color: #c5ddd7; font-family: var(--font-mono); }.vitastor-operational-strip small { margin-left: 4px; color: #607d75; }
+.vitastor-log-filters { display: grid; grid-template-columns: repeat(5,minmax(130px,1fr)); gap: 12px; }.vitastor-log-filters label { color: #78938d; font-size: .7rem; }.vitastor-log-filters select { width: 100%; margin-top: 6px; }.vitastor-log-search { display: flex; align-items: center; gap: 9px; margin: 16px 0; }.vitastor-log-search > input { min-width: 260px; flex: 1; }.vitastor-log-meta { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: #78938d; font: .68rem/1 var(--font-mono); }.vitastor-log-output { min-height: 480px; max-height: 68vh; margin: 0; padding: 16px; overflow: auto; border: 1px solid rgba(108,190,173,.14); border-radius: 10px; background: #030a08; color: #a9c9c1; font: .7rem/1.55 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.vitastor-health-card, .vitastor-stat-card, .vitastor-monitor-card { border: 1px solid rgba(108,190,173,.14); background: linear-gradient(145deg,rgba(14,37,32,.85),rgba(9,25,22,.72)); box-shadow: 0 12px 30px rgba(0,0,0,.09); }
+.vitastor-health-card, .vitastor-stat-card { min-height: 105px; padding: 17px; border-radius: 12px; }
+.vitastor-card-label, .vitastor-stat-card div > span { display: block; color: #78938d; font-size: .67rem; font-weight: 650; }
+.vitastor-health-card strong { display: block; margin: 10px 0 7px; font: 750 1.12rem/1 var(--font-mono); }.vitastor-health-card small, .vitastor-stat-card small { color: #628078; font-size: .63rem; }
+.health-healthy, .is-up { color: #58dfbd !important; }.health-warning { color: #f4c66f !important; }.health-critical, .is-down { color: #f98e8e !important; }
+.vitastor-stat-card { display: flex; align-items: center; gap: 12px; }.vitastor-card-icon { width: 31px; height: 31px; display: grid; place-items: center; flex: none; border-radius: 9px; background: rgba(55,218,183,.1); color: #56d9bd; font: 750 .73rem/1 var(--font-mono); }.vitastor-stat-card strong { display: block; margin: 5px 0 4px; font-size: .92rem; }
+.vitastor-dashboard-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.vitastor-monitor-card { min-width: 0; padding: 19px; border-radius: 13px; }.vitastor-monitor-card > header { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 18px; }.vitastor-monitor-card h2 { margin: 4px 0 0; font-size: .98rem; }.vitastor-card-kicker { color: #4fcfb3; font: 700 .57rem/1 var(--font-mono); letter-spacing: .12em; }.vitastor-inline-status { color: #78938d; font: 650 .67rem/1 var(--font-mono); }
+.vitastor-capacity-bar { height: 13px; overflow: hidden; border-radius: 8px; background: rgba(2,10,8,.65); }.vitastor-capacity-bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#26b99a,#67e2c6); transition: width .25s ease; }
+.vitastor-capacity-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 19px; }.vitastor-capacity-legend span { display: grid; grid-template-columns: 8px auto; gap: 4px 7px; color: #78938d; font-size: .66rem; }.vitastor-capacity-legend i { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: #35c6a7; }.vitastor-capacity-legend i.is-free { background: #305e55; }.vitastor-capacity-legend i.is-down { background: #ee7c7c; }.vitastor-capacity-legend strong { grid-column: 2; color: #d7ebe6; font: 650 .78rem/1 var(--font-mono); }
+.vitastor-state-list { display: grid; gap: 8px; }.vitastor-state-row { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,.12); color: #9bb5ae; font: .7rem/1 var(--font-mono); }.vitastor-state-row i { width: 7px; height: 7px; border-radius: 50%; }.vitastor-state-row i.is-healthy { background: #4ed8b8; }.vitastor-state-row i.is-warning { background: #f4bd57; }.vitastor-state-row i.is-critical { background: #f47777; }.vitastor-muted { color: #66827b; font-size: .75rem; }
+.vitastor-live-dot { color: #51dab9; font: 750 .58rem/1 var(--font-mono); letter-spacing: .09em; }.vitastor-live-dot::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(55,218,183,.1); }
+.vitastor-io-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 9px; }.vitastor-io-grid div { padding: 10px; border-radius: 8px; background: rgba(0,0,0,.13); }.vitastor-io-grid span { display: block; color: #6e8c84; font-size: .62rem; }.vitastor-io-grid strong { display: block; margin-top: 5px; font: 700 .93rem/1 var(--font-mono); }.vitastor-recovery-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 9px 10px; border-top: 1px solid rgba(108,190,173,.1); color: #78938d; font-size: .67rem; }.vitastor-recovery-row strong { color: #b8d7cf; font-family: var(--font-mono); }
+.vitastor-history-card { margin-top: 14px; }.vitastor-history-card canvas { display: block; width: 100%; height: 220px; margin-top: 12px; }.vitastor-history-card .vitastor-muted { text-align: center; }
+.vitastor-object-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }.vitastor-object-grid div { padding: 12px 9px; border-radius: 8px; background: rgba(0,0,0,.13); }.vitastor-object-grid span { display: block; color: #708d86; font-size: .6rem; text-transform: uppercase; }.vitastor-object-grid strong { display: block; margin-top: 7px; font: 700 .76rem/1 var(--font-mono); }.vitastor-object-grid .is-degraded strong, .vitastor-object-grid .is-incomplete strong { color: #f98e8e; }.vitastor-object-grid .is-misplaced strong { color: #f4c66f; }.vitastor-flags { margin-top: 12px; }.vitastor-flags span { display: block; padding: 8px 10px; border-radius: 7px; color: #5ccfb7; background: rgba(55,218,183,.06); font-size: .66rem; }.vitastor-flags .is-warning { color: #f4c66f; background: rgba(244,183,79,.07); }
+.vitastor-detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin-top: 14px; }.vitastor-images-card { margin-top: 14px; }.vitastor-table-wrap { margin: 0 -19px -19px; overflow-x: auto; }.vitastor-table-wrap table { width: 100%; min-width: 630px; background: transparent; }.vitastor-table-wrap th { background: rgba(0,0,0,.13); color: #66857d; border-color: rgba(108,190,173,.1); font-size: .61rem; }.vitastor-table-wrap td { color: #93aaa4; border-color: rgba(108,190,173,.08); font-size: .69rem; }.vitastor-table-wrap tbody tr:hover td { background: rgba(55,218,183,.035); }.vitastor-mono { color: #c7e0da !important; font-family: var(--font-mono); }.vitastor-node { color: #64d6bd !important; font-weight: 700; }.vitastor-table-empty { padding: 28px !important; color: #66827b !important; text-align: center; }
+.vitastor-app > .vitastor-workspace > .chat-panel { top: 68px; height: calc(100vh - 68px); flex: 0 0 var(--chat-panel-width); background: #091815; border-left-color: rgba(108,190,173,.15); }
+.vitastor-cluster-dialog { width: min(700px,calc(100% - 24px)); padding: 0; border: 1px solid rgba(108,190,173,.25); border-radius: 15px; background: #0b1c19; color: #dceeea; box-shadow: 0 35px 90px rgba(0,0,0,.55); }.vitastor-cluster-dialog::backdrop { background: rgba(1,8,7,.72); backdrop-filter: blur(4px); }.vitastor-cluster-form { padding: 22px; }.vitastor-cluster-form > header { display: flex; justify-content: space-between; gap: 20px; }.vitastor-cluster-form h2 { margin: 3px 0 7px; }.vitastor-cluster-form header p { margin: 0; color: #78938d; font-size: .75rem; }.vitastor-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 13px; margin: 22px 0; }.vitastor-form-grid label { display: grid; gap: 6px; color: #89a49d; font-size: .68rem; }.vitastor-form-grid input, .vitastor-form-grid select { width: 100%; height: 38px; border: 1px solid rgba(108,190,173,.18); border-radius: 8px; background: #07120f; color: #e1f0ec; padding: 0 10px; }.vitastor-cluster-form footer { display: flex; justify-content: flex-end; gap: 8px; }
+.vitastor-diagnosis-card { margin-top: 14px; }.vitastor-diagnosis-card h3 { margin: 18px 0 7px; color: #a9c8c0; font-size: .78rem; }.vitastor-diagnosis-card p, .vitastor-diagnosis-card li { color: #91aaa4; font-size: .74rem; line-height: 1.6; }.vitastor-diagnosis-card ol { margin: 0; padding-left: 19px; }.vitastor-diagnosis-card pre { max-height: 220px; padding: 13px; overflow: auto; border: 1px solid rgba(108,190,173,.12); border-radius: 8px; background: rgba(0,0,0,.2); color: #8fe5d2; white-space: pre-wrap; }
+@media (max-width: 1250px) { .vitastor-health-strip { grid-template-columns: repeat(3,1fr); }.vitastor-detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 920px) { .vitastor-dashboard-grid { grid-template-columns: 1fr; }.vitastor-health-strip { grid-template-columns: repeat(2,1fr); }.vitastor-metrics-strip { grid-template-columns: repeat(2,1fr); }.vitastor-log-filters { grid-template-columns: repeat(2,minmax(0,1fr)); }.vitastor-app > .vitastor-workspace > .chat-panel { position: fixed; z-index: 60; right: 0; bottom: 0; top: auto; height: min(72vh,620px); } }
+@media (max-width: 680px) { .vitastor-topbar { gap: 10px; }.vitastor-nav { overflow-x: auto; }.vitastor-dashboard { padding: 20px 12px 36px; }.vitastor-dashboard-head { align-items: flex-start; flex-direction: column; }.vitastor-dashboard-actions { width: 100%; flex-wrap: wrap; }.vitastor-cluster-picker { flex: 1; }.vitastor-cluster-picker select { width: 100%; }.vitastor-health-strip,.vitastor-metrics-strip,.vitastor-log-filters { grid-template-columns: 1fr; }.vitastor-log-search { align-items: stretch; flex-direction: column; }.vitastor-log-search > input { min-width: 0; }.vitastor-operational-strip { flex-direction: column; gap: 7px; }.vitastor-object-grid { grid-template-columns: repeat(2,1fr); }.vitastor-form-grid { grid-template-columns: 1fr; } }

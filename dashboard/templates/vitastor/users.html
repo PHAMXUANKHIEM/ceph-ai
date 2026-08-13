@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Users — Vitastor</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body class="vitastor-app">
+  <header class="vitastor-topbar">
+    <a href="/vitastor" class="vitastor-brand"><span class="vitastor-brand-mark">V</span><span>Vitastor <small>CONTROL PLANE</small></span></a>
+    <nav class="vitastor-nav"><a href="/vitastor">Overview</a><a href="/vitastor/deploy-cluster">Deploy</a><a href="/vitastor/upgrade">Upgrade</a><a href="/vitastor/backup">Backup</a><a href="/vitastor/delete-cluster">Delete</a><a href="/vitastor/settings">Settings</a><a href="/vitastor/users" class="active">Users</a></nav>
+    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Đăng xuất</button></form>
+  </header>
+  <main class="vitastor-shell vitastor-users-shell">
+    <div class="vitastor-section-heading">
+      <span class="product-suite-label">ACCESS CONTROL</span>
+      <h1>Users</h1>
+      <p>Tài khoản trong danh sách này chỉ có quyền đăng nhập Vitastor, hoàn toàn không cấp quyền vào Ceph.</p>
+    </div>
+    <section class="vitastor-panel">
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      {% if success %}<p class="success">{{ success }}</p>{% endif %}
+      <div class="table-wrap">
+        <table class="vitastor-users-table">
+          <thead><tr><th>Username</th><th>Vai trò</th><th>Trạng thái</th><th>Người tạo</th><th>Ngày tạo</th><th></th></tr></thead>
+          <tbody>
+          {% for u in users %}
+            <tr>
+              <td><strong>{{ u.username }}</strong></td>
+              <td><span class="role-badge">{{ "Admin" if u.is_admin else "User" }}</span></td>
+              <td><span class="status-pill {{ 'status-ok' if u.is_active else 'status-failed' }}">{{ "Hoạt động" if u.is_active else "Đã khóa" }}</span></td>
+              <td>{{ u.created_by }}</td><td>{{ u.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+              <td>
+                <form method="post" action="/vitastor/users/{{ u.id }}/toggle-active" class="inline-form">
+                  <button class="btn btn-sm {{ 'btn-danger' if u.is_active else '' }}" {% if u.username == user %}disabled{% endif %}>{{ "Vô hiệu hoá" if u.is_active else "Kích hoạt" }}</button>
+                </form>
+                <form method="post" action="/vitastor/users/{{ u.id }}/delete" class="inline-form" onsubmit="return confirm('Xoá vĩnh viễn Vitastor user {{ u.username }}?');">
+                  <button class="btn btn-sm btn-danger" {% if u.username == user %}disabled{% endif %}>Xoá</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}<tr><td colspan="6" class="empty-state">Chưa có Vitastor user nào.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="vitastor-panel vitastor-create-user">
+      <div><span class="product-suite-label">NEW ACCOUNT</span><h2>Tạo Vitastor user</h2><p>Thông tin đăng nhập được lưu trong bảng tài khoản riêng của Vitastor.</p></div>
+      <form class="login-box" method="post" action="/vitastor/users/create">
+        <label>Username<input name="new_username" required autocomplete="off" placeholder="vd: vitastor-operator"></label>
+        <label>Mật khẩu<input type="password" name="new_password" required autocomplete="new-password"></label>
+        <label>Nhập lại mật khẩu<input type="password" name="new_password_confirm" required autocomplete="new-password"></label>
+        <label class="checkbox-label"><input type="checkbox" name="new_is_admin"> Vitastor Admin</label>
+        <button class="btn btn-primary">Tạo user</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

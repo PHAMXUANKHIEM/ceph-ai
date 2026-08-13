@@ -23,6 +23,7 @@ from watcher import (
     publisher,
     trash_capacity_monitor,
     volume_monitor,
+    vitastor_monitor,
 )
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
 from watcher.ceph_client import CephQueryError, query_cluster_health, query_cluster_health_with
@@ -781,6 +782,14 @@ def run_all_clusters() -> None:
         default_cluster_id = get_default_cluster_id(session)
         observed_clusters = [c for c in list_active_clusters(session) if not c.is_default]
         session.expunge_all()
+
+    vitastor_thread = threading.Thread(
+        target=vitastor_monitor.run_all_clusters_loop,
+        name="watcher-vitastor",
+        daemon=True,
+    )
+    vitastor_thread.start()
+    logger.info("run_all_clusters: started dynamic Vitastor monitoring loop")
 
     for cluster in observed_clusters:
         thread = threading.Thread(

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Clusters — Vitastor</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head>
+<body class="vitastor-app">
+  <header class="vitastor-topbar">
+    <a href="/vitastor" class="vitastor-brand"><span class="vitastor-brand-mark">V</span><span>Vitastor <small>CONTROL PLANE</small></span></a>
+    <nav class="vitastor-nav"><a href="/vitastor">Overview</a><a href="/vitastor/clusters" class="active">Clusters</a><a href="/vitastor/deploy-cluster">Deploy</a><a href="/vitastor/upgrade">Upgrade</a><a href="/vitastor/backup">Backup</a><a href="/vitastor/delete-cluster">Delete</a><a href="/vitastor/settings">AI Settings</a><a href="/vitastor/users">Users</a></nav>
+    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Đăng xuất</button></form>
+  </header>
+  <main class="vitastor-shell vitastor-users-shell">
+    <div class="vitastor-section-heading"><span class="product-suite-label">CLUSTER CONNECTIONS</span><h1>Vitastor Clusters</h1><p>Kết nối qua management host có <code>vitastor-cli</code>, không sử dụng MON, thông tin đăng nhập hay dữ liệu cụm Ceph; SSH của Vitastor được lưu riêng.</p></div>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}{% if success %}<p class="success">{{ success }}</p>{% endif %}
+    <section class="vitastor-panel">
+      <div class="table-wrap"><table><thead><tr><th>Tên cụm</th><th>Management host</th><th>Etcd</th><th>Prefix</th><th>Mode</th><th>Trạng thái</th><th>Kiểm tra gần nhất</th><th></th></tr></thead>
+      <tbody>{% for c in clusters %}<tr>
+        <td><strong>{{ c.name }}</strong></td><td><code>{{ c.management_host }}</code></td><td><code>{{ c.etcd_address or c.config_path }}</code></td><td><code>{{ c.etcd_prefix }}</code></td><td>{{ c.exec_mode }}</td>
+        <td><span class="status-pill {{ 'status-ok' if c.is_active else 'status-failed' }}">{{ 'Hoạt động' if c.is_active else 'Đã tắt' }}</span></td><td>{{ c.last_checked_at.strftime('%Y-%m-%d %H:%M') if c.last_checked_at else '—' }}</td>
+        <td><form method="post" action="/vitastor/clusters/{{ c.id }}/check" class="inline-form"><button class="btn btn-sm">Kiểm tra</button></form><form method="post" action="/vitastor/clusters/{{ c.id }}/toggle-active" class="inline-form"><button class="btn btn-sm">{{ 'Vô hiệu hoá' if c.is_active else 'Kích hoạt' }}</button></form><form method="post" action="/vitastor/clusters/{{ c.id }}/delete" class="inline-form" onsubmit="return confirm('Xoá kết nối cụm {{ c.name }}?');"><button class="btn btn-sm btn-danger">Xoá</button></form></td>
+      </tr>{% else %}<tr><td colspan="8" class="empty-state">Chưa kết nối cụm Vitastor nào.</td></tr>{% endfor %}</tbody></table></div>
+    </section>
+    <section class="vitastor-panel vitastor-create-user">
+      <div><span class="product-suite-label">NEW CONNECTION</span><h2>Kết nối cụm Vitastor</h2><p>Hệ thống chạy <code>vitastor-cli --json status</code> để xác thực kết nối trước khi lưu.</p></div>
+      <form class="login-box" method="post" action="/vitastor/clusters/create">
+        <label>Tên cụm<input name="name" required value="{{ form_values.name or '' }}" placeholder="vd: vitastor-lab"></label>
+        <label>Management host<input name="management_host" required value="{{ form_values.management_host or '' }}" placeholder="10.20.1.20"></label>
+        <label>Etcd address<input name="etcd_address" value="{{ form_values.etcd_address or '' }}" placeholder="10.20.1.10:2379/v3,10.20.1.11:2379/v3"></label>
+        <label>Etcd prefix<input name="etcd_prefix" value="{{ form_values.etcd_prefix or '/vitastor' }}"></label>
+        <label>Config path (thay cho Etcd address)<input name="config_path" value="{{ form_values.config_path or '' }}" placeholder="/etc/vitastor/vitastor.conf"></label>
+        <label>Kiểu chạy<select name="exec_mode">{% for mode in exec_modes %}<option value="{{ mode }}" {{ 'selected' if form_values.exec_mode == mode else '' }}>{{ mode }}</option>{% endfor %}</select></label>
+        <label>Container name (Docker/Podman)<input name="container_name" value="{{ form_values.container_name or '' }}"></label>
+        <label>SSH user<input name="ssh_user" required value="{{ form_values.ssh_user or '' }}" placeholder="root"></label>
+        <label>SSH key path<input name="ssh_key_path" required value="{{ form_values.ssh_key_path or '' }}" placeholder="/root/.ssh/vitastor_aiops"></label>
+        <button class="btn btn-primary">Kiểm tra kết nối &amp; Thêm cụm</button>
+      </form>
+    </section>
+  </main>
+</body></html>

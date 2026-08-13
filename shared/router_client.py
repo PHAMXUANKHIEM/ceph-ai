@@ -39,7 +39,12 @@ def build_router_client(api_key: str, base_url: str) -> AsyncOpenAI:
     is no direct-to-vendor fallback path in this codebase, by policy.
     """
     _require_config(api_key, base_url)
-    return AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/") + "/v1")
+    normalized_url = base_url.rstrip("/")
+    # Public provider presets already include /v1, while self-hosted
+    # 9router addresses usually do not. Accept both operator-facing forms.
+    if not normalized_url.endswith("/v1"):
+        normalized_url += "/v1"
+    return AsyncOpenAI(api_key=api_key, base_url=normalized_url)
 
 
 async def list_router_models(api_key: str, base_url: str) -> list[str]:

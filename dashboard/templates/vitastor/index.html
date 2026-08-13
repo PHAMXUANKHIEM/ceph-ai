@@ -3,25 +3,103 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Vitastor Control Plane</title>
+  <title>Vitastor Dashboard</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body class="vitastor-app">
   <header class="vitastor-topbar">
     <a href="/vitastor" class="vitastor-brand"><span class="vitastor-brand-mark">V</span><span>Vitastor <small>CONTROL PLANE</small></span></a>
+    <nav class="vitastor-nav"><a href="/vitastor" class="active">Dashboard</a><a href="/vitastor/logs">Logs</a>{% if is_admin %}<a href="/vitastor/deploy-cluster">Deploy</a><a href="/vitastor/upgrade">Upgrade</a><a href="/vitastor/backup">Backup</a><a href="/vitastor/delete-cluster">Delete</a><a href="/vitastor/settings">Settings</a><a href="/vitastor/users">Users</a>{% endif %}</nav>
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Đăng xuất</button></form>
   </header>
-  <main class="vitastor-shell">
-    <section class="vitastor-hero">
-      <span class="product-suite-label">INDEPENDENT STORAGE WORKSPACE</span>
-      <h1>Vitastor Management</h1>
-      <p>Không gian Vitastor đã được khởi tạo độc lập. Các module cluster, OSD, pool, volume và cảnh báo sẽ được xây mới trong namespace này.</p>
-    </section>
-    <section class="vitastor-empty-grid">
-      <article><span>01</span><strong>Clusters</strong><p>Chưa cấu hình cụm Vitastor.</p></article>
-      <article><span>02</span><strong>Block Storage</strong><p>Volume Vitastor sẽ xuất hiện tại đây.</p></article>
-      <article><span>03</span><strong>Operations</strong><p>Giám sát và workflow riêng, không phụ thuộc Ceph.</p></article>
-    </section>
-  </main>
+
+  <div class="vitastor-workspace">
+    <main class="vitastor-dashboard" id="vitastor-dashboard">
+      <header class="vitastor-dashboard-head">
+        <div><span class="product-suite-label">LIVE CLUSTER TELEMETRY</span><h1>Storage overview</h1><p>Etcd, monitor, OSD, pool, placement group và I/O trong một màn hình.</p></div>
+        <div class="vitastor-dashboard-actions">
+          {% if clusters %}<label class="vitastor-cluster-picker"><span>Cluster</span><select id="vitastor-cluster-select">{% for cluster in clusters %}<option value="{{ cluster.id }}">{{ cluster.name }}</option>{% endfor %}</select></label>{% endif %}
+          <button type="button" class="btn btn-ghost btn-sm" id="vitastor-refresh">↻ Làm mới</button>
+          {% if is_admin %}<button type="button" class="btn btn-primary btn-sm" id="vitastor-add-cluster">+ Kết nối cụm</button>{% endif %}
+        </div>
+      </header>
+
+      <div class="vitastor-live-notice" id="vitastor-live-notice" hidden></div>
+
+      {% if not clusters %}
+      <section class="vitastor-onboarding" id="vitastor-onboarding">
+        <span class="vitastor-onboarding-icon">◇</span><h2>Chưa kết nối cụm Vitastor</h2>
+        <p>Thêm management host có <code>vitastor-cli</code> để bắt đầu giám sát. Dashboard chỉ chạy các lệnh đọc.</p>
+        {% if is_admin %}<button type="button" class="btn btn-primary" data-open-vitastor-cluster>Thiết lập kết nối</button>{% endif %}
+      </section>
+      {% endif %}
+
+      <div id="vitastor-monitor" {% if not clusters %}hidden{% endif %}>
+        <section class="vitastor-health-strip vitastor-ceph-parity-grid">
+          <article class="vitastor-health-card"><span class="vitastor-card-label">Vitastor Health</span><strong id="vita-health">Đang tải…</strong><small id="vita-checked-at">Chưa có dữ liệu</small></article>
+          <article class="vitastor-stat-card"><span class="vitastor-card-icon">O</span><div><span>OSDs</span><strong id="vita-osd">—</strong><small id="vita-osd-note">Up</small></div></article>
+          <article class="vitastor-stat-card"><span class="vitastor-card-icon">M</span><div><span>MONs</span><strong id="vita-mon">—</strong><small id="vita-mon-master">Quorum</small></div></article>
+          <article class="vitastor-stat-card"><span class="vitastor-card-icon">S</span><div><span>Servers</span><strong id="vita-servers">—</strong><small>Online</small></div></article>
+          <article class="vitastor-stat-card"><span class="vitastor-card-icon">U</span><div><span>Utilization</span><strong id="vita-utilization">—</strong><small id="vita-utilization-note">— in — pools</small></div></article>
+        </section>
+
+        <section class="vitastor-metrics-strip">
+          <article class="vitastor-monitor-card vitastor-parity-metric"><span>Latency</span><strong id="vita-latency">—</strong><small>OSD average</small></article>
+          <article class="vitastor-monitor-card vitastor-parity-metric"><span>Bandwidth</span><strong id="vita-bandwidth">—</strong><small>Read + write</small></article>
+          <article class="vitastor-monitor-card vitastor-parity-metric"><span>IOPS</span><strong id="vita-iops">—</strong><small>Read + write ops/s</small></article>
+          <article class="vitastor-monitor-card vitastor-parity-metric is-pg"><span>Placement Groups</span><strong id="vita-placement-state">—</strong><small id="vita-pg-summary">Cluster PG state</small></article>
+        </section>
+
+        <section class="vitastor-operational-strip"><span>Etcd <strong id="vita-etcd">—</strong> <small id="vita-etcd-db">Database —</small></span><span>Etcd latency <strong id="vita-etcd-latency">—</strong> <small id="vita-etcd-quorum">Quorum —</small></span><span>Pools <strong id="vita-pools">—</strong> <small id="vita-pool-note">Active</small></span></section>
+
+        <section class="vitastor-dashboard-grid">
+          <article class="vitastor-monitor-card vitastor-capacity-card">
+            <header><div><span class="vitastor-card-kicker">RAW STORAGE</span><h2>Capacity</h2></div><strong id="vita-capacity-percent">—</strong></header>
+            <div class="vitastor-capacity-bar"><i id="vita-capacity-fill"></i></div>
+            <div class="vitastor-capacity-legend"><span><i class="is-used"></i>Used <strong id="vita-used">—</strong></span><span><i class="is-free"></i>Free <strong id="vita-free">—</strong></span><span><i class="is-down"></i>Down <strong id="vita-down">—</strong></span></div>
+          </article>
+
+          <article class="vitastor-monitor-card">
+            <header><div><span class="vitastor-card-kicker">PLACEMENT GROUPS</span><h2>PG state distribution</h2></div><span class="vitastor-inline-status" id="vita-pg-total">— PG</span></header>
+            <div class="vitastor-state-list" id="vita-pg-states"><p class="vitastor-muted">Đang tải…</p></div>
+          </article>
+
+          <article class="vitastor-monitor-card vitastor-io-card">
+            <header><div><span class="vitastor-card-kicker">CLIENT TRAFFIC</span><h2>Live I/O</h2></div><span class="vitastor-live-dot">LIVE</span></header>
+            <div class="vitastor-io-grid"><div><span>Read IOPS</span><strong id="vita-read-iops">—</strong></div><div><span>Write IOPS</span><strong id="vita-write-iops">—</strong></div><div><span>Read bandwidth</span><strong id="vita-read-bw">—</strong></div><div><span>Write bandwidth</span><strong id="vita-write-bw">—</strong></div></div>
+            <div class="vitastor-recovery-row"><span>Recovery / rebalance</span><strong id="vita-recovery">—</strong></div>
+          </article>
+
+          <article class="vitastor-monitor-card">
+            <header><div><span class="vitastor-card-kicker">DATA INTEGRITY</span><h2>Object health</h2></div></header>
+            <div class="vitastor-object-grid" id="vita-object-health"></div>
+            <div class="vitastor-flags" id="vita-flags"></div>
+          </article>
+        </section>
+
+        <section class="vitastor-detail-grid">
+          <article class="vitastor-monitor-card"><header><div><span class="vitastor-card-kicker">TOPOLOGY</span><h2>OSD inventory</h2></div><span id="vita-osd-count" class="vitastor-inline-status">0 items</span></header><div class="vitastor-table-wrap"><table><thead><tr><th>OSD / node</th><th>Parent</th><th>State</th><th>Capacity</th><th>Used</th><th>Read / Write IOPS</th><th>Bandwidth</th><th>Latency</th></tr></thead><tbody id="vita-osd-table"></tbody></table></div></article>
+          <article class="vitastor-monitor-card"><header><div><span class="vitastor-card-kicker">POOLS</span><h2>Pool health & capacity</h2></div><span id="vita-pool-count" class="vitastor-inline-status">0 items</span></header><div class="vitastor-table-wrap"><table><thead><tr><th>Pool</th><th>Scheme</th><th>PG</th><th>Status</th><th>Used / Total</th><th>Efficiency</th></tr></thead><tbody id="vita-pool-table"></tbody></table></div></article>
+        </section>
+
+        <section class="vitastor-monitor-card vitastor-diagnosis-card"><header><div><span class="vitastor-card-kicker">AI INCIDENT ANALYSIS</span><h2>Chẩn đoán Vitastor</h2></div><button type="button" class="btn btn-primary btn-sm" id="vita-diagnose">Phân tích bằng AI</button></header><p class="vitastor-muted">AI thu thập telemetry read-only của cluster đang chọn. Command trong kết quả chỉ là preview và không được tự động thực thi.</p><div id="vita-diagnosis-empty" class="vitastor-table-empty">Chưa có lần chẩn đoán nào.</div><div id="vita-diagnosis-result" hidden><div class="vitastor-object-grid"><div><span>Health</span><strong id="vita-diagnosis-health">—</strong></div><div><span>Confidence</span><strong id="vita-diagnosis-confidence">—</strong></div><div><span>Status</span><strong id="vita-diagnosis-status">—</strong></div><div><span>Thời điểm</span><strong id="vita-diagnosis-time">—</strong></div></div><h3>Nguyên nhân có khả năng nhất</h3><p id="vita-diagnosis-cause"></p><h3>Ảnh hưởng</h3><p id="vita-diagnosis-impact"></p><div class="vitastor-detail-grid"><div><h3>Bằng chứng</h3><ol id="vita-diagnosis-evidence"></ol></div><div><h3>Khuyến nghị theo thứ tự</h3><ol id="vita-diagnosis-steps"></ol></div></div><h3>Command preview — chưa thực thi</h3><pre id="vita-diagnosis-commands"></pre><div class="vitastor-flags" id="vita-diagnosis-safety"></div></div></section>
+
+        <section class="vitastor-monitor-card vitastor-history-card"><header><div><span class="vitastor-card-kicker">TIME SERIES</span><h2>Performance history</h2></div><label class="vitastor-cluster-picker"><span>Metric</span><select id="vita-history-metric"><option value="iops">IOPS</option><option value="bandwidth">Bandwidth</option><option value="latency">Latency</option><option value="capacity">Capacity</option><option value="recovery">Recovery</option></select></label></header><canvas id="vita-history-chart" height="220"></canvas><p class="vitastor-muted" id="vita-history-empty">Chưa có dữ liệu lịch sử. Watcher sẽ ghi một mẫu mỗi chu kỳ.</p></section>
+
+        <section class="vitastor-monitor-card vitastor-images-card"><header><div><span class="vitastor-card-kicker">BLOCK STORAGE</span><h2>Images / volumes</h2></div><span id="vita-image-count" class="vitastor-inline-status">0 images</span></header><div class="vitastor-table-wrap"><table><thead><tr><th>Name</th><th>Pool</th><th>Provisioned</th><th>Allocated</th><th>Mode</th><th>Read IOPS</th><th>Write IOPS</th><th>Latency</th></tr></thead><tbody id="vita-image-table"></tbody></table></div></section>
+        <section class="vitastor-monitor-card vitastor-images-card"><header><div><span class="vitastor-card-kicker">HARDWARE</span><h2>OSD node &amp; device health</h2></div><span id="vita-hardware-count" class="vitastor-inline-status">0 nodes</span></header><div class="vitastor-table-wrap"><table><thead><tr><th>Host / device</th><th>OSD process</th><th>CPU</th><th>RAM</th><th>Temperature</th><th>Wear</th><th>Media errors</th><th>SMART</th></tr></thead><tbody id="vita-hardware-table"></tbody></table></div></section>
+        <section class="vitastor-monitor-card vitastor-images-card"><header><div><span class="vitastor-card-kicker">NETWORK</span><h2>OSD &amp; client network paths</h2></div><span id="vita-network-count" class="vitastor-inline-status">0 paths</span></header><div class="vitastor-table-wrap"><table><thead><tr><th>Source</th><th>Target</th><th>Reachable</th><th>RTT</th><th>Jumbo 9000</th><th>NIC</th><th>Link speed</th><th>Drops / errors</th></tr></thead><tbody id="vita-network-table"></tbody></table></div></section>
+      </div>
+    </main>
+
+    <aside class="chat-panel" id="chat-panel" data-api-prefix="/vitastor/api/chat" data-settings-url="/vitastor/settings" data-product-name="Vitastor">
+      <header class="chat-panel-header"><div class="chat-panel-title"><span class="chat-panel-icon">V</span><span>Chat với <span id="chat-panel-ai-name">AI</span></span></div><div class="chat-panel-controls"><button type="button" class="chat-panel-btn" id="chat-panel-history" title="Lịch sử">◷</button><button type="button" class="chat-panel-btn" id="chat-panel-settings" title="Cấu hình AI">⚙</button><button type="button" class="chat-panel-btn" id="chat-panel-new-session" title="Đoạn chat mới">+</button><button type="button" class="chat-panel-btn" id="chat-panel-minimize">−</button><button type="button" class="chat-panel-btn" id="chat-panel-close">×</button></div></header>
+      <div class="chat-panel-body" id="chat-panel-body"><div class="chat-history-list-view" id="chat-history-list-view" hidden><div class="chat-view-header"><span class="chat-view-icon">↶</span><div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3></div></div><div class="chat-history-list" id="chat-history-list"></div></div><div class="chat-settings-view" id="chat-settings-view" hidden><form class="chat-settings-form" id="chat-settings-form"><div class="chat-view-header"><span class="chat-view-icon">AI</span><div><span class="chat-view-eyebrow">Chat / Cài đặt</span><h3>Cấu hình AI</h3></div></div><div class="chat-settings-card"><label for="chat-ai-name"><span>Tên hiển thị của AI</span><small>Tối đa 64 ký tự</small></label><input id="chat-ai-name" name="ai_name" maxlength="64" required><div class="chat-persona-note"><span>V</span><p class="chat-settings-hint">Trợ lý chuyên biệt cho không gian Vitastor.</p></div></div><div class="chat-settings-actions"><button class="btn btn-sm">Lưu thay đổi</button></div><p class="chat-settings-success" id="chat-settings-success" hidden></p></form></div><div class="chat-messages" id="chat-messages"><div class="chat-empty-state" id="chat-empty-state"><span class="chat-empty-icon">V</span><p class="chat-empty-text">Hỏi tôi về Vitastor</p><p class="chat-empty-subtext">Cấu hình, vận hành và xử lý sự cố.</p></div></div><p class="chat-error" id="chat-error" hidden></p><form class="chat-input-bar" id="chat-form"><textarea id="chat-input" class="chat-textarea" rows="1" placeholder="Nhập câu hỏi về Vitastor..." required></textarea><button type="submit" class="chat-send-btn" id="chat-send-btn" disabled aria-label="Gửi">➤</button></form></div>
+    </aside>
+  </div>
+
+  {% if is_admin %}<dialog class="vitastor-cluster-dialog" id="vitastor-cluster-dialog"><form id="vitastor-cluster-form" class="vitastor-cluster-form"><header><div><span class="product-suite-label">READ-ONLY CONNECTION</span><h2>Kết nối cụm Vitastor</h2><p>Dashboard xác minh SSH và <code>vitastor-cli status</code> trước khi lưu.</p></div><button type="button" class="chat-panel-btn" data-close-vitastor-cluster>×</button></header><div class="vitastor-form-grid"><label>Tên cụm<input name="name" required placeholder="Production Vitastor"></label><label>Management host<input name="management_host" required placeholder="10.0.0.10"></label><label>SSH user<input name="ssh_user" required value="root"></label><label>SSH private key path<input name="ssh_key_path" required placeholder="/root/.ssh/id_ed25519"></label><label>Etcd address<input name="etcd_address" placeholder="http://10.0.0.10:2379"></label><label>Etcd prefix<input name="etcd_prefix" value="/vitastor"></label><label>Config path<input name="config_path" placeholder="/etc/vitastor/vitastor.conf"></label><label>Execution mode<select name="exec_mode" id="vitastor-exec-mode"><option value="none">Native</option><option value="docker">Docker</option><option value="podman">Podman</option></select></label><label id="vitastor-container-field" hidden>Container name<input name="container_name"></label></div><p class="error" id="vitastor-cluster-error" hidden></p><footer><button type="button" class="btn btn-ghost" data-close-vitastor-cluster>Huỷ</button><button type="submit" class="btn btn-primary">Xác minh &amp; kết nối</button></footer></form></dialog>{% endif %}
+  <script src="/static/vitastor_dashboard.js?v={{ static_version }}"></script>
+  <script src="/static/chat_widget.js?v={{ static_version }}"></script>
 </body>
 </html>

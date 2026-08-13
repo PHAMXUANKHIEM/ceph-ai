@@ -176,6 +176,16 @@ class Settings(BaseSettings):
     # unreachable" without treating a blank api_key as the only signal.
     router_enabled: bool = False
 
+    # Vitastor is a separate product workspace, so its chat connection must
+    # not silently inherit or overwrite the Ceph AI provider configuration.
+    vitastor_router_provider: str = "9router"
+    vitastor_router_api_key: str = ""
+    vitastor_router_base_url: str = ""
+    vitastor_router_model: str = ""
+    vitastor_router_enabled: bool = False
+    vitastor_codex_chat_enabled: bool = False
+    vitastor_claude_chat_enabled: bool = False
+
     # Optional ChatGPT subscription-backed Codex connection used by the
     # dashboard chat only.  Credentials are owned/refreshed by Codex CLI in
     # codex_home; ceph-ai never copies OAuth tokens into .env or the DB.
@@ -303,6 +313,30 @@ class Settings(BaseSettings):
     # scan intervals above, this is a cheap DB query, not a real SSH round
     # trip, so there's no reason to space it out).
     telegram_approval_scan_interval_seconds: int = 10
+    # Independent read-only Vitastor health poll used for Telegram alerts.
+    vitastor_poll_interval_seconds: int = 60
+    vitastor_metric_retention_days: int = 30
+    vitastor_capacity_warning_percent: float = 85.0
+    vitastor_capacity_critical_percent: float = 90.0
+    vitastor_anomaly_min_samples: int = 20
+    vitastor_anomaly_history_samples: int = 500
+    vitastor_anomaly_mad_multiplier: float = 6.0
+    vitastor_anomaly_relative_multiplier: float = 2.5
+    vitastor_etcd_latency_warning_ms: float = 100.0
+    vitastor_etcd_latency_critical_ms: float = 500.0
+    vitastor_recovery_warning_mbps: float = 500.0
+    vitastor_recovery_critical_mbps: float = 1000.0
+    vitastor_slow_osd_latency_ms: float = 20.0
+    vitastor_slow_osd_median_multiplier: float = 3.0
+    vitastor_slow_osd_consecutive_scans: int = 3
+    vitastor_disk_temperature_warning_c: float = 65.0
+    vitastor_disk_temperature_critical_c: float = 75.0
+    vitastor_disk_wear_warning_percent: float = 80.0
+    vitastor_disk_wear_critical_percent: float = 95.0
+    vitastor_network_rtt_warning_ms: float = 5.0
+    vitastor_network_rtt_critical_ms: float = 20.0
+    vitastor_expect_jumbo_frames: bool = False
+    vitastor_network_max_nodes: int = 32
 
     # watcher/node_health_monitor.py's own scan cadence — same reasoning as
     # device_health_scan_interval_seconds above: collecting CPU/RAM needs a

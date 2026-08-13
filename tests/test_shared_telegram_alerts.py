@@ -145,6 +145,23 @@ def test_send_trash_capacity_alert_uses_incident_channel(monkeypatch):
 # --- send_node_alert ---------------------------------------------------------
 
 
+def test_send_vitastor_alert_uses_incident_channel_and_cluster_name(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message",
+        lambda token, chat_id, text: calls.append((token, chat_id, text)),
+    )
+
+    telegram_alerts.send_vitastor_alert("vita-prod", "CRITICAL", "OSD 2/3 up")
+
+    assert calls[0][0:2] == ("123:ABC", "-100999")
+    assert "Cụm: vita-prod" in calls[0][2]
+    assert "Cụm Vitastor" in calls[0][2]
+    assert "OSD 2/3 up" in calls[0][2]
+
+
 def test_send_node_alert_sends_when_configured(monkeypatch):
     _configure_node(monkeypatch)
     calls = []

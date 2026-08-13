@@ -487,6 +487,208 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class VitastorUser(Base):
+    """Login accounts owned exclusively by the Vitastor control plane.
+
+    Deliberately separate from ``users``: a Ceph account never gains
+    Vitastor access implicitly, and Vitastor lifecycle changes cannot affect
+    Ceph authentication. The root account from ``.env`` remains available
+    to bootstrap the first Vitastor admin and is not stored in either table.
+    """
+
+    __tablename__ = "vitastor_users"
+    __table_args__ = (UniqueConstraint("username", name="uq_vitastor_users_username"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(72), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorCluster(Base):
+    """Connection inventory owned exclusively by the Vitastor product."""
+
+    __tablename__ = "vitastor_clusters"
+    __table_args__ = (UniqueConstraint("name", name="uq_vitastor_clusters_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    management_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    etcd_address: Mapped[str] = mapped_column(Text, nullable=False)
+    etcd_prefix: Mapped[str] = mapped_column(String(255), nullable=False, default="/vitastor")
+    config_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ssh_user: Mapped[str] = mapped_column(String(64), nullable=False)
+    ssh_key_path: Mapped[str] = mapped_column(Text, nullable=False)
+    exec_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+    container_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_status_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorOperation(Base):
+    """Deploy/delete workflow state, isolated from Ceph Incident/Action."""
+
+    __tablename__ = "vitastor_operations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING_APPROVAL")
+    cluster_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    params_json: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_text: Mapped[str] = mapped_column(Text, nullable=False)
+    progress_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class VitastorDiagnosticRun(Base):
+    """Read-only AI diagnosis persisted independently from Ceph incidents."""
+
+    __tablename__ = "vitastor_diagnostic_runs"
+    __table_args__ = (Index("ix_vitastor_diagnostic_cluster_created", "cluster_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
+    health: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    diagnosis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class VitastorMetricSample(Base):
+    """Time-series cluster metric captured by the independent Vitastor watcher."""
+
+    __tablename__ = "vitastor_metric_samples"
+    __table_args__ = (Index("ix_vitastor_metric_cluster_time", "cluster_id", "collected_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    health: Mapped[str] = mapped_column(String(16), nullable=False)
+    osd_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    osd_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    free_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    used_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    etcd_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    etcd_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    etcd_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    etcd_quorum: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    etcd_leader_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    read_iops: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    write_iops: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    read_bps: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    write_bps: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    read_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    write_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recovery_bps: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    degraded_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorOsdMetricSample(Base):
+    """Per-OSD time-series metric; no Ceph OSD table or identity is reused."""
+
+    __tablename__ = "vitastor_osd_metric_samples"
+    __table_args__ = (Index("ix_vitastor_osd_metric_cluster_osd_time", "cluster_id", "osd_id", "collected_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    osd_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_up: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    used_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    read_iops: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    write_iops: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    read_bps: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    write_bps: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    read_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    write_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorNodeMetricSample(Base):
+    __tablename__ = "vitastor_node_metric_samples"
+    __table_args__ = (Index("ix_vitastor_node_metric_cluster_host_time", "cluster_id", "host", "collected_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    osd_processes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cpu_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    ram_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    max_temperature_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_wear_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    media_errors: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    smart_failing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorNetworkMetricSample(Base):
+    __tablename__ = "vitastor_network_metric_samples"
+    __table_args__ = (Index("ix_vitastor_network_metric_cluster_time", "cluster_id", "collected_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    target: Mapped[str] = mapped_column(String(255), nullable=False)
+    reachable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    rtt_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    jumbo_9000: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    interface_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorEntityMetricSample(Base):
+    """Generic pool/image/OSD/cluster metrics used by dynamic baselines."""
+    __tablename__ = "vitastor_entity_metric_samples"
+    __table_args__ = (Index("ix_vita_entity_metric_lookup", "cluster_id", "entity_type", "entity_name", "collected_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entity_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    metrics_json: Mapped[str] = mapped_column(Text, nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class VitastorAnomalyEvent(Base):
+    """Open/resolved anomaly lifecycle generated from robust dynamic baselines."""
+    __tablename__ = "vitastor_anomaly_events"
+    __table_args__ = (Index("ix_vita_anomaly_cluster_status", "cluster_id", "status", "detected_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entity_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="WARNING")
+    current_value: Mapped[float] = mapped_column(Float, nullable=False)
+    baseline_value: Mapped[float] = mapped_column(Float, nullable=False)
+    deviation_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class ChatPreference(Base):
     """Per-login chat persona, including the `.env` root admin which has
     no User row. The username is deliberately not a foreign key for that

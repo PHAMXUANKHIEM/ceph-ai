@@ -132,6 +132,23 @@ def send_incident_alert(
     )
 
 
+def send_vitastor_alert(cluster_name: str, health: str, detail: str) -> None:
+    """Send a Vitastor health transition through the cluster-alert channel."""
+    prefix = {
+        "CRITICAL": "🔴 CRITICAL",
+        "WARNING": "🟡 WARNING",
+        "UNREACHABLE": "🔴 UNREACHABLE",
+        "HEALTHY": "🟢 RECOVERED",
+    }.get(health, f"⚠️ {health}")
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        f"{prefix} Cụm Vitastor\n{_compact(detail, _MAX_EXCERPT_CHARS)}",
+        cluster_name,
+    )
+
+
 def send_ai_incident_alert(
     ceph_code: str,
     severity: str | None,

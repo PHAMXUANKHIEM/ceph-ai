@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from config.settings import settings
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import ChatPreference, User
+from shared.models import ChatPreference, User, VitastorUser
 
 router = APIRouter()
 templates = make_templates()
@@ -69,7 +69,7 @@ def _find_active_user(username: str) -> User | None:
         )
 
 
-def _check_password(username: str, password: str) -> bool:
+def _check_password(username: str, password: str, product: str = "ceph") -> bool:
     """Constant-cost check: always runs bcrypt exactly once, never
     short-circuits on whether the username matches a real account (the
     `.env` account or an active DB-created User row)."""
@@ -77,7 +77,13 @@ def _check_password(username: str, password: str) -> bool:
         found = True
         hash_to_check = settings.dashboard_password_hash
     else:
-        db_user = _find_active_user(username)
+        if product == "vitastor":
+            with db.SessionLocal() as session:
+                db_user = session.query(VitastorUser).filter(
+                    VitastorUser.username == username, VitastorUser.is_active.is_(True)
+                ).first()
+        else:
+            db_user = _find_active_user(username)
         found = db_user is not None
         hash_to_check = db_user.password_hash if db_user else _DUMMY_HASH
     try:
@@ -99,6 +105,17 @@ def is_admin_user(username: str) -> bool:
         return True
     db_user = _find_active_user(username)
     return db_user is not None and db_user.is_admin
+
+
+def is_vitastor_admin_user(username: str) -> bool:
+    """Vitastor equivalent of :func:`is_admin_user`, using its own table."""
+    if username == settings.dashboard_username:
+        return True
+    with db.SessionLocal() as session:
+        db_user = session.query(VitastorUser).filter(
+            VitastorUser.username == username, VitastorUser.is_active.is_(True)
+        ).first()
+        return db_user is not None and db_user.is_admin
 
 
 def is_ceph_chat_restricted(username: str) -> bool:
@@ -184,7 +201,7 @@ async def login_submit(
             status_code=429,
         )
 
-    if not _check_password(username, password):
+    if not _check_password(username, password, product):
         _record_failure(client_key)
         return templates.TemplateResponse(
             request,

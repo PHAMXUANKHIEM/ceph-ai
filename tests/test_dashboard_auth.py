@@ -63,7 +63,7 @@ def test_vitastor_login_reaches_vitastor_only(dashboard_client):
     )
     assert response.status_code == 200
     assert response.url.path == "/vitastor"
-    assert "Vitastor Management" in response.text
+    assert "Storage overview" in response.text
 
     ceph_page = dashboard_client.get("/", follow_redirects=False)
     assert ceph_page.status_code == 303
