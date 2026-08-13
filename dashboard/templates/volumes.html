@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Volume Performance — Ceph AIOps</title>
+  <title>{{ 'Trash' if selected_view == 'trash' else 'Volume Performance' }} — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -40,7 +40,7 @@
         {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
       </nav>
       {% if clusters|length > 1 %}
-      <form method="get" action="/volumes" class="topbar-cluster-switcher">
+      <form method="get" action="{{ '/trash' if selected_view == 'trash' else '/volumes' }}" class="topbar-cluster-switcher">
         <select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">
           {% for c in clusters %}
           <option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>
@@ -57,6 +57,7 @@
 
   <main class="page">
     <div class="tabbed-page">
+    {% if selected_view == "pools" %}
     <nav class="tabbed-sidebar" id="pool-selector">
       <div class="node-sidebar-header">
         <span class="hint">Pool</span>
@@ -81,13 +82,8 @@
           khởi động lại Watcher.
         </p>
       {% endif %}
-      <div class="node-sidebar-header">
-        <span class="hint">Quản lý</span>
-      </div>
-      <a href="/volumes?view=trash" class="tabbed-nav-item {% if selected_view == 'trash' %}active{% endif %}">
-        <span class="node-chip-ip">Trash</span>
-      </a>
     </nav>
+    {% endif %}
 
     <div class="tabbed-content">
     {% if is_admin and selected_view == "pools" %}

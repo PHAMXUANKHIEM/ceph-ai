@@ -276,7 +276,9 @@ async def volumes_page(request: Request, user: str = Depends(require_login)):
     if selected_view not in {"pools", "trash"}:
         raise HTTPException(status_code=404, detail="Mục Volume không hợp lệ")
     if selected_view == "trash":
-        requested_pool = None
+        cluster_query = request.query_params.get("cluster", "").strip()
+        suffix = f"?cluster={cluster_query}" if cluster_query else ""
+        return RedirectResponse(url=f"/trash{suffix}", status_code=307)
     if requested_pool and requested_pool not in pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     # No default pool — same "must actually pick one" posture as
@@ -287,6 +289,26 @@ async def volumes_page(request: Request, user: str = Depends(require_login)):
             request, user, requested_pool, pools, clusters=clusters, selected_cluster=cluster,
             selected_view=selected_view,
         )
+    )
+
+
+@router.get("/trash", response_class=HTMLResponse)
+async def trash_page(request: Request, user: str = Depends(require_login)):
+    """Top-level Pool navigation peer of /volumes and /pgs."""
+    clusters, cluster = cluster_selection(request)
+    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
+    return templates.TemplateResponse(
+        request,
+        "volumes.html",
+        _volumes_page_context(
+            request,
+            user,
+            None,
+            pools,
+            clusters=clusters,
+            selected_cluster=cluster,
+            selected_view="trash",
+        ),
     )
 
 
@@ -889,7 +911,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
         )
         session.commit()
 
-    return RedirectResponse(url="/volumes?view=trash", status_code=303)
+    return RedirectResponse(url="/trash", status_code=303)
 
 
 @router.post("/volumes/{pool}/trash/purge-all", response_class=HTMLResponse)

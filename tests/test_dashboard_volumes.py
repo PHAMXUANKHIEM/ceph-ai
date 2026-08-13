@@ -79,6 +79,29 @@ def test_volumes_page_lists_configured_pools(dashboard_client, monkeypatch):
     assert "backups" in response.text
 
 
+def test_trash_is_top_level_page_not_pool_sidebar_item(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_no_trash(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash")
+
+    assert response.status_code == 200
+    assert "<h2>Trash</h2>" in response.text
+    assert 'id="pool-selector"' not in response.text
+    assert 'href="/volumes?view=trash"' not in response.text
+
+
+def test_legacy_volumes_trash_url_redirects_to_top_level_trash(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volumes?view=trash", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/trash"
+
+
 def test_volumes_page_with_no_pool_selects_nothing_and_shows_empty_state(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _login(dashboard_client)
@@ -1060,7 +1083,7 @@ def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, 
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/volumes?view=trash"
+    assert response.headers["location"] == "/trash"
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value

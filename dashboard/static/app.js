@@ -102,7 +102,7 @@
   main.insertBefore(heading, main.firstChild);
 
   var iconByPath = {
-    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/block-storage": "▱", "/settings": "⚙",
+    "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
@@ -122,6 +122,13 @@
       pgLink.className = window.location.pathname === "/pgs" ? "nav-link active" : "nav-link";
       pgLink.textContent = "PGs";
       linksByPath["/pgs"] = pgLink;
+    }
+    if (!linksByPath["/trash"]) {
+      var trashLink = document.createElement("a");
+      trashLink.href = "/trash";
+      trashLink.className = window.location.pathname === "/trash" ? "nav-link active" : "nav-link";
+      trashLink.textContent = "Trash";
+      linksByPath["/trash"] = trashLink;
     }
     if (!linksByPath["/block-storage"]) {
       var blockStorageLink = document.createElement("a");
@@ -143,7 +150,7 @@
     // regroup only those that were actually rendered.
     var navGroups = [
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
-      { label: "Pool", paths: ["/volumes", "/pgs"] },
+      { label: "Pool", paths: ["/volumes", "/pgs", "/trash"] },
       { label: "Object Storage", paths: ["/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage"] },
       { label: "OpenStack", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
