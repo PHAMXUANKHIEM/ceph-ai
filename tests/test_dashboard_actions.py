@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import dashboard.routes.patch as patch_route
+import dashboard.routes.actions as actions_route
 import dashboard.routes.upgrade as upgrade_route
 import dashboard.telegram_approval_bot as telegram_bot
 from shared import db as db_module
@@ -43,6 +44,50 @@ def _pending_action(incident_id: str = "inc-1") -> str:
         session.add(action)
         session.commit()
         return action.id
+
+
+def _secondary_pending_action(*, active=True):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="secondary-actions", ceph_mon_nodes="10.99.0.10",
+            ceph_container_name="mon", ssh_user="root", ssh_key_path="/keys/k",
+            ceph_exec_mode="docker", is_default=False, is_active=active,
+        )
+        session.add(cluster)
+        session.flush()
+        incident = Incident(
+            ceph_code="OSD_DOWN", cluster_id=cluster.id,
+            status=IncidentStatus.PENDING_APPROVAL.value, detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="restart_osd_daemon",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value, rationale="secondary",
+            proposed_command="docker restart osd", target_nodes='["10.99.0.20"]',
+        )
+        session.add(action)
+        session.commit()
+        return cluster.id, action.id
+
+
+def test_reject_redirects_to_actions_cluster(dashboard_client):
+    cluster_id, action_id = _secondary_pending_action()
+    _login(dashboard_client)
+    response = dashboard_client.post(f"/actions/{action_id}/reject", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/?cluster={cluster_id}"
+
+
+def test_approve_rejects_inactive_cluster_action(dashboard_client):
+    _cluster_id, action_id = _secondary_pending_action(active=False)
+    try:
+        actions_route.approve_action_core(action_id, "admin")
+    except actions_route.ActionConflictError as exc:
+        assert "vô hiệu hoá" in exc.detail
+    else:
+        raise AssertionError("inactive cluster action must not be approved")
 
 
 def test_index_shows_pending_action_card(dashboard_client):

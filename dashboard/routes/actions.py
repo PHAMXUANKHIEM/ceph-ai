@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from dashboard.routes import patch as patch_routes
@@ -14,7 +14,7 @@ from dashboard.routes.auth import require_login
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from shared import audit, db
-from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,14 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
             # still unanswered). No-op: the caller reflects reality back.
             return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
 
+        scoped_incident = session.get(Incident, action.incident_id)
+        if scoped_incident is not None and scoped_incident.cluster_id is not None:
+            cluster = session.get(Cluster, scoped_incident.cluster_id)
+            if cluster is None or not cluster.is_active:
+                raise ActionConflictError(
+                    "Cụm của Action đã bị vô hiệu hoá hoặc không còn tồn tại; không thể duyệt hành động."
+                )
+
         # 2026-07-23: a live cluster upgrade must never race with some OTHER
         # risky action being approved at the same time (e.g. restarting an
         # OSD daemon mid-upgrade) — the upgrade's OWN approval is exempt
@@ -245,24 +253,31 @@ def reject_action_core(action_id: str, actor: str) -> ApprovalResult:
 @router.post("/actions/{action_id}/approve")
 async def approve_action(
     action_id: str,
+    request: Request,
     user: str = Depends(require_login),
     pool_app: str = Form(""),
 ):
     try:
         if pool_app:
             await asyncio.to_thread(_prepare_pool_application_choice, action_id, pool_app)
-        await asyncio.to_thread(approve_action_core, action_id, user)
+        result = await asyncio.to_thread(approve_action_core, action_id, user)
     except ActionNotFoundError:
         raise HTTPException(status_code=404, detail="Không tìm thấy Action")
     except ActionConflictError as exc:
         raise HTTPException(status_code=409, detail=exc.detail)
-    return RedirectResponse(url="/", status_code=303)
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, result.incident_id)
+        cluster_id = incident.cluster_id if incident is not None else None
+    return RedirectResponse(url=f"/?cluster={cluster_id}" if cluster_id else "/", status_code=303)
 
 
 @router.post("/actions/{action_id}/reject")
-async def reject_action(action_id: str, user: str = Depends(require_login)):
+async def reject_action(action_id: str, request: Request, user: str = Depends(require_login)):
     try:
-        await asyncio.to_thread(reject_action_core, action_id, user)
+        result = await asyncio.to_thread(reject_action_core, action_id, user)
     except ActionNotFoundError:
         raise HTTPException(status_code=404, detail="Không tìm thấy Action")
-    return RedirectResponse(url="/", status_code=303)
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, result.incident_id)
+        cluster_id = incident.cluster_id if incident is not None else None
+    return RedirectResponse(url=f"/?cluster={cluster_id}" if cluster_id else "/", status_code=303)

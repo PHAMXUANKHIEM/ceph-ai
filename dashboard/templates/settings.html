@@ -700,8 +700,9 @@
     {% endif %}
 
     <section class="card settings-panel" data-panel="cluster" {% if active_section != 'cluster' %}hidden{% endif %}>
-      <div class="card-header"><h2>Kết nối cụm Ceph</h2></div>
+      <div class="card-header"><h2>Kết nối cụm Ceph — cụm mặc định</h2></div>
       <div class="card-body">
+        <p class="hint">Mục này chỉ sửa cụm mặc định được lưu trong <code>.env</code>.{% if is_admin %} Để thêm, sửa hoặc test cluster phụ, dùng trang <a href="/clusters">Clusters</a>.{% endif %}</p>
         {% if cluster_error %}
           <p class="error">{{ cluster_error }}</p>
         {% endif %}

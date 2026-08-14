@@ -405,6 +405,72 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
     )
 
 
+@router.post("/clusters/{cluster_id}/connection", response_class=HTMLResponse)
+async def update_cluster_connection(
+    request: Request, cluster_id: str, user: str = Depends(require_login),
+    name: str = Form(""), ceph_mon_nodes: str = Form(""),
+    ceph_mon_hostnames: str = Form(""), ceph_mgr_nodes: str = Form(""),
+    ceph_osd_nodes: str = Form(""), ceph_rgw_nodes: str = Form(""),
+    ceph_container_name: str = Form(""), ceph_osd_container_name: str = Form(""),
+    ceph_rgw_container_name: str = Form(""), ssh_user: str = Form(""),
+    ssh_key_path: str = Form(""), ceph_exec_mode: str = Form("docker"),
+):
+    """Test then update an additional cluster's connection atomically."""
+    _require_admin_privilege(user)
+    values = {key: value.strip() for key, value in {
+        "name": name, "ceph_mon_nodes": ceph_mon_nodes,
+        "ceph_mon_hostnames": ceph_mon_hostnames, "ceph_mgr_nodes": ceph_mgr_nodes,
+        "ceph_osd_nodes": ceph_osd_nodes, "ceph_rgw_nodes": ceph_rgw_nodes,
+        "ceph_container_name": ceph_container_name,
+        "ceph_osd_container_name": ceph_osd_container_name,
+        "ceph_rgw_container_name": ceph_rgw_container_name,
+        "ssh_user": ssh_user, "ssh_key_path": ssh_key_path,
+        "ceph_exec_mode": ceph_exec_mode,
+    }.items()}
+    nodes = _parse_node_list(values["ceph_mon_nodes"])
+    container_required = values["ceph_exec_mode"] not in ("none", "cephadm")
+    if values["ceph_exec_mode"] not in VALID_EXEC_MODES or not values["name"] or not nodes \
+            or not values["ssh_user"] or not values["ssh_key_path"] \
+            or (container_required and not values["ceph_container_name"]):
+        return templates.TemplateResponse(request, "clusters.html", _clusters_context(
+            user, cluster_toggle_error="Thông tin kết nối cluster chưa đầy đủ hoặc exec mode không hợp lệ."
+        ))
+    with db.SessionLocal() as session:
+        target = session.get(Cluster, cluster_id)
+        if target is None or target.is_default:
+            return templates.TemplateResponse(request, "clusters.html", _clusters_context(
+                user, cluster_toggle_error="Không tìm thấy cluster phụ cần sửa."
+            ))
+    try:
+        await asyncio.to_thread(
+            query_cluster_health_with, nodes, values["ceph_container_name"],
+            values["ssh_user"], values["ssh_key_path"], values["ceph_exec_mode"],
+            update_sticky_fallback=False,
+        )
+    except CephQueryError as exc:
+        return templates.TemplateResponse(request, "clusters.html", _clusters_context(
+            user, cluster_toggle_error=f"Không lưu vì test kết nối thất bại: {exc}"
+        ))
+    with db.SessionLocal() as session:
+        target = session.get(Cluster, cluster_id)
+        for field, value in values.items():
+            setattr(target, field, value)
+        session.commit()
+    watcher_result, worker_result = await asyncio.gather(
+        asyncio.to_thread(restart_watcher), asyncio.to_thread(restart_worker)
+    )
+    failed = [label for label, result in (("Watcher", watcher_result), ("Worker", worker_result))
+              if not result.get("restarted")]
+    message = "Đã test và cập nhật kết nối cluster."
+    if failed:
+        return templates.TemplateResponse(request, "clusters.html", _clusters_context(
+            user, cluster_toggle_error=message + f" Không restart được {', '.join(failed)}."
+        ))
+    return templates.TemplateResponse(request, "clusters.html", _clusters_context(
+        user, cluster_toggle_success=message + " Watcher/Worker đã được đồng bộ."
+    ))
+
+
 def _purge_cluster_data(session, cluster_id: str) -> dict[str, int]:
     """Hard-deletes every DB row scoped to exactly this ONE additional
     (non-default) cluster — called by delete_cluster() below, inside the

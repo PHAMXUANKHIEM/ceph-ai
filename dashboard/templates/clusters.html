@@ -125,6 +125,28 @@
                 </td>
               </tr>
               {% if not c.is_default %}
+              <tr class="backup-config-row">
+                <td colspan="7">
+                  <details>
+                    <summary>Sửa &amp; test lại kết nối — {{ c.name }}</summary>
+                    <form method="post" action="/clusters/{{ c.id }}/connection" class="login-box">
+                      <label>Tên cụm<input name="name" value="{{ c.name }}" required></label>
+                      <label>MON nodes<input name="ceph_mon_nodes" value="{{ c.ceph_mon_nodes }}" required></label>
+                      <label>MON hostnames<input name="ceph_mon_hostnames" value="{{ c.ceph_mon_hostnames or '' }}"></label>
+                      <label>MGR nodes<input name="ceph_mgr_nodes" value="{{ c.ceph_mgr_nodes or '' }}"></label>
+                      <label>OSD nodes<input name="ceph_osd_nodes" value="{{ c.ceph_osd_nodes or '' }}"></label>
+                      <label>RGW nodes<input name="ceph_rgw_nodes" value="{{ c.ceph_rgw_nodes or '' }}"></label>
+                      <label>Exec mode<select name="ceph_exec_mode">{% for mode in ("cephadm", "docker", "podman", "none") %}<option value="{{ mode }}" {{ "selected" if c.ceph_exec_mode == mode else "" }}>{{ mode }}</option>{% endfor %}</select></label>
+                      <label>MON container<input name="ceph_container_name" value="{{ c.ceph_container_name or '' }}"></label>
+                      <label>OSD container<input name="ceph_osd_container_name" value="{{ c.ceph_osd_container_name or '' }}"></label>
+                      <label>RGW container<input name="ceph_rgw_container_name" value="{{ c.ceph_rgw_container_name or '' }}"></label>
+                      <label>SSH user<input name="ssh_user" value="{{ c.ssh_user }}" required></label>
+                      <label>SSH key path<input name="ssh_key_path" value="{{ c.ssh_key_path }}" required></label>
+                      <button type="submit" class="btn btn-primary btn-sm">Test kết nối &amp; lưu</button>
+                    </form>
+                  </details>
+                </td>
+              </tr>
               {% set bv = backup_config_form_values if backup_config_cluster_id == c.id else c %}
               <tr class="backup-config-row">
                 <td colspan="7">

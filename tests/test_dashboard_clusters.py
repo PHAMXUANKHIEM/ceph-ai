@@ -146,6 +146,49 @@ def test_toggle_active_flips_an_additional_cluster(dashboard_client, monkeypatch
         assert session.get(Cluster, cluster_id).is_active is False
 
 
+def test_update_cluster_connection_tests_before_saving(dashboard_client, monkeypatch):
+    monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
+    _stub_restart_watcher(monkeypatch)
+    _login(dashboard_client)
+    dashboard_client.post("/clusters/create", data=_cluster_form_data())
+    with db_module.SessionLocal() as session:
+        cluster_id = session.query(Cluster).filter_by(name="cluster-b").one().id
+    response = dashboard_client.post(f"/clusters/{cluster_id}/connection", data={
+        "name": "cluster-b-edited", "ceph_mon_nodes": "10.40.1.10",
+        "ceph_mon_hostnames": "mon-new", "ceph_mgr_nodes": "10.40.1.11",
+        "ceph_osd_nodes": "10.40.1.12", "ceph_rgw_nodes": "",
+        "ceph_container_name": "mon-new", "ceph_osd_container_name": "osd-new",
+        "ceph_rgw_container_name": "", "ssh_user": "cephadmin",
+        "ssh_key_path": "/keys/new", "ceph_exec_mode": "docker",
+    })
+    assert response.status_code == 200
+    assert "Đã test và cập nhật" in response.text
+    with db_module.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        assert cluster.name == "cluster-b-edited"
+        assert cluster.ceph_mon_nodes == "10.40.1.10"
+        assert cluster.ssh_user == "cephadmin"
+
+
+def test_update_cluster_connection_failure_keeps_old_values(dashboard_client, monkeypatch):
+    monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
+    _stub_restart_watcher(monkeypatch)
+    _login(dashboard_client)
+    dashboard_client.post("/clusters/create", data=_cluster_form_data())
+    with db_module.SessionLocal() as session:
+        cluster_id = session.query(Cluster).filter_by(name="cluster-b").one().id
+    def fail(*args, **kwargs):
+        raise clusters_route.CephQueryError("unreachable")
+    monkeypatch.setattr(clusters_route, "query_cluster_health_with", fail)
+    dashboard_client.post(f"/clusters/{cluster_id}/connection", data=_cluster_form_data(
+        name="must-not-save", ceph_mon_nodes="10.50.1.10"
+    ))
+    with db_module.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        assert cluster.name == "cluster-b"
+        assert cluster.ceph_mon_nodes == "10.30.1.10,10.30.1.11"
+
+
 def test_default_only_features_fail_closed_for_selected_additional_cluster(
     dashboard_client, monkeypatch
 ):
