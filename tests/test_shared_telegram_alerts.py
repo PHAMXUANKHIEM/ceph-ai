@@ -129,6 +129,27 @@ def test_send_ai_incident_alert_sends_diagnosis_and_rationale(monkeypatch):
     assert "Đề xuất: Kiểm tra pg_num và tăng dần theo tải." in text
 
 
+def test_reminder_includes_vietnamese_ai_summary_and_solution(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert(
+        "OSD_DOWN",
+        "HEALTH_ERR",
+        "osd.2 down",
+        reminder=True,
+        diagnosis_text="OSD.2 đã dừng do tiến trình bị lỗi.",
+        rationale="Khởi động lại daemon OSD.2 để phục hồi dịch vụ.",
+    )
+
+    assert "🔁 NHẮC LẠI" in calls[0]
+    assert "🧠 Tóm tắt AI: OSD.2 đã dừng do tiến trình bị lỗi." in calls[0]
+    assert "🔧 Giải pháp: Khởi động lại daemon OSD.2 để phục hồi dịch vụ." in calls[0]
+
+
 def test_send_trash_capacity_alert_uses_incident_channel(monkeypatch):
     _configure_incident(monkeypatch)
     monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)

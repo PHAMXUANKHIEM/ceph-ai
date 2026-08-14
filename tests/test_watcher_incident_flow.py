@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -6,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 import watcher.main as watcher_main
 from shared import db as db_module
 from shared.db import Base
-from shared.models import Incident, IncidentStatus
+from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 
 HEALTH_WARN_PAYLOAD = {
     "status": "HEALTH_WARN",
@@ -311,6 +313,59 @@ def test_no_telegram_alert_sent_on_recovery_to_health_ok(isolated_db, monkeypatc
     watcher_main.build_and_publish_incident("HEALTH_WARN", HEALTH_OK_PAYLOAD)
 
     assert calls == []
+
+
+def test_open_incident_is_reminded_hourly_until_resolved(isolated_db, monkeypatch):
+    now = datetime(2026, 8, 14, 12, 0, 0)
+    with db_module.SessionLocal() as session:
+        due = Incident(
+            ceph_code="OSD_DOWN",
+            status=IncidentStatus.FAILED.value,
+            severity="HEALTH_ERR",
+            log_excerpt="osd.2 down",
+            diagnosis_text="OSD.2 đã dừng do tiến trình bị lỗi.",
+            detected_at=now - timedelta(hours=2),
+            created_at=now - timedelta(hours=2),
+        )
+        resolved = Incident(
+            ceph_code="MON_DOWN",
+            status=IncidentStatus.RESOLVED.value,
+            severity="HEALTH_ERR",
+            detected_at=now - timedelta(hours=2),
+            created_at=now - timedelta(hours=2),
+        )
+        session.add_all([due, resolved])
+        session.flush()
+        session.add(Action(
+            incident_id=due.id,
+            action_id="restart_osd_daemon",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale="Khởi động lại daemon OSD.2 để phục hồi dịch vụ.",
+        ))
+        session.commit()
+        due_id = due.id
+
+    calls = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_alert",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        watcher_main.settings, "telegram_incident_reminder_interval_seconds", 3600
+    )
+
+    assert watcher_main.send_due_incident_reminders(now) == 1
+    assert calls[0][0][:3] == ("OSD_DOWN", "HEALTH_ERR", "osd.2 down")
+    assert calls[0][1]["reminder"] is True
+    assert calls[0][1]["diagnosis_text"] == "OSD.2 đã dừng do tiến trình bị lỗi."
+    assert calls[0][1]["rationale"] == "Khởi động lại daemon OSD.2 để phục hồi dịch vụ."
+    assert watcher_main.send_due_incident_reminders(now + timedelta(minutes=59)) == 0
+    assert watcher_main.send_due_incident_reminders(now + timedelta(hours=1)) == 1
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, due_id).telegram_reminded_at == now + timedelta(hours=1)
 
 
 def test_multiple_simultaneous_checks_create_one_incident_each_and_publish_all(

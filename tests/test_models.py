@@ -71,6 +71,7 @@ def test_incident_has_required_columns():
         "severity",
         "log_excerpt",
         "diagnosis_text",
+        "telegram_reminded_at",
         "detected_at",
         "created_at",
         "updated_at",

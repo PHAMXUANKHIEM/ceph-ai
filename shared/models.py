@@ -178,6 +178,9 @@ class Incident(Base):
     severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
     log_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     diagnosis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Last hourly Telegram reminder. NULL means no reminder has been sent;
+    # created_at remains the baseline for the first reminder.
+    telegram_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -698,6 +701,9 @@ class ChatPreference(Base):
 
     username: Mapped[str] = mapped_column(String(64), primary_key=True)
     ai_name: Mapped[str] = mapped_column(String(64), nullable=False, default="AI")
+    female_address: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="Mình yêu ơi, em là"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )

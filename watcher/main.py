@@ -3,7 +3,7 @@ import functools
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 from sqlalchemy import or_
@@ -35,7 +35,7 @@ from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat, telegram_alerts
 from shared.clusters import get_default_cluster_id, list_active_clusters
-from shared.models import Cluster, Incident, IncidentStatus
+from shared.models import Action, Cluster, Incident, IncidentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,54 @@ _CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
 # `ceph health detail` check code either), hiding the real outcome from the
 # operator exactly the way the CHAT_REQUEST bug did before that fix.
 _CLUSTER_UPGRADE_CEPH_CODE = "CLUSTER_UPGRADE"
+
+
+def send_due_incident_reminders(now: datetime | None = None) -> int:
+    """Re-send every still-open Incident to Telegram once per configured interval."""
+    now = now or datetime.utcnow()
+    interval = max(60, settings.telegram_incident_reminder_interval_seconds)
+    cutoff = now - timedelta(seconds=interval)
+    sent = 0
+    with db.SessionLocal() as session:
+        incidents = (
+            session.query(Incident)
+            .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
+            .filter(
+                or_(
+                    Incident.telegram_reminded_at <= cutoff,
+                    (Incident.telegram_reminded_at.is_(None) & (Incident.created_at <= cutoff)),
+                )
+            )
+            .all()
+        )
+        clusters = {
+            cluster.id: cluster
+            for cluster in session.query(Cluster).filter(Cluster.id.in_({i.cluster_id for i in incidents if i.cluster_id})).all()
+        }
+        actions = {
+            action.incident_id: action
+            for action in session.query(Action).filter(Action.incident_id.in_([i.id for i in incidents])).all()
+        }
+        for incident in incidents:
+            cluster = clusters.get(incident.cluster_id)
+            action = actions.get(incident.id)
+            has_cluster_channel = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
+            telegram_alerts.send_incident_alert(
+                incident.ceph_code,
+                incident.severity,
+                incident.log_excerpt,
+                cluster_name=cluster.name if cluster else None,
+                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+                enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                reminder=True,
+                diagnosis_text=incident.diagnosis_text,
+                rationale=action.rationale if action else None,
+            )
+            incident.telegram_reminded_at = now
+            sent += 1
+        session.commit()
+    return sent
 
 
 def default_on_transition(previous_status: Optional[str], current: dict) -> None:
@@ -396,6 +444,7 @@ def run(
     last_crush_scan_at: Optional[datetime] = None
     last_database_size_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
+    last_incident_reminder_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -491,6 +540,15 @@ def run(
         # watcher_poll_interval_seconds tick — see that setting's own
         # comment in config/settings.py for why.
         now = datetime.utcnow()
+        if (
+            last_incident_reminder_scan_at is None
+            or (now - last_incident_reminder_scan_at).total_seconds() >= 60
+        ):
+            try:
+                send_due_incident_reminders(now)
+            except Exception:
+                logger.exception("run: Telegram incident reminder scan failed")
+            last_incident_reminder_scan_at = now
         if (
             last_device_health_scan_at is None
             or (now - last_device_health_scan_at).total_seconds()

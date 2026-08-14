@@ -168,7 +168,10 @@ SYSTEM_PROMPT = (
     "deep Ceph internals knowledge can understand, and recommend exactly one "
     "remediation action from the fixed set provided in the tool schema. "
     "Every recommendation must be a concrete action the system can execute; "
-    "never recommend manual investigation or a generic diagnostic check."
+    "never recommend manual investigation or a generic diagnostic check. "
+    "Write diagnosis_text and rationale in concise, natural Vietnamese (at most "
+    "two short sentences each). Keep Ceph error codes, daemon names, pool names, "
+    "commands, paths, and technical identifiers unchanged instead of translating them."
 )
 
 # Story 3.2: when a redelivered message finds an Action that's already
@@ -217,7 +220,8 @@ def _tool_schema() -> dict:
                         "type": "string",
                         "description": (
                             "Plain-language explanation of the likely root cause, "
-                            "understandable without reading raw Ceph docs."
+                            "understandable without reading raw Ceph docs. Must be a "
+                            "concise Vietnamese summary of at most two short sentences."
                         ),
                     },
                     "action_id": {
@@ -227,7 +231,10 @@ def _tool_schema() -> dict:
                     },
                     "rationale": {
                         "type": "string",
-                        "description": "Why this action_id was chosen over the alternatives.",
+                        "description": (
+                            "Concise Vietnamese summary (at most two short sentences) of why "
+                            "this action_id was chosen over the alternatives."
+                        ),
                     },
                 },
                 "required": ["diagnosis_text", "action_id", "rationale"],

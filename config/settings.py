@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # and "none" modes.
     ceph_exec_mode: str = "docker"
     watcher_poll_interval_seconds: int = 15
+    # Repeat Telegram notifications while an Incident remains unresolved.
+    telegram_incident_reminder_interval_seconds: int = 3600
 
     # OSD/data node access — used by watcher/collector.py to fetch OSD daemon
     # logs (Story 1.4). Same cluster as ceph_mon_nodes above; also blank by

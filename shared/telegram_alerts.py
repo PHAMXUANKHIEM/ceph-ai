@@ -95,6 +95,9 @@ def send_incident_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
+    reminder: bool = False,
+    diagnosis_text: str | None = None,
+    rationale: str | None = None,
 ) -> None:
     """Called once per newly-created cluster-health Incident
     (watcher/main.py::build_and_publish_incident, one call per `ceph
@@ -120,9 +123,14 @@ def send_incident_alert(
     exactly as before this param existed"."""
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
     excerpt = _compact(log_excerpt, _MAX_EXCERPT_CHARS)
-    text = f"{prefix} Cụm Ceph: {ceph_code}"
+    reminder_prefix = "🔁 NHẮC LẠI · " if reminder else ""
+    text = f"{reminder_prefix}{prefix} Cụm Ceph: {ceph_code}"
     if excerpt:
         text += f"\n{excerpt}"
+    if reminder and diagnosis_text:
+        text += f"\n🧠 Tóm tắt AI: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}"
+    if reminder and rationale:
+        text += f"\n🔧 Giải pháp: {_compact(rationale, _MAX_FOLLOWUP_FIELD_CHARS)}"
     _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,
