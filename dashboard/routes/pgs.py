@@ -1,8 +1,10 @@
 import asyncio
 import json
 import logging
+import re
 from collections import Counter
 from datetime import datetime
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = make_templates()
 POOL_CREATE_CEPH_CODE = "POOL_CREATE_REQUEST"
+POOL_ACTION_CEPH_CODE = "POOL_ACTION_REQUEST"
 
 
 def _pool_names_by_id(payload: dict | list) -> dict[str, str]:
@@ -89,6 +92,8 @@ def _normalize_pool_rows(
         df_stats = df_by_name.get(name, {})
         io_stats = io_by_name.get(name, {})
         size = pool.get("size")
+        flags = str(pool.get("flags_names") or pool.get("flags") or "")
+        protected = "nodelete" in {part for part in re.split(r"[,;\s]+", flags) if part}
         ec_profile = pool.get("erasure_code_profile")
         redundancy = f"EC · {ec_profile}" if ec_profile else (f"{size} replicas" if size is not None else "—")
         rule_id = pool.get("crush_rule")
@@ -96,6 +101,8 @@ def _normalize_pool_rows(
             {
                 "name": name,
                 "redundancy": redundancy,
+                "size": size,
+                "protected": protected,
                 "pgs": pool.get("pg_num") if pool.get("pg_num") is not None else pool.get("pg_num_target", "—"),
                 "crush_rule": rule_names.get(str(rule_id), str(rule_id) if rule_id is not None else "—"),
                 "used_bytes": df_stats.get("stored", df_stats.get("bytes_used", 0)) or 0,
@@ -243,6 +250,7 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
             "clusters": clusters,
             "selected_cluster": cluster,
             "create_success": request.query_params.get("create_success") == "1",
+            "action_success": request.query_params.get("action_success", "").strip() or None,
             "selected_pool": request.query_params.get("pool", "").strip() or None,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         },
@@ -314,5 +322,99 @@ async def create_pool(
 
     return RedirectResponse(
         url=f"/pools?cluster={cluster.id}&create_success=1",
+        status_code=303,
+    )
+
+
+@router.post("/pools/action")
+async def pool_action(
+    request: Request,
+    user: str = Depends(require_login),
+    cluster_id: str = Form(""),
+    action_id: str = Form(""),
+    pool_name: str = Form(""),
+    size: int | None = Form(None),
+    pg_num: int | None = Form(None),
+    protected: str = Form(""),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản admin mới được thay đổi pool")
+
+    allowed = {"edit_pool", "scrub_pool", "delete_pool", "set_pool_protection"}
+    action_id = action_id.strip()
+    if action_id not in allowed:
+        raise HTTPException(status_code=400, detail="Thao tác pool không hợp lệ")
+
+    clusters, selected = cluster_selection(request)
+    cluster = {item.id: item for item in clusters}.get(cluster_id.strip())
+    if cluster is None or cluster.id != selected.id:
+        raise HTTPException(status_code=400, detail="Cụm được gửi lên không khớp cụm đang chọn")
+    mon_nodes, _container, _ssh_user, _ssh_key, _exec_mode = cluster_connection(cluster)
+    if not mon_nodes:
+        raise HTTPException(status_code=400, detail="Cụm đang chọn chưa cấu hình MON node")
+
+    name = pool_name.strip()
+    try:
+        query = ceph_client.run_ceph_json_command if cluster.is_default else None
+        if query is not None:
+            _host, pool_payload = await asyncio.to_thread(query, "ceph osd pool ls detail")
+        else:
+            _host, pool_payload = await asyncio.to_thread(
+                run_ceph_json_command_with, *cluster_connection(cluster), "ceph osd pool ls detail"
+            )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không kiểm tra được pool trên cụm: {exc}") from exc
+    existing_names = set(_pool_names_by_id(pool_payload).values())
+    if name not in existing_names:
+        raise HTTPException(status_code=404, detail="Pool không tồn tại trên cụm đang chọn")
+
+    params: dict = {"pool_name": name}
+    if action_id == "edit_pool":
+        params.update({"size": size, "pg_num": pg_num})
+    elif action_id == "set_pool_protection":
+        if protected not in {"true", "false"}:
+            raise HTTPException(status_code=400, detail="Trạng thái bảo vệ pool không hợp lệ")
+        params["protected"] = protected == "true"
+    try:
+        command = executor_commands.get_command(action_id, mon_nodes[0], params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Thông tin pool không hợp lệ: {exc}") from exc
+
+    classification = gate.classify_action(action_id)
+    status = ActionStatus.APPROVED if classification == ActionClassification.SAFE else ActionStatus.PENDING_APPROVAL
+    incident_status = IncidentStatus.APPROVED if classification == ActionClassification.SAFE else IncidentStatus.PENDING_APPROVAL
+    labels = {
+        "edit_pool": "cập nhật",
+        "scrub_pool": "scrub",
+        "delete_pool": "xóa",
+        "set_pool_protection": "đổi trạng thái bảo vệ",
+    }
+    with db.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=cluster.id,
+            ceph_code=POOL_ACTION_CEPH_CODE,
+            status=incident_status.value,
+            log_excerpt=f"{user} yêu cầu {labels[action_id]} pool {name}",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=classification.value,
+            status=status.value,
+            rationale=f"{labels[action_id].capitalize()} pool {name} trên cụm {cluster.name}",
+            target_nodes=json.dumps([mon_nodes[0]]),
+            action_params=json.dumps(params),
+            proposed_command=command,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(session, incident_id=incident.id, action_id=action.id, event_type=audit.EVENT_CHAT_ACTION_REQUESTED, actor=user)
+        session.commit()
+
+    return RedirectResponse(
+        url=f"/pools?{urlencode({'cluster': cluster.id, 'pool': name, 'action_success': action_id})}",
         status_code=303,
     )

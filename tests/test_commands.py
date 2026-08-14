@@ -569,6 +569,22 @@ def test_get_command_delete_pool_requires_pool_name_twice_and_confirmation_flag(
     )
 
 
+def test_get_command_edit_pool_updates_size_and_pg_count():
+    assert get_command("edit_pool", params={"pool_name": "data", "size": 3, "pg_num": 128}) == (
+        "ceph osd pool set data size 3 && ceph osd pool set data pg_num 128"
+    )
+
+
+def test_get_command_scrub_pool():
+    assert get_command("scrub_pool", params={"pool_name": "data"}) == "ceph osd pool scrub data"
+
+
+def test_get_command_pool_protection():
+    assert get_command("set_pool_protection", params={"pool_name": "data", "protected": True}) == (
+        "ceph osd pool set data nodelete true"
+    )
+
+
 def test_get_command_delete_pool_enables_and_restores_mon_allow_pool_delete():
     # 2026-07-23: Ceph itself refuses to delete a pool unless
     # mon_allow_pool_delete=true — verified live against the real cluster.

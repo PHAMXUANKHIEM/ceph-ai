@@ -264,6 +264,26 @@ def _set_pool_pg_num_command(params: dict) -> str:
     return f"ceph osd pool set {shlex.quote(pool_name)} pg_num {pg_num}"
 
 
+def _edit_pool_command(params: dict) -> str:
+    pool_name = _require_pool_name(params)
+    size = _require_int(params, "size", _POOL_SIZE_RANGE)
+    pg_num = _require_int(params, "pg_num", _PG_NUM_RANGE)
+    quoted = shlex.quote(pool_name)
+    return f"ceph osd pool set {quoted} size {size} && ceph osd pool set {quoted} pg_num {pg_num}"
+
+
+def _scrub_pool_command(params: dict) -> str:
+    return f"ceph osd pool scrub {shlex.quote(_require_pool_name(params))}"
+
+
+def _set_pool_protection_command(params: dict) -> str:
+    pool_name = _require_pool_name(params)
+    protected = params.get("protected")
+    if not isinstance(protected, bool):
+        raise ExecutorError(f"invalid or missing protected: {protected!r} (must be boolean)")
+    return f"ceph osd pool set {shlex.quote(pool_name)} nodelete {'true' if protected else 'false'}"
+
+
 def _mark_osd_command(verb: str, params: dict) -> str:
     osd_id = _require_int(params, "osd_id", _OSD_ID_RANGE)
     return f"ceph osd {verb} {osd_id}"
@@ -338,6 +358,9 @@ def _execute_node_command(params: dict) -> str:
 
 
 _MANAGEMENT_COMMAND_BUILDERS = {
+    "edit_pool": _edit_pool_command,
+    "scrub_pool": _scrub_pool_command,
+    "set_pool_protection": _set_pool_protection_command,
     "execute_node_command": _execute_node_command,
     "create_pool": _create_pool_command,
     "delete_pool": _delete_pool_command,

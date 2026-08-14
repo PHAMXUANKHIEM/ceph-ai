@@ -33,6 +33,9 @@ action_ids:
 # VALID_MANAGEMENT_ACTION_IDS; worker/llm/router_client.py's VALID_ACTION_IDS
 # (Incident-diagnosis enum) is untouched by this list's existence.
 management_action_ids:
+  - edit_pool
+  - scrub_pool
+  - set_pool_protection
   - execute_node_command
   - create_pool
   - delete_pool
@@ -238,6 +241,9 @@ safe:
   - delete_pool
   - set_pool_size
   - set_pool_pg_num
+  - edit_pool
+  - scrub_pool
+  - set_pool_protection
   - mark_osd_out
   - mark_osd_in
   - mark_osd_down

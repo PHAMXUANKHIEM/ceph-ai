@@ -7,7 +7,7 @@ def _login(client):
 
 def test_normalize_pool_rows_joins_config_capacity_and_iops():
     rows = pools_route._normalize_pool_rows(
-        [{"pool_name": "volumes", "size": 3, "pg_num": 128, "crush_rule": 2}],
+        [{"pool_name": "volumes", "size": 3, "pg_num": 128, "crush_rule": 2, "flags_names": "hashpspool,nodelete"}],
         {"pools": [{"name": "volumes", "stats": {"stored": 1073741824, "objects": 42}}]},
         [{"pool_name": "volumes", "client_io_rate": {"read_op_per_sec": 17, "write_op_per_sec": 9}}],
         [{"rule_id": 2, "rule_name": "replicated-ssd"}],
@@ -16,6 +16,8 @@ def test_normalize_pool_rows_joins_config_capacity_and_iops():
     assert rows == [{
         "name": "volumes",
         "redundancy": "3 replicas",
+        "size": 3,
+        "protected": True,
         "pgs": 128,
         "crush_rule": "replicated-ssd",
         "used_bytes": 1073741824,

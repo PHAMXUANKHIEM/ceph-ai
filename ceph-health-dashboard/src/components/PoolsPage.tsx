@@ -10,6 +10,8 @@ import {
   Pencil,
   Plus,
   Search,
+  Shield,
+  ShieldOff,
   TrendingUp,
   X,
 } from "lucide-react";
@@ -23,6 +25,8 @@ type PoolRow = {
   objects: number;
   read_iops: number;
   write_iops: number;
+  size: number | null;
+  protected: boolean;
 };
 
 type PoolsBootstrap = {
@@ -33,26 +37,25 @@ type PoolsBootstrap = {
   isAdmin: boolean;
   clusterId: string;
   createSuccess?: boolean;
+  actionSuccess?: string | null;
   queryError?: string | null;
 };
 
 const samplePools: PoolRow[] = [
-  { name: ".mgr", redundancy: "2/3 Replicated", pgs: 1, crush_rule: "replicated_rule", used: "925.7 kB", objects: 2, read_iops: 0, write_iops: 0 },
-  { name: "images", redundancy: "2/3 Replicated", pgs: 16, crush_rule: "replicated_rule", used: "0 B", objects: 0, read_iops: 0, write_iops: 0 },
-  { name: "volumes", redundancy: "2/3 Replicated", pgs: 16, crush_rule: "replicated_rule", used: "4.67 GB", objects: 776, read_iops: 0, write_iops: 0 },
-  { name: "vms", redundancy: "2/3 Replicated", pgs: 16, crush_rule: "replicated_rule", used: "0 B", objects: 0, read_iops: 0, write_iops: 0 },
-  { name: "test", redundancy: "2/3 Replicated", pgs: 32, crush_rule: "replicated_rule", used: "0 B", objects: 0, read_iops: 0, write_iops: 0 },
-  { name: "images2", redundancy: "2/3 Replicated", pgs: 64, crush_rule: "replicated_rule", used: "26.85 GB", objects: 3375, read_iops: 0, write_iops: 0 },
+  { name: ".mgr", redundancy: "3 replicas", size: 3, protected: true, pgs: 1, crush_rule: "replicated_rule", used: "925.7 kB", objects: 2, read_iops: 0, write_iops: 0 },
+  { name: "images", redundancy: "3 replicas", size: 3, protected: false, pgs: 16, crush_rule: "replicated_rule", used: "0 B", objects: 0, read_iops: 0, write_iops: 0 },
+  { name: "volumes", redundancy: "3 replicas", size: 3, protected: false, pgs: 16, crush_rule: "replicated_rule", used: "4.67 GB", objects: 776, read_iops: 0, write_iops: 0 },
 ];
 
-function ToolbarButton({ icon: Icon, label, danger = false, onClick }: { icon: React.ElementType; label: string; danger?: boolean; onClick?: () => void }) {
+function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, onClick }: { icon: React.ElementType; label: string; danger?: boolean; disabled?: boolean; onClick?: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={danger
         ? "inline-flex h-9 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-medium text-rose-600 transition hover:border-rose-300 hover:bg-rose-100"
-        : "inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700"}
+        : "inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-40"}
     >
       <Icon size={16} strokeWidth={1.8} aria-hidden="true" />
       {label}
@@ -65,7 +68,15 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const initial = bootstrap.selectedPool || (rows.some((row) => row.name === "test") ? "test" : rows[0]?.name || "");
   const [selected, setSelected] = useState(initial);
   const [createOpen, setCreateOpen] = useState(false);
+  const [modal, setModal] = useState<"metrics" | "edit" | "scrub" | "details" | "delete" | "protection" | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const [visible, setVisible] = useState<Record<string, boolean>>({ redundancy: true, pgs: true, crush_rule: true, used: true, objects: true, read_iops: true, write_iops: true });
   const selectedRow = useMemo(() => rows.find((row) => row.name === selected), [rows, selected]);
+  const filteredRows = useMemo(() => rows.filter((row) => `${row.name} ${row.redundancy} ${row.crush_rule}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
+  const actionLabels: Record<string, string> = { edit_pool: "cập nhật", scrub_pool: "scrub", delete_pool: "xóa", set_pool_protection: "đổi trạng thái bảo vệ" };
+  const openSelected = (value: typeof modal) => { if (selectedRow) setModal(value); };
 
   return (
     <div className="pools-workspace min-h-[620px] rounded-xl p-4 font-sans sm:p-6">
@@ -87,21 +98,26 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
 
         {bootstrap.queryError && <div className="mx-5 mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">Không lấy được dữ liệu Pool: {bootstrap.queryError}</div>}
         {bootstrap.createSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu tạo pool đã được gửi tới Worker.</div>}
+        {bootstrap.actionSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu {actionLabels[bootstrap.actionSuccess] || bootstrap.actionSuccess} pool đã được gửi tới Worker.</div>}
 
         <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex flex-wrap gap-2">
-            <ToolbarButton icon={TrendingUp} label="Metrics" />
+            <ToolbarButton icon={TrendingUp} label="Metrics" disabled={!selectedRow} onClick={() => openSelected("metrics")} />
             {bootstrap.isAdmin && <ToolbarButton icon={Plus} label="Create" onClick={() => setCreateOpen(true)} />}
-            <ToolbarButton icon={Pencil} label="Edit" />
-            <ToolbarButton icon={Brush} label="Scrub" />
-            <ToolbarButton icon={Info} label="Details" />
-            <ToolbarButton icon={X} label="Delete" danger />
+            {bootstrap.isAdmin && <ToolbarButton icon={Pencil} label="Edit" disabled={!selectedRow} onClick={() => openSelected("edit")} />}
+            {bootstrap.isAdmin && <ToolbarButton icon={Brush} label="Scrub" disabled={!selectedRow} onClick={() => openSelected("scrub")} />}
+            <ToolbarButton icon={Info} label="Details" disabled={!selectedRow} onClick={() => openSelected("details")} />
+            {bootstrap.isAdmin && <ToolbarButton icon={X} label="Delete" danger disabled={!selectedRow} onClick={() => openSelected("delete")} />}
+            {bootstrap.isAdmin && selectedRow && <ToolbarButton icon={selectedRow.protected ? ShieldOff : Shield} label={selectedRow.protected ? "Unprotect" : "Protect"} onClick={() => openSelected("protection")} />}
           </div>
           <div className="flex flex-wrap gap-2">
-            <ToolbarButton icon={Search} label="Search" />
-            <ToolbarButton icon={ChevronDown} label="Columns" />
+            <ToolbarButton icon={Search} label="Search" onClick={() => setSearchOpen((value) => !value)} />
+            <div className="relative"><ToolbarButton icon={ChevronDown} label="Columns" onClick={() => setColumnsOpen((value) => !value)} />
+              {columnsOpen && <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border border-slate-200 bg-white p-3 shadow-xl">{Object.keys(visible).map((key) => <label key={key} className="flex items-center gap-2 py-1 text-sm"><input type="checkbox" checked={visible[key]} onChange={() => setVisible((old) => ({ ...old, [key]: !old[key] }))} />{key.replace("crush_rule", "Crush Rule").replace("read_iops", "Read IOPS").replace("write_iops", "Write IOPS")}</label>)}</div>}
+            </div>
           </div>
         </div>
+        {searchOpen && <div className="border-b border-slate-200 px-5 py-3"><label className="relative block max-w-md"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} autoFocus placeholder="Tìm theo tên, redundancy hoặc CRUSH rule..." className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-violet-400" /></label></div>}
 
         <div className="overflow-x-auto px-3 pt-2 sm:px-5">
           <table className="min-w-[1000px] w-full border-separate border-spacing-y-1 text-sm">
@@ -109,17 +125,17 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
               <tr className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 <th className="w-5 px-1 py-3"><span className="sr-only">Health</span></th>
                 <th className="px-3 py-3 text-left">Pool Name</th>
-                <th className="px-3 py-3 text-left">Redundancy</th>
-                <th className="px-3 py-3 text-right">#PGs</th>
-                <th className="px-3 py-3 text-left">Crush Rule</th>
-                <th className="px-3 py-3 text-right">Used disk space</th>
-                <th className="px-3 py-3 text-right">Objects</th>
-                <th className="px-3 py-3 text-right">Read IOPS</th>
-                <th className="px-3 py-3 text-right">Write IOPS</th>
+                {visible.redundancy && <th className="px-3 py-3 text-left">Redundancy</th>}
+                {visible.pgs && <th className="px-3 py-3 text-right">#PGs</th>}
+                {visible.crush_rule && <th className="px-3 py-3 text-left">Crush Rule</th>}
+                {visible.used && <th className="px-3 py-3 text-right">Used disk space</th>}
+                {visible.objects && <th className="px-3 py-3 text-right">Objects</th>}
+                {visible.read_iops && <th className="px-3 py-3 text-right">Read IOPS</th>}
+                {visible.write_iops && <th className="px-3 py-3 text-right">Write IOPS</th>}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, index) => {
+              {filteredRows.map((row, index) => {
                 const active = row.name === selected;
                 return (
                   <tr
@@ -129,13 +145,13 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
                   >
                     <td className="rounded-l-md px-1 py-3"><span className="block h-2.5 w-2.5 rounded-full bg-orange-400 ring-2 ring-orange-100" /></td>
                     <td className="px-3 py-3 font-semibold text-slate-800">{row.name}</td>
-                    <td className="px-3 py-3 text-slate-600">{row.redundancy}</td>
-                    <td className="px-3 py-3 text-right tabular-nums">{row.pgs}</td>
-                    <td className="px-3 py-3"><span className="rounded-full bg-slate-100 px-2.5 py-1 font-mono text-xs text-slate-600">{row.crush_rule}</span></td>
-                    <td className="px-3 py-3 text-right tabular-nums">{row.used}</td>
-                    <td className="px-3 py-3 text-right tabular-nums">{row.objects.toLocaleString()}</td>
-                    <td className="px-3 py-3 text-right tabular-nums">{row.read_iops.toLocaleString()}</td>
-                    <td className="rounded-r-md px-3 py-3 text-right tabular-nums">{row.write_iops.toLocaleString()}</td>
+                    {visible.redundancy && <td className="px-3 py-3 text-slate-600">{row.redundancy}</td>}
+                    {visible.pgs && <td className="px-3 py-3 text-right tabular-nums">{row.pgs}</td>}
+                    {visible.crush_rule && <td className="px-3 py-3"><span className="rounded-full bg-slate-100 px-2.5 py-1 font-mono text-xs text-slate-600">{row.crush_rule}</span></td>}
+                    {visible.used && <td className="px-3 py-3 text-right tabular-nums">{row.used}</td>}
+                    {visible.objects && <td className="px-3 py-3 text-right tabular-nums">{row.objects.toLocaleString()}</td>}
+                    {visible.read_iops && <td className="px-3 py-3 text-right tabular-nums">{row.read_iops.toLocaleString()}</td>}
+                    {visible.write_iops && <td className="rounded-r-md px-3 py-3 text-right tabular-nums">{row.write_iops.toLocaleString()}</td>}
                   </tr>
                 );
               })}
@@ -170,6 +186,31 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" onClick={() => setCreateOpen(false)} className="h-9 rounded-md border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">Cancel</button><button type="submit" className="h-9 rounded-md bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-700">Create</button></div>
+          </form>
+        </div>
+      )}
+      {modal && selectedRow && (
+        <div className="pools-modal-backdrop fixed inset-0 z-50 grid place-items-center p-4" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}>
+          <form method="post" action="/pools/action" className="pools-create-form w-full max-w-lg rounded-xl p-6 shadow-2xl">
+            <input type="hidden" name="cluster_id" value={bootstrap.clusterId} />
+            <input type="hidden" name="pool_name" value={selectedRow.name} />
+            <input type="hidden" name="action_id" value={modal === "protection" ? "set_pool_protection" : `${modal}_pool`} />
+            {modal === "protection" && <input type="hidden" name="protected" value={String(!selectedRow.protected)} />}
+            <div className="flex items-start justify-between gap-4">
+              <div><h2 className="text-xl font-semibold text-slate-900">{modal[0].toUpperCase() + modal.slice(1)} Pool</h2><p className="mt-1 text-sm text-slate-500">Pool: <strong>{selectedRow.name}</strong></p></div>
+              <button type="button" onClick={() => setModal(null)} className="grid h-8 w-8 place-items-center rounded-md text-slate-500 hover:bg-slate-100" aria-label="Close"><X size={18} /></button>
+            </div>
+            {(modal === "details" || modal === "metrics") && <dl className="mt-5 grid grid-cols-2 gap-3 rounded-lg border border-slate-200 p-4 text-sm">
+              <div><dt className="text-slate-500">Redundancy</dt><dd className="font-semibold">{selectedRow.redundancy}</dd></div><div><dt className="text-slate-500">PGs</dt><dd className="font-semibold">{selectedRow.pgs}</dd></div>
+              <div><dt className="text-slate-500">Used</dt><dd className="font-semibold">{selectedRow.used}</dd></div><div><dt className="text-slate-500">Objects</dt><dd className="font-semibold">{selectedRow.objects.toLocaleString()}</dd></div>
+              <div><dt className="text-slate-500">Read IOPS</dt><dd className="font-semibold">{selectedRow.read_iops.toLocaleString()}</dd></div><div><dt className="text-slate-500">Write IOPS</dt><dd className="font-semibold">{selectedRow.write_iops.toLocaleString()}</dd></div>
+              {modal === "details" && <div className="col-span-2"><dt className="text-slate-500">CRUSH Rule</dt><dd className="font-mono font-semibold">{selectedRow.crush_rule}</dd></div>}
+            </dl>}
+            {modal === "edit" && <div className="mt-5 grid grid-cols-2 gap-4"><label className="grid gap-2 text-sm font-medium">Replicas<input name="size" type="number" min={1} max={10} required defaultValue={selectedRow.size ?? 3} className="h-10 rounded-md border px-3" /></label><label className="grid gap-2 text-sm font-medium">Placement Groups<input name="pg_num" type="number" min={1} max={32768} required defaultValue={selectedRow.pgs} className="h-10 rounded-md border px-3" /></label></div>}
+            {modal === "scrub" && <p className="mt-5 text-sm text-slate-600">Worker sẽ yêu cầu Ceph scrub toàn bộ PG thuộc pool này.</p>}
+            {modal === "delete" && <p className="mt-5 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">Xóa pool sẽ xóa vĩnh viễn toàn bộ dữ liệu trong pool.</p>}
+            {modal === "protection" && <p className="mt-5 text-sm text-slate-600">{selectedRow.protected ? "Gỡ cờ nodelete để cho phép xóa pool." : "Bật cờ nodelete để ngăn pool bị xóa."}</p>}
+            <div className="mt-6 flex justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" onClick={() => setModal(null)} className="h-9 rounded-md border px-4 text-sm">Close</button>{!(["details", "metrics"] as string[]).includes(modal) && <button type="submit" className={`h-9 rounded-md px-4 text-sm font-semibold text-white ${modal === "delete" ? "bg-rose-600" : "bg-violet-600"}`}>Confirm</button>}</div>
           </form>
         </div>
       )}
