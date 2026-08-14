@@ -46,10 +46,33 @@ def test_get_command_returns_crash_archive_all_command():
     assert get_command("crash_archive_all") == "ceph crash archive-all"
 
 
+def test_get_command_builds_osd_release_finalize_command():
+    assert get_command("finalize_osd_release", params={"release": "pacific"}) == (
+        "ceph osd require-osd-release pacific"
+    )
+
+
+@pytest.mark.parametrize("release", [None, "Pacific", "reef; id", "reef\nwhoami"])
+def test_get_command_rejects_invalid_osd_release(release):
+    with pytest.raises(ExecutorError, match="invalid or missing Ceph release"):
+        get_command("finalize_osd_release", params={"release": release})
+
+
 def test_get_command_returns_detached_hard_reboot_command():
     assert get_command("hard_reboot_node", "10.3.55.91") == (
         "nohup systemctl reboot --force --force >/dev/null 2>&1 &"
     )
+
+
+def test_execute_node_command_preserves_admin_command_after_validation():
+    assert get_command(
+        "execute_node_command", "10.20.1.150", {"command": "systemctl restart ceph-mon@a"}
+    ) == "systemctl restart ceph-mon@a"
+
+
+def test_execute_node_command_rejects_multiline_input():
+    with pytest.raises(ExecutorError, match="single shell line"):
+        get_command("execute_node_command", "10.20.1.150", {"command": "id\nuname -a"})
 
 
 def test_get_command_raises_for_unknown_action_id():
@@ -596,6 +619,22 @@ def test_get_command_set_pool_size_rejects_non_integer():
 def test_get_command_set_pool_pg_num_builds_expected_command():
     command = get_command("set_pool_pg_num", params={"pool_name": "rbd_data", "pg_num": 64})
     assert command == "ceph osd pool set rbd_data pg_num 64"
+
+
+def test_get_command_set_pool_pg_num_builds_health_detail_batch():
+    command = get_command(
+        "set_pool_pg_num",
+        params={
+            "adjustments": [
+                {"pool_name": "images", "current_pg_num": 16, "pg_num": 32},
+                {"pool_name": "volumes", "current_pg_num": 16, "pg_num": 32},
+            ]
+        },
+    )
+    assert command == (
+        "ceph osd pool set images pg_num 32 && "
+        "ceph osd pool set volumes pg_num 32"
+    )
 
 
 def test_get_command_mark_osd_out_in_down_build_expected_commands():

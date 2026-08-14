@@ -16,6 +16,10 @@ action_ids:
   # PG id, which is why THAT one still has no command — see commands.py),
   # so this is safe to add to the closed enum the same way resync_ntp is.
   - crash_archive_all
+  # OSD_UPGRADE_FINISHED: Ceph health detail carries the release codename;
+  # the Worker resolves it deterministically and proposes the compatibility
+  # floor change for operator approval.
+  - finalize_osd_release
 
 # 2026-07-23: cluster-MANAGEMENT actions the Chat-with-AI feature
 # (dashboard/chat_client.py) can propose — deliberately a SEPARATE list from
@@ -29,6 +33,7 @@ action_ids:
 # VALID_MANAGEMENT_ACTION_IDS; worker/llm/router_client.py's VALID_ACTION_IDS
 # (Incident-diagnosis enum) is untouched by this list's existence.
 management_action_ids:
+  - execute_node_command
   - create_pool
   - delete_pool
   - set_pool_size
@@ -268,7 +273,9 @@ safe:
   - crash_archive_all
 
 risky:
+  - execute_node_command
   - restart_osd_daemon
+  - finalize_osd_release
   # RAM >= 90% across two slow health scans. A forced host reboot can
   # interrupt MON/OSD traffic, so it must never run without approval.
   - hard_reboot_node

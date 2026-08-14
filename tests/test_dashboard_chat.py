@@ -25,6 +25,60 @@ def _login(client):
     client.post("/login", data={"username": "admin", "password": "admin"})
 
 
+def _seed_node_command_proposal(session_id="node-command-session"):
+    with db_module.SessionLocal() as session:
+        message = ChatMessage(
+            session_id=session_id,
+            role="assistant",
+            content="Node: 10.20.1.150; command: systemctl restart ceph-mon@a. Nhập OK để chạy.",
+            actor="admin",
+            proposed_action_id="execute_node_command",
+            proposed_target_nodes=json.dumps([A_MON_HOST]),
+            proposed_action_params=json.dumps({"command": "systemctl restart ceph-mon@a"}),
+            proposed_rationale="Restart MON theo yêu cầu admin",
+            proposed_command_preview="systemctl restart ceph-mon@a",
+            proposed_status="PENDING",
+        )
+        session.add(message)
+        session.commit()
+        return message.id
+
+
+def test_node_command_runs_only_after_exact_next_message_ok(dashboard_client):
+    _login(dashboard_client)
+    message_id = _seed_node_command_proposal()
+
+    response = dashboard_client.post(
+        "/api/chat/messages", json={"session_id": "node-command-session", "content": "OK"}
+    )
+
+    assert response.status_code == 200
+    assert "chuyển cho Worker" in response.json()["assistant_message"]["content"]
+    with db_module.SessionLocal() as session:
+        message = session.get(ChatMessage, message_id)
+        action = session.query(Action).filter(Action.incident_id == message.proposed_incident_id).one()
+        assert message.proposed_status == "CONFIRMED"
+        assert action.action_id == "execute_node_command"
+        assert action.status == ActionStatus.APPROVED.value
+        assert action.target_nodes == json.dumps([A_MON_HOST])
+        assert action.proposed_command == "systemctl restart ceph-mon@a"
+
+
+def test_node_command_is_cancelled_when_next_message_is_not_exact_ok(dashboard_client):
+    _login(dashboard_client)
+    message_id = _seed_node_command_proposal("cancel-command-session")
+
+    response = dashboard_client.post(
+        "/api/chat/messages", json={"session_id": "cancel-command-session", "content": "Ok"}
+    )
+
+    assert response.status_code == 200
+    assert "đã huỷ" in response.json()["assistant_message"]["content"]
+    with db_module.SessionLocal() as session:
+        assert session.get(ChatMessage, message_id).proposed_status == "CANCELLED"
+        assert session.query(Action).filter(Action.action_id == "execute_node_command").count() == 0
+
+
 def test_chat_preferences_default_and_update_are_scoped_to_login(dashboard_client):
     _login(dashboard_client)
 

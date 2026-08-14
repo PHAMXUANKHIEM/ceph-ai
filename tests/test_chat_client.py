@@ -383,6 +383,8 @@ def test_node_journal_tool_is_exposed_only_to_admin():
     user_names = {item["function"]["name"] for item in chat_client._tool_schemas(is_admin=False)}
     assert "get_node_journal" in admin_names
     assert "get_node_journal" not in user_names
+    assert "propose_node_command" in admin_names
+    assert "propose_node_command" not in user_names
 
 
 def test_admin_can_read_mon_journal_on_configured_mon(monkeypatch):

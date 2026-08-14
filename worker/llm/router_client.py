@@ -12,7 +12,7 @@ import yaml
 from config.settings import settings
 from shared import audit, db
 from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
-from shared.ceph_releases import codename_for_version
+from shared.ceph_releases import RELEASES, codename_for_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.router_client import build_router_client
 from shared.codex_app_server import CodexAppServerError, codex_app_server
@@ -60,10 +60,49 @@ AI_EXECUTABLE_ACTION_IDS = frozenset(
     action_id for action_id in VALID_ACTION_IDS if commands.has_command(action_id)
 ) | frozenset({"enable_pool_application"})
 _POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
+_POOL_TOO_FEW_PGS_CODE = "POOL_TOO_FEW_PGS"
+_OSD_UPGRADE_FINISHED_CODE = "OSD_UPGRADE_FINISHED"
+_KNOWN_CEPH_CODENAMES = frozenset(row["codename"] for row in RELEASES.values())
 _POOL_NAME_PATTERNS = (
     re.compile(r"pool ['\"]([^'\"]+)['\"]", re.IGNORECASE),
     re.compile(r"pool\s+([A-Za-z0-9_.-]+)", re.IGNORECASE),
 )
+_POOL_TOO_FEW_PGS_PATTERN = re.compile(
+    r"Pool\s+['\"]?([A-Za-z0-9_.-]+)['\"]?\s+has\s+(\d+)\s+placement groups?,\s*"
+    r"should have\s+(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _pool_pg_adjustments_from_health_detail(envelope: dict) -> list[dict]:
+    """Extract Ceph's exact per-pool PG targets; never ask the LLM to guess them."""
+    check = (
+        ((envelope.get("cluster_snapshot") or {}).get("checks") or {}).get(
+            _POOL_TOO_FEW_PGS_CODE
+        )
+        or {}
+    )
+    messages = [
+        str(row.get("message") or "")
+        for row in check.get("detail", [])
+        if isinstance(row, dict)
+    ]
+    # Some Ceph versions/transports leave detail out of the snapshot but
+    # preserve it in the incident excerpt.
+    messages.append(str(envelope.get("log_excerpt") or ""))
+
+    by_pool: dict[str, dict] = {}
+    for message in messages:
+        for match in _POOL_TOO_FEW_PGS_PATTERN.finditer(message):
+            pool_name, current_raw, target_raw = match.groups()
+            current, target = int(current_raw), int(target_raw)
+            if 1 <= current < target <= 32768:
+                by_pool[pool_name] = {
+                    "pool_name": pool_name,
+                    "current_pg_num": current,
+                    "pg_num": target,
+                }
+    return list(by_pool.values())
 
 
 def _pool_name_from_snapshot(envelope: dict) -> str | None:
@@ -71,6 +110,25 @@ def _pool_name_from_snapshot(envelope: dict) -> str | None:
     for pattern in _POOL_NAME_PATTERNS:
         match = pattern.search(text)
         if match:
+            return match.group(1)
+    return None
+
+
+def _osd_upgrade_finished_release(envelope: dict) -> str | None:
+    """Extract only a known Ceph codename from OSD_UPGRADE_FINISHED evidence."""
+    evidence = " ".join(
+        (
+            str(envelope.get("log_excerpt") or ""),
+            json.dumps(envelope.get("cluster_snapshot") or {}, ensure_ascii=False),
+        )
+    ).lower()
+    patterns = (
+        r"all osds are running\s+([a-z][a-z0-9-]+)\s+or later",
+        r"require_osd_release\s*(?:<|is below)\s*([a-z][a-z0-9-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, evidence)
+        if match and match.group(1) in _KNOWN_CEPH_CODENAMES:
             return match.group(1)
     return None
 
@@ -302,10 +360,47 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     diagnosis_text = (result.get("diagnosis_text") or "").strip()
     action_id = (result.get("action_id") or "").strip()
     rationale = (result.get("rationale") or "").strip()
-    if not diagnosis_text or not rationale or action_id not in AI_EXECUTABLE_ACTION_IDS:
+    deterministic_code = envelope.get("ceph_code") in {
+        _OSD_UPGRADE_FINISHED_CODE,
+        _POOL_TOO_FEW_PGS_CODE,
+    }
+    if (
+        not diagnosis_text
+        or not rationale
+        or (not deterministic_code and action_id not in AI_EXECUTABLE_ACTION_IDS)
+    ):
         raise RouterDiagnosisError(
             f"invalid router response for incident {incident_id}: "
             f"action_id={action_id!r}, diagnosis_text={diagnosis_text!r}, rationale={rationale!r}"
+        )
+
+    osd_release = None
+    pool_pg_adjustments = None
+    if envelope.get("ceph_code") == _OSD_UPGRADE_FINISHED_CODE:
+        osd_release = _osd_upgrade_finished_release(envelope)
+        if osd_release is None:
+            raise RouterDiagnosisError(
+                "OSD_UPGRADE_FINISHED không chứa release Ceph đã biết; từ chối đoán lệnh require-osd-release"
+            )
+        action_id = "finalize_osd_release"
+        rationale = (
+            f"Tất cả OSD đã chạy {osd_release} hoặc mới hơn nhưng require_osd_release vẫn thấp hơn; "
+            f"đề xuất chạy `ceph osd require-osd-release {osd_release}` để hoàn tất nâng cấp và xoá cảnh báo."
+        )
+    elif envelope.get("ceph_code") == _POOL_TOO_FEW_PGS_CODE:
+        pool_pg_adjustments = _pool_pg_adjustments_from_health_detail(envelope)
+        if not pool_pg_adjustments:
+            raise RouterDiagnosisError(
+                "POOL_TOO_FEW_PGS không chứa pool/PG mục tiêu hợp lệ; từ chối đoán tham số lệnh"
+            )
+        action_id = "set_pool_pg_num"
+        changes = ", ".join(
+            f"{item['pool_name']}: {item['current_pg_num']} -> {item['pg_num']}"
+            for item in pool_pg_adjustments
+        )
+        rationale = (
+            "Ceph health detail đã chỉ rõ PG mục tiêu cho từng pool; "
+            f"đề xuất điều chỉnh đúng các giá trị này ({changes})."
         )
     logger.info("diagnose_incident: incident %s rationale: %s", incident_id, rationale)
 
@@ -380,7 +475,21 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # Park this as a Telegram choice even though the generic
                 # policy classifies the metadata update as SAFE.
                 classification = ActionClassification.RISKY
+            if pool_pg_adjustments is not None:
+                # Increasing PGs redistributes data, so an incident-driven
+                # proposal must be explicitly approved even though the same
+                # management action from operator-confirmed Chat is SAFE.
+                classification = ActionClassification.RISKY
             nodes = envelope.get("nodes")
+            if action_id == "finalize_osd_release" and isinstance(nodes, list):
+                nodes = nodes[:1]
+            action_params = None
+            if osd_release is not None:
+                action_params = {"release": osd_release}
+            elif pool_pg_adjustments is not None:
+                action_params = {"adjustments": pool_pg_adjustments}
+            elif pool_name:
+                action_params = {"pool_name": pool_name}
             action = Action(
                 incident_id=incident_id,
                 action_id=action_id,
@@ -391,7 +500,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # (Story 4.3), which runs from a DB poll long after this
                 # envelope is gone, still knows which host(s) to target.
                 target_nodes=json.dumps(nodes) if isinstance(nodes, list) else None,
-                action_params=(json.dumps({"pool_name": pool_name}) if pool_name else None),
+                action_params=json.dumps(action_params) if action_params else None,
             )
             session.add(action)
             session.commit()
@@ -1312,14 +1421,17 @@ def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -
     """Story 4.2: resolve the proposed command (best-effort — some
     action_ids have none, see worker/executor/commands.py's Epic-4 note)
     purely for display, then park the Action/Incident at PENDING_APPROVAL."""
-    try:
-        command = commands.get_command(action_id)
-    except ExecutorError:
-        command = None
-
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         incident = session.get(Incident, incident_id)
+        try:
+            params = json.loads(action.action_params) if action and action.action_params else None
+        except (TypeError, ValueError):
+            params = None
+        try:
+            command = commands.get_command(action_id, params=params)
+        except ExecutorError:
+            command = None
         if action is None:
             logger.warning(
                 "_route_risky_to_approval: no Action row for pk=%s (incident %s)",

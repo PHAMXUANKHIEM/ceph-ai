@@ -142,17 +142,28 @@
     var actionsDiv = document.createElement("div");
     actionsDiv.className = "chat-proposal-actions";
     if (message.proposed_status === "PENDING") {
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-approve btn-sm chat-confirm-btn";
-      btn.dataset.messageId = message.id;
-      btn.textContent = "Thực hiện";
-      actionsDiv.appendChild(btn);
+      if (message.proposed_action_id === "execute_node_command") {
+        var okHint = document.createElement("strong");
+        okHint.textContent = "Nhập chính xác OK ở tin nhắn kế tiếp để thực hiện.";
+        actionsDiv.appendChild(okHint);
+      } else {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-approve btn-sm chat-confirm-btn";
+        btn.dataset.messageId = message.id;
+        btn.textContent = "Thực hiện";
+        actionsDiv.appendChild(btn);
+      }
     } else if (message.proposed_status === "CONFIRMED") {
       var span = document.createElement("span");
       span.className = "chat-proposal-confirmed";
       span.textContent = "✓ Đã tạo yêu cầu — xem tiến trình ở Dashboard";
       actionsDiv.appendChild(span);
+    } else if (message.proposed_status === "CANCELLED") {
+      var cancelled = document.createElement("span");
+      cancelled.className = "hint";
+      cancelled.textContent = "Đã huỷ — tin nhắn kế tiếp không phải OK.";
+      actionsDiv.appendChild(cancelled);
     }
     wrap.appendChild(actionsDiv);
 

@@ -246,6 +246,19 @@ def _set_pool_size_command(params: dict) -> str:
 
 
 def _set_pool_pg_num_command(params: dict) -> str:
+    adjustments = params.get("adjustments") if isinstance(params, dict) else None
+    if adjustments is not None:
+        if not isinstance(adjustments, list) or not adjustments:
+            raise ExecutorError("adjustments must be a non-empty list")
+        commands = []
+        for adjustment in adjustments:
+            if not isinstance(adjustment, dict):
+                raise ExecutorError(f"invalid pool PG adjustment: {adjustment!r}")
+            pool_name = _require_pool_name(adjustment)
+            pg_num = _require_int(adjustment, "pg_num", _PG_NUM_RANGE)
+            commands.append(f"ceph osd pool set {shlex.quote(pool_name)} pg_num {pg_num}")
+        return " && ".join(commands)
+
     pool_name = _require_pool_name(params)
     pg_num = _require_int(params, "pg_num", _PG_NUM_RANGE)
     return f"ceph osd pool set {shlex.quote(pool_name)} pg_num {pg_num}"
@@ -291,6 +304,17 @@ def _finalize_pacific_osd_release_command(params: dict) -> str:
     return "ceph osd require-osd-release pacific --yes-i-really-mean-it"
 
 
+_CEPH_RELEASE_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
+
+
+def _finalize_osd_release_command(params: dict) -> str:
+    """Build the approval-gated OSD compatibility-floor command."""
+    release = params.get("release")
+    if not isinstance(release, str) or not _CEPH_RELEASE_RE.fullmatch(release):
+        raise ExecutorError(f"invalid or missing Ceph release: {release!r}")
+    return f"ceph osd require-osd-release {shlex.quote(release)}"
+
+
 def _rbd_trash_remove_command(params: dict) -> str:
     """Permanently deletes an RBD image an operator already soft-deleted
     into a pool's trash (dashboard/routes/volumes.py's "Xoá" button on the
@@ -304,7 +328,17 @@ def _rbd_trash_remove_command(params: dict) -> str:
     return f"rbd trash rm {shlex.quote(pool_name)}/{shlex.quote(trash_id)}"
 
 
+def _execute_node_command(params: dict) -> str:
+    command = params.get("command")
+    if not isinstance(command, str) or not command.strip() or len(command) > 2000:
+        raise ExecutorError("command must be a non-empty string of at most 2000 characters")
+    if "\x00" in command or "\n" in command or "\r" in command:
+        raise ExecutorError("command must be a single shell line without NUL/newline characters")
+    return command.strip()
+
+
 _MANAGEMENT_COMMAND_BUILDERS = {
+    "execute_node_command": _execute_node_command,
     "create_pool": _create_pool_command,
     "delete_pool": _delete_pool_command,
     "set_pool_size": _set_pool_size_command,
@@ -315,6 +349,10 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "enable_pool_application": _enable_pool_application_command,
     "finalize_pacific_osd_release": _finalize_pacific_osd_release_command,
     "rbd_trash_remove": _rbd_trash_remove_command,
+}
+
+_INCIDENT_PARAMETER_COMMAND_BUILDERS = {
+    "finalize_osd_release": _finalize_osd_release_command,
 }
 
 # 2026-08-01 (Story C, DeviceHealth-driven evacuation): a SEPARATE dict from
@@ -1168,6 +1206,8 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
         return _restart_osd_daemon_command(host)
     if action_id in _MANAGEMENT_COMMAND_BUILDERS:
         return _MANAGEMENT_COMMAND_BUILDERS[action_id](params or {})
+    if action_id in _INCIDENT_PARAMETER_COMMAND_BUILDERS:
+        return _INCIDENT_PARAMETER_COMMAND_BUILDERS[action_id](params or {})
     if action_id in _DEVICE_HEALTH_COMMAND_BUILDERS:
         return _DEVICE_HEALTH_COMMAND_BUILDERS[action_id](params or {})
     if action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS:
@@ -1205,6 +1245,7 @@ def has_command(action_id: str) -> bool:
     return (
         action_id == "restart_osd_daemon"
         or action_id in _MANAGEMENT_COMMAND_BUILDERS
+        or action_id in _INCIDENT_PARAMETER_COMMAND_BUILDERS
         or action_id in _DEVICE_HEALTH_COMMAND_BUILDERS
         or action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS
         or action_id in _PATCH_COMMAND_BUILDERS

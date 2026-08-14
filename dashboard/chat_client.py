@@ -43,7 +43,7 @@ MAX_HISTORY_MESSAGES = 20
 # rbd_trash_remove shares the management command-builder family but belongs
 # to the Volumes page, not free-form Chat. The remaining management actions
 # and the approval-gated BlueStore repair are valid Chat proposals.
-CHAT_MANAGEMENT_ACTION_IDS = VALID_MANAGEMENT_ACTION_IDS - {"rbd_trash_remove"}
+CHAT_MANAGEMENT_ACTION_IDS = VALID_MANAGEMENT_ACTION_IDS - {"rbd_trash_remove", "execute_node_command"}
 CHAT_ACTION_IDS = VALID_ACTION_IDS | CHAT_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS
 
 # A tool_result this large fed a well-behaved model into replying with a
@@ -59,6 +59,7 @@ MAX_TOOL_RESULT_CHARS = 4000
 TOOL_LIST_NODES = "list_nodes"
 TOOL_GET_NODE_METRICS = "get_node_metrics"
 TOOL_GET_NODE_JOURNAL = "get_node_journal"
+TOOL_PROPOSE_NODE_COMMAND = "propose_node_command"
 TOOL_PROPOSE_ACTION = "propose_action"
 TOOL_GET_RBD_TRASH = "get_rbd_trash"
 _POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -144,6 +145,9 @@ def system_prompt(*, ceph_restricted: bool = True, ai_name: str = "AI") -> str:
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
     "- Với admin cần chẩn đoán log dịch vụ trên một node → dùng get_node_journal; "
     "tool này đọc journalctl trực tiếp, read-only và không restart dịch vụ\n"
+    "- Khi admin yêu cầu chạy shell command trực tiếp trên node → dùng propose_node_command. "
+    "Chỉ hiển thị node+lệnh và yêu cầu admin nhập chính xác OK ở TIN NHẮN KẾ TIẾP; "
+    "không được tự xác nhận hoặc nói lệnh đã chạy\n"
     "- Khi muốn thực hiện lệnh Ceph bất kỳ (read-only) → dùng run_ceph_command\n"
     "- Khi hỏi RBD trash → BẮT BUỘC dùng get_rbd_trash với tên pool; KHÔNG gọi "
     "run_ceph_command và KHÔNG tự dựng lệnh 'ceph rbd ...' (RBD là CLI riêng)\n"
@@ -274,6 +278,22 @@ def _tool_schemas(*, is_admin: bool = False) -> list[dict]:
                         "lines": {"type": "integer", "minimum": 20, "maximum": 500},
                     },
                     "required": ["host", "service", "lines"],
+                    "additionalProperties": False,
+                },
+            )
+        )
+        tools.append(
+            _fn(
+                TOOL_PROPOSE_NODE_COMMAND,
+                "Admin-only: đề xuất chạy shell command trên một node. Không chạy ngay; admin phải nhập chính xác OK ở tin nhắn kế tiếp.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string", "enum": hosts},
+                        "command": {"type": "string", "maxLength": 2000},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["host", "command", "rationale"],
                     "additionalProperties": False,
                 },
             )
@@ -411,6 +431,29 @@ def _run_get_node_journal(args: dict, actor: str | None) -> str:
         return json.dumps({"host": host, "service": service, "lines": run_command_on_node(host, command).splitlines()})
     except CephQueryError as exc:
         raise ChatToolError(f"Không đọc được journalctl trên {host}: {exc}") from exc
+
+
+def _validate_node_command_proposal(args: dict, actor: str) -> dict:
+    if not auth.is_admin_user(actor):
+        raise ChatToolError("Chỉ tài khoản admin được đề xuất lệnh trực tiếp trên node")
+    host = args.get("host")
+    if host not in {node["host"] for node in configured_nodes()}:
+        raise ChatToolError(f"host {host!r} không nằm trong danh sách node đã cấu hình")
+    params = {"command": args.get("command")}
+    try:
+        command = executor_commands.get_command("execute_node_command", host, params)
+    except ExecutorError as exc:
+        raise ChatToolError(str(exc)) from exc
+    rationale = str(args.get("rationale") or "").strip()
+    if not rationale:
+        raise ChatToolError("rationale không được để trống")
+    return {
+        "action_id": "execute_node_command",
+        "target_nodes": [host],
+        "rationale": rationale,
+        "params": params,
+        "command_preview": command,
+    }
 
 
 def _run_get_rbd_trash(args: dict) -> str:
@@ -668,14 +711,20 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
 
         messages.append(msg.model_dump(exclude_none=True))
 
-        propose_call = next((c for c in tool_calls if c.function.name == TOOL_PROPOSE_ACTION), None)
+        propose_call = next(
+            (c for c in tool_calls if c.function.name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}),
+            None,
+        )
         if propose_call is not None:
             try:
                 args = json.loads(propose_call.function.arguments or "{}")
-                proposal = _validate_proposal(args)
-                proposal["command_preview"] = resolve_command_preview(
-                    proposal["action_id"], proposal["target_nodes"], proposal["params"]
-                )
+                if propose_call.function.name == TOOL_PROPOSE_NODE_COMMAND:
+                    proposal = _validate_node_command_proposal(args, actor)
+                else:
+                    proposal = _validate_proposal(args)
+                    proposal["command_preview"] = resolve_command_preview(
+                        proposal["action_id"], proposal["target_nodes"], proposal["params"]
+                    )
             except (ChatToolError, TypeError, ValueError) as exc:
                 reply_text_parts.append(f"[Đề xuất hành động không hợp lệ, đã bỏ qua: {exc}]")
                 proposal = None
@@ -728,8 +777,11 @@ async def _run_codex_chat_turn(
 
     async def handle_tool(name: str, args: dict) -> tuple[str, bool]:
         nonlocal proposal
-        if name == TOOL_PROPOSE_ACTION:
+        if name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}:
             try:
+                if name == TOOL_PROPOSE_NODE_COMMAND:
+                    proposal = _validate_node_command_proposal(args, actor)
+                    return "Đề xuất đã tạo. Admin phải nhập chính xác OK ở tin nhắn kế tiếp.", True
                 proposal = _validate_proposal(args)
                 proposal["command_preview"] = resolve_command_preview(
                     proposal["action_id"], proposal["target_nodes"], proposal["params"]

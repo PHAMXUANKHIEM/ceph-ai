@@ -152,6 +152,61 @@ def test_diagnose_incident_creates_risky_action_for_risky_action_id(isolated_db,
         assert actions[0].classification == ActionClassification.RISKY.value
 
 
+def test_pool_too_few_pgs_uses_exact_health_detail_targets(isolated_db, monkeypatch):
+    async def fake_call_router(user_content):
+        # The model is allowed to diagnose the warning, but command parameters
+        # must come from Ceph's structured health detail, not this response.
+        return {
+            "diagnosis_text": "Hai pool đang có ít PG hơn mức Ceph khuyến nghị.",
+            "action_id": "resync_ntp",
+            "rationale": "generic model recommendation",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("incident-too-few-pgs")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-too-few-pgs")
+        incident.ceph_code = "POOL_TOO_FEW_PGS"
+        session.commit()
+
+    envelope = dict(
+        ENVELOPE,
+        incident_id="incident-too-few-pgs",
+        ceph_code="POOL_TOO_FEW_PGS",
+        cluster_snapshot={
+            "status": "HEALTH_WARN",
+            "checks": {
+                "POOL_TOO_FEW_PGS": {
+                    "severity": "HEALTH_WARN",
+                    "summary": {"message": "2 pools have too few placement groups"},
+                    "detail": [
+                        {"message": "Pool images has 16 placement groups, should have 32"},
+                        {"message": "Pool volumes has 16 placement groups, should have 32"},
+                    ],
+                }
+            },
+        },
+    )
+
+    asyncio.run(router_client.diagnose_incident("incident-too-few-pgs", envelope))
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-too-few-pgs").one()
+        assert action.action_id == "set_pool_pg_num"
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert json.loads(action.action_params) == {
+            "adjustments": [
+                {"pool_name": "images", "current_pg_num": 16, "pg_num": 32},
+                {"pool_name": "volumes", "current_pg_num": 16, "pg_num": 32},
+            ]
+        }
+        assert action.proposed_command == (
+            "ceph osd pool set images pg_num 32 && "
+            "ceph osd pool set volumes pg_num 32"
+        )
+
+
 def test_diagnose_incident_auto_rejects_risky_action_while_upgrade_in_flight(
     isolated_db, monkeypatch
 ):
@@ -273,6 +328,60 @@ def test_diagnose_incident_keeps_restart_osd_daemon_risky(isolated_db, monkeypat
         action = session.query(Action).filter_by(incident_id="incident-auto-2").one()
         assert action.classification == ActionClassification.RISKY.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_osd_upgrade_finished_always_proposes_release_command(isolated_db, monkeypatch):
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "Nâng cấp OSD đã hoàn tất nhưng compatibility floor còn thấp.",
+            "action_id": "restart_osd_daemon",
+            "rationale": "LLM output is deliberately overridden for this health code.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("incident-osd-upgrade-finished")
+    envelope = dict(
+        ENVELOPE,
+        incident_id="incident-osd-upgrade-finished",
+        ceph_code="OSD_UPGRADE_FINISHED",
+        nodes=["10.20.1.83", "10.20.1.84"],
+        log_excerpt=(
+            "all OSDs are running pacific or later but require_osd_release < pacific"
+        ),
+    )
+
+    asyncio.run(router_client.diagnose_incident("incident-osd-upgrade-finished", envelope))
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-osd-upgrade-finished").one()
+        assert action.action_id == "finalize_osd_release"
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert json.loads(action.action_params) == {"release": "pacific"}
+        assert json.loads(action.target_nodes) == ["10.20.1.83"]
+        assert action.proposed_command == "ceph osd require-osd-release pacific"
+        assert "ceph osd require-osd-release pacific" in action.rationale
+
+
+def test_osd_upgrade_finished_does_not_guess_unknown_release(isolated_db, monkeypatch):
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "OSD upgrade warning.",
+            "action_id": "restart_osd_daemon",
+            "rationale": "Needs inspection.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("incident-osd-upgrade-unknown")
+    envelope = dict(
+        ENVELOPE,
+        incident_id="incident-osd-upgrade-unknown",
+        ceph_code="OSD_UPGRADE_FINISHED",
+        log_excerpt="all OSDs are running futureceph or later",
+    )
+
+    with pytest.raises(router_client.RouterDiagnosisError, match="không chứa release Ceph đã biết"):
+        asyncio.run(router_client.diagnose_incident("incident-osd-upgrade-unknown", envelope))
 
 
 def test_diagnose_incident_raises_when_no_tool_use_block(isolated_db, monkeypatch):

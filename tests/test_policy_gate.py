@@ -48,12 +48,18 @@ def test_risky_action_ids_loaded_from_policy_yaml():
 
     assert "restart_osd_daemon" in gate.RISKY_ACTION_IDS
     assert "pg_repair_force" in gate.RISKY_ACTION_IDS
+    assert "finalize_osd_release" in gate.RISKY_ACTION_IDS
+
+    import worker.llm.router_client as router_client
+
+    assert "finalize_osd_release" in router_client.VALID_ACTION_IDS
 
 
 def test_management_action_ids_loaded_from_policy_yaml():
     import worker.policy.gate as gate
 
     assert gate.VALID_MANAGEMENT_ACTION_IDS == {
+        "execute_node_command",
         "create_pool",
         "delete_pool",
         "set_pool_size",

@@ -291,21 +291,74 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         # DetachedInstanceError the first time a conversation had any prior
         # history (never on a conversation's first message, which is why
         # this shipped unnoticed — see run_chat_turn()'s docstring).
+        recent_messages = (
+            session.query(ChatMessage)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(MAX_HISTORY_MESSAGES)
+            .all()
+        )
         history = [
             {"role": m.role, "content": m.content}
-            for m in reversed(
-                session.query(ChatMessage)
-                .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(MAX_HISTORY_MESSAGES)
-                .all()
-            )
+            for m in reversed(recent_messages)
         ]
+        previous = recent_messages[0] if recent_messages else None
+        pending_node_command_id = (
+            previous.id
+            if previous is not None
+            and previous.role == "assistant"
+            and previous.proposed_action_id == "execute_node_command"
+            and previous.proposed_status == "PENDING"
+            else None
+        )
         user_message = ChatMessage(session_id=session_id, role="user", content=text, actor=user)
         session.add(user_message)
         session.commit()
         session.refresh(user_message)
         user_message_dict = _message_to_dict(user_message)
+
+    if pending_node_command_id is not None:
+        ai_name = auth.chat_ai_name(user)
+        if text != "OK" or not auth.is_admin_user(user):
+            with db.SessionLocal() as session:
+                pending = session.get(ChatMessage, pending_node_command_id)
+                if pending is not None and pending.proposed_status == "PENDING":
+                    pending.proposed_status = "CANCELLED"
+                assistant_message = ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=with_romantic_address(
+                        "Đề xuất lệnh trên node đã huỷ vì tin nhắn kế tiếp không phải chính xác `OK`.",
+                        ai_name,
+                    ),
+                    actor=user,
+                )
+                session.add(assistant_message)
+                session.commit()
+                session.refresh(assistant_message)
+                return {"user_message": user_message_dict, "assistant_message": _message_to_dict(assistant_message)}
+
+        await _confirm_chat_action_core(pending_node_command_id, user, allow_node_command=True)
+        from dashboard.routes.actions import approve_action_core
+        with db.SessionLocal() as session:
+            pending = session.get(ChatMessage, pending_node_command_id)
+            action = session.query(Action).filter(Action.incident_id == pending.proposed_incident_id).one()
+            action_id = action.id
+        approve_action_core(action_id, user)
+        with db.SessionLocal() as session:
+            assistant_message = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=with_romantic_address(
+                    "Đã xác nhận `OK`. Lệnh đã được chuyển cho Worker thực hiện trên node đã chọn.",
+                    ai_name,
+                ),
+                actor=user,
+            )
+            session.add(assistant_message)
+            session.commit()
+            session.refresh(assistant_message)
+            return {"user_message": user_message_dict, "assistant_message": _message_to_dict(assistant_message)}
 
     # Fails fast, before ever building a tool loop, with the exact sentinel
     # text dashboard/static/chat_widget.js matches on to render a clickable
@@ -371,8 +424,9 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     return {"user_message": user_message_dict, "assistant_message": assistant_message_dict}
 
 
-@router.post("/api/chat/messages/{message_id}/confirm-action")
-async def confirm_chat_action(message_id: str, user: str = Depends(require_login)):
+async def _confirm_chat_action_core(
+    message_id: str, user: str, *, allow_node_command: bool = False
+):
     """The ONLY place a chat conversation can turn into a real Incident/Action
     row — requires an explicit operator click (never triggered by Claude, see
     dashboard/chat_client.py's SYSTEM_PROMPT), and re-validates the proposal
@@ -397,6 +451,11 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
             return _message_to_dict(message)
 
         action_id = message.proposed_action_id
+        if action_id == "execute_node_command" and not allow_node_command:
+            raise HTTPException(
+                status_code=400,
+                detail="Lệnh trực tiếp trên node chỉ được xác nhận bằng cách nhập OK ở tin nhắn kế tiếp",
+            )
         try:
             target_nodes = (
                 json.loads(message.proposed_target_nodes) if message.proposed_target_nodes else None
@@ -507,3 +566,8 @@ async def confirm_chat_action(message_id: str, user: str = Depends(require_login
         session.commit()
         session.refresh(message)
         return _message_to_dict(message)
+
+
+@router.post("/api/chat/messages/{message_id}/confirm-action")
+async def confirm_chat_action(message_id: str, user: str = Depends(require_login)):
+    return await _confirm_chat_action_core(message_id, user)
