@@ -162,7 +162,7 @@
       { label: "Pool", paths: ["/pools", "/pgs", "/trash"] },
       { label: "Object Storage", paths: ["/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage"] },
-      { label: "OpenStack", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
+      { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },

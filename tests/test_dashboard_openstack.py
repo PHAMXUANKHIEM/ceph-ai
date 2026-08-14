@@ -70,12 +70,12 @@ def test_auth_pool_page_loads_users_and_pools(dashboard_client, monkeypatch):
     assert 'class="tabbed-sidebar"' not in response.text
 
 
-def test_main_sidebar_defines_openstack_group():
+def test_main_sidebar_defines_ceph_auth_group():
     app_js = (openstack_route.templates.env.loader.searchpath[0] + "/../static/app.js")
     with open(app_js, encoding="utf-8") as source:
         content = source.read()
     assert (
-        '{ label: "OpenStack", paths: ["/openstack/auth-pool", '
+        '{ label: "ceph-auth", paths: ["/openstack/auth-pool", '
         '"/openstack/auth-user/create"] }'
     ) in content
 
