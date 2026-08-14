@@ -92,8 +92,8 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   }, [bootstrap.actionSuccess]);
 
   return (
-    <div className="pools-workspace min-h-[620px] rounded-xl p-4 font-sans sm:p-6">
-      <section className="pools-panel overflow-hidden rounded-lg border shadow-[0_4px_18px_rgba(15,23,42,0.08)]">
+    <div className="pools-workspace min-h-[620px] font-sans">
+      <section className="pools-panel overflow-hidden border">
         <header className="border-b border-slate-200 px-5 pt-5">
           <div className="flex items-center gap-2 pb-5">
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Pools</h1>
@@ -132,8 +132,8 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
         </div>
         {searchOpen && <div className="border-b border-slate-200 px-5 py-3"><label className="relative block max-w-md"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} autoFocus placeholder="Tìm theo tên, redundancy hoặc CRUSH rule..." className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-violet-400" /></label></div>}
 
-        <div className="overflow-x-auto px-3 pt-2 sm:px-5">
-          <table className="min-w-[1000px] w-full border-separate border-spacing-y-1 text-sm">
+        <div className="pools-table-wrap overflow-x-auto px-3 py-4 sm:px-5">
+          <table className="min-w-[1000px] w-full text-sm">
             <thead>
               <tr className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 <th className="w-5 px-1 py-3"><span className="sr-only">Health</span></th>
@@ -156,7 +156,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
                     onClick={() => setSelected(row.name)}
                     className={`${active ? "bg-blue-100" : index % 2 ? "bg-amber-50/70" : "bg-white"} cursor-pointer transition hover:bg-violet-50 focus-within:bg-violet-50`}
                   >
-                    <td className="rounded-l-md px-1 py-3"><span className="block h-2.5 w-2.5 rounded-full bg-orange-400 ring-2 ring-orange-100" /></td>
+                    <td className="px-3 py-3"><span className="block h-2.5 w-2.5 rounded-full bg-orange-400 ring-2 ring-orange-100" /></td>
                     <td className="px-3 py-3 font-semibold text-slate-800">{row.name}</td>
                     {visible.redundancy && <td className="px-3 py-3 text-slate-600">{row.redundancy}</td>}
                     {visible.pgs && <td className="px-3 py-3 text-right tabular-nums">{row.pgs}</td>}
@@ -164,7 +164,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
                     {visible.used && <td className="px-3 py-3 text-right tabular-nums">{row.used}</td>}
                     {visible.objects && <td className="px-3 py-3 text-right tabular-nums">{row.objects.toLocaleString()}</td>}
                     {visible.read_iops && <td className="px-3 py-3 text-right tabular-nums">{row.read_iops.toLocaleString()}</td>}
-                    {visible.write_iops && <td className="rounded-r-md px-3 py-3 text-right tabular-nums">{row.write_iops.toLocaleString()}</td>}
+                    {visible.write_iops && <td className="px-3 py-3 text-right tabular-nums">{row.write_iops.toLocaleString()}</td>}
                   </tr>
                 );
               })}
