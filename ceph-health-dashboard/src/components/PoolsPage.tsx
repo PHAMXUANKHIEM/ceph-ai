@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Brush,
   ChevronDown,
@@ -77,6 +77,19 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const filteredRows = useMemo(() => rows.filter((row) => `${row.name} ${row.redundancy} ${row.crush_rule}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
   const actionLabels: Record<string, string> = { edit_pool: "cập nhật", scrub_pool: "scrub", delete_pool: "xóa", set_pool_protection: "đổi trạng thái bảo vệ" };
   const openSelected = (value: typeof modal) => { if (selectedRow) setModal(value); };
+
+  useEffect(() => {
+    if (bootstrap.actionSuccess !== "set_pool_protection") return;
+    // The POST queues work asynchronously. Reload after the Worker's normal
+    // polling window so the button reflects Ceph's real nodelete flag instead
+    // of the pre-action bootstrap payload returned by the immediate redirect.
+    const timer = window.setTimeout(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("action_success");
+      window.location.replace(url.toString());
+    }, 6500);
+    return () => window.clearTimeout(timer);
+  }, [bootstrap.actionSuccess]);
 
   return (
     <div className="pools-workspace min-h-[620px] rounded-xl p-4 font-sans sm:p-6">
