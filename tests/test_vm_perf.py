@@ -54,6 +54,7 @@ def test_run_executes_read_only_fio_inside_vm(monkeypatch):
     assert result is True
     fio_calls = [call for call in calls if "fio --name" in call[1]]
     assert len(fio_calls) == 4
+    assert all("sudo -n fio --name" in call[1] for call in fio_calls)
     assert all("--readonly" in call[1] and "--rw=randread" in call[1] for call in fio_calls)
     assert all(call[0] == "10.0.0.10" for call in calls)
     assert all(call[2:] == ("ceph-admin", "/keys/controller") for call in calls)
@@ -62,6 +63,11 @@ def test_run_executes_read_only_fio_inside_vm(monkeypatch):
     assert final["status"] == "done"
     assert final["result"]["device"] == "/dev/vdb"
     assert len(final["result"]["steps"]) == 2
+
+    prepare_call = next(call for call in calls if "lsblk" in call[1])
+    assert "sudo -n true" in prepare_call[1]
+    assert "sudo -n test -b /dev/vdb" in prepare_call[1]
+    assert "sudo -n lsblk" in prepare_call[1]
 
 
 def test_max_volume_performance_runs_three_samples_per_depth():

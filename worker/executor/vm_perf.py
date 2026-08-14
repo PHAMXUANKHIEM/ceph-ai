@@ -92,7 +92,7 @@ def _run_sample(
     iodepth: int,
 ) -> dict:
     command = (
-        "fio --name=ceph-ai-vm-read --readonly --rw=randread --bs=4k "
+        "sudo -n fio --name=ceph-ai-vm-read --readonly --rw=randread --bs=4k "
         f"--filename={shlex.quote(device)} --ioengine=libaio --direct=1 "
         f"--iodepth={iodepth} --numjobs=1 --runtime={FIO_RUNTIME_SECONDS} "
         f"--ramp_time={FIO_RAMP_SECONDS} --time_based --group_reporting "
@@ -127,9 +127,11 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
         progress[0]["started_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
         check = (
+            "sudo -n true >/dev/null 2>&1 || { "
+            "echo 'SSH user cần quyền sudo không mật khẩu để đọc block device' >&2; exit 22; }; "
             "command -v fio >/dev/null 2>&1 || { echo 'VM chưa cài fio' >&2; exit 20; }; "
-            f"test -b {shlex.quote(device)} || {{ echo '{shlex.quote(device)} không phải block device' >&2; exit 21; }}; "
-            f"lsblk -dn -o NAME,SIZE,TYPE,RO {shlex.quote(device)}"
+            f"sudo -n test -b {shlex.quote(device)} || {{ echo '{shlex.quote(device)} không phải block device' >&2; exit 21; }}; "
+            f"sudo -n lsblk -dn -o NAME,SIZE,TYPE,RO {shlex.quote(device)}"
         )
         controller_user = cluster.ssh_user if cluster is not None else None
         controller_key_path = cluster.ssh_key_path if cluster is not None else None
