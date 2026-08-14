@@ -605,6 +605,69 @@
     }
   }
 
+  // OpenStack settings only contain node addresses; this verifies the
+  // actual SSH path used later to copy Ceph config/keyring files. It uses
+  // current form values and never saves or changes a remote file.
+  var openstackTestBtn = document.getElementById("openstack-test-btn");
+  if (openstackTestBtn) {
+    var openstackForm = document.getElementById("openstack-settings-form");
+    var openstackResult = document.getElementById("openstack-test-result");
+    openstackTestBtn.addEventListener("click", function () {
+      openstackTestBtn.disabled = true;
+      openstackResult.hidden = false;
+      openstackResult.className = "ai-test-result";
+      openstackResult.textContent = "Đang kiểm tra kết nối...";
+      fetch("/settings/openstack/test", {
+        method: "POST", credentials: "same-origin", body: new FormData(openstackForm)
+      })
+        .then(handleAuthRedirect)
+        .then(function (response) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          openstackResult.classList.add(data.valid ? "ai-test-ok" : "ai-test-fail");
+          openstackResult.textContent = (data.valid ? "✅ " : "❌ ") + data.message;
+        })
+        .catch(function (err) {
+          if (err.message === "unauthenticated") return;
+          openstackResult.classList.add("ai-test-fail");
+          openstackResult.textContent = "❌ " + err.message;
+        })
+        .finally(function () { openstackTestBtn.disabled = false; });
+    });
+  }
+
+  var openstackVmTestBtn = document.getElementById("openstack-vm-test-btn");
+  if (openstackVmTestBtn) {
+    var openstackVmForm = document.getElementById("openstack-settings-form");
+    var openstackVmResult = document.getElementById("openstack-vm-test-result");
+    openstackVmTestBtn.addEventListener("click", function () {
+      openstackVmTestBtn.disabled = true;
+      openstackVmResult.hidden = false;
+      openstackVmResult.className = "ai-test-result";
+      openstackVmResult.textContent = "Đang SSH qua Controller tới VM...";
+      fetch("/settings/openstack/vm/test", {
+        method: "POST", credentials: "same-origin", body: new FormData(openstackVmForm)
+      })
+        .then(handleAuthRedirect)
+        .then(function (response) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          openstackVmResult.classList.add(data.valid ? "ai-test-ok" : "ai-test-fail");
+          openstackVmResult.textContent = (data.valid ? "✅ " : "❌ ") + data.message;
+        })
+        .catch(function (err) {
+          if (err.message === "unauthenticated") return;
+          openstackVmResult.classList.add("ai-test-fail");
+          openstackVmResult.textContent = "❌ " + err.message;
+        })
+        .finally(function () { openstackVmTestBtn.disabled = false; });
+    });
+  }
+
   // Kết nối cụm Ceph: only show the fields the currently-selected "Kiểu
   // deploy" actually needs (e.g. container-name inputs are meaningless
   // under cephadm/none — see dashboard/templates/settings.html's

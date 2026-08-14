@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import re
@@ -45,6 +46,7 @@ from shared.claude_cli import (
     submit_claude_authentication_code,
 )
 from shared.clusters import sync_default_cluster_from_settings
+from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
 from shared.models import Cluster
 from shared.router_client import list_router_models, readable_exception_message
@@ -55,6 +57,8 @@ from watcher.ceph_client import (
     read_public_key,
     ssh_key_path_error,
 )
+from worker.executor.ssh_executor import ExecutorError, execute_command
+from worker.executor.vm_perf import _vm_ssh_command
 
 logger = logging.getLogger(__name__)
 
@@ -971,6 +975,106 @@ async def openstack_settings_submit(
     return templates.TemplateResponse(request, "settings.html", _settings_context(
         user, openstack_success="Đã lưu cấu hình OpenStack và đường dẫn nhận file Ceph."
     ))
+
+
+def _test_openstack_node(host: str, ssh_user: str, ssh_key_path: str) -> tuple[str, str | None]:
+    """Run a read-only SSH probe and return ``(host, error)``."""
+    try:
+        execute_command(host, "printf CEPH_AIOPS_OPENSTACK_OK", user=ssh_user, key_path=ssh_key_path)
+        return host, None
+    except ExecutorError as exc:
+        return host, str(exc)
+
+
+@router.post("/settings/openstack/test")
+async def openstack_settings_test(
+    user: str = Depends(require_login),
+    controller_nodes: str = Form(""),
+    compute_nodes: str = Form(""),
+):
+    """Test SSH access to the entered OpenStack nodes without saving them."""
+    _require_admin_privilege(user)
+    controllers = _parse_node_list(controller_nodes)
+    computes = _parse_node_list(compute_nodes)
+    nodes = list(dict.fromkeys(controllers + computes))
+    if not controllers:
+        return {"valid": False, "message": "Vui lòng nhập ít nhất một OpenStack Controller node."}
+
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        if cluster is None:
+            return {"valid": False, "message": "Chưa có cụm Ceph mặc định để lấy thông tin SSH."}
+        ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
+
+    results = await asyncio.gather(*(
+        asyncio.to_thread(_test_openstack_node, host, ssh_user, ssh_key_path) for host in nodes
+    ))
+    failures = [(host, error) for host, error in results if error]
+    if failures:
+        detail = "; ".join(f"{host}: {error}" for host, error in failures)
+        return {
+            "valid": False,
+            "message": f"Kết nối thất bại {len(failures)}/{len(nodes)} node. {detail}",
+        }
+    return {
+        "valid": True,
+        "message": f"Kết nối SSH tới OpenStack thành công trên {len(nodes)}/{len(nodes)} node.",
+    }
+
+
+@router.post("/settings/openstack/vm/test")
+async def openstack_vm_ssh_test(
+    user: str = Depends(require_login),
+    controller_nodes: str = Form(""),
+    vm_ip: str = Form(""),
+    vm_ssh_user: str = Form(""),
+    vm_ssh_key_path: str = Form(""),
+):
+    """Test the real Controller -> VM second SSH hop without saving settings."""
+    _require_admin_privilege(user)
+    controllers = _parse_node_list(controller_nodes)
+    if not controllers:
+        return {"valid": False, "message": "Vui lòng nhập ít nhất một OpenStack Controller node."}
+    try:
+        ipaddress.ip_address(vm_ip.strip())
+    except ValueError:
+        return {"valid": False, "message": "IP của VM không hợp lệ."}
+    vm_user = vm_ssh_user.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", vm_user):
+        return {"valid": False, "message": "SSH user của VM không hợp lệ."}
+    vm_key = vm_ssh_key_path.strip()
+    if not vm_key.startswith("/") or "\x00" in vm_key or "\n" in vm_key:
+        return {
+            "valid": False,
+            "message": "SSH private key phải là đường dẫn tuyệt đối trên OpenStack Controller.",
+        }
+
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        if cluster is None:
+            return {"valid": False, "message": "Chưa có cụm Ceph mặc định để lấy thông tin SSH."}
+        controller_user, controller_key, _exec_mode, _container = resolve_ssh_creds(cluster)
+
+    second_hop = _vm_ssh_command(
+        vm_ip.strip(), vm_user, vm_key, "printf CEPH_AIOPS_VM_SSH_OK"
+    )
+    failures = []
+    for controller in controllers:
+        try:
+            await asyncio.to_thread(
+                execute_command, controller, second_hop,
+                user=controller_user, key_path=controller_key,
+            )
+            return {
+                "valid": True,
+                "message": f"SSH tới VM {vm_ip.strip()} thành công qua Controller {controller}.",
+            }
+        except ExecutorError as exc:
+            failures.append(f"{controller}: {exc}")
+    return {
+        "valid": False,
+        "message": "Không thể SSH tới VM qua các Controller. " + "; ".join(failures),
+    }
 
 
 @router.get("/settings/codex/status")

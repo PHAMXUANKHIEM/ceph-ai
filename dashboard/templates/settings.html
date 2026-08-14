@@ -639,7 +639,7 @@
         </div>
         {% if openstack_error %}<p class="error">{{ openstack_error }}</p>{% endif %}
         {% if openstack_success %}<p class="success">{{ openstack_success }}</p>{% endif %}
-        <form method="post" action="/settings/openstack" class="settings-form openstack-settings-form">
+        <form method="post" action="/settings/openstack" class="settings-form openstack-settings-form" id="openstack-settings-form">
           <div class="settings-field-grid">
             <label class="settings-field">
               <span class="settings-field-heading"><strong>Controller nodes</strong><em>Bắt buộc</em></span>
@@ -659,7 +659,30 @@
           </div>
           <div class="settings-form-actions">
             <p><strong>Lưu ý:</strong> Việc chuyển file chỉ chạy sau khi Create Auth User thành công.</p>
-            <button type="submit" class="btn btn-primary">Lưu cấu hình OpenStack</button>
+            <div>
+              <button type="button" class="btn btn-sm" id="openstack-test-btn">Kiểm tra kết nối</button>
+              <button type="submit" class="btn btn-primary">Lưu cấu hình OpenStack</button>
+            </div>
+          </div>
+          <span id="openstack-test-result" class="ai-test-result" hidden></span>
+          <div class="settings-field-grid">
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>IP VM cần kiểm tra</strong><em class="is-optional">Test SSH VM</em></span>
+              <input type="text" name="vm_ip" placeholder="10.20.1.50" inputmode="decimal" autocomplete="off">
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>SSH user của VM</strong></span>
+              <input type="text" name="vm_ssh_user" value="root" placeholder="root hoặc ubuntu" autocomplete="off">
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>Private key path trên Controller</strong></span>
+              <input type="text" name="vm_ssh_key_path" placeholder="/root/.ssh/vm_ed25519" autocomplete="off">
+              <small>Kiểm tra đúng luồng Ceph-AI → Controller → VM. Key phải có sẵn trên Controller và không được tải lên trình duyệt.</small>
+            </label>
+          </div>
+          <div class="ai-test-row">
+            <button type="button" class="btn btn-sm" id="openstack-vm-test-btn">Kiểm tra SSH tới VM</button>
+            <span id="openstack-vm-test-result" class="ai-test-result" hidden></span>
           </div>
         </form>
       </div>

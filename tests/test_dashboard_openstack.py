@@ -1,4 +1,5 @@
 import dashboard.routes.openstack as openstack_route
+import dashboard.routes.settings as settings_route
 from shared import db
 from shared.models import Cluster
 
@@ -136,6 +137,89 @@ def test_settings_saves_openstack_nodes(dashboard_client):
         assert cluster.openstack_controller_nodes == "10.0.0.10,10.0.0.11"
         assert cluster.openstack_compute_nodes == "10.0.0.20,10.0.0.21"
         assert cluster.openstack_ceph_config_path == "/etc/ceph/openstack"
+
+
+def test_settings_tests_openstack_nodes_without_saving(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    calls = []
+
+    def fake_execute(host, command, user=None, key_path=None):
+        calls.append((host, command, user, key_path))
+        return "CEPH_AIOPS_OPENSTACK_OK"
+
+    monkeypatch.setattr(settings_route, "execute_command", fake_execute)
+    response = dashboard_client.post("/settings/openstack/test", data={
+        "controller_nodes": "controller1, controller2",
+        "compute_nodes": "compute1,controller1",
+    })
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
+    assert "3/3" in response.json()["message"]
+    assert [call[0] for call in calls] == ["controller1", "controller2", "compute1"]
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        assert cluster.openstack_controller_nodes != "controller1,controller2"
+
+
+def test_settings_openstack_test_reports_failed_node(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+
+    def fake_execute(host, command, user=None, key_path=None):
+        if host == "controller2":
+            raise settings_route.ExecutorError("SSH timeout")
+        return "CEPH_AIOPS_OPENSTACK_OK"
+
+    monkeypatch.setattr(settings_route, "execute_command", fake_execute)
+    response = dashboard_client.post("/settings/openstack/test", data={
+        "controller_nodes": "controller1,controller2",
+        "compute_nodes": "",
+    })
+    assert response.json()["valid"] is False
+    assert "controller2" in response.json()["message"]
+    assert "SSH timeout" in response.json()["message"]
+
+
+def test_settings_tests_vm_ssh_through_controller(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    calls = []
+
+    def fake_execute(host, command, user=None, key_path=None):
+        calls.append((host, command, user, key_path))
+        return "CEPH_AIOPS_VM_SSH_OK"
+
+    monkeypatch.setattr(settings_route, "execute_command", fake_execute)
+    response = dashboard_client.post("/settings/openstack/vm/test", data={
+        "controller_nodes": "controller1,controller2",
+        "vm_ip": "10.20.1.50",
+        "vm_ssh_user": "ubuntu",
+        "vm_ssh_key_path": "/root/.ssh/vm-key",
+    })
+    assert response.json()["valid"] is True
+    assert "controller1" in response.json()["message"]
+    assert calls[0][0] == "controller1"
+    assert "ubuntu@10.20.1.50" in calls[0][1]
+    assert "/root/.ssh/vm-key" in calls[0][1]
+
+
+def test_settings_vm_ssh_tries_next_controller(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    attempted = []
+
+    def fake_execute(host, command, user=None, key_path=None):
+        attempted.append(host)
+        if host == "controller1":
+            raise settings_route.ExecutorError("controller unavailable")
+        return "CEPH_AIOPS_VM_SSH_OK"
+
+    monkeypatch.setattr(settings_route, "execute_command", fake_execute)
+    response = dashboard_client.post("/settings/openstack/vm/test", data={
+        "controller_nodes": "controller1,controller2",
+        "vm_ip": "10.20.1.50",
+        "vm_ssh_user": "root",
+        "vm_ssh_key_path": "/root/.ssh/vm-key",
+    })
+    assert response.json()["valid"] is True
+    assert attempted == ["controller1", "controller2"]
 
 
 def test_create_auth_user_exports_and_copies_ceph_files(dashboard_client, monkeypatch):
