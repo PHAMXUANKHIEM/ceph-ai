@@ -1044,24 +1044,35 @@ def test_query_rbd_iostat_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
         query_rbd_iostat("vms")
 
 
-# --- query_rbd_trash (2026-07-28, Volume Trash — dashboard/routes/volumes.py.
-# Same "NOT verified against a real cluster's actual `rbd trash ls
-# --format json` output" caveat as query_rbd_iostat above.) -------------
+# --- query_rbd_trash (Volume Trash — dashboard/routes/volumes.py) -------
 
 
 def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    fake_ssh.behavior = {
-        "10.20.1.150": [
+    responses = iter(
+        [
+            [
+                {
+                    "id": "1234567890ab",
+                    "name": "old-disk",
+                    "deleted_at": "Mon Jul 28 10:00:00 2026",
+                    "status": "expired",
+                }
+            ],
             {
-                "id": "1234567890ab",
-                "name": "old-disk",
-                "deletion_time": "2026-07-28 10:00:00",
-                "status": "expired",
                 "size": 1073741824,
-            }
+            },
         ]
-    }
+    )
+
+    commands = []
+
+    def routed_exec(self, command, timeout=None):
+        commands.append(command)
+        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
+
+    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    fake_ssh.behavior = {"10.20.1.150": {}}
 
     entries = query_rbd_trash("vms")
 
@@ -1069,11 +1080,32 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
         {
             "id": "1234567890ab",
             "name": "old-disk",
-            "deletion_time": "2026-07-28 10:00:00",
+            "deletion_time": "Mon Jul 28 10:00:00 2026",
             "status": "expired",
             "size_bytes": 1073741824,
         }
     ]
+    assert "rbd trash ls --long vms --format json" in commands[0]
+    assert "rbd info --pool vms --image-id 1234567890ab --format json" in commands[1]
+
+
+def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    responses = iter(
+        [
+            [{"id": "abc123", "name": "old-disk", "deleted_at": "x", "status": "y"}],
+            {"id": "abc123"},
+        ]
+    )
+
+    def routed_exec(self, command, timeout=None):
+        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
+
+    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    fake_ssh.behavior = {"10.20.1.150": {}}
+
+    with pytest.raises(CephQueryError, match="returned no size"):
+        query_rbd_trash("vms")
 
 
 def test_query_rbd_trash_returns_empty_list_for_unexpected_shape(fake_ssh, monkeypatch):
@@ -1085,17 +1117,27 @@ def test_query_rbd_trash_returns_empty_list_for_unexpected_shape(fake_ssh, monke
 
 def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
-    fake_ssh.behavior = {
-        "10.20.1.150": [
-            {"name": "no-id-entry"},  # no "id" key
-            {"id": "abc123", "name": "real-entry", "deletion_time": "x", "status": "y"},
+    responses = iter(
+        [
+            [
+                {"name": "no-id-entry"},  # no "id" key
+                {"id": "abc123", "name": "real-entry", "deleted_at": "x", "status": "y"},
+            ],
+            {"size": 4096},
         ]
-    }
+    )
+
+    def routed_exec(self, command, timeout=None):
+        return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
+
+    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    fake_ssh.behavior = {"10.20.1.150": {}}
 
     entries = query_rbd_trash("vms")
 
     assert len(entries) == 1
     assert entries[0]["id"] == "abc123"
+    assert entries[0]["size_bytes"] == 4096
 
 
 # --- force_purge_rbd_trash (2026-07-28, "Xoá tất cả trash" button — bulk,

@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import shlex
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 import paramiko
 
@@ -245,12 +245,6 @@ def _as_float(value: object) -> float:
         return 0.0
 
 
-# 2026-07-28: NOT verified against a real cluster yet — same caveat as
-# query_rbd_iostat above (no RBD-backed pool with a real trashed image was
-# ever available to test against this session). `rbd trash ls --format
-# json`'s exact key names are a best-effort guess (snake_case, matching
-# every other Ceph JSON command's convention), isolated in this one
-# function so fixing it against real output later only touches this place.
 class TrashEntry(TypedDict):
     id: str
     name: str
@@ -271,7 +265,11 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
     unexpected-shape response, same defensive posture as
     query_rbd_iostat."""
     _, payload = run_ceph_json_command(f"rbd trash ls --long {shlex.quote(pool)}")
-    return _normalize_rbd_trash(pool, payload)
+    return _normalize_rbd_trash(
+        pool,
+        payload,
+        lambda command: run_ceph_json_command(command)[1],
+    )
 
 
 def query_rbd_trash_with(
@@ -279,14 +277,23 @@ def query_rbd_trash_with(
     ssh_key_path: str, exec_mode: str,
 ) -> list[TrashEntry]:
     """Cluster-scoped counterpart to :func:`query_rbd_trash`."""
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
     _, payload = run_ceph_json_command_with(
         mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
         f"rbd trash ls --long {shlex.quote(pool)}",
     )
-    return _normalize_rbd_trash(pool, payload)
+    return _normalize_rbd_trash(
+        pool,
+        payload,
+        lambda command: run_ceph_json_command_with(*connection, command)[1],
+    )
 
 
-def _normalize_rbd_trash(pool: str, payload: dict | list) -> list[TrashEntry]:
+def _normalize_rbd_trash(
+    pool: str,
+    payload: dict | list,
+    query_json: Callable[[str], dict | list],
+) -> list[TrashEntry]:
     if not isinstance(payload, list):
         logger.warning(
             "query_rbd_trash: unexpected response shape for pool %r — treating as no data",
@@ -301,13 +308,24 @@ def _normalize_rbd_trash(pool: str, payload: dict | list) -> list[TrashEntry]:
         trash_id = entry.get("id")
         if not trash_id:
             continue
+        # Ceph's `rbd trash ls --long --format json` does not include image
+        # capacity. Open the trashed image by id and use the logical size
+        # reported by `rbd info`; treating the absent list field as zero made
+        # both the per-image and pool totals silently wrong.
+        info = query_json(
+            f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
+        )
+        if not isinstance(info, dict) or "size" not in info:
+            raise CephQueryError(
+                f"rbd info returned no size for trash image {pool}/{trash_id}"
+            )
         entries.append(
             TrashEntry(
                 id=str(trash_id),
                 name=str(entry.get("name") or "?"),
-                deletion_time=str(entry.get("deletion_time") or ""),
+                deletion_time=str(entry.get("deleted_at") or ""),
                 status=str(entry.get("status") or ""),
-                size_bytes=max(0, int(_as_float(entry.get("size")))),
+                size_bytes=max(0, int(_as_float(info["size"]))),
             )
         )
     return entries
