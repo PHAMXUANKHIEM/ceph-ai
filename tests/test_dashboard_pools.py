@@ -27,6 +27,14 @@ def test_normalize_pool_rows_joins_config_capacity_and_iops():
     }]
 
 
+def test_pool_protection_accepts_all_ceph_flag_formats():
+    assert pools_route._pool_is_protected({"flags_names": "hashpspool,nodelete"}) is True
+    assert pools_route._pool_is_protected({"flags_names": ["hashpspool", "nodelete"]}) is True
+    assert pools_route._pool_is_protected({"flags": 16}) is True
+    assert pools_route._pool_is_protected({"flags": "16"}) is True
+    assert pools_route._pool_is_protected({"flags_names": "hashpspool", "flags": 1}) is False
+
+
 def test_pools_page_renders_requested_columns(dashboard_client, monkeypatch):
     payloads = {
         "ceph osd pool ls detail": [{"pool_name": "volumes", "size": 3, "pg_num": 32, "crush_rule": 0}],

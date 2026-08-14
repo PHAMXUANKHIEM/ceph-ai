@@ -26,6 +26,7 @@ router = APIRouter()
 templates = make_templates()
 POOL_CREATE_CEPH_CODE = "POOL_CREATE_REQUEST"
 POOL_ACTION_CEPH_CODE = "POOL_ACTION_REQUEST"
+CEPH_POOL_FLAG_NODELETE = 1 << 4
 
 
 def _pool_names_by_id(payload: dict | list) -> dict[str, str]:
@@ -60,6 +61,32 @@ def _payload_rows(payload: dict | list, *keys: str) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _pool_is_protected(pool: dict) -> bool:
+    """Accept the string/list names and legacy integer flag formats Ceph emits."""
+    flag_names = pool.get("flags_names")
+    if isinstance(flag_names, list):
+        names = {str(item).strip().lower() for item in flag_names}
+    else:
+        names = {
+            part.lower()
+            for part in re.split(r"[,;\s]+", str(flag_names or ""))
+            if part
+        }
+    if "nodelete" in names:
+        return True
+    flags = pool.get("flags")
+    if isinstance(flags, int) and not isinstance(flags, bool):
+        return bool(flags & CEPH_POOL_FLAG_NODELETE)
+    if isinstance(flags, str) and not flags.strip().isdigit():
+        return "nodelete" in {
+            part.lower() for part in re.split(r"[,;\s]+", flags) if part
+        }
+    try:
+        return bool(int(flags) & CEPH_POOL_FLAG_NODELETE)
+    except (TypeError, ValueError):
+        return False
+
+
 def _normalize_pool_rows(
     detail_payload: dict | list,
     df_payload: dict | list,
@@ -92,8 +119,7 @@ def _normalize_pool_rows(
         df_stats = df_by_name.get(name, {})
         io_stats = io_by_name.get(name, {})
         size = pool.get("size")
-        flags = str(pool.get("flags_names") or pool.get("flags") or "")
-        protected = "nodelete" in {part for part in re.split(r"[,;\s]+", flags) if part}
+        protected = _pool_is_protected(pool)
         ec_profile = pool.get("erasure_code_profile")
         redundancy = f"EC · {ec_profile}" if ec_profile else (f"{size} replicas" if size is not None else "—")
         rule_id = pool.get("crush_rule")
