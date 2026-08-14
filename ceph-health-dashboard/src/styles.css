@@ -8,6 +8,44 @@ html, body { min-width: 320px; margin: 0; }
 #ceph-dashboard-root { width: 100%; min-width: 0; }
 #pools-dashboard-root { width: 100%; min-width: 0; font-family: Roboto, Inter, Arial, ui-sans-serif, system-ui, sans-serif; }
 
+/* Pools follows the dark control-plane canvas instead of introducing a
+   bright white workspace in the middle of the application shell. */
+.pools-workspace {
+  color: #dce3ee;
+  border: 1px solid rgba(79, 140, 255, .10);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(79, 140, 255, .10), transparent 34%),
+    radial-gradient(circle at 92% 100%, rgba(62, 207, 110, .055), transparent 30%),
+    rgba(15, 17, 23, .72);
+}
+.pools-panel { border-color: #262b38 !important; background: rgba(22, 25, 34, .96) !important; box-shadow: 0 18px 50px rgba(0,0,0,.28) !important; }
+.pools-panel header, .pools-panel > div, .pools-panel footer { border-color: #262b38 !important; }
+.pools-panel h1, .pools-panel h2, .pools-panel .text-slate-900, .pools-panel .text-slate-800 { color: #eef2f8 !important; }
+.pools-panel .text-slate-700, .pools-panel .text-slate-600 { color: #b7c0cf !important; }
+.pools-panel .text-slate-500, .pools-panel .text-slate-400 { color: #7f899d !important; }
+.pools-panel .text-slate-300 { color: #50596b !important; }
+.pools-panel .text-violet-700 { color: #78a8ff !important; }
+.pools-panel .after\:bg-violet-600::after { background: #4f8cff !important; box-shadow: 0 0 12px rgba(79,140,255,.5); }
+.pools-panel button { border-color: #343b4c !important; background: #1b1f2a !important; color: #cbd2df !important; }
+.pools-panel button:hover { border-color: rgba(79,140,255,.65) !important; background: #202838 !important; color: #eef5ff !important; }
+.pools-panel button.text-rose-600 { border-color: rgba(247,86,103,.35) !important; background: rgba(247,86,103,.09) !important; color: #ff8b98 !important; }
+.pools-panel thead { background: rgba(15,17,23,.58); }
+.pools-panel tbody tr { background: rgba(27,31,42,.62) !important; }
+.pools-panel tbody tr:nth-child(even) { background: rgba(24,28,38,.82) !important; }
+.pools-panel tbody tr:hover { background: rgba(79,140,255,.09) !important; }
+.pools-panel tbody tr.bg-blue-100 { background: rgba(79,140,255,.17) !important; box-shadow: inset 3px 0 #4f8cff; }
+.pools-panel tbody td { color: #b7c0cf; border-bottom-color: rgba(52,59,76,.48); }
+.pools-panel tbody td.font-semibold { color: #edf3ff; }
+.pools-panel tbody .bg-slate-100 { border: 1px solid #343b4c; background: #202532 !important; color: #aebad0 !important; }
+.pools-panel input, .pools-panel select { border-color: #343b4c !important; background: #11151d !important; color: #dce3ee !important; }
+.pools-modal-backdrop { background: rgba(4,7,12,.78); backdrop-filter: blur(5px); }
+.pools-create-form { border: 1px solid #343b4c; background: #161922 !important; color: #dce3ee; box-shadow: 0 30px 90px rgba(0,0,0,.62) !important; }
+.pools-create-form h2 { color: #eef2f8 !important; }.pools-create-form p, .pools-create-form label { color: #99a1b3 !important; }
+.pools-create-form input, .pools-create-form select { border-color: #343b4c !important; background: #0f1117 !important; color: #e7e9ee !important; }
+.pools-create-form button { border-color: #343b4c !important; background: #1b1f2a !important; color: #cbd2df !important; }
+.pools-create-form button[type="submit"] { border-color: #4f8cff !important; background: #4f8cff !important; color: white !important; }
+.pools-create-form button[type="submit"]:hover { background: #6ea0ff !important; }
+
 .ceph-dashboard { position: relative; width: 100%; min-height: 569px; padding: 8px; display: grid; grid-template-rows: 192px 363px; gap: 14px; border: 1px solid #262b38; border-radius: 13px; background: #11151d; }
 .dashboard-live-error { position: absolute; z-index: 2; top: 16px; left: 50%; width: min(760px, calc(100% - 32px)); transform: translateX(-50%); display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 13px; border: 1px solid rgba(248,113,113,.55); border-radius: 9px; background: rgba(69,10,10,.96); box-shadow: 0 8px 30px rgba(0,0,0,.35); color: #fecaca; font-size: 13px; }
 .dashboard-live-error button { flex: none; padding: 6px 10px; border: 1px solid rgba(254,202,202,.35); border-radius: 7px; background: rgba(255,255,255,.08); color: #fff; cursor: pointer; font-weight: 600; }

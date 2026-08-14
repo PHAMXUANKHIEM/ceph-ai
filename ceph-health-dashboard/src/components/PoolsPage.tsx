@@ -68,8 +68,8 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const selectedRow = useMemo(() => rows.find((row) => row.name === selected), [rows, selected]);
 
   return (
-    <div className="min-h-[620px] rounded-xl bg-[#f5f5f5] p-4 font-sans text-slate-800 sm:p-6">
-      <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-[0_4px_18px_rgba(15,23,42,0.08)]">
+    <div className="pools-workspace min-h-[620px] rounded-xl p-4 font-sans sm:p-6">
+      <section className="pools-panel overflow-hidden rounded-lg border shadow-[0_4px_18px_rgba(15,23,42,0.08)]">
         <header className="border-b border-slate-200 px-5 pt-5">
           <div className="flex items-center gap-2 pb-5">
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Pools</h1>
@@ -155,8 +155,8 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
         </footer>
       </section>
       {createOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/60 p-4" role="dialog" aria-modal="true" aria-labelledby="create-pool-title" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}>
-          <form method="post" action="/pgs/pools/create" className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+        <div className="pools-modal-backdrop fixed inset-0 z-50 grid place-items-center p-4" role="dialog" aria-modal="true" aria-labelledby="create-pool-title" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreateOpen(false); }}>
+          <form method="post" action="/pgs/pools/create" className="pools-create-form w-full max-w-lg rounded-xl p-6 shadow-2xl">
             <input type="hidden" name="cluster_id" value={bootstrap.clusterId} />
             <div className="flex items-start justify-between gap-4">
               <div><h2 id="create-pool-title" className="text-xl font-semibold text-slate-900">Create Pool</h2><p className="mt-1 text-sm text-slate-500">Tạo pool mới trên cluster đang chọn.</p></div>
