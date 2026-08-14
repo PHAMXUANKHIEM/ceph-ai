@@ -267,10 +267,18 @@
         {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
         {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
         {% if trash_entries %}
-        <div class="table-wrap"><table>
+        <div class="trash-filter-panel" aria-label="Lọc Trash theo Volume ID">
+          <label class="trash-filter-field">
+            <span>Volume ID</span>
+            <input id="trash-id-filter" type="search" placeholder="Nhập ID volume trong trash" autocomplete="off">
+          </label>
+          <button id="trash-filter-reset" type="button" class="btn btn-ghost btn-sm">Xóa bộ lọc</button>
+          <span id="trash-filter-result" role="status" aria-live="polite">Hiển thị 1-{{ [trash_entries|length, 10]|min }} / {{ trash_entries|length }} Trash</span>
+        </div>
+        <div class="table-wrap"><table id="trash-entry-list">
           <thead><tr><th>Volume</th><th>ID</th><th>Dung lượng</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
           <tbody>{% for entry in trash_entries %}
-          <tr id="trash-{{ entry.id }}">
+          <tr id="trash-{{ entry.id }}" data-trash-id="{{ entry.id }}"{% if loop.index > 10 %} hidden{% endif %}>
             <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Dung lượng: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
             <td><code>{{ entry.id }}</code></td><td>{{ entry.size_human }}</td>
             <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.status or "—" }}</td>
@@ -284,6 +292,13 @@
             </td>
           </tr>{% endfor %}</tbody>
         </table></div>
+        <div id="trash-filter-empty" class="empty-state trash-filter-empty" hidden>Không tìm thấy Trash có Volume ID phù hợp.</div>
+        <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
+          <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
+          <span id="trash-page-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
+          <button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button>
+          <span class="trash-page-size">10 Trash mỗi trang</span>
+        </div>
         {% else %}<p class="hint">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>{% endif %}
       </div>
     </section>
@@ -297,6 +312,7 @@
     </div>
     </div>
   </main>
+  {% if selected_view == "trash" and selected_pool and trash_entries %}<script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/volumes.js?v={{ static_version }}"></script>

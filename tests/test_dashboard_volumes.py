@@ -1028,6 +1028,29 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert "old-disk" in response.text
     assert "1234567890ab" in response.text
+    assert 'id="trash-id-filter"' in response.text
+    assert 'id="trash-entry-list"' in response.text
+    assert 'data-trash-id="1234567890ab"' in response.text
+    assert 'id="trash-pagination"' in response.text
+    assert "10 Trash mỗi trang" in response.text
+    assert 'src="/static/trash.js' in response.text
+
+
+def test_trash_page_server_hides_entries_after_first_ten(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_trash",
+        lambda pool: [_fake_trash_entry(f"id-{index}", f"disk-{index}") for index in range(12)],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert 'data-trash-id="id-9"' in response.text
+    assert 'data-trash-id="id-10" hidden' in response.text
+    assert "Trang 1 / 2" in response.text
 
 
 def test_volumes_page_shows_empty_trash_hint(dashboard_client, monkeypatch):
