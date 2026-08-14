@@ -11,7 +11,15 @@ import yaml
 
 from config.settings import settings
 from shared import audit, db
-from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
+from shared.models import (
+    Action,
+    ActionClassification,
+    ActionStatus,
+    ChatMessage,
+    Cluster,
+    Incident,
+    IncidentStatus,
+)
 from shared.ceph_releases import RELEASES, codename_for_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.router_client import build_router_client
@@ -1724,7 +1732,7 @@ def _execute_approved_action(action_pk: str) -> None:
         _write_action_progress(action_pk, progress)
 
         try:
-            execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
+            command_output = execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
             executed_any = True
         except ExecutorError as exc:
             logger.exception(
@@ -1746,6 +1754,8 @@ def _execute_approved_action(action_pk: str) -> None:
             continue
 
         progress[node_index - 1]["status"] = "done"
+        if action_id_str == "execute_node_command":
+            progress[node_index - 1]["output"] = command_output[-50000:]
         progress[node_index - 1]["finished_at"] = datetime.utcnow().isoformat()
         _write_action_progress(action_pk, progress)
 
@@ -1829,6 +1839,50 @@ def _record_approved_execution_result(
                 ),
                 actor=audit.ACTOR_SYSTEM,
             )
+        if action.action_id == "execute_node_command":
+            source_message = (
+                session.query(ChatMessage)
+                .filter(
+                    ChatMessage.proposed_incident_id == incident_id,
+                    ChatMessage.proposed_action_id == "execute_node_command",
+                )
+                .first()
+            )
+            existing_result = (
+                session.query(ChatMessage)
+                .filter(
+                    ChatMessage.proposed_incident_id == incident_id,
+                    ChatMessage.proposed_status == "RESULT",
+                )
+                .first()
+            )
+            if source_message is not None and existing_result is None:
+                try:
+                    progress = json.loads(action.execution_progress or "[]")
+                except (TypeError, ValueError):
+                    progress = []
+                blocks = []
+                for item in progress if isinstance(progress, list) else []:
+                    host = item.get("host", "node")
+                    if item.get("status") == "done":
+                        output = str(item.get("output") or "(lệnh hoàn tất, không có output)")
+                        blocks.append(f"Kết quả trên {host}:\n{output}")
+                    elif item.get("status") == "failed":
+                        error = item.get("error") or "Không rõ lỗi"
+                        blocks.append(f"Lệnh thất bại trên {host}:\n{error}")
+                session.add(
+                    ChatMessage(
+                        session_id=source_message.session_id,
+                        role="assistant",
+                        content=(
+                            "\n\n".join(blocks)
+                            or "Worker đã kết thúc nhưng không ghi nhận được kết quả lệnh."
+                        ),
+                        actor=source_message.actor,
+                        proposed_status="RESULT",
+                        proposed_incident_id=incident_id,
+                    )
+                )
         session.commit()
 
 

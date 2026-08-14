@@ -345,6 +345,25 @@
     .catch(function () {})
     .then(loadHistory);
 
+  // Worker actions complete asynchronously after the OK response. Pull new
+  // messages for the active session so stdout/stderr appears without the
+  // operator having to ask again or reload the page.
+  window.setInterval(function () {
+    if (!currentSessionId || historyMode !== "closed" || document.hidden) return;
+    fetch(apiPrefix + "/messages", { credentials: "same-origin" })
+      .then(handleAuthRedirect)
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (data.session_id !== currentSessionId) return;
+        (data.messages || []).forEach(function (message) {
+          if (!messagesEl.querySelector('[data-message-id="' + message.id + '"]')) {
+            appendMessage(message);
+          }
+        });
+      })
+      .catch(function () {});
+  }, 2500);
+
   // --- new session (Đoạn chat mới) --------------------------------------------
 
   function resetToEmptyState() {

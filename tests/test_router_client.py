@@ -18,6 +18,7 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    ChatMessage,
     Cluster,
     Incident,
     IncidentStatus,
@@ -940,6 +941,43 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert incident.status == IncidentStatus.RESOLVED.value
         entries = session.query(AuditEntry).filter_by(incident_id="incident-7a").all()
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
+
+
+def test_execute_node_command_posts_stdout_back_to_chat(isolated_db, monkeypatch):
+    monkeypatch.setattr(router_client, "execute_command", lambda *args, **kwargs: "RAM used: 98%\nOOM killed pid 42")
+    _create_incident("incident-node-command-result")
+    with db_module.SessionLocal() as session:
+        session.add(ChatMessage(
+            session_id="chat-session",
+            role="assistant",
+            content="Nhập OK để chạy",
+            actor="admin",
+            proposed_action_id="execute_node_command",
+            proposed_target_nodes=json.dumps(["10.20.1.83"]),
+            proposed_action_params=json.dumps({"command": "free -h"}),
+            proposed_status="CONFIRMED",
+            proposed_incident_id="incident-node-command-result",
+        ))
+        action = _approved_action(
+            session,
+            "incident-node-command-result",
+            action_id="execute_node_command",
+            nodes=["10.20.1.83"],
+        )
+        action.action_params = json.dumps({"command": "free -h"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        progress = json.loads(action.execution_progress)
+        result = session.query(ChatMessage).filter_by(proposed_status="RESULT").one()
+        assert progress[0]["output"] == "RAM used: 98%\nOOM killed pid 42"
+        assert result.session_id == "chat-session"
+        assert "Kết quả trên 10.20.1.83" in result.content
+        assert "OOM killed pid 42" in result.content
 
 
 def test_execute_approved_action_skips_when_another_worker_claimed_incident(isolated_db, monkeypatch):
