@@ -64,6 +64,7 @@ SESSION_PREVIEW_MAX_CHARS = 80
 # ever needed, on top of the EVENT_CHAT_ACTION_REQUESTED audit entry.
 CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
 MAX_AI_NAME_LENGTH = 64
+MAX_FEMALE_ADDRESS_LENGTH = 128
 
 
 def _validated_ai_name(value) -> str:
@@ -80,9 +81,26 @@ def _validated_ai_name(value) -> str:
     return name
 
 
+def _validated_female_address(value) -> str:
+    address = str(value or "").strip()
+    if not address:
+        raise HTTPException(status_code=400, detail="Cách xưng hô nữ không được để trống")
+    if len(address) > MAX_FEMALE_ADDRESS_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cách xưng hô nữ tối đa {MAX_FEMALE_ADDRESS_LENGTH} ký tự",
+        )
+    if any(ch in address for ch in "\r\n\x00"):
+        raise HTTPException(status_code=400, detail="Cách xưng hô nữ chỉ được nằm trên một dòng")
+    return address
+
+
 @router.get("/api/chat/preferences")
 async def get_chat_preferences(user: str = Depends(require_login)):
-    return {"ai_name": auth.chat_ai_name(user)}
+    return {
+        "ai_name": auth.chat_ai_name(user),
+        "female_address": auth.chat_female_address(user),
+    }
 
 
 @router.get("/api/chat/limits")
@@ -106,15 +124,19 @@ async def get_chat_ai_limits(user: str = Depends(require_login)):
 async def update_chat_preferences(request: Request, user: str = Depends(require_login)):
     body = await request.json()
     ai_name = _validated_ai_name(body.get("ai_name"))
+    female_address = _validated_female_address(body.get("female_address"))
     with db.SessionLocal() as session:
         preference = session.get(ChatPreference, user)
         if preference is None:
-            preference = ChatPreference(username=user, ai_name=ai_name)
+            preference = ChatPreference(
+                username=user, ai_name=ai_name, female_address=female_address
+            )
             session.add(preference)
         else:
             preference.ai_name = ai_name
+            preference.female_address = female_address
         session.commit()
-    return {"ai_name": ai_name}
+    return {"ai_name": ai_name, "female_address": female_address}
 
 
 def _message_to_dict(message: ChatMessage) -> dict:
@@ -339,6 +361,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
 
     if pending_node_command_id is not None:
         ai_name = auth.chat_ai_name(user)
+        female_address = auth.chat_female_address(user)
         if text != "OK" or not auth.is_admin_user(user):
             with db.SessionLocal() as session:
                 pending = session.get(ChatMessage, pending_node_command_id)
@@ -350,6 +373,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
                     content=with_romantic_address(
                         "Đề xuất lệnh trên node đã huỷ vì tin nhắn kế tiếp không phải chính xác `OK`.",
                         ai_name,
+                        female_address,
                     ),
                     actor=user,
                 )
@@ -372,6 +396,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
                 content=with_romantic_address(
                     "Đã xác nhận `OK`. Lệnh đã được chuyển cho Worker thực hiện trên node đã chọn.",
                     ai_name,
+                    female_address,
                 ),
                 actor=user,
             )
@@ -387,11 +412,12 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     api_ready = settings.router_enabled and settings.router_api_key and settings.router_base_url
     if not (settings.codex_chat_enabled or settings.claude_chat_enabled or api_ready):
         ai_name = auth.chat_ai_name(user)
+        female_address = auth.chat_female_address(user)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
                 session_id=session_id,
                 role="assistant",
-                content=with_romantic_address(MISSING_AI_CONFIG_MESSAGE, ai_name),
+                content=with_romantic_address(MISSING_AI_CONFIG_MESSAGE, ai_name, female_address),
                 actor=user,
             )
             session.add(assistant_message)
@@ -405,11 +431,12 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     except ChatTurnError as exc:
         logger.warning("post_chat_message: %s", exc)
         ai_name = auth.chat_ai_name(user)
+        female_address = auth.chat_female_address(user)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
                 session_id=session_id,
                 role="assistant",
-                content=with_romantic_address(str(exc), ai_name),
+                content=with_romantic_address(str(exc), ai_name, female_address),
                 actor=user,
             )
             session.add(assistant_message)

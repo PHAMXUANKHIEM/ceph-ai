@@ -13,6 +13,7 @@
   var settingsViewEl = document.getElementById("chat-settings-view");
   var settingsFormEl = document.getElementById("chat-settings-form");
   var aiNameInputEl = document.getElementById("chat-ai-name");
+  var femaleAddressInputEl = document.getElementById("chat-female-address");
   var settingsSuccessEl = document.getElementById("chat-settings-success");
   var panelAiNameEl = document.getElementById("chat-panel-ai-name");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
@@ -374,6 +375,7 @@
       .then(function (data) {
         aiName = data.ai_name || "AI";
         if (aiNameInputEl) aiNameInputEl.value = aiName;
+        if (femaleAddressInputEl) femaleAddressInputEl.value = data.female_address || "Mình yêu ơi, em là";
         if (panelAiNameEl) panelAiNameEl.textContent = aiName;
       });
   }
@@ -615,7 +617,10 @@
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ai_name: aiNameInputEl.value })
+        body: JSON.stringify({
+          ai_name: aiNameInputEl.value,
+          female_address: femaleAddressInputEl.value
+        })
       })
         .then(handleAuthRedirect)
         .then(function (response) {
@@ -627,9 +632,10 @@
         .then(function (data) {
           aiName = data.ai_name;
           aiNameInputEl.value = aiName;
+          femaleAddressInputEl.value = data.female_address;
           if (panelAiNameEl) panelAiNameEl.textContent = aiName;
           if (settingsSuccessEl) {
-            settingsSuccessEl.textContent = "Đã lưu tên " + aiName + ".";
+            settingsSuccessEl.textContent = "Đã lưu tên và cách xưng hô của " + aiName + ".";
             settingsSuccessEl.hidden = false;
           }
         })

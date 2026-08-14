@@ -43,4 +43,6 @@ def test_vitastor_chat_uses_activated_codex_account(dashboard_client, monkeypatc
     _login(dashboard_client)
     response = dashboard_client.post("/vitastor/api/chat/messages", json={"content": "Kiểm tra cluster"})
     assert response.status_code == 200
-    assert response.json()["assistant_message"]["content"] == "Phản hồi từ Codex"
+    assert response.json()["assistant_message"]["content"] == (
+        "Mình yêu ơi, em là AI. Phản hồi từ Codex"
+    )

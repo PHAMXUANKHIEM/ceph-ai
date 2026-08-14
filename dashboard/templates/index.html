@@ -298,7 +298,9 @@
           <div class="chat-settings-card">
             <label for="chat-ai-name"><span>Tên hiển thị của AI</span><small>Tối đa 64 ký tự</small></label>
             <input id="chat-ai-name" name="ai_name" type="text" maxlength="64" autocomplete="off" placeholder="Ví dụ: Bé Mây" required>
-            <div class="chat-persona-note"><span aria-hidden="true">♡</span><p class="chat-settings-hint">AI sẽ xưng “em” và gọi bạn là “mình yêu” trong mọi câu trả lời.</p></div>
+            <label for="chat-female-address"><span>Cách xưng hô nữ</span><small>Tối đa 128 ký tự</small></label>
+            <input id="chat-female-address" name="female_address" type="text" maxlength="128" autocomplete="off" placeholder="Ví dụ: Anh yêu ơi, em là" required>
+            <div class="chat-persona-note"><span aria-hidden="true">♡</span><p class="chat-settings-hint">AI sẽ dùng cách xưng hô này trước tên hiển thị trong mọi câu trả lời.</p></div>
           </div>
           <div class="chat-settings-actions"><button type="submit" class="btn btn-sm">Lưu thay đổi</button></div>
           <p class="chat-settings-success" id="chat-settings-success" hidden></p>

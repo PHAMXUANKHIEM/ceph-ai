@@ -145,6 +145,16 @@ def chat_ai_name(username: str) -> str:
         return "AI"
 
 
+def chat_female_address(username: str) -> str:
+    """Return the configured feminine opening phrase for this login."""
+    try:
+        with db.SessionLocal() as session:
+            preference = session.get(ChatPreference, username)
+            return preference.female_address if preference is not None else "Mình yêu ơi, em là"
+    except (SQLAlchemyError, AttributeError):
+        return "Mình yêu ơi, em là"
+
+
 async def require_login(request: Request) -> str:
     user = request.session.get("user")
     if not user:
