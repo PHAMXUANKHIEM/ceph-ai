@@ -21,6 +21,15 @@
   let currentPage = 1;
   const normalize = (value) => String(value || "").trim().toLocaleLowerCase("vi");
 
+  // Build the Pool dropdown from the rendered PG rows themselves. This is
+  // deliberately independent of Ceph's pool-list response shape: any pool
+  // visible in the table must always be available as one distinct option.
+  const poolNames = Array.from(new Set(
+    rows.map((row) => String(row.dataset.pool || "").trim()).filter((name) => name && name !== "—")
+  )).sort((left, right) => left.localeCompare(right, "vi", { numeric: true }));
+  poolSelect.replaceChildren(new Option("Tất cả pool", ""));
+  poolNames.forEach((poolName) => poolSelect.add(new Option(poolName, poolName)));
+
   function matchingRows() {
     const search = normalize(searchInput.value);
     const pgId = normalize(pgIdInput.value);

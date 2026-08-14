@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import dashboard.routes.pgs as pgs_route
 from shared import db as db_module
 from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident
@@ -20,6 +22,13 @@ def test_pool_name_mapping_supports_ceph_json_key_variants():
         {"pool": 2, "poolname": "cephfs"},
         {"poolnum": 3, "name": "rgw"},
     ]) == {"1": "rbd", "2": "cephfs", "3": "rgw"}
+
+
+def test_pg_filter_script_builds_pool_options_from_rendered_rows():
+    script = (Path(pgs_route.__file__).resolve().parents[1] / "static" / "pgs.js").read_text()
+    assert "row.dataset.pool" in script
+    assert 'poolSelect.replaceChildren(new Option("Tất cả pool", ""))' in script
+    assert "poolSelect.add(new Option(poolName, poolName))" in script
 
 
 def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, monkeypatch):
