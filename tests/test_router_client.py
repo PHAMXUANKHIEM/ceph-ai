@@ -1810,7 +1810,9 @@ def test_execute_approved_action_package_upgrade_skips_restart_for_host_with_fai
 
     restart_calls = [(h, c) for h, c in executed if "systemctl restart" in c]
     assert not any(h == bad_host for h, _c in restart_calls)
-    assert any(h == good_host for h, _c in restart_calls)
+    # Fail-safe rollback: once any install fails, no daemon on any host is
+    # restarted and no later phase continues.
+    assert not restart_calls
 
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_pk)
@@ -1821,10 +1823,11 @@ def test_execute_approved_action_package_upgrade_skips_restart_for_host_with_fai
 
     bad_mon_step = next(p for p in progress if p.get("phase") == "mon" and p["host"] == bad_host)
     assert bad_mon_step["status"] == "skipped"
-    assert "cài đặt gói thất bại" in bad_mon_step["error"]
+    assert "bảo vệ cụm" in bad_mon_step["error"]
 
     good_mon_step = next(p for p in progress if p.get("phase") == "mon" and p["host"] == good_host)
-    assert good_mon_step["status"] == "done"
+    assert good_mon_step["status"] == "skipped"
+    assert any(p.get("phase") == "rollback" and p["status"] == "done" for p in progress)
 
 
 def test_execute_approved_action_package_upgrade_unexpected_exception_still_unsets_flags(
@@ -1926,6 +1929,46 @@ def test_execute_approved_action_cephadm_upgrade_skips_router_clients_own_flags_
     assert executed[0][1].startswith("cephadm shell -- bash -c")
     assert "ceph orch upgrade start" in executed[0][1]
     assert not any("ceph osd unset" in cmd for _host, cmd in executed)
+
+
+def test_cephadm_upgrade_failure_stops_upgrade_rolls_back_flags_and_notifies(
+    isolated_db, monkeypatch
+):
+    from worker.executor.ssh_executor import ExecutorError
+
+    executed = []
+    alerts = []
+
+    def fake_execute(host, command, **kwargs):
+        executed.append((host, command))
+        if "ceph orch upgrade start" in command:
+            raise ExecutorError("image pull failed")
+        return "ok"
+
+    monkeypatch.setattr(router_client, "execute_command", fake_execute)
+    monkeypatch.setattr(router_client, "send_update_failure_alert", lambda *a, **kw: alerts.append((a, kw)))
+    monkeypatch.setattr(router_client.settings, "ceph_exec_mode", "cephadm")
+    _create_incident("incident-cephadm-fail")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-cephadm-fail")
+        incident.diagnosis_text = "Không tải được image Ceph mục tiêu."
+        action = _approved_action(
+            session, incident.id, action_id="upgrade_ceph_cluster", nodes=["10.20.1.112"]
+        )
+        action.action_params = json.dumps({"target_version": "16.2.15"})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    assert any("ceph orch upgrade stop" in command for _host, command in executed)
+    assert any("ceph osd unset noout" in command for _host, command in executed)
+    assert alerts and "image pull failed" in alerts[0][0][2]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value
+        progress = json.loads(action.execution_progress)
+        assert any(step.get("phase") == "rollback" and step["status"] == "done" for step in progress)
 
 
 def test_execute_approved_action_marks_failed_host_in_progress(isolated_db, monkeypatch):

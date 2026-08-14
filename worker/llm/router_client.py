@@ -25,7 +25,11 @@ from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.router_client import build_router_client
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
-from shared.telegram_alerts import send_ai_incident_alert, send_auto_remediation_alert
+from shared.telegram_alerts import (
+    send_ai_incident_alert,
+    send_auto_remediation_alert,
+    send_update_failure_alert,
+)
 from worker.backup import engine as backup_engine
 from worker.executor import cluster_deploy, commands, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
@@ -982,6 +986,7 @@ _NOTHING_TO_RESTART_MESSAGE = "Không tìm thấy systemd unit nào cần khởi
 # must not have its later MON/MGR/OSD/MDS-RGW unit restarted — that would
 # restart a daemon against a possibly broken/partial package install.
 _INSTALL_FAILED_SKIP_MESSAGE = "Bỏ qua vì cài đặt gói thất bại trên node này"
+_UPGRADE_ABORTED_SKIP_MESSAGE = "Bỏ qua để bảo vệ cụm sau khi một bước cập nhật thất bại"
 
 
 def _execute_for_cluster(host: str, command: str, cluster: Cluster | None = None) -> str:
@@ -1063,6 +1068,8 @@ def _execute_package_upgrade_action(
         # phase) must skip these rather than restart a daemon against a
         # possibly broken/partial install.
         "failed_install_hosts": set(),
+        "aborted": False,
+        "failures": [],
     }
 
     # Same bracket as the pre-7.2 code — set BEFORE phase 0, unset once
@@ -1096,31 +1103,71 @@ def _execute_package_upgrade_action(
             action_pk, action_id_str, nodes, install_entries, action_params, progress,
             incident_id, state, cluster,
         )
+        if not state["aborted"]:
+            for phase_name, role, daemon_types in _ROLE_RESTART_PHASES:
+                phase_entries = [p for p in progress if p.get("phase") == phase_name]
+                _run_restart_phase(
+                    action_pk, action_id_str, phase_name, role_hosts[role], phase_entries,
+                    daemon_types, action_params, progress, incident_id, state, cluster,
+                )
+                if state["aborted"]:
+                    break
 
-        for phase_name, role, daemon_types in _ROLE_RESTART_PHASES:
-            phase_entries = [p for p in progress if p.get("phase") == phase_name]
+        if not state["aborted"]:
             _run_restart_phase(
-                action_pk, action_id_str, phase_name, role_hosts[role], phase_entries,
-                daemon_types, action_params, progress, incident_id, state, cluster,
+                action_pk, action_id_str, _UPGRADE_PHASE_MDS_RGW, nodes, None,
+                ("mds", "rgw"), action_params, progress, incident_id, state, cluster,
             )
-
-        _run_restart_phase(
-            action_pk, action_id_str, _UPGRADE_PHASE_MDS_RGW, nodes, None,
-            ("mds", "rgw"), action_params, progress, incident_id, state, cluster,
-        )
     finally:
         if upgrade_flags_mon_host is not None:
             _unset_upgrade_osd_flags(action_pk, upgrade_flags_mon_host, progress, cluster)
 
     # also block this finalize step — without `not state["stopped_mid_
     # sequence"]`, `ceph osd require-osd-release <codename>` could still
-    if state["executed_any"]:
+    if state["aborted"]:
+        now = datetime.utcnow().isoformat()
+        for item in progress:
+            if item.get("status") == "pending":
+                item.update(status="skipped", error=_UPGRADE_ABORTED_SKIP_MESSAGE,
+                            started_at=now, finished_at=now)
+        progress.append({
+            "host": upgrade_flags_mon_host or "cluster",
+            "phase": "rollback",
+            "status": "done",
+            "message": "Đã dừng rollout, không restart thêm daemon và đã gỡ các cờ bảo trì Ceph.",
+            "started_at": now,
+            "finished_at": now,
+        })
+        _write_action_progress(action_pk, progress)
+    elif state["executed_any"]:
         _finalize_package_upgrade_osd_release(action_pk, action_params, progress, cluster)
 
     _record_approved_execution_result(
         action_pk,
         command=state["last_command"],
         succeeded=state["all_succeeded"] and state["executed_any"],
+    )
+    if state["aborted"]:
+        _notify_package_upgrade_failure(incident_id, state["failures"], cluster)
+
+
+def _notify_package_upgrade_failure(
+    incident_id: str, failures: list[str], cluster: Cluster | None
+) -> None:
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        diagnosis = incident.diagnosis_text if incident else None
+        ceph_code = incident.ceph_code if incident else "CLUSTER_UPGRADE"
+    has_cluster_channel = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
+    send_update_failure_alert(
+        ceph_code,
+        diagnosis,
+        "; ".join(failures) or "Không xác định được chi tiết lỗi",
+        "Đã dừng các bước còn lại, giữ nguyên daemon đang chạy và gỡ các cờ bảo trì Ceph.",
+        cluster_name=cluster.name if cluster else None,
+        bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+        chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+        enabled=cluster.telegram_enabled if has_cluster_channel else None,
     )
 
 
@@ -1157,10 +1204,12 @@ def _run_install_phase(
             )
             state["all_succeeded"] = False
             state["failed_install_hosts"].add(host)
+            state["aborted"] = True
+            state["failures"].append(f"Node {host}, bước install: {exc}")
             entry["status"] = "failed"
             entry["error"] = str(exc)
             _write_action_progress(action_pk, progress)
-            continue
+            break
         state["last_command"] = command
 
         logger.info(
@@ -1187,11 +1236,13 @@ def _run_install_phase(
             state["all_succeeded"] = False
             state["executed_any"] = True
             state["failed_install_hosts"].add(host)
+            state["aborted"] = True
+            state["failures"].append(f"Node {host}, bước install: {exc}")
             entry["status"] = "failed"
             entry["error"] = str(exc)
             entry["finished_at"] = datetime.utcnow().isoformat()
             _write_action_progress(action_pk, progress)
-            continue
+            break
 
         entry["status"] = "done"
         entry["finished_at"] = datetime.utcnow().isoformat()
@@ -1238,6 +1289,8 @@ def _run_restart_phase(
     nothing is discovered to restart).
     """
     for index, host in enumerate(candidate_hosts):
+        if state["aborted"]:
+            break
         # Code review fix (2026-08-04): a host whose install step already
         # failed (Fix 1) must not have its unit(s) restarted here — that
         # would restart a daemon against a possibly broken/partial
@@ -1265,6 +1318,8 @@ def _run_restart_phase(
             discovered = _discover_units_for_cluster(host, cluster)
         except ExecutorError as exc:
             state["all_succeeded"] = False
+            state["aborted"] = True
+            state["failures"].append(f"Node {host}, bước {phase_name}/discover: {exc}")
             now = datetime.utcnow().isoformat()
             if phase_entries is not None:
                 entry = phase_entries[index]
@@ -1284,7 +1339,7 @@ def _run_restart_phase(
                     }
                 )
             _write_action_progress(action_pk, progress)
-            continue
+            break
 
         if not any(discovered.get(daemon_type) for daemon_type in daemon_types):
             if phase_entries is not None:
@@ -1308,6 +1363,8 @@ def _run_restart_phase(
             )
         except ExecutorError as exc:
             state["all_succeeded"] = False
+            state["aborted"] = True
+            state["failures"].append(f"Node {host}, bước {phase_name}/prepare: {exc}")
             now = datetime.utcnow().isoformat()
             if phase_entries is not None:
                 entry = phase_entries[index]
@@ -1327,7 +1384,7 @@ def _run_restart_phase(
                     }
                 )
             _write_action_progress(action_pk, progress)
-            continue
+            break
         state["last_command"] = command
 
         if phase_entries is not None:
@@ -1352,11 +1409,13 @@ def _run_restart_phase(
         except ExecutorError as exc:
             state["all_succeeded"] = False
             state["executed_any"] = True
+            state["aborted"] = True
+            state["failures"].append(f"Node {host}, bước {phase_name}/restart: {exc}")
             entry["status"] = "failed"
             entry["error"] = str(exc)
             entry["finished_at"] = datetime.utcnow().isoformat()
             _write_action_progress(action_pk, progress)
-            continue
+            break
 
         entry["status"] = "done"
         entry["finished_at"] = datetime.utcnow().isoformat()
@@ -1695,6 +1754,8 @@ def _execute_approved_action(action_pk: str) -> None:
     # discovered (see worker/executor/commands.py::get_command). Every
     # other action_id's command is identical regardless of host.
     last_command: str | None = None
+    update_failures: list[str] = []
+    update_rollback_summary: str | None = None
     total_nodes = len(nodes)
     progress = [{"host": host, "status": "pending"} for host in nodes]
     _write_action_progress(action_pk, progress)
@@ -1716,6 +1777,9 @@ def _execute_approved_action(action_pk: str) -> None:
             progress[node_index - 1]["status"] = "failed"
             progress[node_index - 1]["error"] = str(exc)
             _write_action_progress(action_pk, progress)
+            if action_id_str == "upgrade_ceph_cluster":
+                update_failures.append(f"Node {host}, bước chuẩn bị: {exc}")
+                break
             continue
         last_command = command
 
@@ -1762,6 +1826,39 @@ def _execute_approved_action(action_pk: str) -> None:
             progress[node_index - 1]["error"] = str(exc)
             progress[node_index - 1]["finished_at"] = datetime.utcnow().isoformat()
             _write_action_progress(action_pk, progress)
+            if action_id_str == "upgrade_ceph_cluster":
+                update_failures.append(f"Node {host}, bước cephadm upgrade: {exc}")
+                rollback_command = (
+                    "cephadm shell -- bash -c 'ceph orch upgrade stop; "
+                    + "; ".join(f"ceph osd unset {flag}" for flag in _UPGRADE_OSD_FLAGS)
+                    + "'"
+                )
+                rollback_step = {
+                    "host": host,
+                    "phase": "rollback",
+                    "status": "running",
+                    "command": rollback_command,
+                    "started_at": datetime.utcnow().isoformat(),
+                }
+                progress.append(rollback_step)
+                _write_action_progress(action_pk, progress)
+                try:
+                    execute_command(host, rollback_command, user=ssh_user, key_path=ssh_key_path)
+                except ExecutorError as rollback_exc:
+                    rollback_step["status"] = "failed"
+                    rollback_step["error"] = str(rollback_exc)
+                    update_rollback_summary = f"Rollback cephadm thất bại: {rollback_exc}"
+                else:
+                    rollback_step["status"] = "done"
+                    update_rollback_summary = "Đã dừng cephadm upgrade và gỡ các cờ bảo trì Ceph."
+                rollback_step["finished_at"] = datetime.utcnow().isoformat()
+                now = datetime.utcnow().isoformat()
+                for pending in progress:
+                    if pending.get("status") == "pending":
+                        pending.update(status="skipped", error=_UPGRADE_ABORTED_SKIP_MESSAGE,
+                                       started_at=now, finished_at=now)
+                _write_action_progress(action_pk, progress)
+                break
             # Keep trying remaining nodes, same rationale as
             # _maybe_execute_safe_action: the log should show exactly which
             # nodes failed even though the overall Action is already FAILED.
@@ -1785,6 +1882,33 @@ def _execute_approved_action(action_pk: str) -> None:
 
     _record_approved_execution_result(
         action_pk, command=last_command, succeeded=all_succeeded and executed_any
+    )
+    if update_failures:
+        _notify_update_failure(
+            incident_id,
+            update_failures,
+            update_rollback_summary or "Đã dừng rollout trước các node còn lại.",
+            cluster,
+        )
+
+
+def _notify_update_failure(
+    incident_id: str, failures: list[str], rollback_summary: str, cluster: Cluster | None
+) -> None:
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        diagnosis = incident.diagnosis_text if incident else None
+        ceph_code = incident.ceph_code if incident else "CLUSTER_UPGRADE"
+    has_cluster_channel = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
+    send_update_failure_alert(
+        ceph_code,
+        diagnosis,
+        "; ".join(failures),
+        rollback_summary,
+        cluster_name=cluster.name if cluster else None,
+        bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+        chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+        enabled=cluster.telegram_enabled if has_cluster_channel else None,
     )
 
 

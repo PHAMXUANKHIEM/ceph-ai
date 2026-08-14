@@ -329,3 +329,31 @@ def send_auto_remediation_alert(
         enabled if enabled is not None else settings.telegram_incident_enabled,
         "\n".join(lines),
     )
+
+
+def send_update_failure_alert(
+    ceph_code: str,
+    diagnosis_text: str | None,
+    failure_summary: str,
+    rollback_summary: str,
+    *,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> None:
+    """Report a failed cluster update and its safety rollback in Vietnamese."""
+    text = "\n".join((
+        f"🔴 CẬP NHẬT THẤT BẠI: {ceph_code}",
+        f"🧠 Tóm tắt AI: {_compact(diagnosis_text or failure_summary, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        f"❌ Lỗi cụ thể: {_compact(failure_summary, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        f"↩️ Rollback: {_compact(rollback_summary, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        "🔧 Giải pháp: Sửa lỗi trên node được nêu, kiểm tra `ceph health detail`, sau đó chạy lại cập nhật từ giao diện.",
+    ))
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )

@@ -150,6 +150,26 @@ def test_reminder_includes_vietnamese_ai_summary_and_solution(monkeypatch):
     assert "🔧 Giải pháp: Khởi động lại daemon OSD.2 để phục hồi dịch vụ." in calls[0]
 
 
+def test_update_failure_alert_contains_error_ai_summary_and_rollback(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_update_failure_alert(
+        "CLUSTER_UPGRADE",
+        "Gói Ceph trên node MON bị xung đột phiên bản.",
+        "Node 10.0.0.1, bước install: package conflict",
+        "Đã dừng rollout và gỡ cờ noout.",
+    )
+
+    assert "CẬP NHẬT THẤT BẠI" in calls[0]
+    assert "🧠 Tóm tắt AI: Gói Ceph trên node MON bị xung đột phiên bản." in calls[0]
+    assert "❌ Lỗi cụ thể: Node 10.0.0.1" in calls[0]
+    assert "↩️ Rollback: Đã dừng rollout và gỡ cờ noout." in calls[0]
+
+
 def test_send_trash_capacity_alert_uses_incident_channel(monkeypatch):
     _configure_incident(monkeypatch)
     monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
