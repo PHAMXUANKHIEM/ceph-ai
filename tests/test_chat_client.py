@@ -419,6 +419,61 @@ def test_non_admin_cannot_run_node_journal_even_if_called_directly(monkeypatch):
     assert ran["called"] is False
 
 
+def test_claude_admin_can_call_node_journal_and_receive_result(monkeypatch):
+    prompts = []
+    replies = iter([
+        json.dumps({
+            "type": "tool",
+            "name": "get_node_journal",
+            "arguments": {"host": A_MON_HOST, "service": "mon", "lines": 100},
+        }),
+        json.dumps({"type": "final", "content": "MON đã khởi động lại lúc 10:15 UTC."}),
+    ])
+
+    async def fake_claude_prompt(prompt, *, timeout):
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(chat_client, "run_claude_prompt", fake_claude_prompt)
+    monkeypatch.setattr(chat_client.auth, "is_admin_user", lambda actor: actor == "admin")
+    monkeypatch.setattr(chat_client, "run_command_on_node", lambda host, command: "10:15 mon started")
+
+    result = asyncio.run(chat_client._run_claude_chat_turn(
+        [], "Kiểm tra journal MON", chat_client.system_prompt(), "admin"
+    ))
+
+    assert result == {
+        "reply_text": "MON đã khởi động lại lúc 10:15 UTC.",
+        "proposal": None,
+        "tools_used": ["get_node_journal"],
+    }
+    assert "10:15 mon started" in prompts[1]
+
+
+def test_claude_non_admin_is_not_offered_node_journal(monkeypatch):
+    captured = {}
+
+    async def fake_claude_prompt(prompt, *, timeout):
+        captured["prompt"] = prompt
+        return json.dumps({"type": "final", "content": "Không có quyền đọc journal."})
+
+    monkeypatch.setattr(chat_client, "run_claude_prompt", fake_claude_prompt)
+    monkeypatch.setattr(chat_client.auth, "is_admin_user", lambda actor: False)
+
+    result = asyncio.run(chat_client._run_claude_chat_turn(
+        [], "Kiểm tra journal MON", chat_client.system_prompt(), "operator"
+    ))
+
+    assert result["tools_used"] == []
+    assert '"name": "get_node_journal"' not in captured["prompt"]
+
+
+def test_parse_claude_tool_envelope_accepts_fenced_json():
+    assert chat_client._parse_claude_tool_envelope(
+        '```json\n{"type":"final","content":"ok"}\n```'
+    ) == {"type": "final", "content": "ok"}
+
+
 def test_run_chat_turn_get_node_metrics_rejects_unconfigured_host(monkeypatch):
     ran = {"called": False}
 

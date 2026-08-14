@@ -638,7 +638,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
         result["reply_text"] = with_romantic_address(result["reply_text"], ai_name)
         return result
     if settings.claude_chat_enabled:
-        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt)
+        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt, actor)
         result["reply_text"] = with_romantic_address(result["reply_text"], ai_name)
         return result
 
@@ -803,22 +803,105 @@ async def _run_codex_chat_turn(
     return {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
 
 
-async def _run_claude_chat_turn(history: list[dict], user_text: str, actor_system_prompt: str) -> dict:
-    """Run a guarded, text-only turn through the authenticated Claude CLI."""
+def _parse_claude_tool_envelope(raw: str) -> dict | None:
+    """Parse Claude's app-managed tool envelope, tolerating a fenced JSON block."""
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            text = "\n".join(lines[1:-1])
+            if text.lstrip().startswith("json\n"):
+                text = text.lstrip()[5:]
+    try:
+        value = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def _run_claude_chat_turn(
+    history: list[dict], user_text: str, actor_system_prompt: str, actor: str
+) -> dict:
+    """Run Claude with server-managed tools and the same guards as other providers.
+
+    Claude CLI is intentionally launched without its filesystem/shell tools. The
+    model requests one ceph-ai tool at a time through a JSON envelope; this app
+    validates and executes it, then sends the result into the next Claude turn.
+    """
     transcript = []
     for message in history[-MAX_HISTORY_MESSAGES:]:
         role = "Người dùng" if message["role"] == "user" else "Trợ lý"
         transcript.append(f"{role}: {message['content']}")
-    prompt = (
+    schemas = _tool_schemas(is_admin=auth.is_admin_user(actor))
+    tool_contract = [item["function"] for item in schemas]
+    exchange: list[str] = []
+    tools_used: list[str] = []
+    proposal: dict | None = None
+    base_prompt = (
         actor_system_prompt
-        + "\n\nBạn đang chạy ở chế độ chỉ đọc và không có tool trong lượt Claude này. "
-          "Không được tuyên bố đã kiểm tra hoặc thay đổi cụm nếu không có dữ liệu trong hội thoại. "
-          "Không tạo đề xuất hành động có thể thực thi; hãy hướng dẫn operator xác minh khi cần."
+        + "\n\nBạn có các tool ceph-ai dưới đây. Claude CLI không chạy tool trực tiếp; "
+          "ứng dụng sẽ chạy tool thay bạn. Khi cần dữ liệu, chỉ trả về đúng một JSON object "
+          'dạng {"type":"tool","name":"<tool>","arguments":{...}}. Khi đã đủ dữ liệu, '
+          'trả về {"type":"final","content":"<câu trả lời>"}. Không bọc JSON bằng markdown. '
+          "Không nói rằng tool không khả dụng. Chỉ gọi tool có trong danh sách.\n"
+        + json.dumps(tool_contract, ensure_ascii=False)
         + "\n\nLịch sử hội thoại:\n" + "\n".join(transcript)
-        + f"\n\nNgười dùng: {user_text}\nTrợ lý:"
+        + f"\n\nNgười dùng: {user_text}"
     )
-    try:
-        reply = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
-    except ClaudeCLIError as exc:
-        raise ChatTurnError(f"Claude: {exc}") from exc
-    return {"reply_text": reply or "Claude không trả về nội dung", "proposal": None, "tools_used": []}
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        prompt = base_prompt + ("\n\nKết quả các bước trước:\n" + "\n".join(exchange) if exchange else "")
+        prompt += "\n\nChỉ trả về JSON object theo contract:"
+        try:
+            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+        except ClaudeCLIError as exc:
+            raise ChatTurnError(f"Claude: {exc}") from exc
+        envelope = _parse_claude_tool_envelope(raw)
+        if envelope is None:
+            return {
+                "reply_text": raw or "Claude không trả về nội dung",
+                "proposal": None,
+                "tools_used": tools_used,
+            }
+        if envelope.get("type") == "final":
+            return {
+                "reply_text": str(envelope.get("content") or "Claude không trả về nội dung"),
+                "proposal": proposal,
+                "tools_used": tools_used,
+            }
+        if envelope.get("type") != "tool":
+            exchange.append(f"Phản hồi không hợp lệ: {json.dumps(envelope, ensure_ascii=False)}")
+            continue
+        name = str(envelope.get("name") or "")
+        args = envelope.get("arguments") if isinstance(envelope.get("arguments"), dict) else {}
+        allowed_names = {item["name"] for item in tool_contract}
+        if name not in allowed_names:
+            exchange.append(f"Tool {name!r} không được cấp cho tài khoản này.")
+            continue
+        if name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}:
+            try:
+                if name == TOOL_PROPOSE_NODE_COMMAND:
+                    proposal = _validate_node_command_proposal(args, actor)
+                    reply = "Đã tạo đề xuất lệnh trên node. Hãy nhập chính xác `OK` ở tin nhắn kế tiếp để thực hiện."
+                else:
+                    proposal = _validate_proposal(args)
+                    proposal["command_preview"] = resolve_command_preview(
+                        proposal["action_id"], proposal["target_nodes"], proposal["params"]
+                    )
+                    reply = "Đã tạo đề xuất hành động để bạn kiểm tra và xác nhận."
+            except (ChatToolError, TypeError, ValueError) as exc:
+                exchange.append(f"Tool {name} lỗi: {exc}")
+                continue
+            return {"reply_text": reply, "proposal": proposal, "tools_used": tools_used}
+        result_text, is_error = _run_tool(name, args, actor)
+        if not is_error:
+            tools_used.append(name)
+        exchange.append(
+            f"Tool {name} ({'lỗi' if is_error else 'thành công'}): {result_text}"
+        )
+
+    return {
+        "reply_text": "Đã dừng sau nhiều bước gọi tool liên tiếp; hãy yêu cầu lại cụ thể hơn.",
+        "proposal": proposal,
+        "tools_used": tools_used,
+    }
