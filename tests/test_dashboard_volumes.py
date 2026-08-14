@@ -1062,6 +1062,24 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'id="trash-pagination"' in response.text
     assert "10 Trash mỗi trang" in response.text
     assert 'src="/static/trash.js' in response.text
+    assert 'id="trash-purge-all-btn"' in response.text
+    assert 'action="/volumes/vms/trash/purge-all"' in response.text
+    assert "XOÁ VĨNH VIỄN tất cả 1 volume" in response.text
+
+
+def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash", lambda pool: [_fake_trash_entry()]
+    )
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert 'id="trash-purge-all-btn"' not in response.text
+    assert 'action="/volumes/vms/trash/purge-all"' not in response.text
 
 
 def test_trash_page_server_hides_entries_after_first_ten(dashboard_client, monkeypatch):
