@@ -187,6 +187,7 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
         query_error = str(exc)
 
     state_counts = Counter(row["state"] for row in rows)
+    pool_names = sorted({str(row["pool"]) for row in rows if row.get("pool") not in (None, "—")})
     return templates.TemplateResponse(
         request,
         "pgs.html",
@@ -194,6 +195,7 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
             "user": user,
             "is_admin": auth.is_admin_user(user),
             "pgs": rows,
+            "pool_names": pool_names,
             "state_counts": sorted(state_counts.items()),
             "query_error": query_error,
             "clusters": clusters,

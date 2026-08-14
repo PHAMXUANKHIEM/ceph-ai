@@ -75,6 +75,27 @@
             </div>
             {% endif %}
           </div>
+          {% if pgs %}
+          <div class="card-body pg-filter-panel" aria-label="Tìm kiếm và lọc Placement Groups">
+            <label class="pg-filter-field pg-search-field">
+              <span>Tìm kiếm</span>
+              <input id="pg-search" type="search" placeholder="State, OSD, thời gian scrub..." autocomplete="off">
+            </label>
+            <label class="pg-filter-field">
+              <span>PG ID</span>
+              <input id="pg-id-filter" type="search" placeholder="Ví dụ: 1.a" autocomplete="off">
+            </label>
+            <label class="pg-filter-field">
+              <span>Pool</span>
+              <select id="pg-pool-filter">
+                <option value="">Tất cả pool</option>
+                {% for pool_name in pool_names %}<option value="{{ pool_name }}">{{ pool_name }}</option>{% endfor %}
+              </select>
+            </label>
+            <button id="pg-filter-reset" type="button" class="btn btn-ghost btn-sm">Xóa bộ lọc</button>
+            <span id="pg-filter-result" class="pg-filter-result" role="status" aria-live="polite">Hiển thị {{ pgs|length }}/{{ pgs|length }} PGs</span>
+          </div>
+          {% endif %}
           {% if query_error %}
           <div class="card-body"><p class="error">Không lấy được PG từ cluster: {{ query_error }}</p></div>
           {% elif pgs %}
@@ -83,7 +104,7 @@
               <thead><tr><th>PG ID</th><th>State</th><th>Pool</th><th>Acting</th><th>Up</th><th>Primary</th><th>Last scrub</th><th>Last deep scrub</th></tr></thead>
               <tbody>
                 {% for pg in pgs %}
-                <tr>
+                <tr data-pgid="{{ pg.pgid }}" data-pool="{{ pg.pool }}">
                   <td><code>{{ pg.pgid }}</code></td>
                   <td><span class="pg-state-chip {% if pg.state == 'active+clean' %}is-clean{% else %}is-warning{% endif %}">{{ pg.state }}</span></td>
                   <td>{{ pg.pool }}</td>
@@ -96,6 +117,7 @@
                 {% endfor %}
               </tbody>
             </table>
+            <div id="pg-filter-empty" class="empty-state pg-filter-empty" hidden>Không tìm thấy Placement Group phù hợp.</div>
           </div>
           {% else %}
           <div class="card-body"><div class="empty-state">Cụm chưa có Placement Group nào.</div></div>
@@ -104,5 +126,6 @@
     </div>
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/pgs.js?v={{ static_version }}"></script>
 </body>
 </html>

@@ -70,6 +70,13 @@ def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, 
     assert "[0, 1, 2]" in response.text
     assert "2026-08-11T01:02:03Z" in response.text
     assert "2026-08-10T01:02:03Z" in response.text
+    assert 'id="pg-search"' in response.text
+    assert 'id="pg-id-filter"' in response.text
+    assert 'id="pg-pool-filter"' in response.text
+    assert '<option value="vms">vms</option>' in response.text
+    assert '<option value="backups">backups</option>' in response.text
+    assert 'data-pgid="1.a" data-pool="vms"' in response.text
+    assert 'src="/static/pgs.js' in response.text
     assert "Chọn một pool" not in response.text
     assert "Tạo pool" not in response.text
 
