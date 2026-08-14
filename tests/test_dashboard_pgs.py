@@ -73,10 +73,15 @@ def test_pgs_page_returns_all_pgs_with_pool_and_scrub_details(dashboard_client, 
     assert 'id="pg-search"' in response.text
     assert 'id="pg-id-filter"' in response.text
     assert 'id="pg-pool-filter"' in response.text
+    assert 'aria-label="Lọc theo Pool name"' in response.text
     assert '<option value="vms">vms</option>' in response.text
     assert '<option value="backups">backups</option>' in response.text
     assert 'data-pgid="1.a" data-pool="vms"' in response.text
     assert 'src="/static/pgs.js' in response.text
+    assert 'id="pg-pagination"' in response.text
+    assert 'id="pg-page-prev"' in response.text
+    assert 'id="pg-page-next"' in response.text
+    assert "10 PGs mỗi trang" in response.text
     assert "Chọn một pool" not in response.text
     assert "Tạo pool" not in response.text
 

@@ -2145,6 +2145,18 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .pg-filter-result { margin-left: auto; padding-bottom: 10px; color: var(--text-muted); font: 600 .7rem/1 var(--font-mono); white-space: nowrap; }
 .pg-filter-empty { margin: 14px; }
 .pg-filter-panel .btn:disabled { cursor: not-allowed; opacity: .45; }
+.pg-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; border-top: 1px solid var(--border); }
+.pg-pagination > span { color: var(--text-muted); font: 600 .72rem/1 var(--font-mono); }
+.pg-pagination .btn:disabled { cursor: not-allowed; opacity: .4; }
+.pg-page-size { margin-left: auto; }
+
+@media (max-width: 680px) {
+  .pg-filter-field, .pg-search-field { width: 100%; min-width: 0; flex-basis: 100%; }
+  .pg-filter-panel .btn { width: 100%; }
+  .pg-filter-result { width: 100%; margin-left: 0; padding-bottom: 0; text-align: center; }
+  .pg-pagination { flex-wrap: wrap; }
+  .pg-page-size { width: 100%; margin-left: 0; text-align: center; }
+}
 .block-storage-card { overflow: hidden; }
 .block-storage-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .block-storage-header h2 { font-size: 1.05rem; }

@@ -86,10 +86,12 @@
               <input id="pg-id-filter" type="search" placeholder="Ví dụ: 1.a" autocomplete="off">
             </label>
             <label class="pg-filter-field">
-              <span>Pool</span>
-              <select id="pg-pool-filter">
+              <span>Pool name</span>
+              <select id="pg-pool-filter" aria-label="Lọc theo Pool name">
                 <option value="">Tất cả pool</option>
-                {% for pool_name in pool_names %}<option value="{{ pool_name }}">{{ pool_name }}</option>{% endfor %}
+                {% for pool_name in pool_names %}
+                <option value="{{ pool_name }}">{{ pool_name }}</option>
+                {% endfor %}
               </select>
             </label>
             <button id="pg-filter-reset" type="button" class="btn btn-ghost btn-sm">Xóa bộ lọc</button>
@@ -118,6 +120,12 @@
               </tbody>
             </table>
             <div id="pg-filter-empty" class="empty-state pg-filter-empty" hidden>Không tìm thấy Placement Group phù hợp.</div>
+          </div>
+          <div id="pg-pagination" class="card-body pg-pagination" aria-label="Phân trang Placement Groups">
+            <button id="pg-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
+            <span id="pg-page-status" role="status" aria-live="polite">Trang 1 / 1</span>
+            <button id="pg-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button>
+            <span class="pg-page-size">10 PGs mỗi trang</span>
           </div>
           {% else %}
           <div class="card-body"><div class="empty-state">Cụm chưa có Placement Group nào.</div></div>

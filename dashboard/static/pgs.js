@@ -8,42 +8,77 @@
   const resetButton = document.getElementById("pg-filter-reset");
   const result = document.getElementById("pg-filter-result");
   const empty = document.getElementById("pg-filter-empty");
+  const pagination = document.getElementById("pg-pagination");
+  const previousButton = document.getElementById("pg-page-prev");
+  const nextButton = document.getElementById("pg-page-next");
+  const pageStatus = document.getElementById("pg-page-status");
 
-  if (!table || !searchInput || !pgIdInput || !poolSelect || !resetButton || !result) return;
+  if (!table || !searchInput || !pgIdInput || !poolSelect || !resetButton || !result
+      || !pagination || !previousButton || !nextButton || !pageStatus) return;
 
   const rows = Array.from(table.querySelectorAll("tbody tr"));
+  const pageSize = 10;
+  let currentPage = 1;
   const normalize = (value) => String(value || "").trim().toLocaleLowerCase("vi");
 
-  function applyFilters() {
+  function matchingRows() {
     const search = normalize(searchInput.value);
     const pgId = normalize(pgIdInput.value);
     const pool = normalize(poolSelect.value);
-    let visible = 0;
-
-    rows.forEach((row) => {
+    return rows.filter((row) => {
       const matchesSearch = !search || normalize(row.textContent).includes(search);
       const matchesPgId = !pgId || normalize(row.dataset.pgid).includes(pgId);
       const matchesPool = !pool || normalize(row.dataset.pool) === pool;
-      const show = matchesSearch && matchesPgId && matchesPool;
-      row.hidden = !show;
-      if (show) visible += 1;
+      return matchesSearch && matchesPgId && matchesPool;
     });
+  }
 
-    result.textContent = `Hiển thị ${visible}/${rows.length} PGs`;
-    if (empty) empty.hidden = visible !== 0;
-    table.hidden = visible === 0;
+  function render() {
+    const filteredRows = matchingRows();
+    const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+    currentPage = Math.min(Math.max(1, currentPage), pageCount);
+    const start = (currentPage - 1) * pageSize;
+    const pageRows = new Set(filteredRows.slice(start, start + pageSize));
+
+    rows.forEach((row) => { row.hidden = !pageRows.has(row); });
+
+    const shownFrom = filteredRows.length ? start + 1 : 0;
+    const shownTo = Math.min(start + pageSize, filteredRows.length);
+    result.textContent = `Hiển thị ${shownFrom}-${shownTo} / ${filteredRows.length} PGs`;
+    pageStatus.textContent = `Trang ${currentPage} / ${pageCount}`;
+    previousButton.disabled = currentPage === 1;
+    nextButton.disabled = currentPage === pageCount;
+    pagination.hidden = filteredRows.length === 0;
+    if (empty) empty.hidden = filteredRows.length !== 0;
+    table.hidden = filteredRows.length === 0;
+    const search = normalize(searchInput.value);
+    const pgId = normalize(pgIdInput.value);
+    const pool = normalize(poolSelect.value);
     resetButton.disabled = !search && !pgId && !pool;
   }
 
-  [searchInput, pgIdInput].forEach((input) => input.addEventListener("input", applyFilters));
-  poolSelect.addEventListener("change", applyFilters);
+  function resetPageAndRender() {
+    currentPage = 1;
+    render();
+  }
+
+  [searchInput, pgIdInput].forEach((input) => input.addEventListener("input", resetPageAndRender));
+  poolSelect.addEventListener("change", resetPageAndRender);
+  previousButton.addEventListener("click", () => {
+    if (currentPage > 1) currentPage -= 1;
+    render();
+  });
+  nextButton.addEventListener("click", () => {
+    currentPage += 1;
+    render();
+  });
   resetButton.addEventListener("click", () => {
     searchInput.value = "";
     pgIdInput.value = "";
     poolSelect.value = "";
-    applyFilters();
+    resetPageAndRender();
     searchInput.focus();
   });
 
-  applyFilters();
+  render();
 })();
