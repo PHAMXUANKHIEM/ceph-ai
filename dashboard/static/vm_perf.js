@@ -81,9 +81,9 @@
     } else {
       html += '<p class="hint">Chưa thấy điểm knee trong dải tải đã đo; mức cao nhất chỉ là cận dưới.</p>';
     }
-    html += '<div class="table-wrap"><table><thead><tr><th>iodepth</th><th>IOPS</th><th>MiB/s</th><th>Độ lệch</th><th>Latency avg</th><th>p99</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>iodepth</th><th>Số lần đo</th><th>IOPS median</th><th>MiB/s</th><th>Độ lệch</th><th>Latency avg</th><th>p99</th></tr></thead><tbody>';
     (result.steps || []).forEach(function (row) {
-      html += "<tr><td>" + row.iodepth + "</td><td>" + fmt(row.iops, 0) + "</td><td>" +
+      html += "<tr><td>" + row.iodepth + "</td><td>" + (row.sample_count || 0) + "/3</td><td>" + fmt(row.iops, 0) + "</td><td>" +
         fmt(row.bandwidth_mib_s, 2) + "</td><td>" + fmt(row.iops_cv_pct, 1) + "%</td><td>" +
         fmt(row.latency_avg_ms, 2) + " ms</td><td>" + fmt(row.latency_p99_ms, 2) + " ms</td></tr>";
     });

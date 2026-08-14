@@ -64,6 +64,10 @@ def test_run_executes_read_only_fio_inside_vm(monkeypatch):
     assert len(final["result"]["steps"]) == 2
 
 
+def test_max_volume_performance_runs_three_samples_per_depth():
+    assert vm_perf.FIO_SAMPLES_PER_DEPTH == 3
+
+
 def test_run_rejects_unsafe_device_without_ssh(monkeypatch):
     monkeypatch.setattr(
         vm_perf,

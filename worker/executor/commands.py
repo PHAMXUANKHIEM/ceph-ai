@@ -1143,7 +1143,7 @@ def _vm_perf_benchmark_preview_command(host: str | None, params: dict) -> str:
     ssh_user = params.get("ssh_user", "<ssh-user>")
     return (
         f"SSH vào OpenStack Controller {controller_ip}, sau đó SSH {ssh_user}@{vm_ip} và chạy "
-        f"fio READ-ONLY 4K random-read trên {device} "
+        f"fio READ-ONLY 4K random-read trên {device}, mỗi mức tải đo 3 lần và lấy median "
         "từ bên trong VM; không chạy write benchmark và không hiển thị nội dung SSH key"
     )
 

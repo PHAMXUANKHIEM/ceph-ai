@@ -117,7 +117,7 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
 
     progress = [
         _step("prepare", "SSH qua OpenStack Controller, kiểm tra fio và ổ đĩa trong VM", 10),
-        _step("sweep", "Đo đọc ngẫu nhiên 4K từ trong VM", 90),
+        _step("sweep", "Đo hiệu năng tối đa trong VM — mỗi mức lặp 3 lần", 90),
         _step("complete", "Tổng hợp kết quả end-to-end", 100),
     ]
     write_progress(action_pk, progress)
@@ -173,7 +173,9 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
                     ),
                 }
             )
-            progress[1]["message"] = f"Đã đo iodepth={depth} ({len(samples)} mẫu)."
+            progress[1]["message"] = (
+                f"Đã đo iodepth={depth}: {len(samples)}/3 lần, lấy median {median_iops:.0f} IOPS."
+            )
             write_progress(action_pk, progress)
         progress[1].update(status="done", finished_at=datetime.utcnow().isoformat())
 
@@ -188,6 +190,7 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
                 "controller_ip": controller_ip,
                 "device": device,
                 "profile": "4K random read, direct I/O, read-only",
+                "samples_per_depth": FIO_SAMPLES_PER_DEPTH,
                 "disk_info": disk_info,
                 "steps": measured,
                 "knee": knee,

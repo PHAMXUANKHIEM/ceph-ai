@@ -169,7 +169,7 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     assert 'data-pool="vms"' in response.text
 
 
-def test_volumes_page_shows_perf_sweep_button_for_admin(dashboard_client, monkeypatch):
+def test_volumes_page_uses_vm_benchmark_instead_of_legacy_pool_sweep(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _stub_no_trash(monkeypatch)
     _login(dashboard_client)
@@ -177,7 +177,8 @@ def test_volumes_page_shows_perf_sweep_button_for_admin(dashboard_client, monkey
     response = dashboard_client.get("/volumes?pool=vms")
 
     assert response.status_code == 200
-    assert 'id="perf-sweep-run-btn"' in response.text
+    assert 'id="vm-perf-form"' in response.text
+    assert 'id="perf-sweep-run-btn"' not in response.text
 
 
 def test_volumes_page_hides_perf_sweep_button_for_non_admin(dashboard_client, monkeypatch):
@@ -192,7 +193,7 @@ def test_volumes_page_hides_perf_sweep_button_for_non_admin(dashboard_client, mo
     assert 'id="perf-sweep-run-btn"' not in response.text
 
 
-def test_volumes_page_shows_approve_reject_when_perf_sweep_pending(dashboard_client, monkeypatch):
+def test_volumes_page_does_not_surface_legacy_perf_sweep_pending_action(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _stub_no_trash(monkeypatch)
     _login(dashboard_client)
@@ -203,13 +204,13 @@ def test_volumes_page_shows_approve_reject_when_perf_sweep_pending(dashboard_cli
     response = dashboard_client.get("/volumes?pool=vms")
 
     assert response.status_code == 200
-    assert f'action="/actions/{action_id}/approve"' in response.text
-    assert f'action="/actions/{action_id}/reject"' in response.text
+    assert f'action="/actions/{action_id}/approve"' not in response.text
+    assert f'action="/actions/{action_id}/reject"' not in response.text
     assert 'id="perf-sweep-run-btn"' not in response.text
-    assert "fio" in response.text  # proposed_command preview shown before approval
+    assert 'id="vm-perf-form"' in response.text
 
 
-def test_volumes_page_shows_running_indicator_when_perf_sweep_approved(dashboard_client, monkeypatch):
+def test_volumes_page_does_not_show_legacy_perf_sweep_running_indicator(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _stub_no_trash(monkeypatch)
     _login(dashboard_client)
@@ -223,8 +224,8 @@ def test_volumes_page_shows_running_indicator_when_perf_sweep_approved(dashboard
     response = dashboard_client.get("/volumes?pool=vms")
 
     assert response.status_code == 200
-    assert "Đang đo hiệu năng" in response.text
-    assert 'data-status="APPROVED"' in response.text
+    assert "Đang đo hiệu năng — xem tiến độ bên dưới" not in response.text
+    assert 'id="vm-perf-form"' in response.text
 
 
 def test_volumes_page_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
@@ -611,6 +612,8 @@ def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, m
     assert 'value="/dev/vdb"' in response.text
     assert 'value="/dev/vdc"' in response.text
     assert "READ-ONLY" in response.text
+    assert "Mỗi mức tải được đo đúng 3 lần" in response.text
+    assert 'id="perf-sweep-panel"' not in response.text
 
 
 def test_propose_vm_perf_creates_risky_pending_action(dashboard_client):

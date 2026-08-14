@@ -134,12 +134,13 @@
 
     <section class="card" id="vm-perf-panel" data-status="{{ vm_perf_action.status if vm_perf_action else '' }}">
       <div class="card-header">
-        <h2>Đo hiệu năng từ trong VM</h2>
+        <h2>Hiệu năng tối đa của Volume — đo từ trong VM</h2>
       </div>
       <div class="card-body">
         <p class="hint metrics-panel-desc">
           Worker SSH vào OpenStack Controller đã cấu hình, từ Controller SSH tiếp vào VM và chạy
-          <code>fio</code> READ-ONLY trên ổ đã chọn. Kết quả
+          <code>fio</code> READ-ONLY trên ổ đã chọn. Mỗi mức tải được đo đúng 3 lần và lấy median
+          để loại nhiễu. Kết quả
           bao gồm toàn bộ đường đi guest → virtio/QEMU → network → Ceph. Private key phải tồn tại
           trên OpenStack Controller; hệ thống chỉ lưu đường dẫn, không nhận nội dung key qua trình duyệt.
         </p>
@@ -181,55 +182,12 @@
               <option value="/dev/nvme1n1"></option>
             </datalist>
           </label>
-          <button type="submit" class="btn btn-primary btn-sm">Đề xuất đo từ VM</button>
+          <button type="submit" class="btn btn-primary btn-sm">Đề xuất đo hiệu năng tối đa</button>
         </form>
         {% endif %}
         <p class="error" id="vm-perf-error" hidden></p>
         <div id="vm-perf-progress" hidden></div>
         <div id="vm-perf-result"></div>
-      </div>
-    </section>
-
-    <section
-      class="card"
-      id="perf-sweep-panel"
-      data-pool="{{ selected_pool }}"
-      data-status="{{ perf_sweep_action.status if perf_sweep_action else '' }}"
-    >
-      <div class="card-header">
-        <h2>Hiệu năng tối đa (Load Sweep)</h2>
-      </div>
-      <div class="card-body">
-        <p class="hint metrics-panel-desc">
-          Quét tải fio 4K random-write tăng dần (iodepth 1→256) trên scratch image riêng của pool
-          này (KHÔNG đụng volume thật). Mỗi mức được đo 3 lần và lấy median; điểm bão hòa chỉ được
-          chốt sau 2 mức xấu liên tiếp. Scratch image 50 GiB được tạo mới trước khi đo và xóa hẳn
-          sau khi kết thúc hoặc gặp lỗi. Đây là tải I/O thật, có thể kéo dài khoảng 4–12 phút và cần
-          duyệt trước khi thực thi (chỉ admin đề xuất được).
-        </p>
-
-        {% if perf_sweep_action and perf_sweep_action.status == "PENDING_APPROVAL" %}
-        {% if perf_sweep_action.proposed_command %}
-        <pre class="upgrade-plan-text">{{ perf_sweep_action.proposed_command }}</pre>
-        {% endif %}
-        <div class="pending-action-buttons">
-          <span class="hint">Chờ duyệt — sẽ tạo tải I/O thật lên cluster trong vài phút khi bắt đầu.</span>
-          <form method="post" action="/actions/{{ perf_sweep_action.id }}/approve" class="inline-form">
-            <button type="submit" class="btn btn-approve btn-sm">Duyệt — bắt đầu đo</button>
-          </form>
-          <form method="post" action="/actions/{{ perf_sweep_action.id }}/reject" class="inline-form">
-            <button type="submit" class="btn btn-reject btn-sm">Từ chối</button>
-          </form>
-        </div>
-        {% elif perf_sweep_action and perf_sweep_action.status == "APPROVED" %}
-        <p class="hint">● Đang đo hiệu năng — xem tiến độ bên dưới...</p>
-        {% elif is_admin %}
-        <button type="button" class="btn btn-primary btn-sm" id="perf-sweep-run-btn">Đo trần IOPS ghi ngẫu nhiên 4K</button>
-        {% endif %}
-
-        <p class="error" id="perf-sweep-error" hidden></p>
-        <div id="perf-sweep-progress" hidden></div>
-        <div id="perf-sweep-result"></div>
       </div>
     </section>
 
@@ -317,7 +275,6 @@
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/volumes.js?v={{ static_version }}"></script>
-  <script src="/static/volume_perf_sweep.js?v={{ static_version }}"></script>
   <script src="/static/vm_perf.js?v={{ static_version }}"></script>
 </body>
 </html>
