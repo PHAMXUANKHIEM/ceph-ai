@@ -8,6 +8,11 @@
   var codexInstallPrompt = document.getElementById("codex-install-prompt");
   var codexInstallYesBtn = document.getElementById("codex-install-yes-btn");
   var codexInstallNoBtn = document.getElementById("codex-install-no-btn");
+  var codexModelPanel = document.getElementById("codex-model-panel");
+  var codexModelSelect = document.getElementById("codex-model-select");
+  var codexModelSaveBtn = document.getElementById("codex-model-save-btn");
+  var codexModelResult = document.getElementById("codex-model-result");
+  var codexLimitPanel = document.getElementById("codex-limit-panel");
   var codexPollTimer = null;
 
   function codexRequest(url, options) {
@@ -24,6 +29,8 @@
       if (codexInstallPrompt) codexInstallPrompt.hidden = false;
       if (codexLoginBtn) codexLoginBtn.hidden = true;
       if (codexLogoutBtn) codexLogoutBtn.hidden = true;
+      if (codexModelPanel) codexModelPanel.hidden = true;
+      if (codexLimitPanel) codexLimitPanel.hidden = true;
     } else if (data.authenticated) {
       if (codexInstallPrompt) codexInstallPrompt.hidden = true;
       var detail = data.email || "tài khoản ChatGPT";
@@ -31,13 +38,77 @@
       codexStatus.textContent = "✅ Đã đăng nhập " + detail + (data.enabled ? " — đang dùng cho Chat-with-AI" : "");
       if (codexLoginBtn) codexLoginBtn.hidden = true;
       if (codexLogoutBtn) codexLogoutBtn.hidden = false;
+      renderAccountModels(codexModelPanel, codexModelSelect, data.models || [], data.model, true);
+      renderAiLimits(codexLimitPanel, data.limits || []);
       if (codexFlow) codexFlow.hidden = true;
     } else {
       if (codexInstallPrompt) codexInstallPrompt.hidden = true;
       codexStatus.textContent = data.error ? "❌ " + data.error : "Chưa đăng nhập tài khoản Codex.";
       if (codexLoginBtn) codexLoginBtn.hidden = false;
       if (codexLogoutBtn) codexLogoutBtn.hidden = true;
+      if (codexModelPanel) codexModelPanel.hidden = true;
+      if (codexLimitPanel) codexLimitPanel.hidden = true;
     }
+  }
+
+  function renderAccountModels(panel, select, models, selected, includeAutomatic) {
+    if (!panel || !select) return;
+    select.innerHTML = "";
+    if (includeAutomatic) {
+      var automatic = document.createElement("option");
+      automatic.value = "";
+      automatic.textContent = "Tự động (model mặc định của tài khoản)";
+      select.appendChild(automatic);
+    }
+    models.forEach(function (model) {
+      var option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.label + (model.is_default ? " · mặc định" : "");
+      select.appendChild(option);
+    });
+    select.value = selected || (includeAutomatic ? "" : "default");
+    panel.hidden = false;
+  }
+
+  function renderAiLimits(panel, limits) {
+    if (!panel) return;
+    panel.innerHTML = "";
+    var title = document.createElement("strong");
+    title.textContent = "Hạn mức AI";
+    panel.appendChild(title);
+    if (!limits.length) {
+      var unavailable = document.createElement("p");
+      unavailable.className = "hint";
+      unavailable.textContent = "Nhà cung cấp chưa trả dữ liệu hạn mức cho tài khoản này.";
+      panel.appendChild(unavailable);
+    }
+    limits.forEach(function (limit) {
+      var row = document.createElement("div");
+      row.className = "ai-limit-row" + (limit.remaining_percent <= 15 ? " ai-limit-low" : "");
+      var label = document.createElement("span");
+      label.textContent = limit.label;
+      var value = document.createElement("strong");
+      value.textContent = limit.remaining_percent + "% còn lại";
+      var meter = document.createElement("progress");
+      meter.max = 100;
+      meter.value = limit.remaining_percent;
+      row.appendChild(label); row.appendChild(value); row.appendChild(meter);
+      panel.appendChild(row);
+    });
+    panel.hidden = false;
+  }
+
+  function saveAccountModel(provider, select, button, result) {
+    if (!select || !button) return;
+    button.disabled = true;
+    if (result) { result.hidden = false; result.textContent = "Đang lưu..."; }
+    var body = new URLSearchParams();
+    body.set("model", select.value);
+    codexRequest("/settings/" + provider + "/model", { method: "POST", body: body }).then(function () {
+      if (result) { result.className = "ai-test-result ai-test-ok"; result.textContent = "✅ Đã lưu"; }
+    }).catch(function (err) {
+      if (result) { result.className = "ai-test-result ai-test-fail"; result.textContent = "❌ " + err.message; }
+    }).then(function () { button.disabled = false; });
   }
 
   function refreshCodexStatus(activate) {
@@ -92,6 +163,9 @@
       renderCodexStatus({ authenticated: false, enabled: false });
     }).catch(function (err) { codexStatus.textContent = "❌ " + err.message; });
   });
+  if (codexModelSaveBtn) codexModelSaveBtn.addEventListener("click", function () {
+    saveAccountModel("codex", codexModelSelect, codexModelSaveBtn, codexModelResult);
+  });
 
   var claudeLoginBtn = document.getElementById("claude-login-btn");
   var claudeLogoutBtn = document.getElementById("claude-logout-btn");
@@ -103,6 +177,11 @@
   var claudeInstallPrompt = document.getElementById("claude-install-prompt");
   var claudeInstallYesBtn = document.getElementById("claude-install-yes-btn");
   var claudeInstallNoBtn = document.getElementById("claude-install-no-btn");
+  var claudeModelPanel = document.getElementById("claude-model-panel");
+  var claudeModelSelect = document.getElementById("claude-model-select");
+  var claudeModelSaveBtn = document.getElementById("claude-model-save-btn");
+  var claudeModelResult = document.getElementById("claude-model-result");
+  var claudeLimitPanel = document.getElementById("claude-limit-panel");
   var claudePollTimer = null;
 
   function renderClaudeStatus(data) {
@@ -112,12 +191,16 @@
       if (claudeInstallPrompt) claudeInstallPrompt.hidden = false;
       if (claudeLoginBtn) claudeLoginBtn.hidden = true;
       if (claudeLogoutBtn) claudeLogoutBtn.hidden = true;
+      if (claudeModelPanel) claudeModelPanel.hidden = true;
+      if (claudeLimitPanel) claudeLimitPanel.hidden = true;
     } else if (data.authenticated) {
       if (claudeInstallPrompt) claudeInstallPrompt.hidden = true;
       var detail = data.email || data.auth_method || "tài khoản Claude";
       claudeStatus.textContent = "✅ Đã đăng nhập " + detail + (data.enabled ? " — đang dùng cho Chat và phân tích hiệu năng" : "");
       if (claudeLoginBtn) claudeLoginBtn.hidden = true;
       if (claudeLogoutBtn) claudeLogoutBtn.hidden = false;
+      renderAccountModels(claudeModelPanel, claudeModelSelect, data.models || [], data.model, false);
+      renderAiLimits(claudeLimitPanel, data.limits || []);
       if (claudeFlow) claudeFlow.hidden = true;
       if (claudeAuthenticationCode) claudeAuthenticationCode.value = "";
     } else {
@@ -125,6 +208,8 @@
       claudeStatus.textContent = data.error ? "❌ " + data.error : "Chưa đăng nhập tài khoản Claude.";
       if (claudeLoginBtn) { claudeLoginBtn.hidden = false; claudeLoginBtn.disabled = false; }
       if (claudeLogoutBtn) claudeLogoutBtn.hidden = true;
+      if (claudeModelPanel) claudeModelPanel.hidden = true;
+      if (claudeLimitPanel) claudeLimitPanel.hidden = true;
     }
   }
 
@@ -202,6 +287,9 @@
     codexRequest("/settings/claude/logout", { method: "POST" }).then(function () {
       renderClaudeStatus({ installed: true, authenticated: false, enabled: false });
     }).catch(function (err) { claudeStatus.textContent = "❌ " + err.message; });
+  });
+  if (claudeModelSaveBtn) claudeModelSaveBtn.addEventListener("click", function () {
+    saveAccountModel("claude", claudeModelSelect, claudeModelSaveBtn, claudeModelResult);
   });
 
   var verifyBtn = document.getElementById("router-verify-btn");

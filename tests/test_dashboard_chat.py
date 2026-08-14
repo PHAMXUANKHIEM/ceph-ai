@@ -102,6 +102,32 @@ def test_chat_preferences_reject_prompt_injection_characters(dashboard_client):
     assert response.status_code == 400
 
 
+def test_chat_limits_returns_active_codex_quota(dashboard_client, monkeypatch):
+    async def fake_limits():
+        return {
+            "rateLimits": {
+                "primary": {"usedPercent": 91, "resetsAt": 123},
+                "secondary": {"usedPercent": 86, "resetsAt": 456},
+            }
+        }
+
+    monkeypatch.setattr(chat_module.settings, "codex_chat_enabled", True)
+    monkeypatch.setattr(chat_module.settings, "claude_chat_enabled", False)
+    monkeypatch.setattr(chat_module.codex_app_server, "rate_limits", fake_limits)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/chat/limits")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider": "codex",
+        "limits": [
+            {"period": "primary", "label": "Ngày", "remaining_percent": 9, "used_percent": 91, "resets_at": 123},
+            {"period": "secondary", "label": "Tuần", "remaining_percent": 14, "used_percent": 86, "resets_at": 456},
+        ],
+    }
+
+
 def _stage_proposal(
     message_id: str = "msg-1",
     action_id: str = "resync_ntp",

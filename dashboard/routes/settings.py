@@ -45,6 +45,7 @@ from shared.claude_cli import (
     submit_claude_authentication_code,
 )
 from shared.clusters import sync_default_cluster_from_settings
+from shared.ai_limits import normalize_rate_limits
 from shared.models import Cluster
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
@@ -69,6 +70,14 @@ ROUTER_ENABLED_ENV_NAME = "ROUTER_ENABLED"
 ROUTER_PROVIDER_ENV_NAME = "ROUTER_PROVIDER"
 CODEX_CHAT_ENABLED_ENV_NAME = "CODEX_CHAT_ENABLED"
 CLAUDE_CHAT_ENABLED_ENV_NAME = "CLAUDE_CHAT_ENABLED"
+CODEX_CHAT_MODEL_ENV_NAME = "CODEX_CHAT_MODEL"
+CLAUDE_CHAT_MODEL_ENV_NAME = "CLAUDE_CHAT_MODEL"
+CLAUDE_MODELS = [
+    {"id": "default", "label": "Mặc định tài khoản"},
+    {"id": "sonnet", "label": "Claude Sonnet"},
+    {"id": "opus", "label": "Claude Opus"},
+    {"id": "haiku", "label": "Claude Haiku"},
+]
 
 # API AI connection-type presets shown on the Settings page (2026-07-24).
 # Every entry still ends up going through the exact same generic
@@ -957,6 +966,8 @@ async def settings_codex_status(user: str = Depends(require_login)):
     try:
         await refresh_app_server_after_cli_login()
         account = await codex_app_server.account()
+        model_catalog = await codex_app_server.models() if account else []
+        limits = normalize_rate_limits(await codex_app_server.rate_limits()) if account else []
     except CodexAppServerError as exc:
         return {"installed": True, "authenticated": False, "enabled": settings.codex_chat_enabled, "error": str(exc)}
     authenticated = bool(account)
@@ -966,7 +977,33 @@ async def settings_codex_status(user: str = Depends(require_login)):
         "enabled": settings.codex_chat_enabled,
         "email": account.get("email"),
         "plan_type": account.get("planType") or account.get("plan_type"),
+        "model": settings.codex_chat_model,
+        "models": [
+            {"id": item.get("model") or item.get("id"), "label": item.get("displayName") or item.get("model") or item.get("id"), "is_default": bool(item.get("isDefault"))}
+            for item in model_catalog if item.get("model") or item.get("id")
+        ],
+        "limits": limits,
     }
+
+
+@router.post("/settings/codex/model")
+async def settings_codex_model(model: str = Form(""), user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    submitted = model.strip()
+    try:
+        if not await codex_app_server.account():
+            raise HTTPException(status_code=409, detail="Cần đăng nhập Codex trước khi chọn model")
+        catalog = await codex_app_server.models()
+    except HTTPException:
+        raise
+    except CodexAppServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    available = {item.get("model") or item.get("id") for item in catalog}
+    if submitted and submitted not in available:
+        raise HTTPException(status_code=400, detail="Model Codex không khả dụng với tài khoản này")
+    _update_env_file(CODEX_CHAT_MODEL_ENV_NAME, submitted)
+    settings.codex_chat_model = submitted
+    return {"saved": True, "model": submitted}
 
 
 @router.post("/settings/codex/install")
@@ -1035,7 +1072,27 @@ async def settings_claude_status(user: str = Depends(require_login)):
         return {"installed": claude_executable() is not None, "authenticated": False,
                 "enabled": settings.claude_chat_enabled, "error": str(exc)}
     result["enabled"] = settings.claude_chat_enabled
+    result["model"] = settings.claude_chat_model
+    result["models"] = CLAUDE_MODELS
+    result["limits"] = normalize_rate_limits(result.pop("rate_limits", None))
     return result
+
+
+@router.post("/settings/claude/model")
+async def settings_claude_model(model: str = Form("default"), user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    submitted = model.strip() or "default"
+    try:
+        status = await claude_status()
+    except ClaudeCLIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not status.get("authenticated"):
+        raise HTTPException(status_code=409, detail="Cần đăng nhập Claude trước khi chọn model")
+    if submitted not in {item["id"] for item in CLAUDE_MODELS}:
+        raise HTTPException(status_code=400, detail="Model Claude không hợp lệ")
+    _update_env_file(CLAUDE_CHAT_MODEL_ENV_NAME, submitted)
+    settings.claude_chat_model = submitted
+    return {"saved": True, "model": submitted}
 
 
 @router.post("/settings/claude/install")

@@ -80,6 +80,43 @@ def test_codex_controls_require_admin(dashboard_client):
     assert response.status_code == 403
 
 
+def test_codex_status_and_model_selection_use_live_catalog(dashboard_client, monkeypatch):
+    async def fake_account():
+        return {"email": "admin@example.test", "planType": "plus"}
+
+    async def fake_models():
+        return [
+            {"id": "model-1", "model": "gpt-codex-1", "displayName": "Codex One", "isDefault": True},
+            {"id": "model-2", "model": "gpt-codex-2", "displayName": "Codex Two", "isDefault": False},
+        ]
+
+    async def fake_rate_limits():
+        return {"rateLimits": {"primary": {"usedPercent": 86}, "secondary": {"usedPercent": 40}}}
+
+    monkeypatch.setattr(settings_route, "codex_executable", lambda: "/tmp/codex")
+    monkeypatch.setattr(settings_route, "refresh_app_server_after_cli_login", fake_account)
+    monkeypatch.setattr(settings_route.codex_app_server, "account", fake_account)
+    monkeypatch.setattr(settings_route.codex_app_server, "models", fake_models)
+    monkeypatch.setattr(settings_route.codex_app_server, "rate_limits", fake_rate_limits)
+    monkeypatch.setattr(settings, "codex_chat_model", "")
+    _login(dashboard_client)
+
+    status = dashboard_client.get("/settings/codex/status")
+    assert status.status_code == 200
+    assert status.json()["models"][0] == {
+        "id": "gpt-codex-1", "label": "Codex One", "is_default": True
+    }
+    assert status.json()["limits"][0]["remaining_percent"] == 14
+
+    saved = dashboard_client.post("/settings/codex/model", data={"model": "gpt-codex-2"})
+    assert saved.status_code == 200
+    assert settings.codex_chat_model == "gpt-codex-2"
+    assert "CODEX_CHAT_MODEL=gpt-codex-2" in env_config.ENV_PATH.read_text()
+
+    invalid = dashboard_client.post("/settings/codex/model", data={"model": "unknown"})
+    assert invalid.status_code == 400
+
+
 def test_codex_status_prompts_install_when_cli_missing(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings_route, "codex_executable", lambda: None)
     _login(dashboard_client)
@@ -139,6 +176,26 @@ def test_claude_login_and_activate_disables_codex(dashboard_client, monkeypatch)
     env_text = env_config.ENV_PATH.read_text()
     assert "CLAUDE_CHAT_ENABLED=true" in env_text
     assert "CODEX_CHAT_ENABLED=false" in env_text
+
+
+def test_claude_status_and_model_selection(dashboard_client, monkeypatch):
+    async def fake_status():
+        return {"installed": True, "authenticated": True, "email": "admin@example.test"}
+
+    monkeypatch.setattr(settings_route, "claude_status", fake_status)
+    monkeypatch.setattr(settings, "claude_chat_model", "default")
+    _login(dashboard_client)
+
+    status = dashboard_client.get("/settings/claude/status")
+    assert [item["id"] for item in status.json()["models"]] == ["default", "sonnet", "opus", "haiku"]
+
+    saved = dashboard_client.post("/settings/claude/model", data={"model": "opus"})
+    assert saved.status_code == 200
+    assert settings.claude_chat_model == "opus"
+    assert "CLAUDE_CHAT_MODEL=opus" in env_config.ENV_PATH.read_text()
+
+    invalid = dashboard_client.post("/settings/claude/model", data={"model": "other"})
+    assert invalid.status_code == 400
 
 
 def test_claude_authentication_code_is_submitted_to_active_login(dashboard_client, monkeypatch):

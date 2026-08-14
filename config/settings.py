@@ -191,10 +191,14 @@ class Settings(BaseSettings):
     # codex_home; ceph-ai never copies OAuth tokens into .env or the DB.
     codex_chat_enabled: bool = False
     codex_home: str = ".codex-account"
+    # Blank lets Codex choose the account/CLI default from its live catalog.
+    codex_chat_model: str = ""
     # Optional Claude subscription/Console-backed CLI connection. OAuth
     # credentials stay in this private Claude-owned directory.
     claude_chat_enabled: bool = False
     claude_config_dir: str = ".claude-account"
+    # Claude CLI accepts these stable aliases (default/sonnet/opus/haiku).
+    claude_chat_model: str = "default"
 
     # Worker (Story 4.3): how often the Worker checks for Actions an
     # operator just approved on the Dashboard. Separate from RabbitMQ

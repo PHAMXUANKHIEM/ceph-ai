@@ -103,6 +103,9 @@ async def claude_status() -> dict:
         "email": data.get("email"),
         "auth_method": data.get("authMethod") or data.get("auth_method"),
         "error": None if authenticated or process.returncode in (0, 1) else clean[-1000:],
+        # Some Claude CLI/account variants expose quota windows in auth
+        # status; keep them when present. Others deliberately omit them.
+        "rate_limits": data.get("rateLimits") or data.get("rate_limits"),
     }
 
 
@@ -202,8 +205,12 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
     executable = claude_executable()
     if not executable:
         raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")
+    command = [executable, "-p", prompt, "--output-format", "json", "--tools", ""]
+    model = settings.claude_chat_model.strip()
+    if model and model != "default":
+        command.extend(["--model", model])
     process = await asyncio.create_subprocess_exec(
-        executable, "-p", prompt, "--output-format", "json", "--tools", "",
+        *command,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         env=_env(), cwd="/tmp",
     )

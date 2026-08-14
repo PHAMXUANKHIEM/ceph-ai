@@ -303,6 +303,14 @@ class CodexAppServer:
     async def logout(self) -> None:
         await self._request("account/logout")
 
+    async def models(self) -> list[dict]:
+        """Return the model picker catalog exposed by the logged-in account."""
+        result = await self._request("model/list", {"includeHidden": False})
+        return result.get("data") or []
+
+    async def rate_limits(self) -> dict:
+        return await self._request("account/rateLimits/read", {})
+
     async def close(self) -> None:
         process, task = self._process, self._reader_task
         self._process = None
@@ -338,18 +346,21 @@ class CodexAppServer:
                 }
                 for tool in dynamic_tools
             ]
+            thread_params = {
+                "cwd": "/tmp",
+                "approvalPolicy": "never",
+                "sandboxPolicy": {
+                    "type": "readOnly",
+                    "access": {"type": "restricted", "includePlatformDefaults": False, "readableRoots": []},
+                },
+                "dynamicTools": tools,
+                "serviceName": "ceph-ai-dashboard",
+            }
+            if settings.codex_chat_model.strip():
+                thread_params["model"] = settings.codex_chat_model.strip()
             thread = await self._request(
                 "thread/start",
-                {
-                    "cwd": "/tmp",
-                    "approvalPolicy": "never",
-                    "sandboxPolicy": {
-                        "type": "readOnly",
-                        "access": {"type": "restricted", "includePlatformDefaults": False, "readableRoots": []},
-                    },
-                    "dynamicTools": tools,
-                    "serviceName": "ceph-ai-dashboard",
-                },
+                thread_params,
             )
             thread_id = thread["thread"]["id"]
             await self._request(

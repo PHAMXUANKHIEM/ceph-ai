@@ -655,6 +655,11 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 
 /* ===== AI Provider card (Settings) — "Kiểm tra kết nối" test row ===== */
 .ai-test-row { display: flex; align-items: center; gap: var(--space-3); }
+.ai-limit-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); }
+.ai-limit-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 12px; font-size: .82rem; color: var(--text-muted); }
+.ai-limit-row progress { grid-column: 1 / -1; width: 100%; accent-color: var(--success); }
+.ai-limit-row.ai-limit-low { color: var(--warning); }
+.ai-limit-row.ai-limit-low progress { accent-color: var(--warning); }
 .ai-test-result { font-size: 0.85rem; font-weight: 600; }
 .ai-test-result.ai-test-ok { color: var(--healthy); }
 .ai-test-result.ai-test-fail { color: var(--critical); }

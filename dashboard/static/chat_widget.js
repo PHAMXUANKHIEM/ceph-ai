@@ -45,6 +45,7 @@
   // clickable Settings link instead of just the raw text.
   var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API, Codex hoặc Claude.";
   var NETWORK_ERROR_MESSAGE = "Không thể kết nối server. Thử lại sau.";
+  var LIMIT_WARNING_THRESHOLDS = [5, 10, 15];
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
   // own OS timezone — deliberately NOT getHours()/getMinutes() etc. (those
@@ -254,6 +255,42 @@
     clearEmptyState();
     messagesEl.appendChild(buildMessage(message));
     scrollToBottom();
+  }
+
+  function appendLimitWarning(provider, limit, threshold) {
+    appendMessage({
+      id: "ai-limit-" + provider + "-" + limit.period + "-" + threshold,
+      role: "assistant",
+      actor: "system",
+      created_at: new Date().toISOString(),
+      content: "⚠️ Hạn mức " + provider.toUpperCase() + " theo " + limit.label.toLowerCase() +
+        " chỉ còn " + limit.remaining_percent + "% (dưới " + threshold + "%).",
+    });
+  }
+
+  function checkAiLimitWarnings() {
+    if (productName !== "Ceph") return;
+    fetch(apiPrefix + "/limits", { credentials: "same-origin" })
+      .then(handleAuthRedirect)
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (!data || !data.provider) return;
+        (data.limits || []).forEach(function (limit) {
+          var threshold = LIMIT_WARNING_THRESHOLDS.filter(function (value) {
+            return limit.remaining_percent < value;
+          })[0];
+          if (!threshold) return;
+          var cycle = limit.resets_at || (limit.period === "secondary"
+            ? new Date().toISOString().slice(0, 7)
+            : new Date().toISOString().slice(0, 10));
+          var prefix = "aiLimitWarning:" + data.provider + ":" + limit.period + ":" + cycle + ":";
+          if (window.localStorage.getItem(prefix + threshold)) return;
+          LIMIT_WARNING_THRESHOLDS.forEach(function (value) {
+            if (value >= threshold) window.localStorage.setItem(prefix + value, "1");
+          });
+          appendLimitWarning(data.provider, limit, threshold);
+        });
+      }).catch(function () { /* quota is informational; never block chat */ });
   }
 
   function replaceMessage(message) {
@@ -720,6 +757,7 @@
         currentSessionId = data.user_message.session_id || currentSessionId;
         appendMessage(data.user_message);
         appendMessage(data.assistant_message);
+        checkAiLimitWarnings();
       })
       .catch(function (err) {
         removeTypingIndicator();
@@ -767,4 +805,5 @@
         btn.textContent = "Thực hiện";
       });
   });
+  checkAiLimitWarnings();
 })();

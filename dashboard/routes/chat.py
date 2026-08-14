@@ -17,6 +17,9 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.vntime import to_utc_iso
 from shared import audit, db
+from shared.ai_limits import normalize_rate_limits
+from shared.claude_cli import ClaudeCLIError, claude_status
+from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.cluster_nodes import configured_nodes
 from shared.models import (
     Action,
@@ -80,6 +83,23 @@ def _validated_ai_name(value) -> str:
 @router.get("/api/chat/preferences")
 async def get_chat_preferences(user: str = Depends(require_login)):
     return {"ai_name": auth.chat_ai_name(user)}
+
+
+@router.get("/api/chat/limits")
+async def get_chat_ai_limits(user: str = Depends(require_login)):
+    """Current subscription quota for the provider serving this chatbox."""
+    if settings.codex_chat_enabled:
+        try:
+            return {"provider": "codex", "limits": normalize_rate_limits(await codex_app_server.rate_limits())}
+        except CodexAppServerError as exc:
+            return {"provider": "codex", "limits": [], "error": str(exc)}
+    if settings.claude_chat_enabled:
+        try:
+            status = await claude_status()
+            return {"provider": "claude", "limits": normalize_rate_limits(status.get("rate_limits"))}
+        except ClaudeCLIError as exc:
+            return {"provider": "claude", "limits": [], "error": str(exc)}
+    return {"provider": None, "limits": []}
 
 
 @router.put("/api/chat/preferences")
