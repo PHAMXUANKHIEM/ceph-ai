@@ -12,7 +12,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics
-from watcher.ceph_client import CephQueryError, query_rbd_trash
+from watcher.ceph_client import CephQueryError, query_rbd_trash, run_command_on_node
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.llm.router_client import VALID_ACTION_IDS
@@ -58,6 +58,7 @@ MAX_TOOL_RESULT_CHARS = 4000
 
 TOOL_LIST_NODES = "list_nodes"
 TOOL_GET_NODE_METRICS = "get_node_metrics"
+TOOL_GET_NODE_JOURNAL = "get_node_journal"
 TOOL_PROPOSE_ACTION = "propose_action"
 TOOL_GET_RBD_TRASH = "get_rbd_trash"
 _POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -141,6 +142,8 @@ def system_prompt(*, ceph_restricted: bool = True, ai_name: str = "AI") -> str:
     prompt_rules = (
     "- Trả lời bằng tiếng Việt, ngắn gọn và chính xác\n"
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
+    "- Với admin cần chẩn đoán log dịch vụ trên một node → dùng get_node_journal; "
+    "tool này đọc journalctl trực tiếp, read-only và không restart dịch vụ\n"
     "- Khi muốn thực hiện lệnh Ceph bất kỳ (read-only) → dùng run_ceph_command\n"
     "- Khi hỏi RBD trash → BẮT BUỘC dùng get_rbd_trash với tên pool; KHÔNG gọi "
     "run_ceph_command và KHÔNG tự dựng lệnh 'ceph rbd ...' (RBD là CLI riêng)\n"
@@ -152,7 +155,8 @@ def system_prompt(*, ceph_restricted: bool = True, ai_name: str = "AI") -> str:
     "sửa lệnh ceph trực tiếp) → giải thích và từ chối\n\n"
     "Ngoài các tool tra cứu (list_nodes, get_node_metrics, get_cluster_status, "
     "get_osd_stat, get_osd_tree, get_pool_list, get_pg_stat, get_df, "
-    "get_health_detail, get_mon_stat, get_rbd_trash, run_ceph_command), bạn có thể gọi "
+    "get_health_detail, get_mon_stat, get_rbd_trash, get_node_journal (admin-only), "
+    "run_ceph_command), bạn có thể gọi "
     "propose_action để ĐỀ XUẤT một hành động từ danh mục cố định — gồm cả "
     "hành động khắc phục sự cố (restart_osd_daemon, resync_ntp, "
     "pg_repair_force) VÀ hành động quản lý cluster: create_pool (cần "
@@ -215,7 +219,7 @@ class ChatTurnError(Exception):
     this as a plain assistant-role error message rather than a 500."""
 
 
-def _tool_schemas() -> list[dict]:
+def _tool_schemas(*, is_admin: bool = False) -> list[dict]:
     hosts = sorted(n["host"] for n in configured_nodes())
     action_ids = sorted(CHAT_ACTION_IDS)
 
@@ -241,7 +245,7 @@ def _tool_schemas() -> list[dict]:
         _fn("get_health_detail", "Chi tiết cảnh báo HEALTH_WARN hoặc HEALTH_ERR."),
         _fn("get_mon_stat", "Trạng thái MON nodes và quorum."),
     ]
-    return [
+    tools = [
         _fn(
             TOOL_LIST_NODES,
             "List every node configured for this cluster, with its role(s) (MON/MGR/OSD/RGW).",
@@ -256,6 +260,25 @@ def _tool_schemas() -> list[dict]:
                 "additionalProperties": False,
             },
         ),
+    ]
+    if is_admin:
+        tools.append(
+            _fn(
+                TOOL_GET_NODE_JOURNAL,
+                "Admin-only: đọc journalctl trực tiếp trên một node đã cấu hình để chẩn đoán MON hoặc toàn bộ Ceph. Read-only.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string", "enum": hosts},
+                        "service": {"type": "string", "enum": ["mon", "ceph"]},
+                        "lines": {"type": "integer", "minimum": 20, "maximum": 500},
+                    },
+                    "required": ["host", "service", "lines"],
+                    "additionalProperties": False,
+                },
+            )
+        )
+    tools.extend([
         *fixed_query_tools,
         _fn(
             TOOL_GET_RBD_TRASH,
@@ -346,7 +369,8 @@ def _tool_schemas() -> list[dict]:
                 "additionalProperties": False,
             },
         ),
-    ]
+    ])
+    return tools
 
 
 def _run_list_nodes() -> str:
@@ -363,6 +387,30 @@ def _run_get_node_metrics(args: dict) -> str:
     except NodeMetricsError as exc:
         raise ChatToolError(f"Không lấy được metrics từ {host}: {exc}") from exc
     return json.dumps(metrics)
+
+
+def _run_get_node_journal(args: dict, actor: str | None) -> str:
+    if not actor or not auth.is_admin_user(actor):
+        raise ChatToolError("Chỉ tài khoản admin được đọc journalctl trực tiếp trên node")
+    host = args.get("host")
+    nodes = configured_nodes()
+    allowed = {node["host"]: node for node in nodes}
+    if host not in allowed:
+        raise ChatToolError(f"host {host!r} không nằm trong danh sách node đã cấu hình")
+    service = args.get("service")
+    if service not in {"mon", "ceph"}:
+        raise ChatToolError("service phải là 'mon' hoặc 'ceph'")
+    lines = args.get("lines")
+    if isinstance(lines, bool) or not isinstance(lines, int) or not 20 <= lines <= 500:
+        raise ChatToolError("lines phải là số nguyên từ 20 đến 500")
+    if service == "mon" and "MON" not in allowed[host].get("roles", []):
+        raise ChatToolError(f"node {host} không có role MON")
+    units = "-u 'ceph-mon@*' -u 'ceph-*@mon.*.service'" if service == "mon" else "-u 'ceph-*'"
+    command = f"journalctl --no-pager --utc -n {lines} {units}"
+    try:
+        return json.dumps({"host": host, "service": service, "lines": run_command_on_node(host, command).splitlines()})
+    except CephQueryError as exc:
+        raise ChatToolError(f"Không đọc được journalctl trên {host}: {exc}") from exc
 
 
 def _run_get_rbd_trash(args: dict) -> str:
@@ -479,7 +527,7 @@ def _get_client() -> AsyncOpenAI:
     return build_router_client(settings.router_api_key, settings.router_base_url)
 
 
-def _run_tool(name: str, args: dict) -> tuple[str, bool]:
+def _run_tool(name: str, args: dict, actor: str | None = None) -> tuple[str, bool]:
     """Returns (result_text, is_error). Never raises — ChatToolError and any
     unexpected exception are both turned into an error result string, same
     posture as the original MCP-based tool loop this replaces. Truncates to
@@ -491,6 +539,8 @@ def _run_tool(name: str, args: dict) -> tuple[str, bool]:
             result_text, is_error = _run_list_nodes(), False
         elif name == TOOL_GET_NODE_METRICS:
             result_text, is_error = _run_get_node_metrics(args), False
+        elif name == TOOL_GET_NODE_JOURNAL:
+            result_text, is_error = _run_get_node_journal(args, actor), False
         elif name == TOOL_GET_RBD_TRASH:
             result_text, is_error = _run_get_rbd_trash(args), False
         elif name in FIXED_TOOL_COMMANDS:
@@ -541,7 +591,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     actor_system_prompt = system_prompt(ceph_restricted=ceph_restricted, ai_name=ai_name)
 
     if settings.codex_chat_enabled:
-        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt)
+        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt, actor)
         result["reply_text"] = with_romantic_address(result["reply_text"], ai_name)
         return result
     if settings.claude_chat_enabled:
@@ -559,7 +609,8 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
         messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": user_text})
 
-    tools = _tool_schemas()
+    is_admin = auth.is_admin_user(actor)
+    tools = _tool_schemas(is_admin=is_admin)
     reply_text_parts: list[str] = []
     proposal: dict | None = None
     tools_used: list[str] = []
@@ -640,7 +691,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
                 args = json.loads(call.function.arguments or "{}")
             except (TypeError, ValueError):
                 args = {}
-            result_text, is_error = _run_tool(call.function.name, args)
+            result_text, is_error = _run_tool(call.function.name, args, actor)
             if not is_error:
                 tools_used.append(call.function.name)
             messages.append(
@@ -662,7 +713,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     }
 
 
-async def _run_codex_chat_turn(history: list[dict], user_text: str, actor_system_prompt: str) -> dict:
+async def _run_codex_chat_turn(
+    history: list[dict], user_text: str, actor_system_prompt: str, actor: str
+) -> dict:
     """Run chat through Codex while retaining ceph-ai's guarded tools."""
     transcript = []
     for message in history[-MAX_HISTORY_MESSAGES:]:
@@ -684,13 +737,15 @@ async def _run_codex_chat_turn(history: list[dict], user_text: str, actor_system
                 return "Đề xuất đã tạo và đang chờ operator xác nhận trên giao diện.", True
             except (ChatToolError, TypeError, ValueError) as exc:
                 return f"Đề xuất không hợp lệ: {exc}", False
-        text, is_error = _run_tool(name, args)
+        text, is_error = _run_tool(name, args, actor)
         if not is_error:
             tools_used.append(name)
         return text, not is_error
 
     try:
-        result = await codex_app_server.run_turn(prompt, _tool_schemas(), handle_tool)
+        result = await codex_app_server.run_turn(
+            prompt, _tool_schemas(is_admin=auth.is_admin_user(actor)), handle_tool
+        )
     except CodexAppServerError as exc:
         raise ChatTurnError(f"Codex: {exc}") from exc
     return {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}

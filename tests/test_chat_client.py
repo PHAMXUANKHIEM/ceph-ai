@@ -378,6 +378,45 @@ def test_run_chat_turn_plain_text_answer(monkeypatch):
 # --- run_chat_turn: local tools (list_nodes, get_node_metrics) --------------
 
 
+def test_node_journal_tool_is_exposed_only_to_admin():
+    admin_names = {item["function"]["name"] for item in chat_client._tool_schemas(is_admin=True)}
+    user_names = {item["function"]["name"] for item in chat_client._tool_schemas(is_admin=False)}
+    assert "get_node_journal" in admin_names
+    assert "get_node_journal" not in user_names
+
+
+def test_admin_can_read_mon_journal_on_configured_mon(monkeypatch):
+    calls = []
+    monkeypatch.setattr(chat_client.auth, "is_admin_user", lambda actor: actor == "admin")
+    monkeypatch.setattr(
+        chat_client,
+        "run_command_on_node",
+        lambda host, command: calls.append((host, command)) or "Aug 14 mon.a started",
+    )
+
+    result, is_error = chat_client._run_tool(
+        "get_node_journal", {"host": A_MON_HOST, "service": "mon", "lines": 100}, "admin"
+    )
+
+    assert is_error is False
+    assert json.loads(result)["lines"] == ["Aug 14 mon.a started"]
+    assert calls == [(A_MON_HOST, "journalctl --no-pager --utc -n 100 -u 'ceph-mon@*' -u 'ceph-*@mon.*.service'")]
+
+
+def test_non_admin_cannot_run_node_journal_even_if_called_directly(monkeypatch):
+    ran = {"called": False}
+    monkeypatch.setattr(chat_client.auth, "is_admin_user", lambda actor: False)
+    monkeypatch.setattr(chat_client, "run_command_on_node", lambda *_: ran.update(called=True))
+
+    result, is_error = chat_client._run_tool(
+        "get_node_journal", {"host": A_MON_HOST, "service": "mon", "lines": 100}, "operator"
+    )
+
+    assert is_error is True
+    assert "Chỉ tài khoản admin" in result
+    assert ran["called"] is False
+
+
 def test_run_chat_turn_get_node_metrics_rejects_unconfigured_host(monkeypatch):
     ran = {"called": False}
 
