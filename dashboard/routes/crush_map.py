@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, or_
 
 from dashboard.routes import auth
+from dashboard.cluster_scope import require_default_cluster
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db
@@ -201,6 +202,7 @@ async def crush_map_page(request: Request, user: str = Depends(require_login)):
     """Standalone admin-only page — same posture as `/users`/`/telegram-alerts`:
     a non-admin typing the URL directly gets 403, not just a hidden nav link."""
     _require_admin_privilege(user)
+    require_default_cluster(request, "CRUSH Map")
     return templates.TemplateResponse(
         request,
         "crush_map.html",
@@ -209,8 +211,9 @@ async def crush_map_page(request: Request, user: str = Depends(require_login)):
 
 
 @router.get("/api/crush-map/tree")
-async def crush_map_tree_api(user: str = Depends(require_login)):
+async def crush_map_tree_api(request: Request, user: str = Depends(require_login)):
     _require_admin_privilege(user)
+    require_default_cluster(request, "CRUSH Map")
 
     with db.SessionLocal() as session:
         latest = (
@@ -225,6 +228,7 @@ async def crush_map_tree_api(user: str = Depends(require_login)):
 
 @router.get("/api/crush-map/history")
 async def crush_map_history_api(
+    request: Request,
     user: str = Depends(require_login),
     limit: int = Query(DEFAULT_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT),
     before: str | None = Query(None),
@@ -241,6 +245,7 @@ async def crush_map_history_api(
     diff against) and is deliberately excluded here, same distinction
     `crush_structure_monitor.py::scan_and_store` itself draws."""
     _require_admin_privilege(user)
+    require_default_cluster(request, "CRUSH Map")
 
     with db.SessionLocal() as session:
         query = session.query(CrushStructureSnapshot).filter(
@@ -288,8 +293,9 @@ async def crush_map_history_api(
 
 
 @router.get("/api/crush-map/history/{snapshot_id}")
-async def crush_map_history_detail_api(snapshot_id: str, user: str = Depends(require_login)):
+async def crush_map_history_detail_api(request: Request, snapshot_id: str, user: str = Depends(require_login)):
     _require_admin_privilege(user)
+    require_default_cluster(request, "CRUSH Map")
 
     with db.SessionLocal() as session:
         row = session.get(CrushStructureSnapshot, snapshot_id)

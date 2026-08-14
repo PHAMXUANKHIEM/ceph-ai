@@ -766,6 +766,7 @@ def _settings_context(
     backup_target_values: dict | None = None,
     openstack_error: str | None = None,
     openstack_success: str | None = None,
+    openstack_cluster_id: str | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -840,11 +841,15 @@ def _settings_context(
         "openstack_success": openstack_success,
     }
     with db.SessionLocal() as session:
-        default_cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
-        context["openstack_controller_nodes"] = default_cluster.openstack_controller_nodes if default_cluster else ""
-        context["openstack_compute_nodes"] = default_cluster.openstack_compute_nodes if default_cluster else ""
+        openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
+        default_cluster = next((row for row in openstack_clusters if row.is_default), None)
+        openstack_cluster = next((row for row in openstack_clusters if row.id == openstack_cluster_id), None) or default_cluster
+        context["openstack_clusters"] = openstack_clusters
+        context["openstack_cluster"] = openstack_cluster
+        context["openstack_controller_nodes"] = openstack_cluster.openstack_controller_nodes if openstack_cluster else ""
+        context["openstack_compute_nodes"] = openstack_cluster.openstack_compute_nodes if openstack_cluster else ""
         context["openstack_ceph_config_path"] = (
-            default_cluster.openstack_ceph_config_path if default_cluster else "/etc/ceph"
+            openstack_cluster.openstack_ceph_config_path if openstack_cluster else "/etc/ceph"
         )
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
@@ -939,7 +944,10 @@ def _normalize_provider(raw: str) -> str:
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_form(request: Request, user: str = Depends(require_login)):
-    return templates.TemplateResponse(request, "settings.html", _settings_context(user))
+    return templates.TemplateResponse(
+        request, "settings.html",
+        _settings_context(user, openstack_cluster_id=request.query_params.get("cluster")),
+    )
 
 
 @router.post("/settings/openstack", response_class=HTMLResponse)
@@ -949,6 +957,7 @@ async def openstack_settings_submit(
     controller_nodes: str = Form(""),
     compute_nodes: str = Form(""),
     ceph_config_path: str = Form("/etc/ceph"),
+    cluster_id: str = Form(""),
 ):
     _require_admin_privilege(user)
     controllers = ",".join(_parse_node_list(controller_nodes))
@@ -963,7 +972,7 @@ async def openstack_settings_submit(
             user, openstack_error="Đường dẫn nhận file Ceph phải là đường dẫn tuyệt đối."
         ))
     with db.SessionLocal() as session:
-        cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        cluster = session.get(Cluster, cluster_id) if cluster_id else session.query(Cluster).filter_by(is_default=True).one_or_none()
         if cluster is None:
             return templates.TemplateResponse(request, "settings.html", _settings_context(
                 user, openstack_error="Chưa có cụm Ceph mặc định để gắn cấu hình OpenStack."
@@ -973,7 +982,8 @@ async def openstack_settings_submit(
         cluster.openstack_ceph_config_path = destination
         session.commit()
     return templates.TemplateResponse(request, "settings.html", _settings_context(
-        user, openstack_success="Đã lưu cấu hình OpenStack và đường dẫn nhận file Ceph."
+        user, openstack_success="Đã lưu cấu hình OpenStack và đường dẫn nhận file Ceph.",
+        openstack_cluster_id=cluster_id,
     ))
 
 
@@ -991,6 +1001,7 @@ async def openstack_settings_test(
     user: str = Depends(require_login),
     controller_nodes: str = Form(""),
     compute_nodes: str = Form(""),
+    cluster_id: str = Form(""),
 ):
     """Test SSH access to the entered OpenStack nodes without saving them."""
     _require_admin_privilege(user)
@@ -1001,7 +1012,7 @@ async def openstack_settings_test(
         return {"valid": False, "message": "Vui lòng nhập ít nhất một OpenStack Controller node."}
 
     with db.SessionLocal() as session:
-        cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        cluster = session.get(Cluster, cluster_id) if cluster_id else session.query(Cluster).filter_by(is_default=True).one_or_none()
         if cluster is None:
             return {"valid": False, "message": "Chưa có cụm Ceph mặc định để lấy thông tin SSH."}
         ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
@@ -1029,6 +1040,7 @@ async def openstack_vm_ssh_test(
     vm_ip: str = Form(""),
     vm_ssh_user: str = Form(""),
     vm_ssh_key_path: str = Form(""),
+    cluster_id: str = Form(""),
 ):
     """Test the real Controller -> VM second SSH hop without saving settings."""
     _require_admin_privilege(user)
@@ -1050,7 +1062,7 @@ async def openstack_vm_ssh_test(
         }
 
     with db.SessionLocal() as session:
-        cluster = session.query(Cluster).filter_by(is_default=True).one_or_none()
+        cluster = session.get(Cluster, cluster_id) if cluster_id else session.query(Cluster).filter_by(is_default=True).one_or_none()
         if cluster is None:
             return {"valid": False, "message": "Chưa có cụm Ceph mặc định để lấy thông tin SSH."}
         controller_user, controller_key, _exec_mode, _container = resolve_ssh_creds(cluster)

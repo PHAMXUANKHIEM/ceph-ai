@@ -1,7 +1,7 @@
 import logging
 import re
 
-from watcher.ceph_client import run_command_on_node
+from watcher.ceph_client import run_command_on_node, run_command_on_node_with
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,20 @@ def collect_node_metrics(host: str) -> dict:
     try:
         raw_output = run_command_on_node(
             host, REMOTE_METRICS_SCRIPT, timeout=METRICS_COMMAND_TIMEOUT_SECONDS
+        )
+    except NodeMetricsError:
+        raise
+    except Exception as exc:
+        raise NodeMetricsError(f"{host}: failed to collect metrics: {exc}") from exc
+    return parse_node_metrics(raw_output)
+
+
+def collect_node_metrics_with(host: str, ssh_user: str, ssh_key_path: str) -> dict:
+    """Cluster-scoped variant that never falls back to global SSH creds."""
+    try:
+        raw_output = run_command_on_node_with(
+            host, REMOTE_METRICS_SCRIPT, ssh_user, ssh_key_path,
+            timeout=METRICS_COMMAND_TIMEOUT_SECONDS,
         )
     except NodeMetricsError:
         raise

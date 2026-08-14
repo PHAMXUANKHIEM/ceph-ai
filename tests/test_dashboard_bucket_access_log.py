@@ -1,6 +1,8 @@
 import dashboard.routes.bucket_access_log as bal_route
 from config.settings import settings
 from shared import env_config
+from shared import db
+from shared.models import Cluster
 from watcher.rgw_access_log import RgwLogError, parse_beast_access_log
 
 _RESTARTED_OK = {"restarted": True, "new_pid": 12345, "error": None}
@@ -210,6 +212,30 @@ def test_api_returns_502_when_fetch_fails(dashboard_client, monkeypatch):
     response = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90")
 
     assert response.status_code == 502
+
+
+def test_secondary_cluster_uses_its_own_rgw_scope(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-rgw-2", ceph_mon_nodes="10.99.0.10", ceph_rgw_nodes="10.99.0.90",
+            ceph_container_name="mon-2", ceph_rgw_container_name="rgw-2",
+            ssh_user="ceph2", ssh_key_path="/keys/ceph2", ceph_exec_mode="docker",
+            is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+    dashboard_client.get(f"/bucket-access-log?cluster={cluster_id}")
+    calls = []
+    monkeypatch.setattr(
+        bal_route, "fetch_bucket_access_log_with",
+        lambda *args: calls.append(args) or [],
+    )
+    response = dashboard_client.get("/api/bucket-access-log?host=10.99.0.90")
+    assert response.status_code == 200
+    assert calls[0] == ("10.99.0.90", "", "ceph2", "/keys/ceph2", "docker", "rgw-2")
+    assert dashboard_client.get("/api/bucket-access-log?host=10.20.1.90").status_code == 404
 
 
 # --- POST /bucket-access-log/settings ("Cấu hình RGW" form) ---------------

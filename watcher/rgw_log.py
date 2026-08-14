@@ -3,7 +3,7 @@ import logging
 import shlex
 
 from config.settings import settings
-from watcher.ceph_client import run_command_on_node
+from watcher.ceph_client import run_command_on_node, run_command_on_node_with
 
 logger = logging.getLogger(__name__)
 
@@ -160,5 +160,44 @@ def fetch_rgw_log(host: str, filter_text: str | None = None) -> str:
 
     try:
         return run_command_on_node(host, command, RGW_LOG_COMMAND_TIMEOUT_SECONDS)
+    except Exception as exc:
+        raise RgwLogError(f"Không đọc được log RGW trên {host}: {exc}") from exc
+
+
+def fetch_rgw_log_with(host: str, filter_text: str | None, ssh_user: str, ssh_key_path: str,
+                       exec_mode: str, rgw_container_name: str) -> str:
+    """Cluster-scoped RGW log fetch using explicit connection settings."""
+    filter_text = (filter_text or "").strip()[:RGW_LOG_FILTER_MAX_CHARS] or None
+    run = lambda command: run_command_on_node_with(
+        host, command, ssh_user, ssh_key_path, RGW_LOG_COMMAND_TIMEOUT_SECONDS
+    )
+    if exec_mode == "cephadm":
+        try:
+            payload = json.loads(run("cephadm ls --no-detail"))
+        except Exception as exc:
+            raise RgwLogError(f"Không liệt kê được daemon trên {host}: {exc}") from exc
+        names = [row["name"] for row in payload if isinstance(row, dict)
+                 and isinstance(row.get("name"), str) and row["name"].startswith("rgw.")] \
+            if isinstance(payload, list) else []
+        if not names:
+            raise RgwLogError(f"Không tìm thấy RGW daemon nào trên {host}")
+        parts = []
+        for name in names:
+            output = run(_cephadm_command(name, filter_text))
+            parts.append(output if len(names) == 1 else f"--- {name} ---\n{output}")
+        return "\n".join(parts)
+    if exec_mode == "none":
+        command = _none_mode_command(filter_text)
+    else:
+        if not rgw_container_name:
+            raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+        if filter_text:
+            command = (f"{exec_mode} logs {shlex.quote(rgw_container_name)} --tail "
+                       f"{RGW_LOG_FILTER_SCAN_LINES} 2>&1 | {_quoted_grep(filter_text)} "
+                       f"| tail -n {RGW_LOG_MAX_DISPLAY_LINES}")
+        else:
+            command = f"{exec_mode} logs {shlex.quote(rgw_container_name)} --tail {RGW_LOG_TAIL_LINES} 2>&1"
+    try:
+        return run(command)
     except Exception as exc:
         raise RgwLogError(f"Không đọc được log RGW trên {host}: {exc}") from exc

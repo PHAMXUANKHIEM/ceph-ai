@@ -18,6 +18,8 @@
         <a href="/settings#router"><span class="control-nav-icon control-nav-icon-text">AI</span>AI</a>
         <a href="/nodes"><span class="control-nav-icon">◉</span>Monitoring</a>
         {% if is_admin %}<a href="/users"><span class="control-nav-icon">♙</span>Users</a>{% endif %}
+        {% if is_admin %}<a href="/clusters"><span class="control-nav-icon">◎</span>Clusters</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map"><span class="control-nav-icon">⌘</span>CRUSH Map</a>{% endif %}
         <a href="/settings" class="active"><span class="control-nav-icon">⚙</span>Settings</a>
       </nav>
       <div class="control-sidebar-footer">
@@ -640,6 +642,14 @@
         {% if openstack_error %}<p class="error">{{ openstack_error }}</p>{% endif %}
         {% if openstack_success %}<p class="success">{{ openstack_success }}</p>{% endif %}
         <form method="post" action="/settings/openstack" class="settings-form openstack-settings-form" id="openstack-settings-form">
+          {% if openstack_clusters|length > 1 %}
+          <label class="settings-field">Cụm Ceph
+            <select onchange="window.location='/settings?cluster='+encodeURIComponent(this.value)+'#openstack'">
+              {% for c in openstack_clusters %}<option value="{{ c.id }}" {{ "selected" if openstack_cluster and c.id == openstack_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>{% endfor %}
+            </select>
+          </label>
+          {% endif %}
+          <input type="hidden" name="cluster_id" value="{{ openstack_cluster.id if openstack_cluster else '' }}">
           <div class="settings-field-grid">
             <label class="settings-field">
               <span class="settings-field-heading"><strong>Controller nodes</strong><em>Bắt buộc</em></span>

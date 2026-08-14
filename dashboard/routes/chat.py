@@ -15,6 +15,7 @@ from dashboard.chat_client import (
 )
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
+from dashboard.cluster_scope import require_default_cluster
 from dashboard.vntime import to_utc_iso
 from shared import audit, db
 from shared.ai_limits import normalize_rate_limits
@@ -38,7 +39,11 @@ from worker.policy.gate import VALID_BLUESTORE_ACTION_IDS, VALID_MANAGEMENT_ACTI
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+def _require_default_chat_scope(request: Request) -> None:
+    require_default_cluster(request, "Chat/AI")
+
+
+router = APIRouter(dependencies=[Depends(_require_default_chat_scope)])
 
 # How many past messages the widget fetches on page load — purely a display
 # limit (this is cheap, unlike MAX_HISTORY_MESSAGES which bounds what's

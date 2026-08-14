@@ -1,8 +1,9 @@
 from datetime import datetime
+import bcrypt
 
 import dashboard.routes.clusters as clusters_route
 from shared import db as db_module
-from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, WatcherHeartbeat
+from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, User, WatcherHeartbeat
 
 
 def _login(client):
@@ -143,6 +144,25 @@ def test_toggle_active_flips_an_additional_cluster(dashboard_client, monkeypatch
     assert response.status_code == 200
     with db_module.SessionLocal() as session:
         assert session.get(Cluster, cluster_id).is_active is False
+
+
+def test_default_only_features_fail_closed_for_selected_additional_cluster(
+    dashboard_client, monkeypatch
+):
+    monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
+    _stub_restart_watcher(monkeypatch)
+    _login(dashboard_client)
+    dashboard_client.post("/clusters/create", data=_cluster_form_data())
+    with db_module.SessionLocal() as session:
+        cluster_id = session.query(Cluster).filter_by(name="cluster-b").one().id
+
+    # Persist the additional cluster as the global dashboard selection.
+    dashboard_client.get(f"/?cluster={cluster_id}")
+    for path in ("/delete-cluster", "/convert-cluster", "/restore-cluster", "/patch"):
+        response = dashboard_client.get(path)
+        assert response.status_code == 409, path
+        assert "chỉ hỗ trợ cụm mặc định" in response.json()["detail"]
+        assert "cluster-b" in response.json()["detail"]
 
 
 def test_backup_config_saves_fields_and_restarts_worker_only(dashboard_client, monkeypatch):
@@ -517,10 +537,14 @@ def test_nav_shows_clusters_link_for_admin_on_every_page(dashboard_client):
 
 
 def test_nav_hides_clusters_link_for_non_admin_on_other_pages(dashboard_client):
-    from tests.test_dashboard_users import _create_user, _login_as
-
-    _create_user("regular", "s3cret-pw", is_admin=False)
-    _login_as(dashboard_client, "regular", "s3cret-pw")
+    with db_module.SessionLocal() as session:
+        session.add(User(
+            username="regular",
+            password_hash=bcrypt.hashpw(b"s3cret-pw", bcrypt.gensalt()).decode(),
+            is_admin=False, is_active=True, created_by="admin",
+        ))
+        session.commit()
+    dashboard_client.post("/login", data={"username": "regular", "password": "s3cret-pw"})
 
     for path in ("/", "/nodes", "/upgrade", "/settings"):
         response = dashboard_client.get(path)

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config.settings import settings
+from dashboard.cluster_scope import require_default_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -169,13 +170,15 @@ def _patch_context(request: Request, user: str) -> dict:
 
 @router.get("/patch", response_class=HTMLResponse)
 async def patch_page(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Patch Ceph")
     return templates.TemplateResponse(request, "patch.html", _patch_context(request, user))
 
 
 @router.post("/patch/upload")
 async def upload_patch(
-    file: UploadFile = File(...), user: str = Depends(require_login)
+    request: Request, file: UploadFile = File(...), user: str = Depends(require_login)
 ):
+    require_default_cluster(request, "Patch Ceph")
     filename = file.filename or "upload.patch"
     if not filename.lower().endswith(ALLOWED_PATCH_EXTENSIONS):
         raise HTTPException(
@@ -212,7 +215,8 @@ async def upload_patch(
 
 
 @router.post("/patch/propose-build")
-async def propose_patch_build(user: str = Depends(require_login)):
+async def propose_patch_build(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Patch Ceph")
     build_node = patch_build_node()
     if build_node is None:
         raise HTTPException(status_code=400, detail="Chưa cấu hình build server (xem trang Cài đặt)")
@@ -272,7 +276,8 @@ async def propose_patch_build(user: str = Depends(require_login)):
 
 
 @router.post("/patch/propose-install")
-async def propose_patch_install(user: str = Depends(require_login)):
+async def propose_patch_install(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Patch Ceph")
     with db.SessionLocal() as session:
         _reject_duplicate_patch_proposal(session)
 

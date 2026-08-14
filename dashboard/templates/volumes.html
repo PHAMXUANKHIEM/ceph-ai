@@ -163,7 +163,7 @@
         </div>
         {% elif vm_perf_action and vm_perf_action.status == "APPROVED" %}
         <p class="hint">● Đang SSH vào VM và đo hiệu năng...</p>
-        {% elif is_admin %}
+        {% elif is_admin and selected_cluster.is_default %}
         <form id="vm-perf-form" class="login-box">
           <label>IP của VM
             <input name="vm_ip" required inputmode="decimal" placeholder="vd: 10.20.1.50">
@@ -184,6 +184,8 @@
           </label>
           <button type="submit" class="btn btn-primary btn-sm">Đề xuất đo hiệu năng tối đa</button>
         </form>
+        {% elif is_admin %}
+        <p class="hint">Benchmark SSH/FIO trong VM hiện chỉ hỗ trợ cụm mặc định; không thể chạy khi đang chọn <strong>{{ selected_cluster.name }}</strong>.</p>
         {% endif %}
         <p class="error" id="vm-perf-error" hidden></p>
         <div id="vm-perf-progress" hidden></div>

@@ -28,11 +28,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard.routes import auth
+from dashboard.cluster_scope import cluster_selection, selected_cluster
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from config.settings import settings
 from shared import audit, db
+from shared.cluster_nodes import configured_nodes
+from sqlalchemy import or_
 from shared.models import (
     Action,
     ActionClassification,
@@ -44,6 +47,7 @@ from shared.models import (
     IncidentStatus,
 )
 from worker.backup.policy_config import load_backup_policy
+from worker.backup.cluster_scope import parse_tracked_images
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
@@ -90,24 +94,30 @@ def _require_admin_privilege(user: str) -> None:
         raise HTTPException(status_code=403, detail="Chỉ tài khoản admin được vận hành backup.")
 
 
-def _latest_running_backup_action() -> Action | None:
+def _job_scope(column, cluster):
+    return or_(column == cluster.id, column.is_(None)) if cluster.is_default else column == cluster.id
+
+
+def _latest_running_backup_action(cluster=None) -> Action | None:
     with db.SessionLocal() as session:
         return (
-            session.query(Action)
+            session.query(Action).join(Incident, Action.incident_id == Incident.id)
             .filter(
                 Action.action_id.in_(BACKUP_PROGRESS_ACTION_IDS),
                 Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+                _job_scope(Incident.cluster_id, cluster) if cluster is not None else True,
             )
             .order_by(Action.created_at.desc())
             .first()
         )
 
 
-def _pending_restore_action() -> Action | None:
+def _pending_restore_action(cluster=None) -> Action | None:
     with db.SessionLocal() as session:
         return (
-            session.query(Action)
-            .filter(Action.action_id == RESTORE_ACTION_ID, Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
+            session.query(Action).join(Incident, Action.incident_id == Incident.id)
+            .filter(Action.action_id == RESTORE_ACTION_ID, Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+                    _job_scope(Incident.cluster_id, cluster) if cluster is not None else True)
             .order_by(Action.created_at.desc())
             .first()
         )
@@ -133,11 +143,13 @@ def _with_step_display_times(progress: list) -> list:
     return progress
 
 
-def _tracked_images() -> list[dict]:
+def _tracked_images(cluster=None) -> list[dict]:
+    if cluster is not None and not cluster.is_default:
+        return [{"pool": pool, "image": image} for pool, image in parse_tracked_images(cluster.backup_tracked_images)]
     return [t for t in (load_backup_policy().get("tracked_images") or []) if t.get("pool") and t.get("image")]
 
 
-def _queue(tracked: list[dict]) -> list[dict]:
+def _queue(tracked: list[dict], cluster=None) -> list[dict]:
     """AC #4: which tracked image is due next — the one that's gone
     longest without a successful run sorts first (None = never run at
     all, sorts before any real timestamp). `last_run_at` stays a real
@@ -153,6 +165,7 @@ def _queue(tracked: list[dict]) -> list[dict]:
                     BackupJob.pool == pool,
                     BackupJob.image == image,
                     BackupJob.job_type.in_(("full", "incremental")),
+                    _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True,
                 )
                 .order_by(BackupJob.created_at.desc())
                 .first()
@@ -164,6 +177,7 @@ def _queue(tracked: list[dict]) -> list[dict]:
                     BackupJob.image == image,
                     BackupJob.job_type.in_(("full", "incremental")),
                     BackupJob.status == "SUCCESS",
+                    _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True,
                 )
                 .order_by(BackupJob.created_at.desc())
                 .first()
@@ -180,7 +194,7 @@ def _queue(tracked: list[dict]) -> list[dict]:
     return entries
 
 
-def _history(tracked: list[dict]) -> list[dict]:
+def _history(tracked: list[dict], cluster=None) -> list[dict]:
     """AC #4: >= `HISTORY_LIMIT_PER_IMAGE` most recent runs PER (pool,
     image) — Story 9.1's `Index(pool, image, created_at)` (the same one
     Story 9.5's anomaly baseline already uses) makes this cheap. Includes
@@ -192,7 +206,8 @@ def _history(tracked: list[dict]) -> list[dict]:
             pool, image = t["pool"], t["image"]
             rows = (
                 session.query(BackupJob)
-                .filter(BackupJob.pool == pool, BackupJob.image == image)
+                .filter(BackupJob.pool == pool, BackupJob.image == image,
+                        _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
                 .order_by(BackupJob.created_at.desc())
                 .limit(HISTORY_LIMIT_PER_IMAGE)
                 .all()
@@ -214,11 +229,13 @@ def _history(tracked: list[dict]) -> list[dict]:
     return rows_out
 
 
-def _digests() -> list[dict]:
+def _digests(cluster=None) -> list[dict]:
     """Story 9.5 (PRD FR-14): most recent BackupDigestLog rows, newest
     first — read-only, same as `_history` (route never imports
     `worker/backup/digest.py`, only the model it wrote to, per AD-3)."""
     with db.SessionLocal() as session:
+        if cluster is not None and not cluster.is_default:
+            return []
         rows = session.query(BackupDigestLog).order_by(BackupDigestLog.created_at.desc()).limit(DIGEST_LIMIT).all()
         return [
             {
@@ -234,7 +251,7 @@ def _digests() -> list[dict]:
         ]
 
 
-def _anomalies() -> list[dict]:
+def _anomalies(cluster=None) -> list[dict]:
     """Story 9.5 (PRD FR-15): most recent BackupAnomaly rows, newest first
     — joined against BackupJob for pool/image/job_type context, since
     BackupAnomaly itself only stores the FK (`backup_job_id`)."""
@@ -242,6 +259,7 @@ def _anomalies() -> list[dict]:
         rows = (
             session.query(BackupAnomaly, BackupJob)
             .join(BackupJob, BackupAnomaly.backup_job_id == BackupJob.id)
+            .filter(_job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
             .order_by(BackupAnomaly.created_at.desc())
             .limit(ANOMALY_LIMIT)
             .all()
@@ -262,19 +280,22 @@ def _anomalies() -> list[dict]:
 
 @router.get("/backups", response_class=HTMLResponse)
 async def index(request: Request, user: str = Depends(require_login)):
-    tracked = _tracked_images()
+    clusters, cluster = cluster_selection(request)
+    tracked = _tracked_images(cluster)
     return templates.TemplateResponse(
         request,
         "backups.html",
         {
             "user": user,
             "is_admin": auth.is_admin_user(user),
-            "queue": _queue(tracked),
-            "history": _history(tracked),
-            "digests": _digests(),
-            "anomalies": _anomalies(),
+            "queue": _queue(tracked, cluster),
+            "history": _history(tracked, cluster),
+            "digests": _digests(cluster),
+            "anomalies": _anomalies(cluster),
             "tracked_images": tracked,
-            "pending_restore_action": _pending_restore_action(),
+            "pending_restore_action": _pending_restore_action(cluster),
+            "clusters": clusters,
+            "selected_cluster": cluster,
         },
     )
 
@@ -291,7 +312,8 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
     pool = str(body.get("pool", "")).strip()
     image = str(body.get("image", "")).strip()
 
-    tracked = _tracked_images()
+    cluster = selected_cluster(request)
+    tracked = _tracked_images(cluster)
     if not any(t["pool"] == pool and t["image"] == image for t in tracked):
         raise HTTPException(
             status_code=400,
@@ -306,6 +328,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
                 BackupJob.image == image,
                 BackupJob.job_type == "full",
                 BackupJob.status == "SUCCESS",
+                _job_scope(BackupJob.cluster_id, cluster),
             )
             .first()
             is not None
@@ -322,7 +345,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
     # an empty/missing target_nodes as "malformed" and marks the Action
     # FAILED before ever reaching engine.py, which never reads this column
     # itself — it resolves its own mon node from settings).
-    mon_nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
+    mon_nodes = [n["host"] for n in configured_nodes(None if cluster.is_default else cluster) if "MON" in n["roles"]]
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
 
@@ -346,6 +369,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             )
 
         incident = Incident(
+            cluster_id=None if cluster.is_default else cluster.id,
             ceph_code=RESTORE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất khôi phục {pool}/{image} từ backup (ghi đè dữ liệu hiện tại) bởi {user}",
@@ -384,8 +408,8 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 
-def _create_manual_backup_action(action_id: str, action_params: dict, user: str) -> str:
-    mon_nodes = [n.strip() for n in settings.ceph_mon_nodes.split(",") if n.strip()]
+def _create_manual_backup_action(action_id: str, action_params: dict, user: str, cluster=None) -> str:
+    mon_nodes = [n["host"] for n in configured_nodes(None if cluster is None or cluster.is_default else cluster) if "MON" in n["roles"]]
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
 
@@ -407,6 +431,7 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str)
             else "Backup metadata cụm thủ công"
         )
         incident = Incident(
+            cluster_id=None if cluster is None or cluster.is_default else cluster.id,
             ceph_code=MANUAL_BACKUP_CEPH_CODE,
             status=IncidentStatus.EXECUTING.value,
             log_excerpt=f"{label} bởi {user}",
@@ -442,22 +467,24 @@ async def run_backup_now(request: Request, user: str = Depends(require_login)):
     body = await request.json()
     pool = str(body.get("pool", "")).strip()
     image = str(body.get("image", "")).strip()
-    if not any(t["pool"] == pool and t["image"] == image for t in _tracked_images()):
+    cluster = selected_cluster(request)
+    if not any(t["pool"] == pool and t["image"] == image for t in _tracked_images(cluster)):
         raise HTTPException(status_code=400, detail="Image không nằm trong tracked_images.")
-    action_pk = _create_manual_backup_action("rbd_backup_run", {"pool": pool, "image": image}, user)
+    action_pk = _create_manual_backup_action("rbd_backup_run", {"pool": pool, "image": image}, user, cluster)
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 
 @router.post("/backups/metadata/run-now")
-async def run_metadata_backup_now(user: str = Depends(require_login)):
+async def run_metadata_backup_now(request: Request, user: str = Depends(require_login)):
     _require_admin_privilege(user)
-    action_pk = _create_manual_backup_action("backup_metadata_run", {}, user)
+    cluster = selected_cluster(request)
+    action_pk = _create_manual_backup_action("backup_metadata_run", {}, user, cluster)
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 
 @router.get("/api/backups/progress")
-async def backups_progress_api(user: str = Depends(require_login)):
-    action = _latest_running_backup_action()
+async def backups_progress_api(request: Request, user: str = Depends(require_login)):
+    action = _latest_running_backup_action(selected_cluster(request))
     if action is None:
         return {"action_id": None, "status": None, "progress": []}
     try:

@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
+from dashboard.cluster_scope import require_default_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -109,6 +110,7 @@ def _convert_plan_text(nodes: list[dict], version: str) -> str:
 
 @router.get("/convert-cluster", response_class=HTMLResponse)
 async def convert_cluster_page(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Convert to Cephadm")
     try:
         with db.SessionLocal() as session:
             last_action = (
@@ -164,6 +166,7 @@ async def convert_cluster_page(request: Request, user: str = Depends(require_log
 
 @router.post("/convert-cluster/propose")
 async def propose_convert(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Convert to Cephadm")
     nodes = _normalize_configured_nodes()
     if not nodes:
         raise HTTPException(status_code=400, detail="Chưa có cụm nào được cấu hình để chuyển đổi")
@@ -282,7 +285,8 @@ async def propose_convert(request: Request, user: str = Depends(require_login)):
 
 
 @router.get("/convert-cluster/progress")
-async def convert_cluster_progress(user: str = Depends(require_login)):
+async def convert_cluster_progress(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Convert to Cephadm")
     with db.SessionLocal() as session:
         action = (
             session.query(Action)

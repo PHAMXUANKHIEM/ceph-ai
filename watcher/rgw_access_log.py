@@ -36,7 +36,8 @@ from datetime import datetime
 
 from config.settings import settings
 from watcher import ceph_client
-from watcher.ceph_client import run_command_on_node
+from watcher.ceph_client import run_command_on_node, run_command_on_node_with
+from watcher.rgw_log import fetch_rgw_log_with
 from watcher.rgw_log import RgwLogError, fetch_rgw_log  # noqa: F401 — re-exported for callers
 
 _BEAST_LOG_RE = re.compile(
@@ -158,6 +159,16 @@ def fetch_bucket_access_log(host: str, bucket: str | None = None) -> list[dict]:
     return records
 
 
+def fetch_bucket_access_log_with(host: str, bucket: str | None, ssh_user: str, ssh_key_path: str,
+                                 exec_mode: str, rgw_container_name: str) -> list[dict]:
+    bucket = (bucket or "").strip() or None
+    raw = fetch_rgw_log_with(
+        host, bucket, ssh_user, ssh_key_path, exec_mode, rgw_container_name
+    )
+    records = parse_beast_access_log(raw)
+    return [row for row in records if row["bucket"] == bucket] if bucket else records
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately
@@ -200,6 +211,23 @@ def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
         parsed = json.loads(output)
     except (TypeError, ValueError):
         return None  # unknown bucket -> radosgw-admin prints a plain error, not JSON
+    return parsed if isinstance(parsed, dict) else None
+
+
+def fetch_bucket_stats_with(host: str, bucket: str, ssh_user: str, ssh_key_path: str,
+                            exec_mode: str, rgw_container_name: str) -> dict | None:
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+    inner = f"radosgw-admin bucket stats --bucket={shlex.quote(bucket)} --format json"
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được thông tin bucket trên {host}: {exc}") from exc
+    try:
+        parsed = json.loads(output)
+    except (TypeError, ValueError):
+        return None
     return parsed if isinstance(parsed, dict) else None
 
 

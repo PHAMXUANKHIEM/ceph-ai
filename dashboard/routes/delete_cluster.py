@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
+from dashboard.cluster_scope import require_default_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -129,6 +130,7 @@ def _with_step_display_times(progress: list) -> list:
 
 @router.get("/delete-cluster", response_class=HTMLResponse)
 async def delete_cluster_page(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Delete Cluster")
     try:
         with db.SessionLocal() as session:
             last_action = (
@@ -180,6 +182,7 @@ async def delete_cluster_page(request: Request, user: str = Depends(require_logi
 
 @router.post("/delete-cluster/propose")
 async def propose_delete(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Delete Cluster")
     body = await request.json()
 
     nodes = _normalize_configured_nodes()
@@ -277,7 +280,8 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
 
 
 @router.get("/delete-cluster/progress")
-async def delete_cluster_progress(user: str = Depends(require_login)):
+async def delete_cluster_progress(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Delete Cluster")
     with db.SessionLocal() as session:
         action = (
             session.query(Action)

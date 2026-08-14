@@ -47,8 +47,15 @@
   </header>
 
   <main class="page">
+    {% if clusters|length > 1 %}
+    <form method="get" action="/bucket-access-log" class="topbar-cluster-switcher">
+      <select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">
+        {% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>{% endfor %}
+      </select>
+    </form>
+    {% endif %}
     <section class="card">
-      <div class="card-header"><h2>Bucket Access Log</h2></div>
+      <div class="card-header"><h2>Bucket Access Log — {{ selected_cluster.name }}</h2></div>
       <div class="card-body">
         <p class="hint">
           Tương đương tính năng "S3 Bucket Logging" cho các phiên bản Ceph chưa có sẵn — đọc trực
@@ -69,7 +76,7 @@
         </p>
         {% if config_error %}<p class="error">{{ config_error }}</p>{% endif %}
         {% if config_success %}<p class="success">{{ config_success }}</p>{% endif %}
-        <form method="post" action="/bucket-access-log/settings" class="audit-filters">
+        <form method="post" action="/bucket-access-log/settings?cluster={{ selected_cluster.id }}" class="audit-filters">
           <label>RGW nodes (IP, phân tách dấu phẩy)
             <input type="text" name="ceph_rgw_nodes" value="{{ ceph_rgw_nodes }}" placeholder="10.0.0.8,10.0.0.9">
           </label>

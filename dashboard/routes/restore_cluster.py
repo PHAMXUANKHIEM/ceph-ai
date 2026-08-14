@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
+from dashboard.cluster_scope import require_default_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -178,6 +179,7 @@ def _restore_plan_text(nodes: list[dict], version: str) -> str:
 
 @router.get("/restore-cluster", response_class=HTMLResponse)
 async def restore_cluster_page(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Restore Cluster")
     try:
         with db.SessionLocal() as session:
             last_action = (
@@ -232,6 +234,7 @@ async def restore_cluster_page(request: Request, user: str = Depends(require_log
 
 @router.post("/restore-cluster/propose")
 async def propose_restore(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Restore Cluster")
     body = await request.json()
 
     version = str(body.get("version", "")).strip()
@@ -330,7 +333,8 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
 
 
 @router.get("/restore-cluster/progress")
-async def restore_cluster_progress(user: str = Depends(require_login)):
+async def restore_cluster_progress(request: Request, user: str = Depends(require_login)):
+    require_default_cluster(request, "Restore Cluster")
     with db.SessionLocal() as session:
         action = (
             session.query(Action)

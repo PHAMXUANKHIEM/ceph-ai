@@ -25,16 +25,21 @@ from fastapi.responses import HTMLResponse
 
 from config.settings import settings
 from dashboard.routes import auth
+from dashboard.cluster_scope import cluster_selection, selected_cluster
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import restart_watcher, restart_worker
 from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
-from shared.cluster_nodes import configured_nodes as _configured_nodes
+from shared.cluster_nodes import configured_nodes as _configured_nodes, resolve_ssh_creds
+from shared import db
+from shared.models import Cluster
 from shared.env_config import CLUSTER_ENV_NAMES, update_env_file_batch
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
+    fetch_bucket_access_log_with,
     fetch_bucket_stats,
+    fetch_bucket_stats_with,
     summarize_bucket_stats,
 )
 
@@ -44,18 +49,22 @@ router = APIRouter()
 templates = make_templates()
 
 
-def _rgw_hosts() -> list[dict]:
-    return [n for n in _configured_nodes() if "RGW" in n["roles"]]
+def _rgw_hosts(cluster) -> list[dict]:
+    nodes = _configured_nodes() if cluster.is_default else _configured_nodes(cluster)
+    return [node for node in nodes if "RGW" in node["roles"]]
 
 
-def _context(user: str, *, config_error: str | None = None, config_success: str | None = None) -> dict:
+def _context(user: str, cluster, clusters, *, config_error: str | None = None, config_success: str | None = None) -> dict:
+    exec_mode = settings.ceph_exec_mode if cluster.is_default else cluster.ceph_exec_mode
     return {
         "user": user,
         "is_admin": auth.is_admin_user(user),
-        "rgw_hosts": _rgw_hosts(),
-        "ceph_rgw_nodes": settings.ceph_rgw_nodes,
-        "ceph_rgw_container_name": settings.ceph_rgw_container_name,
-        "ceph_exec_mode": settings.ceph_exec_mode,
+        "rgw_hosts": _rgw_hosts(cluster),
+        "ceph_rgw_nodes": settings.ceph_rgw_nodes if cluster.is_default else cluster.ceph_rgw_nodes,
+        "ceph_rgw_container_name": settings.ceph_rgw_container_name if cluster.is_default else cluster.ceph_rgw_container_name,
+        "ceph_exec_mode": exec_mode,
+        "clusters": clusters,
+        "selected_cluster": cluster,
         "config_error": config_error,
         "config_success": config_success,
     }
@@ -63,7 +72,8 @@ def _context(user: str, *, config_error: str | None = None, config_success: str 
 
 @router.get("/bucket-access-log", response_class=HTMLResponse)
 async def index(request: Request, user: str = Depends(require_login)):
-    return templates.TemplateResponse(request, "bucket_access_log.html", _context(user))
+    clusters, cluster = cluster_selection(request)
+    return templates.TemplateResponse(request, "bucket_access_log.html", _context(user, cluster, clusters))
 
 
 @router.post("/bucket-access-log/settings", response_class=HTMLResponse)
@@ -85,38 +95,49 @@ async def bucket_access_log_settings_submit(
     cluster_settings_submit) — both hold their OWN in-memory settings copy
     and depend on configured_nodes() including the current RGW node list.
     """
+    clusters, cluster = cluster_selection(request)
     rgw_nodes = ceph_rgw_nodes.strip()
     rgw_container_name = ceph_rgw_container_name.strip()
 
-    container_required = settings.ceph_exec_mode not in ("none", "cephadm")
+    exec_mode = settings.ceph_exec_mode if cluster.is_default else cluster.ceph_exec_mode
+    container_required = exec_mode not in ("none", "cephadm")
     if rgw_nodes and container_required and not rgw_container_name:
         return templates.TemplateResponse(
             request,
             "bucket_access_log.html",
             _context(
-                user,
+                user, cluster, clusters,
                 config_error=(
-                    f"Kiểu deploy hiện tại ({settings.ceph_exec_mode}) cần tên container RGW."
+                    f"Kiểu deploy hiện tại ({exec_mode}) cần tên container RGW."
                 ),
             ),
         )
 
     try:
-        update_env_file_batch(
-            {
-                CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: rgw_nodes,
-                CLUSTER_ENV_NAMES["ceph_rgw_container_name"]: rgw_container_name,
-            }
-        )
-        settings.ceph_rgw_nodes = rgw_nodes
-        settings.ceph_rgw_container_name = rgw_container_name
+        if cluster.is_default:
+            update_env_file_batch(
+                {
+                    CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: rgw_nodes,
+                    CLUSTER_ENV_NAMES["ceph_rgw_container_name"]: rgw_container_name,
+                }
+            )
+            settings.ceph_rgw_nodes = rgw_nodes
+            settings.ceph_rgw_container_name = rgw_container_name
+        else:
+            with db.SessionLocal() as session:
+                target = session.get(Cluster, cluster.id)
+                target.ceph_rgw_nodes = rgw_nodes
+                target.ceph_rgw_container_name = rgw_container_name
+                session.commit()
+            cluster.ceph_rgw_nodes = rgw_nodes
+            cluster.ceph_rgw_container_name = rgw_container_name
     except Exception:
         logger.exception("bucket_access_log_settings_submit: failed to persist config to .env")
         return templates.TemplateResponse(
             request,
             "bucket_access_log.html",
             _context(
-                user, config_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server"
+                user, cluster, clusters, config_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server"
             ),
         )
 
@@ -133,20 +154,27 @@ async def bucket_access_log_settings_submit(
         success += " " + " ".join(warnings)
 
     return templates.TemplateResponse(
-        request, "bucket_access_log.html", _context(user, config_success=success)
+        request, "bucket_access_log.html", _context(user, cluster, clusters, config_success=success)
     )
 
 
 @router.get("/api/bucket-access-log")
-async def bucket_access_log_api(host: str, bucket: str = "", user: str = Depends(require_login)):
+async def bucket_access_log_api(request: Request, host: str, bucket: str = "", user: str = Depends(require_login)):
     # Same SSRF-via-SSH whitelist posture as dashboard/routes/nodes.py's
     # rgw_log_api — `host` is attacker-reachable input, only an
     # already-configured RGW node may ever be queried.
-    rgw_hosts = {n["host"] for n in _rgw_hosts()}
+    cluster = selected_cluster(request)
+    rgw_hosts = {n["host"] for n in _rgw_hosts(cluster)}
     if host not in rgw_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách RGW đã cấu hình")
     try:
-        records = fetch_bucket_access_log(host, bucket)
+        if cluster.is_default:
+            records = fetch_bucket_access_log(host, bucket)
+        else:
+            ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
+            records = fetch_bucket_access_log_with(
+                host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name
+            )
     except RgwLogError as exc:
         logger.warning("bucket_access_log_api: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc))
@@ -160,7 +188,13 @@ async def bucket_access_log_api(host: str, bucket: str = "", user: str = Depends
     bucket_stats = None
     if bucket:
         try:
-            raw_stats = fetch_bucket_stats(host, bucket)
+            if cluster.is_default:
+                raw_stats = fetch_bucket_stats(host, bucket)
+            else:
+                ssh_user, ssh_key_path, exec_mode, _container = resolve_ssh_creds(cluster)
+                raw_stats = fetch_bucket_stats_with(
+                    host, bucket, ssh_user, ssh_key_path, exec_mode, cluster.ceph_rgw_container_name
+                )
             if raw_stats:
                 bucket_stats = summarize_bucket_stats(raw_stats)
                 bucket_stats["creation_time"] = (

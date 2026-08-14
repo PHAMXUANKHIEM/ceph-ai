@@ -379,15 +379,11 @@ def _resolve_selected_cluster(requested_cluster_id: str, session_cluster_id: str
     deactivated — a stale bookmarked link (or session pointing at a
     since-deactivated cluster) must not 404/500, it should just land back
     on the default cluster."""
-    with db.SessionLocal() as session:
-        default_cluster = ensure_default_cluster(session)
-        clusters = list_active_clusters(session)
-        session.expunge_all()
-    by_id = {c.id: c for c in clusters}
-    selected = by_id.get(requested_cluster_id) if requested_cluster_id else None
-    if selected is None and session_cluster_id:
-        selected = by_id.get(session_cluster_id)
-    return clusters, (selected or default_cluster)
+    # Kept as a compatibility wrapper for existing imports/tests; the
+    # dependency-free implementation belongs in dashboard.cluster_scope.
+    from dashboard.cluster_scope import resolve_cluster_selection
+
+    return resolve_cluster_selection(requested_cluster_id, session_cluster_id)
 
 
 def _dashboard_health_payload(

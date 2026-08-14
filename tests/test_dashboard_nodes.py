@@ -1,6 +1,8 @@
 import dashboard.routes.nodes as nodes_route
 from config.settings import settings
 from watcher.node_metrics import NodeMetricsError
+from shared import db
+from shared.models import Cluster
 
 
 def _login(client):
@@ -130,3 +132,36 @@ def test_metrics_api_returns_502_when_collector_fails(dashboard_client, monkeypa
     response = dashboard_client.get("/api/nodes/10.20.1.150/metrics")
 
     assert response.status_code == 502
+
+
+def test_nodes_page_and_metrics_use_selected_additional_cluster(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-secondary", ceph_mon_nodes="10.99.0.10",
+            ceph_osd_nodes="10.99.0.20", ceph_rgw_nodes="",
+            ceph_container_name="ceph-mon-secondary", ssh_user="ceph-secondary",
+            ssh_key_path="/keys/secondary", ceph_exec_mode="docker",
+            is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+
+    response = dashboard_client.get(f"/nodes?cluster={cluster_id}")
+    assert response.status_code == 200
+    assert "cluster-secondary" in response.text
+    assert "10.99.0.10" in response.text
+    assert "10.20.1.150" not in response.text
+
+    calls = []
+    monkeypatch.setattr(
+        nodes_route, "collect_node_metrics_with",
+        lambda host, user, key: calls.append((host, user, key)) or {"cpu_percent": 1},
+    )
+    response = dashboard_client.get("/api/nodes/10.99.0.20/metrics")
+    assert response.status_code == 200
+    assert calls == [("10.99.0.20", "ceph-secondary", "/keys/secondary")]
+
+    # A host from the default cluster must not pass the selected cluster's whitelist.
+    assert dashboard_client.get("/api/nodes/10.20.1.150/metrics").status_code == 404
