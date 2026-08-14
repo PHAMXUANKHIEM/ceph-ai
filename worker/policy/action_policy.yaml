@@ -10,6 +10,7 @@ action_ids:
   - resync_ntp
   - pg_repair_force
   - investigate_manually  # fallback: no automated action applies
+  - hard_reboot_node      # RAM >= 90% for two node-health scans; always approval-gated
   # 2026-08-01 (Story A, Crash-module visibility): remediates RECENT_CRASH —
   # `ceph crash archive-all` takes no id argument (unlike pg_repair_force's
   # PG id, which is why THAT one still has no command — see commands.py),
@@ -268,6 +269,9 @@ safe:
 
 risky:
   - restart_osd_daemon
+  # RAM >= 90% across two slow health scans. A forced host reboot can
+  # interrupt MON/OSD traffic, so it must never run without approval.
+  - hard_reboot_node
   - pg_repair_force
   - finalize_pacific_osd_release
   # 2026-07-23: a live cluster version upgrade is never auto-executed —

@@ -42,11 +42,10 @@ from worker.policy import gate
 logger = logging.getLogger(__name__)
 
 NODE_RESOURCE_HIGH_PREFIX = "NODE_RESOURCE_HIGH:"
-# No automated remediation exists for "a node's CPU/RAM is high" (unlike,
-# say, DEVICE_HEALTH_EVACUATE_PREFIX's mark_osd_out) — same "no Command,
-# operator investigates" posture as watcher/volume_monitor.py's own
-# VOLUME_SATURATED_PREFIX family.
+# CPU-only pressure remains an operator investigation. Sustained RAM >=90%
+# proposes a hard reboot, but it is RISKY and remains approval-gated.
 NODE_RESOURCE_HIGH_ACTION_ID = "investigate_manually"
+NODE_RAM_HIGH_ACTION_ID = "hard_reboot_node"
 
 # Absolute thresholds, not relative-to-own-history like volume_monitor.py's
 # NEAR_PEAK_RATIO — CPU%/RAM% are already normalized 0-100 numbers, unlike
@@ -121,18 +120,24 @@ def check_node_resources() -> dict[str, dict]:
 
 
 def _rationale_for(detail: dict) -> str:
+    remediation = (
+        " RAM vượt ngưỡng nên hệ thống đề xuất hard reboot node; thao tác chỉ chạy sau khi operator duyệt."
+        if detail["mem_percent"] >= MEM_ALERT_THRESHOLD_PERCENT
+        else " Cần operator kiểm tra tiến trình gây tải trước khi xử lý."
+    )
     return (
         f"Node {detail['host']} có CPU {detail['cpu_percent']:.1f}% / RAM {detail['mem_percent']:.1f}% "
         f"cao bất thường, lặp lại {detail['consecutive_scans']} lần quét liên tiếp (ngưỡng "
         f"{CPU_ALERT_THRESHOLD_PERCENT:.0f}% CPU hoặc {MEM_ALERT_THRESHOLD_PERCENT:.0f}% RAM) — có thể "
         f"node đang quá tải hoặc có tiến trình bất thường, không phải lỗi cấu hình có thể tự sửa."
+        f"{remediation}"
     )
 
 
 def create_or_resolve_node_health_incidents(current: dict[str, dict]) -> None:
     """Same shape/reasoning as watcher/volume_monitor.py::
     create_or_resolve_volume_incidents — creates a PENDING_APPROVAL
-    Incident+Action(investigate_manually) for every newly-flagged host not
+    Incident plus an approval-gated Action for every newly-flagged host not
     already open, and resolves any open NODE_RESOURCE_HIGH: Incident whose
     host dropped out of `current` (no longer over threshold). Sends a
     Telegram alert (shared/telegram_alerts.py, its own independent
@@ -168,19 +173,23 @@ def create_or_resolve_node_health_incidents(current: dict[str, dict]) -> None:
             session.add(incident)
             session.flush()  # assigns incident.id, needed by the Action FK below
 
+            ram_high = detail["mem_percent"] >= MEM_ALERT_THRESHOLD_PERCENT
+            action_id = NODE_RAM_HIGH_ACTION_ID if ram_high else NODE_RESOURCE_HIGH_ACTION_ID
+            target_nodes = [detail["host"]] if ram_high else []
             action = Action(
                 incident_id=incident.id,
-                action_id=NODE_RESOURCE_HIGH_ACTION_ID,
-                classification=gate.classify_action(NODE_RESOURCE_HIGH_ACTION_ID).value,
+                action_id=action_id,
+                classification=gate.classify_action(action_id).value,
                 status=ActionStatus.PENDING_APPROVAL.value,
                 rationale=rationale,
-                # No specific automated target — investigate_manually has
-                # no automated Command regardless (has_command() is False
-                # for it, same as watcher/volume_monitor.py's identical
-                # comment), target_nodes/action_params are informational
-                # only here.
-                target_nodes=json.dumps([]),
+                # RAM pressure targets the affected host for the approved
+                # reboot; CPU-only pressure keeps the manual-action posture.
+                target_nodes=json.dumps(target_nodes),
                 action_params=json.dumps({"host": detail["host"]}),
+                proposed_command=(
+                    "nohup systemctl reboot --force --force >/dev/null 2>&1 &"
+                    if ram_high else None
+                ),
             )
             session.add(action)
             session.flush()

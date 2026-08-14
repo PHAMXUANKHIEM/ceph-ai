@@ -46,6 +46,12 @@ def test_get_command_returns_crash_archive_all_command():
     assert get_command("crash_archive_all") == "ceph crash archive-all"
 
 
+def test_get_command_returns_detached_hard_reboot_command():
+    assert get_command("hard_reboot_node", "10.3.55.91") == (
+        "nohup systemctl reboot --force --force >/dev/null 2>&1 &"
+    )
+
+
 def test_get_command_raises_for_unknown_action_id():
     with pytest.raises(ExecutorError, match="no Command defined"):
         get_command("some_action_id_with_no_command")

@@ -143,6 +143,22 @@ def test_create_or_resolve_creates_incident_and_investigate_manually_action(isol
         assert audit_entry.actor == "system"
 
 
+def test_ram_over_threshold_proposes_approval_gated_hard_reboot(isolated_db):
+    current = {"NODE_RESOURCE_HIGH:10.3.55.91": _detail(host="10.3.55.91", cpu=11.1, mem=98.6)}
+
+    nhm.create_or_resolve_node_health_incidents(current)
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="NODE_RESOURCE_HIGH:10.3.55.91").one()
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert action.action_id == "hard_reboot_node"
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.target_nodes == '["10.3.55.91"]'
+        assert action.proposed_command == "nohup systemctl reboot --force --force >/dev/null 2>&1 &"
+        assert "đề xuất hard reboot node" in action.rationale
+
+
 def test_create_or_resolve_does_not_duplicate_an_already_open_incident(isolated_db):
     current = {"NODE_RESOURCE_HIGH:10.0.0.5": _detail()}
 

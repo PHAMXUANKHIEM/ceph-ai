@@ -21,6 +21,9 @@ from worker.executor.ssh_executor import ExecutorError, execute_command
 # worker/llm/router_client.py's approved-execution path already turns into a
 # clear FAILED status instead of guessing — see deferred-work.md.
 COMMANDS: dict[str, str] = {
+    # Hard reboot is deliberately RISKY and approval-gated. Redirecting all
+    # file descriptors lets SSH return before systemd tears down the node.
+    "hard_reboot_node": "nohup systemctl reboot --force --force >/dev/null 2>&1 &",
     "resync_ntp": (
         "if command -v chronyc >/dev/null 2>&1; then chronyc -a makestep; "
         "elif command -v ntpdate >/dev/null 2>&1; then ntpdate -u pool.ntp.org; "
