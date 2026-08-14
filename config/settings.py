@@ -199,8 +199,10 @@ class Settings(BaseSettings):
     # credentials stay in this private Claude-owned directory.
     claude_chat_enabled: bool = False
     claude_config_dir: str = ".claude-account"
-    # Claude CLI accepts these stable aliases (default/sonnet/opus/haiku).
+    # Claude CLI accepts stable family aliases and explicit version IDs.
     claude_chat_model: str = "default"
+    # "auto" leaves the effort choice to the selected model/Claude Code.
+    claude_chat_effort: str = "auto"
 
     # Worker (Story 4.3): how often the Worker checks for Actions an
     # operator just approved on the Dashboard. Separate from RabbitMQ

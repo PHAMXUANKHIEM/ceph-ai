@@ -63,7 +63,7 @@
     models.forEach(function (model) {
       var option = document.createElement("option");
       option.value = model.id;
-      option.textContent = model.label + (model.is_default ? " · mặc định" : "");
+      option.textContent = model.label + (model.version ? " " + model.version : "") + (model.is_default ? " · mặc định" : "");
       select.appendChild(option);
     });
     select.value = selected || (includeAutomatic ? "" : "default");
@@ -179,6 +179,7 @@
   var claudeInstallNoBtn = document.getElementById("claude-install-no-btn");
   var claudeModelPanel = document.getElementById("claude-model-panel");
   var claudeModelSelect = document.getElementById("claude-model-select");
+  var claudeEffortSelect = document.getElementById("claude-effort-select");
   var claudeModelSaveBtn = document.getElementById("claude-model-save-btn");
   var claudeModelResult = document.getElementById("claude-model-result");
   var claudeLimitPanel = document.getElementById("claude-limit-panel");
@@ -200,6 +201,7 @@
       if (claudeLoginBtn) claudeLoginBtn.hidden = true;
       if (claudeLogoutBtn) claudeLogoutBtn.hidden = false;
       renderAccountModels(claudeModelPanel, claudeModelSelect, data.models || [], data.model, false);
+      renderAccountModels(claudeModelPanel, claudeEffortSelect, data.efforts || [], data.effort, false);
       renderAiLimits(claudeLimitPanel, data.limits || []);
       if (claudeFlow) claudeFlow.hidden = true;
       if (claudeAuthenticationCode) claudeAuthenticationCode.value = "";
@@ -289,7 +291,17 @@
     }).catch(function (err) { claudeStatus.textContent = "❌ " + err.message; });
   });
   if (claudeModelSaveBtn) claudeModelSaveBtn.addEventListener("click", function () {
-    saveAccountModel("claude", claudeModelSelect, claudeModelSaveBtn, claudeModelResult);
+    if (!claudeModelSelect || !claudeEffortSelect) return;
+    claudeModelSaveBtn.disabled = true;
+    if (claudeModelResult) { claudeModelResult.hidden = false; claudeModelResult.textContent = "Đang lưu..."; }
+    var body = new URLSearchParams();
+    body.set("model", claudeModelSelect.value);
+    body.set("effort", claudeEffortSelect.value);
+    codexRequest("/settings/claude/model", { method: "POST", body: body }).then(function () {
+      if (claudeModelResult) { claudeModelResult.className = "ai-test-result ai-test-ok"; claudeModelResult.textContent = "✅ Đã lưu"; }
+    }).catch(function (err) {
+      if (claudeModelResult) { claudeModelResult.className = "ai-test-result ai-test-fail"; claudeModelResult.textContent = "❌ " + err.message; }
+    }).then(function () { claudeModelSaveBtn.disabled = false; });
   });
 
   var verifyBtn = document.getElementById("router-verify-btn");

@@ -209,6 +209,9 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
     model = settings.claude_chat_model.strip()
     if model and model != "default":
         command.extend(["--model", model])
+    effort = settings.claude_chat_effort.strip().lower()
+    if effort and effort != "auto":
+        command.extend(["--effort", effort])
     process = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

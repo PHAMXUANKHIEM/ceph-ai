@@ -72,11 +72,26 @@ CODEX_CHAT_ENABLED_ENV_NAME = "CODEX_CHAT_ENABLED"
 CLAUDE_CHAT_ENABLED_ENV_NAME = "CLAUDE_CHAT_ENABLED"
 CODEX_CHAT_MODEL_ENV_NAME = "CODEX_CHAT_MODEL"
 CLAUDE_CHAT_MODEL_ENV_NAME = "CLAUDE_CHAT_MODEL"
+CLAUDE_CHAT_EFFORT_ENV_NAME = "CLAUDE_CHAT_EFFORT"
 CLAUDE_MODELS = [
-    {"id": "default", "label": "Mặc định tài khoản"},
-    {"id": "sonnet", "label": "Claude Sonnet"},
-    {"id": "opus", "label": "Claude Opus"},
-    {"id": "haiku", "label": "Claude Haiku"},
+    {"id": "default", "label": "Mặc định tài khoản", "version": "Tự động"},
+    {"id": "fable", "label": "Claude Fable", "version": "5 (mới nhất)"},
+    {"id": "opus", "label": "Claude Opus", "version": "5 (mới nhất)"},
+    {"id": "sonnet", "label": "Claude Sonnet", "version": "5 (mới nhất)"},
+    {"id": "haiku", "label": "Claude Haiku", "version": "4.5 (mới nhất)"},
+    {"id": "claude-opus-4-8", "label": "Claude Opus", "version": "4.8"},
+    {"id": "claude-opus-4-7", "label": "Claude Opus", "version": "4.7"},
+    {"id": "claude-opus-4-6", "label": "Claude Opus", "version": "4.6"},
+    {"id": "claude-sonnet-4-6", "label": "Claude Sonnet", "version": "4.6"},
+    {"id": "claude-haiku-4-5", "label": "Claude Haiku", "version": "4.5"},
+]
+CLAUDE_EFFORTS = [
+    {"id": "auto", "label": "Tự động theo model"},
+    {"id": "low", "label": "Low — nhanh, ít suy luận"},
+    {"id": "medium", "label": "Medium — cân bằng chi phí"},
+    {"id": "high", "label": "High — suy luận kỹ"},
+    {"id": "xhigh", "label": "XHigh — suy luận sâu"},
+    {"id": "max", "label": "Max — suy luận tối đa"},
 ]
 
 # API AI connection-type presets shown on the Settings page (2026-07-24).
@@ -1074,14 +1089,20 @@ async def settings_claude_status(user: str = Depends(require_login)):
     result["enabled"] = settings.claude_chat_enabled
     result["model"] = settings.claude_chat_model
     result["models"] = CLAUDE_MODELS
+    result["effort"] = settings.claude_chat_effort
+    result["efforts"] = CLAUDE_EFFORTS
     result["limits"] = normalize_rate_limits(result.pop("rate_limits", None))
     return result
 
 
 @router.post("/settings/claude/model")
-async def settings_claude_model(model: str = Form("default"), user: str = Depends(require_login)):
+async def settings_claude_model(
+    model: str = Form("default"), effort: str = Form("auto"),
+    user: str = Depends(require_login),
+):
     _require_admin_privilege(user)
     submitted = model.strip() or "default"
+    submitted_effort = effort.strip().lower() or "auto"
     try:
         status = await claude_status()
     except ClaudeCLIError as exc:
@@ -1090,9 +1111,13 @@ async def settings_claude_model(model: str = Form("default"), user: str = Depend
         raise HTTPException(status_code=409, detail="Cần đăng nhập Claude trước khi chọn model")
     if submitted not in {item["id"] for item in CLAUDE_MODELS}:
         raise HTTPException(status_code=400, detail="Model Claude không hợp lệ")
+    if submitted_effort not in {item["id"] for item in CLAUDE_EFFORTS}:
+        raise HTTPException(status_code=400, detail="Effort Claude không hợp lệ")
     _update_env_file(CLAUDE_CHAT_MODEL_ENV_NAME, submitted)
+    _update_env_file(CLAUDE_CHAT_EFFORT_ENV_NAME, submitted_effort)
     settings.claude_chat_model = submitted
-    return {"saved": True, "model": submitted}
+    settings.claude_chat_effort = submitted_effort
+    return {"saved": True, "model": submitted, "effort": submitted_effort}
 
 
 @router.post("/settings/claude/install")

@@ -184,18 +184,30 @@ def test_claude_status_and_model_selection(dashboard_client, monkeypatch):
 
     monkeypatch.setattr(settings_route, "claude_status", fake_status)
     monkeypatch.setattr(settings, "claude_chat_model", "default")
+    monkeypatch.setattr(settings, "claude_chat_effort", "auto")
     _login(dashboard_client)
 
     status = dashboard_client.get("/settings/claude/status")
-    assert [item["id"] for item in status.json()["models"]] == ["default", "sonnet", "opus", "haiku"]
+    payload = status.json()
+    assert payload["models"][1] == {"id": "fable", "label": "Claude Fable", "version": "5 (mới nhất)"}
+    assert "claude-sonnet-4-6" in [item["id"] for item in payload["models"]]
+    assert [item["id"] for item in payload["efforts"]] == ["auto", "low", "medium", "high", "xhigh", "max"]
 
-    saved = dashboard_client.post("/settings/claude/model", data={"model": "opus"})
+    saved = dashboard_client.post("/settings/claude/model", data={"model": "claude-opus-4-8", "effort": "xhigh"})
     assert saved.status_code == 200
-    assert settings.claude_chat_model == "opus"
-    assert "CLAUDE_CHAT_MODEL=opus" in env_config.ENV_PATH.read_text()
+    assert settings.claude_chat_model == "claude-opus-4-8"
+    assert settings.claude_chat_effort == "xhigh"
+    env_text = env_config.ENV_PATH.read_text()
+    assert "CLAUDE_CHAT_MODEL=claude-opus-4-8" in env_text
+    assert "CLAUDE_CHAT_EFFORT=xhigh" in env_text
 
     invalid = dashboard_client.post("/settings/claude/model", data={"model": "other"})
     assert invalid.status_code == 400
+
+    invalid_effort = dashboard_client.post(
+        "/settings/claude/model", data={"model": "opus", "effort": "extreme"},
+    )
+    assert invalid_effort.status_code == 400
 
 
 def test_claude_authentication_code_is_submitted_to_active_login(dashboard_client, monkeypatch):
