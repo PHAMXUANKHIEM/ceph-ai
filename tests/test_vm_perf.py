@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from worker.executor import vm_perf
 
@@ -39,6 +40,7 @@ def test_run_executes_read_only_fio_inside_vm(monkeypatch):
     result = vm_perf.run(
         "action-1",
         {
+            "controller_ip": "10.0.0.10",
             "vm_ip": "10.20.1.50",
             "ssh_user": "ubuntu",
             "ssh_key_path": "/keys/vm",
@@ -46,13 +48,16 @@ def test_run_executes_read_only_fio_inside_vm(monkeypatch):
         },
         "incident-1",
         lambda _action, progress: progress_updates.append(json.loads(json.dumps(progress))),
+        SimpleNamespace(ssh_user="ceph-admin", ssh_key_path="/keys/controller"),
     )
 
     assert result is True
     fio_calls = [call for call in calls if "fio --name" in call[1]]
     assert len(fio_calls) == 4
     assert all("--readonly" in call[1] and "--rw=randread" in call[1] for call in fio_calls)
-    assert all(call[0] == "10.20.1.50" and call[2:] == ("ubuntu", "/keys/vm") for call in calls)
+    assert all(call[0] == "10.0.0.10" for call in calls)
+    assert all(call[2:] == ("ceph-admin", "/keys/controller") for call in calls)
+    assert all("ssh -i /keys/vm" in call[1] and "ubuntu@10.20.1.50" in call[1] for call in calls)
     final = progress_updates[-1][-1]
     assert final["status"] == "done"
     assert final["result"]["device"] == "/dev/vdb"
@@ -68,6 +73,7 @@ def test_run_rejects_unsafe_device_without_ssh(monkeypatch):
     assert vm_perf.run(
         "action-2",
         {
+            "controller_ip": "10.0.0.10",
             "vm_ip": "10.20.1.50",
             "ssh_user": "root",
             "ssh_key_path": "/key",

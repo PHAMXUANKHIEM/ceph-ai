@@ -1625,7 +1625,14 @@ def _execute_approved_action(action_pk: str) -> None:
             _record_approved_execution_result(action_pk, command=None, succeeded=False)
             return
         executor = vm_perf if action_id_str == vm_perf.VM_PERF_ACTION_ID else volume_perf
-        succeeded = executor.run(action_pk, action_params, incident_id, _write_action_progress)
+        if action_id_str == vm_perf.VM_PERF_ACTION_ID:
+            succeeded = executor.run(
+                action_pk, action_params, incident_id, _write_action_progress, cluster
+            )
+        else:
+            succeeded = executor.run(
+                action_pk, action_params, incident_id, _write_action_progress
+            )
         _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
         return
 

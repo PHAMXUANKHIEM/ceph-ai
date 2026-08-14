@@ -138,9 +138,10 @@
       </div>
       <div class="card-body">
         <p class="hint metrics-panel-desc">
-          Worker SSH trực tiếp vào VM và chạy <code>fio</code> READ-ONLY trên ổ đã chọn. Kết quả
+          Worker SSH vào OpenStack Controller đã cấu hình, từ Controller SSH tiếp vào VM và chạy
+          <code>fio</code> READ-ONLY trên ổ đã chọn. Kết quả
           bao gồm toàn bộ đường đi guest → virtio/QEMU → network → Ceph. Private key phải tồn tại
-          trên máy chạy Worker; hệ thống chỉ lưu đường dẫn, không nhận nội dung key qua trình duyệt.
+          trên OpenStack Controller; hệ thống chỉ lưu đường dẫn, không nhận nội dung key qua trình duyệt.
         </p>
         <div class="vitastor-live-notice">
           <strong>Cảnh báo:</strong> phép đo không ghi dữ liệu nhưng tạo tải đọc thật và có thể làm
@@ -169,7 +170,7 @@
           <label>SSH user
             <input name="ssh_user" required value="root" placeholder="root hoặc ubuntu">
           </label>
-          <label>SSH private key path trên Worker
+          <label>SSH private key path của VM trên OpenStack Controller
             <input name="ssh_key_path" required placeholder="/root/.ssh/vm_benchmark_ed25519">
           </label>
           <label>Ổ cứng trong VM

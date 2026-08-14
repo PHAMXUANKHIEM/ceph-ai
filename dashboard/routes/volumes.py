@@ -2,10 +2,8 @@ import asyncio
 import ipaddress
 import json
 import logging
-import os
 import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -509,7 +507,7 @@ async def volume_history_api(
 async def propose_vm_perf_benchmark(request: Request, user: str = Depends(require_login)):
     """Create an approval-gated, read-only fio benchmark inside one VM."""
     _require_admin_privilege(user)
-    _require_default_cluster_operation(request)
+    cluster = _require_default_cluster_operation(request)
     try:
         payload = await request.json()
     except (TypeError, ValueError):
@@ -528,12 +526,15 @@ async def propose_vm_perf_benchmark(request: Request, user: str = Depends(requir
     if not _VM_DEVICE_RE.fullmatch(device):
         raise HTTPException(status_code=400, detail="Ổ đĩa phải có dạng /dev/vdb, /dev/vdc, ...")
 
-    key = Path(ssh_key_path).expanduser()
-    if not key.is_absolute() or not key.is_file() or not os.access(key, os.R_OK):
+    if not ssh_key_path.startswith("/") or "\x00" in ssh_key_path or "\n" in ssh_key_path:
         raise HTTPException(
             status_code=400,
-            detail="SSH key phải là đường dẫn tuyệt đối tới private key đọc được trên máy chạy ceph-ai Worker",
+            detail="SSH key phải là đường dẫn tuyệt đối tới private key của VM trên OpenStack Controller",
         )
+    controller_nodes = [node.strip() for node in cluster.openstack_controller_nodes.split(",") if node.strip()]
+    if not controller_nodes:
+        raise HTTPException(status_code=400, detail="Cluster chưa cấu hình OpenStack Controller")
+    controller_ip = controller_nodes[0]
 
     previous = _latest_vm_perf_action()
     if previous is not None and previous.status in _IN_FLIGHT_ACTION_STATUSES:
@@ -541,17 +542,22 @@ async def propose_vm_perf_benchmark(request: Request, user: str = Depends(requir
 
     params = {
         "vm_ip": vm_ip,
+        "controller_ip": controller_ip,
         "ssh_user": ssh_user,
-        "ssh_key_path": str(key),
+        "ssh_key_path": ssh_key_path,
         "device": device,
         "requested_by": user,
     }
     preview = executor_commands.get_command(VM_PERF_BENCHMARK_ACTION_ID, vm_ip, params)
     with db.SessionLocal() as session:
         incident = Incident(
+            cluster_id=cluster.id,
             ceph_code=VM_PERF_BENCHMARK_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"Đề xuất đo read-only từ trong VM {vm_ip}, ổ {device}, bởi {user}.",
+            log_excerpt=(
+                f"Đề xuất đo read-only từ Controller {controller_ip} qua VM {vm_ip}, "
+                f"ổ {device}, bởi {user}."
+            ),
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
@@ -562,10 +568,11 @@ async def propose_vm_perf_benchmark(request: Request, user: str = Depends(requir
             classification=gate.classify_action(VM_PERF_BENCHMARK_ACTION_ID).value,
             status=ActionStatus.PENDING_APPROVAL.value,
             rationale=(
-                f"SSH vào VM {vm_ip} và chạy fio 4K random-read trên {device}. Phép đo không ghi dữ liệu "
+                f"SSH vào Controller {controller_ip}, từ đó SSH vào VM {vm_ip} và chạy fio 4K "
+                f"random-read trên {device}. Phép đo không ghi dữ liệu "
                 "nhưng tạo tải đọc thật, có thể làm chậm workload đang chạy."
             ),
-            target_nodes=json.dumps([vm_ip]),
+            target_nodes=json.dumps([controller_ip]),
             action_params=json.dumps(params),
             proposed_command=preview,
         )

@@ -2265,8 +2265,8 @@ def test_execute_approved_action_delegates_vm_benchmark_to_vm_executor(isolated_
     monkeypatch.setattr(
         router_client.vm_perf,
         "run",
-        lambda action_pk, params, incident_id, write_progress: calls.append(
-            (action_pk, params, incident_id)
+        lambda action_pk, params, incident_id, write_progress, cluster: calls.append(
+            (action_pk, params, incident_id, cluster)
         ) or True,
     )
     monkeypatch.setattr(
@@ -2289,7 +2289,7 @@ def test_execute_approved_action_delegates_vm_benchmark_to_vm_executor(isolated_
 
     router_client._execute_approved_action(action_pk)
 
-    assert calls == [(action_pk, params, "incident-vm-perf")]
+    assert calls == [(action_pk, params, "incident-vm-perf", None)]
     with db_module.SessionLocal() as session:
         assert session.get(Action, action_pk).status == ActionStatus.EXECUTED.value
 

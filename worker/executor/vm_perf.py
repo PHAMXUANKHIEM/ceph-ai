@@ -54,7 +54,43 @@ def _parse_fio_json(output: str, iodepth: int) -> dict:
     }
 
 
-def _run_sample(vm_ip: str, ssh_user: str, ssh_key_path: str, device: str, iodepth: int) -> dict:
+def _vm_ssh_command(vm_ip: str, ssh_user: str, ssh_key_path: str, command: str) -> str:
+    """Build the second SSH hop, executed from the OpenStack Controller."""
+    destination = f"{ssh_user}@{vm_ip}"
+    return (
+        f"ssh -i {shlex.quote(ssh_key_path)} -o BatchMode=yes "
+        "-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "
+        f"{shlex.quote(destination)} {shlex.quote(command)}"
+    )
+
+
+def _execute_in_vm(
+    controller_ip: str,
+    controller_user: str | None,
+    controller_key_path: str | None,
+    vm_ip: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    command: str,
+) -> str:
+    return execute_command(
+        controller_ip,
+        _vm_ssh_command(vm_ip, ssh_user, ssh_key_path, command),
+        user=controller_user,
+        key_path=controller_key_path,
+    )
+
+
+def _run_sample(
+    controller_ip: str,
+    controller_user: str | None,
+    controller_key_path: str | None,
+    vm_ip: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    device: str,
+    iodepth: int,
+) -> dict:
     command = (
         "fio --name=ceph-ai-vm-read --readonly --rw=randread --bs=4k "
         f"--filename={shlex.quote(device)} --ioengine=libaio --direct=1 "
@@ -62,21 +98,25 @@ def _run_sample(vm_ip: str, ssh_user: str, ssh_key_path: str, device: str, iodep
         f"--ramp_time={FIO_RAMP_SECONDS} --time_based --group_reporting "
         "--lat_percentiles=1 --percentile_list=99 --output-format=json"
     )
-    output = execute_command(vm_ip, command, user=ssh_user, key_path=ssh_key_path)
+    output = _execute_in_vm(
+        controller_ip, controller_user, controller_key_path,
+        vm_ip, ssh_user, ssh_key_path, command,
+    )
     return _parse_fio_json(output, iodepth)
 
 
-def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, *_unused) -> bool:
+def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, cluster=None) -> bool:
+    controller_ip = str(action_params.get("controller_ip") or "").strip()
     vm_ip = str(action_params.get("vm_ip") or "").strip()
     ssh_user = str(action_params.get("ssh_user") or "").strip()
     ssh_key_path = str(action_params.get("ssh_key_path") or "").strip()
     device = str(action_params.get("device") or "").strip()
-    if not vm_ip or not ssh_user or not ssh_key_path or not _DEVICE_RE.fullmatch(device):
+    if not controller_ip or not vm_ip or not ssh_user or not ssh_key_path or not _DEVICE_RE.fullmatch(device):
         logger.error("vm_perf.run: invalid/missing parameters for action %s", action_pk)
         return False
 
     progress = [
-        _step("prepare", "Kiểm tra SSH, fio và ổ đĩa trong VM", 10),
+        _step("prepare", "SSH qua OpenStack Controller, kiểm tra fio và ổ đĩa trong VM", 10),
         _step("sweep", "Đo đọc ngẫu nhiên 4K từ trong VM", 90),
         _step("complete", "Tổng hợp kết quả end-to-end", 100),
     ]
@@ -91,7 +131,12 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
             f"test -b {shlex.quote(device)} || {{ echo '{shlex.quote(device)} không phải block device' >&2; exit 21; }}; "
             f"lsblk -dn -o NAME,SIZE,TYPE,RO {shlex.quote(device)}"
         )
-        disk_info = execute_command(vm_ip, check, user=ssh_user, key_path=ssh_key_path).strip()
+        controller_user = cluster.ssh_user if cluster is not None else None
+        controller_key_path = cluster.ssh_key_path if cluster is not None else None
+        disk_info = _execute_in_vm(
+            controller_ip, controller_user, controller_key_path,
+            vm_ip, ssh_user, ssh_key_path, check,
+        ).strip()
         progress[0].update(
             status="done",
             message=f"Đã xác minh {device}: {disk_info or 'block device'}; phép đo chỉ đọc.",
@@ -105,7 +150,10 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
         measured = []
         for depth in IODEPTH_STEPS:
             samples = [
-                _run_sample(vm_ip, ssh_user, ssh_key_path, device, depth)
+                _run_sample(
+                    controller_ip, controller_user, controller_key_path,
+                    vm_ip, ssh_user, ssh_key_path, device, depth,
+                )
                 for _ in range(FIO_SAMPLES_PER_DEPTH)
             ]
             iops_values = [sample["iops"] for sample in samples]
@@ -137,6 +185,7 @@ def run(action_pk: str, action_params: dict, _incident_id: str, write_progress, 
             finished_at=datetime.utcnow().isoformat(),
             result={
                 "vm_ip": vm_ip,
+                "controller_ip": controller_ip,
                 "device": device,
                 "profile": "4K random read, direct I/O, read-only",
                 "disk_info": disk_info,

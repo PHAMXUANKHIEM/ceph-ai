@@ -1138,10 +1138,12 @@ def _volume_perf_sweep_preview_command(host: str | None, params: dict) -> str:
 
 def _vm_perf_benchmark_preview_command(host: str | None, params: dict) -> str:
     vm_ip = params.get("vm_ip") or host or "<vm-ip>"
+    controller_ip = params.get("controller_ip") or "<openstack-controller>"
     device = params.get("device", "<device>")
     ssh_user = params.get("ssh_user", "<ssh-user>")
     return (
-        f"SSH {ssh_user}@{vm_ip}, chạy fio READ-ONLY 4K random-read trên {device} "
+        f"SSH vào OpenStack Controller {controller_ip}, sau đó SSH {ssh_user}@{vm_ip} và chạy "
+        f"fio READ-ONLY 4K random-read trên {device} "
         "từ bên trong VM; không chạy write benchmark và không hiển thị nội dung SSH key"
     )
 

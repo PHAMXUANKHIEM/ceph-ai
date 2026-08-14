@@ -11,6 +11,7 @@ from shared.models import (
     ActionStatus,
     Incident,
     IncidentStatus,
+    Cluster,
     User,
     VolumeMetric,
     VolumePerfSweep,
@@ -44,6 +45,13 @@ def _login_as(client, username, password):
 def _configure_pools(monkeypatch):
     monkeypatch.setattr(settings, "ceph_rbd_pools", "vms,backups")
     monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["vms", "backups"])
+
+
+def _configure_openstack_controller():
+    with db_module.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        cluster.openstack_controller_nodes = "10.0.0.10"
+        session.commit()
 
 
 def _stub_no_trash(monkeypatch):
@@ -605,9 +613,8 @@ def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, m
     assert "READ-ONLY" in response.text
 
 
-def test_propose_vm_perf_creates_risky_pending_action(dashboard_client, tmp_path):
-    key = tmp_path / "vm-key"
-    key.write_text("test key")
+def test_propose_vm_perf_creates_risky_pending_action(dashboard_client):
+    _configure_openstack_controller()
     _login(dashboard_client)
 
     response = dashboard_client.post(
@@ -615,7 +622,7 @@ def test_propose_vm_perf_creates_risky_pending_action(dashboard_client, tmp_path
         json={
             "vm_ip": "10.20.1.50",
             "ssh_user": "ubuntu",
-            "ssh_key_path": str(key),
+            "ssh_key_path": "/root/.ssh/vm-key",
             "device": "/dev/vdb",
         },
     )
@@ -626,15 +633,17 @@ def test_propose_vm_perf_creates_risky_pending_action(dashboard_client, tmp_path
         assert action.action_id == "vm_perf_benchmark"
         assert action.status == ActionStatus.PENDING_APPROVAL.value
         assert action.classification == "RISKY"
-        assert json.loads(action.target_nodes) == ["10.20.1.50"]
+        assert json.loads(action.target_nodes) == ["10.0.0.10"]
         params = json.loads(action.action_params)
+        assert params["controller_ip"] == "10.0.0.10"
         assert params["ssh_user"] == "ubuntu"
-        assert params["ssh_key_path"] == str(key)
+        assert params["ssh_key_path"] == "/root/.ssh/vm-key"
         assert params["device"] == "/dev/vdb"
-        assert str(key) not in action.proposed_command
+        assert "/root/.ssh/vm-key" not in action.proposed_command
 
 
 def test_propose_vm_perf_rejects_bad_ip_device_or_missing_key(dashboard_client, tmp_path):
+    _configure_openstack_controller()
     _login(dashboard_client)
     base = {
         "vm_ip": "not-an-ip",
@@ -648,9 +657,25 @@ def test_propose_vm_perf_rejects_bad_ip_device_or_missing_key(dashboard_client, 
     assert dashboard_client.post("/volumes/vm-perf/propose", json=base).status_code == 400
 
     base["device"] = "/dev/vdb"
+    base["ssh_key_path"] = "relative/missing-key"
     response = dashboard_client.post("/volumes/vm-perf/propose", json=base)
     assert response.status_code == 400
     assert "SSH key" in response.json()["detail"]
+
+
+def test_propose_vm_perf_requires_configured_openstack_controller(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/volumes/vm-perf/propose",
+        json={
+            "vm_ip": "10.20.1.50",
+            "ssh_user": "ubuntu",
+            "ssh_key_path": "/root/.ssh/vm-key",
+            "device": "/dev/vdb",
+        },
+    )
+    assert response.status_code == 400
+    assert "OpenStack Controller" in response.json()["detail"]
 
 
 def test_propose_perf_sweep_rejects_pool_not_in_configured_list(dashboard_client, monkeypatch):
