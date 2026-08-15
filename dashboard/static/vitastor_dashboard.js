@@ -219,23 +219,26 @@
   }
   function renderNetwork(sources){const root=byId("vita-network-table");if(!root)return;root.replaceChildren();const count=sources.reduce((n,s)=>n+(s.probes||[]).length,0);setText("vita-network-count",`${count} paths`);if(!count){root.append(emptyRow(8,"Chưa có network sample từ Watcher"));return;}sources.forEach(source=>(source.probes||[]).forEach(probe=>{const nics=source.interfaces||[],active=nics.filter(n=>n.state==="up"),errors=nics.reduce((sum,n)=>sum+Number(n.rx_errors||0)+Number(n.rx_dropped||0)+Number(n.tx_errors||0)+Number(n.tx_dropped||0),0),row=child("tr");row.append(cell(source.source||"—","vitastor-mono"),cell(probe.target||"—","vitastor-mono"),cell(probe.reachable?"YES":"NO",probe.reachable?"is-up":"is-down"),cell(probe.rtt_ms==null?"—":`${number(probe.rtt_ms,2)} ms`),cell(probe.jumbo_9000?"PASS":"FAIL",probe.jumbo_9000?"is-up":"is-down"),cell(active.map(n=>`${n.name} MTU ${n.mtu}`).join(", ")||"—"),cell(active.map(n=>`${n.speed_mbps} Mb/s`).join(", ")||"—"),cell(number(errors),errors?"is-down":"is-up"));root.append(row);}));}
 
-  async function loadOverview() {
+  async function loadOverview(opts = {}) {
     if (!select || loading) return;
+    const cached = opts.cached === true, silent = opts.silent === true;
     loading = true;
-    const refresh = byId("vitastor-refresh"); if (refresh) refresh.disabled = true;
-    showNotice("Đang đọc telemetry trực tiếp từ Vitastor…");
+    const refresh = byId("vitastor-refresh"); if (refresh && !silent) refresh.disabled = true;
+    if (!silent && !cached) showNotice("Đang đọc telemetry trực tiếp từ Vitastor…");
     try {
-      const response = await fetch(`/vitastor/api/overview?cluster_id=${encodeURIComponent(select.value)}`, {headers: {Accept: "application/json"}});
+      const url = `/vitastor/api/overview?cluster_id=${encodeURIComponent(select.value)}${cached ? "&cached=1" : ""}`;
+      const response = await fetch(url, {headers: {Accept: "application/json"}});
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Không tải được telemetry");
       if (monitor) monitor.hidden = false;
       renderSummary(data); renderOsds(data.osds || []); renderPools(data.pools || []); renderImages(data.images || []); renderHardware(data.hardware || []); renderNetwork(data.network || []); loadHistory(select.value);
       const sectionErrors = Object.entries(data.section_errors || {});
-      if (data.stale) showNotice(`Đang hiển thị dữ liệu cache: ${data.error || "mất kết nối cluster"}`, "warning");
+      if (silent) { /* background refresh — leave any existing notice untouched */ }
+      else if (data.stale) showNotice(`Đang hiển thị dữ liệu cache: ${data.error || "mất kết nối cluster"}`, "warning");
       else if (sectionErrors.length) showNotice(`Một số mục chưa đọc được: ${sectionErrors.map(([name]) => name).join(", ")}`, "warning");
       else showNotice("");
     } catch (error) {
-      showNotice(error.message || "Không thể tải dashboard Vitastor", "critical");
+      if (!silent) showNotice(error.message || "Không thể tải dashboard Vitastor", "critical");
     } finally {
       loading = false; if (refresh) refresh.disabled = false;
     }
@@ -307,8 +310,19 @@
       submit.disabled = false; submit.textContent = "Xác minh & kết nối";
     }
   });
-  byId("vitastor-refresh")?.addEventListener("click", loadOverview);
+  byId("vitastor-refresh")?.addEventListener("click", () => loadOverview({ cached: false }));
   byId("vita-diagnose")?.addEventListener("click",async(event)=>{const button=event.currentTarget;if(!select)return;button.disabled=true;button.textContent="AI đang phân tích…";showNotice("Đang thu thập evidence read-only và chẩn đoán…");try{const form=new FormData();form.append("cluster_id",select.value);const response=await fetch("/vitastor/api/diagnostics",{method:"POST",body:form});const data=await response.json();if(!response.ok)throw new Error(data.detail||"Chẩn đoán thất bại");renderDiagnosis(data.diagnostic);showNotice("");}catch(error){showNotice(error.message||"AI chẩn đoán thất bại","critical");await loadLatestDiagnosis();}finally{button.disabled=false;button.textContent="Phân tích bằng AI";}});
-  select?.addEventListener("change",()=>{loadOverview();loadLatestDiagnosis();loadAnomalies();loadRemediation();loadAudit();});
-  if (select) { loadOverview(); loadLatestDiagnosis(); loadAnomalies(); loadRemediation(); loadAudit(); window.setInterval(()=>{loadOverview();loadAnomalies();loadRemediation();loadAudit();}, 30000); }
+  // Switching cluster paints instantly from the Watcher's cached snapshot
+  // (falls back to a live read server-side if that cluster has no cache yet).
+  select?.addEventListener("change",()=>{loadOverview({cached:true});loadLatestDiagnosis();loadAnomalies();loadRemediation();loadAudit();});
+  if (select) {
+    // Instant first paint from cache, then one silent live read to freshen —
+    // the SSH round-trip no longer blocks the page from rendering.
+    loadOverview({cached:true}).then(()=>loadOverview({cached:false, silent:true}));
+    loadLatestDiagnosis(); loadAnomalies(); loadRemediation(); loadAudit();
+    // Auto-refresh uses the cheap cached path and pauses entirely while the
+    // tab is hidden (no wasted polling); returning to the tab refreshes once.
+    window.setInterval(()=>{ if(document.hidden)return; loadOverview({cached:true, silent:true});loadAnomalies();loadRemediation();loadAudit(); }, 30000);
+    document.addEventListener("visibilitychange",()=>{ if(!document.hidden){ loadOverview({cached:true, silent:true});loadAnomalies();loadRemediation();loadAudit(); } });
+  }
 })();

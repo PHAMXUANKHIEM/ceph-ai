@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from config.settings import (
@@ -50,6 +51,22 @@ from shared.clusters import sync_default_cluster_from_settings
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
+
+
+class _CachedStaticFiles(StaticFiles):
+    """Static assets are content-versioned via ``?v=STATIC_VERSION`` on every
+    URL (dashboard/templating.py appends it site-wide), so a given URL's bytes
+    never change within a running Dashboard process. That makes them safe to
+    cache immutably — a browser then serves the 120KB+ stylesheet and every JS
+    bundle from disk on subsequent navigations instead of re-downloading them,
+    and only re-fetches after a deploy (which mints a fresh ``?v=``). Without
+    this, StaticFiles sends no Cache-Control at all and every page load re-pulls
+    every asset."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
 
 
 def _warn_if_using_dev_defaults() -> None:
@@ -108,7 +125,13 @@ def create_app() -> FastAPI:
     # Added after the product middleware so SessionMiddleware wraps it and
     # `request.session` is available inside the namespace guard.
     application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key)
-    application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    # Outermost middleware (added last): compress every response over ~500B —
+    # the 129KB stylesheet, large Jinja pages (settings.html ~52KB) and the
+    # telemetry JSON APIs all shrink ~70-80% over the wire, the single biggest
+    # first-paint latency win and pure gain (browsers negotiate it via
+    # Accept-Encoding; nothing here changes semantically).
+    application.add_middleware(GZipMiddleware, minimum_size=500)
+    application.mount("/static", _CachedStaticFiles(directory=str(STATIC_DIR)), name="static")
     application.include_router(auth.router)
     application.include_router(incidents.router)
     application.include_router(nodes.router)

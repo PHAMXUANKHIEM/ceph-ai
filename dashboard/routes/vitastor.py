@@ -163,12 +163,36 @@ async def create_vitastor_diagnostic(cluster_id: str = Form(...), user: str = De
 
 @router.get("/api/overview")
 async def vitastor_overview_api(
-    cluster_id: str | None = None, user: str = Depends(require_vitastor_login)
+    cluster_id: str | None = None, cached: bool = False,
+    user: str = Depends(require_vitastor_login),
 ):
     with db.SessionLocal() as session:
         cluster = _cluster_or_404(session, cluster_id)
         cluster_pk = cluster.id
         cluster_name = cluster.name
+        # Fast path (page load + auto-refresh): serve the Watcher's last
+        # snapshot straight from the DB with no SSH round-trip, so the
+        # dashboard paints instantly. The Watcher refreshes last_status_json
+        # every poll; the manual Refresh button (cached=false) still forces a
+        # live read. Underscore-prefixed keys are internal alert state
+        # (_telegram_*) — stripped so they never reach the client.
+        if cached and cluster.last_status_json:
+            try:
+                snapshot = json.loads(cluster.last_status_json)
+            except (TypeError, json.JSONDecodeError):
+                snapshot = None
+            if snapshot:
+                snapshot = {k: v for k, v in snapshot.items() if not str(k).startswith("_")}
+                if "summary" not in snapshot:
+                    snapshot = {
+                        "summary": normalize_status(snapshot),
+                        "pools": [], "osds": [], "images": [], "section_errors": {},
+                    }
+                return {
+                    **snapshot,
+                    "cluster": {"id": cluster_pk, "name": cluster_name},
+                    "stale": snapshot.get("stale", False), "cached": True,
+                }
         try:
             datasets = await asyncio.to_thread(_query_cluster, cluster)
         except VitastorConnectionError as exc:
