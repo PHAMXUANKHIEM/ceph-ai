@@ -11,6 +11,7 @@ from shared.models import (
     AuditEntry,
     ChatMessage,
     ChatPreference,
+    Cluster,
     Incident,
     IncidentStatus,
     User,
@@ -21,8 +22,61 @@ A_MON_HOST = "10.20.1.150"
 UNCONFIGURED_HOST = "9.9.9.9"
 
 
+def _seed_secondary_cluster():
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="secondary", ceph_mon_nodes="10.30.0.10", ceph_mgr_nodes="10.30.0.11",
+            ceph_osd_nodes="10.30.0.12", ceph_rgw_nodes="", ceph_container_name="mon-secondary",
+            ssh_user="ceph", ssh_key_path="/keys/secondary", ceph_exec_mode="podman",
+            is_default=False, is_active=True,
+        )
+        session.add(cluster); session.commit(); session.refresh(cluster)
+        return cluster.id
+
+
 def _login(client):
     client.post("/login", data={"username": "admin", "password": "admin"})
+
+
+def test_chat_uses_selected_secondary_cluster_and_scopes_history(dashboard_client, monkeypatch):
+    cluster_id = _seed_secondary_cluster()
+    captured = {}
+
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
+        captured["cluster"] = cluster
+        return {"reply_text": "secondary ok", "proposal": None, "tools_used": []}
+
+    monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/chat/messages?cluster={cluster_id}", json={"session_id": "secondary-chat", "content": "health cluster"}
+    )
+
+    assert response.status_code == 200
+    assert captured["cluster"].id == cluster_id
+    assert response.json()["assistant_message"]["cluster_id"] == cluster_id
+    with db_module.SessionLocal() as session:
+        assert session.query(ChatMessage).filter_by(cluster_id=cluster_id).count() == 2
+
+
+def test_confirmed_secondary_chat_action_keeps_original_cluster(dashboard_client):
+    cluster_id = _seed_secondary_cluster()
+    with db_module.SessionLocal() as session:
+        message = ChatMessage(
+            session_id="secondary-proposal", cluster_id=cluster_id, role="assistant",
+            content="restart", actor="admin", proposed_action_id="resync_ntp",
+            proposed_target_nodes=json.dumps(["10.30.0.10"]), proposed_rationale="clock skew",
+            proposed_status="PENDING",
+        )
+        session.add(message); session.commit(); session.refresh(message); message_id = message.id
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/api/chat/messages/{message_id}/confirm-action")
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="CHAT_REQUEST").one()
+        assert incident.cluster_id == cluster_id
 
 
 def _seed_node_command_proposal(session_id="node-command-session"):
@@ -350,7 +404,7 @@ def test_new_session_message_does_not_see_previous_session_as_context(dashboard_
 
     received_history = {}
 
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         received_history["value"] = list(history)
         return {"reply_text": "trả lời mới", "proposal": None, "tools_used": []}
 
@@ -374,7 +428,7 @@ def test_new_session_message_does_not_see_previous_session_as_context(dashboard_
 def test_post_chat_message_without_session_id_starts_a_new_one(dashboard_client, monkeypatch):
     # A stale/cached frontend bundle that predates sessions entirely must
     # still work — falls back to a fresh session rather than erroring.
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         assert history == []
         return {"reply_text": "ok", "proposal": None, "tools_used": []}
 
@@ -403,7 +457,7 @@ def test_post_chat_message_rejects_empty_content(dashboard_client):
 
 
 def test_post_chat_message_persists_both_messages_and_returns_reply(dashboard_client, monkeypatch):
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         assert user_text == "cluster có khoẻ không?"
         assert actor == "admin"
         return {"reply_text": "Cluster đang HEALTH_OK.", "proposal": None}
@@ -450,7 +504,7 @@ def test_post_chat_message_with_prior_history_passes_plain_dicts_not_orm_rows(
 
     received_history = {}
 
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         # The real bug: a ChatMessage ORM row detached from its (now closed)
         # session raises DetachedInstanceError on this exact attribute
         # access — a plain dict never can.
@@ -472,7 +526,7 @@ def test_post_chat_message_with_prior_history_passes_plain_dicts_not_orm_rows(
 
 
 def test_post_chat_message_persists_proposal_fields(dashboard_client, monkeypatch):
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         return {
             "reply_text": "Đề xuất resync NTP.",
             "proposal": {
@@ -496,7 +550,7 @@ def test_post_chat_message_persists_proposal_fields(dashboard_client, monkeypatc
 
 
 def test_post_chat_message_claude_error_is_saved_not_500(dashboard_client, monkeypatch):
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         raise chat_module.ChatTurnError("Lỗi gọi Claude API: boom")
 
     monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)
@@ -509,7 +563,7 @@ def test_post_chat_message_claude_error_is_saved_not_500(dashboard_client, monke
 
 
 def test_post_chat_message_persists_and_returns_tools_used(dashboard_client, monkeypatch):
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         return {
             "reply_text": "Cụm có 2 pool.",
             "proposal": None,
@@ -535,7 +589,7 @@ def test_post_chat_message_without_ai_key_shows_settings_prompt_without_calling_
 ):
     called = {"yes": False}
 
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         called["yes"] = True
         return {"reply_text": "should not be reached", "proposal": None, "tools_used": []}
 
@@ -555,7 +609,7 @@ def test_post_chat_message_without_ai_key_shows_settings_prompt_without_calling_
 
 
 def test_post_chat_message_allows_codex_without_api_key(dashboard_client, monkeypatch):
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         return {"reply_text": "Trả lời từ Codex", "proposal": None, "tools_used": []}
 
     monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)
@@ -568,7 +622,7 @@ def test_post_chat_message_allows_codex_without_api_key(dashboard_client, monkey
 
 
 def test_post_chat_message_allows_claude_without_api_key(dashboard_client, monkeypatch):
-    async def fake_run_chat_turn(history, user_text, actor):
+    async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         return {"reply_text": "Trả lời từ Claude", "proposal": None, "tools_used": []}
 
     monkeypatch.setattr(chat_module, "run_chat_turn", fake_run_chat_turn)

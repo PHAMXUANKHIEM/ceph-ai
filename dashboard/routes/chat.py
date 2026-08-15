@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import or_
 
 from config.settings import settings
 from dashboard.chat_client import (
@@ -15,7 +16,7 @@ from dashboard.chat_client import (
 )
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
-from dashboard.cluster_scope import require_default_cluster
+from dashboard.cluster_scope import selected_cluster
 from dashboard.vntime import to_utc_iso
 from shared import audit, db
 from shared.ai_limits import normalize_rate_limits
@@ -30,6 +31,7 @@ from shared.models import (
     ChatPreference,
     Incident,
     IncidentStatus,
+    Cluster,
 )
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -39,11 +41,7 @@ from worker.policy.gate import VALID_BLUESTORE_ACTION_IDS, VALID_MANAGEMENT_ACTI
 
 logger = logging.getLogger(__name__)
 
-def _require_default_chat_scope(request: Request) -> None:
-    require_default_cluster(request, "Chat/AI")
-
-
-router = APIRouter(dependencies=[Depends(_require_default_chat_scope)])
+router = APIRouter()
 
 # How many past messages the widget fetches on page load — purely a display
 # limit (this is cheap, unlike MAX_HISTORY_MESSAGES which bounds what's
@@ -148,6 +146,7 @@ def _message_to_dict(message: ChatMessage) -> dict:
     return {
         "id": message.id,
         "session_id": message.session_id,
+        "cluster_id": message.cluster_id,
         "role": message.role,
         "content": message.content,
         "actor": message.actor,
@@ -169,7 +168,12 @@ def _message_to_dict(message: ChatMessage) -> dict:
 _NO_MESSAGES_YET = object()  # sentinel — distinct from "the latest row's session_id happens to be None"
 
 
-def _latest_session_id(session, actor: str):
+def _message_cluster_filter(cluster):
+    condition = ChatMessage.cluster_id == cluster.id
+    return or_(condition, ChatMessage.cluster_id.is_(None)) if cluster.is_default else condition
+
+
+def _latest_session_id(session, actor: str, cluster=None):
     """"The current session" is the latest session owned by ``actor``.
     There is no separate session table to go out of sync with the messages.
 
@@ -183,9 +187,11 @@ def _latest_session_id(session, actor: str):
     conflating the two here made get_chat_messages() incorrectly report an
     empty conversation for the latter case.
     """
+    query = session.query(ChatMessage).filter(ChatMessage.actor == actor)
+    if cluster is not None:
+        query = query.filter(_message_cluster_filter(cluster))
     latest = (
-        session.query(ChatMessage)
-        .filter(ChatMessage.actor == actor)
+        query
         .order_by(ChatMessage.created_at.desc())
         .first()
     )
@@ -205,7 +211,7 @@ async def create_chat_session(user: str = Depends(require_login)):
     return {"session_id": str(uuid.uuid4())}
 
 
-def _build_session_summaries(session, actor: str) -> list[dict]:
+def _build_session_summaries(session, actor: str, cluster=None) -> list[dict]:
     """One summary per session owned by ``actor``, newest-active first —
     powers the chat panel's history list. Scans only the most recent
     SESSION_LIST_SCAN_LIMIT messages (bounds cost regardless of how large
@@ -218,9 +224,11 @@ def _build_session_summaries(session, actor: str) -> list[dict]:
     oldest row, `preview` has settled on the OLDEST (opening) user message,
     a natural one-line title for the conversation.
     """
+    query = session.query(ChatMessage).filter(ChatMessage.actor == actor)
+    if cluster is not None:
+        query = query.filter(_message_cluster_filter(cluster))
     rows = (
-        session.query(ChatMessage)
-        .filter(ChatMessage.actor == actor)
+        query
         .order_by(ChatMessage.created_at.desc())
         .limit(SESSION_LIST_SCAN_LIMIT)
         .all()
@@ -252,20 +260,21 @@ def _build_session_summaries(session, actor: str) -> list[dict]:
 
 
 @router.get("/api/chat/sessions")
-async def list_chat_sessions(user: str = Depends(require_login)):
+async def list_chat_sessions(request: Request, user: str = Depends(require_login)):
     """Powers the per-login chat history — one row per past conversation,
     most-recently-active first, so the operator can browse or delete an old
     session without it ever having to be "the current one" again."""
     with db.SessionLocal() as session:
-        summaries = _build_session_summaries(session, user)
-        current = _latest_session_id(session, user)
+        cluster = selected_cluster(request)
+        summaries = _build_session_summaries(session, user, cluster)
+        current = _latest_session_id(session, user, cluster)
         for entry in summaries:
             entry["is_current"] = entry["session_id"] == current
         return {"sessions": summaries}
 
 
 @router.delete("/api/chat/sessions/{session_id}")
-async def delete_chat_session(session_id: str, user: str = Depends(require_login)):
+async def delete_chat_session(session_id: str, request: Request, user: str = Depends(require_login)):
     """Permanently deletes every message in one session — the only
     destructive endpoint across Story 6.1-6.3 (everything else is additive
     or reversible-in-spirit, e.g. starting a new session doesn't delete the
@@ -276,10 +285,11 @@ async def delete_chat_session(session_id: str, user: str = Depends(require_login
     nothing in this schema has a foreign key pointing AT ChatMessage.id, so
     deleting these rows can never leave anything else dangling.
     """
+    cluster = selected_cluster(request)
     with db.SessionLocal() as session:
         deleted = (
             session.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user, _message_cluster_filter(cluster))
             .delete()
         )
         session.commit()
@@ -289,7 +299,7 @@ async def delete_chat_session(session_id: str, user: str = Depends(require_login
 
 
 @router.get("/api/chat/messages")
-async def get_chat_messages(user: str = Depends(require_login)):
+async def get_chat_messages(request: Request, user: str = Depends(require_login)):
     """Backs the floating chat widget (dashboard/static/chat_widget.js) on
     page load — the widget has no server-rendered history of its own (it's
     embedded directly in dashboard/templates/index.html, not its own route/
@@ -298,12 +308,13 @@ async def get_chat_messages(user: str = Depends(require_login)):
     sessions still exist in the DB, just not shown once a newer one has a
     message in it."""
     with db.SessionLocal() as session:
-        session_id = _latest_session_id(session, user)
+        cluster = selected_cluster(request)
+        session_id = _latest_session_id(session, user, cluster)
         if session_id is _NO_MESSAGES_YET:
             return {"messages": [], "session_id": None}
         rows = (
             session.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user, _message_cluster_filter(cluster))
             .order_by(ChatMessage.created_at.asc())
             .limit(CHAT_WIDGET_HISTORY_LIMIT)
             .all()
@@ -313,6 +324,7 @@ async def get_chat_messages(user: str = Depends(require_login)):
 
 @router.post("/api/chat/messages")
 async def post_chat_message(request: Request, user: str = Depends(require_login)):
+    cluster = selected_cluster(request)
     body = await request.json()
     text = (body.get("content") or "").strip()
     if not text:
@@ -340,7 +352,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         # this shipped unnoticed — see run_chat_turn()'s docstring).
         recent_messages = (
             session.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.actor == user, _message_cluster_filter(cluster))
             .order_by(ChatMessage.created_at.desc())
             .limit(MAX_HISTORY_MESSAGES)
             .all()
@@ -358,7 +370,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
             and previous.proposed_status == "PENDING"
             else None
         )
-        user_message = ChatMessage(session_id=session_id, role="user", content=text, actor=user)
+        user_message = ChatMessage(session_id=session_id, cluster_id=cluster.id, role="user", content=text, actor=user)
         session.add(user_message)
         session.commit()
         session.refresh(user_message)
@@ -374,6 +386,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
                     pending.proposed_status = "CANCELLED"
                 assistant_message = ChatMessage(
                     session_id=session_id,
+                    cluster_id=cluster.id,
                     role="assistant",
                     content=with_romantic_address(
                         "Đề xuất lệnh trên node đã huỷ vì tin nhắn kế tiếp không phải chính xác `OK`.",
@@ -397,6 +410,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
                 session_id=session_id,
+                cluster_id=cluster.id,
                 role="assistant",
                 content=with_romantic_address(
                     "Đã xác nhận `OK`. Lệnh đã được chuyển cho Worker thực hiện trên node đã chọn.",
@@ -421,6 +435,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
                 session_id=session_id,
+                cluster_id=cluster.id,
                 role="assistant",
                 content=with_romantic_address(MISSING_AI_CONFIG_MESSAGE, ai_name, female_address),
                 actor=user,
@@ -432,7 +447,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         return {"user_message": user_message_dict, "assistant_message": assistant_message_dict}
 
     try:
-        result = await run_chat_turn(history, text, user)
+        result = await run_chat_turn(history, text, user, cluster)
     except ChatTurnError as exc:
         logger.warning("post_chat_message: %s", exc)
         ai_name = auth.chat_ai_name(user)
@@ -440,6 +455,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         with db.SessionLocal() as session:
             assistant_message = ChatMessage(
                 session_id=session_id,
+                cluster_id=cluster.id,
                 role="assistant",
                 content=with_romantic_address(str(exc), ai_name, female_address),
                 actor=user,
@@ -455,6 +471,7 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     with db.SessionLocal() as session:
         assistant_message = ChatMessage(
             session_id=session_id,
+            cluster_id=cluster.id,
             role="assistant",
             content=result["reply_text"],
             actor=user,
@@ -524,7 +541,12 @@ async def _confirm_chat_action_core(
         is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
         is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
         is_parameterized_action = is_management_action or is_bluestore_action
-        allowed_hosts = {n["host"] for n in configured_nodes()}
+        cluster = session.get(Cluster, message.cluster_id) if message.cluster_id else None
+        if cluster is None:
+            cluster = session.query(Cluster).filter_by(is_default=True).first()
+        if cluster is None or not cluster.is_active:
+            raise HTTPException(status_code=400, detail="Cụm của đề xuất không còn hoạt động")
+        allowed_hosts = {n["host"] for n in configured_nodes(cluster)}
         if (
             action_id
             not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS)
@@ -560,6 +582,7 @@ async def _confirm_chat_action_core(
                 )
 
         incident = Incident(
+            cluster_id=cluster.id,
             ceph_code=CHAT_REQUEST_CEPH_CODE,
             status=IncidentStatus.NEW.value,
             log_excerpt=f"Yêu cầu qua Chat bởi {user}: {message.proposed_rationale or ''}",

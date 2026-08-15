@@ -16,7 +16,14 @@ Two kinds of tools:
 
 import re
 
-from watcher.ceph_client import CephQueryError, query_rbd_trash, run_ceph_json_command
+from shared.cluster_nodes import resolve_ssh_creds
+from watcher.ceph_client import (
+    CephQueryError,
+    query_rbd_trash,
+    query_rbd_trash_with,
+    run_ceph_json_command,
+    run_ceph_json_command_with,
+)
 
 FIXED_TOOL_COMMANDS: dict[str, str] = {
     "get_cluster_status": "ceph status",
@@ -91,24 +98,33 @@ def _blocked_reason(command: str) -> str | None:
     return None
 
 
-def _run(inner_command: str) -> dict | list:
+def _connection(cluster):
+    nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
+    ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
+    return nodes, container_name, ssh_user, ssh_key_path, exec_mode
+
+
+def _run(inner_command: str, cluster=None) -> dict | list:
     try:
-        _host, parsed = run_ceph_json_command(inner_command)
+        if cluster is None:
+            _host, parsed = run_ceph_json_command(inner_command)
+        else:
+            _host, parsed = run_ceph_json_command_with(*_connection(cluster), inner_command)
         return parsed
     except CephQueryError as exc:
         return {"error": str(exc)}
 
 
-def run_fixed_tool(tool_name: str) -> dict | list:
+def run_fixed_tool(tool_name: str, cluster=None) -> dict | list:
     """`tool_name` must be a FIXED_TOOL_COMMANDS key — raises ValueError
     otherwise, same fail-loud posture as watcher/ceph_client.py's own
     run_diagnostic_command for an unknown command_id."""
     if tool_name not in FIXED_TOOL_COMMANDS:
         raise ValueError(f"unknown fixed tool: {tool_name!r}")
-    return _run(FIXED_TOOL_COMMANDS[tool_name])
+    return _run(FIXED_TOOL_COMMANDS[tool_name], cluster)
 
 
-def run_ceph_command_tool(command: str) -> dict:
+def run_ceph_command_tool(command: str, cluster=None) -> dict:
     """Runs an arbitrary AI-generated `ceph ...` command after denylist
     validation. Returns {"blocked": True, "reason": ...} instead of running
     anything when refused — never raises for a blocked command, since a
@@ -120,12 +136,13 @@ def run_ceph_command_tool(command: str) -> dict:
     legacy_rbd_match = _LEGACY_RBD_TRASH_RE.fullmatch(command.strip())
     if legacy_rbd_match:
         try:
-            return {"result": query_rbd_trash(legacy_rbd_match.group(1))}
+            pool = legacy_rbd_match.group(1)
+            return {"result": query_rbd_trash(pool) if cluster is None else query_rbd_trash_with(pool, *_connection(cluster))}
         except CephQueryError as exc:
             return {"error": str(exc)}
 
     reason = _blocked_reason(command)
     if reason is not None:
         return {"blocked": True, "reason": reason}
-    result = _run(command.strip())
+    result = _run(command.strip(), cluster)
     return result if isinstance(result, dict) else {"result": result}

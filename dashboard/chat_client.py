@@ -7,12 +7,18 @@ from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationErro
 
 from config.settings import settings
 from dashboard.routes import auth
-from shared.cluster_nodes import configured_nodes
+from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
-from watcher.node_metrics import NodeMetricsError, collect_node_metrics
-from watcher.ceph_client import CephQueryError, query_rbd_trash, run_command_on_node
+from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
+from watcher.ceph_client import (
+    CephQueryError,
+    query_rbd_trash,
+    query_rbd_trash_with,
+    run_command_on_node,
+    run_command_on_node_with,
+)
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.llm.router_client import VALID_ACTION_IDS
@@ -134,13 +140,14 @@ _UNRESTRICTED_SCOPE_RULE = (
 
 def system_prompt(
     *, ceph_restricted: bool = True, ai_name: str = "AI",
-    female_address: str = "Mình yêu ơi, em là",
+    female_address: str = "Mình yêu ơi, em là", cluster_name: str | None = None,
 ) -> str:
     """Build the model prompt with the same chat scope enforced server-side."""
     scope_rule = _RESTRICTED_SCOPE_RULE if ceph_restricted else _UNRESTRICTED_SCOPE_RULE
+    cluster_context = f" Cụm đang được chọn là {cluster_name!r}." if cluster_name else ""
     prompt_prefix = (
     "Bạn là trợ lý AI quản trị cụm Ceph trong hệ thống CA Ceph AIOps. "
-    "Bạn có thể gọi tool để lấy dữ liệu THỰC TẾ từ cụm Ceph đang chạy.\n\n"
+    f"Bạn có thể gọi tool để lấy dữ liệu THỰC TẾ từ cụm Ceph đang chạy.{cluster_context}\n\n"
     "Quy tắc:\n"
     )
     prompt_rules = (
@@ -229,8 +236,8 @@ class ChatTurnError(Exception):
     this as a plain assistant-role error message rather than a 500."""
 
 
-def _tool_schemas(*, is_admin: bool = False) -> list[dict]:
-    hosts = sorted(n["host"] for n in configured_nodes())
+def _tool_schemas(*, is_admin: bool = False, cluster=None) -> list[dict]:
+    hosts = sorted(n["host"] for n in configured_nodes(cluster))
     action_ids = sorted(CHAT_ACTION_IDS)
 
     def _fn(name: str, description: str, parameters: dict | None = None) -> dict:
@@ -399,27 +406,31 @@ def _tool_schemas(*, is_admin: bool = False) -> list[dict]:
     return tools
 
 
-def _run_list_nodes() -> str:
-    return json.dumps(configured_nodes())
+def _run_list_nodes(cluster=None) -> str:
+    return json.dumps(configured_nodes(cluster))
 
 
-def _run_get_node_metrics(args: dict) -> str:
+def _run_get_node_metrics(args: dict, cluster=None) -> str:
     host = args.get("host")
-    allowed_hosts = {n["host"] for n in configured_nodes()}
+    allowed_hosts = {n["host"] for n in configured_nodes(cluster)}
     if host not in allowed_hosts:
         raise ChatToolError(f"host {host!r} không nằm trong danh sách node đã cấu hình")
     try:
-        metrics = collect_node_metrics(host)
+        if cluster is None:
+            metrics = collect_node_metrics(host)
+        else:
+            ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+            metrics = collect_node_metrics_with(host, ssh_user, ssh_key_path)
     except NodeMetricsError as exc:
         raise ChatToolError(f"Không lấy được metrics từ {host}: {exc}") from exc
     return json.dumps(metrics)
 
 
-def _run_get_node_journal(args: dict, actor: str | None) -> str:
+def _run_get_node_journal(args: dict, actor: str | None, cluster=None) -> str:
     if not actor or not auth.is_admin_user(actor):
         raise ChatToolError("Chỉ tài khoản admin được đọc journalctl trực tiếp trên node")
     host = args.get("host")
-    nodes = configured_nodes()
+    nodes = configured_nodes(cluster)
     allowed = {node["host"]: node for node in nodes}
     if host not in allowed:
         raise ChatToolError(f"host {host!r} không nằm trong danh sách node đã cấu hình")
@@ -434,16 +445,21 @@ def _run_get_node_journal(args: dict, actor: str | None) -> str:
     units = "-u 'ceph-mon@*' -u 'ceph-*@mon.*.service'" if service == "mon" else "-u 'ceph-*'"
     command = f"journalctl --no-pager --utc -n {lines} {units}"
     try:
-        return json.dumps({"host": host, "service": service, "lines": run_command_on_node(host, command).splitlines()})
+        if cluster is None:
+            output = run_command_on_node(host, command)
+        else:
+            ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+            output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        return json.dumps({"host": host, "service": service, "lines": output.splitlines()})
     except CephQueryError as exc:
         raise ChatToolError(f"Không đọc được journalctl trên {host}: {exc}") from exc
 
 
-def _validate_node_command_proposal(args: dict, actor: str) -> dict:
+def _validate_node_command_proposal(args: dict, actor: str, cluster=None) -> dict:
     if not auth.is_admin_user(actor):
         raise ChatToolError("Chỉ tài khoản admin được đề xuất lệnh trực tiếp trên node")
     host = args.get("host")
-    if host not in {node["host"] for node in configured_nodes()}:
+    if host not in {node["host"] for node in configured_nodes(cluster)}:
         raise ChatToolError(f"host {host!r} không nằm trong danh sách node đã cấu hình")
     params = {"command": args.get("command")}
     try:
@@ -462,12 +478,16 @@ def _validate_node_command_proposal(args: dict, actor: str) -> dict:
     }
 
 
-def _run_get_rbd_trash(args: dict) -> str:
+def _run_get_rbd_trash(args: dict, cluster=None) -> str:
     pool = str(args.get("pool") or "").strip()
     if not _POOL_NAME_RE.fullmatch(pool):
         raise ChatToolError("pool RBD không hợp lệ")
     try:
-        return json.dumps(query_rbd_trash(pool))
+        if cluster is None:
+            return json.dumps(query_rbd_trash(pool))
+        nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
+        ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
+        return json.dumps(query_rbd_trash_with(pool, nodes, container_name, ssh_user, ssh_key_path, exec_mode))
     except CephQueryError as exc:
         raise ChatToolError(f"Không đọc được RBD trash của pool {pool}: {exc}") from exc
 
@@ -518,11 +538,11 @@ _MANAGEMENT_PARAM_IS_INT: dict[str, bool] = {
 }
 
 
-def _validate_proposal(args: dict) -> dict:
+def _validate_proposal(args: dict, cluster=None) -> dict:
     action_id = (args.get("action_id") or "").strip()
     target_nodes = args.get("target_nodes")
     rationale = (args.get("rationale") or "").strip()
-    allowed_hosts = {n["host"] for n in configured_nodes()}
+    allowed_hosts = {n["host"] for n in configured_nodes(cluster)}
     # Re-checked here even though the tool schema's `enum` already constrains
     # this — schema enums shape sampling, they are not a hard server-side
     # guarantee (a model can technically emit anything as tool input; only
@@ -576,7 +596,7 @@ def _get_client() -> AsyncOpenAI:
     return build_router_client(settings.router_api_key, settings.router_base_url)
 
 
-def _run_tool(name: str, args: dict, actor: str | None = None) -> tuple[str, bool]:
+def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> tuple[str, bool]:
     """Returns (result_text, is_error). Never raises — ChatToolError and any
     unexpected exception are both turned into an error result string, same
     posture as the original MCP-based tool loop this replaces. Truncates to
@@ -585,18 +605,23 @@ def _run_tool(name: str, args: dict, actor: str | None = None) -> tuple[str, boo
     run_ceph_command's raw `ceph osd dump` output did."""
     try:
         if name == TOOL_LIST_NODES:
-            result_text, is_error = _run_list_nodes(), False
+            result_text, is_error = _run_list_nodes(cluster), False
         elif name == TOOL_GET_NODE_METRICS:
-            result_text, is_error = _run_get_node_metrics(args), False
+            result_text, is_error = _run_get_node_metrics(args, cluster), False
         elif name == TOOL_GET_NODE_JOURNAL:
-            result_text, is_error = _run_get_node_journal(args, actor), False
+            result_text, is_error = _run_get_node_journal(args, actor, cluster), False
         elif name == TOOL_GET_RBD_TRASH:
-            result_text, is_error = _run_get_rbd_trash(args), False
+            result_text, is_error = _run_get_rbd_trash(args, cluster), False
         elif name in FIXED_TOOL_COMMANDS:
-            result_text, is_error = json.dumps(run_fixed_tool(name)), False
+            result_text, is_error = json.dumps(
+                run_fixed_tool(name) if cluster is None else run_fixed_tool(name, cluster)
+            ), False
         elif name == RUN_CEPH_COMMAND_TOOL:
             command = (args.get("command") or "").strip()
-            result_text, is_error = json.dumps(run_ceph_command_tool(command)), False
+            result_text, is_error = json.dumps(
+                run_ceph_command_tool(command)
+                if cluster is None else run_ceph_command_tool(command, cluster)
+            ), False
         else:
             return f"unknown tool {name!r}", True
     except ChatToolError as exc:
@@ -607,7 +632,7 @@ def _run_tool(name: str, args: dict, actor: str | None = None) -> tuple[str, boo
     return result_text[:MAX_TOOL_RESULT_CHARS], is_error
 
 
-async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict:
+async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster=None) -> dict:
     """Runs one chat turn: sends `user_text` (plus prior `history`) to
     9router (OpenAI-compatible /v1/chat/completions), executing any
     read-only tool calls it makes in-process (up to MAX_TOOL_ITERATIONS
@@ -639,15 +664,16 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
         }
 
     actor_system_prompt = system_prompt(
-        ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address
+        ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address,
+        cluster_name=getattr(cluster, "name", None),
     )
 
     if settings.codex_chat_enabled:
-        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt, actor)
+        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
         result["reply_text"] = with_romantic_address(result["reply_text"], ai_name, female_address)
         return result
     if settings.claude_chat_enabled:
-        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt, actor)
+        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
         result["reply_text"] = with_romantic_address(result["reply_text"], ai_name, female_address)
         return result
 
@@ -662,7 +688,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
     messages.append({"role": "user", "content": user_text})
 
     is_admin = auth.is_admin_user(actor)
-    tools = _tool_schemas(is_admin=is_admin)
+    tools = _tool_schemas(is_admin=is_admin, cluster=cluster)
     reply_text_parts: list[str] = []
     proposal: dict | None = None
     tools_used: list[str] = []
@@ -728,9 +754,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
             try:
                 args = json.loads(propose_call.function.arguments or "{}")
                 if propose_call.function.name == TOOL_PROPOSE_NODE_COMMAND:
-                    proposal = _validate_node_command_proposal(args, actor)
+                    proposal = _validate_node_command_proposal(args, actor, cluster)
                 else:
-                    proposal = _validate_proposal(args)
+                    proposal = _validate_proposal(args, cluster)
                     proposal["command_preview"] = resolve_command_preview(
                         proposal["action_id"], proposal["target_nodes"], proposal["params"]
                     )
@@ -749,7 +775,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
                 args = json.loads(call.function.arguments or "{}")
             except (TypeError, ValueError):
                 args = {}
-            result_text, is_error = _run_tool(call.function.name, args, actor)
+            result_text, is_error = _run_tool(call.function.name, args, actor, cluster)
             if not is_error:
                 tools_used.append(call.function.name)
             messages.append(
@@ -772,7 +798,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str) -> dict
 
 
 async def _run_codex_chat_turn(
-    history: list[dict], user_text: str, actor_system_prompt: str, actor: str
+    history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None
 ) -> dict:
     """Run chat through Codex while retaining ceph-ai's guarded tools."""
     transcript = []
@@ -789,23 +815,23 @@ async def _run_codex_chat_turn(
         if name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}:
             try:
                 if name == TOOL_PROPOSE_NODE_COMMAND:
-                    proposal = _validate_node_command_proposal(args, actor)
+                    proposal = _validate_node_command_proposal(args, actor, cluster)
                     return "Đề xuất đã tạo. Admin phải nhập chính xác OK ở tin nhắn kế tiếp.", True
-                proposal = _validate_proposal(args)
+                proposal = _validate_proposal(args, cluster)
                 proposal["command_preview"] = resolve_command_preview(
                     proposal["action_id"], proposal["target_nodes"], proposal["params"]
                 )
                 return "Đề xuất đã tạo và đang chờ operator xác nhận trên giao diện.", True
             except (ChatToolError, TypeError, ValueError) as exc:
                 return f"Đề xuất không hợp lệ: {exc}", False
-        text, is_error = _run_tool(name, args, actor)
+        text, is_error = _run_tool(name, args, actor, cluster)
         if not is_error:
             tools_used.append(name)
         return text, not is_error
 
     try:
         result = await codex_app_server.run_turn(
-            prompt, _tool_schemas(is_admin=auth.is_admin_user(actor)), handle_tool
+            prompt, _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster), handle_tool
         )
     except CodexAppServerError as exc:
         raise ChatTurnError(f"Codex: {exc}") from exc
@@ -829,7 +855,7 @@ def _parse_claude_tool_envelope(raw: str) -> dict | None:
 
 
 async def _run_claude_chat_turn(
-    history: list[dict], user_text: str, actor_system_prompt: str, actor: str
+    history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None
 ) -> dict:
     """Run Claude with server-managed tools and the same guards as other providers.
 
@@ -841,7 +867,7 @@ async def _run_claude_chat_turn(
     for message in history[-MAX_HISTORY_MESSAGES:]:
         role = "Người dùng" if message["role"] == "user" else "Trợ lý"
         transcript.append(f"{role}: {message['content']}")
-    schemas = _tool_schemas(is_admin=auth.is_admin_user(actor))
+    schemas = _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster)
     tool_contract = [item["function"] for item in schemas]
     exchange: list[str] = []
     tools_used: list[str] = []
@@ -890,10 +916,10 @@ async def _run_claude_chat_turn(
         if name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}:
             try:
                 if name == TOOL_PROPOSE_NODE_COMMAND:
-                    proposal = _validate_node_command_proposal(args, actor)
+                    proposal = _validate_node_command_proposal(args, actor, cluster)
                     reply = "Đã tạo đề xuất lệnh trên node. Hãy nhập chính xác `OK` ở tin nhắn kế tiếp để thực hiện."
                 else:
-                    proposal = _validate_proposal(args)
+                    proposal = _validate_proposal(args, cluster)
                     proposal["command_preview"] = resolve_command_preview(
                         proposal["action_id"], proposal["target_nodes"], proposal["params"]
                     )
@@ -902,7 +928,7 @@ async def _run_claude_chat_turn(
                 exchange.append(f"Tool {name} lỗi: {exc}")
                 continue
             return {"reply_text": reply, "proposal": proposal, "tools_used": tools_used}
-        result_text, is_error = _run_tool(name, args, actor)
+        result_text, is_error = _run_tool(name, args, actor, cluster)
         if not is_error:
             tools_used.append(name)
         exchange.append(

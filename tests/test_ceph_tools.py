@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,6 +83,26 @@ def test_run_fixed_tool_returns_parsed_json(fake_ssh, monkeypatch):
 
     assert result == {"num_pools": 3}
     assert fake_ssh.calls[-1][1] == f"docker exec {settings.ceph_container_name} ceph osd pool ls detail --format json"
+
+
+def test_run_fixed_tool_uses_selected_clusters_connection(monkeypatch):
+    captured = []
+    cluster = SimpleNamespace(
+        ceph_mon_nodes="10.30.0.10,10.30.0.11", ceph_container_name="secondary-mon",
+        ssh_user="ceph", ssh_key_path="/keys/secondary", ceph_exec_mode="podman",
+    )
+    monkeypatch.setattr(
+        "dashboard.ceph_tools.run_ceph_json_command_with",
+        lambda *args: captured.append(args) or ("10.30.0.10", {"health": "HEALTHY"}),
+    )
+
+    result = run_fixed_tool("get_cluster_status", cluster)
+
+    assert result == {"health": "HEALTHY"}
+    assert captured == [(
+        ["10.30.0.10", "10.30.0.11"], "secondary-mon", "ceph", "/keys/secondary",
+        "podman", "ceph status",
+    )]
 
 
 def test_run_fixed_tool_returns_error_dict_when_all_mon_nodes_fail(fake_ssh):

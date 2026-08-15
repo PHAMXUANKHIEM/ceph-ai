@@ -353,6 +353,7 @@ class ChatMessage(Base):
     """
 
     __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_chat_messages_actor_cluster_time", "actor", "cluster_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     # Nullable in the schema (not NOT NULL) purely so rows created before
@@ -362,6 +363,11 @@ class ChatMessage(Base):
     # that inserts a ChatMessage always sets this; NULL should not occur for
     # any row created going forward.
     session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Cluster context used for every tool call and copied to a confirmed
+    # Incident. NULL denotes legacy rows created before multi-cluster Chat.
+    cluster_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=True
+    )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # Conversation owner. New user AND assistant rows always carry the login
