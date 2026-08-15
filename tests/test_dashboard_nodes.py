@@ -165,3 +165,69 @@ def test_nodes_page_and_metrics_use_selected_additional_cluster(dashboard_client
 
     # A host from the default cluster must not pass the selected cluster's whitelist.
     assert dashboard_client.get("/api/nodes/10.20.1.150/metrics").status_code == 404
+
+
+def test_selected_node_shows_ceph_log_panel_and_role_choices(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/nodes?host=10.20.1.150")
+
+    assert response.status_code == 200
+    assert 'id="ceph-log-panel"' in response.text
+    assert '<option value="mon">MON</option>' in response.text
+    assert '<option value="osd">OSD</option>' in response.text
+
+
+def test_ceph_log_api_is_limited_to_roles_on_configured_host(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    calls = []
+    monkeypatch.setattr(
+        nodes_route, "fetch_ceph_log",
+        lambda host, service, filter_text: calls.append((host, service, filter_text)) or "a\nb",
+    )
+
+    response = dashboard_client.get(
+        "/api/nodes/10.20.1.150/ceph-log?service=osd&filter=slow"
+    )
+    assert response.status_code == 200
+    assert response.json()["lines"] == ["a", "b"]
+    assert calls == [("10.20.1.150", "osd", "slow")]
+
+    assert dashboard_client.get(
+        "/api/nodes/10.20.1.83/ceph-log?service=mon"
+    ).status_code == 404
+    assert dashboard_client.get(
+        "/api/nodes/8.8.8.8/ceph-log?service=osd"
+    ).status_code == 404
+
+
+def test_ceph_log_api_uses_selected_additional_cluster_credentials(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-secondary", ceph_mon_nodes="10.99.0.10",
+            ceph_osd_nodes="10.99.0.20", ceph_rgw_nodes="",
+            ceph_container_name="mon-secondary", ceph_osd_container_name="osd-secondary",
+            ssh_user="ceph-secondary", ssh_key_path="/keys/secondary",
+            ceph_exec_mode="docker", is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+    dashboard_client.get(f"/nodes?cluster={cluster_id}&host=10.99.0.20")
+    calls = []
+    monkeypatch.setattr(
+        nodes_route, "fetch_ceph_log_with",
+        lambda *args: calls.append(args) or "secondary log",
+    )
+
+    response = dashboard_client.get("/api/nodes/10.99.0.20/ceph-log?service=osd")
+
+    assert response.status_code == 200
+    assert response.json()["lines"] == ["secondary log"]
+    assert calls == [(
+        "10.99.0.20", "osd", "", "ceph-secondary", "/keys/secondary",
+        "docker", "mon-secondary", "osd-secondary", "",
+    )]

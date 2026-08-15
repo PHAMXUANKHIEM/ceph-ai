@@ -10,6 +10,7 @@ from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.cluster_nodes import resolve_ssh_creds
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
+from watcher.ceph_log import CephLogError, fetch_ceph_log, fetch_ceph_log_with
 from watcher.rgw_log import RgwLogError, fetch_rgw_log, fetch_rgw_log_with
 
 logger = logging.getLogger(__name__)
@@ -105,3 +106,34 @@ async def rgw_log_api(request: Request, host: str, filter: str = "", user: str =
         raise HTTPException(status_code=502, detail=str(exc))
     lines = output.splitlines()
     return {"host": host, "filter": filter, "lines": lines}
+
+
+@router.get("/api/nodes/{host}/ceph-log")
+async def ceph_log_api(
+    request: Request, host: str, service: str, filter: str = "",
+    user: str = Depends(require_login),
+):
+    """Read a bounded daemon-log tail from a configured node and cluster."""
+    cluster = selected_cluster(request)
+    node = next((n for n in _nodes_for_cluster(cluster) if n["host"] == host), None)
+    requested_role = service.strip().upper()
+    if node is None or requested_role not in node["roles"]:
+        raise HTTPException(
+            status_code=404,
+            detail="Node không có dịch vụ Ceph được yêu cầu trong cấu hình cụm",
+        )
+    try:
+        if cluster.is_default:
+            output = fetch_ceph_log(host, service.strip().lower(), filter)
+        else:
+            ssh_user, ssh_key_path, exec_mode, mon_container = resolve_ssh_creds(cluster)
+            output = fetch_ceph_log_with(
+                host, service.strip().lower(), filter, ssh_user, ssh_key_path,
+                exec_mode, mon_container, cluster.ceph_osd_container_name,
+                cluster.ceph_rgw_container_name,
+            )
+    except CephLogError as exc:
+        logger.warning("ceph_log_api: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"host": host, "service": service.strip().lower(), "filter": filter,
+            "lines": output.splitlines()}
