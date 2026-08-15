@@ -27,7 +27,7 @@ def check_trash_capacity() -> dict:
             continue
         scanned_pools.append(pool)
         entry_count += len(entries)
-        total_trash_bytes += sum(max(0, int(entry.get("size_bytes", 0))) for entry in entries)
+        total_trash_bytes += sum(max(0, int(entry.get("used_size_bytes", 0))) for entry in entries)
 
     _host, df = ceph_client.run_ceph_json_command("ceph df")
     stats = df.get("stats", {}) if isinstance(df, dict) else {}

@@ -126,6 +126,7 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     assert response.status_code == 200
     assert 'href="/trash?pool=vms"' in response.text
     assert 'href="/trash?pool=backups"' in response.text
+    assert "512.0 MiB" in response.text
     assert "2.0 GiB" in response.text
     assert "old-disk" not in response.text
 
@@ -1058,7 +1059,7 @@ def test_analyze_perf_sweep_returns_502_when_analysis_fails(dashboard_client, mo
 
 
 def _fake_trash_entry(entry_id="1234567890ab", name="old-disk"):
-    return {"id": entry_id, "name": name, "deletion_time": "2026-07-28 10:00:00", "status": "expired", "size_bytes": 1073741824}
+    return {"id": entry_id, "name": name, "deletion_time": "2026-07-28 10:00:00", "status": "expired", "size_bytes": 1073741824, "used_size_bytes": 268435456}
 
 
 def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):

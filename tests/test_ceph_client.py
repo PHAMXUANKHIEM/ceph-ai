@@ -1061,6 +1061,8 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
             ],
             {
                 "size": 1073741824,
+                "block_name_prefix": "rbd_data.1234567890ab",
+                "object_size": 4194304,
             },
         ]
     )
@@ -1072,6 +1074,7 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
         return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
 
     monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    monkeypatch.setattr(ceph_client, "run_ceph_text_command", lambda command: ("10.20.1.150", "268435456\n"))
     fake_ssh.behavior = {"10.20.1.150": {}}
 
     entries = query_rbd_trash("vms")
@@ -1083,6 +1086,7 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
             "deletion_time": "Mon Jul 28 10:00:00 2026",
             "status": "expired",
             "size_bytes": 1073741824,
+            "used_size_bytes": 268435456,
         }
     ]
     assert "rbd trash ls --long vms --format json" in commands[0]
@@ -1104,7 +1108,7 @@ def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
     monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
     fake_ssh.behavior = {"10.20.1.150": {}}
 
-    with pytest.raises(CephQueryError, match="returned no size"):
+    with pytest.raises(CephQueryError, match="incomplete capacity metadata"):
         query_rbd_trash("vms")
 
 
@@ -1123,7 +1127,7 @@ def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
                 {"name": "no-id-entry"},  # no "id" key
                 {"id": "abc123", "name": "real-entry", "deleted_at": "x", "status": "y"},
             ],
-            {"size": 4096},
+            {"size": 4096, "block_name_prefix": "rbd_data.abc123", "object_size": 4096},
         ]
     )
 
@@ -1131,6 +1135,7 @@ def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
         return None, _FakeStream(json.dumps(next(responses))), _FakeStream("")
 
     monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    monkeypatch.setattr(ceph_client, "run_ceph_text_command", lambda command: ("10.20.1.150", "1024\n"))
     fake_ssh.behavior = {"10.20.1.150": {}}
 
     entries = query_rbd_trash("vms")
@@ -1138,6 +1143,7 @@ def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
     assert len(entries) == 1
     assert entries[0]["id"] == "abc123"
     assert entries[0]["size_bytes"] == 4096
+    assert entries[0]["used_size_bytes"] == 1024
 
 
 # --- force_purge_rbd_trash (2026-07-28, "Xoá tất cả trash" button — bulk,

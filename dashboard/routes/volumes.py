@@ -216,13 +216,16 @@ def _volumes_page_context(
                     if cluster.is_default
                     else ceph_client.query_rbd_trash_with(trash_pool, *cluster_connection(cluster))
                 )
-                total_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
+                total_used_size_bytes = sum(max(0, int(row.get("used_size_bytes") or 0)) for row in rows)
+                total_provisioned_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
                 trash_pool_summaries.append(
                     {
                         "pool": trash_pool,
                         "entry_count": len(rows),
-                        "total_size_bytes": total_size_bytes,
-                        "total_size_human": _format_bytes(total_size_bytes),
+                        "total_used_size_bytes": total_used_size_bytes,
+                        "total_used_size_human": _format_bytes(total_used_size_bytes),
+                        "total_provisioned_size_bytes": total_provisioned_size_bytes,
+                        "total_provisioned_size_human": _format_bytes(total_provisioned_size_bytes),
                         "error": None,
                     }
                 )
@@ -232,6 +235,7 @@ def _volumes_page_context(
                     item = dict(row)
                     item["pool"] = trash_pool
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
+                    item["used_size_human"] = _format_bytes(item.get("used_size_bytes", 0))
                     trash_entries.append(item)
             except CephQueryError as exc:
                 logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", trash_pool, exc)
@@ -240,8 +244,10 @@ def _volumes_page_context(
                     {
                         "pool": trash_pool,
                         "entry_count": None,
-                        "total_size_bytes": None,
-                        "total_size_human": "—",
+                        "total_used_size_bytes": None,
+                        "total_used_size_human": "—",
+                        "total_provisioned_size_bytes": None,
+                        "total_provisioned_size_human": "—",
                         "error": str(exc),
                     }
                 )
