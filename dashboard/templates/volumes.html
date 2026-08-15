@@ -197,17 +197,17 @@
     <section class="card">
       <div class="card-header"><h2>Trash theo Pool</h2></div>
       <div class="card-body">
-        <p class="hint metrics-panel-desc">Chọn một pool để xem các Volume đã xoá mềm. Tổng dung lượng là tổng kích thước logic Ceph báo cho các image đang nằm trong trash.</p>
+        <p class="hint metrics-panel-desc">Dung lượng đã dùng là dữ liệu RADOS được cấp phát cho các image trong Trash; dung lượng logic là capacity đã provision.</p>
         {% if trash_pool_summaries %}
         <div class="table-wrap"><table id="trash-pool-list">
-          <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Tổng dung lượng Trash</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Đã dùng</th><th>Logic</th><th>Thao tác</th></tr></thead>
           <tbody>{% for summary in trash_pool_summaries %}
             <tr class="{% if summary.pool == selected_pool %}progress-item-failed{% endif %}">
               <td><code>{{ summary.pool }}</code></td>
               {% if summary.error %}
-              <td colspan="2"><span class="error">Không đọc được: {{ summary.error }}</span></td>
+              <td colspan="3"><span class="error">Không đọc được: {{ summary.error }}</span></td>
               {% else %}
-              <td>{{ summary.entry_count }}</td><td>{{ summary.total_size_human }}</td>
+              <td>{{ summary.entry_count }}</td><td>{{ summary.total_used_size_human }}</td><td>{{ summary.total_provisioned_size_human }}</td>
               {% endif %}
               <td>
                 <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>
@@ -258,11 +258,11 @@
           <span id="trash-filter-result" role="status" aria-live="polite">Hiển thị 1-{{ [trash_entries|length, 10]|min }} / {{ trash_entries|length }} Trash</span>
         </div>
         <div class="table-wrap"><table id="trash-entry-list">
-          <thead><tr><th>Volume</th><th>ID</th><th>Dung lượng</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
+          <thead><tr><th>Volume</th><th>ID</th><th>Đã dùng</th><th>Logic</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
           <tbody>{% for entry in trash_entries %}
           <tr id="trash-{{ entry.id }}" data-trash-id="{{ entry.id }}"{% if loop.index > 10 %} hidden{% endif %}>
-            <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Dung lượng: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
-            <td><code>{{ entry.id }}</code></td><td>{{ entry.size_human }}</td>
+            <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Đã dùng: {{ entry.used_size_human }}<br>Dung lượng logic: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
+            <td><code>{{ entry.id }}</code></td><td>{{ entry.used_size_human }}</td><td>{{ entry.size_human }}</td>
             <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.status or "—" }}</td>
             <td>
               {% set pending_action = trash_pending.get(entry.pool ~ '/' ~ entry.id) %}

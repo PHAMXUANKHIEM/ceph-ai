@@ -1192,6 +1192,9 @@ class CrushStructureSnapshot(Base):
     __tablename__ = "crush_structure_snapshots"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=False, index=True
+    )
     tree_json: Mapped[str] = mapped_column(Text, nullable=False)
     diff_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -1218,10 +1221,12 @@ class CrushOsdDistribution(Base):
 
     __tablename__ = "crush_osd_distribution"
 
-    # autoincrement=False: this is the REAL Ceph osd_id (caller-assigned),
-    # never a synthetic surrogate key — an Integer primary key defaults to
-    # autoincrement=True otherwise, which would silently create an unused
-    # Postgres SERIAL sequence and invite the wrong mental model.
+    # (cluster_id, osd_id) is the identity: every Ceph cluster normally has
+    # an osd.0, osd.1, ... of its own. autoincrement=False keeps osd_id as
+    # the REAL caller-assigned Ceph id, never a synthetic sequence.
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), primary_key=True
+    )
     osd_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     host: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bytes_used: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

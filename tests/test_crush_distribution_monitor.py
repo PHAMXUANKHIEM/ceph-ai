@@ -5,6 +5,7 @@ from sqlalchemy.pool import StaticPool
 
 from shared import db as db_module
 from shared.db import Base
+from shared.clusters import ensure_default_cluster
 from shared.models import CrushOsdDistribution
 from watcher import crush_distribution_monitor as cdm
 from watcher.ceph_client import CephQueryError
@@ -20,7 +21,9 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=engine, autoflush=False, autocommit=False)
     )
-    yield engine
+    with db_module.SessionLocal() as session:
+        cluster_id = ensure_default_cluster(session).id
+    yield cluster_id
 
 
 def _fake_osd_df(entries):
@@ -77,71 +80,75 @@ def test_collect_osd_distribution_missing_bytes_fields_become_none(monkeypatch):
 
 
 def test_sync_distribution_noop_on_query_error(isolated_db, monkeypatch):
+    cluster_id = isolated_db
     with db_module.SessionLocal() as session:
-        session.add(CrushOsdDistribution(osd_id=1, bytes_used=1, bytes_total=2, pgs=1))
+        session.add(CrushOsdDistribution(cluster_id=cluster_id, osd_id=1, bytes_used=1, bytes_total=2, pgs=1))
         session.commit()
 
     monkeypatch.setattr(cdm, "collect_osd_distribution", lambda: None)
-    cdm.sync_distribution()
+    cdm.sync_distribution(cluster_id)
 
     with db_module.SessionLocal() as session:
         # AC #5: a FAILED scan must leave existing data untouched.
-        row = session.get(CrushOsdDistribution, 1)
+        row = session.get(CrushOsdDistribution, (cluster_id, 1))
         assert row is not None
         assert row.bytes_used == 1
 
 
 def test_sync_distribution_upserts_new_osd(isolated_db, monkeypatch):
+    cluster_id = isolated_db
     monkeypatch.setattr(
         cdm, "collect_osd_distribution",
         lambda: {3: {"host": "node2", "bytes_used": 1000, "bytes_total": 2000, "pgs": 42}},
     )
 
-    cdm.sync_distribution()
+    cdm.sync_distribution(cluster_id)
 
     with db_module.SessionLocal() as session:
-        row = session.get(CrushOsdDistribution, 3)
+        row = session.get(CrushOsdDistribution, (cluster_id, 3))
         assert row.host == "node2"
         assert row.bytes_used == 1000
         assert row.pgs == 42
 
 
 def test_sync_distribution_overwrites_existing_osd_in_place(isolated_db, monkeypatch):
+    cluster_id = isolated_db
     monkeypatch.setattr(
         cdm, "collect_osd_distribution",
         lambda: {3: {"host": "node2", "bytes_used": 1000, "bytes_total": 2000, "pgs": 42}},
     )
-    cdm.sync_distribution()
+    cdm.sync_distribution(cluster_id)
 
     monkeypatch.setattr(
         cdm, "collect_osd_distribution",
         lambda: {3: {"host": "node2", "bytes_used": 1500, "bytes_total": 2000, "pgs": 50}},
     )
-    cdm.sync_distribution()
+    cdm.sync_distribution(cluster_id)
 
     with db_module.SessionLocal() as session:
         assert session.query(CrushOsdDistribution).count() == 1
-        row = session.get(CrushOsdDistribution, 3)
+        row = session.get(CrushOsdDistribution, (cluster_id, 3))
         assert row.bytes_used == 1500
         assert row.pgs == 50
 
 
 def test_sync_distribution_deletes_osd_confirmed_removed(isolated_db, monkeypatch):
+    cluster_id = isolated_db
     # AC #6: a SUCCESSFUL scan that no longer sees a previously-known osd_id
     # means it genuinely left the cluster — the stale row must be deleted,
     # NOT left in place (that would be indistinguishable from AC #5's
     # "scan failed, keep old data" case).
     with db_module.SessionLocal() as session:
-        session.add(CrushOsdDistribution(osd_id=1, bytes_used=1, bytes_total=2, pgs=1))
-        session.add(CrushOsdDistribution(osd_id=2, bytes_used=1, bytes_total=2, pgs=1))
+        session.add(CrushOsdDistribution(cluster_id=cluster_id, osd_id=1, bytes_used=1, bytes_total=2, pgs=1))
+        session.add(CrushOsdDistribution(cluster_id=cluster_id, osd_id=2, bytes_used=1, bytes_total=2, pgs=1))
         session.commit()
 
     monkeypatch.setattr(
         cdm, "collect_osd_distribution",
         lambda: {2: {"host": "node1", "bytes_used": 5, "bytes_total": 10, "pgs": 2}},
     )
-    cdm.sync_distribution()
+    cdm.sync_distribution(cluster_id)
 
     with db_module.SessionLocal() as session:
-        assert session.get(CrushOsdDistribution, 1) is None
-        assert session.get(CrushOsdDistribution, 2) is not None
+        assert session.get(CrushOsdDistribution, (cluster_id, 1)) is None
+        assert session.get(CrushOsdDistribution, (cluster_id, 2)) is not None

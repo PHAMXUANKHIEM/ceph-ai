@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, or_
 
 from dashboard.routes import auth
-from dashboard.cluster_scope import require_default_cluster
+from dashboard.cluster_scope import cluster_selection, selected_cluster
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db
@@ -54,9 +54,12 @@ def _normalized_weight(weight: int | float | None) -> float | None:
     return weight / CRUSH_WEIGHT_SCALE
 
 
-def _load_distribution_by_osd_id() -> dict[int, dict]:
+def _load_distribution_by_osd_id(cluster_id: str, include_legacy_null: bool = False) -> dict[int, dict]:
     with db.SessionLocal() as session:
-        rows = session.query(CrushOsdDistribution).all()
+        scope = CrushOsdDistribution.cluster_id == cluster_id
+        if include_legacy_null:
+            scope = or_(scope, CrushOsdDistribution.cluster_id.is_(None))
+        rows = session.query(CrushOsdDistribution).filter(scope).all()
         return {
             row.osd_id: {
                 "host": row.host,
@@ -167,7 +170,7 @@ def _tree_has_osd(node: dict) -> bool:
     return any(_tree_has_osd(child) for child in node.get("children") or [])
 
 
-def _build_tree_response(latest: CrushStructureSnapshot) -> dict:
+def _build_tree_response(latest: CrushStructureSnapshot, cluster_id: str, include_legacy_null: bool = False) -> dict:
     tree = json.loads(latest.tree_json)
     roots = tree.get("roots") or []
     rules = tree.get("rules") or []
@@ -186,7 +189,7 @@ def _build_tree_response(latest: CrushStructureSnapshot) -> dict:
         and datetime.utcnow() - latest.created_at <= timedelta(hours=RECENT_CHANGE_HOURS)
     )
     changes = _recent_change_map(diff, latest.created_at.isoformat()) if is_recent else {}
-    distribution = _load_distribution_by_osd_id()
+    distribution = _load_distribution_by_osd_id(cluster_id, include_legacy_null)
 
     return {
         "state": "ok",
@@ -202,28 +205,32 @@ async def crush_map_page(request: Request, user: str = Depends(require_login)):
     """Standalone admin-only page — same posture as `/users`/`/telegram-alerts`:
     a non-admin typing the URL directly gets 403, not just a hidden nav link."""
     _require_admin_privilege(user)
-    require_default_cluster(request, "CRUSH Map")
+    clusters, cluster = cluster_selection(request)
     return templates.TemplateResponse(
         request,
         "crush_map.html",
-        {"user": user, "is_admin": True},
+        {"user": user, "is_admin": True, "clusters": clusters, "selected_cluster": cluster},
     )
 
 
 @router.get("/api/crush-map/tree")
 async def crush_map_tree_api(request: Request, user: str = Depends(require_login)):
     _require_admin_privilege(user)
-    require_default_cluster(request, "CRUSH Map")
+    cluster = selected_cluster(request)
 
     with db.SessionLocal() as session:
         latest = (
             session.query(CrushStructureSnapshot)
+            .filter(or_(
+                CrushStructureSnapshot.cluster_id == cluster.id,
+                and_(cluster.is_default, CrushStructureSnapshot.cluster_id.is_(None)),
+            ))
             .order_by(CrushStructureSnapshot.created_at.desc())
             .first()
         )
         if latest is None:
             return {"state": "no_snapshot_yet"}
-        return _build_tree_response(latest)
+        return _build_tree_response(latest, cluster.id, cluster.is_default)
 
 
 @router.get("/api/crush-map/history")
@@ -245,10 +252,14 @@ async def crush_map_history_api(
     diff against) and is deliberately excluded here, same distinction
     `crush_structure_monitor.py::scan_and_store` itself draws."""
     _require_admin_privilege(user)
-    require_default_cluster(request, "CRUSH Map")
+    cluster = selected_cluster(request)
 
     with db.SessionLocal() as session:
         query = session.query(CrushStructureSnapshot).filter(
+            or_(
+                CrushStructureSnapshot.cluster_id == cluster.id,
+                and_(cluster.is_default, CrushStructureSnapshot.cluster_id.is_(None)),
+            ),
             CrushStructureSnapshot.diff_json.isnot(None)
         )
         if before:
@@ -295,10 +306,16 @@ async def crush_map_history_api(
 @router.get("/api/crush-map/history/{snapshot_id}")
 async def crush_map_history_detail_api(request: Request, snapshot_id: str, user: str = Depends(require_login)):
     _require_admin_privilege(user)
-    require_default_cluster(request, "CRUSH Map")
+    cluster = selected_cluster(request)
 
     with db.SessionLocal() as session:
-        row = session.get(CrushStructureSnapshot, snapshot_id)
+        row = session.query(CrushStructureSnapshot).filter(
+            CrushStructureSnapshot.id == snapshot_id,
+            or_(
+                CrushStructureSnapshot.cluster_id == cluster.id,
+                and_(cluster.is_default, CrushStructureSnapshot.cluster_id.is_(None)),
+            ),
+        ).one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi lịch sử này")
         diff = json.loads(row.diff_json) if row.diff_json else {"added": [], "removed": [], "reweighted": []}

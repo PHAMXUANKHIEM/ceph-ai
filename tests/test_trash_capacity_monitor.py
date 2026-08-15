@@ -6,7 +6,7 @@ def test_check_trash_capacity_aggregates_all_pools(monkeypatch):
     monkeypatch.setattr(
         monitor.ceph_client,
         "query_rbd_trash",
-        lambda pool: [{"size_bytes": 15}] if pool == "vms" else [{"size_bytes": 10}],
+        lambda pool: [{"size_bytes": 1000, "used_size_bytes": 15}] if pool == "vms" else [{"size_bytes": 2000, "used_size_bytes": 10}],
     )
     monkeypatch.setattr(
         monitor.ceph_client,

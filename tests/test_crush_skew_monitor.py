@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 import watcher.crush_skew_monitor as csk
 from shared import db as db_module
+from shared.clusters import ensure_default_cluster
 from shared.db import Base
 from shared.models import (
     Action,
@@ -129,9 +130,10 @@ def _tree():
 
 
 def _seed(session, distribution: dict[int, dict]):
-    session.add(CrushStructureSnapshot(tree_json=json.dumps(_tree()), diff_json=None))
+    cluster_id = ensure_default_cluster(session).id
+    session.add(CrushStructureSnapshot(cluster_id=cluster_id, tree_json=json.dumps(_tree()), diff_json=None))
     for osd_id, values in distribution.items():
-        session.add(CrushOsdDistribution(osd_id=osd_id, **values))
+        session.add(CrushOsdDistribution(cluster_id=cluster_id, osd_id=osd_id, **values))
     session.commit()
 
 

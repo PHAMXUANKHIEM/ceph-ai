@@ -251,6 +251,24 @@ class TrashEntry(TypedDict):
     deletion_time: str
     status: str
     size_bytes: int
+    used_size_bytes: int
+
+
+def _rbd_trash_used_size_command(pool: str, block_prefix: str, object_size: int) -> str:
+    """Return a read-only command that sums bytes in this image's RADOS objects.
+
+    ``rbd du`` cannot see images after they have moved to trash.  The block
+    prefix from ``rbd info --image-id`` is still stable, however, so summing
+    the matching object sizes gives the allocated (thin-provisioned) data
+    bytes instead of the image's advertised capacity.
+    """
+    pool_arg = shlex.quote(pool)
+    prefix_arg = shlex.quote(f"{block_prefix}.")
+    script = (
+        f"rados --pool {pool_arg} ls --object-prefix {prefix_arg} | "
+        f"awk 'END {{ print NR * {object_size} }}'"
+    )
+    return f"sh -c {shlex.quote(script)}"
 
 
 def query_rbd_trash(pool: str) -> list[TrashEntry]:
@@ -269,6 +287,7 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
         pool,
         payload,
         lambda command: run_ceph_json_command(command)[1],
+        lambda command: run_ceph_text_command(command)[1],
     )
 
 
@@ -286,6 +305,7 @@ def query_rbd_trash_with(
         pool,
         payload,
         lambda command: run_ceph_json_command_with(*connection, command)[1],
+        lambda command: run_ceph_text_command_with(*connection, command)[1],
     )
 
 
@@ -293,6 +313,7 @@ def _normalize_rbd_trash(
     pool: str,
     payload: dict | list,
     query_json: Callable[[str], dict | list],
+    query_text: Callable[[str], str],
 ) -> list[TrashEntry]:
     if not isinstance(payload, list):
         logger.warning(
@@ -315,10 +336,29 @@ def _normalize_rbd_trash(
         info = query_json(
             f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
         )
-        if not isinstance(info, dict) or "size" not in info:
+        if (
+            not isinstance(info, dict)
+            or "size" not in info
+            or not info.get("block_name_prefix")
+            or not info.get("object_size")
+        ):
             raise CephQueryError(
-                f"rbd info returned no size for trash image {pool}/{trash_id}"
+                f"rbd info returned incomplete capacity metadata for trash image {pool}/{trash_id}"
             )
+        try:
+            used_size = max(
+                0,
+                int(
+                    query_text(
+                        _rbd_trash_used_size_command(
+                            pool, str(info["block_name_prefix"]), int(info["object_size"])
+                        )
+                    ).strip()
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise CephQueryError(f"invalid allocated size for trash image {pool}/{trash_id}") from exc
         entries.append(
             TrashEntry(
                 id=str(trash_id),
@@ -326,6 +366,7 @@ def _normalize_rbd_trash(
                 deletion_time=str(entry.get("deleted_at") or ""),
                 status=str(entry.get("status") or ""),
                 size_bytes=max(0, int(_as_float(info["size"]))),
+                used_size_bytes=used_size,
             )
         )
     return entries
@@ -589,6 +630,39 @@ def run_ceph_json_command(inner_command: str) -> tuple[str, dict | list]:
         nodes, settings.ceph_container_name, settings.ssh_user, settings.ssh_key_path,
         settings.ceph_exec_mode, inner_command,
     )
+
+
+def run_ceph_text_command(inner_command: str) -> tuple[str, str]:
+    """Run a read-only Ceph-family command and return its unparsed output."""
+    nodes = get_mon_nodes()
+    if not nodes:
+        raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
+    return run_ceph_text_command_with(
+        nodes, settings.ceph_container_name, settings.ssh_user, settings.ssh_key_path,
+        settings.ceph_exec_mode, inner_command,
+    )
+
+
+def run_ceph_text_command_with(
+    mon_nodes: list[str],
+    container_name: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    exec_mode: str,
+    inner_command: str,
+) -> tuple[str, str]:
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured for this cluster")
+    command = build_exec_command(exec_mode, container_name, inner_command)
+    command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
+    errors = []
+    for host in mon_nodes:
+        try:
+            return host, _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
+        except Exception as exc:
+            logger.warning("run_ceph_text_command_with: %s failed: %s", host, exc)
+            errors.append(f"{host}: {exc}")
+    raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
 
 def run_ceph_json_command_with(
@@ -934,6 +1008,11 @@ def list_osds() -> list[dict]:
     nested-object shape.
     """
     _, payload = run_ceph_json_command("ceph osd tree")
+    return _normalize_osd_tree(payload)
+
+
+def _normalize_osd_tree(payload: dict | list) -> list[dict]:
+    """Normalize an already-fetched ``ceph osd tree`` response."""
     nodes = payload.get("nodes") if isinstance(payload, dict) else None
     if not isinstance(nodes, list):
         return []

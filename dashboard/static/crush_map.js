@@ -1,12 +1,14 @@
 (function () {
-  // Epic 12, Story 12.3 (F2) — CRUSH tree: setInterval + fetch polling that
+  // Epic 12, Story 12.3 (F2) — CRUSH tree: lightweight fetch polling that
   // rebuilds/updates the DOM (AD-29), deliberately NOT the app.js WebSocket
   // + window.location.reload() mechanism (that would wipe every expand/
   // collapse the admin just clicked on every new Snapshot). First tree/graph
   // UI in this app — no canvas chart precedent to reuse for the tree itself,
   // only the fetch/interval shape (mirrors backups.js's poll()).
 
-  var POLL_INTERVAL_MS = 5000;
+  // CRUSH/distribution data is collected on a much slower Watcher cadence;
+  // polling every 5 seconds only rebuilt thousands of DOM nodes repeatedly.
+  var POLL_INTERVAL_MS = 15000;
   var COLLAPSED_STORAGE_KEY = "crushMapCollapsedNodes";
   var CRUSH_WEIGHT_SCALE = 65536;
 
@@ -198,37 +200,65 @@
     // a re-render never resets what the admin already had open (AD-29).
     var collapsedSet = loadCollapsed();
     treeEl.innerHTML = "";
+    var fragment = document.createDocumentFragment();
     (data.roots || []).forEach(function (root) {
-      treeEl.appendChild(buildNodeEl(root, collapsedSet));
+      fragment.appendChild(buildNodeEl(root, collapsedSet));
     });
+    // One DOM insertion avoids layout work after every individual root.
+    treeEl.appendChild(fragment);
     treeEl.hidden = false;
   }
 
-  var latestPollSeq = 0;
+  var lastPayload = null;
+  var pollTimer = null;
+  var requestInFlight = false;
+
+  function schedulePoll() {
+    window.clearTimeout(pollTimer);
+    pollTimer = window.setTimeout(poll, POLL_INTERVAL_MS);
+  }
 
   function poll() {
-    var seq = ++latestPollSeq;
+    // Background tabs do no useful visual work. A visibilitychange listener
+    // below refreshes immediately when the operator comes back.
+    if (document.hidden || requestInFlight) {
+      schedulePoll();
+      return;
+    }
+    requestInFlight = true;
     fetch("/api/crush-map/tree", { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
       .then(function (data) {
-        // A slower response resolving after a later, faster poll's
-        // response must not overwrite the DOM with stale tree/usage data.
-        if (seq === latestPollSeq) renderTree(data);
+        errorEl.hidden = true;
+        var payload = JSON.stringify(data);
+        // Building a large nested tree is the expensive part. Keep the
+        // current DOM untouched when neither structure nor usage changed.
+        if (payload !== lastPayload) {
+          renderTree(data);
+          lastPayload = payload;
+        }
       })
       .catch(function () {
-        if (seq !== latestPollSeq) return;
-        // Transient network hiccup — next tick retries, same posture as
-        // backups.js's own poll loop.
-        hideAllStates();
+        // Keep the last good tree visible during a transient failure. Hiding
+        // and rebuilding it caused a noticeable flash and extra layout work.
         errorEl.hidden = false;
+      })
+      .finally(function () {
+        requestInFlight = false;
+        schedulePoll();
       });
   }
 
   poll();
-  setInterval(poll, POLL_INTERVAL_MS);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && !requestInFlight) {
+      window.clearTimeout(pollTimer);
+      poll();
+    }
+  });
 })();
 
 (function () {
