@@ -148,7 +148,10 @@
       });
       this.setLoadingUI(true);
       this.poll();
-      setInterval(function () { self.poll(); }, POLL_INTERVAL_MS);
+      // Skip polling while the tab is hidden (no wasted SSH-backed requests),
+      // and refresh once the moment the operator returns to the tab.
+      setInterval(function () { if (document.hidden) return; self.poll(); }, POLL_INTERVAL_MS);
+      document.addEventListener("visibilitychange", function () { if (!document.hidden) self.poll(); });
 
       var retryBtn = document.getElementById("retry-btn");
       if (retryBtn) retryBtn.addEventListener("click", function () { self.poll(); });

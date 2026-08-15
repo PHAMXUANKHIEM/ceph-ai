@@ -136,7 +136,8 @@
     METRICS.forEach(function (cfg) { sections[cfg.key].hasDrawnOnce = false; });
     renderSuggestions(searchInput.value);
     fetchHistory();
-    App.pollTimer = setInterval(fetchHistory, REFRESH_INTERVAL_MS);
+    // Don't poll the selected image's history while the tab is hidden.
+    App.pollTimer = setInterval(function () { if (document.hidden) return; fetchHistory(); }, REFRESH_INTERVAL_MS);
   }
 
   // 2026-07-29: the search box's <datalist> alone turned out to be too

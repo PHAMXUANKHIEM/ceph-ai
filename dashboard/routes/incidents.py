@@ -507,44 +507,51 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
         if not mon_nodes:
             raise CephQueryError("Cụm chưa cấu hình MON node")
         ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
-        _host, payload = await asyncio.to_thread(
-            run_ceph_json_command_with,
-            mon_nodes,
-            container_name,
-            ssh_user,
-            ssh_key_path,
-            exec_mode,
-            "ceph -s",
+
+        def _query(command: str):
+            return run_ceph_json_command_with(
+                mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode, command,
+            )
+
+        def _query_node_inventory():
+            # cephadm exposes host inventory via `orch host ls`, with `node ls`
+            # as the fallback (and the only option off-cephadm). Sequential by
+            # nature — a first-that-works fallback, not two datasets.
+            node_commands = ("ceph orch host ls", "ceph node ls") if exec_mode == "cephadm" else ("ceph node ls",)
+            for node_command in node_commands:
+                try:
+                    _host, result = _query(node_command)
+                    return result
+                except Exception as exc:
+                    logger.info("dashboard_health: server inventory unavailable via %s: %s", node_command, exc)
+            return None
+
+        # Run the mandatory status query and the 3 best-effort enrichments
+        # concurrently — 4 sequential SSH round-trips collapse into ~1, the
+        # dominant latency of this endpoint (hit on page load + every 30s).
+        status_result, perf_result, dump_result, nodes_result = await asyncio.gather(
+            asyncio.to_thread(_query, "ceph -s"),
+            asyncio.to_thread(_query, "ceph osd perf"),
+            asyncio.to_thread(_query, "ceph osd dump"),
+            asyncio.to_thread(_query_node_inventory),
+            return_exceptions=True,
         )
+        if isinstance(status_result, BaseException):
+            raise status_result
+        _host, payload = status_result
         if not isinstance(payload, dict):
             raise CephQueryError("ceph -s returned an unexpected response")
-        osd_perf = None
-        osd_dump = None
-        cluster_nodes = None
-        try:
-            _host, osd_perf = await asyncio.to_thread(
-                run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
-                ssh_key_path, exec_mode, "ceph osd perf",
-            )
-        except Exception as exc:
-            logger.info("dashboard_health: osd latency unavailable: %s", exc)
-        try:
-            _host, osd_dump = await asyncio.to_thread(
-                run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
-                ssh_key_path, exec_mode, "ceph osd dump",
-            )
-        except Exception as exc:
-            logger.info("dashboard_health: detailed OSD state unavailable: %s", exc)
-        node_commands = ("ceph orch host ls", "ceph node ls") if exec_mode == "cephadm" else ("ceph node ls",)
-        for node_command in node_commands:
-            try:
-                _host, cluster_nodes = await asyncio.to_thread(
-                    run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
-                    ssh_key_path, exec_mode, node_command,
-                )
-                break
-            except Exception as exc:
-                logger.info("dashboard_health: server inventory unavailable via %s: %s", node_command, exc)
+        if isinstance(perf_result, BaseException):
+            logger.info("dashboard_health: osd latency unavailable: %s", perf_result)
+            osd_perf = None
+        else:
+            _host, osd_perf = perf_result
+        if isinstance(dump_result, BaseException):
+            logger.info("dashboard_health: detailed OSD state unavailable: %s", dump_result)
+            osd_dump = None
+        else:
+            _host, osd_dump = dump_result
+        cluster_nodes = None if isinstance(nodes_result, BaseException) else nodes_result
         return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
     except CephQueryError as exc:
         cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
