@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 import json
 import logging
@@ -209,13 +210,48 @@ def _volumes_page_context(
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
+        def fetch_trash(trash_pool: str):
+            return (
+                ceph_client.query_rbd_trash(trash_pool)
+                if cluster.is_default
+                else ceph_client.query_rbd_trash_with(trash_pool, *cluster_connection(cluster))
+            )
+
+        # A trash listing is one independent RBD command per pool. Bound the
+        # fan-out so large installations do not create an unbounded number
+        # of SSH sessions, while avoiding the old N x timeout page latency.
+        results: dict[str, list[dict] | CephQueryError] = {}
+        max_workers = min(8, max(1, len(pools)))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="trash-pool") as executor:
+            futures = {executor.submit(fetch_trash, trash_pool): trash_pool for trash_pool in pools}
+            for future in as_completed(futures):
+                trash_pool = futures[future]
+                try:
+                    results[trash_pool] = future.result()
+                except CephQueryError as exc:
+                    results[trash_pool] = exc
+
+        # Render in configured pool order even though requests completed out
+        # of order, so parallelism never makes the UI jump around.
         for trash_pool in pools:
-            try:
-                rows = (
-                    ceph_client.query_rbd_trash(trash_pool)
-                    if cluster.is_default
-                    else ceph_client.query_rbd_trash_with(trash_pool, *cluster_connection(cluster))
+            result = results[trash_pool]
+            if isinstance(result, CephQueryError):
+                logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", trash_pool, result)
+                trash_error = f"{trash_pool}: {result}"
+                trash_pool_summaries.append(
+                    {
+                        "pool": trash_pool,
+                        "entry_count": None,
+                        "total_used_size_bytes": None,
+                        "total_used_size_human": "—",
+                        "total_provisioned_size_bytes": None,
+                        "total_provisioned_size_human": "—",
+                        "error": str(result),
+                    }
                 )
+                continue
+            rows = result
+            try:
                 total_used_size_bytes = sum(max(0, int(row.get("used_size_bytes") or 0)) for row in rows)
                 total_provisioned_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
                 trash_pool_summaries.append(
@@ -237,20 +273,9 @@ def _volumes_page_context(
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
                     item["used_size_human"] = _format_bytes(item.get("used_size_bytes", 0))
                     trash_entries.append(item)
-            except CephQueryError as exc:
-                logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", trash_pool, exc)
-                trash_error = f"{trash_pool}: {exc}"
-                trash_pool_summaries.append(
-                    {
-                        "pool": trash_pool,
-                        "entry_count": None,
-                        "total_used_size_bytes": None,
-                        "total_used_size_human": "—",
-                        "total_provisioned_size_bytes": None,
-                        "total_provisioned_size_human": "—",
-                        "error": str(exc),
-                    }
-                )
+            except (TypeError, ValueError) as exc:
+                logger.warning("_volumes_page_context: invalid trash response for pool %r: %s", trash_pool, exc)
+                trash_error = f"{trash_pool}: dữ liệu trash không hợp lệ"
         if cluster.is_default:
             for trash_pool in ([pool] if pool else []):
                 for trash_id, action in _in_flight_trash_actions(trash_pool).items():

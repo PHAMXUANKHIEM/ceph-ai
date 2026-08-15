@@ -251,13 +251,17 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
     )
     try:
         query = ceph_client.run_ceph_json_command if cluster.is_default else None
-        payloads = []
-        for command in commands:
+        async def fetch(command: str):
             if query is not None:
-                _host, payload = await asyncio.to_thread(query, command)
-            else:
-                _host, payload = await asyncio.to_thread(run_ceph_json_command_with, *connection, command)
-            payloads.append(payload)
+                return (await asyncio.to_thread(query, command))[1]
+            return (await asyncio.to_thread(
+                run_ceph_json_command_with, *connection, command
+            ))[1]
+
+        # These commands are independent read-only snapshots. Running them
+        # sequentially made page latency equal the sum of four SSH/Ceph
+        # round trips; gather keeps it close to the slowest single query.
+        payloads = await asyncio.gather(*(fetch(command) for command in commands))
         rows = _normalize_pool_rows(*payloads)
         for row in rows:
             row["used"] = _format_bytes(row.pop("used_bytes"))
