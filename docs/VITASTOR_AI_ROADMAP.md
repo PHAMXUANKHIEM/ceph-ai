@@ -35,7 +35,7 @@ commit gần nhất. Không đánh dấu hoàn thành nếu tiêu chí nghiệm 
   - [x] Model `VitastorRemediationAction` + `VitastorAuditEntry`, migration riêng, cô lập khỏi Ceph.
   - [x] Policy SAFE/RISKY bảo thủ mặc định (AD-5) + `action_id` đóng, không có shell tự do.
   - [x] Command builder đóng (start/restart OSD·mon·etcd, resync_time) + allowlist host khi thực thi.
-  - [x] Proposer tất định từ telemetry: OSD `up:false` → đề xuất `start_osd_service` (chờ duyệt).
+  - [x] Proposer tất định từ telemetry: OSD `up:false` → đề xuất `restart_osd_service` (chờ duyệt).
   - [x] Watcher tự sinh đề xuất (dedup), auto-run SAFE, cảnh báo Telegram khi có RISKY chờ duyệt.
   - [x] Dashboard: thẻ Khắc phục (Duyệt/Từ chối) + Nhật ký hành động; API approve/reject/audit gated theo Vitastor admin.
   - [ ] Mở rộng sau: dry-run/reweight, theo dõi rebalance, phê duyệt qua nút Telegram, tự huỷ đề xuất khi tín hiệu đã hết.

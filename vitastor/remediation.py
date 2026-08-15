@@ -160,7 +160,9 @@ def known_hosts(cluster, datasets: dict | None = None) -> set[str]:
 def propose_from_status(datasets: dict, summary: dict) -> list[dict]:
     """Pure function: derive approval-gated remediation proposals from a
     read-only status snapshot. Currently every OSD reported ``up: false``
-    becomes one ``start_osd_service`` proposal (RISKY — never auto-run)."""
+    becomes one ``restart_osd_service`` proposal (RISKY — never auto-run).
+    Restart is deliberate: a DOWN OSD may still have an active but wedged
+    systemd unit, in which case ``systemctl start`` is a successful no-op."""
     proposals: list[dict] = []
     for row in datasets.get("osds") or []:
         if not isinstance(row, dict) or row.get("type") != "osd" or row.get("up"):
@@ -170,14 +172,14 @@ def propose_from_status(datasets: dict, summary: dict) -> list[dict]:
         if not _OSD_ID_RE.fullmatch(osd_id) or not host:
             continue
         proposals.append({
-            "action_id": "start_osd_service",
+            "action_id": "restart_osd_service",
             "target_host": host,
             "action_params": {"osd_id": osd_id},
             "rationale": (
                 f"OSD {osd_id} trên {host} đang DOWN — đề xuất khởi động lại "
                 f"daemon vitastor-osd@{osd_id} (chờ duyệt)."
             ),
-            "dedup_key": f"start_osd_service:{host}:{osd_id}",
+            "dedup_key": f"restart_osd_service:{host}:{osd_id}",
         })
     return proposals
 
@@ -244,19 +246,29 @@ def reconcile_monitor_proposals(cluster, datasets: dict, summary: dict) -> list[
     ``cluster`` may be a detached VitastorCluster — only its already-loaded
     scalar attributes are read, never a lazy relationship."""
     proposals = propose_from_status(datasets, summary)
-    if not proposals:
-        return []
     allowed = known_hosts(cluster, datasets)
     new_pending: list[dict] = []
     with db.SessionLocal() as session:
-        open_keys = {
+        current_keys = {proposal["dedup_key"] for proposal in proposals}
+        # A terminal action continues to own its key while the same fault is
+        # observable.  Otherwise a fast execution followed by one stale DOWN
+        # poll creates another approval every minute.  Once telemetry shows
+        # recovery, release the key so a later, genuinely new outage can
+        # create a fresh proposal.
+        session.query(VitastorRemediationAction).filter(
+            VitastorRemediationAction.cluster_id == cluster.id,
+            VitastorRemediationAction.dedup_key != "",
+            ~VitastorRemediationAction.dedup_key.in_(current_keys),
+            ~VitastorRemediationAction.status.in_(_OPEN_STATUSES),
+        ).update({VitastorRemediationAction.dedup_key: ""}, synchronize_session=False)
+        owned_keys = {
             key for (key,) in session.query(VitastorRemediationAction.dedup_key).filter(
                 VitastorRemediationAction.cluster_id == cluster.id,
-                VitastorRemediationAction.status.in_(_OPEN_STATUSES),
+                VitastorRemediationAction.dedup_key != "",
             ).all()
         }
         for proposal in proposals:
-            if proposal["dedup_key"] in open_keys:
+            if proposal["dedup_key"] in owned_keys:
                 continue
             try:
                 command = build_command(proposal["action_id"], proposal["action_params"])
@@ -274,7 +286,7 @@ def reconcile_monitor_proposals(cluster, datasets: dict, summary: dict) -> list[
             )
             session.add(row)
             session.flush()
-            open_keys.add(proposal["dedup_key"])
+            owned_keys.add(proposal["dedup_key"])
             if classification is VitastorActionClassification.SAFE:
                 _auto_execute(session, row, cluster, allowed)
             else:

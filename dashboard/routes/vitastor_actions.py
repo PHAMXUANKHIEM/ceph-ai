@@ -83,9 +83,20 @@ def _execute_approved(action_pk: str, actor: str) -> None:
     posture as dashboard/routes/vitastor_lifecycle.py::_execute). Each DB
     transition is its own short session; the SSH call happens between them."""
     with db.SessionLocal() as session:
-        row = session.get(VitastorRemediationAction, action_pk)
-        if not row or row.status != VitastorActionStatus.APPROVED.value:
+        # Atomic compare-and-set: multiple workers/background tasks may see
+        # the same approval, but exactly one is allowed to claim execution.
+        claimed = session.query(VitastorRemediationAction).filter(
+            VitastorRemediationAction.id == action_pk,
+            VitastorRemediationAction.status == VitastorActionStatus.APPROVED.value,
+        ).update(
+            {VitastorRemediationAction.status: VitastorActionStatus.EXECUTING.value},
+            synchronize_session=False,
+        )
+        if claimed != 1:
+            session.rollback()
             return
+        session.flush()
+        row = session.get(VitastorRemediationAction, action_pk)
         cluster = session.query(VitastorCluster).filter_by(id=row.cluster_id).first()
         if not cluster:
             row.status = VitastorActionStatus.FAILED.value
@@ -97,7 +108,6 @@ def _execute_approved(action_pk: str, actor: str) -> None:
         target_host, command = row.target_host, row.proposed_command
         ssh_user, ssh_key = cluster.ssh_user, cluster.ssh_key_path
         allowed = known_hosts(cluster)
-        row.status = VitastorActionStatus.EXECUTING.value
         record_audit(session, row.cluster_id, row.id, "EXECUTING", actor, command)
         session.commit()
     try:
@@ -124,12 +134,23 @@ async def approve_action(action_pk: str, background: BackgroundTasks, user: str 
     _require_admin(user)
     with db.SessionLocal() as session:
         row = session.get(VitastorRemediationAction, action_pk)
-        if not row or row.status != VitastorActionStatus.PENDING_APPROVAL.value:
+        if not row:
             raise HTTPException(status_code=409, detail="Hành động không còn ở trạng thái chờ duyệt")
         if not session.query(VitastorCluster).filter_by(id=row.cluster_id).first():
             raise HTTPException(status_code=404, detail="Cụm Vitastor không còn tồn tại")
-        row.status = VitastorActionStatus.APPROVED.value
-        row.approved_by = user
+        approved = session.query(VitastorRemediationAction).filter(
+            VitastorRemediationAction.id == action_pk,
+            VitastorRemediationAction.status == VitastorActionStatus.PENDING_APPROVAL.value,
+        ).update(
+            {
+                VitastorRemediationAction.status: VitastorActionStatus.APPROVED.value,
+                VitastorRemediationAction.approved_by: user,
+            },
+            synchronize_session=False,
+        )
+        if approved != 1:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="Hành động không còn ở trạng thái chờ duyệt")
         record_audit(session, row.cluster_id, row.id, "APPROVED", user)
         session.commit()
     background.add_task(_execute_approved, action_pk, user)

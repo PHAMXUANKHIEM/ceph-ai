@@ -59,10 +59,10 @@ def test_propose_from_status_flags_down_osds_only():
     proposals = remediation.propose_from_status(datasets, {})
     assert len(proposals) == 1
     only = proposals[0]
-    assert only["action_id"] == "start_osd_service"
+    assert only["action_id"] == "restart_osd_service"
     assert only["target_host"] == "node-b"
     assert only["action_params"] == {"osd_id": "2"}
-    assert only["dedup_key"] == "start_osd_service:node-b:2"
+    assert only["dedup_key"] == "restart_osd_service:node-b:2"
 
 
 # --- Executor + host allowlist ---------------------------------------------
@@ -118,14 +118,32 @@ def test_reconcile_creates_pending_action_and_dedupes(dashboard_client):
         assert len(rows) == 1
         assert rows[0].status == VitastorActionStatus.PENDING_APPROVAL.value
         assert rows[0].classification == "RISKY"
-        assert rows[0].proposed_command == "systemctl start vitastor-osd@5"
-        assert rows[0].dedup_key == "start_osd_service:node-a:5"
+        assert rows[0].proposed_command == "systemctl restart vitastor-osd@5"
+        assert rows[0].dedup_key == "restart_osd_service:node-a:5"
         assert session.query(VitastorAuditEntry).filter_by(cluster_id=cluster.id, event_type="PROPOSED").count() == 1
 
     # Same fault next poll -> no second row while the first is still open.
     assert remediation.reconcile_monitor_proposals(cluster, datasets, {}) == []
     with db.SessionLocal() as session:
         assert session.query(VitastorRemediationAction).filter_by(cluster_id=cluster.id).count() == 1
+
+
+def test_reconcile_holds_terminal_dedup_until_recovery_then_rearms(dashboard_client):
+    cluster = _seed_cluster()
+    down = {"osds": [{"type": "osd", "name": 5, "parent": "node-a", "up": False}]}
+    remediation.reconcile_monitor_proposals(cluster, down, {})
+    with db.SessionLocal() as session:
+        row = session.query(VitastorRemediationAction).filter_by(cluster_id=cluster.id).one()
+        row.status = VitastorActionStatus.EXECUTED.value
+        session.commit()
+
+    # A stale DOWN sample after execution must not create another approval.
+    assert remediation.reconcile_monitor_proposals(cluster, down, {}) == []
+    # One healthy sample releases the key; a later outage is a new incident.
+    assert remediation.reconcile_monitor_proposals(cluster, {"osds": []}, {}) == []
+    assert len(remediation.reconcile_monitor_proposals(cluster, down, {})) == 1
+    with db.SessionLocal() as session:
+        assert session.query(VitastorRemediationAction).filter_by(cluster_id=cluster.id).count() == 2
 
 
 def test_reconcile_rejects_host_not_in_allowlist_on_execute(dashboard_client, monkeypatch):
@@ -200,6 +218,21 @@ def test_approve_executes_and_audits(dashboard_client, monkeypatch):
         assert row.approved_by == "admin"
         events = {e.event_type for e in session.query(VitastorAuditEntry).filter_by(action_pk=action_id).all()}
         assert {"APPROVED", "EXECUTING", "EXECUTED"} <= events
+
+
+def test_duplicate_background_tasks_execute_an_approval_only_once(dashboard_client, monkeypatch):
+    cluster = _seed_cluster()
+    action_id = _seed_action(cluster.id, status=VitastorActionStatus.APPROVED.value)
+    import dashboard.routes.vitastor_actions as routes
+    calls = []
+    monkeypatch.setattr(routes, "run_remediation", lambda *args, **kwargs: calls.append(args) or "ok")
+
+    routes._execute_approved(action_id, "admin")
+    routes._execute_approved(action_id, "admin")
+
+    assert len(calls) == 1
+    with db.SessionLocal() as session:
+        assert session.query(VitastorAuditEntry).filter_by(action_pk=action_id, event_type="EXECUTING").count() == 1
 
 
 def test_reject_sets_status_and_audits(dashboard_client):

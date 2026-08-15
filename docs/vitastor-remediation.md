@@ -26,7 +26,7 @@ Mọi quyết định thực thi đều tuân thủ đúng các bất biến an 
    parent của OSD trong telemetry). Đây là cùng lớp phòng vệ như
    `dashboard/routes/vitastor.py::_cluster_log_hosts`.
 4. **Không tự động chạy hành động nguy hiểm** — proposer tất định của Watcher
-   hiện chỉ sinh `start_osd_service` (RISKY). Không có gì tự thực thi lên cụm
+   hiện chỉ sinh `restart_osd_service` (RISKY). Không có gì tự thực thi lên cụm
    thật mà không có người duyệt.
 5. **Không rò rỉ credential** — evidence/rationale không chứa SSH key/token;
    lệnh preview chỉ chứa id OSD dạng số đã được validate.
@@ -40,7 +40,7 @@ Watcher poll  ──> vitastor_monitor.poll_cluster_once
                     │
                     └─ reconcile_monitor_proposals(cluster, datasets, summary)
                          │
-                         ├─ propose_from_status  (OSD up:false → start_osd_service)
+                         ├─ propose_from_status  (OSD up:false → restart_osd_service)
                          ├─ dedup theo dedup_key vs các action đang mở
                          ├─ SAFE  → _auto_execute (chạy ngay, audit AUTO_EXECUTED)
                          └─ RISKY → tạo PENDING_APPROVAL + audit PROPOSED
