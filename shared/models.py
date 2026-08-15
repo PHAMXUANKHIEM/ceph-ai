@@ -692,6 +692,132 @@ class VitastorAnomalyEvent(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class VitastorActionClassification(str, enum.Enum):
+    """Vitastor-only mirror of shared/models.py::ActionClassification — kept a
+    separate enum so a Vitastor policy decision can never be confused with a
+    Ceph one, even though the two happen to share the same SAFE/RISKY names."""
+
+    SAFE = "SAFE"
+    RISKY = "RISKY"
+
+
+class VitastorActionStatus(str, enum.Enum):
+    """Lifecycle of a VitastorRemediationAction — the Vitastor counterpart of
+    ActionStatus. AUTO_EXECUTED is the terminal state for a SAFE action the
+    system ran itself; the PENDING_APPROVAL -> APPROVED -> EXECUTING ->
+    EXECUTED chain is the operator-gated RISKY path."""
+
+    PENDING_APPROVAL = "PENDING_APPROVAL"  # RISKY, waiting for an operator
+    AUTO_EXECUTED = "AUTO_EXECUTED"        # SAFE, executed by the system
+    APPROVED = "APPROVED"                  # operator approved, not yet run
+    REJECTED = "REJECTED"                  # operator rejected
+    EXECUTING = "EXECUTING"                # command in flight (background task)
+    EXECUTED = "EXECUTED"                  # approved RISKY action executed
+    FAILED = "FAILED"                      # execution raised
+
+
+class VitastorRemediationAction(Base):
+    """AI/telemetry-proposed remediation for a Vitastor cluster — the Vitastor
+    equivalent of the Ceph Incident->Action->AuditEntry loop, kept in its own
+    tables so a Ceph Action never targets a Vitastor cluster and vice-versa
+    (same isolation posture as every other ``vitastor_*`` table above).
+
+    Conservative by default, exactly like worker/policy/gate.py: only an
+    action_id on vitastor/remediation.py's explicit SAFE allowlist ever
+    auto-executes (status AUTO_EXECUTED); everything else is RISKY and waits
+    at PENDING_APPROVAL for an operator, the same posture as the Ceph
+    device_health_monitor path that creates Actions straight at
+    PENDING_APPROVAL with no AI round trip. ``proposed_command`` is always a
+    resolved preview of a CLOSED command builder's output (never free-text
+    shell); ``action_params``/``target_host`` carry only what the builder
+    needs to reproduce it at execute time, long after the originating poll.
+
+    Like the other Vitastor tables (and unlike Ceph's Incident.cluster_id),
+    ``cluster_id`` is a plain String, not a real ForeignKey — the Vitastor
+    product manages its own cluster inventory and never joins the Ceph
+    ``clusters`` table."""
+
+    __tablename__ = "vitastor_remediation_actions"
+    __table_args__ = (
+        CheckConstraint(
+            "classification IN ('" + "','".join(c.value for c in VitastorActionClassification) + "')",
+            name="ck_vita_remediation_classification_valid",
+        ),
+        CheckConstraint(
+            "status IN ('" + "','".join(s.value for s in VitastorActionStatus) + "')",
+            name="ck_vita_remediation_status_valid",
+        ),
+        Index("ix_vita_remediation_cluster_status", "cluster_id", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # Where this proposal came from: MONITOR (deterministic watcher signal),
+    # DIAGNOSIS (operator ran AI diagnosis) or CHAT. Descriptive, not a
+    # state machine — plain string like AuditEntry.event_type.
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="MONITOR")
+    # The VitastorDiagnosticRun / VitastorAnomalyEvent id this came from, when
+    # applicable; NULL for a bare telemetry-signal proposal.
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=VitastorActionStatus.PENDING_APPROVAL.value)
+    # Node the command runs on (an OSD/mon host), validated against the
+    # cluster's known-host allowlist both at propose and execute time.
+    target_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # JSON-encoded dict of resolved params the closed command builder needs
+    # (e.g. {"osd_id": "3"}). Same JSON-in-Text convention as
+    # Action.action_params. NULL for builders that need only target_host.
+    action_params: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Resolved preview of the command that will run — NULL for a no-op
+    # action_id like investigate_manually (approving it just records the
+    # incident as handled, runs nothing).
+    proposed_command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Truncated stdout/stderr captured after execution — an audit record of
+    # what ran, not a full log store (same posture as NodeDiagnosticRun).
+    result_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stable key identifying the underlying problem so the watcher never
+    # stacks duplicate OPEN proposals for the same thing every poll (e.g.
+    # "start_osd_service:node-a:3"). Empty for operator-initiated proposals.
+    dedup_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False, default="vitastor-monitor")
+    approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Same JSON-encoded {channel_key: message_id} convention / opt-in posture
+    # as Action.telegram_message_ids — populated only once a Telegram approval
+    # channel is configured; harmless NULL otherwise.
+    telegram_message_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class VitastorAuditEntry(Base):
+    """Append-only audit trail for Vitastor remediation — the Vitastor
+    equivalent of shared/models.py::AuditEntry, in its own table so a Vitastor
+    lifecycle event can never be written into (or confused with) the Ceph
+    audit history. ``event_type``/``actor`` are plain descriptive strings, not
+    a CheckConstraint enum, same reasoning as AuditEntry: this is history, not
+    a safety-critical state machine."""
+
+    __tablename__ = "vitastor_audit_entries"
+    __table_args__ = (Index("ix_vita_audit_cluster_created", "cluster_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # The VitastorRemediationAction.id this event is about; NULL for a
+    # cluster-level event not tied to one specific action.
+    action_pk: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ChatPreference(Base):
     """Per-login chat persona, including the `.env` root admin which has
     no User row. The username is deliberately not a foreign key for that

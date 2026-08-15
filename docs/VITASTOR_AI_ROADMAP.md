@@ -31,7 +31,15 @@ commit gần nhất. Không đánh dấu hoàn thành nếu tiêu chí nghiệm 
   - [x] Lifecycle `OPEN/RESOLVED`, persistence, Telegram transition và Dashboard API/UI.
   - [x] Retention dùng chung chính sách metric Vitastor.
 - [ ] **3. Dự báo đầy dung lượng** và thời gian tới các mốc 80/90/95%.
-- [ ] **4. AI lập kế hoạch bảo trì OSD** với dry-run, reweight, theo dõi rebalance và duyệt.
+- [~] **4. Vòng lặp khắc phục đóng (closed-loop remediation)** — nền tảng cho bảo trì OSD.
+  - [x] Model `VitastorRemediationAction` + `VitastorAuditEntry`, migration riêng, cô lập khỏi Ceph.
+  - [x] Policy SAFE/RISKY bảo thủ mặc định (AD-5) + `action_id` đóng, không có shell tự do.
+  - [x] Command builder đóng (start/restart OSD·mon·etcd, resync_time) + allowlist host khi thực thi.
+  - [x] Proposer tất định từ telemetry: OSD `up:false` → đề xuất `start_osd_service` (chờ duyệt).
+  - [x] Watcher tự sinh đề xuất (dedup), auto-run SAFE, cảnh báo Telegram khi có RISKY chờ duyệt.
+  - [x] Dashboard: thẻ Khắc phục (Duyệt/Từ chối) + Nhật ký hành động; API approve/reject/audit gated theo Vitastor admin.
+  - [ ] Mở rộng sau: dry-run/reweight, theo dõi rebalance, phê duyệt qua nút Telegram, tự huỷ đề xuất khi tín hiệu đã hết.
+  - Xem thiết kế chi tiết: `docs/vitastor-remediation.md`.
 - [ ] **5. Trợ lý tối ưu pool và PG** với mô phỏng tác động trước thay đổi.
 - [ ] **6. Quản lý scrub thông minh** theo tải và phát hiện inconsistent/corrupted object.
 - [ ] **7. Phân tích object lỗi** bằng `describe`; `fix` luôn là thao tác rủi ro cao.
@@ -69,6 +77,7 @@ Command preview chỉ là văn bản; endpoint chẩn đoán không có khả n�
 |---|---:|---|---|---|---|
 | 2026-08-13 | 1 | Hoàn thành bản lõi | DiagnosticRun, migration, evidence read-only, provider-neutral JSON contract, API và Dashboard UI | `25 passed` (Vitastor diagnosis/dashboard/client/monitor), JS syntax, compileall, Alembic 1 head | Chưa commit |
 | 2026-08-13 | 2 | Hoàn thành | Baseline median/MAD theo entity và khung giờ, anomaly lifecycle, Telegram, API và Dashboard table | `45 passed` tập trung; JS syntax, compileall, Alembic 1 head | Chưa commit |
+| 2026-08-15 | 4 | Nền tảng hoàn thành | Closed-loop remediation: model + audit + migration (head `d9a1c7b3e204`), policy SAFE/RISKY đóng, command builder + allowlist, proposer down-OSD, wiring watcher, route approve/reject/audit, thẻ Dashboard | `16 passed` (test_vitastor_remediation) + `45 passed` (monitor/dashboard/auth/client hồi quy); `py_compile` sạch; Alembic 1 head | Chưa commit |
 
 ## Ghi chú bàn giao
 

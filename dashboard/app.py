@@ -36,6 +36,7 @@ from dashboard.routes import (
     upgrade,
     users,
     vitastor,
+    vitastor_actions,
     vitastor_chat,
     vitastor_clusters,
     vitastor_lifecycle,
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     application.include_router(crush_map.router)
     application.include_router(clusters_routes.router)
     application.include_router(vitastor.router)
+    application.include_router(vitastor_actions.router)
     application.include_router(vitastor_chat.router)
     application.include_router(vitastor_clusters.router)
     application.include_router(vitastor_lifecycle.router)

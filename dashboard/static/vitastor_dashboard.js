@@ -242,6 +242,52 @@
   }
   if(byId("vita-history-metric"))byId("vita-history-metric").onchange=drawHistory;
 
+  const statusClass = (status) => (
+    status === "EXECUTED" || status === "AUTO_EXECUTED" ? "is-up"
+    : status === "FAILED" || status === "REJECTED" ? "is-down" : ""
+  );
+  function renderRemediation(data){
+    const body=byId("vita-remediation-body"); if(!body) return;
+    const pending=data.pending||[], recent=data.recent||[], isAdmin=!!data.is_admin;
+    setText("vita-remediation-count", `${pending.length} chờ duyệt`);
+    body.replaceChildren();
+    if(!pending.length){ body.append(child("p","Không có hành động khắc phục nào đang chờ duyệt.","vitastor-muted")); }
+    pending.forEach(action=>{
+      const item=child("article",undefined,"vitastor-remediation-item");
+      item.append(child("p",action.rationale||action.action_id));
+      item.append(child("p",`${action.classification} · ${action.action_id} · host ${action.target_host||"—"}`,"vitastor-muted"));
+      if(action.command) item.append(child("pre",action.command));
+      if(isAdmin){
+        const buttons=child("div",undefined,"vitastor-remediation-buttons");
+        const approve=child("button","Duyệt","btn btn-primary btn-sm"); approve.dataset.approve=action.id;
+        const reject=child("button","Từ chối","btn btn-ghost btn-sm"); reject.dataset.reject=action.id;
+        buttons.append(approve,reject); item.append(buttons);
+      } else {
+        item.append(child("p","Chỉ Vitastor admin được duyệt hoặc từ chối.","vitastor-muted"));
+      }
+      body.append(item);
+    });
+    const recentRoot=byId("vita-remediation-recent");
+    if(recentRoot){ recentRoot.replaceChildren();
+      if(!recent.length){ recentRoot.append(emptyRow(5,"Chưa có hành động đã xử lý")); }
+      recent.forEach(a=>{const row=child("tr");row.append(cell(a.action_id,"vitastor-mono"),cell(a.target_host||"—"),cell(a.classification),cell(a.status,statusClass(a.status)),cell(a.approved_by||a.requested_by||"—"));row.title=a.error||a.result_output||a.rationale||"";recentRoot.append(row);});
+    }
+  }
+  function renderAudit(entries){const root=byId("vita-audit-body");if(!root)return;root.replaceChildren();if(!entries.length){root.append(emptyRow(4,"Chưa có hoạt động nào"));return;}entries.forEach(e=>{const row=child("tr");row.append(cell(new Date(e.created_at).toLocaleString("vi-VN")),cell(e.event_type),cell(e.actor),cell(e.detail||"—"));root.append(row);});}
+  async function loadRemediation(){if(!select)return;try{const r=await fetch(`/vitastor/api/actions?cluster_id=${encodeURIComponent(select.value)}`,{credentials:"same-origin"});const data=await r.json();if(r.ok)renderRemediation(data);}catch(_){/* keep last render */}}
+  async function loadAudit(){if(!select)return;try{const r=await fetch(`/vitastor/api/audit?cluster_id=${encodeURIComponent(select.value)}`,{credentials:"same-origin"});const data=await r.json();if(r.ok)renderAudit(data.entries||[]);}catch(_){/* keep last render */}}
+  byId("vita-remediation-body")?.addEventListener("click",async(event)=>{
+    const target=event.target; const approveId=target?.dataset?.approve, rejectId=target?.dataset?.reject;
+    const id=approveId||rejectId; if(!id)return;
+    target.disabled=true;
+    try{
+      const r=await fetch(`/vitastor/api/actions/${encodeURIComponent(id)}/${approveId?"approve":"reject"}`,{method:"POST",credentials:"same-origin"});
+      const data=await r.json(); if(!r.ok)throw new Error(data.detail||"Thao tác thất bại");
+      showNotice(approveId?"Đã duyệt — đang thực thi trên host…":"Đã từ chối hành động.","info");
+    }catch(error){ showNotice(error.message||"Thao tác thất bại","critical"); target.disabled=false; }
+    finally{ loadRemediation(); loadAudit(); }
+  });
+
   const dialog = byId("vitastor-cluster-dialog");
   document.querySelectorAll("#vitastor-add-cluster, [data-open-vitastor-cluster]").forEach((button) => button.addEventListener("click", () => dialog?.showModal()));
   document.querySelectorAll("[data-close-vitastor-cluster]").forEach((button) => button.addEventListener("click", () => dialog?.close()));
@@ -263,6 +309,6 @@
   });
   byId("vitastor-refresh")?.addEventListener("click", loadOverview);
   byId("vita-diagnose")?.addEventListener("click",async(event)=>{const button=event.currentTarget;if(!select)return;button.disabled=true;button.textContent="AI đang phân tích…";showNotice("Đang thu thập evidence read-only và chẩn đoán…");try{const form=new FormData();form.append("cluster_id",select.value);const response=await fetch("/vitastor/api/diagnostics",{method:"POST",body:form});const data=await response.json();if(!response.ok)throw new Error(data.detail||"Chẩn đoán thất bại");renderDiagnosis(data.diagnostic);showNotice("");}catch(error){showNotice(error.message||"AI chẩn đoán thất bại","critical");await loadLatestDiagnosis();}finally{button.disabled=false;button.textContent="Phân tích bằng AI";}});
-  select?.addEventListener("change",()=>{loadOverview();loadLatestDiagnosis();loadAnomalies();});
-  if (select) { loadOverview(); loadLatestDiagnosis(); loadAnomalies(); window.setInterval(()=>{loadOverview();loadAnomalies();}, 30000); }
+  select?.addEventListener("change",()=>{loadOverview();loadLatestDiagnosis();loadAnomalies();loadRemediation();loadAudit();});
+  if (select) { loadOverview(); loadLatestDiagnosis(); loadAnomalies(); loadRemediation(); loadAudit(); window.setInterval(()=>{loadOverview();loadAnomalies();loadRemediation();loadAudit();}, 30000); }
 })();

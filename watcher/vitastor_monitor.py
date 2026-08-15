@@ -15,6 +15,7 @@ from shared.telegram_alerts import send_vitastor_alert
 from vitastor.client import VitastorConnectionError, normalize_etcd, normalize_status, query_dashboard
 from vitastor.anomaly import detect_and_record, extract_entities
 from vitastor.node_metrics import query_node_hardware, query_node_network
+from vitastor.remediation import reconcile_monitor_proposals
 
 logger = logging.getLogger(__name__)
 PROBLEM_STATES = {"WARNING", "CRITICAL", "UNREACHABLE"}
@@ -349,6 +350,18 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
     _slow_osd_alerts(cluster, datasets, cache)
     hardware = _collect_hardware(cluster, datasets, cache)
     network = _collect_network(cluster, datasets, cache)
+    # Closed-loop remediation: turn observed faults (a down OSD) into
+    # approval-gated proposals, auto-run any SAFE ones, and alert on new
+    # RISKY pending. Isolated in its own try — a remediation hiccup must
+    # never abort the health poll or block cache persistence below.
+    try:
+        for proposal in reconcile_monitor_proposals(cluster, datasets, summary):
+            send_vitastor_alert(
+                cluster.name, "WARNING",
+                "Đề xuất khắc phục (chờ duyệt): " + (proposal.get("rationale") or proposal.get("action_id", "")),
+            )
+    except Exception:
+        logger.exception("Vitastor remediation reconcile failed for %r", cluster.name)
     current = summary["health"]
     if current in PROBLEM_STATES and current != previous:
         send_vitastor_alert(cluster.name, current, _health_detail(summary))
