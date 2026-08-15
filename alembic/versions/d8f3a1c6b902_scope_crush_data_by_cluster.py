@@ -15,6 +15,18 @@ branch_labels = None
 depends_on = None
 
 
+def _primary_key_name(table_name: str) -> str:
+    """Return the PK name that exists in the target database.
+
+    The table's original migration created an unnamed PrimaryKeyConstraint.
+    PostgreSQL therefore named it ``<table>_pkey`` while SQLite reflection
+    reports no name.  Do not assume Alembic's later naming convention was
+    present when that older constraint was created.
+    """
+    reflected_name = sa.inspect(op.get_bind()).get_pk_constraint(table_name).get("name")
+    return reflected_name or f"pk_{table_name}"
+
+
 def upgrade() -> None:
     op.add_column("crush_structure_snapshots", sa.Column("cluster_id", sa.String(36), nullable=True))
     op.add_column("crush_osd_distribution", sa.Column("cluster_id", sa.String(36), nullable=True))
@@ -42,6 +54,7 @@ def upgrade() -> None:
         ["cluster_id"],
     )
 
+    distribution_pk_name = _primary_key_name("crush_osd_distribution")
     with op.batch_alter_table(
         "crush_osd_distribution",
         naming_convention={"pk": "pk_%(table_name)s"},
@@ -50,7 +63,7 @@ def upgrade() -> None:
         batch_op.create_foreign_key(
             "fk_crush_osd_distribution_cluster_id", "clusters", ["cluster_id"], ["id"]
         )
-        batch_op.drop_constraint("pk_crush_osd_distribution", type_="primary")
+        batch_op.drop_constraint(distribution_pk_name, type_="primary")
         batch_op.create_primary_key(
             "pk_crush_osd_distribution", ["cluster_id", "osd_id"]
         )
@@ -63,12 +76,13 @@ def downgrade() -> None:
         "DELETE FROM crush_osd_distribution WHERE cluster_id != "
         "(SELECT id FROM clusters WHERE is_default = true LIMIT 1)"
     ))
+    distribution_pk_name = _primary_key_name("crush_osd_distribution")
     with op.batch_alter_table(
         "crush_osd_distribution",
         naming_convention={"pk": "pk_%(table_name)s"},
     ) as batch_op:
         batch_op.drop_constraint("fk_crush_osd_distribution_cluster_id", type_="foreignkey")
-        batch_op.drop_constraint("pk_crush_osd_distribution", type_="primary")
+        batch_op.drop_constraint(distribution_pk_name, type_="primary")
         batch_op.create_primary_key("pk_crush_osd_distribution", ["osd_id"])
         batch_op.drop_column("cluster_id")
 
