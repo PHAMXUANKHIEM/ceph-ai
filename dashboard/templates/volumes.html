@@ -200,7 +200,7 @@
         <p class="hint metrics-panel-desc">Chọn một pool để xem các Volume đã xoá mềm. Tổng dung lượng là tổng kích thước logic Ceph báo cho các image đang nằm trong trash.</p>
         {% if trash_pool_summaries %}
         <div class="table-wrap"><table id="trash-pool-list">
-          <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Tổng dung lượng Trash</th><th></th></tr></thead>
+          <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Tổng dung lượng Trash</th><th>Thao tác</th></tr></thead>
           <tbody>{% for summary in trash_pool_summaries %}
             <tr class="{% if summary.pool == selected_pool %}progress-item-failed{% endif %}">
               <td><code>{{ summary.pool }}</code></td>
@@ -209,7 +209,15 @@
               {% else %}
               <td>{{ summary.entry_count }}</td><td>{{ summary.total_size_human }}</td>
               {% endif %}
-              <td><a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a></td>
+              <td>
+                <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>
+                {% if is_admin and selected_cluster.is_default and summary.entry_count %}
+                <form method="post" action="/volumes/{{ summary.pool }}/trash/purge-all" class="inline-form"
+                  onsubmit="return confirm('XOÁ VĨNH VIỄN tất cả {{ summary.entry_count }} volume trong Trash của pool {{ summary.pool }}? Thao tác dùng --force, không thể hoàn tác và thực thi ngay.');">
+                  <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Xoá tất cả</button>
+                </form>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}</tbody>
         </table></div>

@@ -130,6 +130,23 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     assert "old-disk" not in response.text
 
 
+def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_trash",
+        lambda pool: [_fake_trash_entry(name=f"{pool}-deleted")],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash")
+
+    assert response.status_code == 200
+    assert response.text.count("Xoá tất cả</button>") == 2
+    assert 'action="/volumes/vms/trash/purge-all"' in response.text
+    assert 'action="/volumes/backups/trash/purge-all"' in response.text
+
+
 def test_trash_pool_page_only_lists_selected_pools_entries(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
