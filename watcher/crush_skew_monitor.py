@@ -243,7 +243,7 @@ def _host_actual_and_weight(
     return total, node.get("weight")
 
 
-def check_crush_skew() -> dict[str, dict]:
+def check_crush_skew(cluster_id: str | None = None) -> dict[str, dict]:
     """Reads the single most-recent `CrushStructureSnapshot` and the full
     current `CrushOsdDistribution` table, computes both Skew signals for
     every OSD/Host entity found, and returns `{ceph_code: detail}` for
@@ -254,8 +254,13 @@ def check_crush_skew() -> dict[str, dict]:
     in a row. No-op (returns `{}`) if no Snapshot exists yet -- never
     raises, same best-effort posture as every other Watcher scan module."""
     with db.SessionLocal() as session:
+        snapshot_query = session.query(CrushStructureSnapshot)
+        distribution_query = session.query(CrushOsdDistribution)
+        if cluster_id is not None:
+            snapshot_query = snapshot_query.filter(CrushStructureSnapshot.cluster_id == cluster_id)
+            distribution_query = distribution_query.filter(CrushOsdDistribution.cluster_id == cluster_id)
         latest_snapshot = (
-            session.query(CrushStructureSnapshot)
+            snapshot_query
             .order_by(CrushStructureSnapshot.created_at.desc())
             .first()
         )
@@ -270,7 +275,7 @@ def check_crush_skew() -> dict[str, dict]:
                 "bytes_total": row.bytes_total,
                 "pgs": row.pgs,
             }
-            for row in session.query(CrushOsdDistribution).all()
+            for row in distribution_query.all()
         }
 
     flagged: dict[str, dict] = {}

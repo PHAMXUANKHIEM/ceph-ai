@@ -934,6 +934,11 @@ def list_osds() -> list[dict]:
     nested-object shape.
     """
     _, payload = run_ceph_json_command("ceph osd tree")
+    return _normalize_osd_tree(payload)
+
+
+def _normalize_osd_tree(payload: dict | list) -> list[dict]:
+    """Normalize an already-fetched ``ceph osd tree`` response."""
     nodes = payload.get("nodes") if isinstance(payload, dict) else None
     if not isinstance(nodes, list):
         return []

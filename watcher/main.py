@@ -644,8 +644,8 @@ def run(
             or (now - last_crush_scan_at).total_seconds() >= settings.crush_scan_interval_seconds
         ):
             try:
-                crush_structure_monitor.scan_and_store()
-                crush_distribution_monitor.sync_distribution()
+                crush_structure_monitor.scan_and_store(cluster_id)
+                crush_distribution_monitor.sync_distribution(cluster_id)
                 # 2026-08-07 (Epic 12, Story 12.2): Skew detection reads
                 # BACK the 2 tables the calls above just wrote, on the SAME
                 # tick (AD-28 — 2 independent signals, USE and PG, both
@@ -654,7 +654,7 @@ def run(
                 # block) so one shared failure-isolation boundary covers
                 # this whole tick, same as every other scan block in this
                 # function.
-                current_crush_skew = crush_skew_monitor.check_crush_skew()
+                current_crush_skew = crush_skew_monitor.check_crush_skew(cluster_id)
                 crush_skew_monitor.create_or_resolve_crush_skew_incidents(current_crush_skew)
             except Exception:
                 logger.exception("run: crush structure/distribution/skew scan failed")
@@ -766,9 +766,10 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
 
 def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = None) -> None:
     """Multi-cluster observability Phase 1: the loop for any cluster OTHER
-    than the default one — core health poll + Incident creation + heartbeat
-    ONLY. Deliberately does NOT run device_health/node_health/
-    bluestore_omap/osd_latency/crush/volume_monitor — every one of those
+    than the default one — core health poll + Incident creation + heartbeat,
+    plus the read-only CRUSH structure/distribution collectors. Deliberately
+    does NOT run device_health/node_health/bluestore_omap/osd_latency/
+    crush-skew/volume_monitor — those secondary monitors
     secondary monitors is coupled to the global `settings` singleton the
     same way watcher/collector.py is (see
     `_build_and_publish_incident_for_observed_cluster`'s docstring), and
@@ -783,6 +784,7 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     """
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
+    last_crush_scan_at: Optional[datetime] = None
     mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
@@ -815,6 +817,20 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 _build_and_publish_incident_for_observed_cluster(cluster, health)
                 last_status = current_status
                 last_checks = current_checks
+
+            now = datetime.utcnow()
+            if (
+                last_crush_scan_at is None
+                or (now - last_crush_scan_at).total_seconds() >= settings.crush_scan_interval_seconds
+            ):
+                try:
+                    crush_structure_monitor.scan_and_store(cluster.id, cluster=cluster)
+                    crush_distribution_monitor.sync_distribution(cluster.id, cluster=cluster)
+                except Exception:
+                    logger.exception(
+                        "run_observed_cluster_loop(%r): CRUSH scan failed", cluster.name
+                    )
+                last_crush_scan_at = now
         except CephQueryError as exc:
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)

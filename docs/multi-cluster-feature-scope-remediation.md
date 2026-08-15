@@ -36,10 +36,10 @@ Các trang này chưa có data model/executor đủ để chạy multi-cluster. 
 
 ## 4. CRUSH Map
 
-- [ ] 4.1 Thêm `cluster_id` vào snapshot CRUSH và migration database.
-- [ ] 4.2 Watcher ghi snapshot theo cluster.
-- [ ] 4.3 API tree/history lọc theo cluster đang chọn.
-- [ ] 4.4 UI có cluster selector và trạng thái empty riêng từng cluster.
+- [x] 4.1 Thêm `cluster_id` vào snapshot CRUSH và migration database.
+- [x] 4.2 Watcher ghi snapshot theo cluster.
+- [x] 4.3 API tree/history lọc theo cluster đang chọn.
+- [x] 4.4 UI có cluster selector và trạng thái empty riêng từng cluster.
 
 ## 5. Backup và restore volume
 
@@ -88,3 +88,4 @@ Các trang này chưa có data model/executor đủ để chạy multi-cluster. 
 - 2026-08-14: Lifecycle restart Watcher/Worker được kiểm tra kết quả; navigation Clusters suite 21 passed. CRUSH Map và Chat/AI tạm fail-closed trên cluster phụ để loại nguy cơ fallback trong lúc chờ data-model scope.
 - 2026-08-14: Thêm edit/test connection cho cluster phụ, chặn approve khi cluster inactive, redirect approve/reject về đúng cluster; Clusters + Actions tests đạt.
 - 2026-08-14: Regression bổ sung cho redirect Action theo cluster và chặn approval cluster inactive; `tests/test_dashboard_actions.py` + `tests/test_dashboard_clusters.py`: 54 passed.
+- 2026-08-15: CRUSH Map hỗ trợ cluster phụ end-to-end: snapshot/distribution có scope, Watcher thu thập bằng kết nối riêng, API/UI lọc theo cluster và chặn đọc chéo history; 91 test CRUSH/model liên quan đạt.

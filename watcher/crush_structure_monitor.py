@@ -37,17 +37,25 @@ from __future__ import annotations
 import json
 
 from shared import db
-from shared.models import CrushStructureSnapshot
+from shared.clusters import ensure_default_cluster
+from shared.models import Cluster, CrushStructureSnapshot
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 
 
-def capture_crush_structure() -> dict | None:
+def capture_crush_structure(cluster: Cluster | None = None) -> dict | None:
     """Runs `ceph osd crush dump` and returns the parsed tree (see
     `_build_tree`), or `None` if the query itself failed -- never raises,
     same best-effort posture as every other Watcher scan in this codebase."""
     try:
-        _, payload = ceph_client.run_ceph_json_command("ceph osd crush dump")
+        if cluster is None:
+            _, payload = ceph_client.run_ceph_json_command("ceph osd crush dump")
+        else:
+            mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
+            _, payload = ceph_client.run_ceph_json_command_with(
+                mon_nodes, cluster.ceph_container_name, cluster.ssh_user,
+                cluster.ssh_key_path, cluster.ceph_exec_mode, "ceph osd crush dump",
+            )
     except CephQueryError:
         return None
     if not isinstance(payload, dict):
@@ -196,27 +204,30 @@ def _compute_diff(old_tree: dict, new_tree: dict) -> dict:
     return {"added": added, "removed": removed, "reweighted": reweighted}
 
 
-def scan_and_store() -> None:
+def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None) -> None:
     """One scan cycle -- called from `watcher/main.py::run()` on its own
     `crush_scan_interval_seconds` cadence. No-op if the query itself failed
     (AC #5). Writes a new `CrushStructureSnapshot` only when the canonical
     form differs from the single most-recent row (AC #2); the very first
     snapshot ever taken always gets `diff_json=None` (AC #1) since there is
     no prior row to diff against."""
-    new_tree = capture_crush_structure()
+    new_tree = capture_crush_structure(cluster) if cluster is not None else capture_crush_structure()
     if new_tree is None:
         return
 
     with db.SessionLocal() as session:
+        if cluster_id is None:
+            cluster_id = ensure_default_cluster(session).id
         latest = (
             session.query(CrushStructureSnapshot)
+            .filter(CrushStructureSnapshot.cluster_id == cluster_id)
             .order_by(CrushStructureSnapshot.created_at.desc())
             .first()
         )
         new_canonical = _canonicalize(new_tree)
 
         if latest is None:
-            session.add(CrushStructureSnapshot(tree_json=new_canonical, diff_json=None))
+            session.add(CrushStructureSnapshot(cluster_id=cluster_id, tree_json=new_canonical, diff_json=None))
             session.commit()
             return
 
@@ -226,6 +237,6 @@ def scan_and_store() -> None:
 
         diff = _compute_diff(old_tree, new_tree)
         session.add(
-            CrushStructureSnapshot(tree_json=new_canonical, diff_json=json.dumps(diff))
+            CrushStructureSnapshot(cluster_id=cluster_id, tree_json=new_canonical, diff_json=json.dumps(diff))
         )
         session.commit()

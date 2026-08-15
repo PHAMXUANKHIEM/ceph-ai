@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import bcrypt
 
 from shared import db as db_module
-from shared.models import CrushOsdDistribution, CrushStructureSnapshot, User
+from shared.models import Cluster, CrushOsdDistribution, CrushStructureSnapshot, User
 
 
 def _login(client):
@@ -49,9 +49,11 @@ def _empty_tree():
     return {"roots": [{"id": -1, "name": "default", "type": "root", "weight": None, "children": []}]}
 
 
-def _add_snapshot(tree, diff=None, created_at=None):
+def _add_snapshot(tree, diff=None, created_at=None, cluster_id=None):
     with db_module.SessionLocal() as session:
+        cluster_id = cluster_id or session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
         row = CrushStructureSnapshot(
+            cluster_id=cluster_id,
             tree_json=json.dumps(tree),
             diff_json=json.dumps(diff) if diff is not None else None,
         )
@@ -62,11 +64,13 @@ def _add_snapshot(tree, diff=None, created_at=None):
         return row.id
 
 
-def _add_distribution(osd_id, bytes_used, bytes_total, pgs, host="host1"):
+def _add_distribution(osd_id, bytes_used, bytes_total, pgs, host="host1", cluster_id=None):
     with db_module.SessionLocal() as session:
+        cluster_id = cluster_id or session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
         session.add(
             CrushOsdDistribution(
-                osd_id=osd_id, host=host, bytes_used=bytes_used, bytes_total=bytes_total, pgs=pgs
+                cluster_id=cluster_id, osd_id=osd_id, host=host,
+                bytes_used=bytes_used, bytes_total=bytes_total, pgs=pgs
             )
         )
         session.commit()
@@ -122,6 +126,53 @@ def test_api_tree_no_snapshot_yet(dashboard_client):
     response = dashboard_client.get("/api/crush-map/tree")
     assert response.status_code == 200
     assert response.json() == {"state": "no_snapshot_yet"}
+
+
+def test_second_cluster_page_and_tree_are_fully_scoped(dashboard_client):
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        second = Cluster(
+            name="cluster-2", ceph_mon_nodes="10.0.0.2",
+            ssh_user="ceph", ssh_key_path="/tmp/test-key", is_active=True,
+        )
+        session.add(second)
+        session.commit()
+        second_id = second.id
+
+    _add_snapshot(_sample_tree(second_osd=False), cluster_id=second_id)
+    _add_distribution(
+        0, bytes_used=777, bytes_total=1000, pgs=17,
+        host="cluster-2-host", cluster_id=second_id,
+    )
+
+    page = dashboard_client.get("/crush-map", params={"cluster": second_id})
+    assert page.status_code == 200
+    assert "cluster-2" in page.text
+    assert f'value="{second_id}" selected' in page.text
+
+    data = dashboard_client.get("/api/crush-map/tree").json()
+    osd = data["roots"][0]["children"][0]["children"][0]
+    assert osd["bytes_used"] == 777
+    assert osd["host"] == "cluster-2-host"
+
+
+def test_second_cluster_cannot_read_default_cluster_history_detail(dashboard_client):
+    _login(dashboard_client)
+    default_snapshot_id = _add_snapshot(
+        _sample_tree(), diff={"added": [], "removed": [], "reweighted": []}
+    )
+    with db_module.SessionLocal() as session:
+        second = Cluster(
+            name="cluster-2", ceph_mon_nodes="10.0.0.2",
+            ssh_user="ceph", ssh_key_path="/tmp/test-key", is_active=True,
+        )
+        session.add(second)
+        session.commit()
+        second_id = second.id
+
+    dashboard_client.get("/crush-map", params={"cluster": second_id})
+    response = dashboard_client.get(f"/api/crush-map/history/{default_snapshot_id}")
+    assert response.status_code == 404
 
 
 def test_api_tree_empty_cluster(dashboard_client):
