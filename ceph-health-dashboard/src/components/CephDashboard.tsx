@@ -77,19 +77,12 @@ export function CephDashboard() {
     };
     load();
     // Metrics remain live without constantly repainting the dashboard. A
-    // WebSocket incident event still requests an immediate refresh. Polling
-    // pauses entirely while the tab is hidden — the /api/dashboard/health
-    // endpoint is SSH-backed, so a backgrounded tab shouldn't keep paying for
-    // it — and refreshes once the moment the operator returns to the tab.
-    const tick = () => { if (!document.hidden) load(); };
-    const onVisible = () => { if (!document.hidden) load(); };
-    const timer = window.setInterval(tick, 30_000);
+    // WebSocket incident event still requests an immediate refresh.
+    const timer = window.setInterval(load, 30_000);
     window.addEventListener("ceph-dashboard-refresh", load);
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("ceph-dashboard-refresh", load);
-      document.removeEventListener("visibilitychange", onVisible);
       controller?.abort();
     };
   }, [reloadToken]);

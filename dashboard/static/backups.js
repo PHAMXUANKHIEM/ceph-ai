@@ -66,9 +66,7 @@
   }
 
   poll();
-  // Pause polling while the tab is hidden; refresh once on return.
-  setInterval(function () { if (document.hidden) return; poll(); }, POLL_INTERVAL_MS);
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(); });
+  setInterval(poll, POLL_INTERVAL_MS);
 
   function postRunNow(url, payload, button) {
     button.disabled = true;
