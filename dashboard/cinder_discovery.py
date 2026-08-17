@@ -63,6 +63,76 @@ def normalize_cinder_volume(payload: dict, expected_id: str) -> dict:
     }
 
 
+def reconcile_cinder_attachment(cinder: dict, watchers: list, locks: list) -> dict:
+    """Compare stable Cinder state with Ceph evidence without mutating either side."""
+    cinder_status = cinder.get("status")
+    watcher_count = len(watchers) if isinstance(watchers, list) else 0
+    lock_count = len(locks) if isinstance(locks, list) else 0
+    observed = watcher_count > 0 or lock_count > 0
+    evidence = {
+        "cinder_attachment_count": 0,
+        "ceph_watcher_count": watcher_count,
+        "ceph_lock_count": lock_count,
+    }
+    if cinder_status == "not_cinder":
+        return {"status": "not_applicable", "safe": False, "evidence": evidence}
+    if cinder_status == "not_found":
+        return {
+            "status": "orphan", "safe": False,
+            "reason": "RBD image theo chuẩn Cinder nhưng volume không còn trong Cinder.",
+            "evidence": evidence,
+        }
+    if cinder_status != "managed" or not cinder.get("verified"):
+        return {
+            "status": "unknown", "safe": False,
+            "reason": cinder.get("error") or "Không xác minh được trạng thái Cinder.",
+            "evidence": evidence,
+        }
+
+    attachments = cinder.get("attachments") if isinstance(cinder.get("attachments"), list) else []
+    attachment_count = len(attachments)
+    evidence["cinder_attachment_count"] = attachment_count
+    volume_status = str(cinder.get("volume_status") or "").lower()
+    evidence["cinder_volume_status"] = volume_status
+
+    if attachment_count > 1 and not cinder.get("multiattach"):
+        return {
+            "status": "mismatch", "safe": False,
+            "reason": "Cinder có nhiều attachment nhưng volume không bật multiattach.",
+            "evidence": evidence,
+        }
+    if volume_status not in {"available", "in-use"}:
+        return {
+            "status": "unknown", "safe": False,
+            "reason": f"Cinder volume đang ở trạng thái chuyển tiếp hoặc lỗi: {volume_status or 'unknown'}.",
+            "evidence": evidence,
+        }
+    if attachment_count and not observed:
+        return {
+            "status": "mismatch", "safe": False,
+            "reason": "Cinder báo attached nhưng Ceph không có watcher/lock.",
+            "evidence": evidence,
+        }
+    if not attachment_count and observed:
+        return {
+            "status": "stale_attachment", "safe": False,
+            "reason": "Cinder không có attachment nhưng Ceph vẫn còn watcher/lock.",
+            "evidence": evidence,
+        }
+    if (volume_status == "available") != (attachment_count == 0):
+        return {
+            "status": "mismatch", "safe": False,
+            "reason": "Cinder status không khớp danh sách attachment.",
+            "evidence": evidence,
+        }
+    return {"status": "healthy", "safe": True, "evidence": evidence}
+
+
+def _is_not_found_error(message: str) -> bool:
+    lowered = message.lower()
+    return "no volume with a name or id" in lowered or "could not find resource" in lowered
+
+
 def discover_cinder_volume(cluster, image: str) -> dict:
     match = _CINDER_IMAGE_RE.fullmatch(image)
     if not match:
@@ -89,4 +159,6 @@ def discover_cinder_volume(cluster, image: str) -> dict:
             raise ValueError("Cinder CLI không trả về JSON object")
         return normalize_cinder_volume(payload, volume_id)
     except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
+        if _is_not_found_error(str(exc)):
+            return {"status": "not_found", "verified": True, "volume_id": volume_id}
         return {"status": "error", "verified": False, "volume_id": volume_id, "error": str(exc)}

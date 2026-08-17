@@ -247,8 +247,9 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
   - Hỗ trợ consumer đã đăng ký; kiểm tra exclusive/shared mode, watcher/lock,
     multipath và trạng thái consumer trước thao tác.
   - Đã có inventory watcher + exclusive lock và attachment summary trong Volume
-    Detail. Management source hiện để `unknown` và mutation fail-closed; chưa có
-    attach/detach cho tới khi hoàn tất discovery Cinder source of truth.
+    Detail. Cinder volume được đối soát với watcher/lock thành `healthy`,
+    `mismatch`, `stale_attachment`, `orphan` hoặc `unknown`; mọi trạng thái chưa
+    an toàn đều fail-closed. Chưa có attach/detach qua Cinder.
 - [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
   - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
@@ -479,6 +480,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-02 Trash TTL | Hoàn thành code | Thêm `RBD_TRASH_RETENTION_DAYS` mặc định 7 ngày; tính hạn từ `deletion_time`, hiển thị số ngày còn lại. Item thiếu timestamp hoặc chưa hết TTL không có nút hard-delete; API đơn lẻ và purge-all cùng enforce lại server-side. | Nhóm Trash `27 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | BS-02 code nền tảng đã đủ; tiếp theo live Ceph acceptance hoặc BS-03 Attachment. |
 | 2026-08-17 | BS-03 Attachment Inventory | Đang làm | Volume Detail đọc thêm `rbd lock list`, chuẩn hóa watcher/lock và attachment summary; UI hiển thị attachment guard. Khi chưa xác định Cinder source of truth, management source là `unknown` và mutation bị khóa fail-closed. | Parser detail `2 passed`; nhóm Volume Inventory `6 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | Tiếp theo discovery/mapping consumer Cinder; chỉ mở attach/detach qua control plane đã xác minh. |
 | 2026-08-17 | BS-03 Cinder Discovery | Đang làm | Thêm cấu hình `openstack_openrc_path` theo cluster; nhận diện RBD `volume-<UUID>`, truy vấn `openstack volume show` read-only trên Controller và hiển thị project/type/status/backend cùng attachment instance/host/device. Credential ở lại Controller; lỗi/thiếu cấu hình fail-closed và không bật mutation. Phạm vi Kubernetes/CSI đã loại khỏi roadmap. | Discovery `2 passed`; Settings `1 passed`; Volume Detail `2 passed`; một Alembic head; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo đối soát watcher/lock với Cinder attachment và phát hiện orphan/mismatch trước khi xây attach/detach qua Cinder. |
+| 2026-08-17 | BS-03 Cinder Reconciliation | Hoàn thành code | Đối soát Cinder status/attachment/multiattach với Ceph watcher/lock; phân loại `healthy`, `mismatch`, `stale_attachment`, `orphan`, `unknown` và hiển thị evidence/reason trong Volume Detail. Cinder UUID không còn record được tách khỏi lỗi kết nối; mọi trạng thái ngoài `healthy` đều fail-closed. | Reconciliation/discovery `9 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo thiết kế attach/detach chỉ qua Cinder với approval, idempotency và post-check hai phía. |
 
 ## Ghi chú bàn giao
 

@@ -1520,6 +1520,7 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
         volumes_route, "discover_cinder_volume",
         lambda cluster, image: {
             "status": "managed", "verified": True, "volume_id": volume_id,
+            "volume_status": "in-use", "multiattach": False,
             "attachments": [{"attachment_id": "attach-1", "instance_id": "vm-1"}],
         },
     )
@@ -1533,6 +1534,7 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
     assert payload["attachment_summary"]["management_source"] == "openstack_cinder"
     assert payload["attachment_summary"]["consumer_count"] == 1
     assert payload["attachment_summary"]["mutation_supported"] is False
+    assert payload["attachment_reconciliation"]["status"] == "mismatch"
 
 
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):

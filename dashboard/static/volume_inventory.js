@@ -169,15 +169,23 @@
         (item.size ? " · " + bytes(item.size) : "");
     });
     var attachment = data.attachment_summary || {};
+    var reconciliation = data.attachment_reconciliation || {};
     var attachmentGuard = document.createElement("p");
-    attachmentGuard.className = attachment.attached ? "error" : "hint";
+    attachmentGuard.className = reconciliation.status === "healthy" ? "hint" : "error";
     attachmentGuard.textContent = "Attachment guard: " +
       (attachment.attached ? "đang có consumer" : "không phát hiện consumer") +
       " · Watcher: " + Number(attachment.watcher_count || 0) +
       " · Lock: " + Number(attachment.lock_count || 0) +
       " · Control plane: " + (attachment.management_source || "unknown") +
+      " · Reconcile: " + (reconciliation.status || "unknown") +
       " · Attach/detach trực tiếp: " + (attachment.mutation_supported ? "cho phép" : "đã khóa");
     detail.appendChild(attachmentGuard);
+    if (reconciliation.reason) {
+      var reconcileReason = document.createElement("p");
+      reconcileReason.className = "error";
+      reconcileReason.textContent = "Đối soát attachment: " + reconciliation.reason;
+      detail.appendChild(reconcileReason);
+    }
     var cinder = data.cinder || {};
     if (cinder.status === "managed") {
       var cinderSummary = document.createElement("p");
@@ -191,7 +199,7 @@
       addListSection(detail, "Cinder Attachment", cinder.attachments || [], function (item) {
         return [item.attachment_id, item.instance_id, item.host, item.device].filter(Boolean).join(" · ") || JSON.stringify(item);
       });
-    } else if (cinder.status === "error" || cinder.status === "not_configured") {
+    } else if (["error", "not_configured", "not_found"].indexOf(cinder.status) !== -1) {
       var cinderWarning = document.createElement("p");
       cinderWarning.className = "error";
       cinderWarning.textContent = "Cinder discovery: " + (cinder.error || cinder.status);
