@@ -211,16 +211,21 @@ lưu bền vững. Không lưu secret dạng clear text.
   - Metadata, feature, watchers/locks, attachment, parent/child, snapshot/clone,
     backup status, metric và audit gần nhất.
   - Đã có size/format/features, snapshot, parent, children/clone và watcher từ
-    `rbd info/snap ls/status/children`; còn thiếu backup/audit summary và
-    degradation theo từng subsection khi một command phụ lỗi.
-- [ ] **1.4 Pool overview read-only**
+    `rbd info/snap ls/status/children`; command phụ lỗi được degrade theo từng
+    subsection và trả `partial_errors`, không làm mất metadata chính. Còn thiếu
+    backup/audit summary.
+- [~] **1.4 Pool overview read-only**
   - Pool type, replication/EC profile, logical/physical usage, image count,
     health, near-full state và capability RBD.
+  - Đã có type, replica/min-size hoặc EC profile, PG/PGP, CRUSH rule, physical
+    used/max-available/percent, object count và RBD capability từ pool detail +
+    `ceph df detail`; còn thiếu health/near-full mapping trực tiếp.
 - [~] **1.5 Kiểm thử và nghiệm thu**
   - Empty/error/pagination, input escaping, cluster isolation, stale cache,
     non-admin read-only và redaction.
-  - Đã có parser test, search/sort/pagination, secondary-cluster connection và
-    input validation. Còn thiếu inactive cluster, partial error và live Ceph.
+  - Đã có 10 test cho parser, search/sort/pagination, secondary-cluster
+    connection, input validation, read-only role, backend error, pool overview
+    partial error và inactive-cluster fail-closed. Còn thiếu live Ceph.
 
 **Hoàn thành khi:** operator xem được inventory thật và dependency của volume ở
 cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
@@ -442,6 +447,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 0.1–0.4 | Đang làm | Audit route, model, Watcher, Worker và policy hiện có. Xác nhận nền tảng volume performance, RBD trash, full/incremental backup, retention, checksum, restore và restore drill; ghi rõ các khoảng trống CRUD/snapshot/clone/QoS/DR và hai rủi ro multi-cluster metric + force purge. | Test tập trung: `239 passed, 1 error`; lỗi ở fixture lifespan/SQLite in-memory trước assertion đầu tiên. | Sửa/cô lập lỗi setup, chạy lại baseline; ưu tiên bỏ force purge trực tiếp và hoàn thiện inventory read-only. |
 | 2026-08-17 | Fix metric multi-cluster | Hoàn thành code + test tập trung | Tách rolling state và last-poll sample theo cluster; thêm discovery RBD pool/query iostat bằng connection cluster phụ; persist `VolumeMetric.cluster_id`; scope lifecycle Incident bão hòa; nối collector vào observed-cluster loop. Thêm backlog BS-01–BS-09 cho phần còn thiếu. | `tests/test_volume_monitor.py`: 16 passed; 2 test integration Watcher volume path: 2 passed. Lượt suite rộng hơn được dừng sau `40 passed` vì test kế tiếp đi vào SSH Paramiko chậm; không có failure trước khi dừng. | Chưa kiểm chứng live trên Ceph phụ; tiếp theo BS-01 và thay force purge trực tiếp. |
 | 2026-08-17 | BS-01 | Đang làm | Thêm adaptor `rbd du/info/snap ls/status/children`, inventory/detail API scoped theo cluster và card UI live có search/sort/pagination/freshness/capacity summary/dependency detail. | 6 test mới đạt; `py_compile` + `node --check` đạt. Một lượt trước gặp đúng race fixture SQLite lifespan đã ghi ở baseline và test đó đạt khi chạy lại. | Bổ sung pool overview sâu, partial-error detail, inactive-cluster test và kiểm chứng live trước khi đóng BS-01. |
+| 2026-08-17 | BS-01 Pool Overview | Đang làm | Thêm pool durability/capacity overview từ `ceph osd pool ls detail` + `ceph df detail`; Volume Detail degrade riêng snapshot/watcher/children và công bố `partial_errors`; request chỉ rõ cluster inactive fail-closed, không rơi về default. | Nhóm BS-01: `10 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn health/near-full và live Ceph; sau đó đóng BS-01 và sang BS-02. |
 
 ## Ghi chú bàn giao
 

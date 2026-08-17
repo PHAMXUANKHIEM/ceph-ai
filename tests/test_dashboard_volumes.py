@@ -1476,3 +1476,49 @@ def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_er
 
     assert response.status_code == 502
     assert "MON timeout" in response.json()["detail"]
+
+
+def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {
+            "pool": pool, "pool_id": 3, "type": "replicated", "replica_size": 3,
+            "min_size": 2, "pg_num": 32, "pgp_num": 32, "crush_rule": 0,
+            "erasure_code_profile": None, "rbd_enabled": True, "bytes_used": 2048,
+            "max_available": 8192, "percent_used": 20.0, "objects": 5,
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/volumes/vms/inventory-overview")
+
+    assert response.status_code == 200
+    assert response.json()["replica_size"] == 3
+    assert response.json()["rbd_enabled"] is True
+    assert response.json()["bytes_used"] == 2048
+
+
+def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    with db_module.SessionLocal() as session:
+        inactive = Cluster(
+            name="inactive", ceph_mon_nodes="10.9.0.1", ceph_container_name="",
+            ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none",
+            is_default=False, is_active=False,
+        )
+        session.add(inactive)
+        session.commit()
+        cluster_id = inactive.id
+    default_calls = []
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory",
+        lambda pool: default_calls.append(pool) or [],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/api/volumes/vms/inventory?cluster={cluster_id}")
+
+    assert response.status_code == 409
+    assert "không fallback" in response.json()["detail"]
+    assert default_calls == []

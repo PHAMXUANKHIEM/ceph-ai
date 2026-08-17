@@ -963,6 +963,42 @@ def test_normalize_rbd_image_detail_exposes_dependencies_and_watchers():
     assert detail["children"] == ["vms/child"]
 
 
+def test_query_rbd_image_detail_keeps_info_when_optional_section_fails(monkeypatch):
+    def fake_query(command):
+        if command.startswith("rbd info"):
+            return "mon", {"id": "img-1", "size": 4096, "features": ["layering"]}
+        if command.startswith("rbd status"):
+            return "mon", {"watchers": [{"client": "client.7"}]}
+        raise CephQueryError("optional command unsupported")
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_query)
+
+    detail = ceph_client.query_rbd_image_detail("vms", "vm-01")
+
+    assert detail["image_id"] == "img-1"
+    assert detail["watchers"] == [{"client": "client.7"}]
+    assert set(detail["partial_errors"]) == {"snapshots", "children"}
+
+
+def test_normalize_rbd_pool_overview_combines_durability_and_usage():
+    overview = ceph_client._normalize_rbd_pool_overview(
+        "vms",
+        [{
+            "pool": 4, "pool_name": "vms", "type": "replicated", "size": 3,
+            "min_size": 2, "pg_num": 64, "pg_placement_num": 64,
+            "crush_rule": 1, "application_metadata": {"rbd": {}},
+        }],
+        {"pools": [{"name": "vms", "stats": {"bytes_used": 1024, "max_avail": 8192, "percent_used": 12.5, "objects": 10}}]},
+    )
+
+    assert overview == {
+        "pool": "vms", "pool_id": 4, "type": "replicated", "replica_size": 3,
+        "min_size": 2, "pg_num": 64, "pgp_num": 64, "crush_rule": 1,
+        "erasure_code_profile": None, "rbd_enabled": True, "bytes_used": 1024,
+        "max_available": 8192, "percent_used": 12.5, "objects": 10,
+    }
+
+
 def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     fake_ssh.behavior = {

@@ -242,7 +242,7 @@ def query_rbd_inventory_with(
 
 def _normalize_rbd_image_detail(
     pool: str, image: str, info: dict | list, snapshots: dict | list,
-    status: dict | list, children: dict | list,
+    status: dict | list, children: dict | list, errors: dict | None = None,
 ) -> dict:
     info_row = info if isinstance(info, dict) else {}
     snapshot_rows = snapshots if isinstance(snapshots, list) else snapshots.get("snapshots", []) if isinstance(snapshots, dict) else []
@@ -267,18 +267,29 @@ def _normalize_rbd_image_detail(
         "snapshots": snapshot_rows if isinstance(snapshot_rows, list) else [],
         "watchers": watcher_rows if isinstance(watcher_rows, list) else [],
         "children": child_rows if isinstance(child_rows, list) else [],
+        "partial_errors": errors or {},
     }
 
 
 def query_rbd_image_detail(pool: str, image: str) -> dict:
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
-    queries = (
-        run_ceph_json_command(f"rbd info {spec}")[1],
-        run_ceph_json_command(f"rbd snap ls {spec}")[1],
-        run_ceph_json_command(f"rbd status {spec}")[1],
-        run_ceph_json_command(f"rbd children {spec}")[1],
+    info = run_ceph_json_command(f"rbd info {spec}")[1]
+    errors: dict[str, str] = {}
+
+    def optional(section: str, command: str) -> dict | list:
+        try:
+            return run_ceph_json_command(command)[1]
+        except CephQueryError as exc:
+            errors[section] = str(exc)
+            return []
+
+    return _normalize_rbd_image_detail(
+        pool, image, info,
+        optional("snapshots", f"rbd snap ls {spec}"),
+        optional("watchers", f"rbd status {spec}"),
+        optional("children", f"rbd children {spec}"),
+        errors,
     )
-    return _normalize_rbd_image_detail(pool, image, *queries)
 
 
 def query_rbd_image_detail_with(
@@ -287,13 +298,72 @@ def query_rbd_image_detail_with(
 ) -> dict:
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
     connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
-    queries = (
-        run_ceph_json_command_with(*connection, f"rbd info {spec}")[1],
-        run_ceph_json_command_with(*connection, f"rbd snap ls {spec}")[1],
-        run_ceph_json_command_with(*connection, f"rbd status {spec}")[1],
-        run_ceph_json_command_with(*connection, f"rbd children {spec}")[1],
+    info = run_ceph_json_command_with(*connection, f"rbd info {spec}")[1]
+    errors: dict[str, str] = {}
+
+    def optional(section: str, command: str) -> dict | list:
+        try:
+            return run_ceph_json_command_with(*connection, command)[1]
+        except CephQueryError as exc:
+            errors[section] = str(exc)
+            return []
+
+    return _normalize_rbd_image_detail(
+        pool, image, info,
+        optional("snapshots", f"rbd snap ls {spec}"),
+        optional("watchers", f"rbd status {spec}"),
+        optional("children", f"rbd children {spec}"),
+        errors,
     )
-    return _normalize_rbd_image_detail(pool, image, *queries)
+
+
+def _normalize_rbd_pool_overview(pool: str, pool_detail: dict | list, df: dict | list) -> dict:
+    detail_rows = pool_detail if isinstance(pool_detail, list) else pool_detail.get("pools", []) if isinstance(pool_detail, dict) else []
+    detail = next(
+        (row for row in detail_rows if isinstance(row, dict) and (row.get("pool_name") or row.get("name")) == pool),
+        {},
+    )
+    df_rows = df.get("pools", []) if isinstance(df, dict) else []
+    usage = next(
+        (row.get("stats", row) for row in df_rows if isinstance(row, dict) and (row.get("name") or row.get("pool_name")) == pool),
+        {},
+    )
+    applications = detail.get("application_metadata") if isinstance(detail, dict) else {}
+    pool_type = detail.get("type") if isinstance(detail, dict) else None
+    if pool_type is None and isinstance(detail, dict):
+        pool_type = "erasure" if detail.get("erasure_code_profile") else "replicated"
+    return {
+        "pool": pool,
+        "pool_id": detail.get("pool") if isinstance(detail, dict) else None,
+        "type": pool_type,
+        "replica_size": _as_int(detail.get("size")) if isinstance(detail, dict) else 0,
+        "min_size": _as_int(detail.get("min_size")) if isinstance(detail, dict) else 0,
+        "pg_num": _as_int(detail.get("pg_num")) if isinstance(detail, dict) else 0,
+        "pgp_num": _as_int(detail.get("pg_placement_num") or detail.get("pgp_num")) if isinstance(detail, dict) else 0,
+        "crush_rule": detail.get("crush_rule") if isinstance(detail, dict) else None,
+        "erasure_code_profile": detail.get("erasure_code_profile") if isinstance(detail, dict) else None,
+        "rbd_enabled": isinstance(applications, dict) and "rbd" in applications,
+        "bytes_used": _as_int(usage.get("bytes_used")) if isinstance(usage, dict) else 0,
+        "max_available": _as_int(usage.get("max_avail")) if isinstance(usage, dict) else 0,
+        "percent_used": _as_float(usage.get("percent_used")) if isinstance(usage, dict) else 0.0,
+        "objects": _as_int(usage.get("objects")) if isinstance(usage, dict) else 0,
+    }
+
+
+def query_rbd_pool_overview(pool: str) -> dict:
+    detail = run_ceph_json_command("ceph osd pool ls detail")[1]
+    usage = run_ceph_json_command("ceph df detail")[1]
+    return _normalize_rbd_pool_overview(pool, detail, usage)
+
+
+def query_rbd_pool_overview_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> dict:
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
+    detail = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")[1]
+    usage = run_ceph_json_command_with(*connection, "ceph df detail")[1]
+    return _normalize_rbd_pool_overview(pool, detail, usage)
 
 
 def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:

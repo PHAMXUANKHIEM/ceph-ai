@@ -100,6 +100,14 @@
         </p>
       </div>
       <div class="card-body">
+        <div class="node-summary-grid" id="volume-pool-overview" aria-live="polite">
+          <div class="summary-item"><span>Kiểu Pool</span><strong data-field="type">—</strong></div>
+          <div class="summary-item"><span>Độ bền</span><strong data-field="durability">—</strong></div>
+          <div class="summary-item"><span>PG</span><strong data-field="pg">—</strong></div>
+          <div class="summary-item"><span>Physical usage</span><strong data-field="physical">—</strong></div>
+          <div class="summary-item"><span>RBD</span><strong data-field="rbd">—</strong></div>
+        </div>
+        <p class="error" id="volume-pool-overview-error" hidden></p>
         <form class="audit-filters" id="volume-inventory-filter">
           <label>Tìm Volume
             <input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tên hoặc ID Volume" autocomplete="off">

@@ -16,6 +16,8 @@
   var next = document.getElementById("volume-inventory-next");
   var pageStatus = document.getElementById("volume-inventory-page-status");
   var detail = document.getElementById("volume-inventory-detail");
+  var overview = document.getElementById("volume-pool-overview");
+  var overviewError = document.getElementById("volume-pool-overview-error");
   var state = { page: 1, pages: 1, loading: false };
 
   function bytes(value) {
@@ -138,6 +140,13 @@
       " · Object: " + data.object_count + " × " + bytes(data.object_size) +
       " · Format: " + (data.format || "—") + " · Features: " + ((data.features || []).join(", ") || "—");
     detail.appendChild(summary);
+    var partialErrors = data.partial_errors || {};
+    if (Object.keys(partialErrors).length) {
+      var warning = document.createElement("p");
+      warning.className = "error";
+      warning.textContent = "Một số mục không đọc được: " + Object.keys(partialErrors).join(", ");
+      detail.appendChild(warning);
+    }
     if (data.parent) {
       var parent = document.createElement("p");
       parent.textContent = "Parent: " + (typeof data.parent === "string" ? data.parent : JSON.stringify(data.parent));
@@ -168,6 +177,30 @@
     });
   }
 
+  function setOverview(field, value) {
+    var target = overview.querySelector('[data-field="' + field + '"]');
+    if (target) target.textContent = value;
+  }
+
+  function loadOverview() {
+    requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory-overview")
+      .then(function (data) {
+        var durability = data.type === "erasure"
+          ? "EC " + (data.erasure_code_profile || "—")
+          : "Replica " + data.replica_size + " / min " + data.min_size;
+        setOverview("type", data.type || "—");
+        setOverview("durability", durability);
+        setOverview("pg", String(data.pg_num || 0) + " / PGP " + String(data.pgp_num || 0));
+        setOverview("physical", bytes(data.bytes_used) + " · " + Number(data.percent_used || 0).toFixed(1) + "%");
+        setOverview("rbd", data.rbd_enabled ? "Enabled" : "Disabled");
+      })
+      .catch(function (exc) {
+        if (exc.message === "unauthenticated") return;
+        overviewError.textContent = exc.message;
+        overviewError.hidden = false;
+      });
+  }
+
   form.addEventListener("submit", function (event) {
     event.preventDefault();
     state.page = 1;
@@ -175,5 +208,6 @@
   });
   prev.addEventListener("click", function () { if (state.page > 1) { state.page -= 1; loadInventory(); } });
   next.addEventListener("click", function () { if (state.page < state.pages) { state.page += 1; loadInventory(); } });
+  loadOverview();
   loadInventory();
 }());

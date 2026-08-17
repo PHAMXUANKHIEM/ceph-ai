@@ -87,7 +87,14 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
 
 
 def _cluster_for_request(request: Request):
-    return selected_cluster(request)
+    cluster = selected_cluster(request)
+    requested = request.query_params.get("cluster", "").strip()
+    if requested and cluster.id != requested:
+        raise HTTPException(
+            status_code=409,
+            detail="Cluster được yêu cầu không tồn tại hoặc đã bị vô hiệu hóa; không fallback sang cluster mặc định",
+        )
+    return cluster
 
 
 def _allowed_pools_for_request(request: Request) -> tuple[object, set[str]]:
@@ -499,6 +506,26 @@ async def volume_inventory_api(
         "pages": max(1, (total + page_size - 1) // page_size),
         "collected_at": datetime.utcnow().isoformat() + "Z",
     }
+
+
+@router.get("/api/volumes/{pool}/inventory-overview")
+async def volume_inventory_overview_api(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    """Live RBD pool durability and physical-capacity context."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        overview = (
+            ceph_client.query_rbd_pool_overview(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được tổng quan Pool: {exc}")
+    return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}")
