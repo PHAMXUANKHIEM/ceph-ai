@@ -153,7 +153,7 @@ def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client,
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert response.text.count("Đề xuất xoá tất cả</button>") == 2
+    assert response.text.count("Xoá vĩnh viễn tất cả (1)</button>") == 2
     assert 'action="/volumes/vms/trash/purge-all"' in response.text
     assert 'action="/volumes/backups/trash/purge-all"' in response.text
 
@@ -1107,7 +1107,8 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'src="/static/trash.js' in response.text
     assert 'id="trash-purge-all-btn"' in response.text
     assert 'action="/volumes/vms/trash/purge-all"' in response.text
-    assert "XOÁ VĨNH VIỄN tất cả 1 volume" in response.text
+    assert "Xoá vĩnh viễn tất cả (1)" in response.text
+    assert "XOÁ VĨNH VIỄN tất cả 1 volume đã hết TTL" in response.text
 
 
 def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch):
@@ -1404,6 +1405,9 @@ def test_trash_ttl_blocks_early_delete_and_purge_all(dashboard_client, monkeypat
     assert page.status_code == 200
     assert "Còn 30 ngày" in page.text
     assert "Chưa hết TTL" in page.text
+    assert 'id="trash-purge-all-btn" disabled' in page.text
+    assert 'title="Chưa có volume nào hết TTL"' in page.text
+    assert 'action="/volumes/vms/trash/purge-all"' not in page.text
     assert 'action="/volumes/vms/trash/fresh-id/propose"' not in page.text
     assert single.status_code == 409
     assert bulk.status_code == 409
