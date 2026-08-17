@@ -41,6 +41,8 @@ type PoolsBootstrap = {
   queryError?: string | null;
 };
 
+const POOLS_PER_PAGE = 10;
+
 function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, onClick }: { icon: React.ElementType; label: string; danger?: boolean; disabled?: boolean; onClick?: () => void }) {
   return (
     <button
@@ -65,10 +67,17 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [modal, setModal] = useState<"metrics" | "edit" | "scrub" | "details" | "delete" | "protection" | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [visible, setVisible] = useState<Record<string, boolean>>({ redundancy: true, pgs: true, crush_rule: true, used: true, objects: true, read_iops: true, write_iops: true });
   const selectedRow = useMemo(() => rows.find((row) => row.name === selected), [rows, selected]);
   const filteredRows = useMemo(() => rows.filter((row) => `${row.name} ${row.redundancy} ${row.crush_rule}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / POOLS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const paginatedRows = useMemo(
+    () => filteredRows.slice((currentPage - 1) * POOLS_PER_PAGE, currentPage * POOLS_PER_PAGE),
+    [filteredRows, currentPage],
+  );
   const actionLabels: Record<string, string> = { edit_pool: "cập nhật", scrub_pool: "scrub", delete_pool: "xóa", set_pool_protection: "đổi trạng thái bảo vệ" };
   const openSelected = (value: typeof modal) => { if (selectedRow) setModal(value); };
 
@@ -124,7 +133,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
             </div>
           </div>
         </div>
-        {searchOpen && <div className="border-b border-slate-200 px-5 py-3"><label className="relative block max-w-md"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} autoFocus placeholder="Tìm theo tên, redundancy hoặc CRUSH rule..." className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-violet-400" /></label></div>}
+        {searchOpen && <div className="border-b border-slate-200 px-5 py-3"><label className="relative block max-w-md"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} autoFocus placeholder="Tìm theo tên, redundancy hoặc CRUSH rule..." className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-violet-400" /></label></div>}
 
         <div className="pools-table-wrap overflow-x-auto px-3 py-4 sm:px-5">
           <table className="min-w-[1000px] w-full text-sm">
@@ -148,7 +157,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
                     {rows.length === 0 ? "Chưa có pool." : "Không tìm thấy pool phù hợp."}
                   </td>
                 </tr>
-              ) : filteredRows.map((row, index) => {
+              ) : paginatedRows.map((row, index) => {
                 const active = row.name === selected;
                 return (
                   <tr
@@ -175,10 +184,10 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
         <footer className="flex flex-col gap-4 border-t border-slate-200 px-5 py-4 text-sm lg:flex-row lg:items-center lg:justify-between">
           <div>{selected && <button type="button" onClick={() => setSelected("")} className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-slate-600 transition hover:bg-slate-200">1 selected <X size={14} /></button>}</div>
           <div className="flex flex-wrap items-center justify-center gap-3 text-slate-600">
-            <span>Page</span><input value="1" readOnly aria-label="Page number" className="h-8 w-10 rounded border border-slate-200 bg-white text-center outline-none focus:border-violet-400" /><span>of 1</span>
-            <label className="ml-2 inline-flex items-center gap-2">Rows per page:<select defaultValue="20" className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-violet-400"><option>20</option></select></label>
-            <button disabled className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-300"><ChevronLeft size={16} /></button>
-            <button disabled className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-300"><ChevronRight size={16} /></button>
+            <span>Page</span><input value={currentPage} readOnly aria-label="Page number" className="h-8 w-10 rounded border border-slate-200 bg-white text-center outline-none focus:border-violet-400" /><span>of {totalPages}</span>
+            <label className="ml-2 inline-flex items-center gap-2">Rows per page:<select value={POOLS_PER_PAGE} disabled aria-label="Rows per page" className="h-8 rounded border border-slate-200 bg-white px-2 outline-none"><option value={POOLS_PER_PAGE}>{POOLS_PER_PAGE}</option></select></label>
+            <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1} aria-label="Previous page" className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300"><ChevronLeft size={16} /></button>
+            <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage === totalPages} aria-label="Next page" className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300"><ChevronRight size={16} /></button>
           </div>
           <div className="text-right text-xs text-slate-400"><div>{bootstrap.updatedAgo}</div><time>{bootstrap.updatedAt}</time></div>
         </footer>

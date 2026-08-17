@@ -30,7 +30,17 @@
 
   <main class="page">
     {% if is_admin %}<section class="card"><div class="card-body"><p id="object-storage-capability-status" class="hint">Đang kiểm tra capability theo phiên bản Ceph thực tế...</p></div></section>{% endif %}
-    <section class="card">
+    <nav class="bucket-feature-tabs" role="tablist" aria-label="Tính năng Buckets">
+      <button type="button" class="bucket-feature-tab is-active" role="tab" aria-selected="true" aria-controls="bucket-overview-panel" data-bucket-tab="bucket-overview-panel">Danh sách bucket</button>
+      {% if is_admin %}
+      <button type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="bucket-create-panel" data-bucket-tab="bucket-create-panel">Tạo bucket</button>
+      <button type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="bucket-governance-panel" data-bucket-tab="bucket-governance-panel">Quota, Versioning &amp; Retention</button>
+      <button type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="bucket-lifecycle-panel" data-bucket-tab="bucket-lifecycle-panel">Lifecycle Policy</button>
+      <button type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="bucket-policy-panel" data-bucket-tab="bucket-policy-panel">Bucket Policy &amp; ACL</button>
+      <button type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="bucket-delete-panel" data-bucket-tab="bucket-delete-panel">Xóa bucket</button>
+      {% endif %}
+    </nav>
+    <section id="bucket-overview-panel" class="card bucket-feature-panel" role="tabpanel">
       <div class="card-header">
         <div><h2>Bucket Overview</h2><p class="hint">Bucket RGW trên cụm <strong>{{ selected_cluster.name }}</strong>. Metadata được đọc trực tiếp từ RGW.</p></div>
       </div>
@@ -75,7 +85,7 @@
         {% if inventory.page_count > 1 %}<span>{% if inventory.page > 1 %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page - 1 }}">Trước</a>{% endif %}{% if inventory.page < inventory.page_count %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page + 1 }}">Sau</a>{% endif %}</span>{% endif %}
       </div>
     </section>
-    {% if is_admin %}<section class="card"><div class="card-header"><div><h2>Tạo bucket</h2><p class="hint">Kiểm tra phiên bản Ceph trực tiếp, tạo bucket qua S3 API và dùng access key tạm của owner; key được thu hồi ngay sau request.</p></div></div><div class="card-body">
+    {% if is_admin %}<section id="bucket-create-panel" class="card bucket-feature-panel" role="tabpanel" hidden><div class="card-header"><div><h2>Tạo bucket</h2><p class="hint">Kiểm tra phiên bản Ceph trực tiếp, tạo bucket qua S3 API và dùng access key tạm của owner; key được thu hồi ngay sau request.</p></div></div><div class="card-body">
       <form id="bucket-create-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
         <label>Tên bucket<input id="bucket-create-name" maxlength="63" required placeholder="team-archive"></label>
         <label>Owner UID<input id="bucket-create-owner" maxlength="128" required></label>
@@ -88,7 +98,7 @@
       <div id="bucket-create-preview" hidden><p id="bucket-create-summary"></p><label>Nhập lại tên bucket<input id="bucket-create-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-create-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
       <p id="bucket-create-status" class="hint"></p>
     </div></section>
-    <section class="card"><div class="card-header"><div><h2>Quota, Versioning &amp; Retention</h2><p class="hint">Mọi thay đổi đều kiểm tra live Ceph capability, preview và yêu cầu nhập lại tên bucket. Versioning/retention dùng credential tạm của owner.</p></div></div><div class="card-body">
+    <section id="bucket-governance-panel" class="card bucket-feature-panel" role="tabpanel" hidden><div class="card-header"><div><h2>Quota, Versioning &amp; Retention</h2><p class="hint">Mọi thay đổi đều kiểm tra live Ceph capability, preview và yêu cầu nhập lại tên bucket. Versioning/retention dùng credential tạm của owner.</p></div></div><div class="card-body">
       <form id="bucket-governance-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
         <label>Thao tác<select id="bucket-governance-action"><option value="quota_set">Đặt quota</option><option value="quota_enable">Bật quota</option><option value="quota_disable">Tắt quota</option><option value="versioning_enable" data-capability="versioning">Bật versioning</option><option value="versioning_suspend" data-capability="versioning">Suspend versioning</option><option value="retention_set" data-capability="object-lock">Đặt default retention</option></select></label>
         <label>Bucket<input id="bucket-governance-name" maxlength="63" required></label>
@@ -103,7 +113,7 @@
       <div id="bucket-governance-preview" hidden><p id="bucket-governance-summary"></p><label>Nhập lại tên bucket<input id="bucket-governance-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-governance-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
       <p id="bucket-governance-status" class="hint"></p>
     </div></section>
-    <section class="card"><div class="card-header"><div><h2>Lifecycle Policy</h2><p class="hint">Schema giới hạn an toàn cho expiration, noncurrent expiration, abort multipart và transition. Preview quét tối đa 1.000 object hiện tại; multipart/noncurrent được báo riêng là không thể ước lượng qua ListObjectsV2.</p></div></div><div class="card-body">
+    <section id="bucket-lifecycle-panel" class="card bucket-feature-panel" role="tabpanel" hidden><div class="card-header"><div><h2>Lifecycle Policy</h2><p class="hint">Schema giới hạn an toàn cho expiration, noncurrent expiration, abort multipart và transition. Preview quét tối đa 1.000 object hiện tại; multipart/noncurrent được báo riêng là không thể ước lượng qua ListObjectsV2.</p></div></div><div class="card-body">
       <form id="bucket-lifecycle-form" data-cluster="{{ selected_cluster.id }}">
         <div class="audit-filters"><label>Thao tác<select id="bucket-lifecycle-action"><option value="lifecycle_put">Áp dụng/cập nhật rules</option><option value="lifecycle_delete">Xóa lifecycle configuration</option></select></label><label>Bucket<input id="bucket-lifecycle-name" maxlength="63" required></label><label>Owner UID<input id="bucket-lifecycle-owner" maxlength="128" required></label><label>RGW S3 endpoint<input id="bucket-lifecycle-endpoint" type="url" required placeholder="https://rgw.example.com"></label></div>
         <label id="bucket-lifecycle-rules-label">Rules JSON<textarea id="bucket-lifecycle-rules" rows="12" spellcheck="false">[
@@ -115,7 +125,7 @@
       <div id="bucket-lifecycle-preview" hidden><pre id="bucket-lifecycle-summary"></pre><label>Nhập lại tên bucket<input id="bucket-lifecycle-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-lifecycle-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
       <p id="bucket-lifecycle-status" class="hint"></p>
     </div></section>
-    <section class="card"><div class="card-header"><div><h2>Bucket Policy &amp; ACL</h2><p class="hint">Policy mặc định không public. Preview hiển thị trước/sau; mọi cấu hình public hoặc authenticated-read yêu cầu xác nhận mạnh <code>PUBLIC:tên-bucket</code>.</p></div></div><div class="card-body">
+    <section id="bucket-policy-panel" class="card bucket-feature-panel" role="tabpanel" hidden><div class="card-header"><div><h2>Bucket Policy &amp; ACL</h2><p class="hint">Policy mặc định không public. Preview hiển thị trước/sau; mọi cấu hình public hoặc authenticated-read yêu cầu xác nhận mạnh <code>PUBLIC:tên-bucket</code>.</p></div></div><div class="card-body">
       <form id="bucket-policy-form" data-cluster="{{ selected_cluster.id }}">
         <div class="audit-filters"><label>Thao tác<select id="bucket-policy-action"><option value="policy_put">Áp dụng policy</option><option value="policy_delete">Xóa policy</option><option value="acl_set">Đặt canned ACL</option></select></label><label>Bucket<input id="bucket-policy-name" maxlength="63" required></label><label>Owner UID<input id="bucket-policy-owner" maxlength="128" required></label><label>RGW S3 endpoint<input id="bucket-policy-endpoint" type="url" required placeholder="https://rgw.example.com"></label><label id="bucket-policy-acl-label" hidden>ACL<select id="bucket-policy-acl"><option value="private">private</option><option value="authenticated-read">authenticated-read</option><option value="public-read">public-read</option><option value="public-read-write">public-read-write</option></select></label></div>
         <label id="bucket-policy-json-label">Policy JSON<textarea id="bucket-policy-json" rows="14" spellcheck="false">{
@@ -133,7 +143,7 @@
       <div id="bucket-policy-preview" hidden><pre id="bucket-policy-diff"></pre><p id="bucket-policy-warning" class="warning"></p><label>Nhập giá trị xác nhận<input id="bucket-policy-confirmation" maxlength="255" autocomplete="off"></label><button id="bucket-policy-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
       <p id="bucket-policy-status" class="hint"></p>
     </div></section>
-    <section class="card"><div class="card-header"><div><h2>Delete Bucket</h2><p class="hint">Bucket rỗng và bucket có dữ liệu là hai luồng riêng. Purge xóa vĩnh viễn toàn bộ object versions và delete markers; hệ thống không bypass retention/Object Lock.</p></div></div><div class="card-body">
+    <section id="bucket-delete-panel" class="card bucket-feature-panel" role="tabpanel" hidden><div class="card-header"><div><h2>Delete Bucket</h2><p class="hint">Bucket rỗng và bucket có dữ liệu là hai luồng riêng. Purge xóa vĩnh viễn toàn bộ object versions và delete markers; hệ thống không bypass retention/Object Lock.</p></div></div><div class="card-body">
       <form id="bucket-delete-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}"><label>Luồng xóa<select id="bucket-delete-action"><option value="delete_empty">Xóa bucket rỗng</option><option value="purge_delete">Purge dữ liệu &amp; xóa bucket</option></select></label><label>Bucket<input id="bucket-delete-name" maxlength="63" required></label><label>Owner UID<input id="bucket-delete-owner" maxlength="128" required></label><label>RGW S3 endpoint<input id="bucket-delete-endpoint" type="url" required placeholder="https://rgw.example.com"></label><button class="btn btn-danger btn-sm" type="submit">Kiểm tra tác động</button></form>
       <div id="bucket-delete-preview" hidden><pre id="bucket-delete-impact"></pre><p id="bucket-delete-warning" class="warning"></p><label>Nhập giá trị xác nhận<input id="bucket-delete-confirmation" maxlength="255" autocomplete="off"></label><button id="bucket-delete-execute" class="btn btn-danger btn-sm" type="button" disabled>Xóa vĩnh viễn</button></div><p id="bucket-delete-status" class="hint"></p>
     </div></section>{% endif %}

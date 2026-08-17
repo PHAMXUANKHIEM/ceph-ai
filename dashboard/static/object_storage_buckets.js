@@ -1,4 +1,33 @@
 (function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-bucket-tab]"));
+  if (!tabs.length) return;
+  var panels = Array.prototype.slice.call(document.querySelectorAll(".bucket-feature-panel"));
+
+  function activate(tab) {
+    tabs.forEach(function (item) {
+      var active = item === tab;
+      item.classList.toggle("is-active", active);
+      item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach(function (panel) { panel.hidden = panel.id !== tab.dataset.bucketTab; });
+  }
+
+  tabs.forEach(function (tab, index) {
+    tab.addEventListener("click", function () { activate(tab); });
+    tab.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      var offset = event.key === "ArrowRight" ? 1 : -1;
+      var next = tabs[(index + offset + tabs.length) % tabs.length];
+      activate(next);
+      next.focus();
+    });
+  });
+  activate(tabs[0]);
+})();
+
+(function () {
   var capabilityStatus = document.getElementById("object-storage-capability-status");
   if (!capabilityStatus) return;
   var source = document.getElementById("bucket-create-form");

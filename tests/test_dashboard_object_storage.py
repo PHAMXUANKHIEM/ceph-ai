@@ -58,6 +58,16 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert ".mgr" not in response.text
     assert '<a href="/object-storage/buckets" class="nav-link active">Buckets</a>' in response.text
     assert '>Object Storage</a>' not in response.text
+    assert 'role="tablist" aria-label="Tính năng Buckets"' in response.text
+    assert 'data-bucket-tab="bucket-overview-panel"' in response.text
+    assert 'id="bucket-create-panel" class="card bucket-feature-panel" role="tabpanel" hidden' in response.text
+
+
+def test_bucket_feature_tabs_only_show_the_selected_panel():
+    source = open("dashboard/static/object_storage_buckets.js", encoding="utf-8").read()
+    assert 'document.querySelectorAll("[data-bucket-tab]")' in source
+    assert "panel.hidden = panel.id !== tab.dataset.bucketTab" in source
+    assert 'item.setAttribute("aria-selected", String(active))' in source
 
 
 def test_capability_api_detects_live_reef_version_and_requires_s3_for_bucket_create(dashboard_client, monkeypatch):

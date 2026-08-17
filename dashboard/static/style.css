@@ -90,6 +90,34 @@ code {
 .error { color: var(--critical); font-size: 0.87rem; margin: 0 0 var(--space-3); }
 .success { color: var(--healthy); font-size: 0.87rem; margin: 0 0 var(--space-3); }
 
+.bucket-feature-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: var(--space-4);
+  padding: 5px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+.bucket-feature-tab {
+  flex: 0 0 auto;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bucket-feature-tab:hover { color: var(--text); background: var(--bg-surface-hover); }
+.bucket-feature-tab.is-active { color: var(--accent); background: var(--accent-bg); }
+.bucket-feature-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bucket-feature-panel[hidden] { display: none; }
+
 /* ===== Generic completion progress bar (e.g. cluster upgrade progress) ===== */
 .progress-bar {
   width: 100%;

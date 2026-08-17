@@ -85,6 +85,15 @@ def test_pools_react_component_contains_requested_toolbar_and_table():
     assert 'name="cluster_id"' in source
 
 
+def test_pools_react_component_limits_each_page_to_ten_rows():
+    source = open("ceph-health-dashboard/src/components/PoolsPage.tsx", encoding="utf-8").read()
+    assert "const POOLS_PER_PAGE = 10;" in source
+    assert "filteredRows.slice((currentPage - 1) * POOLS_PER_PAGE, currentPage * POOLS_PER_PAGE)" in source
+    assert "paginatedRows.map" in source
+    assert 'aria-label="Previous page"' in source
+    assert 'aria-label="Next page"' in source
+
+
 def test_navigation_places_volume_performance_under_monitoring():
     source = open("dashboard/static/app.js", encoding="utf-8").read()
     assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/volumes", "/crush-map"] }' in source
