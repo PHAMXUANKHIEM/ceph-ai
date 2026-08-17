@@ -5,7 +5,7 @@ from alembic import command
 from alembic.config import Config
 
 from config.settings import settings
-from shared.models import Action, Incident, PatchDocument, User
+from shared.models import Action, Incident, ObjectStorageAuditEntry, PatchDocument, User
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,6 +39,15 @@ def test_alembic_upgrade_head_creates_users_table_matching_model(tmp_path, monke
 
     model_columns = {c.name for c in User.__table__.columns}
     assert columns == model_columns
+
+
+def test_alembic_upgrade_head_creates_object_storage_audit_table(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_test.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(object_storage_audit_entries)")}
+    con.close()
+    assert columns == {column.name for column in ObjectStorageAuditEntry.__table__.columns}
 
 
 def test_alembic_upgrade_head_creates_patch_documents_table_matching_model(tmp_path, monkeypatch):

@@ -2,6 +2,7 @@ import dashboard.routes.object_storage_users as route
 from config.settings import settings
 from shared import db
 from shared.models import Cluster
+from shared.models import ObjectStorageAuditEntry
 
 
 def _login(client):
@@ -165,3 +166,49 @@ def test_execute_uses_closed_action_adapter(dashboard_client, monkeypatch):
 
     assert response.status_code == 200
     assert calls == [("10.20.1.90", "modify", "alice", {"display_name": "Alice New", "email": ""})]
+    request_id = response.json()["request_id"]
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, request_id)
+        assert audit.actor == "admin"
+        assert audit.cluster_id == response.json()["cluster_id"]
+        assert audit.target_id == "alice"
+        assert audit.result == "succeeded"
+        assert "secret" not in audit.preview.casefold()
+
+
+def test_failed_action_is_persisted_in_audit(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(
+        route, "execute_s3_user_action",
+        lambda *args: (_ for _ in ()).throw(route.RgwLogError("RGW unavailable")),
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/users/actions/execute", json={
+        "action": "suspend", "uid": "alice", "confirmation": "alice",
+    })
+
+    assert response.status_code == 502
+    with db.SessionLocal() as session:
+        audit = session.query(ObjectStorageAuditEntry).filter_by(target_id="alice").one()
+        assert audit.result == "failed"
+        assert audit.error_message == "RGW unavailable"
+
+
+def test_audit_api_is_admin_only_and_cluster_scoped(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster_id = session.query(Cluster).filter_by(is_default=True).one().id
+        session.add(ObjectStorageAuditEntry(
+            cluster_id=cluster_id, actor="admin", action="enable", target_type="s3_user",
+            target_id="alice", preview="radosgw-admin user enable --uid=alice", result="succeeded",
+        ))
+        session.commit()
+
+    response = dashboard_client.get("/api/object-storage/audit")
+    assert response.status_code == 200
+    assert response.json()["entries"][0]["target_id"] == "alice"
+
+    monkeypatch.setattr(route.auth, "is_admin_user", lambda user: False)
+    assert dashboard_client.get("/api/object-storage/audit").status_code == 403

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from urllib.parse import quote
@@ -16,6 +17,8 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared import db
+from shared.models import ObjectStorageAuditEntry
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_s3_user_info,
@@ -101,6 +104,43 @@ def _execute(cluster, action: str, uid: str, params: dict) -> str:
     return host
 
 
+def _start_audit(cluster_id: str, actor: str, action: str, uid: str, preview: str) -> str:
+    with db.SessionLocal() as session:
+        row = ObjectStorageAuditEntry(
+            cluster_id=cluster_id, actor=actor, action=action, target_type="s3_user",
+            target_id=uid, preview=preview, result="pending",
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+
+
+def _finish_audit(audit_id: str, result: str, error: str | None = None) -> None:
+    with db.SessionLocal() as session:
+        row = session.get(ObjectStorageAuditEntry, audit_id)
+        if row is None:
+            return
+        row.result = result
+        row.error_message = error
+        row.completed_at = datetime.utcnow()
+        session.commit()
+
+
+def _audit_rows(cluster_id: str, limit: int = 50) -> list[dict]:
+    with db.SessionLocal() as session:
+        rows = session.query(ObjectStorageAuditEntry).filter_by(cluster_id=cluster_id).order_by(
+            ObjectStorageAuditEntry.created_at.desc()
+        ).limit(limit).all()
+        return [{
+            "id": row.id, "actor": row.actor, "action": row.action,
+            "target_type": row.target_type, "target_id": row.target_id,
+            "preview": row.preview, "result": row.result,
+            "error": row.error_message,
+            "created_at": row.created_at.isoformat() + "Z",
+            "completed_at": row.completed_at.isoformat() + "Z" if row.completed_at else None,
+        } for row in rows]
+
+
 def _inventory(cluster, query: str, page: int) -> dict:
     host = _host(cluster)
     users = _list(cluster, host)
@@ -170,13 +210,28 @@ async def user_action_execute(request: Request, user: str = Depends(require_logi
     if str(body.get("confirmation") or "") != uid:
         raise HTTPException(status_code=400, detail="Nhập chính xác UID để xác nhận")
     cluster = selected_cluster(request)
+    preview = build_s3_user_action_command(action, uid, params)
+    try:
+        audit_id = await asyncio.to_thread(_start_audit, cluster.id, user, action, uid, preview)
+    except Exception as exc:
+        logger.exception("cannot persist S3 user audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
     try:
         host = await asyncio.to_thread(_execute, cluster, action, uid, params)
     except RgwLogError as exc:
+        await asyncio.to_thread(_finish_audit, audit_id, "failed", str(exc))
         logger.warning("s3_user_action actor=%s cluster=%s action=%s uid=%s result=failed", user, cluster.id, action, uid)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
     logger.info("s3_user_action actor=%s cluster=%s action=%s uid=%s host=%s result=success", user, cluster.id, action, uid, host)
-    return {"ok": True, "action": action, "uid": uid, "cluster_id": cluster.id}
+    return {"ok": True, "action": action, "uid": uid, "cluster_id": cluster.id, "request_id": audit_id}
+
+
+@router.get("/api/object-storage/audit")
+async def audit_api(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    cluster = selected_cluster(request)
+    return {"entries": await asyncio.to_thread(_audit_rows, cluster.id)}
 
 
 @router.get("/object-storage/users", response_class=HTMLResponse)
@@ -193,6 +248,7 @@ async def users_page(request: Request, user: str = Depends(require_login),
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": cluster, "inventory": inventory, "error": error,
         "quote_value": lambda value: quote(value, safe=""),
+        "audit_entries": _audit_rows(cluster.id) if auth.is_admin_user(user) else [],
     })
 
 
