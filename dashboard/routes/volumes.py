@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import or_
 
@@ -443,6 +443,84 @@ async def volume_known_images_api(request: Request, pool: str, user: str = Depen
         images.update(sample["image"] for sample in samples)
 
     return {"pool": pool, "images": sorted(images)}
+
+
+@router.get("/api/volumes/{pool}/inventory")
+async def volume_inventory_api(
+    request: Request,
+    pool: str,
+    search: str = Query("", max_length=128),
+    sort: str = Query("name"),
+    order: str = Query("asc"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    user: str = Depends(require_login),
+):
+    """Live, read-only inventory from ``rbd du`` for the selected cluster."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if sort not in {"name", "provisioned_size", "used_size", "snapshot_count"}:
+        raise HTTPException(status_code=400, detail="Trường sắp xếp không hợp lệ")
+    if order not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="Thứ tự sắp xếp không hợp lệ")
+    try:
+        rows = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_inventory_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}")
+
+    query = search.strip().casefold()
+    if query:
+        rows = [row for row in rows if query in row["name"].casefold()]
+    rows.sort(key=lambda row: (row[sort] if sort != "name" else row["name"].casefold(), row["name"]))
+    if order == "desc":
+        rows.reverse()
+    total = len(rows)
+    start = (page - 1) * page_size
+    all_provisioned = sum(int(row["provisioned_size"]) for row in rows)
+    all_used = sum(int(row["used_size"]) for row in rows)
+    return {
+        "cluster_id": cluster.id,
+        "pool": pool,
+        "items": rows[start:start + page_size],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "summary": {
+            "image_count": total,
+            "provisioned_size": all_provisioned,
+            "used_size": all_used,
+        },
+        "pages": max(1, (total + page_size - 1) // page_size),
+        "collected_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.get("/api/volumes/{pool}/inventory/{image}")
+async def volume_inventory_detail_api(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    """Live image metadata and dependency graph; never mutates the image."""
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not image or len(image) > 128 or "\x00" in image or "/" in image:
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        logger.warning("volume_inventory_detail_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
+        raise HTTPException(status_code=502, detail=f"Không đọc được chi tiết Volume: {exc}")
+    return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **detail}
 
 
 @router.get("/api/volumes/{pool}/{image}/history")

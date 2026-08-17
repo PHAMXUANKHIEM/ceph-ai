@@ -183,6 +183,119 @@ class VolumeIoSample(TypedDict):
     write_latency_ms: float
 
 
+class RbdInventoryEntry(TypedDict):
+    name: str
+    image_id: str | None
+    provisioned_size: int
+    used_size: int
+    snapshot_count: int
+
+
+def _as_int(value: object) -> int:
+    try:
+        return max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_rbd_inventory(payload: dict | list) -> list[RbdInventoryEntry]:
+    rows = payload.get("images") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        logger.warning("query_rbd_inventory: unexpected rbd du response shape")
+        return []
+    result: list[RbdInventoryEntry] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name") or row.get("image")
+        if not name:
+            continue
+        snapshots = row.get("snapshots")
+        result.append(
+            RbdInventoryEntry(
+                name=str(name),
+                image_id=str(row.get("id")) if row.get("id") is not None else None,
+                provisioned_size=_as_int(row.get("provisioned_size") or row.get("size")),
+                used_size=_as_int(row.get("used_size")),
+                snapshot_count=len(snapshots) if isinstance(snapshots, list) else _as_int(row.get("snapshot_count")),
+            )
+        )
+    return result
+
+
+def query_rbd_inventory(pool: str) -> list[RbdInventoryEntry]:
+    """Return every live image in one pool, including idle images."""
+    _, payload = run_ceph_json_command(f"rbd du --pool {shlex.quote(pool)}")
+    return _normalize_rbd_inventory(payload)
+
+
+def query_rbd_inventory_with(
+    pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> list[RbdInventoryEntry]:
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        f"rbd du --pool {shlex.quote(pool)}",
+    )
+    return _normalize_rbd_inventory(payload)
+
+
+def _normalize_rbd_image_detail(
+    pool: str, image: str, info: dict | list, snapshots: dict | list,
+    status: dict | list, children: dict | list,
+) -> dict:
+    info_row = info if isinstance(info, dict) else {}
+    snapshot_rows = snapshots if isinstance(snapshots, list) else snapshots.get("snapshots", []) if isinstance(snapshots, dict) else []
+    watcher_rows = status.get("watchers", []) if isinstance(status, dict) else []
+    child_rows = children if isinstance(children, list) else children.get("children", []) if isinstance(children, dict) else []
+    features = info_row.get("features") or []
+    if isinstance(features, str):
+        features = [item.strip() for item in features.split(",") if item.strip()]
+    parent = info_row.get("parent")
+    return {
+        "pool": pool,
+        "name": image,
+        "image_id": info_row.get("id"),
+        "size": _as_int(info_row.get("size")),
+        "object_size": _as_int(info_row.get("object_size")),
+        "object_count": _as_int(info_row.get("num_objs")),
+        "format": info_row.get("format"),
+        "features": features if isinstance(features, list) else [],
+        "flags": info_row.get("flags") or [],
+        "created_at": info_row.get("create_timestamp") or info_row.get("create_time"),
+        "parent": parent,
+        "snapshots": snapshot_rows if isinstance(snapshot_rows, list) else [],
+        "watchers": watcher_rows if isinstance(watcher_rows, list) else [],
+        "children": child_rows if isinstance(child_rows, list) else [],
+    }
+
+
+def query_rbd_image_detail(pool: str, image: str) -> dict:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    queries = (
+        run_ceph_json_command(f"rbd info {spec}")[1],
+        run_ceph_json_command(f"rbd snap ls {spec}")[1],
+        run_ceph_json_command(f"rbd status {spec}")[1],
+        run_ceph_json_command(f"rbd children {spec}")[1],
+    )
+    return _normalize_rbd_image_detail(pool, image, *queries)
+
+
+def query_rbd_image_detail_with(
+    pool: str, image: str, mon_nodes: list[str], container_name: str,
+    ssh_user: str, ssh_key_path: str, exec_mode: str,
+) -> dict:
+    spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
+    connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
+    queries = (
+        run_ceph_json_command_with(*connection, f"rbd info {spec}")[1],
+        run_ceph_json_command_with(*connection, f"rbd snap ls {spec}")[1],
+        run_ceph_json_command_with(*connection, f"rbd status {spec}")[1],
+        run_ceph_json_command_with(*connection, f"rbd children {spec}")[1],
+    )
+    return _normalize_rbd_image_detail(pool, image, *queries)
+
+
 def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
     """Runs `rbd perf image iostat <pool> --format json` against a MON node
     (same multi-MON-fallback/exec-mode-wrapping `run_ceph_json_command`

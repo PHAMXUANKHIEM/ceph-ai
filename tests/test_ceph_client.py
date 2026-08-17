@@ -928,6 +928,41 @@ def test_discover_rbd_pools_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch
         discover_rbd_pools()
 
 
+def test_normalize_rbd_inventory_includes_idle_images_and_snapshot_count():
+    payload = {
+        "images": [
+            {
+                "name": "vm-01", "id": "abc", "provisioned_size": 10 * 1024,
+                "used_size": 2048, "snapshots": [{"name": "daily"}],
+            },
+            {"name": "idle", "provisioned_size": 4096, "used_size": 0},
+        ]
+    }
+
+    rows = ceph_client._normalize_rbd_inventory(payload)
+
+    assert rows == [
+        {"name": "vm-01", "image_id": "abc", "provisioned_size": 10240, "used_size": 2048, "snapshot_count": 1},
+        {"name": "idle", "image_id": None, "provisioned_size": 4096, "used_size": 0, "snapshot_count": 0},
+    ]
+
+
+def test_normalize_rbd_image_detail_exposes_dependencies_and_watchers():
+    detail = ceph_client._normalize_rbd_image_detail(
+        "vms", "clone",
+        {"id": "img-2", "size": 4096, "features": ["layering"], "parent": {"pool": "vms", "image": "base"}},
+        [{"id": 1, "name": "snap-a"}],
+        {"watchers": [{"address": "10.0.0.8:0/1", "client": "client.1"}]},
+        ["vms/child"],
+    )
+
+    assert detail["image_id"] == "img-2"
+    assert detail["parent"] == {"pool": "vms", "image": "base"}
+    assert detail["snapshots"][0]["name"] == "snap-a"
+    assert detail["watchers"][0]["client"] == "client.1"
+    assert detail["children"] == ["vms/child"]
+
+
 def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     fake_ssh.behavior = {

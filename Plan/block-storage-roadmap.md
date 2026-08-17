@@ -121,7 +121,7 @@ một “tính năng hoàn thành” nếu executor hoặc guard chưa có.
 
 | Thứ tự | Work package | Phạm vi bắt buộc | Phụ thuộc | Exit gate |
 |---:|---|---|---|---|
-| 1 | **BS-01 Inventory read-only** | `rbd ls/info/du/status`, volume detail, size/used, feature, watcher/lock, snapshot và parent/child; search/filter/pagination theo cluster/pool. | Không | Test default/secondary/inactive cluster, timeout/partial error và không cross-cluster. |
+| 1 | **BS-01 Inventory read-only `[~]`** | `rbd ls/info/du/status`, volume detail, size/used, feature, watcher/lock, snapshot và parent/child; search/filter/pagination theo cluster/pool. | Không | Test default/secondary/inactive cluster, timeout/partial error và không cross-cluster. |
 | 2 | **BS-02 Volume CRUD nền tảng** | Create, expand-only resize, rename, move-to-trash và restore-from-trash; quota/capacity/dependency preflight, idempotency và reconciliation. | BS-01 | Mọi write qua Worker; retry không tạo trùng; delete bị chặn khi busy/dependent. |
 | 3 | **BS-03 Attachment** | Inventory watcher/lock và mapping consumer; attach/detach qua control plane được hỗ trợ, exclusive/shared guard và force-detach approval. | BS-01, Cinder/CSI discovery | Không mutate trực tiếp volume do Cinder/CSI quản lý; có post-check consumer. |
 | 4 | **BS-04 Snapshot/Clone** | Snapshot thủ công + lịch/retention, restore-as-new mặc định, rollback in-place có guard, clone, dependency graph và flatten. | BS-01, BS-02 | Không xóa protected/parent snapshot; scheduler dedup; rollback yêu cầu detached. |
@@ -193,24 +193,34 @@ lưu bền vững. Không lưu secret dạng clear text.
 
 ## Các giai đoạn triển khai
 
-### 1. Volume Inventory và Detail — ưu tiên P0
+### 1. Volume Inventory và Detail — ưu tiên P0 `[~] Đang triển khai BS-01`
 
-- [ ] **1.1 API danh sách volume scoped theo cluster/pool**
+- [~] **1.1 API danh sách volume scoped theo cluster/pool**
   - Trả name/id, pool, size, used/provisioned, format/features, trạng thái,
     attachment, snapshot count, owner/project và backend source.
   - Có search, filter, sort, cursor pagination, timeout và partial-error state.
-- [ ] **1.2 Trang `/block-storage/volumes`**
+  - Đã có API live `/api/volumes/{pool}/inventory` từ `rbd du`: image id,
+    provisioned/used size, snapshot count, search, sort, page/page-size và
+    `collected_at`; default/secondary cluster dùng đúng connection.
+- [~] **1.2 Trang `/volumes`**
   - Bộ lọc cluster/pool/project/status/attachment, capacity summary và deep link.
   - Không dùng sample data khi backend trả rỗng hoặc lỗi.
-- [ ] **1.3 Volume detail read-only**
+  - Đã tích hợp card Inventory vào trang `/volumes`: filter, sort, bảng live,
+    pagination, empty/error/freshness state và mở detail theo từng image.
+- [~] **1.3 Volume detail read-only**
   - Metadata, feature, watchers/locks, attachment, parent/child, snapshot/clone,
     backup status, metric và audit gần nhất.
+  - Đã có size/format/features, snapshot, parent, children/clone và watcher từ
+    `rbd info/snap ls/status/children`; còn thiếu backup/audit summary và
+    degradation theo từng subsection khi một command phụ lỗi.
 - [ ] **1.4 Pool overview read-only**
   - Pool type, replication/EC profile, logical/physical usage, image count,
     health, near-full state và capability RBD.
-- [ ] **1.5 Kiểm thử và nghiệm thu**
+- [~] **1.5 Kiểm thử và nghiệm thu**
   - Empty/error/pagination, input escaping, cluster isolation, stale cache,
     non-admin read-only và redaction.
+  - Đã có parser test, search/sort/pagination, secondary-cluster connection và
+    input validation. Còn thiếu inactive cluster, partial error và live Ceph.
 
 **Hoàn thành khi:** operator xem được inventory thật và dependency của volume ở
 cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
@@ -431,6 +441,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | Kế hoạch | Hoàn thành | Tạo roadmap Block Storage, ranh giới an toàn, kiến trúc, các pha, tiêu chí nghiệm thu và quy trình bàn giao. Hiện trạng code chỉ được ghi là cần audit, chưa công nhận hoàn thành. | Chưa chạy — tài liệu kế hoạch | Bắt đầu từ mục 0; lập inventory API/schema/test hiện có trước khi sửa mã. |
 | 2026-08-17 | 0.1–0.4 | Đang làm | Audit route, model, Watcher, Worker và policy hiện có. Xác nhận nền tảng volume performance, RBD trash, full/incremental backup, retention, checksum, restore và restore drill; ghi rõ các khoảng trống CRUD/snapshot/clone/QoS/DR và hai rủi ro multi-cluster metric + force purge. | Test tập trung: `239 passed, 1 error`; lỗi ở fixture lifespan/SQLite in-memory trước assertion đầu tiên. | Sửa/cô lập lỗi setup, chạy lại baseline; ưu tiên bỏ force purge trực tiếp và hoàn thiện inventory read-only. |
 | 2026-08-17 | Fix metric multi-cluster | Hoàn thành code + test tập trung | Tách rolling state và last-poll sample theo cluster; thêm discovery RBD pool/query iostat bằng connection cluster phụ; persist `VolumeMetric.cluster_id`; scope lifecycle Incident bão hòa; nối collector vào observed-cluster loop. Thêm backlog BS-01–BS-09 cho phần còn thiếu. | `tests/test_volume_monitor.py`: 16 passed; 2 test integration Watcher volume path: 2 passed. Lượt suite rộng hơn được dừng sau `40 passed` vì test kế tiếp đi vào SSH Paramiko chậm; không có failure trước khi dừng. | Chưa kiểm chứng live trên Ceph phụ; tiếp theo BS-01 và thay force purge trực tiếp. |
+| 2026-08-17 | BS-01 | Đang làm | Thêm adaptor `rbd du/info/snap ls/status/children`, inventory/detail API scoped theo cluster và card UI live có search/sort/pagination/freshness/capacity summary/dependency detail. | 6 test mới đạt; `py_compile` + `node --check` đạt. Một lượt trước gặp đúng race fixture SQLite lifespan đã ghi ở baseline và test đó đạt khi chạy lại. | Bổ sung pool overview sâu, partial-error detail, inactive-cluster test và kiểm chứng live trước khi đóng BS-01. |
 
 ## Ghi chú bàn giao
 

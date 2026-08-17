@@ -88,6 +88,48 @@
 
     <div class="tabbed-content">
     {% if selected_view == "pools" and selected_pool %}
+    <section class="card" id="volume-inventory-panel" data-pool="{{ selected_pool }}">
+      <div class="card-header">
+        <div class="metrics-panel-title">
+          <h2>Inventory Volume — {{ selected_pool }}</h2>
+          <span class="hint" id="volume-inventory-freshness">Đang tải dữ liệu live…</span>
+        </div>
+        <p class="hint metrics-panel-desc">
+          Danh sách RBD image thật lấy từ <code>rbd du</code>, bao gồm cả volume đang idle và chưa có
+          mẫu I/O. Bấm một volume để xem feature, snapshot, parent/child và watcher đang attach.
+        </p>
+      </div>
+      <div class="card-body">
+        <form class="audit-filters" id="volume-inventory-filter">
+          <label>Tìm Volume
+            <input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tên hoặc ID Volume" autocomplete="off">
+          </label>
+          <label>Sắp xếp
+            <select id="volume-inventory-sort">
+              <option value="name">Tên</option>
+              <option value="provisioned_size">Dung lượng logic</option>
+              <option value="used_size">Đã dùng</option>
+              <option value="snapshot_count">Snapshot</option>
+            </select>
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Áp dụng</button>
+        </form>
+        <p class="error" id="volume-inventory-error" hidden></p>
+        <div class="table-wrap">
+          <table id="volume-inventory-table">
+            <thead><tr><th>Volume</th><th>Image ID</th><th>Đã dùng</th><th>Logic</th><th>Snapshot</th><th></th></tr></thead>
+            <tbody><tr><td colspan="6" class="hint">Đang tải inventory…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="trash-pagination" id="volume-inventory-pagination" hidden>
+          <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-prev">← Trang trước</button>
+          <span id="volume-inventory-page-status"></span>
+          <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-next">Trang sau →</button>
+        </div>
+        <div id="volume-inventory-detail" class="empty-node-state" hidden></div>
+      </div>
+    </section>
+
     <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
       <div class="card-header">
         <div class="metrics-panel-title">
@@ -298,6 +340,7 @@
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/volumes.js?v={{ static_version }}"></script>
+  <script src="/static/volume_inventory.js?v={{ static_version }}"></script>
   <script src="/static/vm_perf.js?v={{ static_version }}"></script>
 </body>
 </html>

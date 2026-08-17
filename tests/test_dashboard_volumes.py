@@ -1385,3 +1385,94 @@ def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkey
     assert "Không lấy được danh sách trash" in response.text
     with db_module.SessionLocal() as session:
         assert session.query(Action).filter_by(action_id="rbd_trash_remove").count() == 0
+
+
+def test_volume_inventory_api_searches_sorts_and_pages(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_inventory",
+        lambda pool: [
+            {"name": "web-02", "image_id": "2", "provisioned_size": 20, "used_size": 8, "snapshot_count": 0},
+            {"name": "db-01", "image_id": "1", "provisioned_size": 50, "used_size": 40, "snapshot_count": 2},
+            {"name": "web-01", "image_id": "3", "provisioned_size": 10, "used_size": 4, "snapshot_count": 1},
+        ],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get(
+        "/api/volumes/vms/inventory?search=web&sort=provisioned_size&order=desc&page=1&page_size=1"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert body["pages"] == 2
+    assert [item["name"] for item in body["items"]] == ["web-02"]
+    assert body["cluster_id"]
+    assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12}
+
+
+def test_volume_inventory_api_uses_selected_secondary_cluster(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    with db_module.SessionLocal() as session:
+        secondary = Cluster(
+            name="secondary", ceph_mon_nodes="10.2.0.1", ceph_container_name="mon",
+            ssh_user="ceph", ssh_key_path="/key", ceph_exec_mode="cephadm",
+            is_default=False, is_active=True,
+        )
+        session.add(secondary)
+        session.commit()
+        cluster_id = secondary.id
+    monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["vms"])
+    calls = []
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory_with",
+        lambda *args: calls.append(args) or [],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/api/volumes/vms/inventory?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    assert response.json()["cluster_id"] == cluster_id
+    assert calls[0][0] == "vms"
+    assert calls[0][1] == ["10.2.0.1"]
+
+
+def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {
+            "pool": pool, "name": image, "image_id": "id-1", "size": 1024,
+            "object_size": 4096, "object_count": 1, "format": 2,
+            "features": ["layering"], "flags": [], "created_at": None,
+            "parent": None, "snapshots": [{"name": "daily"}],
+            "watchers": [{"client": "client.1"}], "children": ["vms/clone"],
+        },
+    )
+    _login(dashboard_client)
+
+    invalid = dashboard_client.get("/api/volumes/vms/inventory/bad%2Fname")
+    response = dashboard_client.get("/api/volumes/vms/inventory/vm-01")
+
+    assert invalid.status_code in (400, 404)
+    assert response.status_code == 200
+    assert response.json()["snapshots"] == [{"name": "daily"}]
+    assert response.json()["children"] == ["vms/clone"]
+
+
+def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _create_user("viewer", "viewer-password", is_admin=False)
+    _login_as(dashboard_client, "viewer", "viewer-password")
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory",
+        lambda pool: (_ for _ in ()).throw(CephQueryError("MON timeout")),
+    )
+
+    response = dashboard_client.get("/api/volumes/vms/inventory")
+
+    assert response.status_code == 502
+    assert "MON timeout" in response.json()["detail"]
