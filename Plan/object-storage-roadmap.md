@@ -100,7 +100,10 @@ cluster đang chọn, không có fallback sample hoặc cross-cluster leak.
 
 - [~] **2.1 S3 user inventory/detail**: uid, display name, bucket quota,
   capabilities, trạng thái và metadata an toàn.
-- [ ] **2.2 Create/modify/disable S3 user** với preview, validation và audit.
+- [~] **2.2 Create/modify/disable S3 user**: đã có API preview/execute, admin
+  RBAC, form UI hai bước, xác nhận UID, validation, command allowlist,
+  structured audit log và create không sinh access key; chưa có audit
+  persistence/viewer.
 - [ ] **2.3 Access-key lifecycle**: tạo, disable/enable, rotate và revoke;
   secret chỉ hiển thị một lần, không persistence/log.
 - [ ] **2.4 Quota và capability editor** theo allowlist; giải thích tác động
@@ -213,6 +216,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-16 | 1.1–1.4 | Đang làm | Thêm Object Storage Bucket Overview/Detail read-only, API scoped theo cluster, RGW bucket-list/stats adaptor an toàn, search tên, pagination, empty/error state, per-row stats degradation và điều hướng. Thêm regression suite. | `python3 -m py_compile` route/adaptor/test và `node --check dashboard/static/app.js` đạt; `git diff --check` sạch. `pytest` chưa chạy: Python thiếu pytest/FastAPI và ensurepip nên không tạo được venv tạm. | Chưa commit. Cài `python3-venv` hoặc cung cấp môi trường test rồi chạy `tests/test_dashboard_object_storage.py` + hồi quy RGW; hoàn tất filter/sort và detail enrichment. |
 | 2026-08-17 | 1.1–1.4 | Hoàn thành | Thêm filter owner/quota/usage, sort, pagination giữ filter, capability versioning/object-lock fail-soft, chỉ báo policy/lifecycle, deep link Access Log điền sẵn bucket, request/error trend, operator read-only, giới hạn metadata fan-out và redaction credential trong lỗi RGW. | `.venv/bin/pytest -q tests/test_rgw_access_log.py tests/test_dashboard_object_storage.py tests/test_dashboard_bucket_access_log.py`: 54 passed; `git diff --check` sạch. | Commit `699560f`, đã push `main`. |
 | 2026-08-17 | 2.1 | Đang làm | Thêm S3 user inventory/detail read-only, search/pagination, cluster scope và allowlist response loại bỏ toàn bộ key material. | `.venv/bin/pytest -q tests/test_dashboard_object_storage_users.py tests/test_dashboard_object_storage.py tests/test_rgw_access_log.py tests/test_dashboard_bucket_access_log.py`: 60 passed; `node --check dashboard/static/app.js` và `git diff --check` sạch. | Chưa commit; tiếp theo thiết kế preview/audit cho 2.2. |
+| 2026-08-17 | 2.2 | Đang làm | Thêm create/modify/suspend/enable qua command allowlist; API và UI bắt buộc preview, admin RBAC và xác nhận lại UID. Create dùng `--generate-key=false`; structured audit log không chứa credential. | Suite Object Storage liên quan: 65 passed; `node --check dashboard/static/object_storage_users.js`, `node --check dashboard/static/app.js` và `git diff --check` sạch. | Chưa commit; còn audit persistence/viewer trước khi đóng 2.2. |
 
 ## Ghi chú bàn giao
 

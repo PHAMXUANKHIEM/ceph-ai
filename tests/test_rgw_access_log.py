@@ -250,6 +250,21 @@ def test_summarize_s3_user_discards_all_key_material():
     assert "SECRET" not in str(summary)
 
 
+def test_s3_user_action_builder_is_closed_quotes_input_and_never_generates_key():
+    command = ral.build_s3_user_action_command(
+        "create", "alice tenant", {"display_name": "Alice's Team", "email": "a@example.test"}
+    )
+    assert "--uid='alice tenant'" in command
+    assert "--generate-key=false" in command
+    assert "--display-name='Alice'\"'\"'s Team'" in command
+
+    try:
+        ral.build_s3_user_action_command("delete", "alice", {})
+        assert False, "unsupported actions must fail closed"
+    except ValueError:
+        pass
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 

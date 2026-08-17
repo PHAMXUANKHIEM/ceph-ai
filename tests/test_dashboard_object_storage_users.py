@@ -102,3 +102,66 @@ def test_secondary_cluster_uses_scoped_rgw_credentials(dashboard_client, monkeyp
 
     assert response.status_code == 200
     assert calls == [("10.99.0.90", "ceph2", "/keys/ceph2", "docker", "rgw-2")]
+
+
+def test_create_preview_generates_no_access_key(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/users/actions/preview", json={
+        "action": "create", "uid": "alice", "display_name": "Alice Operator",
+        "email": "alice@example.test",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["confirmation_required"] == "alice"
+    assert body["generates_access_key"] is False
+    assert "--generate-key=false" in body["preview"]
+    assert "secret" not in response.text.casefold()
+
+
+def test_admin_page_exposes_two_step_action_form(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "fetch_s3_user_list", lambda host: [])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/users")
+
+    assert response.status_code == 200
+    assert 'id="s3-user-action-form"' in response.text
+    assert 'id="s3-execute"' in response.text
+    assert "Tạo user không tự sinh access key" in response.text
+
+
+def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    _login(dashboard_client)
+    payload = {"action": "suspend", "uid": "alice", "confirmation": "wrong"}
+
+    bad_confirmation = dashboard_client.post("/api/object-storage/users/actions/execute", json=payload)
+    assert bad_confirmation.status_code == 400
+
+    monkeypatch.setattr(route.auth, "is_admin_user", lambda user: False)
+    forbidden = dashboard_client.post(
+        "/api/object-storage/users/actions/execute",
+        json={"action": "suspend", "uid": "alice", "confirmation": "alice"},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_execute_uses_closed_action_adapter(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        route, "execute_s3_user_action",
+        lambda host, action, uid, params: calls.append((host, action, uid, params)),
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/users/actions/execute", json={
+        "action": "modify", "uid": "alice", "display_name": "Alice New",
+        "confirmation": "alice",
+    })
+
+    assert response.status_code == 200
+    assert calls == [("10.20.1.90", "modify", "alice", {"display_name": "Alice New", "email": ""})]

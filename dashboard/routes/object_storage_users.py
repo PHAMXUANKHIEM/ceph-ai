@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from urllib.parse import quote
@@ -22,12 +23,17 @@ from watcher.rgw_access_log import (
     fetch_s3_user_list,
     fetch_s3_user_list_with,
     summarize_s3_user,
+    build_s3_user_action_command,
+    execute_s3_user_action,
+    execute_s3_user_action_with,
 )
 
 router = APIRouter()
 templates = make_templates()
 PAGE_SIZE = 25
 MAX_QUERY_LENGTH = 120
+logger = logging.getLogger(__name__)
+USER_ACTIONS = {"create", "modify", "suspend", "enable"}
 
 
 def _host(cluster) -> str:
@@ -58,6 +64,41 @@ def _valid_uid(uid: str) -> str:
     if not value or len(value) > 128 or any(ord(char) < 32 for char in value) or "/" in value:
         raise HTTPException(status_code=404, detail="S3 user không hợp lệ")
     return value
+
+
+def _require_admin(user: str) -> None:
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được quản lý S3 user")
+
+
+def _action_payload(body: dict) -> tuple[str, str, dict]:
+    action = str(body.get("action") or "")
+    if action not in USER_ACTIONS:
+        raise HTTPException(status_code=400, detail="Thao tác S3 user không hợp lệ")
+    uid = _valid_uid(str(body.get("uid") or ""))
+    params = {
+        "display_name": str(body.get("display_name") or "").strip(),
+        "email": str(body.get("email") or "").strip(),
+    }
+    if any(len(value) > 254 or any(ord(char) < 32 for char in value) for value in params.values()):
+        raise HTTPException(status_code=400, detail="Metadata S3 user không hợp lệ")
+    if action == "create" and not params["display_name"]:
+        raise HTTPException(status_code=400, detail="Display name là bắt buộc khi tạo user")
+    if action == "modify" and not any(params.values()):
+        raise HTTPException(status_code=400, detail="Cần ít nhất một trường để cập nhật")
+    return action, uid, params
+
+
+def _execute(cluster, action: str, uid: str, params: dict) -> str:
+    host = _host(cluster)
+    if cluster.is_default:
+        execute_s3_user_action(host, action, uid, params)
+    else:
+        ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+        execute_s3_user_action_with(
+            host, action, uid, params, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
+        )
+    return host
 
 
 def _inventory(cluster, query: str, page: int) -> dict:
@@ -103,6 +144,39 @@ async def user_api(request: Request, uid: str, user: str = Depends(require_login
         return await asyncio.to_thread(_detail, selected_cluster(request), uid)
     except RgwLogError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/api/object-storage/users/actions/preview")
+async def user_action_preview(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    action, uid, params = _action_payload(await request.json())
+    cluster = selected_cluster(request)
+    # Preview is descriptive and intentionally omits SSH/container details.
+    inner = build_s3_user_action_command(action, uid, params)
+    return {
+        "action": action, "uid": uid, "cluster_id": cluster.id,
+        "cluster_name": cluster.name, "risk": "medium" if action in {"suspend", "modify"} else "low",
+        "confirmation_required": uid,
+        "preview": inner,
+        "generates_access_key": False,
+    }
+
+
+@router.post("/api/object-storage/users/actions/execute")
+async def user_action_execute(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    body = await request.json()
+    action, uid, params = _action_payload(body)
+    if str(body.get("confirmation") or "") != uid:
+        raise HTTPException(status_code=400, detail="Nhập chính xác UID để xác nhận")
+    cluster = selected_cluster(request)
+    try:
+        host = await asyncio.to_thread(_execute, cluster, action, uid, params)
+    except RgwLogError as exc:
+        logger.warning("s3_user_action actor=%s cluster=%s action=%s uid=%s result=failed", user, cluster.id, action, uid)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    logger.info("s3_user_action actor=%s cluster=%s action=%s uid=%s host=%s result=success", user, cluster.id, action, uid, host)
+    return {"ok": True, "action": action, "uid": uid, "cluster_id": cluster.id}
 
 
 @router.get("/object-storage/users", response_class=HTMLResponse)

@@ -329,6 +329,51 @@ def summarize_s3_user(raw: dict) -> dict:
     }
 
 
+def build_s3_user_action_command(action: str, uid: str, params: dict) -> str:
+    """Closed command builder. Creation explicitly generates no access key."""
+    quoted_uid = shlex.quote(uid)
+    if action == "create":
+        command = f"radosgw-admin user create --uid={quoted_uid} --generate-key=false"
+        if params.get("display_name"):
+            command += f" --display-name={shlex.quote(str(params['display_name']))}"
+        if params.get("email"):
+            command += f" --email={shlex.quote(str(params['email']))}"
+        return command + " --format json"
+    if action == "modify":
+        command = f"radosgw-admin user modify --uid={quoted_uid}"
+        if params.get("display_name"):
+            command += f" --display-name={shlex.quote(str(params['display_name']))}"
+        if params.get("email"):
+            command += f" --email={shlex.quote(str(params['email']))}"
+        return command + " --format json"
+    if action in {"suspend", "enable"}:
+        return f"radosgw-admin user {action} --uid={quoted_uid}"
+    raise ValueError("Unsupported S3 user action")
+
+
+def execute_s3_user_action(host: str, action: str, uid: str, params: dict) -> None:
+    command = ceph_client.build_exec_command(
+        settings.ceph_exec_mode, settings.ceph_rgw_container_name,
+        build_s3_user_action_command(action, uid, params),
+    )
+    try:
+        run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Thao tác S3 user thất bại trên {host}: {exc}") from exc
+
+
+def execute_s3_user_action_with(host: str, action: str, uid: str, params: dict,
+                                ssh_user: str, ssh_key_path: str, exec_mode: str,
+                                rgw_container_name: str) -> None:
+    command = ceph_client.build_exec_command(
+        exec_mode, rgw_container_name, build_s3_user_action_command(action, uid, params)
+    )
+    try:
+        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Thao tác S3 user thất bại trên {host}: {exc}") from exc
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately
