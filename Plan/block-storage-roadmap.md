@@ -246,16 +246,19 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
 - [ ] **2.3 Attach/detach**
   - Hỗ trợ consumer đã đăng ký; kiểm tra exclusive/shared mode, watcher/lock,
     multipath và trạng thái consumer trước thao tác.
-- [ ] **2.4 Rename/move/copy theo capability**
+- [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
+  - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
+    chéo create/resize/rename; move/copy khác pool chưa triển khai.
 - [ ] **2.5 Delete và recycle policy**
   - Mặc định soft-delete/trash với thời hạn khôi phục; hard-delete yêu cầu xác
     nhận nâng cao và chặn khi còn attachment/snapshot/clone/backup dependency.
 - [~] **2.6 Idempotency và reconciliation**
   - Retry không tạo volume hoặc attachment trùng; watcher đối soát job với trạng
     thái cluster sau timeout/restart.
-  - Đã dedup action create/resize cùng pool/image khi còn chờ duyệt hoặc đã
-    duyệt; còn thiếu idempotency key và reconciliation sau timeout/restart.
+  - Đã dedup chéo action create/resize/rename theo pool và tên nguồn/đích khi
+    còn chờ duyệt hoặc đã duyệt; còn thiếu idempotency key và reconciliation
+    sau timeout/restart.
 - [~] **2.7 Test**
   - Quota/capacity race, duplicate request, busy/locked image, partial failure,
     inactive cluster, RBAC, CSRF và destructive-action guard.
@@ -459,6 +462,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-01 Pool Overview | Đang làm | Thêm pool durability/capacity overview từ `ceph osd pool ls detail` + `ceph df detail`; Volume Detail degrade riêng snapshot/watcher/children và công bố `partial_errors`; request chỉ rõ cluster inactive fail-closed, không rơi về default. | Nhóm BS-01: `10 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn health/near-full và live Ceph; sau đó đóng BS-01 và sang BS-02. |
 | 2026-08-17 | BS-01 Health | Hoàn thành code | Map pool-specific và capacity-global health check từ `ceph health detail`, hiển thị health/near-full cùng summary trên Pool Overview; không leak cảnh báo riêng của pool khác. | Nhóm BS-01: `11 passed`; `py_compile` và `node --check` đạt. | Chờ xác minh live Ceph để đóng nghiệm thu vận hành; code tiếp theo là BS-02 Volume CRUD. |
 | 2026-08-17 | BS-02 Create/Resize | Đang làm | Thêm UI/API tạo volume và resize expand-only; preflight tên/dung lượng/max-available; tạo Incident + action RISKY theo cluster, dedup in-flight và thực thi qua command builder Worker có `rbd info` post-check. | `8 passed`; `py_compile`, `node --check` và `git diff --check` đạt; chưa xác minh live Ceph. | Tiếp theo làm rename và trash/restore an toàn, sau đó bổ sung reconciliation. |
+| 2026-08-17 | BS-02 Rename | Hoàn thành code | Thêm UI/API rename cùng pool; preflight tên nguồn/đích và watcher; action RISKY qua Worker với `rbd mv` + `rbd info` post-check; dedup chéo create/resize/rename theo tên nguồn/đích. | `7 passed`; `py_compile`, `node --check` và `git diff --check` đạt; chưa xác minh live Ceph. | Tiếp theo triển khai move-to-trash và restore-from-trash an toàn. |
 
 ## Ghi chú bàn giao
 

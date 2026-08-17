@@ -375,6 +375,19 @@ def _rbd_resize_volume_command(params: dict) -> str:
     return f"rbd resize --size {size_mib} {spec} && rbd info {spec} --format json"
 
 
+def _rbd_rename_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    new_image = params.get("new_image")
+    if not isinstance(new_image, str) or not _RBD_IMAGE_RE.fullmatch(new_image):
+        raise ExecutorError(f"invalid or missing destination RBD image: {new_image!r}")
+    if new_image == image:
+        raise ExecutorError("destination RBD image must differ from source")
+    source = shlex.quote(f"{pool}/{image}")
+    destination = shlex.quote(f"{pool}/{new_image}")
+    return f"rbd mv {source} {destination} && rbd info {destination} --format json"
+
+
 def _execute_node_command(params: dict) -> str:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip() or len(command) > 2000:
@@ -401,6 +414,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_trash_remove": _rbd_trash_remove_command,
     "rbd_create_volume": _rbd_create_volume_command,
     "rbd_resize_volume": _rbd_resize_volume_command,
+    "rbd_rename_volume": _rbd_rename_volume_command,
 }
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {

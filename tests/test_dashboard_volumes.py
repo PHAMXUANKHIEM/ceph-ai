@@ -1618,3 +1618,63 @@ def test_propose_resize_volume_is_expand_only_and_creates_risky_action(dashboard
         assert action.action_id == "rbd_resize_volume"
         assert action.classification == "RISKY"
         assert "--allow-shrink" not in action.proposed_command
+
+
+def test_propose_rename_volume_creates_risky_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/rename", json={"new_image": "vm-renamed"}
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_rename_volume"
+        assert action.classification == "RISKY"
+        assert json.loads(action.action_params) == {
+            "pool_name": "vms", "image": "vm-01", "new_image": "vm-renamed"
+        }
+        assert action.proposed_command.endswith("rbd info vms/vm-renamed --format json")
+
+
+def test_propose_rename_volume_rejects_existing_destination_or_watcher(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [{"name": "exists"}],
+    )
+    _login(dashboard_client)
+
+    existing = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/rename", json={"new_image": "exists"}
+    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "size": 1, "watchers": [{"client": "client.1"}]},
+    )
+    attached = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/rename", json={"new_image": "vm-renamed"}
+    )
+
+    assert existing.status_code == 409
+    assert attached.status_code == 409
+
+
+def test_propose_rename_volume_rejects_destination_reserved_by_pending_create(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    create = dashboard_client.post(
+        "/api/volumes/vms/inventory/create", json={"image": "reserved", "size_gib": 10}
+    )
+    rename = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/rename", json={"new_image": "reserved"}
+    )
+
+    assert create.status_code == 201
+    assert rename.status_code == 409

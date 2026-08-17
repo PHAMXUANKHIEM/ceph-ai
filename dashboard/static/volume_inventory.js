@@ -194,6 +194,36 @@
         );
       });
       detail.appendChild(resizeForm);
+
+      var renameForm = document.createElement("form");
+      renameForm.className = "audit-filters";
+      var renameLabel = document.createElement("label");
+      renameLabel.textContent = "Tên Volume mới";
+      var renameInput = document.createElement("input");
+      renameInput.type = "text";
+      renameInput.required = true;
+      renameInput.maxLength = 128;
+      renameInput.pattern = "[A-Za-z0-9][A-Za-z0-9_.-]*";
+      renameInput.value = data.name;
+      renameLabel.appendChild(renameInput);
+      renameForm.appendChild(renameLabel);
+      var renameSubmit = document.createElement("button");
+      renameSubmit.type = "submit";
+      renameSubmit.className = "btn btn-primary btn-sm";
+      renameSubmit.textContent = "Đề xuất đổi tên";
+      renameForm.appendChild(renameSubmit);
+      var renameHint = document.createElement("span");
+      renameHint.className = "hint";
+      renameHint.textContent = " Cần detach consumer; thao tác có thể yêu cầu downtime.";
+      renameForm.appendChild(renameHint);
+      renameForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        proposeMutation(
+          "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/rename",
+          { new_image: renameInput.value.trim() }, renameSubmit
+        );
+      });
+      detail.appendChild(renameForm);
     }
     detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }

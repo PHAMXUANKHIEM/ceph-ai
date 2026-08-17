@@ -133,6 +133,7 @@ RBD_TRASH_REMOVE_ACTION_ID = "rbd_trash_remove"
 RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
 RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
+RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
 
 # 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
 # incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
@@ -148,6 +149,9 @@ _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
 _RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+_RBD_VOLUME_MUTATION_ACTION_IDS = (
+    "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
+)
 
 
 # 2026-07-28: same "own copy, not a cross-import" posture as
@@ -532,13 +536,15 @@ async def volume_inventory_overview_api(
 
 
 def _propose_rbd_volume_mutation(
-    *, cluster, pool: str, image: str, size_mib: int, action_id: str,
+    *, cluster, pool: str, image: str, action_id: str,
     ceph_code: str, user: str, rationale: str,
+    extra_params: dict | None = None, conflicting_images: set[str] | None = None,
 ) -> str:
     mon_nodes, _container, _ssh_user, _ssh_key, _exec_mode = cluster_connection(cluster)
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="Cluster chưa cấu hình MON node")
-    params = {"pool_name": pool, "image": image, "size_mib": size_mib}
+    params = {"pool_name": pool, "image": image, **(extra_params or {})}
+    conflict_names = conflicting_images or {image}
     try:
         preview = executor_commands.get_command(action_id, mon_nodes[0], params)
     except ExecutorError as exc:
@@ -546,7 +552,7 @@ def _propose_rbd_volume_mutation(
 
     with db.SessionLocal() as session:
         in_flight = session.query(Action).filter(
-            Action.action_id == action_id,
+            Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS),
             Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
         ).all()
         for existing in in_flight:
@@ -554,7 +560,8 @@ def _propose_rbd_volume_mutation(
                 existing_params = json.loads(existing.action_params or "{}")
             except (TypeError, ValueError):
                 continue
-            if existing_params.get("pool_name") == pool and existing_params.get("image") == image:
+            existing_names = {existing_params.get("image"), existing_params.get("new_image")}
+            if existing_params.get("pool_name") == pool and conflict_names.intersection(existing_names):
                 raise HTTPException(status_code=409, detail="Volume này đã có một thay đổi đang chờ duyệt hoặc thực thi")
 
         incident = Incident(
@@ -620,7 +627,7 @@ async def propose_volume_create(
     if overview["max_available"] and requested_bytes > overview["max_available"]:
         raise HTTPException(status_code=409, detail="Dung lượng yêu cầu vượt max available của pool")
     action_pk = _propose_rbd_volume_mutation(
-        cluster=cluster, pool=pool, image=image, size_mib=size_gib * 1024,
+        cluster=cluster, pool=pool, image=image, extra_params={"size_mib": size_gib * 1024},
         action_id="rbd_create_volume", ceph_code=RBD_VOLUME_CREATE_CEPH_CODE, user=user,
         rationale=f"Tạo Volume {pool}/{image} dung lượng {size_gib} GiB trên cluster {cluster.name}",
     )
@@ -661,9 +668,49 @@ async def propose_volume_resize(
     if overview["max_available"] and requested_bytes - current_bytes > overview["max_available"]:
         raise HTTPException(status_code=409, detail="Phần dung lượng tăng thêm vượt max available của pool")
     action_pk = _propose_rbd_volume_mutation(
-        cluster=cluster, pool=pool, image=image, size_mib=size_gib * 1024,
+        cluster=cluster, pool=pool, image=image, extra_params={"size_mib": size_gib * 1024},
         action_id="rbd_resize_volume", ceph_code=RBD_VOLUME_RESIZE_CEPH_CODE, user=user,
         rationale=f"Mở rộng Volume {pool}/{image} từ {_format_bytes(current_bytes)} lên {size_gib} GiB",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/rename")
+async def propose_volume_rename(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    new_image = str(body.get("new_image") or "").strip()
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image) or not _RBD_IMAGE_NAME_RE.fullmatch(new_image):
+        raise HTTPException(status_code=400, detail="Tên Volume nguồn hoặc đích không hợp lệ")
+    if new_image == image:
+        raise HTTPException(status_code=409, detail="Tên mới phải khác tên hiện tại")
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        inventory = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight rename Volume: {exc}")
+    if any(row.get("name") == new_image for row in inventory):
+        raise HTTPException(status_code=409, detail="Tên Volume đích đã tồn tại trong pool")
+    if detail.get("watchers"):
+        raise HTTPException(status_code=409, detail="Phải detach Volume khỏi mọi consumer trước khi rename")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, extra_params={"new_image": new_image},
+        conflicting_images={image, new_image}, action_id="rbd_rename_volume",
+        ceph_code=RBD_VOLUME_RENAME_CEPH_CODE, user=user,
+        rationale=f"Đổi tên Volume {pool}/{image} thành {pool}/{new_image}; thao tác yêu cầu downtime",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 

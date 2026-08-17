@@ -727,6 +727,7 @@ def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("rbd_trash_remove") is True
     assert commands_module.has_command("rbd_create_volume") is True
     assert commands_module.has_command("rbd_resize_volume") is True
+    assert commands_module.has_command("rbd_rename_volume") is True
     assert commands_module.has_command("finalize_pacific_osd_release") is True
 
 
@@ -745,6 +746,22 @@ def test_rbd_volume_commands_validate_and_never_allow_shrink_flag():
     with pytest.raises(ExecutorError):
         commands_module.get_command(
             "rbd_create_volume", params={"pool_name": "vms", "image": "bad/name", "size_mib": 1}
+        )
+
+
+def test_rbd_rename_volume_command_validates_both_names_and_post_checks_destination():
+    command = commands_module.get_command(
+        "rbd_rename_volume", params={"pool_name": "vms", "image": "vm-old", "new_image": "vm-new"}
+    )
+
+    assert command == "rbd mv vms/vm-old vms/vm-new && rbd info vms/vm-new --format json"
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_rename_volume", params={"pool_name": "vms", "image": "vm-old", "new_image": "vm-old"}
+        )
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_rename_volume", params={"pool_name": "vms", "image": "vm-old", "new_image": "--bad"}
         )
 
 
