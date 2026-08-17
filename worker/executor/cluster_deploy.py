@@ -1699,6 +1699,9 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
     — which is why `delete_cluster_cephadm`'s phase list now runs this
     BEFORE remove_state, unlike delete_cluster_manual: remove_state
     deletes that exact directory, and cephadm needs it to still be there).
+    Orchestrator-added hosts may only have a copied
+    `/var/lib/ceph/<fsid>/cephadm.<hash>` script rather than cephadm in PATH;
+    the fallback selects the newest such script and runs it with python3.
     """
     osd_nodes = [n for n in nodes if "osd" in (n.get("roles") or [])]
     host_status = [{"host": n["ip"], "status": "pending"} for n in osd_nodes]
@@ -1727,7 +1730,12 @@ def _phase_delete_manual_wipe_osd_disk(nodes: list[dict], action_params: dict, o
                 f"ceph-volume lvm zap --destroy {quoted_disk}; "
                 "elif command -v cephadm >/dev/null 2>&1; then "
                 f"cephadm ceph-volume -- lvm zap --destroy {quoted_disk}; "
-                "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi"
+                "else cephadm_script=$(find /var/lib/ceph -mindepth 2 -maxdepth 2 -type f "
+                "-name 'cephadm.*' -printf '%T@ %p\\n' 2>/dev/null "
+                "| sort -nr | sed -n '1s/^[^ ]* //p'); "
+                "if [ -n \"$cephadm_script\" ]; then "
+                f"python3 \"$cephadm_script\" ceph-volume -- lvm zap --destroy {quoted_disk}; "
+                "else echo 'no ceph-volume (native or via cephadm) found' >&2; exit 1; fi; fi"
             )
             try:
                 _execute_zap_with_connect_retry(ip, zap_command)

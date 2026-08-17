@@ -104,6 +104,8 @@ def test_delete_cephadm_wipes_each_osd_nodes_own_disk_when_requested(monkeypatch
     # ever true because the fallback didn't exist yet, not because
     # `cephadm` involvement was undesirable.
     assert any("cephadm ceph-volume" in cmd for host, cmd in zap_commands.items())
+    assert all("find /var/lib/ceph" in cmd for cmd in zap_commands.values())
+    assert all('python3 "$cephadm_script" ceph-volume' in cmd for cmd in zap_commands.values())
 
 
 def test_delete_cephadm_wipe_uses_native_ceph_volume_when_present(monkeypatch):
