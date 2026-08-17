@@ -520,15 +520,8 @@ def test_ceph_deploy_dependencies_clears_stale_ceph_repo_before_installing_chron
     assert cleanup_pos < install_pos
 
 
-def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
-    """Regression (live-verified 2026-07-26): `cephadm bootstrap` alone
-    leaves `ceph` reachable only via the containerized `cephadm shell`
-    wrapper, not directly on PATH — every later phase (orch_host_add/
-    orch_apply_mgr/orch_apply_osd/verify) calls `ceph ...` directly and
-    failed with "ceph: command not found" (exit 127) right after a
-    successful bootstrap. Must install ceph-common AFTER bootstrap
-    succeeds, not before (the repo it installs from is only added as part
-    of the bootstrap command itself)."""
+def test_cephadm_deploy_uses_containerized_ceph_cli(monkeypatch):
+    """A cephadm deployment must not require host-native ceph-common."""
     seen_commands = []
 
     def fake(host, command):
@@ -540,9 +533,12 @@ def test_cephadm_bootstrap_installs_ceph_common_after_bootstrap(monkeypatch):
 
     run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
 
-    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
-    ceph_common_index = next(i for i, cmd in enumerate(seen_commands) if "ceph-common" in cmd)
-    assert bootstrap_index < ceph_common_index
+    assert any("cephadm bootstrap --mon-ip" in cmd for cmd in seen_commands)
+    assert not any("ceph-common" in cmd for cmd in seen_commands)
+    assert any(cmd.startswith("cephadm shell -- ceph orch host add") for cmd in seen_commands)
+    assert any(cmd.startswith("cephadm shell -- ceph orch apply mgr") for cmd in seen_commands)
+    assert any(cmd.startswith("cephadm shell -- ceph orch daemon add osd") for cmd in seen_commands)
+    assert "cephadm shell -- ceph -s --format json" in seen_commands
 
 
 def test_build_ceph_package_repo_command_nautilus_uses_codename_not_exact_version():
@@ -656,7 +652,7 @@ def test_repo_command_fails_loudly_when_neither_candidate_works(tmp_path):
     assert "No Ceph RPM repo found" in stderr
 
 
-def test_cephadm_ensures_ceph_common_via_plain_install_after_bootstrap(monkeypatch):
+def test_cephadm_does_not_configure_package_repo_for_cli(monkeypatch):
     """Regression (live-verified 2026-07-26): `cephadm install ceph-common`
     left `ceph-common` unfindable via yum TWICE in a row. An intermediate
     fix (2026-07-28) tried forcing a same-version Ceph.com repo via
@@ -681,11 +677,7 @@ def test_cephadm_ensures_ceph_common_via_plain_install_after_bootstrap(monkeypat
 
     run("action-1", "deploy_cluster_cephadm", _cephadm_params(), "incident-1", write_progress, _never_blocked)
 
-    bootstrap_index = next(i for i, cmd in enumerate(seen_commands) if "cephadm bootstrap --mon-ip" in cmd)
-    ceph_common_index = next(
-        i for i, cmd in enumerate(seen_commands) if "install -y ceph-common" in cmd
-    )
-    assert bootstrap_index < ceph_common_index
+    assert not any("install -y ceph-common" in cmd for cmd in seen_commands)
     assert not any("cephadm install ceph-common" in cmd for cmd in seen_commands)
     assert not any("cephadm add-repo" in cmd for cmd in seen_commands)
     # No forced same-version repo setup anywhere in this phase anymore.

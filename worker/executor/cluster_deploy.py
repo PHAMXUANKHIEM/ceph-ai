@@ -390,30 +390,9 @@ def _phase_cephadm_bootstrap(nodes: list[dict], action_params: dict, on_host_upd
         f"cephadm bootstrap --mon-ip {shlex.quote(first_mon)} --skip-monitoring-stack "
         "--allow-fqdn-hostname --allow-overwrite"
     )
-    # `cephadm bootstrap` on its own leaves the `ceph` CLI reachable only
-    # via the containerized `cephadm shell` wrapper, not directly on PATH —
-    # every later phase in this method (orch_host_add/orch_apply_mgr/
-    # orch_apply_osd/verify) calls `ceph ...` directly on `first_mon`
-    # (verified live, 2026-07-26: "ceph: command not found", exit 127,
-    # right after a successful bootstrap). Deliberately a PLAIN install —
-    # no forced same-version Ceph.com repo (see install_cephadm's own
-    # 2026-07-28 comment for why that broke on a real el8 node targeting
-    # reef) — whatever `ceph-common` version the node's ALREADY-configured
-    # repos resolve (confirmed fine by the operator: this CLI only ever
-    # talks to the orchestrator/cluster over RADOS's own cross-version
-    # protocol for `ceph -s`/`ceph orch ...`, it never needs to exactly
-    # match the containerized daemons' real version).
-    ensure_ceph_common = _package_manager_branch(
-        {
-            "apt": "command -v ceph >/dev/null 2>&1 || apt-get install -y ceph-common",
-            "rpm": "command -v ceph >/dev/null 2>&1 || (dnf install -y ceph-common || yum install -y ceph-common)",
-        }
-    )
-
     try:
         execute_command(first_mon, cleanup_previous_attempt)
         execute_command(first_mon, f"{install_cephadm} && {bootstrap}")
-        execute_command(first_mon, ensure_ceph_common)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -469,7 +448,8 @@ def _phase_cephadm_orch_host_add(nodes: list[dict], action_params: dict, on_host
             ) from exc
         try:
             execute_command(
-                first_mon, f"ceph orch host add {shlex.quote(hostname)} {shlex.quote(ip)}"
+                first_mon,
+                f"cephadm shell -- ceph orch host add {shlex.quote(hostname)} {shlex.quote(ip)}",
             )
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
@@ -492,7 +472,10 @@ def _phase_cephadm_orch_apply_mgr(nodes: list[dict], action_params: dict, on_hos
     host_status = [{"host": first_mon, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        execute_command(first_mon, f"ceph orch apply mgr --placement={shlex.quote(placement)}")
+        execute_command(
+            first_mon,
+            f"cephadm shell -- ceph orch apply mgr --placement={shlex.quote(placement)}",
+        )
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -539,7 +522,8 @@ def _phase_cephadm_orch_apply_osd(nodes: list[dict], action_params: dict, on_hos
                 # check).
                 execute_command(
                     first_mon,
-                    f"ceph orch daemon add osd {shlex.quote(hostname)}:{shlex.quote(osd_disk)}",
+                    f"cephadm shell -- ceph orch daemon add osd "
+                    f"{shlex.quote(hostname)}:{shlex.quote(osd_disk)}",
                 )
         except ExecutorError as exc:
             host_status[i]["status"] = "failed"
@@ -570,7 +554,8 @@ def _phase_cephadm_orch_apply_rgw(nodes: list[dict], action_params: dict, on_hos
     try:
         execute_command(
             first_mon,
-            f"ceph orch apply rgw {_RGW_SVC_ID} --placement={shlex.quote(placement)} "
+            f"cephadm shell -- ceph orch apply rgw {_RGW_SVC_ID} "
+            f"--placement={shlex.quote(placement)} "
             f"--port={_RGW_PORT}",
         )
     except ExecutorError as exc:
@@ -1413,6 +1398,34 @@ def _phase_verify(nodes: list[dict], action_params: dict, on_host_update) -> Non
 
     try:
         output = execute_command(first_mon, "ceph -s --format json")
+    except ExecutorError as exc:
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError(f"Không lấy được trạng thái cụm: {exc}") from exc
+
+    try:
+        health = json.loads(output).get("health", {}).get("status")
+    except (TypeError, ValueError, AttributeError):
+        health = None
+
+    if health == "HEALTH_ERR":
+        host_status[0]["status"] = "failed"
+        on_host_update(list(host_status))
+        raise DeployPhaseError("Cụm ở trạng thái HEALTH_ERR sau khi dựng — dừng lại")
+
+    host_status[0]["status"] = "done"
+    host_status[0]["message"] = health or "unknown"
+    on_host_update(list(host_status))
+
+
+def _phase_cephadm_verify(nodes: list[dict], action_params: dict, on_host_update) -> None:
+    """Verify through cephadm's container; do not require host ceph-common."""
+    first_mon = _first_mon_ip(nodes)
+    host_status = [{"host": first_mon, "status": "running"}]
+    on_host_update(list(host_status))
+
+    try:
+        output = execute_command(first_mon, "cephadm shell -- ceph -s --format json")
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -2577,7 +2590,7 @@ _PHASES_BY_ACTION_ID: dict[str, list[tuple[str, str, int, object]]] = {
         ("orch_apply_mgr", "Tạo MGR (orch apply mgr)", 70, _phase_cephadm_orch_apply_mgr),
         ("orch_apply_osd", "Tạo OSD (orch daemon add osd)", 85, _phase_cephadm_orch_apply_osd),
         ("orch_apply_rgw", "Tạo RGW (orch apply rgw, nếu có node RGW)", 90, _phase_cephadm_orch_apply_rgw),
-        ("verify", "Kiểm tra cluster health", 95, _phase_verify),
+        ("verify", "Kiểm tra cluster health", 95, _phase_cephadm_verify),
     ],
     "deploy_cluster_ceph_deploy": [
         ("ssh_check", "Kiểm tra kết nối SSH & hệ thống", 10, _phase_ssh_check),
