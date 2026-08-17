@@ -38,7 +38,7 @@ def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monk
     assert "Default" in response.text
 
 
-def test_block_storage_overview_displays_at_most_ten_volumes(dashboard_client, monkeypatch):
+def test_block_storage_overview_paginates_ten_volumes_per_page(dashboard_client, monkeypatch):
     monkeypatch.setattr(block_storage_route, "_query_block_storage", lambda cluster: [
         {"name": f"volume-{index:02d}", "pool": "volumes", "namespace": "",
          "size_bytes": 1024, "size": "1.0 KiB"}
@@ -46,14 +46,23 @@ def test_block_storage_overview_displays_at_most_ten_volumes(dashboard_client, m
     ])
     _login(dashboard_client)
 
-    response = dashboard_client.get("/block-storage")
+    first = dashboard_client.get("/block-storage")
+    second = dashboard_client.get("/block-storage?page=2")
 
-    assert response.status_code == 200
-    assert response.text.count('class="block-storage-image-row"') == 10
-    assert 'data-name="volume-09"' in response.text
-    assert 'data-name="volume-10"' not in response.text
-    assert "Chỉ hiển thị 10 / 12 volume đầu tiên" in response.text
-    assert ">12 images<" in response.text
+    assert first.status_code == 200
+    assert first.text.count('class="block-storage-image-row"') == 10
+    assert 'data-name="volume-09"' in first.text
+    assert 'data-name="volume-10"' not in first.text
+    assert "Trang 1 / 2" in first.text
+    assert "page=2" in first.text
+    assert ">12 images<" in first.text
+    assert second.status_code == 200
+    assert second.text.count('class="block-storage-image-row"') == 2
+    assert 'data-name="volume-10"' in second.text
+    assert 'data-name="volume-11"' in second.text
+    assert 'data-name="volume-00"' not in second.text
+    assert "Trang 2 / 2" in second.text
+    assert "page=1" in second.text
 
 
 def test_block_storage_reuses_cluster_inventory_cache(dashboard_client, monkeypatch):

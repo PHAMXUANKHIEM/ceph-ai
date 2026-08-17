@@ -3,7 +3,7 @@
 import asyncio
 import shlex
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
 from dashboard.cluster_scope import cluster_connection, cluster_selection
@@ -105,15 +105,21 @@ def _cached_block_storage(cluster) -> list[dict]:
 
 
 @router.get("/block-storage", response_class=HTMLResponse)
-async def block_storage_page(request: Request, user: str = Depends(require_login)):
+async def block_storage_page(
+    request: Request, page: int = Query(1, ge=1), user: str = Depends(require_login)
+):
     clusters, cluster = cluster_selection(request)
     images: list[dict] = []
     total_images = 0
+    total_pages = 1
     error = None
     try:
         images = await asyncio.to_thread(_cached_block_storage, cluster)
         total_images = len(images)
-        images = images[:BLOCK_STORAGE_OVERVIEW_LIMIT]
+        total_pages = max(1, (total_images + BLOCK_STORAGE_OVERVIEW_LIMIT - 1) // BLOCK_STORAGE_OVERVIEW_LIMIT)
+        page = min(page, total_pages)
+        start = (page - 1) * BLOCK_STORAGE_OVERVIEW_LIMIT
+        images = images[start:start + BLOCK_STORAGE_OVERVIEW_LIMIT]
     except CephQueryError as exc:
         error = str(exc)
     return templates.TemplateResponse(request, "block_storage.html", {
@@ -124,5 +130,7 @@ async def block_storage_page(request: Request, user: str = Depends(require_login
         "images": images,
         "total_images": total_images,
         "overview_limit": BLOCK_STORAGE_OVERVIEW_LIMIT,
+        "page": page,
+        "total_pages": total_pages,
         "error": error,
     })
