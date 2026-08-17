@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from typing import Literal
@@ -56,6 +57,42 @@ templates = make_templates()
 PAGE_SIZE = 25
 MAX_QUERY_LENGTH = 120
 MAX_METADATA_SCAN = 500
+MAX_LIFECYCLE_SCAN = 1000
+LIFECYCLE_STORAGE_CLASSES = {
+    "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "REDUCED_REDUNDANCY",
+}
+REEF_POLICY_ACTIONS = {
+    "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetObjectAcl",
+    "s3:GetObjectVersionAcl", "s3:PutObjectAcl", "s3:PutObjectVersionAcl",
+    "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ListMultipartUploadParts",
+    "s3:AbortMultipartUpload", "s3:RestoreObject", "s3:CreateBucket", "s3:DeleteBucket",
+    "s3:ListBucket", "s3:ListBucketVersions", "s3:ListAllMyBuckets",
+    "s3:ListBucketMultipartUploads", "s3:GetBucketAcl", "s3:PutBucketAcl",
+    "s3:GetBucketVersioning", "s3:PutBucketVersioning", "s3:GetBucketLocation",
+    "s3:GetBucketPolicy", "s3:DeleteBucketPolicy", "s3:PutBucketPolicy",
+    "s3:GetBucketLogging", "s3:PutBucketLogging", "s3:GetBucketTagging",
+    "s3:PutBucketTagging", "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration",
+    "s3:GetObjectTagging", "s3:PutObjectTagging", "s3:DeleteObjectTagging",
+    "s3:GetObjectVersionTagging", "s3:PutObjectVersionTagging", "s3:DeleteObjectVersionTagging",
+    "s3:PutBucketObjectLockConfiguration", "s3:GetBucketObjectLockConfiguration",
+    "s3:PutObjectRetention", "s3:GetObjectRetention", "s3:PutObjectLegalHold",
+    "s3:GetObjectLegalHold", "s3:BypassGovernanceRetention", "s3:GetBucketPolicyStatus",
+    "s3:PutPublicAccessBlock", "s3:GetPublicAccessBlock", "s3:DeletePublicAccessBlock",
+    "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock",
+    "s3:DeleteBucketPublicAccessBlock", "s3:GetBucketEncryption", "s3:PutBucketEncryption",
+}
+OBJECT_LOCK_POLICY_ACTIONS = {action for action in REEF_POLICY_ACTIONS if "ObjectLock" in action or
+                              "Retention" in action or "LegalHold" in action or "Governance" in action}
+POLICY_ACTION_MIN_MAJOR = {action: 13 for action in REEF_POLICY_ACTIONS}
+for _action in REEF_POLICY_ACTIONS:
+    if any(token in _action for token in ("Notification", "Replication", "PublicAccessBlock")):
+        POLICY_ACTION_MIN_MAJOR[_action] = 15
+    if "BucketTagging" in _action:
+        POLICY_ACTION_MIN_MAJOR[_action] = 15
+    if _action in OBJECT_LOCK_POLICY_ACTIONS:
+        POLICY_ACTION_MIN_MAJOR[_action] = 15
+    if "BucketEncryption" in _action:
+        POLICY_ACTION_MIN_MAJOR[_action] = 18
 logger = logging.getLogger(__name__)
 
 QuotaFilter = Literal["all", "enabled", "disabled"]
@@ -88,9 +125,14 @@ def _capabilities(cluster) -> dict:
         major = int(str(version).split(".", 1)[0])
     except ValueError as exc:
         raise ObjectStorageError(f"Không đọc được major version Ceph từ {version}.") from exc
+    placement_supported = major >= 10  # documented as new in Jewel
+    lifecycle_supported = major >= 13  # verified in the Mimic S3 support matrix
+    lifecycle_transition_supported = major >= 14  # storage classes: Nautilus
+    versioning_supported = major >= 13  # verified in the Mimic S3 support matrix
     object_lock_supported = major >= 15  # introduced in Ceph Octopus
     return {
         "ceph_version": version,
+        "ceph_major": major,
         "ceph_release": release,
         "is_mixed": False,
         "bucket_create": {
@@ -98,16 +140,41 @@ def _capabilities(cluster) -> dict:
             "method": "s3_api",
             "radosgw_admin_supported": False,
             "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/",
-            "placement_supported": True,
+            "placement_supported": placement_supported,
+            "placement_min_ceph_major": 10,
+            "placement_unavailable_reason": None if placement_supported else "Placement target cần Ceph Jewel 10 trở lên.",
             "storage_class_at_bucket_create": False,
         },
         "bucket_governance": {
             "quota": True,
-            "versioning": True,
+            "versioning": versioning_supported,
+            "versioning_min_ceph_major": 13,
+            "versioning_unavailable_reason": None if versioning_supported else "Bucket versioning cần Ceph Mimic 13 trở lên.",
             "object_lock_at_create": object_lock_supported,
+            "object_lock_min_ceph_major": 15,
+            "object_lock_unavailable_reason": None if object_lock_supported else "Object Lock cần Ceph Octopus 15 trở lên.",
             "object_lock_after_create": False,
             "default_retention": object_lock_supported,
             "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/bucketops/",
+        },
+        "lifecycle": {
+            "supported": lifecycle_supported,
+            "min_ceph_major": 13,
+            "unavailable_reason": None if lifecycle_supported else "Lifecycle editor cần Ceph Mimic 13 trở lên.",
+            "transition_supported": lifecycle_transition_supported,
+            "transition_min_ceph_major": 14,
+            "transition_unavailable_reason": None if lifecycle_transition_supported else "Lifecycle Transition cần Storage Classes của Ceph Nautilus 14 trở lên.",
+            "max_preview_objects": MAX_LIFECYCLE_SCAN,
+            "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/",
+        },
+        "bucket_policy_acl": {
+            "supported": major >= 13,
+            "min_ceph_major": 12,
+            "unavailable_reason": None if major >= 13 else "Bucket Policy cần Ceph Luminous 12 trở lên.",
+            "object_lock_actions_supported": object_lock_supported,
+            "action_compatibility": "Validated per action against the detected Ceph major release.",
+            "public_access_requires_strong_confirmation": True,
+            "documentation": f"https://docs.ceph.com/en/{release}/radosgw/bucketpolicy/",
         },
     }
 
@@ -247,10 +314,22 @@ def _create_bucket(cluster, payload: dict) -> None:
 
 def _ensure_capability(payload: dict, capability: dict) -> None:
     governance = capability["bucket_governance"]
+    if payload.get("placement") and not capability["bucket_create"]["placement_supported"]:
+        raise HTTPException(status_code=409, detail=capability["bucket_create"]["placement_unavailable_reason"])
+    if str(payload.get("action") or "").startswith("versioning_") and not governance["versioning"]:
+        raise HTTPException(status_code=409, detail=governance["versioning_unavailable_reason"])
     if payload.get("object_lock") and not governance["object_lock_at_create"]:
-        raise HTTPException(status_code=409, detail="Ceph release này không hỗ trợ Object Lock khi tạo bucket")
+        raise HTTPException(status_code=409, detail=governance["object_lock_unavailable_reason"])
     if payload.get("action") == "retention_set" and not governance["default_retention"]:
-        raise HTTPException(status_code=409, detail="Ceph release này không hỗ trợ Object Lock retention")
+        raise HTTPException(status_code=409, detail=governance["object_lock_unavailable_reason"])
+
+
+def _ensure_lifecycle_capability(payload: dict, capability: dict) -> None:
+    lifecycle = capability["lifecycle"]
+    if not lifecycle["supported"]:
+        raise HTTPException(status_code=409, detail=lifecycle["unavailable_reason"])
+    if any("transition_days" in rule for rule in payload["rules"]) and not lifecycle["transition_supported"]:
+        raise HTTPException(status_code=409, detail=lifecycle["transition_unavailable_reason"])
 
 
 def _governance_payload(body: dict) -> dict:
@@ -330,6 +409,267 @@ def _execute_governance(cluster, payload: dict) -> None:
         raise ObjectStorageError("Không thu hồi được access key tạm; cần thu hồi key thủ công ngay.") from cleanup_exc
     if operation_error:
         raise ObjectStorageError(f"Thao tác S3 bucket thất bại: {_safe_error(operation_error)}") from operation_error
+
+
+def _lifecycle_payload(body: dict) -> dict:
+    action = str(body.get("action") or "")
+    if action not in {"lifecycle_put", "lifecycle_delete"}:
+        raise HTTPException(status_code=400, detail="Thao tác lifecycle không hợp lệ")
+    base = _create_payload({"name": body.get("bucket"), "owner": body.get("owner"),
+                            "endpoint": body.get("endpoint")})
+    payload = {"action": action, "bucket": base["name"], "owner": base["owner"],
+               "endpoint": base["endpoint"]}
+    if action == "lifecycle_delete":
+        payload["rules"] = []
+        return payload
+    rules = body.get("rules")
+    if not isinstance(rules, list) or not 1 <= len(rules) <= 100:
+        raise HTTPException(status_code=400, detail="Lifecycle cần từ 1 đến 100 rule")
+    normalized = []
+    ids = set()
+    for raw in rules:
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="Lifecycle rule phải là object JSON")
+        rule_id = str(raw.get("id") or "").strip()
+        prefix = str(raw.get("prefix") or "")
+        status = str(raw.get("status") or "Enabled")
+        if not rule_id or len(rule_id) > 255 or rule_id in ids or any(ord(c) < 32 for c in rule_id):
+            raise HTTPException(status_code=400, detail="Lifecycle rule ID thiếu, trùng hoặc không hợp lệ")
+        if len(prefix) > 1024 or any(ord(c) < 32 for c in prefix) or status not in {"Enabled", "Disabled"}:
+            raise HTTPException(status_code=400, detail=f"Lifecycle rule {rule_id} có prefix/status không hợp lệ")
+        rule = {"id": rule_id, "prefix": prefix, "status": status}
+        for key in ("expiration_days", "noncurrent_expiration_days", "abort_multipart_days", "transition_days"):
+            value = raw.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                value = int(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"{key} của rule {rule_id} phải là số") from exc
+            if not 1 <= value <= 36500:
+                raise HTTPException(status_code=400, detail=f"{key} của rule {rule_id} phải từ 1–36500")
+            rule[key] = value
+        storage_class = str(raw.get("storage_class") or "").strip()
+        if storage_class:
+            if "transition_days" not in rule or storage_class not in LIFECYCLE_STORAGE_CLASSES:
+                raise HTTPException(status_code=400, detail=f"Transition của rule {rule_id} không hợp lệ")
+            rule["storage_class"] = storage_class
+        if "transition_days" in rule and not storage_class:
+            raise HTTPException(status_code=400, detail=f"Rule {rule_id} thiếu storage_class")
+        if not any(key in rule for key in ("expiration_days", "noncurrent_expiration_days",
+                                           "abort_multipart_days", "transition_days")):
+            raise HTTPException(status_code=400, detail=f"Rule {rule_id} chưa có hành động")
+        ids.add(rule_id)
+        normalized.append(rule)
+    payload["rules"] = normalized
+    return payload
+
+
+def _boto_lifecycle_rules(rules: list[dict]) -> list[dict]:
+    result = []
+    for rule in rules:
+        item = {"ID": rule["id"], "Status": rule["status"], "Filter": {"Prefix": rule["prefix"]}}
+        if "expiration_days" in rule:
+            item["Expiration"] = {"Days": rule["expiration_days"]}
+        if "noncurrent_expiration_days" in rule:
+            item["NoncurrentVersionExpiration"] = {"NoncurrentDays": rule["noncurrent_expiration_days"]}
+        if "abort_multipart_days" in rule:
+            item["AbortIncompleteMultipartUpload"] = {"DaysAfterInitiation": rule["abort_multipart_days"]}
+        if "transition_days" in rule:
+            item["Transitions"] = [{"Days": rule["transition_days"], "StorageClass": rule["storage_class"]}]
+        result.append(item)
+    return result
+
+
+def _with_owner_s3(cluster, payload: dict, callback):
+    hosts = _rgw_hosts(cluster)
+    if not hosts:
+        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+    host = hosts[0]
+    owner = _owner_info(cluster, host, payload["owner"])
+    if not owner or bool(owner.get("suspended")):
+        raise ObjectStorageError("Owner S3 không tồn tại hoặc đang bị vô hiệu hóa.")
+    credential = _temporary_key(cluster, host, payload["owner"])
+    access_key = str(credential.get("access_key") or "")
+    secret_key = str(credential.get("secret_key") or "")
+    if not access_key or not secret_key:
+        raise ObjectStorageError("RGW không trả về credential tạm hợp lệ.")
+    result = None
+    operation_error = None
+    try:
+        client = boto3.client("s3", endpoint_url=payload["endpoint"], aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
+        result = callback(client)
+    except Exception as exc:
+        operation_error = exc
+    try:
+        _revoke_temporary_key(cluster, host, payload["owner"], access_key)
+    except RgwLogError as cleanup_exc:
+        raise ObjectStorageError("Không thu hồi được access key tạm; cần thu hồi key thủ công ngay.") from cleanup_exc
+    if operation_error:
+        raise ObjectStorageError(f"Thao tác S3 lifecycle thất bại: {_safe_error(operation_error)}") from operation_error
+    return result
+
+
+def _lifecycle_dry_run(cluster, payload: dict) -> dict:
+    def inspect(client):
+        previous = []
+        try:
+            previous = client.get_bucket_lifecycle_configuration(Bucket=payload["bucket"]).get("Rules") or []
+        except client.exceptions.ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code not in {"NoSuchLifecycleConfiguration", "NoSuchLifecycle"}:
+                raise
+        impacted = 0
+        scanned = 0
+        truncated = False
+        token = None
+        now = datetime.now(timezone.utc)
+        while scanned < MAX_LIFECYCLE_SCAN:
+            kwargs = {"Bucket": payload["bucket"], "MaxKeys": min(1000, MAX_LIFECYCLE_SCAN - scanned)}
+            if token:
+                kwargs["ContinuationToken"] = token
+            page = client.list_objects_v2(**kwargs)
+            objects = page.get("Contents") or []
+            scanned += len(objects)
+            for obj in objects:
+                key = str(obj.get("Key") or "")
+                modified = obj.get("LastModified")
+                age = (now - modified).days if isinstance(modified, datetime) else -1
+                for rule in payload["rules"]:
+                    thresholds = [rule[k] for k in ("expiration_days", "transition_days") if k in rule]
+                    if rule["status"] == "Enabled" and key.startswith(rule["prefix"]) and thresholds and age >= min(thresholds):
+                        impacted += 1
+                        break
+            if not page.get("IsTruncated"):
+                break
+            token = page.get("NextContinuationToken")
+            if not token:
+                break
+        if page.get("IsTruncated"):
+            truncated = True
+        return {"previous_rules": previous, "scanned_objects": scanned,
+                "estimated_current_objects_affected": impacted, "truncated": truncated,
+                "multipart_and_noncurrent_estimate": "Không thể ước lượng bằng ListObjectsV2"}
+    return _with_owner_s3(cluster, payload, inspect)
+
+
+def _execute_lifecycle(cluster, payload: dict) -> None:
+    def execute(client):
+        if payload["action"] == "lifecycle_delete":
+            client.delete_bucket_lifecycle(Bucket=payload["bucket"])
+        else:
+            client.put_bucket_lifecycle_configuration(Bucket=payload["bucket"],
+                LifecycleConfiguration={"Rules": _boto_lifecycle_rules(payload["rules"])})
+    _with_owner_s3(cluster, payload, execute)
+
+
+def _is_public_principal(value: object) -> bool:
+    if value == "*":
+        return True
+    if isinstance(value, list):
+        return any(_is_public_principal(item) for item in value)
+    if isinstance(value, dict):
+        return any(_is_public_principal(item) for item in value.values())
+    return False
+
+
+def _policy_acl_payload(body: dict) -> dict:
+    action = str(body.get("action") or "")
+    if action not in {"policy_put", "policy_delete", "acl_set"}:
+        raise HTTPException(status_code=400, detail="Thao tác Bucket Policy/ACL không hợp lệ")
+    base = _create_payload({"name": body.get("bucket"), "owner": body.get("owner"),
+                            "endpoint": body.get("endpoint")})
+    payload = {"action": action, "bucket": base["name"], "owner": base["owner"],
+               "endpoint": base["endpoint"], "public": False, "required_actions": []}
+    if action == "acl_set":
+        acl = str(body.get("acl") or "")
+        if acl not in {"private", "authenticated-read", "public-read", "public-read-write"}:
+            raise HTTPException(status_code=400, detail="Canned ACL không hợp lệ")
+        payload["acl"] = acl
+        payload["public"] = acl != "private"
+        return payload
+    if action == "policy_delete":
+        payload["policy"] = None
+        return payload
+    policy = body.get("policy")
+    if not isinstance(policy, dict) or policy.get("Version") != "2012-10-17":
+        raise HTTPException(status_code=400, detail="Policy cần Version 2012-10-17 và phải là JSON object")
+    statements = policy.get("Statement")
+    if isinstance(statements, dict):
+        statements = [statements]
+    if not isinstance(statements, list) or not 1 <= len(statements) <= 100:
+        raise HTTPException(status_code=400, detail="Policy cần từ 1 đến 100 Statement")
+    bucket_arn = f"arn:aws:s3:::{base['name']}"
+    required_actions = set()
+    public = False
+    for statement in statements:
+        if not isinstance(statement, dict) or statement.get("Effect") not in {"Allow", "Deny"}:
+            raise HTTPException(status_code=400, detail="Statement/Effect không hợp lệ")
+        actions = statement.get("Action")
+        actions = [actions] if isinstance(actions, str) else actions
+        resources = statement.get("Resource")
+        resources = [resources] if isinstance(resources, str) else resources
+        if not isinstance(actions, list) or not actions or not all(action in REEF_POLICY_ACTIONS for action in actions):
+            raise HTTPException(status_code=400, detail="Policy chứa S3 action không có trong allowlist Reef")
+        if not isinstance(resources, list) or not resources or not all(
+            isinstance(resource, str) and resource in {bucket_arn, bucket_arn + "/*"} for resource in resources
+        ):
+            raise HTTPException(status_code=400, detail="Policy chỉ được tham chiếu bucket hiện tại")
+        if "Principal" not in statement:
+            raise HTTPException(status_code=400, detail="Statement thiếu Principal")
+        if "${" in json.dumps(statement, ensure_ascii=False):
+            raise HTTPException(status_code=400, detail="Ceph RGW không hỗ trợ string interpolation trong policy")
+        required_actions.update(actions)
+        if statement["Effect"] == "Allow" and _is_public_principal(statement["Principal"]):
+            public = True
+    encoded = json.dumps(policy, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 64 * 1024:
+        raise HTTPException(status_code=400, detail="Policy vượt quá giới hạn 64 KiB của editor")
+    payload.update(policy=policy, policy_json=encoded, public=public,
+                   required_actions=sorted(required_actions))
+    return payload
+
+
+def _ensure_policy_capability(payload: dict, capability: dict) -> None:
+    matrix = capability["bucket_policy_acl"]
+    if not matrix["supported"]:
+        raise HTTPException(status_code=409, detail=matrix["unavailable_reason"])
+    major = int(capability["ceph_major"])
+    unavailable = [(action, POLICY_ACTION_MIN_MAJOR[action]) for action in payload["required_actions"]
+                   if POLICY_ACTION_MIN_MAJOR[action] > major]
+    if unavailable:
+        action, minimum = unavailable[0]
+        release = {15: "Octopus", 18: "Reef"}.get(minimum, f"major {minimum}")
+        raise HTTPException(status_code=409, detail=f"Policy action {action} cần Ceph {release} {minimum} trở lên.")
+
+
+def _policy_acl_preview(cluster, payload: dict) -> dict:
+    def inspect(client):
+        current_policy = None
+        try:
+            raw = client.get_bucket_policy(Bucket=payload["bucket"]).get("Policy")
+            current_policy = json.loads(raw) if isinstance(raw, str) else raw
+        except client.exceptions.ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code", "")) not in {"NoSuchBucketPolicy", "NoSuchPolicy"}:
+                raise
+        current_acl = client.get_bucket_acl(Bucket=payload["bucket"])
+        safe_acl = {"Owner": current_acl.get("Owner"), "Grants": current_acl.get("Grants") or []}
+        candidate = payload.get("policy") if payload["action"].startswith("policy_") else {"canned_acl": payload["acl"]}
+        return {"before_policy": current_policy, "before_acl": safe_acl, "after": candidate}
+    return _with_owner_s3(cluster, payload, inspect)
+
+
+def _execute_policy_acl(cluster, payload: dict) -> None:
+    def execute(client):
+        if payload["action"] == "policy_put":
+            client.put_bucket_policy(Bucket=payload["bucket"], Policy=payload["policy_json"])
+        elif payload["action"] == "policy_delete":
+            client.delete_bucket_policy(Bucket=payload["bucket"])
+        else:
+            client.put_bucket_acl(Bucket=payload["bucket"], ACL=payload["acl"])
+    _with_owner_s3(cluster, payload, execute)
 
 
 def _format_bytes(value: object) -> str:
@@ -676,6 +1016,118 @@ async def bucket_governance_execute(request: Request, user: str = Depends(requir
     try:
         await asyncio.to_thread(_execute_governance, cluster, payload)
     except (ObjectStorageError, RgwLogError) as exc:
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
+
+
+@router.post("/api/object-storage/buckets/lifecycle/preview")
+async def bucket_lifecycle_preview(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi lifecycle")
+    payload = _lifecycle_payload(await request.json())
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        _ensure_lifecycle_capability(payload, capability)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
+        dry_run = await asyncio.to_thread(_lifecycle_dry_run, cluster, payload)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    return {"action": payload["action"], "bucket": payload["bucket"], "cluster_id": cluster.id,
+        "cluster_name": cluster.name, "ceph_version": capability["ceph_version"],
+        "ceph_release": capability["ceph_release"],
+        "risk": "high" if payload["action"] == "lifecycle_delete" else "medium",
+        "confirmation_required": payload["bucket"], "rules": payload["rules"], "dry_run": dry_run}
+
+
+@router.post("/api/object-storage/buckets/lifecycle/execute")
+async def bucket_lifecycle_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi lifecycle")
+    body = await request.json()
+    payload = _lifecycle_payload(body)
+    if str(body.get("confirmation") or "") != payload["bucket"]:
+        raise HTTPException(status_code=400, detail="Nhập chính xác tên bucket để xác nhận")
+    cluster = selected_cluster(request)
+    preview = ("Xóa toàn bộ lifecycle configuration" if payload["action"] == "lifecycle_delete"
+               else "Áp dụng lifecycle rules: " + json.dumps(payload["rules"], ensure_ascii=False, separators=(",", ":")))
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        _ensure_lifecycle_capability(payload, capability)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
+        audit_id = await asyncio.to_thread(_start_governance_audit, cluster.id, user, payload, preview)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("cannot persist lifecycle audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        await asyncio.to_thread(_execute_lifecycle, cluster, payload)
+    except ObjectStorageError as exc:
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
+
+
+@router.post("/api/object-storage/buckets/policy-acl/preview")
+async def bucket_policy_acl_preview(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi Bucket Policy/ACL")
+    payload = _policy_acl_payload(await request.json())
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        _ensure_policy_capability(payload, capability)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
+        diff = await asyncio.to_thread(_policy_acl_preview, cluster, payload)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    confirmation = f"PUBLIC:{payload['bucket']}" if payload["public"] else payload["bucket"]
+    return {"action": payload["action"], "bucket": payload["bucket"], "cluster_id": cluster.id,
+        "cluster_name": cluster.name, "ceph_version": capability["ceph_version"],
+        "ceph_release": capability["ceph_release"], "public_access": payload["public"],
+        "risk": "high" if payload["public"] else "medium", "confirmation_required": confirmation,
+        "diff": diff, "warning": "Policy/ACL cho phép truy cập rộng hoặc anonymous." if payload["public"] else None}
+
+
+@router.post("/api/object-storage/buckets/policy-acl/execute")
+async def bucket_policy_acl_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi Bucket Policy/ACL")
+    body = await request.json()
+    payload = _policy_acl_payload(body)
+    expected = f"PUBLIC:{payload['bucket']}" if payload["public"] else payload["bucket"]
+    if str(body.get("confirmation") or "") != expected:
+        raise HTTPException(status_code=400, detail=f"Nhập chính xác {expected} để xác nhận")
+    cluster = selected_cluster(request)
+    preview = (f"{payload['action']} public={payload['public']} " +
+               (payload.get("policy_json") or str(payload.get("acl") or "delete")))
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        _ensure_policy_capability(payload, capability)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
+        audit_id = await asyncio.to_thread(_start_governance_audit, cluster.id, user, payload, preview)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("cannot persist bucket policy/acl audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        await asyncio.to_thread(_execute_policy_acl, cluster, payload)
+    except ObjectStorageError as exc:
         safe_error = _safe_error(exc)
         await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
         raise HTTPException(status_code=502, detail=safe_error) from exc

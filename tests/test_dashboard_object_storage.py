@@ -1,5 +1,6 @@
 import dashboard.routes.object_storage as object_storage_route
 from datetime import datetime, timezone
+import json
 import bcrypt
 from config.settings import settings
 from shared import db
@@ -81,6 +82,55 @@ def test_capability_api_fails_closed_for_mixed_cluster(dashboard_client, monkeyp
     response = dashboard_client.get("/api/object-storage/capabilities")
     assert response.status_code == 502
     assert "lẫn phiên bản" in response.json()["detail"]
+
+
+def test_capability_api_explains_features_unavailable_on_mimic(dashboard_client, monkeypatch):
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "13.2.10", "is_mixed": False,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/object-storage/capabilities")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ceph_release"] == "mimic"
+    assert body["bucket_governance"]["object_lock_at_create"] is False
+    assert "Octopus 15" in body["bucket_governance"]["object_lock_unavailable_reason"]
+    assert body["lifecycle"]["supported"] is True
+    assert body["lifecycle"]["transition_supported"] is False
+    assert "Nautilus 14" in body["lifecycle"]["transition_unavailable_reason"]
+
+
+def test_old_ceph_rejects_object_lock_and_lifecycle_transition_server_side(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "13.2.10", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    _login(dashboard_client)
+    object_lock = dashboard_client.post("/api/object-storage/buckets/actions/preview", json={
+        "name": "team-archive", "owner": "alice", "endpoint": "https://rgw.example.test",
+        "object_lock": True,
+    })
+    transition = dashboard_client.post("/api/object-storage/buckets/lifecycle/preview", json={
+        "action": "lifecycle_put", "bucket": "team-archive", "owner": "alice",
+        "endpoint": "https://rgw.example.test", "rules": [{
+            "id": "archive", "prefix": "logs/", "transition_days": 30,
+            "storage_class": "STANDARD_IA",
+        }],
+    })
+    new_policy_action = dashboard_client.post("/api/object-storage/buckets/policy-acl/preview", json={
+        "action": "policy_put", "bucket": "team-archive", "owner": "alice",
+        "endpoint": "https://rgw.example.test", "policy": {"Version": "2012-10-17", "Statement": [{
+            "Effect": "Allow", "Principal": {"AWS": "alice"},
+            "Action": "s3:PutBucketPublicAccessBlock", "Resource": "arn:aws:s3:::team-archive",
+        }]},
+    })
+    assert object_lock.status_code == 409
+    assert "Octopus 15" in object_lock.json()["detail"]
+    assert transition.status_code == 409
+    assert "Nautilus 14" in transition.json()["detail"]
+    assert new_policy_action.status_code == 409
+    assert "Octopus 15" in new_policy_action.json()["detail"]
 
 
 def test_create_bucket_uses_s3_api_temporary_owner_key_and_audit(dashboard_client, monkeypatch):
@@ -221,6 +271,144 @@ def test_bucket_versioning_uses_s3_owner_key_and_always_revokes(dashboard_client
                 "Mode": "COMPLIANCE", "Days": 30}}}}),
     ]
     assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")] * 2
+
+
+def test_lifecycle_preview_dry_run_execute_and_audit(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["team-archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats", lambda host, name: _stats(owner="alice"))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    revoked = []
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: revoked.append(args))
+    applied = []
+
+    class FakeS3:
+        def get_bucket_lifecycle_configuration(self, **kwargs):
+            return {"Rules": [{"ID": "old-rule", "Status": "Enabled", "Filter": {"Prefix": "old/"}}]}
+
+        def list_objects_v2(self, **kwargs):
+            return {"IsTruncated": False, "Contents": [
+                {"Key": "logs/old.log", "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+                {"Key": "images/new.jpg", "LastModified": datetime(2026, 8, 17, tzinfo=timezone.utc)},
+            ]}
+
+        def put_bucket_lifecycle_configuration(self, **kwargs):
+            applied.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "lifecycle_put", "bucket": "team-archive", "owner": "alice",
+            "endpoint": "https://rgw.example.test", "rules": [{
+                "id": "expire-logs", "prefix": "logs/", "status": "Enabled", "expiration_days": 90,
+            }]}
+
+    preview = dashboard_client.post("/api/object-storage/buckets/lifecycle/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/lifecycle/execute",
+                                     json={**body, "confirmation": "team-archive"})
+
+    assert preview.status_code == 200
+    assert preview.json()["dry_run"]["scanned_objects"] == 2
+    assert preview.json()["dry_run"]["estimated_current_objects_affected"] == 1
+    assert executed.status_code == 200
+    assert applied == [{"Bucket": "team-archive", "LifecycleConfiguration": {"Rules": [{
+        "ID": "expire-logs", "Status": "Enabled", "Filter": {"Prefix": "logs/"},
+        "Expiration": {"Days": 90},
+    }]}}]
+    assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")] * 2
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, executed.json()["request_id"])
+        assert audit.result == "succeeded"
+        assert "temp-secret" not in audit.preview
+
+
+def test_lifecycle_schema_rejects_duplicate_ids_and_unknown_actionless_rules(dashboard_client):
+    _login(dashboard_client)
+    base = {"action": "lifecycle_put", "bucket": "team-archive", "owner": "alice",
+            "endpoint": "https://rgw.example.test"}
+    duplicate = dashboard_client.post("/api/object-storage/buckets/lifecycle/preview", json={**base, "rules": [
+        {"id": "same", "prefix": "a/", "expiration_days": 1},
+        {"id": "same", "prefix": "b/", "expiration_days": 2},
+    ]})
+    actionless = dashboard_client.post("/api/object-storage/buckets/lifecycle/preview", json={
+        **base, "rules": [{"id": "no-action", "prefix": "logs/"}],
+    })
+    assert duplicate.status_code == 400
+    assert actionless.status_code == 400
+
+
+def test_bucket_policy_preview_diff_execute_and_public_confirmation(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["team-archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats", lambda host, name: _stats(owner="alice"))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    revoked = []
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: revoked.append(args))
+    applied = []
+
+    class FakeS3:
+        def get_bucket_policy(self, **kwargs):
+            return {"Policy": json.dumps({"Version": "2012-10-17", "Statement": [{
+                "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
+                "Resource": "arn:aws:s3:::team-archive/*",
+            }]})}
+
+        def get_bucket_acl(self, **kwargs):
+            return {"Owner": {"ID": "alice"}, "Grants": []}
+
+        def put_bucket_policy(self, **kwargs):
+            applied.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    policy = {"Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Principal": "*", "Action": ["s3:GetObject"],
+        "Resource": ["arn:aws:s3:::team-archive/*"],
+    }]}
+    body = {"action": "policy_put", "bucket": "team-archive", "owner": "alice",
+            "endpoint": "https://rgw.example.test", "policy": policy}
+
+    preview = dashboard_client.post("/api/object-storage/buckets/policy-acl/preview", json=body)
+    weak = dashboard_client.post("/api/object-storage/buckets/policy-acl/execute",
+                                 json={**body, "confirmation": "team-archive"})
+    executed = dashboard_client.post("/api/object-storage/buckets/policy-acl/execute",
+                                     json={**body, "confirmation": "PUBLIC:team-archive"})
+
+    assert preview.status_code == 200
+    assert preview.json()["public_access"] is True
+    assert preview.json()["confirmation_required"] == "PUBLIC:team-archive"
+    assert preview.json()["diff"]["before_policy"]["Statement"][0]["Effect"] == "Deny"
+    assert weak.status_code == 400
+    assert executed.status_code == 200
+    assert json.loads(applied[0]["Policy"]) == policy
+    assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")] * 2
+
+
+def test_bucket_policy_rejects_unknown_reef_action_and_cross_bucket_resource(dashboard_client):
+    _login(dashboard_client)
+    base = {"action": "policy_put", "bucket": "team-archive", "owner": "alice",
+            "endpoint": "https://rgw.example.test"}
+    unknown = dashboard_client.post("/api/object-storage/buckets/policy-acl/preview", json={**base, "policy": {
+        "Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*",
+            "Action": "s3:DefinitelyNotReal", "Resource": "arn:aws:s3:::team-archive/*"}],
+    }})
+    cross_bucket = dashboard_client.post("/api/object-storage/buckets/policy-acl/preview", json={**base, "policy": {
+        "Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*",
+            "Action": "s3:GetObject", "Resource": "arn:aws:s3:::other-bucket/*"}],
+    }})
+    assert unknown.status_code == 400
+    assert cross_bucket.status_code == 400
 
 
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
