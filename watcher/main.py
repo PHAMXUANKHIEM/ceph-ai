@@ -513,9 +513,11 @@ def run(
         # docstring) — deliberately called every poll regardless of
         # whether anything looked saturated this cycle.
         try:
-            current_saturated = volume_monitor.check_volumes()
-            volume_monitor.persist_last_poll_metrics()
-            volume_monitor.create_or_resolve_volume_incidents(current_saturated)
+            current_saturated = volume_monitor.check_volumes(cluster_id=cluster_id)
+            volume_monitor.persist_last_poll_metrics(cluster_id=cluster_id)
+            volume_monitor.create_or_resolve_volume_incidents(
+                current_saturated, cluster_id=cluster_id, include_legacy_null=True
+            )
         except Exception:
             logger.exception("run: volume saturation check failed")
 
@@ -767,10 +769,10 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
 def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = None) -> None:
     """Multi-cluster observability Phase 1: the loop for any cluster OTHER
     than the default one — core health poll + Incident creation + heartbeat,
-    plus the read-only CRUSH structure/distribution collectors. Deliberately
-    does NOT run device_health/node_health/bluestore_omap/osd_latency/
-    crush-skew/volume_monitor — those secondary monitors
-    secondary monitors is coupled to the global `settings` singleton the
+    plus the read-only CRUSH structure/distribution and RBD volume-performance
+    collectors. Deliberately does NOT run device_health/node_health/
+    bluestore_omap/osd_latency/crush-skew — those secondary monitors
+    are coupled to the global `settings` singleton the
     same way watcher/collector.py is (see
     `_build_and_publish_incident_for_observed_cluster`'s docstring), and
     parameterizing all of them is explicitly deferred to a later phase (see
@@ -817,6 +819,17 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 _build_and_publish_incident_for_observed_cluster(cluster, health)
                 last_status = current_status
                 last_checks = current_checks
+
+            try:
+                current_saturated = volume_monitor.check_volumes(cluster=cluster)
+                volume_monitor.persist_last_poll_metrics(cluster_id=cluster.id)
+                volume_monitor.create_or_resolve_volume_incidents(
+                    current_saturated, cluster_id=cluster.id, include_legacy_null=False
+                )
+            except Exception:
+                logger.exception(
+                    "run_observed_cluster_loop(%r): volume saturation check failed", cluster.name
+                )
 
             now = datetime.utcnow()
             if (

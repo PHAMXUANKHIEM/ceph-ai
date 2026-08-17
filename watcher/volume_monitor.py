@@ -40,7 +40,7 @@ from collections import deque
 from datetime import datetime
 
 from shared import audit, db
-from shared.models import Action, ActionStatus, Incident, IncidentStatus, VolumeMetric
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, VolumeMetric
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from worker.policy import gate
@@ -96,7 +96,7 @@ class _VolumeState:
 # real unbounded-growth risk in practice, same judgment call already made
 # for this codebase's other long-lived module-level state
 # (watcher/ceph_client.py::last_successful_mon_node).
-_state: dict[tuple[str, str], _VolumeState] = {}
+_state: dict[tuple[str | None, str, str], _VolumeState] = {}
 
 # Overwritten (not appended to) on every check_volumes() call — this
 # process's most recent poll's full sample set (every image from every
@@ -108,7 +108,7 @@ _state: dict[tuple[str, str], _VolumeState] = {}
 # its return shape would force every one of those tests to also care about
 # persistence. watcher/main.py's poll loop is the only real caller of
 # either function, and always calls both, once per poll, in order.
-_last_poll_samples: list[dict] = []
+_last_poll_samples: dict[str | None, list[dict]] = {}
 
 
 def _looks_saturated(state: _VolumeState, iops: float, latency_ms: float) -> bool:
@@ -126,7 +126,7 @@ def _looks_saturated(state: _VolumeState, iops: float, latency_ms: float) -> boo
     return near_peak and latency_elevated
 
 
-def check_volumes() -> dict[str, dict]:
+def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None) -> dict[str, dict]:
     """Polls every settings.ceph_rbd_pools-configured pool's per-image
     iostat, updates each image's rolling window + streak counter, and
     returns {ceph_code: detail} for every volume whose streak has reached
@@ -134,17 +134,41 @@ def check_volumes() -> dict[str, dict]:
     (e.g. transient SSH hiccup) is skipped for this poll, logged, and
     simply retried next poll — never raises, matching every other
     best-effort per-poll check in watcher/main.py's loop."""
+    effective_cluster_id = cluster.id if cluster is not None else cluster_id
+    current_samples: list[dict] = []
+    _last_poll_samples[effective_cluster_id] = current_samples
     saturated: dict[str, dict] = {}
-    _last_poll_samples.clear()
-    for pool in ceph_client.configured_rbd_pools():
+    if cluster is None:
+        pools = ceph_client.configured_rbd_pools()
+    else:
+        mon_nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
         try:
-            samples = ceph_client.query_rbd_iostat(pool)
+            pools = ceph_client.discover_rbd_pools_with(
+                mon_nodes, cluster.ceph_container_name, cluster.ssh_user,
+                cluster.ssh_key_path, cluster.ceph_exec_mode,
+            )
         except CephQueryError as exc:
-            logger.warning("check_volumes: failed to query RBD pool %r: %s", pool, exc)
+            logger.warning("check_volumes: cluster %s pool discovery failed: %s", cluster.id, exc)
+            return {}
+
+    for pool in pools:
+        try:
+            if cluster is None:
+                samples = ceph_client.query_rbd_iostat(pool)
+            else:
+                samples = ceph_client.query_rbd_iostat_with(
+                    pool, mon_nodes, cluster.ceph_container_name, cluster.ssh_user,
+                    cluster.ssh_key_path, cluster.ceph_exec_mode,
+                )
+        except CephQueryError as exc:
+            logger.warning(
+                "check_volumes: cluster %s failed to query RBD pool %r: %s",
+                effective_cluster_id or "default", pool, exc,
+            )
             continue
 
         for sample in samples:
-            key = (sample["pool"], sample["image"])
+            key = (effective_cluster_id, sample["pool"], sample["image"])
             state = _state.setdefault(key, _VolumeState())
             latency_ms = max(sample["read_latency_ms"], sample["write_latency_ms"])
 
@@ -157,7 +181,7 @@ def check_volumes() -> dict[str, dict]:
             state.latency_window.append(latency_ms)
 
             is_saturated_now = state.consecutive_saturated_polls >= CONSECUTIVE_POLLS_REQUIRED
-            _last_poll_samples.append(
+            current_samples.append(
                 {
                     "pool": sample["pool"],
                     "image": sample["image"],
@@ -169,7 +193,7 @@ def check_volumes() -> dict[str, dict]:
             )
 
             if is_saturated_now:
-                saturated[ceph_code_for(*key)] = {
+                saturated[ceph_code_for(sample["pool"], sample["image"])] = {
                     "pool": sample["pool"],
                     "image": sample["image"],
                     "iops": sample["iops"],
@@ -179,7 +203,7 @@ def check_volumes() -> dict[str, dict]:
     return saturated
 
 
-def persist_last_poll_metrics() -> None:
+def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
     """Writes one VolumeMetric row per sample check_volumes() saw on its
     most recent call — the persisted, queryable history that this module's
     own in-memory rolling window (see this module's docstring) deliberately
@@ -189,12 +213,14 @@ def persist_last_poll_metrics() -> None:
     itself. Deliberately a separate call from check_volumes() (see
     _last_poll_samples' own comment for why) — watcher/main.py's poll loop
     calls both, every poll."""
-    if not _last_poll_samples:
+    samples = _last_poll_samples.get(cluster_id, [])
+    if not samples:
         return
     polled_at = datetime.utcnow()
     with db.SessionLocal() as session:
         session.add_all(
             VolumeMetric(
+                cluster_id=cluster_id,
                 pool=sample["pool"],
                 image=sample["image"],
                 iops=sample["iops"],
@@ -203,7 +229,7 @@ def persist_last_poll_metrics() -> None:
                 saturated=sample["saturated"],
                 polled_at=polled_at,
             )
-            for sample in _last_poll_samples
+            for sample in samples
         )
         session.commit()
 
@@ -219,7 +245,10 @@ def _rationale_for(detail: dict) -> str:
     )
 
 
-def create_or_resolve_volume_incidents(current_saturated: dict[str, dict]) -> None:
+def create_or_resolve_volume_incidents(
+    current_saturated: dict[str, dict], cluster_id: str | None = None,
+    *, include_legacy_null: bool = True,
+) -> None:
     """Creates a new Incident+Action (action_id=investigate_manually, RISKY)
     for every newly-saturated volume that doesn't already have one open, and
     resolves any open VOLUME_SATURATED: Incident whose volume is no longer
@@ -239,12 +268,21 @@ def create_or_resolve_volume_incidents(current_saturated: dict[str, dict]) -> No
     ceph_code family it has no specific guidance about.
     """
     with db.SessionLocal() as session:
-        open_volume_incidents = (
+        query = (
             session.query(Incident)
             .filter(Incident.ceph_code.like(f"{VOLUME_SATURATED_PREFIX}%"))
             .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
-            .all()
         )
+        if cluster_id is not None:
+            if include_legacy_null:
+                query = query.filter(
+                    (Incident.cluster_id == cluster_id) | Incident.cluster_id.is_(None)
+                )
+            else:
+                query = query.filter(Incident.cluster_id == cluster_id)
+        else:
+            query = query.filter(Incident.cluster_id.is_(None))
+        open_volume_incidents = query.all()
         open_codes = {incident.ceph_code for incident in open_volume_incidents}
 
         for incident in open_volume_incidents:
@@ -257,6 +295,7 @@ def create_or_resolve_volume_incidents(current_saturated: dict[str, dict]) -> No
 
             rationale = _rationale_for(detail)
             incident = Incident(
+                cluster_id=cluster_id,
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
                 detected_at=datetime.utcnow(),

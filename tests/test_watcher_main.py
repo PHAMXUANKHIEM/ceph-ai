@@ -84,9 +84,11 @@ def _fast_volume_monitor_default(monkeypatch):
     actually exercise this path already monkeypatch these same names
     explicitly within their own body, which still correctly takes
     precedence over this fixture's patch."""
-    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda: {})
-    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda: None)
-    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda _c: None)
+    monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", lambda *a, **kw: {})
+    monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        watcher_main.volume_monitor, "create_or_resolve_volume_incidents", lambda *a, **kw: None
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -259,24 +261,27 @@ def test_run_calls_volume_monitor_every_poll_iteration(monkeypatch):
     resolve_calls = []
     persist_calls = {"n": 0}
 
-    def fake_check_volumes():
+    def fake_check_volumes(*_args, **_kwargs):
         check_calls["n"] += 1
         return {"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}
 
-    def fake_persist():
+    def fake_persist(*_args, **_kwargs):
         persist_calls["n"] += 1
 
     monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", fake_check_volumes)
     monkeypatch.setattr(watcher_main.volume_monitor, "persist_last_poll_metrics", fake_persist)
-    monkeypatch.setattr(
-        watcher_main.volume_monitor, "create_or_resolve_volume_incidents", resolve_calls.append
-    )
+    def fake_resolve(current, **kwargs):
+        resolve_calls.append((current, kwargs))
+
+    monkeypatch.setattr(watcher_main.volume_monitor, "create_or_resolve_volume_incidents", fake_resolve)
 
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
 
     assert check_calls["n"] == 3
     assert persist_calls["n"] == 3
-    assert resolve_calls == [{"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}] * 3
+    expected = {"VOLUME_SATURATED:vms/disk-1": {"pool": "vms", "image": "disk-1"}}
+    assert [call[0] for call in resolve_calls] == [expected] * 3
+    assert all(call[1]["include_legacy_null"] is True for call in resolve_calls)
 
 
 def test_run_survives_volume_monitor_raising(monkeypatch):
@@ -287,7 +292,7 @@ def test_run_survives_volume_monitor_raising(monkeypatch):
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
 
-    def broken_check_volumes():
+    def broken_check_volumes(*_args, **_kwargs):
         raise RuntimeError("bug in volume_monitor")
 
     monkeypatch.setattr(watcher_main.volume_monitor, "check_volumes", broken_check_volumes)

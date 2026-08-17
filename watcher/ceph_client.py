@@ -93,6 +93,27 @@ def get_mon_nodes() -> list[str]:
     return [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
 
 
+def _normalize_rbd_pools(payload: dict | list) -> list[str]:
+    """Extract RBD-enabled pool names from ``ceph osd pool ls detail``."""
+    raw_pools = payload if isinstance(payload, list) else payload.get("pools") if isinstance(payload, dict) else None
+    if not isinstance(raw_pools, list):
+        logger.warning(
+            "discover_rbd_pools: unexpected response shape from 'ceph osd pool ls detail' "
+            "— treating as no pools found"
+        )
+        return []
+
+    pools: list[str] = []
+    for entry in raw_pools:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("pool_name")
+        applications = entry.get("application_metadata")
+        if name and isinstance(applications, dict) and "rbd" in applications:
+            pools.append(str(name))
+    return sorted(pools)
+
+
 def discover_rbd_pools() -> list[str]:
     """Auto-detects which pools have the RBD application enabled (the same
     `application_metadata` flag `rbd pool init`/`ceph osd pool application
@@ -111,23 +132,19 @@ def discover_rbd_pools() -> list[str]:
     empty result or a query failure means to a caller.
     """
     _, payload = run_ceph_json_command("ceph osd pool ls detail")
-    raw_pools = payload if isinstance(payload, list) else payload.get("pools") if isinstance(payload, dict) else None
-    if not isinstance(raw_pools, list):
-        logger.warning(
-            "discover_rbd_pools: unexpected response shape from 'ceph osd pool ls detail' "
-            "— treating as no pools found"
-        )
-        return []
+    return _normalize_rbd_pools(payload)
 
-    pools: list[str] = []
-    for entry in raw_pools:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("pool_name")
-        applications = entry.get("application_metadata")
-        if name and isinstance(applications, dict) and "rbd" in applications:
-            pools.append(str(name))
-    return sorted(pools)
+
+def discover_rbd_pools_with(
+    mon_nodes: list[str], container_name: str, ssh_user: str,
+    ssh_key_path: str, exec_mode: str,
+) -> list[str]:
+    """Cluster-scoped counterpart to :func:`discover_rbd_pools`."""
+    _, payload = run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+        "ceph osd pool ls detail",
+    )
+    return _normalize_rbd_pools(payload)
 
 
 def configured_rbd_pools() -> list[str]:

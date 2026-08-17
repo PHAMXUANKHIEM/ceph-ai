@@ -15,6 +15,7 @@ from shared.models import (
     AuditEntry,
     Incident,
     IncidentStatus,
+    Cluster,
     VolumeMetric,
 )
 from watcher.ceph_client import CephQueryError
@@ -296,3 +297,84 @@ def test_persist_last_poll_metrics_is_a_noop_when_nothing_was_polled(isolated_db
 
     with db_module.SessionLocal() as session:
         assert session.query(VolumeMetric).count() == 0
+
+
+def test_secondary_cluster_poll_uses_its_connection_and_persists_cluster_id(isolated_db, monkeypatch):
+    cluster = Cluster(
+        name="secondary", ceph_mon_nodes="10.20.0.11,10.20.0.12",
+        ceph_container_name="ceph-mon", ssh_user="ceph", ssh_key_path="/keys/secondary",
+        ceph_exec_mode="cephadm", is_default=False,
+    )
+    with db_module.SessionLocal() as session:
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+        session.expunge(cluster)
+
+    discovery_calls = []
+    iostat_calls = []
+    monkeypatch.setattr(
+        vm.ceph_client, "discover_rbd_pools_with",
+        lambda *args: discovery_calls.append(args) or ["volumes"],
+    )
+    monkeypatch.setattr(
+        vm.ceph_client, "query_rbd_iostat_with",
+        lambda *args: iostat_calls.append(args) or [_sample(pool="volumes", image="vm-2")],
+    )
+
+    assert vm.check_volumes(cluster=cluster) == {}
+    vm.persist_last_poll_metrics(cluster_id=cluster_id)
+
+    assert discovery_calls[0][0] == ["10.20.0.11", "10.20.0.12"]
+    assert discovery_calls[0][2:] == ("ceph", "/keys/secondary", "cephadm")
+    assert iostat_calls[0][0] == "volumes"
+    with db_module.SessionLocal() as session:
+        row = session.query(VolumeMetric).one()
+        assert row.cluster_id == cluster_id
+        assert row.pool == "volumes"
+        assert row.image == "vm-2"
+
+
+def test_volume_state_is_isolated_between_clusters(monkeypatch):
+    monkeypatch.setattr(vm.ceph_client, "configured_rbd_pools", lambda: ["vms"])
+    monkeypatch.setattr(
+        vm.ceph_client, "query_rbd_iostat",
+        lambda pool: [_sample(iops=100.0, read_latency_ms=1.0, write_latency_ms=1.0)],
+    )
+    for _ in range(vm.ROLLING_WINDOW_SIZE):
+        vm.check_volumes(cluster_id="cluster-a")
+
+    hot = _sample(iops=95.0, read_latency_ms=10.0, write_latency_ms=10.0)
+    monkeypatch.setattr(vm.ceph_client, "query_rbd_iostat", lambda pool: [hot])
+    for _ in range(vm.CONSECUTIVE_POLLS_REQUIRED):
+        vm.check_volumes(cluster_id="cluster-a")
+
+    # The same pool/image in a new cluster has no baseline and must not inherit
+    # cluster-a's saturated streak.
+    assert vm.check_volumes(cluster_id="cluster-b") == {}
+
+
+def test_volume_incidents_are_isolated_by_cluster(isolated_db):
+    clusters = [
+        Cluster(
+            name=name, ceph_mon_nodes="10.0.0.1", ceph_container_name="",
+            ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none",
+            is_default=False,
+        )
+        for name in ("cluster-a", "cluster-b")
+    ]
+    with db_module.SessionLocal() as session:
+        session.add_all(clusters)
+        session.commit()
+        cluster_a, cluster_b = (cluster.id for cluster in clusters)
+
+    current = {"VOLUME_SATURATED:vms/disk-1": _sample() | {"latency_ms": 10.0, "consecutive_polls": 3}}
+    vm.create_or_resolve_volume_incidents(current, cluster_id=cluster_a, include_legacy_null=False)
+    vm.create_or_resolve_volume_incidents(current, cluster_id=cluster_b, include_legacy_null=False)
+    vm.create_or_resolve_volume_incidents({}, cluster_id=cluster_a, include_legacy_null=False)
+
+    with db_module.SessionLocal() as session:
+        rows = session.query(Incident).order_by(Incident.cluster_id).all()
+        by_cluster = {row.cluster_id: row for row in rows}
+        assert by_cluster[cluster_a].status == IncidentStatus.RESOLVED.value
+        assert by_cluster[cluster_b].status == IncidentStatus.PENDING_APPROVAL.value
