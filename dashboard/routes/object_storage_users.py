@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 
 from dashboard.cluster_scope import cluster_selection, selected_cluster
 from dashboard.routes import auth
+from dashboard.routes.object_storage import _safe_error
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
@@ -238,7 +239,7 @@ async def users_api(request: Request, query: str = Query("", max_length=MAX_QUER
     try:
         return await asyncio.to_thread(_inventory, selected_cluster(request), query, page)
     except RgwLogError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
 
 
 @router.get("/api/object-storage/users/{uid}")
@@ -247,7 +248,7 @@ async def user_api(request: Request, uid: str, user: str = Depends(require_login
     try:
         return await asyncio.to_thread(_detail, selected_cluster(request), uid)
     except RgwLogError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
 
 
 @router.post("/api/object-storage/users/actions/preview")
@@ -262,7 +263,7 @@ async def user_action_preview(request: Request, user: str = Depends(require_logi
         "cluster_name": cluster.name, "risk": "medium" if action in {"suspend", "modify"} else "low",
         "confirmation_required": uid,
         "preview": inner,
-        "generates_access_key": False,
+        "generates_access_key": None,
     }
 
 
@@ -283,9 +284,10 @@ async def user_action_execute(request: Request, user: str = Depends(require_logi
     try:
         host = await asyncio.to_thread(_execute, cluster, action, uid, params)
     except RgwLogError as exc:
-        await asyncio.to_thread(_finish_audit, audit_id, "failed", str(exc))
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_finish_audit, audit_id, "failed", safe_error)
         logger.warning("s3_user_action actor=%s cluster=%s action=%s uid=%s result=failed", user, cluster.id, action, uid)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
     logger.info("s3_user_action actor=%s cluster=%s action=%s uid=%s host=%s result=success", user, cluster.id, action, uid, host)
     return {"ok": True, "action": action, "uid": uid, "cluster_id": cluster.id, "request_id": audit_id}
@@ -343,8 +345,9 @@ async def key_action_execute(request: Request, user: str = Depends(require_login
     try:
         credential = await asyncio.to_thread(_key_action, cluster, action, uid, access_key)
     except RgwLogError as exc:
-        await asyncio.to_thread(_finish_audit, audit_id, "failed", str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_finish_audit, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
     response = {"ok": True, "action": action, "uid": uid, "request_id": audit_id}
     if credential is not None:
@@ -389,8 +392,9 @@ async def setting_execute(request: Request, user: str = Depends(require_login)):
     try:
         await asyncio.to_thread(_setting_action, cluster, action, uid, params)
     except RgwLogError as exc:
-        await asyncio.to_thread(_finish_audit, audit_id, "failed", str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_finish_audit, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
     return {"ok": True, "action": action, "uid": uid, "request_id": audit_id}
 

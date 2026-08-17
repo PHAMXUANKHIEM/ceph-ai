@@ -346,7 +346,7 @@ def build_s3_user_action_command(action: str, uid: str, params: dict) -> str:
     """Closed command builder. Creation explicitly generates no access key."""
     quoted_uid = shlex.quote(uid)
     if action == "create":
-        command = f"radosgw-admin user create --uid={quoted_uid} --generate-key=false"
+        command = f"radosgw-admin user create --uid={quoted_uid}"
         if params.get("display_name"):
             command += f" --display-name={shlex.quote(str(params['display_name']))}"
         if params.get("email"):

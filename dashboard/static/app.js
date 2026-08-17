@@ -193,7 +193,12 @@
       s3UsersLink.textContent = "S3 Users";
       linksByPath["/object-storage/users"] = s3UsersLink;
     }
-    if (!linksByPath["/object-storage/user-settings"] && (document.getElementById("s3-user-action-form") || window.location.pathname === "/object-storage/user-settings")) {
+    var objectStorageAdmin = Boolean(
+      linksByPath["/users"] || linksByPath["/clusters"] ||
+      document.getElementById("s3-user-action-form") ||
+      window.location.pathname === "/object-storage/user-settings"
+    );
+    if (!linksByPath["/object-storage/user-settings"] && objectStorageAdmin) {
       var s3SettingsLink = document.createElement("a");
       s3SettingsLink.href = "/object-storage/user-settings";
       s3SettingsLink.className = window.location.pathname === s3SettingsLink.pathname ? "nav-link active" : "nav-link";

@@ -269,7 +269,8 @@ def test_s3_user_action_builder_is_closed_quotes_input_and_never_generates_key()
         "create", "alice tenant", {"display_name": "Alice's Team", "email": "a@example.test"}
     )
     assert "--uid='alice tenant'" in command
-    assert "--generate-key=false" in command
+    assert "--generate-key" not in command
+    assert command.startswith("radosgw-admin user create --uid='alice tenant'")
     assert "--display-name='Alice'\"'\"'s Team'" in command
 
     try:

@@ -70,3 +70,7 @@ def test_compact_admin_pages_keep_permission_gated_navigation_sources():
         source = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
         for path in ("/crush-map", "/telegram-alerts", "/users", "/clusters"):
             assert f'href="{path}"' in source, f"{name} drops admin navigation {path}"
+def test_object_storage_quota_link_uses_admin_navigation_capability():
+    source = APP_JS.read_text(encoding="utf-8")
+    assert 'linksByPath["/users"] || linksByPath["/clusters"]' in source
+    assert 'if (!linksByPath["/object-storage/user-settings"] && objectStorageAdmin)' in source

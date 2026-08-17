@@ -12,6 +12,8 @@
   var execute = document.getElementById("s3-execute");
   var status = document.getElementById("s3-action-status");
   var approvedPayload = null;
+  var managementHint = form.closest(".card").querySelector(".card-header .hint");
+  if (managementHint) managementHint.textContent = "Mọi thao tác yêu cầu preview và nhập lại UID. Access key được quản lý riêng ở phần Access-key lifecycle.";
   function payload() { return {action: action.value, uid: uid.value.trim(), display_name: displayName.value.trim(), email: email.value.trim()}; }
   function endpoint(kind) { return "/api/object-storage/users/actions/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function errorText(response) { return response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }

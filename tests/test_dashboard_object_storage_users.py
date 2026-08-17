@@ -118,8 +118,8 @@ def test_create_preview_generates_no_access_key(dashboard_client):
     assert response.status_code == 200
     body = response.json()
     assert body["confirmation_required"] == "alice"
-    assert body["generates_access_key"] is False
-    assert "--generate-key=false" in body["preview"]
+    assert body["generates_access_key"] is None
+    assert "--generate-key" not in body["preview"]
     assert "secret" not in response.text.casefold()
 
 
@@ -135,7 +135,7 @@ def test_admin_page_exposes_two_step_action_form(dashboard_client, monkeypatch):
     assert 'id="s3-execute"' in response.text
     assert 'id="s3-key-action-form"' in response.text
     assert 'id="s3-one-time-secret"' in response.text
-    assert "Tạo user không tự sinh access key" in response.text
+    assert "Access-key lifecycle" in response.text
 
 
 def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):
@@ -322,3 +322,46 @@ def test_secondary_cluster_executes_setting_with_scoped_credentials(dashboard_cl
     response = dashboard_client.post(f"/api/object-storage/users/settings/execute?cluster={cluster_id}", json=payload)
     assert response.status_code == 200
     assert calls == [("10.88.0.90", "quota_enable", "alice", {"scope":"bucket"}, "cephx", "/keys/x", "docker", "rgw-x")]
+
+
+def test_non_admin_cannot_call_any_write_preview_or_execute_api(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(route.auth, "is_admin_user", lambda user: False)
+    requests = [
+        ("/api/object-storage/users/actions/preview", {"action":"suspend", "uid":"alice"}),
+        ("/api/object-storage/users/actions/execute", {"action":"suspend", "uid":"alice", "confirmation":"alice"}),
+        ("/api/object-storage/users/keys/preview", {"action":"create_key", "uid":"alice"}),
+        ("/api/object-storage/users/keys/execute", {"action":"create_key", "uid":"alice", "confirmation":"alice"}),
+        ("/api/object-storage/users/settings/preview", {"action":"quota_enable", "uid":"alice", "scope":"user"}),
+        ("/api/object-storage/users/settings/execute", {"action":"quota_enable", "uid":"alice", "scope":"user", "confirmation":"alice"}),
+    ]
+    assert [dashboard_client.post(path, json=body).status_code for path, body in requests] == [403] * 6
+
+
+def test_failed_key_action_redacts_secret_from_http_and_audit(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(route, "create_s3_access_key", lambda *args: (_ for _ in ()).throw(
+        route.RgwLogError("secret_access_key=LEAK-ME")
+    ))
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/users/keys/execute", json={
+        "action":"create_key", "uid":"alice", "confirmation":"alice",
+    })
+    assert response.status_code == 502
+    assert "LEAK-ME" not in response.text
+    assert "[REDACTED]" in response.text
+    with db.SessionLocal() as session:
+        audit = session.query(ObjectStorageAuditEntry).filter_by(action="create_key").one()
+        assert audit.error_message == "secret_access_key=[REDACTED]"
+
+
+def test_secondary_cluster_creates_key_with_scoped_credentials(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(name="key-secondary", ceph_mon_nodes="10.77.0.10", ceph_rgw_nodes="10.77.0.90", ceph_container_name="mon-k", ceph_rgw_container_name="rgw-k", ssh_user="cephk", ssh_key_path="/keys/k", ceph_exec_mode="podman", is_default=False, is_active=True)
+        session.add(cluster); session.commit(); cluster_id = cluster.id
+    calls = []
+    monkeypatch.setattr(route, "create_s3_access_key_with", lambda *args: calls.append(args) or {"access_key":"NEW", "secret_key":"SECRET"})
+    response = dashboard_client.post(f"/api/object-storage/users/keys/execute?cluster={cluster_id}", json={"action":"create_key", "uid":"alice", "confirmation":"alice"})
+    assert response.status_code == 200
+    assert calls == [("10.77.0.90", "alice", "cephk", "/keys/k", "podman", "rgw-k")]
