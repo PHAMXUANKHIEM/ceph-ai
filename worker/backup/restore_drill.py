@@ -143,7 +143,8 @@ def _cleanup_scratch(mon_ip: str, scratch_pool: str, scratch_image: str) -> None
 
 
 def _record_result(
-    pool: str, image: str, success: bool, started_at: datetime, error_message: str | None
+    pool: str, image: str, success: bool, started_at: datetime, error_message: str | None,
+    size_bytes: int = 0,
 ) -> None:
     with db.SessionLocal() as session:
         session.add(
@@ -154,6 +155,7 @@ def _record_result(
                 job_type="restore_drill",
                 status="SUCCESS" if success else "FAILED",
                 error_message=error_message,
+                size_bytes=size_bytes,
                 duration_seconds=(datetime.utcnow() - started_at).total_seconds(),
                 created_at=started_at,
                 finished_at=datetime.utcnow(),
@@ -210,14 +212,14 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                 f"checksum mismatch after restore: source={source_sha256} restored={restored_sha256}"
             )
 
-        _record_result(pool, image, True, started_at, None)
+        _record_result(pool, image, True, started_at, None, backup_job.size_bytes or 0)
         progress[0]["status"] = "done"
         progress[0]["finished_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
         return True
     except Exception as exc:
         logger.exception("restore_drill.run: failed for %s/%s", pool, image)
-        _record_result(pool, image, False, started_at, str(exc))
+        _record_result(pool, image, False, started_at, str(exc), backup_job.size_bytes or 0)
         progress[0]["status"] = "failed"
         progress[0]["message"] = str(exc)
         write_progress(action_pk, progress)

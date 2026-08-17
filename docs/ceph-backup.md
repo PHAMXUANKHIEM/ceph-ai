@@ -224,8 +224,8 @@ kiểm tra điều đó:
    dựa vào exit code của `rbd import`).
 4. Dọn sạch image scratch sau khi xong (thành công hay thất bại đều dọn).
 5. Kết quả (thành công/thất bại) được ghi thành một `BackupJob(job_type=
-   "restore_drill")` riêng, và nếu thất bại sẽ gửi cảnh báo `critical` ngay
-   lập tức.
+   "restore_drill")` riêng, gồm duration và kích thước payload để tính
+   throughput thực tế; nếu thất bại sẽ gửi cảnh báo `critical` ngay lập tức.
 
 Nếu `restore_drill:` để trống trong policy (mặc định — chưa có workload lab
 thật) thì job này **không được đăng ký**, tương tự cách `tracked_images`
@@ -245,6 +245,12 @@ dùng `restore_drill_rpo_hours` (mặc định 192 giờ, tương đương lịc
 24 giờ đệm) và chỉ được kiểm tra khi `restore_drill:` có đủ bốn trường. Cả
 hai trạng thái cũng xuất hiện trên Dashboard Backup dưới dạng `Healthy`,
 `Quá hạn`, `Thất bại` hoặc `Chưa từng chạy`.
+
+Dashboard ước tính RTO cho từng volume bằng tổng kích thước full + incremental
+trong recovery chain hiện tại chia cho throughput của RestoreDrill thành công
+gần nhất. Overview hiển thị RTO dự kiến lớn nhất; nếu chưa có drill thành công
+có cả `size_bytes` và `duration_seconds`, hệ thống ghi rõ chưa thể ước tính,
+không dùng một tốc độ mặc định giả định.
 
 Cơ chế cảnh báo dùng chung một hàm `send_alert()`: **luôn ghi log** (mức
 `CRITICAL`/`WARNING`), rồi gửi qua **từng kênh đã cấu hình, độc lập với

@@ -347,6 +347,17 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
     rows = []
     counts = {"healthy": 0, "at_risk": 0, "breached": 0, "never": 0}
     with db.SessionLocal() as session:
+        latest_successful_drill = (
+            session.query(BackupJob).filter(BackupJob.job_type == "restore_drill",
+                BackupJob.status == "SUCCESS", BackupJob.size_bytes > 0,
+                BackupJob.duration_seconds > 0,
+                _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
+            .order_by(BackupJob.created_at.desc()).first()
+        )
+        restore_bytes_per_second = (
+            latest_successful_drill.size_bytes / latest_successful_drill.duration_seconds
+            if latest_successful_drill is not None else None
+        )
         for target in tracked:
             latest = (
                 session.query(BackupJob)
@@ -363,10 +374,30 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                 status = ("breached" if age_hours >= rpo_hours else
                           "at_risk" if age_hours >= rpo_hours * RPO_AT_RISK_RATIO else "healthy")
             counts[status] += 1
+            chain_size_bytes = 0
+            if latest is not None:
+                if latest.job_type == "full":
+                    chain_size_bytes = latest.size_bytes or 0
+                elif latest.base_job_id:
+                    full = session.get(BackupJob, latest.base_job_id)
+                    if full is not None and full.status == "SUCCESS":
+                        chain_size_bytes = full.size_bytes or 0
+                        diffs = session.query(BackupJob).filter(
+                            BackupJob.base_job_id == full.id,
+                            BackupJob.job_type == "incremental", BackupJob.status == "SUCCESS",
+                            BackupJob.backup_target_slot == full.backup_target_slot,
+                            BackupJob.created_at <= latest.created_at,
+                        ).all()
+                        chain_size_bytes += sum(item.size_bytes or 0 for item in diffs)
+            estimated_rto_seconds = (
+                chain_size_bytes / restore_bytes_per_second
+                if chain_size_bytes > 0 and restore_bytes_per_second else None
+            )
             rows.append({"pool": target["pool"], "image": target["image"], "status": status,
                          "latest_at": latest.created_at if latest else None,
                          "age_hours": age_hours, "remaining_hours": remaining,
-                         "rpo_hours": rpo_hours})
+                         "rpo_hours": rpo_hours, "chain_size_bytes": chain_size_bytes,
+                         "estimated_rto_seconds": estimated_rto_seconds})
         latest_drill = (
             session.query(BackupJob).filter(BackupJob.job_type == "restore_drill",
                 _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
@@ -386,7 +417,10 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
 
     drill_config = policy.get("restore_drill") or {}
     drill_configured = all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image"))
+    estimates = [row["estimated_rto_seconds"] for row in rows if row["estimated_rto_seconds"] is not None]
     return {"rows": rows, "counts": counts, "total": len(rows), "rpo_hours": rpo_hours,
+            "estimated_rto_seconds": max(estimates) if estimates else None,
+            "restore_bytes_per_second": restore_bytes_per_second,
             "metadata": _freshness(latest_metadata, metadata_rpo_hours),
             "drill_freshness": _freshness(latest_drill, drill_rpo_hours) if drill_configured else None,
             "latest_drill": None if latest_drill is None else {

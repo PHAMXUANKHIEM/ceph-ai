@@ -163,6 +163,7 @@ def _make_success_full_backup_job():
             status="SUCCESS",
             backup_target_slot="a",
             remote_key="full/vms/web01/backup-20260101T000000Z.bin",
+            size_bytes=len(BACKUP_CONTENT),
             created_at=datetime.utcnow(),
             finished_at=datetime.utcnow(),
         )
@@ -180,8 +181,9 @@ def test_restore_drill_succeeds_when_checksum_matches(isolated_db, fakes):
     assert bytes(FakeSSHClient.imported_bytes) == BACKUP_CONTENT
     with db_module.SessionLocal() as session:
         drills = session.query(BackupJob).filter(BackupJob.job_type == "restore_drill").all()
-    assert len(drills) == 1
-    assert drills[0].status == "SUCCESS"
+        assert len(drills) == 1
+        assert drills[0].status == "SUCCESS"
+        assert drills[0].size_bytes == len(BACKUP_CONTENT)
     assert drills[0].pool == "vms" and drills[0].image == "web01"
     # scratch image always cleaned up, success or failure
     assert any("rbd rm scratch/drill01" == c for c in fakes.cleanup_calls)

@@ -123,7 +123,9 @@ execute; thay đổi trạng thái giữa hai thời điểm làm action fail-cl
 
 - [x] Trạng thái `Healthy`, `RPO at risk`, `RPO breached`, `Never backed up`.
 - [x] Tuổi backup thành công gần nhất, RPO mục tiêu và thời gian còn lại.
-- [~] Hiển thị RTO thực tế của restore drill gần nhất; chưa có RTO dự kiến.
+- [x] Hiển thị RTO thực tế của RestoreDrill và RTO dự kiến theo kích thước
+  recovery chain/tốc độ RestoreDrill thành công gần nhất; thiếu dữ liệu thì
+  fail-visible thay vì đưa số giả.
 - [~] Tổng số volume theo từng trạng thái; chưa có số bản sao tối thiểu để xác
   định volume không đủ bản sao.
 - [~] RPO đọc từ `backup_policy.yaml` và dùng chung cho Dashboard/alerting;

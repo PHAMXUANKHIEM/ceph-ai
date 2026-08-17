@@ -160,6 +160,38 @@ def test_protection_overview_reports_metadata_and_drill_freshness(dashboard_clie
     assert overview["drill_freshness"]["threshold_hours"] == 192
 
 
+def test_protection_overview_estimates_rto_from_chain_and_drill_throughput(
+    dashboard_client, monkeypatch
+):
+    now = datetime.utcnow()
+    monkeypatch.setattr(backups_route, "load_backup_policy",
+                        lambda: {"tracked_images": [], "rpo_hours": 24})
+    with db_module.SessionLocal() as session:
+        full = BackupJob(run_id="full", pool="vms", image="disk1", job_type="full",
+                         status="SUCCESS", backup_target_slot="a", size_bytes=1000,
+                         created_at=now - timedelta(hours=2))
+        session.add(full)
+        session.flush()
+        session.add_all([
+            BackupJob(run_id="inc", pool="vms", image="disk1", job_type="incremental",
+                      status="SUCCESS", backup_target_slot="a", base_job_id=full.id,
+                      size_bytes=500, created_at=now - timedelta(hours=1)),
+            BackupJob(run_id="drill", pool="vms", image="canary", job_type="restore_drill",
+                      status="SUCCESS", size_bytes=1000, duration_seconds=10,
+                      created_at=now),
+        ])
+        session.commit()
+
+    overview = backups_route._protection_overview(
+        [{"pool": "vms", "image": "disk1"}], now=now
+    )
+
+    assert overview["restore_bytes_per_second"] == 100
+    assert overview["rows"][0]["chain_size_bytes"] == 1500
+    assert overview["rows"][0]["estimated_rto_seconds"] == 15
+    assert overview["estimated_rto_seconds"] == 15
+
+
 def test_queue_success_time_does_not_get_replaced_by_newer_failed_run(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     success_at = datetime.utcnow() - timedelta(hours=2)
