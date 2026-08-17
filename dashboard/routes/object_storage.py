@@ -527,10 +527,20 @@ def _with_owner_s3(cluster, payload: dict, callback):
     if not hosts:
         raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
     host = hosts[0]
-    owner = _owner_info(cluster, host, payload["owner"])
+    try:
+        owner = _owner_info(cluster, host, payload["owner"])
+    except (RgwLogError, TimeoutError) as exc:
+        raise ObjectStorageError(
+            f"Không kết nối được RGW {host} để kiểm tra owner S3. Vui lòng thử lại."
+        ) from exc
     if not owner or bool(owner.get("suspended")):
         raise ObjectStorageError("Owner S3 không tồn tại hoặc đang bị vô hiệu hóa.")
-    credential = _temporary_key(cluster, host, payload["owner"])
+    try:
+        credential = _temporary_key(cluster, host, payload["owner"])
+    except (RgwLogError, TimeoutError) as exc:
+        raise ObjectStorageError(
+            f"Không kết nối được RGW {host} để tạo credential S3 tạm. Vui lòng thử lại."
+        ) from exc
     access_key = str(credential.get("access_key") or "")
     secret_key = str(credential.get("secret_key") or "")
     if not access_key or not secret_key:
@@ -1486,6 +1496,11 @@ async def bucket_delete_execute(request: Request, user: str = Depends(require_lo
         await asyncio.to_thread(_execute_delete_bucket, cluster, payload)
     except ObjectStorageError as exc:
         safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    except Exception as exc:
+        logger.exception("unexpected delete bucket failure")
+        safe_error = "Xóa bucket thất bại do RGW tạm thời không phản hồi. Vui lòng thử lại."
         await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
         raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")

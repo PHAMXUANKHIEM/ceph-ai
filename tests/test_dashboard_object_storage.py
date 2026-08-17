@@ -662,6 +662,56 @@ def test_purge_failure_is_audited_and_never_deletes_bucket(dashboard_client, mon
         assert "temp-secret" not in audit.error_message
 
 
+def test_delete_bucket_owner_timeout_returns_retryable_error_and_finishes_audit(
+    dashboard_client, monkeypatch,
+):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["slow-bucket"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice", objects=0))
+    owner_calls = 0
+
+    def owner_info(host, uid):
+        nonlocal owner_calls
+        owner_calls += 1
+        if owner_calls > 1:
+            raise object_storage_route.RgwLogError("SSH timeout")
+        return {"user_id": uid}
+
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", owner_info)
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs): return {"Versions": [], "DeleteMarkers": []}
+        def list_objects_v2(self, **kwargs): return {"Contents": []}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/buckets/delete/execute", json={
+        "action": "delete_empty", "bucket": "slow-bucket", "owner": "alice",
+        "endpoint": "https://rgw.example.test", "confirmation": "slow-bucket",
+    })
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "Không kết nối được RGW 10.20.1.90 để kiểm tra owner S3. Vui lòng thử lại."
+    )
+    with db.SessionLocal() as session:
+        audit = session.query(ObjectStorageAuditEntry).filter_by(
+            action="delete_empty", target_id="slow-bucket",
+        ).one()
+        assert audit.result == "failed"
+        assert audit.completed_at is not None
+        assert audit.error_message == response.json()["detail"]
+
+
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: [])
