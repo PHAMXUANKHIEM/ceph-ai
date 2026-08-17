@@ -24,6 +24,7 @@ from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
+    BackupJob,
     Incident,
     IncidentStatus,
     VolumeMetric,
@@ -134,6 +135,8 @@ RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
 RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
+RBD_VOLUME_TRASH_MOVE_CEPH_CODE = "RBD_VOLUME_TRASH_MOVE"
+RBD_VOLUME_TRASH_RESTORE_CEPH_CODE = "RBD_VOLUME_TRASH_RESTORE"
 
 # 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
 # incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
@@ -151,6 +154,7 @@ _RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
     "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
+    "rbd_trash_move_volume", "rbd_trash_restore_volume",
 )
 
 
@@ -711,6 +715,92 @@ async def propose_volume_rename(
         conflicting_images={image, new_image}, action_id="rbd_rename_volume",
         ceph_code=RBD_VOLUME_RENAME_CEPH_CODE, user=user,
         rationale=f"Đổi tên Volume {pool}/{image} thành {pool}/{new_image}; thao tác yêu cầu downtime",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/trash")
+async def propose_volume_trash_move(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight chuyển Trash: {exc}")
+    blockers = []
+    if detail.get("watchers"):
+        blockers.append("watcher/attachment")
+    if detail.get("snapshots"):
+        blockers.append("snapshot")
+    if detail.get("children"):
+        blockers.append("clone child")
+    with db.SessionLocal() as session:
+        running_backup = (
+            session.query(BackupJob.id)
+            .filter(
+                _cluster_row_filter(BackupJob.cluster_id, cluster),
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                BackupJob.status == "RUNNING",
+            )
+            .first()
+        )
+    if running_backup:
+        blockers.append("backup đang chạy")
+    if blockers:
+        raise HTTPException(status_code=409, detail="Không thể chuyển Trash khi còn dependency: " + ", ".join(blockers))
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, action_id="rbd_trash_move_volume",
+        ceph_code=RBD_VOLUME_TRASH_MOVE_CEPH_CODE, user=user,
+        rationale=f"Chuyển mềm Volume {pool}/{image} vào RBD Trash để có thể khôi phục",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/trash/{trash_id}/restore")
+async def propose_volume_trash_restore(
+    request: Request, pool: str, trash_id: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    image = str(body.get("image") or "").strip()
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume khôi phục không hợp lệ")
+    try:
+        trash = (
+            ceph_client.query_rbd_trash(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
+        )
+        inventory = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight restore Trash: {exc}")
+    if not any(str(entry.get("id")) == trash_id for entry in trash):
+        raise HTTPException(status_code=404, detail="Trash ID không còn tồn tại trong pool")
+    if any(entry.get("name") == image for entry in inventory):
+        raise HTTPException(status_code=409, detail="Tên Volume khôi phục đã tồn tại trong pool")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image,
+        extra_params={"trash_id": trash_id}, action_id="rbd_trash_restore_volume",
+        ceph_code=RBD_VOLUME_TRASH_RESTORE_CEPH_CODE, user=user,
+        rationale=f"Khôi phục Trash {pool}/{trash_id} thành Volume {pool}/{image}",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 

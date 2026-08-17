@@ -19,6 +19,30 @@
   let currentPage = 1;
   const normalize = (value) => String(value || "").trim().toLocaleLowerCase("vi");
 
+  document.querySelectorAll(".trash-restore-form").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      try {
+        const url = new URL(`/api/volumes/${encodeURIComponent(form.dataset.pool)}/trash/${encodeURIComponent(form.dataset.trashId)}/restore`, window.location.origin);
+        const cluster = new URLSearchParams(window.location.search).get("cluster");
+        if (cluster) url.searchParams.set("cluster", cluster);
+        const response = await fetch(url, {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: form.elements.image.value.trim() })
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+        form.replaceChildren(document.createTextNode(`Đã tạo đề xuất ${body.action_id}`));
+      } catch (error) {
+        window.alert(error.message);
+        button.disabled = false;
+      }
+    });
+  });
+
   function render() {
     const query = normalize(filterInput.value);
     const matches = rows.filter((row) => !query || normalize(row.dataset.trashId).includes(query));

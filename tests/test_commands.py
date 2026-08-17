@@ -728,6 +728,8 @@ def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("rbd_create_volume") is True
     assert commands_module.has_command("rbd_resize_volume") is True
     assert commands_module.has_command("rbd_rename_volume") is True
+    assert commands_module.has_command("rbd_trash_move_volume") is True
+    assert commands_module.has_command("rbd_trash_restore_volume") is True
     assert commands_module.has_command("finalize_pacific_osd_release") is True
 
 
@@ -762,6 +764,27 @@ def test_rbd_rename_volume_command_validates_both_names_and_post_checks_destinat
     with pytest.raises(ExecutorError):
         commands_module.get_command(
             "rbd_rename_volume", params={"pool_name": "vms", "image": "vm-old", "new_image": "--bad"}
+        )
+
+
+def test_rbd_trash_move_and_restore_commands_are_guarded_and_post_checked():
+    move = commands_module.get_command(
+        "rbd_trash_move_volume", params={"pool_name": "vms", "image": "vm-old"}
+    )
+    restore = commands_module.get_command(
+        "rbd_trash_restore_volume",
+        params={"pool_name": "vms", "trash_id": "123abc", "image": "vm-restored"},
+    )
+
+    assert move == "rbd trash mv vms/vm-old && rbd trash ls vms --format json"
+    assert restore == (
+        "rbd trash restore vms/123abc --image vm-restored && "
+        "rbd info vms/vm-restored --format json"
+    )
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_trash_restore_volume",
+            params={"pool_name": "vms", "trash_id": "--force", "image": "vm-restored"},
         )
 
 

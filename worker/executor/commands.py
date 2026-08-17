@@ -388,6 +388,22 @@ def _rbd_rename_volume_command(params: dict) -> str:
     return f"rbd mv {source} {destination} && rbd info {destination} --format json"
 
 
+def _rbd_trash_move_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    spec = shlex.quote(f"{pool}/{image}")
+    return f"rbd trash mv {spec} && rbd trash ls {shlex.quote(pool)} --format json"
+
+
+def _rbd_trash_restore_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    trash_id = _require_trash_id(params)
+    image = _require_rbd_image(params)
+    trash_spec = shlex.quote(f"{pool}/{trash_id}")
+    restored_spec = shlex.quote(f"{pool}/{image}")
+    return f"rbd trash restore {trash_spec} --image {shlex.quote(image)} && rbd info {restored_spec} --format json"
+
+
 def _execute_node_command(params: dict) -> str:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip() or len(command) > 2000:
@@ -415,6 +431,8 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_create_volume": _rbd_create_volume_command,
     "rbd_resize_volume": _rbd_resize_volume_command,
     "rbd_rename_volume": _rbd_rename_volume_command,
+    "rbd_trash_move_volume": _rbd_trash_move_volume_command,
+    "rbd_trash_restore_volume": _rbd_trash_restore_volume_command,
 }
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {

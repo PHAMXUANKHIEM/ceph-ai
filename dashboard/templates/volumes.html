@@ -336,6 +336,12 @@
               <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
               {% elif pending_action %}<span class="hint">Đang chờ Worker</span>
               {% else %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>{% endif %}
+              {% if is_admin %}
+              <form class="inline-form trash-restore-form" data-pool="{{ entry.pool }}" data-trash-id="{{ entry.id }}">
+                <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" value="{{ entry.name }}" aria-label="Tên Volume khôi phục">
+                <button type="submit" class="btn btn-approve btn-sm">Đề xuất khôi phục</button>
+              </form>
+              {% endif %}
             </td>
           </tr>{% endfor %}</tbody>
         </table></div>

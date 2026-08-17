@@ -33,6 +33,12 @@
   }
 
   function requestJson(url, options) {
+    var cluster = new URLSearchParams(window.location.search).get("cluster");
+    if (cluster) {
+      var scoped = new URL(url, window.location.origin);
+      scoped.searchParams.set("cluster", cluster);
+      url = scoped.pathname + scoped.search;
+    }
     var requestOptions = options || {};
     requestOptions.credentials = "same-origin";
     return fetch(url, requestOptions).then(function (response) {
@@ -224,6 +230,19 @@
         );
       });
       detail.appendChild(renameForm);
+
+      var trashButton = document.createElement("button");
+      trashButton.type = "button";
+      trashButton.className = "btn btn-reject btn-sm";
+      trashButton.textContent = "Đề xuất chuyển vào Trash";
+      trashButton.addEventListener("click", function () {
+        if (!window.confirm("Chuyển " + data.pool + "/" + data.name + " vào Trash? Volume phải không còn watcher, snapshot hoặc clone child.")) return;
+        proposeMutation(
+          "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/trash",
+          {}, trashButton
+        );
+      });
+      detail.appendChild(trashButton);
     }
     detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }

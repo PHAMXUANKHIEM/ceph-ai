@@ -9,6 +9,7 @@ from shared import db as db_module
 from shared.models import (
     Action,
     ActionStatus,
+    BackupJob,
     Incident,
     IncidentStatus,
     Cluster,
@@ -1678,3 +1679,70 @@ def test_propose_rename_volume_rejects_destination_reserved_by_pending_create(da
 
     assert create.status_code == 201
     assert rename.status_code == 409
+
+
+def test_propose_trash_move_blocks_dependencies_and_creates_risky_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    proposed = dashboard_client.post("/api/volumes/vms/inventory/vm-01/trash", json={})
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"watchers": [{"client": "client.1"}], "snapshots": [], "children": []},
+    )
+    blocked = dashboard_client.post("/api/volumes/vms/inventory/vm-busy/trash", json={})
+
+    assert proposed.status_code == 201
+    assert blocked.status_code == 409
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, proposed.json()["action_id"])
+        assert action.action_id == "rbd_trash_move_volume"
+        assert action.classification == "RISKY"
+
+
+def test_propose_trash_move_blocks_running_backup(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    with db_module.SessionLocal() as session:
+        session.add(BackupJob(run_id="run-1", pool="vms", image="vm-01", job_type="full", status="RUNNING"))
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/volumes/vms/inventory/vm-01/trash", json={})
+
+    assert response.status_code == 409
+    assert "backup" in response.json()["detail"]
+
+
+def test_propose_trash_restore_validates_entry_and_destination(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool: [{"id": "123abc", "name": "vm-old"}],
+    )
+    _login(dashboard_client)
+
+    proposed = dashboard_client.post(
+        "/api/volumes/vms/trash/123abc/restore", json={"image": "vm-restored"}
+    )
+    missing = dashboard_client.post(
+        "/api/volumes/vms/trash/missing/restore", json={"image": "other"}
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [{"name": "exists"}],
+    )
+    conflict = dashboard_client.post(
+        "/api/volumes/vms/trash/123abc/restore", json={"image": "exists"}
+    )
+
+    assert proposed.status_code == 201
+    assert missing.status_code == 404
+    assert conflict.status_code == 409
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, proposed.json()["action_id"])
+        assert action.action_id == "rbd_trash_restore_volume"
+        assert json.loads(action.action_params) == {
+            "pool_name": "vms", "image": "vm-restored", "trash_id": "123abc"
+        }
