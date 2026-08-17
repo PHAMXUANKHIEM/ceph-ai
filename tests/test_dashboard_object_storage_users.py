@@ -294,3 +294,31 @@ def test_capability_preview_rejects_values_outside_allowlist(dashboard_client):
         "action": "cap_add", "uid": "alice", "cap_type": "zone", "cap_perm": "*",
     })
     assert response.status_code == 400
+
+
+def test_quota_capability_editor_page_is_admin_only(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.get("/object-storage/user-settings")
+    assert response.status_code == 200
+    assert 'id="s3-setting-form"' in response.text
+    assert "Quota &amp; Capability Editor" in response.text
+
+    original = route.auth.is_admin_user
+    route.auth.is_admin_user = lambda user: False
+    try:
+        assert dashboard_client.get("/object-storage/user-settings").status_code == 403
+    finally:
+        route.auth.is_admin_user = original
+
+
+def test_secondary_cluster_executes_setting_with_scoped_credentials(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(name="setting-secondary", ceph_mon_nodes="10.88.0.10", ceph_rgw_nodes="10.88.0.90", ceph_container_name="mon-x", ceph_rgw_container_name="rgw-x", ssh_user="cephx", ssh_key_path="/keys/x", ceph_exec_mode="docker", is_default=False, is_active=True)
+        session.add(cluster); session.commit(); cluster_id = cluster.id
+    calls = []
+    monkeypatch.setattr(route, "execute_s3_user_setting_with", lambda *args: calls.append(args))
+    payload = {"action":"quota_enable", "uid":"alice", "scope":"bucket", "confirmation":"alice"}
+    response = dashboard_client.post(f"/api/object-storage/users/settings/execute?cluster={cluster_id}", json=payload)
+    assert response.status_code == 200
+    assert calls == [("10.88.0.90", "quota_enable", "alice", {"scope":"bucket"}, "cephx", "/keys/x", "docker", "rgw-x")]

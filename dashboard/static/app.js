@@ -180,6 +180,13 @@
       s3UsersLink.textContent = "S3 Users";
       linksByPath["/object-storage/users"] = s3UsersLink;
     }
+    if (!linksByPath["/object-storage/user-settings"] && (document.getElementById("s3-user-action-form") || window.location.pathname === "/object-storage/user-settings")) {
+      var s3SettingsLink = document.createElement("a");
+      s3SettingsLink.href = "/object-storage/user-settings";
+      s3SettingsLink.className = window.location.pathname === s3SettingsLink.pathname ? "nav-link active" : "nav-link";
+      s3SettingsLink.textContent = "Quota & Capabilities";
+      linksByPath["/object-storage/user-settings"] = s3SettingsLink;
+    }
     if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/auth-user/create"]) {
       var createAuthLink = document.createElement("a");
       createAuthLink.href = "/openstack/auth-user/create";
@@ -194,7 +201,7 @@
     var navGroups = [
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/volumes", "/crush-map"] },
       { label: "Pool", paths: ["/pools", "/pgs", "/trash"] },
-      { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"] },
+      { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },

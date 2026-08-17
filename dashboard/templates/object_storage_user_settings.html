@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quota & Capability — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar"><div class="topbar-inner">
+    <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+    <nav class="main-nav"><a href="/object-storage/buckets" class="nav-link">Buckets</a><a href="/object-storage/users" class="nav-link">S3 Users</a><a href="/object-storage/user-settings" class="nav-link active">Quota &amp; Capabilities</a></nav>
+    {% if clusters|length > 1 %}<form method="get" action="/object-storage/user-settings" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}</option>{% endfor %}</select></form>{% endif %}
+    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Logout</button></form>
+  </div></header>
+  <main class="page"><p><a class="btn btn-ghost btn-sm" href="/object-storage/users?cluster={{ selected_cluster.id }}">← S3 Users</a></p>
+    <section class="card"><div class="card-header"><div><h2>Quota &amp; Capability Editor</h2><p class="hint">Cluster: <strong>{{ selected_cluster.name }}</strong>. Chỉ scope/type/permission trong allowlist được chấp nhận.</p></div></div>
+      <div class="card-body"><form id="s3-setting-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
+        <label>Thao tác<select id="s3-setting-action"><option value="quota_set">Đặt quota</option><option value="quota_enable">Bật quota</option><option value="quota_disable">Tắt quota</option><option value="cap_add">Thêm capability</option><option value="cap_remove">Gỡ capability</option></select></label>
+        <label>UID<input id="s3-setting-uid" maxlength="128" required></label>
+        <label>Quota scope<select id="s3-quota-scope"><option value="user">User</option><option value="bucket">Bucket</option></select></label>
+        <label>Max bytes (-1 = unlimited)<input id="s3-max-size" type="number" value="-1"></label>
+        <label>Max objects (-1 = unlimited)<input id="s3-max-objects" type="number" value="-1"></label>
+        <label>Capability<select id="s3-cap-type"><option value="users">users</option><option value="buckets">buckets</option><option value="metadata">metadata</option><option value="usage">usage</option></select></label>
+        <label>Permission<select id="s3-cap-perm"><option value="read">read</option><option value="write">write</option><option value="read,write">read,write</option></select></label>
+        <button class="btn btn-primary btn-sm">Xem trước</button>
+      </form><div id="s3-setting-preview" hidden><p id="s3-setting-effect"></p><pre id="s3-setting-command"></pre><label>Nhập lại UID để xác nhận<input id="s3-setting-confirmation" maxlength="128" autocomplete="off"></label><button id="s3-setting-execute" type="button" class="btn btn-danger btn-sm" disabled>Thực thi</button></div><p id="s3-setting-status" class="hint"></p></div>
+    </section>
+  </main><script src="/static/app.js?v={{ static_version }}"></script><script src="/static/object_storage_user_settings.js?v={{ static_version }}"></script>
+</body></html>

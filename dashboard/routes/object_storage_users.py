@@ -426,3 +426,12 @@ async def user_page(request: Request, uid: str, user: str = Depends(require_logi
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": cluster, "uid": uid, "detail": detail, "error": error,
     })
+
+
+@router.get("/object-storage/user-settings", response_class=HTMLResponse)
+async def user_settings_page(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    clusters, cluster = cluster_selection(request)
+    return templates.TemplateResponse(request, "object_storage_user_settings.html", {
+        "user": user, "is_admin": True, "clusters": clusters, "selected_cluster": cluster,
+    })
