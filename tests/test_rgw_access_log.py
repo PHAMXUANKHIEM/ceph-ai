@@ -280,6 +280,13 @@ def test_s3_user_action_builder_is_closed_quotes_input_and_never_generates_key()
         pass
 
 
+def test_create_user_action_returns_only_generated_credential(monkeypatch):
+    monkeypatch.setattr(ral.settings, "ceph_exec_mode", "cephadm")
+    monkeypatch.setattr(ral, "run_command_on_node", lambda host, command: '{"user_id":"alice","keys":[{"access_key":"NEW","secret_key":"SECRET"}]}')
+    result = ral.execute_s3_user_action("10.20.1.39", "create", "alice", {"display_name":"Alice"})
+    assert result == {"access_key":"NEW", "secret_key":"SECRET"}
+
+
 def test_new_s3_key_returns_only_the_new_credential():
     result = ral._new_s3_key({"keys": [
         {"access_key": "OLD", "secret_key": "old-secret"},

@@ -59,6 +59,30 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert '>Object Storage</a>' not in response.text
 
 
+def test_capability_api_detects_live_reef_version_and_requires_s3_for_bucket_create(dashboard_client, monkeypatch):
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/object-storage/capabilities")
+    assert response.status_code == 200
+    capability = response.json()
+    assert capability["ceph_release"] == "reef"
+    assert capability["bucket_create"]["method"] == "s3_api"
+    assert capability["bucket_create"]["radosgw_admin_supported"] is False
+    assert "/reef/" in capability["bucket_create"]["documentation"]
+
+
+def test_capability_api_fails_closed_for_mixed_cluster(dashboard_client, monkeypatch):
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": None, "is_mixed": True,
+    })
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/object-storage/capabilities")
+    assert response.status_code == 502
+    assert "lẫn phiên bản" in response.json()["detail"]
+
+
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: [])

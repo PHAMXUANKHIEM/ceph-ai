@@ -18,6 +18,10 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared.ceph_releases import codename_for_version
+from dashboard.cluster_scope import cluster_connection
+from watcher import ceph_client
+from watcher.ceph_client import CephQueryError
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_bucket_access_log,
@@ -45,6 +49,35 @@ SortOrder = Literal["asc", "desc"]
 
 class ObjectStorageError(RuntimeError):
     """A safe, operator-facing failure while querying the configured RGW."""
+
+
+def _capabilities(cluster) -> dict:
+    try:
+        if cluster.is_default:
+            versions = ceph_client.summarize_cluster_versions()
+        else:
+            connection = cluster_connection(cluster)
+            _host, payload = ceph_client.run_ceph_json_command_with(*connection, "ceph versions")
+            versions = ceph_client.summarize_versions_payload(payload)
+    except CephQueryError as exc:
+        raise ObjectStorageError(f"Không lấy được phiên bản Ceph của cluster: {exc}") from exc
+    version = versions.get("current_version")
+    if not version:
+        raise ObjectStorageError("Cluster đang chạy lẫn phiên bản Ceph; từ chối suy đoán capability RGW.")
+    release = codename_for_version(version)
+    if not release:
+        raise ObjectStorageError(f"Chưa có capability matrix cho Ceph {version}.")
+    return {
+        "ceph_version": version,
+        "ceph_release": release,
+        "is_mixed": False,
+        "bucket_create": {
+            "supported": True,
+            "method": "s3_api",
+            "radosgw_admin_supported": False,
+            "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/",
+        },
+    }
 
 
 _SECRET_PATTERN = re.compile(
@@ -261,6 +294,15 @@ async def bucket_inventory_api(
         return await asyncio.to_thread(
             _inventory, selected_cluster(request), query, page, owner, quota, usage, sort, order
         )
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/api/object-storage/capabilities")
+async def capabilities_api(request: Request, user: str = Depends(require_login)):
+    del user
+    try:
+        return await asyncio.to_thread(_capabilities, selected_cluster(request))
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

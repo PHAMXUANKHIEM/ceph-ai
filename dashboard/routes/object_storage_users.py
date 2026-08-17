@@ -100,16 +100,16 @@ def _action_payload(body: dict) -> tuple[str, str, dict]:
     return action, uid, params
 
 
-def _execute(cluster, action: str, uid: str, params: dict) -> str:
+def _execute(cluster, action: str, uid: str, params: dict) -> tuple[str, dict | None]:
     host = _host(cluster)
     if cluster.is_default:
-        execute_s3_user_action(host, action, uid, params)
+        credential = execute_s3_user_action(host, action, uid, params)
     else:
         ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
-        execute_s3_user_action_with(
+        credential = execute_s3_user_action_with(
             host, action, uid, params, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
         )
-    return host
+    return host, credential
 
 
 def _start_audit(cluster_id: str, actor: str, action: str, uid: str, preview: str) -> str:
@@ -282,7 +282,7 @@ async def user_action_execute(request: Request, user: str = Depends(require_logi
         logger.exception("cannot persist S3 user audit entry")
         raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
     try:
-        host = await asyncio.to_thread(_execute, cluster, action, uid, params)
+        host, credential = await asyncio.to_thread(_execute, cluster, action, uid, params)
     except RgwLogError as exc:
         safe_error = _safe_error(exc)
         await asyncio.to_thread(_finish_audit, audit_id, "failed", safe_error)
@@ -290,7 +290,11 @@ async def user_action_execute(request: Request, user: str = Depends(require_logi
         raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
     logger.info("s3_user_action actor=%s cluster=%s action=%s uid=%s host=%s result=success", user, cluster.id, action, uid, host)
-    return {"ok": True, "action": action, "uid": uid, "cluster_id": cluster.id, "request_id": audit_id}
+    response = {"ok": True, "action": action, "uid": uid, "cluster_id": cluster.id, "request_id": audit_id}
+    if credential is not None:
+        response["credential"] = credential
+        response["secret_shown_once"] = True
+    return response
 
 
 @router.get("/api/object-storage/audit")

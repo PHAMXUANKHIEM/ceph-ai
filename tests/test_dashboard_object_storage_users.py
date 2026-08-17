@@ -159,7 +159,7 @@ def test_execute_uses_closed_action_adapter(dashboard_client, monkeypatch):
     calls = []
     monkeypatch.setattr(
         route, "execute_s3_user_action",
-        lambda host, action, uid, params: calls.append((host, action, uid, params)),
+        lambda host, action, uid, params: calls.append((host, action, uid, params)) or None,
     )
     _login(dashboard_client)
 

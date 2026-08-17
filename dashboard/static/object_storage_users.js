@@ -30,7 +30,7 @@
     var body = Object.assign({}, approvedPayload, {confirmation: confirmation.value});
     fetch(endpoint("execute"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
       .then(function (response) { return response.ok ? response.json() : errorText(response); })
-      .then(function () { status.textContent = "Thao tác thành công. Đang tải lại..."; window.location.reload(); })
+      .then(function (data) { if (data.credential) { document.getElementById("s3-created-access-key").textContent = data.credential.access_key; document.getElementById("s3-created-secret-key").textContent = data.credential.secret_key; document.getElementById("s3-one-time-secret").hidden = false; status.textContent = "Đã tạo user. Hãy lưu credential trước khi rời trang."; } else { status.textContent = "Thao tác thành công. Đang tải lại..."; window.location.reload(); } })
       .catch(function (error) { status.textContent = "Lỗi: " + error.message; execute.disabled = false; });
   });
 })();

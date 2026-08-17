@@ -364,25 +364,31 @@ def build_s3_user_action_command(action: str, uid: str, params: dict) -> str:
     raise ValueError("Unsupported S3 user action")
 
 
-def execute_s3_user_action(host: str, action: str, uid: str, params: dict) -> None:
+def execute_s3_user_action(host: str, action: str, uid: str, params: dict) -> dict | None:
     command = ceph_client.build_exec_command(
         settings.ceph_exec_mode, settings.ceph_rgw_container_name,
         build_s3_user_action_command(action, uid, params),
     )
     try:
-        run_command_on_node(host, command)
+        output = run_command_on_node(host, command)
+        if action == "create":
+            return _new_s3_key(json.loads(output), set())
+        return None
     except Exception as exc:
         raise RgwLogError(f"Thao tác S3 user thất bại trên {host}: {exc}") from exc
 
 
 def execute_s3_user_action_with(host: str, action: str, uid: str, params: dict,
                                 ssh_user: str, ssh_key_path: str, exec_mode: str,
-                                rgw_container_name: str) -> None:
+                                rgw_container_name: str) -> dict | None:
     command = ceph_client.build_exec_command(
         exec_mode, rgw_container_name, build_s3_user_action_command(action, uid, params)
     )
     try:
-        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        if action == "create":
+            return _new_s3_key(json.loads(output), set())
+        return None
     except Exception as exc:
         raise RgwLogError(f"Thao tác S3 user thất bại trên {host}: {exc}") from exc
 

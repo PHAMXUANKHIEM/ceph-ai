@@ -116,10 +116,14 @@ cluster đang chọn, không có fallback sample hoặc cross-cluster leak.
 **Hoàn thành khi:** system admin quản lý user/key an toàn, còn operator không
 thể gọi API ghi dù cố gửi request trực tiếp.
 
-### 3. Bucket Operations và Data Governance — ưu tiên P1
+### 3. Bucket Operations và Data Governance — ưu tiên P1 `[~] Đang triển khai 2026-08-17`
 
-- [ ] **3.1 Create bucket**: tên hợp lệ, owner, placement/storage class và
+- [~] **3.1 Create bucket**: tên hợp lệ, owner, placement/storage class và
   quota tùy khả năng cluster; preview trước khi tạo.
+  - Đã thêm live capability gate đọc `ceph versions`, map đúng release docs
+    và xác nhận create bucket phải dùng S3 API (không dựng lệnh
+    `radosgw-admin bucket create` không tồn tại). Mixed/unknown version
+    fail-closed; tiếp theo bổ sung RGW S3 endpoint an toàn và flow create.
 - [ ] **3.2 Cập nhật quota, versioning và object-lock/retention** khi RGW hỗ
   trợ; capability detection phải ẩn/khóa tính năng không được hỗ trợ.
 - [ ] **3.3 Lifecycle policy**: editor có schema validation, preview rule,
