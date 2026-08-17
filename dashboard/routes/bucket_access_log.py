@@ -20,7 +20,7 @@ these 2 fields, not the only one.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from config.settings import settings
@@ -54,7 +54,15 @@ def _rgw_hosts(cluster) -> list[dict]:
     return [node for node in nodes if "RGW" in node["roles"]]
 
 
-def _context(user: str, cluster, clusters, *, config_error: str | None = None, config_success: str | None = None) -> dict:
+def _context(
+    user: str,
+    cluster,
+    clusters,
+    *,
+    bucket: str = "",
+    config_error: str | None = None,
+    config_success: str | None = None,
+) -> dict:
     exec_mode = settings.ceph_exec_mode if cluster.is_default else cluster.ceph_exec_mode
     return {
         "user": user,
@@ -67,13 +75,20 @@ def _context(user: str, cluster, clusters, *, config_error: str | None = None, c
         "selected_cluster": cluster,
         "config_error": config_error,
         "config_success": config_success,
+        "bucket": bucket,
     }
 
 
 @router.get("/bucket-access-log", response_class=HTMLResponse)
-async def index(request: Request, user: str = Depends(require_login)):
+async def index(
+    request: Request,
+    user: str = Depends(require_login),
+    bucket: str = Query("", max_length=255),
+):
     clusters, cluster = cluster_selection(request)
-    return templates.TemplateResponse(request, "bucket_access_log.html", _context(user, cluster, clusters))
+    return templates.TemplateResponse(
+        request, "bucket_access_log.html", _context(user, cluster, clusters, bucket=bucket.strip())
+    )
 
 
 @router.post("/bucket-access-log/settings", response_class=HTMLResponse)

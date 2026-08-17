@@ -26,12 +26,26 @@
         <tr><th>Owner</th><td>{{ detail.owner or "—" }}</td></tr><tr><th>Ngày tạo</th><td>{{ detail.creation_time or "—" }}</td></tr>
         <tr><th>Số object</th><td>{{ detail.num_objects }}</td></tr><tr><th>Dung lượng logic</th><td>{{ detail.size }}</td></tr>
         <tr><th>Quota</th><td>{% if detail.quota_enabled %}{{ detail.quota_size }} / {{ detail.quota_max_objects if detail.quota_max_objects is not none else "—" }} objects{% else %}Không giới hạn{% endif %}</td></tr>
+        <tr><th>Versioning</th><td>{% if detail.versioning_status == "enabled" %}<span class="status-badge healthy">Đã bật</span>{% elif detail.versioning_status == "disabled" %}<span class="status-badge warning">Đã tắt</span>{% else %}<span class="muted-value">RGW không cung cấp qua bucket stats</span>{% endif %}</td></tr>
+        <tr><th>Object Lock</th><td>{% if detail.object_lock_status == "enabled" %}<span class="status-badge healthy">Đã bật</span>{% elif detail.object_lock_status == "disabled" %}<span class="status-badge warning">Đã tắt</span>{% else %}<span class="muted-value">RGW không cung cấp qua bucket stats</span>{% endif %}</td></tr>
+        <tr><th>Bucket policy</th><td>{% if detail.policy_available %}Có metadata policy{% else %}<span class="muted-value">Không có trong bucket stats</span>{% endif %}</td></tr>
+        <tr><th>Lifecycle</th><td>{% if detail.lifecycle_available %}Có metadata lifecycle{% else %}<span class="muted-value">Không có trong bucket stats</span>{% endif %}</td></tr>
         <tr><th>Shards</th><td>{{ detail.num_shards if detail.num_shards is not none else "—" }}</td></tr><tr><th>Placement rule</th><td><code>{{ detail.placement_rule or "—" }}</code></td></tr>
         <tr><th>RGW node truy vấn</th><td><code>{{ detail.host }}</code></td></tr>
       </tbody></table></div>
-      <div class="card-footer"><a class="btn btn-ghost btn-sm" href="/bucket-access-log?cluster={{ selected_cluster.id }}">Mở Bucket Access Log</a></div>
+      <div class="card-footer"><a class="btn btn-ghost btn-sm" href="/bucket-access-log?cluster={{ selected_cluster.id }}&amp;bucket={{ quote_bucket(bucket) }}">Mở Access Log của bucket này</a></div>
       {% endif %}
     </section>
+    {% if detail and detail.activity %}
+    <section class="card">
+      <div class="card-header"><div><h2>Request / Error trend</h2><p class="hint">Mẫu tối đa 12 giờ xuất hiện trong đoạn log RGW gần nhất; không phải metric retention dài hạn.</p></div></div>
+      <div class="card-body">
+        {% if not detail.activity.available %}<p class="hint">Không đọc được activity: {{ detail.activity.error }}</p>
+        {% else %}<p><strong>{{ detail.activity.total }}</strong> request · <strong>{{ detail.activity.errors }}</strong> lỗi HTTP 4xx/5xx · tỷ lệ lỗi <strong>{{ detail.activity.error_rate }}%</strong>{% if detail.activity.latest_request %} · gần nhất {{ detail.activity.latest_request }}{% endif %}</p>{% endif %}
+      </div>
+      {% if detail.activity.available and detail.activity.points %}<div class="table-wrap"><table><thead><tr><th>Giờ</th><th>Requests</th><th>Lỗi 4xx/5xx</th></tr></thead><tbody>{% for point in detail.activity.points %}<tr><td><time datetime="{{ point.hour }}">{{ point.hour }}</time></td><td>{{ point.requests }}</td><td>{{ point.errors }}</td></tr>{% endfor %}</tbody></table></div>{% elif detail.activity.available %}<div class="card-body"><p class="hint">Chưa có request nào trong đoạn log hiện tại.</p></div>{% endif %}
+    </section>
+    {% endif %}
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>
 </body>

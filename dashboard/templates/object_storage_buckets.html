@@ -28,11 +28,16 @@
         <div><h2>Bucket Overview</h2><p class="hint">Bucket RGW trên cụm <strong>{{ selected_cluster.name }}</strong>. Chỉ đọc metadata; chưa thực hiện thay đổi trên Object Storage.</p></div>
       </div>
       <div class="card-body">
-        <form method="get" action="/object-storage/buckets" class="audit-filters">
-          <input type="hidden" name="cluster" value="{{ selected_cluster.id }}">
-          <label>Tìm bucket<input type="search" name="query" value="{{ inventory.query }}" maxlength="120" placeholder="Tên bucket" autocomplete="off"></label>
-          <button type="submit" class="btn btn-primary btn-sm">Tìm</button>
-          {% if inventory.query %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}">Xóa bộ lọc</a>{% endif %}
+          <form method="get" action="/object-storage/buckets" class="audit-filters">
+            <input type="hidden" name="cluster" value="{{ selected_cluster.id }}">
+            <label>Tìm bucket<input type="search" name="query" value="{{ inventory.query }}" maxlength="120" placeholder="Tên bucket" autocomplete="off"></label>
+            <label>Owner<input type="search" name="owner" value="{{ inventory.owner or '' }}" maxlength="120" placeholder="Tên owner" autocomplete="off"></label>
+            <label>Quota<select name="quota"><option value="all">Tất cả</option><option value="enabled" {{ "selected" if inventory.quota == "enabled" else "" }}>Đã bật</option><option value="disabled" {{ "selected" if inventory.quota == "disabled" else "" }}>Không giới hạn</option></select></label>
+            <label>Usage<select name="usage"><option value="all">Tất cả</option><option value="nonempty" {{ "selected" if inventory.usage == "nonempty" else "" }}>Có dữ liệu</option><option value="empty" {{ "selected" if inventory.usage == "empty" else "" }}>Rỗng</option></select></label>
+            <label>Sắp xếp<select name="sort"><option value="name">Tên</option><option value="owner" {{ "selected" if inventory.sort == "owner" else "" }}>Owner</option><option value="objects" {{ "selected" if inventory.sort == "objects" else "" }}>Objects</option><option value="size" {{ "selected" if inventory.sort == "size" else "" }}>Dung lượng</option><option value="created" {{ "selected" if inventory.sort == "created" else "" }}>Ngày tạo</option></select></label>
+            <label>Thứ tự<select name="order"><option value="asc">Tăng dần</option><option value="desc" {{ "selected" if inventory.order == "desc" else "" }}>Giảm dần</option></select></label>
+            <button type="submit" class="btn btn-primary btn-sm">Tìm</button>
+            {% if inventory.query or inventory.owner or inventory.quota != "all" or inventory.usage != "all" or inventory.sort != "name" or inventory.order != "asc" %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}">Xóa bộ lọc</a>{% endif %}
         </form>
         {% if error %}<p class="error">Không tải được Object Storage: {{ error }}</p>{% endif %}
       </div>
@@ -59,7 +64,8 @@
       </div>
       <div class="card-footer">
         <span>{{ inventory.total }} bucket{% if inventory.total != 1 %}s{% endif %} · Trang {{ inventory.page }} / {{ inventory.page_count }}</span>
-        {% if inventory.page_count > 1 %}<span>{% if inventory.page > 1 %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}&amp;query={{ quote_query(inventory.query) }}&amp;page={{ inventory.page - 1 }}">Trước</a>{% endif %}{% if inventory.page < inventory.page_count %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}&amp;query={{ quote_query(inventory.query) }}&amp;page={{ inventory.page + 1 }}">Sau</a>{% endif %}</span>{% endif %}
+        {% set filters = "&query=" ~ quote_query(inventory.query) ~ "&owner=" ~ quote_query(inventory.owner or '') ~ "&quota=" ~ inventory.quota ~ "&usage=" ~ inventory.usage ~ "&sort=" ~ inventory.sort ~ "&order=" ~ inventory.order %}
+        {% if inventory.page_count > 1 %}<span>{% if inventory.page > 1 %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page - 1 }}">Trước</a>{% endif %}{% if inventory.page < inventory.page_count %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page + 1 }}">Sau</a>{% endif %}</span>{% endif %}
       </div>
     </section>
   </main>

@@ -305,6 +305,20 @@ def summarize_bucket_stats(raw: dict) -> dict:
     usage = raw.get("usage") or {}
     main = usage.get("rgw.main") or {}
     quota = raw.get("bucket_quota") or {}
+    def capability_status(*keys: str) -> str:
+        value = next((raw[key] for key in keys if key in raw), None)
+        if isinstance(value, dict):
+            value = value.get("status", value.get("enabled"))
+        if isinstance(value, bool):
+            return "enabled" if value else "disabled"
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized in {"enabled", "enable", "on", "true"}:
+                return "enabled"
+            if normalized in {"disabled", "disable", "off", "false", "suspended"}:
+                return "disabled"
+        return "unknown"
+
     return {
         "owner": raw.get("owner"),
         "creation_time": _parse_creation_time(raw.get("creation_time")),
@@ -315,4 +329,15 @@ def summarize_bucket_stats(raw: dict) -> dict:
         "quota_enabled": bool(quota.get("enabled", False)),
         "quota_max_size_bytes": quota.get("max_size"),
         "quota_max_objects": quota.get("max_objects"),
+        # These keys occur in some newer/vendor RGW builds. Older releases do
+        # not expose them through `bucket stats`; report unknown rather than
+        # guessing from unrelated flags.
+        "versioning_status": capability_status(
+            "versioning_status", "versioning", "versioning_enabled"
+        ),
+        "object_lock_status": capability_status(
+            "object_lock_status", "object_lock", "object_lock_enabled"
+        ),
+        "policy_available": isinstance(raw.get("policy"), (dict, list, str)),
+        "lifecycle_available": isinstance(raw.get("lifecycle"), (dict, list, str)),
     }

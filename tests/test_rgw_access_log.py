@@ -218,6 +218,25 @@ def test_fetch_bucket_stats_builds_docker_exec_command_against_rgw_container(mon
     assert result["usage"]["rgw.main"]["num_objects"] == 42
 
 
+def test_summarize_bucket_stats_reports_optional_capabilities_without_guessing():
+    base = ral.summarize_bucket_stats({"usage": {}, "bucket_quota": {}})
+    assert base["versioning_status"] == "unknown"
+    assert base["object_lock_status"] == "unknown"
+    assert base["policy_available"] is False
+    assert base["lifecycle_available"] is False
+
+    enriched = ral.summarize_bucket_stats({
+        "versioning": {"status": "Enabled"},
+        "object_lock_enabled": False,
+        "policy": {"Statement": []},
+        "lifecycle": [],
+    })
+    assert enriched["versioning_status"] == "enabled"
+    assert enriched["object_lock_status"] == "disabled"
+    assert enriched["policy_available"] is True
+    assert enriched["lifecycle_available"] is True
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 
