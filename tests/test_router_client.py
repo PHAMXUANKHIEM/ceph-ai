@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -967,6 +967,59 @@ def test_execute_approved_rbd_action_fails_when_post_check_disagrees(isolated_db
         assert incident.status == IncidentStatus.FAILED.value
         assert progress[0]["status"] == "failed"
         assert "size mismatch" in progress[0]["error"]
+
+
+def test_stuck_rbd_scanner_marks_matching_live_state_executed(isolated_db, monkeypatch):
+    now = datetime.utcnow()
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *args, **kwargs: json.dumps({"name": "vm-01", "size": 10 * 1024 * 1024}),
+    )
+    _create_incident("incident-rbd-stuck-success")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-rbd-stuck-success")
+        incident.status = IncidentStatus.EXECUTING.value
+        action = _approved_action(session, incident.id, action_id="rbd_resize_volume")
+        action.action_params = json.dumps({"pool_name": "vms", "image": "vm-01", "size_mib": 10})
+        action.updated_at = now - timedelta(minutes=20)
+        session.commit()
+        action_pk = action.id
+
+    resolved = router_client._reconcile_stuck_rbd_actions_once(now=now)
+
+    assert resolved == [action_pk]
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.EXECUTED.value
+        progress = json.loads(action.execution_progress)
+        assert progress[0]["phase"] == "reconciliation"
+        assert "resize" not in progress[0]["command"]
+
+
+def test_stuck_rbd_scanner_keeps_action_for_retry_when_ceph_unreachable(isolated_db, monkeypatch):
+    from worker.executor.ssh_executor import ExecutorError
+
+    now = datetime.utcnow()
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ExecutorError("MON unreachable")),
+    )
+    _create_incident("incident-rbd-stuck-retry")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-rbd-stuck-retry")
+        incident.status = IncidentStatus.EXECUTING.value
+        action = _approved_action(session, incident.id, action_id="rbd_trash_move_volume")
+        action.action_params = json.dumps({"pool_name": "vms", "image": "vm-01"})
+        action.updated_at = now - timedelta(minutes=20)
+        session.commit()
+        action_pk = action.id
+
+    resolved = router_client._reconcile_stuck_rbd_actions_once(now=now)
+
+    assert resolved == []
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_pk).status == ActionStatus.APPROVED.value
+        assert session.get(Incident, "incident-rbd-stuck-retry").status == IncidentStatus.EXECUTING.value
 
 
 def test_execute_node_command_posts_stdout_back_to_chat(isolated_db, monkeypatch):

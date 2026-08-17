@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -1546,6 +1546,7 @@ def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -
 
 
 def _process_approved_actions_once() -> None:
+    _reconcile_stuck_rbd_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [
             row.id
@@ -1568,6 +1569,73 @@ def _process_approved_actions_once() -> None:
                     "for action %s after an unexpected execution error",
                     action_pk,
                 )
+
+
+def _reconcile_stuck_rbd_actions_once(
+    *, stale_after_seconds: int = 600, now: datetime | None = None,
+) -> list[str]:
+    """Resolve stale RBD executions from live state without rerunning mutation."""
+    cutoff = (now or datetime.utcnow()) - timedelta(seconds=max(1, stale_after_seconds))
+    candidates: list[dict] = []
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(Action, Incident)
+            .join(Incident, Incident.id == Action.incident_id)
+            .filter(
+                Action.action_id.in_(rbd_reconciliation.RBD_RECONCILED_ACTION_IDS),
+                Action.status == ActionStatus.APPROVED.value,
+                Action.updated_at < cutoff,
+                Incident.status == IncidentStatus.EXECUTING.value,
+            )
+            .all()
+        )
+        for action, incident in rows:
+            cluster = session.get(Cluster, incident.cluster_id) if incident.cluster_id else None
+            try:
+                params = json.loads(action.action_params or "{}")
+                nodes = json.loads(action.target_nodes or "[]")
+            except (TypeError, ValueError):
+                params, nodes = {}, []
+            candidates.append({
+                "action_pk": action.id,
+                "action_id": action.action_id,
+                "params": params,
+                "host": nodes[0] if isinstance(nodes, list) and nodes else None,
+                "ssh_user": cluster.ssh_user if cluster is not None else None,
+                "ssh_key_path": cluster.ssh_key_path if cluster is not None else None,
+            })
+
+    resolved: list[str] = []
+    for item in candidates:
+        if not item["host"]:
+            continue
+        try:
+            command = rbd_reconciliation.reconciliation_command(item["action_id"], item["params"])
+            output = execute_command(
+                item["host"], command, user=item["ssh_user"], key_path=item["ssh_key_path"]
+            )
+        except ExecutorError:
+            logger.warning(
+                "RBD stuck-action reconciliation could not query action %s; retrying later",
+                item["action_pk"], exc_info=True,
+            )
+            continue
+        try:
+            rbd_reconciliation.reconcile(item["action_id"], item["params"], output)
+        except ExecutorError as exc:
+            _write_action_progress(item["action_pk"], [{
+                "host": item["host"], "status": "failed", "phase": "reconciliation",
+                "command": command, "error": str(exc), "finished_at": datetime.utcnow().isoformat(),
+            }])
+            _record_approved_execution_result(item["action_pk"], command=command, succeeded=False)
+        else:
+            _write_action_progress(item["action_pk"], [{
+                "host": item["host"], "status": "done", "phase": "reconciliation",
+                "command": command, "finished_at": datetime.utcnow().isoformat(),
+            }])
+            _record_approved_execution_result(item["action_pk"], command=command, succeeded=True)
+        resolved.append(item["action_pk"])
+    return resolved
 
 
 def _execute_approved_action(action_pk: str) -> None:

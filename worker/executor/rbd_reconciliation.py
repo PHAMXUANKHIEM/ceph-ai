@@ -1,6 +1,7 @@
 """Deterministic post-checks for approval-gated RBD lifecycle actions."""
 
 import json
+import shlex
 
 from worker.executor.ssh_executor import ExecutorError
 
@@ -65,3 +66,19 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
     still_present = sorted(expected_removed.intersection(remaining_ids))
     if still_present:
         raise ExecutorError("RBD purge post-check still contains trash IDs: " + ", ".join(still_present))
+
+
+def reconciliation_command(action_id: str, params: dict) -> str:
+    """Build a validated read-only command for recovery after Worker restart."""
+    if action_id not in RBD_RECONCILED_ACTION_IDS:
+        raise ExecutorError(f"action {action_id!r} does not support RBD reconciliation")
+    # Reuse the mutation builder only as a closed-schema validator. It is
+    # never executed here; the returned command below is read-only.
+    from worker.executor import commands
+    commands.get_command(action_id, params=params)
+    pool = shlex.quote(params["pool_name"])
+    if action_id == "rbd_rename_volume":
+        return f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
+    if action_id in {"rbd_create_volume", "rbd_resize_volume", "rbd_trash_restore_volume"}:
+        return f"rbd info {pool}/{shlex.quote(params['image'])} --format json"
+    return f"rbd trash ls {pool} --format json"

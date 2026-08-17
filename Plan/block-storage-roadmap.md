@@ -256,14 +256,15 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
   - Đã có move-to-trash, restore-by-ID và purge-all qua Worker; chặn watcher/
     snapshot/clone child/backup đang chạy và tên restore trùng. Purge-all lưu
     snapshot tối đa 500 Trash ID, bắt buộc approval; còn thiếu TTL.
-- [~] **2.6 Idempotency và reconciliation**
+- [x] **2.6 Idempotency và reconciliation**
   - Retry không tạo volume hoặc attachment trùng; watcher đối soát job với trạng
     thái cluster sau timeout/restart.
   - Đã dedup chéo action create/resize/rename theo pool và tên nguồn/đích khi
     còn chờ duyệt hoặc đã duyệt. Worker đã reconciliation JSON hậu kiểm cho
     create/resize/rename/trash/restore/purge và đánh FAILED nếu state lệch.
     API lifecycle hỗ trợ `Idempotency-Key` theo user/cluster/intent và replay
-    Action cũ trước preflight; còn thiếu cơ chế quét action kẹt sau timeout/restart.
+    Action cũ trước preflight. Worker poll action RBD EXECUTING quá 10 phút,
+    chỉ chạy read-only post-check; query lỗi giữ lại để retry, không chạy mutation lại.
 - [~] **2.7 Test**
   - Quota/capacity race, duplicate request, busy/locked image, partial failure,
     inactive cluster, RBAC, CSRF và destructive-action guard.
@@ -472,6 +473,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | Block Storage IA | Hoàn thành code | Hợp nhất Overview, Volumes, Performance, Trash & Restore vào một nhóm sidebar; tách `/volumes` chỉ chứa inventory/CRUD và `/volume-performance` chỉ chứa metric/benchmark. Overview tập trung vào inventory và image link về đúng pool/cluster. | Nhóm route cũ/rộng `21 passed`; lượt cuối `14 passed`; `py_compile`, hai `node --check` và `git diff --check` đạt. | Sau khi nghiệm thu UI, tiếp tục TTL/reconciliation của BS-02. |
 | 2026-08-17 | BS-02 Reconciliation | Đang làm | Worker parse JSON hậu kiểm của `rbd info`/`rbd trash ls`; xác minh image, exact size, destination name và membership Trash trước khi đánh EXECUTED. State lệch hoặc JSON lỗi chuyển Action/Incident sang FAILED và lưu lỗi trong progress. | `7 passed`; `py_compile` và `git diff --check` đạt. | Tiếp theo quét/reconcile action kẹt do timeout/restart. |
 | 2026-08-17 | BS-02 Idempotency | Hoàn thành code | Create/resize/rename/trash/restore nhận `Idempotency-Key` 8–128 ký tự; key scope theo user, cluster và exact intent. Retry trả Action/status cũ trước Ceph preflight; tái dùng key cho intent khác trả 409. UI tự sinh UUID cho mutation. | `7 passed`; `py_compile`, hai `node --check` và `git diff --check` đạt. | Tiếp theo scanner cho Action EXECUTING bị kẹt sau timeout/restart. |
+| 2026-08-17 | BS-02 Stuck Action Scanner | Hoàn thành code | Mỗi Worker poll tìm RBD Action APPROVED có Incident EXECUTING và `updated_at` quá 10 phút; chạy lệnh `rbd info`/`trash ls` read-only để kết luận. State khớp đóng EXECUTED, lệch đóng FAILED, lỗi kết nối giữ nguyên để retry; không replay mutation. | `9 passed`; `py_compile` và `git diff --check` đạt. | Tiếp theo TTL recycle policy; live Ceph vẫn cần nghiệm thu. |
 
 ## Ghi chú bàn giao
 

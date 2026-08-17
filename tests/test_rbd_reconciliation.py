@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from worker.executor.rbd_reconciliation import reconcile
+from worker.executor.rbd_reconciliation import reconcile, reconciliation_command
 from worker.executor.ssh_executor import ExecutorError
 
 
@@ -38,3 +38,17 @@ def test_reconcile_rejects_invalid_json_but_ignores_unrelated_actions():
     reconcile("scrub_pool", {}, "not-json")
     with pytest.raises(ExecutorError, match="valid JSON"):
         reconcile("rbd_create_volume", {"image": "vm", "size_mib": 1}, "not-json")
+
+
+def test_reconciliation_command_is_read_only_and_validated():
+    command = reconciliation_command(
+        "rbd_resize_volume", {"pool_name": "vms", "image": "vm-01", "size_mib": 10}
+    )
+    trash_command = reconciliation_command(
+        "rbd_trash_purge_all", {"pool_name": "vms", "trash_ids": ["id-1"]}
+    )
+
+    assert command == "rbd info vms/vm-01 --format json"
+    assert trash_command == "rbd trash ls vms --format json"
+    assert "resize" not in command
+    assert " rm " not in trash_command
