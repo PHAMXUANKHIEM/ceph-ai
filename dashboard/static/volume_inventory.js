@@ -216,6 +216,37 @@
       return typeof item === "string" ? item : String(item.pool || "") + "/" + String(item.image || item.name || "");
     });
     if (isAdmin) {
+      if (cinder.status === "managed" && reconciliation.status === "healthy") {
+        var cinderForm = document.createElement("form");
+        cinderForm.className = "audit-filters";
+        var serverLabel = document.createElement("label");
+        var serverInput = document.createElement("input");
+        serverInput.type = "text";
+        serverInput.required = true;
+        serverInput.pattern = "[0-9a-fA-F-]{36}";
+        if (cinder.volume_status === "available") {
+          serverLabel.textContent = "Nova server UUID cần attach";
+        } else {
+          serverLabel.textContent = "Nova server UUID cần detach";
+          if ((cinder.attachments || []).length === 1) serverInput.value = cinder.attachments[0].instance_id || "";
+        }
+        serverLabel.appendChild(serverInput);
+        cinderForm.appendChild(serverLabel);
+        var cinderSubmit = document.createElement("button");
+        cinderSubmit.type = "submit";
+        cinderSubmit.className = cinder.volume_status === "available" ? "btn btn-primary btn-sm" : "btn btn-reject btn-sm";
+        cinderSubmit.textContent = cinder.volume_status === "available" ? "Đề xuất attach qua Cinder" : "Đề xuất detach qua Cinder";
+        cinderForm.appendChild(cinderSubmit);
+        cinderForm.addEventListener("submit", function (event) {
+          event.preventDefault();
+          var operation = cinder.volume_status === "available" ? "attach" : "detach";
+          proposeMutation(
+            "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/" + operation,
+            { server_id: serverInput.value.trim() }, cinderSubmit
+          );
+        });
+        detail.appendChild(cinderForm);
+      }
       var resizeForm = document.createElement("form");
       resizeForm.className = "audit-filters";
       var label = document.createElement("label");

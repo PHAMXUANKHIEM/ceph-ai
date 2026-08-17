@@ -135,6 +135,8 @@ RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 RBD_VOLUME_RENAME_CEPH_CODE = "RBD_VOLUME_RENAME"
 RBD_VOLUME_TRASH_MOVE_CEPH_CODE = "RBD_VOLUME_TRASH_MOVE"
 RBD_VOLUME_TRASH_RESTORE_CEPH_CODE = "RBD_VOLUME_TRASH_RESTORE"
+CINDER_VOLUME_ATTACH_CEPH_CODE = "CINDER_VOLUME_ATTACH"
+CINDER_VOLUME_DETACH_CEPH_CODE = "CINDER_VOLUME_DETACH"
 
 # 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
 # incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
@@ -148,12 +150,17 @@ VM_PERF_BENCHMARK_ACTION_ID = "vm_perf_benchmark"
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
 _RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_OPENSTACK_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
     "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
     "rbd_trash_move_volume", "rbd_trash_restore_volume",
+    "cinder_attach_volume", "cinder_detach_volume",
 )
 
 
@@ -631,6 +638,61 @@ def _propose_rbd_volume_mutation(
         return action.id
 
 
+def _propose_cinder_attachment_mutation(
+    *, cluster, pool: str, image: str, volume_id: str, server_id: str,
+    action_id: str, ceph_code: str, user: str, idempotency_key: str | None,
+) -> str:
+    controllers = [node.strip() for node in cluster.openstack_controller_nodes.split(",") if node.strip()]
+    if not controllers or not cluster.openstack_openrc_path:
+        raise HTTPException(status_code=400, detail="Cluster chưa cấu hình OpenStack Controller/openrc")
+    params = {
+        "pool_name": pool, "image": image, "volume_id": volume_id,
+        "server_id": server_id, "openrc_path": cluster.openstack_openrc_path,
+        "requested_by": user,
+    }
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+    try:
+        preview = executor_commands.get_command(action_id, controllers[0], params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Thông tin Cinder attachment không hợp lệ: {exc}") from exc
+    verb = "Gắn" if action_id == "cinder_attach_volume" else "Tháo"
+    rationale = f"{verb} Cinder volume {volume_id} {'vào' if verb == 'Gắn' else 'khỏi'} Nova server {server_id}"
+    with db.SessionLocal() as session:
+        for existing in session.query(Action).filter(
+            Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS),
+            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+        ).all():
+            try:
+                existing_params = json.loads(existing.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if existing_params.get("pool_name") == pool and existing_params.get("image") == image:
+                raise HTTPException(status_code=409, detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi")
+        incident = Incident(
+            cluster_id=cluster.id, ceph_code=ceph_code,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id=action_id,
+            classification=gate.classify_action(action_id).value,
+            status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale,
+            target_nodes=json.dumps([controllers[0]]), action_params=json.dumps(params),
+            proposed_command=preview,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(
+            session, incident_id=incident.id, action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=user,
+        )
+        session.commit()
+        return action.id
+
+
 def _idempotency_replay(
     request: Request, *, action_id: str, user: str, cluster_id: str, intent: dict,
 ) -> tuple[str | None, dict | None]:
@@ -942,6 +1004,100 @@ async def volume_inventory_detail_api(
         detail.setdefault("attachment_summary", {})["mutation_supported"] = False
         detail["attachment_summary"]["blocked_reason"] = reconciliation.get("reason") or "Attachment chưa đối soát an toàn."
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **detail}
+
+
+async def _cinder_attachment_preflight(cluster, pool: str, image: str) -> tuple[dict, dict, dict]:
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được Ceph attachment evidence: {exc}")
+    cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
+    reconciliation = reconcile_cinder_attachment(
+        cinder, detail.get("watchers") or [], detail.get("locks") or []
+    )
+    if cinder.get("status") != "managed" or not cinder.get("verified"):
+        raise HTTPException(status_code=409, detail="Volume chưa được xác minh là tài nguyên Cinder")
+    if reconciliation.get("status") != "healthy":
+        raise HTTPException(
+            status_code=409,
+            detail="Attachment chưa đối soát an toàn: " + str(reconciliation.get("reason") or "unknown"),
+        )
+    return detail, cinder, reconciliation
+
+
+def _cinder_volume_id_from_image(image: str) -> str:
+    volume_id = image.removeprefix("volume-") if image.startswith("volume-") else ""
+    if not _OPENSTACK_UUID_RE.fullmatch(volume_id):
+        raise HTTPException(status_code=400, detail="RBD image không theo định dạng Cinder volume-<UUID>")
+    return volume_id
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/attach")
+async def propose_cinder_volume_attach(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    server_id = str(body.get("server_id") or "").strip()
+    if not _OPENSTACK_UUID_RE.fullmatch(server_id):
+        raise HTTPException(status_code=400, detail="Nova server ID không hợp lệ")
+    volume_id = _cinder_volume_id_from_image(image)
+    intent = {"pool_name": pool, "image": image, "volume_id": volume_id, "server_id": server_id}
+    key, replay = _idempotency_replay(
+        request, action_id="cinder_attach_volume", user=user, cluster_id=cluster.id, intent=intent,
+    )
+    if replay:
+        return replay
+    _detail, cinder, _reconciliation = await _cinder_attachment_preflight(cluster, pool, image)
+    if cinder.get("volume_status") != "available" or cinder.get("attachments"):
+        raise HTTPException(status_code=409, detail="Cinder volume phải ở trạng thái available và chưa có attachment")
+    if str(cinder["volume_id"]).lower() != volume_id.lower():
+        raise HTTPException(status_code=409, detail="Cinder volume ID không khớp RBD image")
+    action_id = _propose_cinder_attachment_mutation(
+        cluster=cluster, pool=pool, image=image, volume_id=volume_id, server_id=server_id,
+        action_id="cinder_attach_volume", ceph_code=CINDER_VOLUME_ATTACH_CEPH_CODE,
+        user=user, idempotency_key=key,
+    )
+    return JSONResponse({"action_id": action_id, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/detach")
+async def propose_cinder_volume_detach(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    server_id = str(body.get("server_id") or "").strip()
+    if not _OPENSTACK_UUID_RE.fullmatch(server_id):
+        raise HTTPException(status_code=400, detail="Nova server ID không hợp lệ")
+    volume_id = _cinder_volume_id_from_image(image)
+    intent = {"pool_name": pool, "image": image, "volume_id": volume_id, "server_id": server_id}
+    key, replay = _idempotency_replay(
+        request, action_id="cinder_detach_volume", user=user, cluster_id=cluster.id, intent=intent,
+    )
+    if replay:
+        return replay
+    _detail, cinder, _reconciliation = await _cinder_attachment_preflight(cluster, pool, image)
+    if not any(str(item.get("instance_id") or "") == server_id for item in cinder.get("attachments") or []):
+        raise HTTPException(status_code=409, detail="Nova server không có attachment trên Cinder volume này")
+    if str(cinder["volume_id"]).lower() != volume_id.lower():
+        raise HTTPException(status_code=409, detail="Cinder volume ID không khớp RBD image")
+    action_id = _propose_cinder_attachment_mutation(
+        cluster=cluster, pool=pool, image=image, volume_id=volume_id, server_id=server_id,
+        action_id="cinder_detach_volume", ceph_code=CINDER_VOLUME_DETACH_CEPH_CODE,
+        user=user, idempotency_key=key,
+    )
+    return JSONResponse({"action_id": action_id, "status": "PENDING_APPROVAL"}, status_code=201)
 
 
 @router.get("/api/volumes/{pool}/{image}/history")

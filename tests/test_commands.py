@@ -806,6 +806,26 @@ def test_rbd_trash_purge_all_snapshots_validated_ids_and_post_checks():
         )
 
 
+def test_cinder_attachment_commands_use_openstack_control_plane_and_validate_ids():
+    params = {
+        "volume_id": "12345678-1234-4123-8123-1234567890ab",
+        "server_id": "abcdefab-1234-4123-8123-1234567890ab",
+        "openrc_path": "/root/admin-openrc",
+    }
+
+    attach = commands_module.get_command("cinder_attach_volume", params=params)
+    detach = commands_module.get_command("cinder_detach_volume", params=params)
+
+    assert "openstack server add volume" in attach
+    assert "openstack server remove volume" in detach
+    assert "openstack volume show" in attach
+    assert "rbd map" not in attach and "rbd unmap" not in detach
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "cinder_attach_volume", params={**params, "server_id": "bad;id"}
+        )
+
+
 def test_get_command_finalize_pacific_osd_release():
     assert commands_module.get_command("finalize_pacific_osd_release") == (
         "ceph osd require-osd-release pacific --yes-i-really-mean-it"

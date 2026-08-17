@@ -60,6 +60,7 @@ def _configure_openstack_controller():
     with db_module.SessionLocal() as session:
         cluster = session.query(Cluster).filter_by(is_default=True).one()
         cluster.openstack_controller_nodes = "10.0.0.10"
+        cluster.openstack_openrc_path = "/root/admin-openrc"
         session.commit()
 
 
@@ -1535,6 +1536,63 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
     assert payload["attachment_summary"]["consumer_count"] == 1
     assert payload["attachment_summary"]["mutation_supported"] is False
     assert payload["attachment_reconciliation"]["status"] == "mismatch"
+
+
+def test_cinder_attach_proposal_is_approval_gated_and_targets_controller(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    server_id = "abcdefab-1234-4123-8123-1234567890ab"
+
+    async def fake_preflight(cluster, pool, image):
+        return {}, {
+            "status": "managed", "verified": True, "volume_id": volume_id,
+            "volume_status": "available", "attachments": [],
+        }, {"status": "healthy", "safe": True}
+
+    monkeypatch.setattr(volumes_route, "_cinder_attachment_preflight", fake_preflight)
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/attach",
+        headers={"Idempotency-Key": "attach-test-1234"}, json={"server_id": server_id},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="cinder_attach_volume").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert json.loads(action.target_nodes) == ["10.0.0.10"]
+        params = json.loads(action.action_params)
+        assert params["volume_id"] == volume_id
+        assert params["server_id"] == server_id
+        assert "openstack server add volume" in action.proposed_command
+
+
+def test_cinder_detach_proposal_requires_matching_attachment(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    server_id = "abcdefab-1234-4123-8123-1234567890ab"
+
+    async def fake_preflight(cluster, pool, image):
+        return {}, {
+            "status": "managed", "verified": True, "volume_id": volume_id,
+            "volume_status": "in-use",
+            "attachments": [{"attachment_id": "attach-1", "instance_id": server_id}],
+        }, {"status": "healthy", "safe": True}
+
+    monkeypatch.setattr(volumes_route, "_cinder_attachment_preflight", fake_preflight)
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/detach",
+        headers={"Idempotency-Key": "detach-test-123"}, json={"server_id": server_id},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="cinder_detach_volume").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert "openstack server remove volume" in action.proposed_command
 
 
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):
