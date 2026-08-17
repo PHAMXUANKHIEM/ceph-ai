@@ -57,6 +57,22 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert ".mgr" not in response.text
 
 
+def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: [])
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/object-storage/buckets")
+
+    assert response.status_code == 200
+    assert 'href="/openstack/auth-pool"' in response.text
+    assert 'href="/deploy-cluster"' in response.text
+    assert 'href="/delete-cluster"' in response.text
+    assert 'href="/upgrade"' in response.text
+    assert 'href="/patch"' in response.text
+    assert 'href="/convert-cluster"' in response.text
+
+
 def test_inventory_api_searches_paginates_and_returns_bucket_stats(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "PAGE_SIZE", 2)

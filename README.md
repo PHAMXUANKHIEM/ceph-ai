@@ -6,6 +6,16 @@ API AI — Claude, Codex/OpenAI, OpenRouter, hoặc 9router tự triển khai), 
 Action), kèm Dashboard quản trị có Chat-with-AI để tra cứu và quản lý
 cluster (tạo/xoá pool, bật/tắt OSD, ...).
 
+Dashboard hiện cung cấp các nhóm chức năng chính:
+
+- **Monitoring & Metrics**: sức khoẻ cụm, node, volume performance và CRUSH map.
+- **Pool**: quản lý pool, placement group (PG) và trash.
+- **Object Storage**: bucket inventory/detail, S3 user, bucket access log và audit thao tác quản trị.
+- **Block Storage**: inventory RBD image theo pool/namespace.
+- **ceph-auth**: Auth-Pool và tạo Ceph Auth User phục vụ OpenStack.
+- **Cluster Lifecycle Management**: deploy, delete, upgrade, patch và chuyển đổi sang cephadm.
+- **Backup** và **System Administration**: backup/restore, cấu hình, cluster, user và thông báo.
+
 Tài liệu này hướng dẫn chạy toàn bộ hệ thống trên **một máy mới** (không
 phải máy đang chạy sẵn) — ví dụ khi chuyển sang server khác hoặc set up
 môi trường dev.
@@ -17,11 +27,19 @@ Ba tiến trình độc lập, cùng đọc/ghi một database (SQLite mặc đ�
 | Tiến trình | Vai trò |
 |---|---|
 | `watcher` | Poll cụm Ceph qua SSH mỗi `WATCHER_POLL_INTERVAL_SECONDS` giây, phát hiện `HEALTH_WARN`/`HEALTH_ERR`, ghi Incident + publish lên RabbitMQ |
-| `worker` | Tiêu thụ Incident từ RabbitMQ, gọi AI chẩn đoán, phân loại Safe/Risky, tự thực thi (Safe) hoặc chờ duyệt (Risky) — **đây là tiến trình DUY NHẤT giữ SSH credential và thực thi lệnh trên cụm** |
-| `dashboard` | Web UI (FastAPI) — xem Incident, duyệt/từ chối Risky Action, chat với AI, xem log node, cấu hình |
+| `worker` | Tiêu thụ Incident từ RabbitMQ, gọi AI chẩn đoán, phân loại Safe/Risky, tự thực thi Safe Action hoặc thực thi Risky Action sau khi được duyệt |
+| `dashboard` | Web UI (FastAPI) — quan sát cụm, quản trị storage/auth/lifecycle, chat với AI, cấu hình và duyệt/từ chối Risky Action |
 
-Dashboard **không bao giờ** thực thi lệnh trực tiếp lên cụm — chỉ đổi
-trạng thái trong DB; Worker mới là nơi thực sự SSH vào cụm.
+Watcher, Worker và Dashboard đều có thể cần thông tin kết nối cụm. Các
+truy vấn inventory/read-only của Dashboard (ví dụ Bucket, RBD và Ceph Auth)
+được thực hiện trực tiếp qua SSH. Một số thao tác quản trị có phạm vi hẹp,
+như quản lý S3 user, cũng chạy từ Dashboard qua command allowlist, bắt buộc
+preview/xác nhận và ghi audit. Các remediation do AI và workflow dài như
+deploy/upgrade vẫn được lập kế hoạch, kiểm soát chính sách và giao cho
+Worker thực thi sau khi đáp ứng cơ chế phê duyệt tương ứng.
+
+Vì vậy, hãy coi SSH private key là credential của **toàn bộ ứng dụng**, cấp
+quyền tối thiểu cần thiết và không cho phép người dùng khác đọc file key.
 
 Hướng dẫn dưới đây viết cho một máy **chưa cài gì cả** (Ubuntu/Debian sạch)
 — làm theo đúng thứ tự, mỗi bước đều có lệnh kiểm tra để biết đã đúng chưa
@@ -186,6 +204,24 @@ Mọi mục còn lại (`CEPH_OSD_NODES`, `CEPH_MGR_NODES`, `CEPH_RGW_NODES`,
 `CEPH_RBD_POOLS`, ...) đều tuỳ chọn — xem chú thích ngay trong
 `.env.example`, để trống nếu không dùng tính năng tương ứng.
 
+### 6.1. Cấu hình Object Storage và Block Storage
+
+Để sử dụng nhóm **Object Storage**, cấu hình ít nhất một RGW node qua
+`CEPH_RGW_NODES`. Nếu RGW chạy trong container thủ công, điền thêm
+`CEPH_RGW_CONTAINER_NAME`; với cephadm, chọn `CEPH_EXEC_MODE=cephadm`.
+SSH user/key phải có quyền chạy các lệnh `radosgw-admin` mà Dashboard sử
+dụng. Bucket và S3 user inventory không trả access key hoặc secret key về
+trình duyệt.
+
+Các thao tác tạo/sửa/vô hiệu hoá/kích hoạt lại S3 user chỉ dành cho admin,
+phải xem preview và nhập lại UID trước khi thực thi. Kết quả thành công hoặc
+thất bại được lưu trong Object Storage Audit; credential không được ghi vào
+audit log.
+
+Để dùng **Block Storage**, cấu hình `CEPH_RBD_POOLS` nếu chỉ muốn giới hạn
+inventory ở một số pool. Nếu để trống, hành vi khám phá pool phụ thuộc cấu
+hình và quyền Ceph hiện tại của cụm.
+
 ## 7. Khởi tạo database
 
 ```bash
@@ -194,6 +230,10 @@ alembic upgrade head
 
 File SQLite (`ceph_aiops.db`, theo `DATABASE_URL`) sẽ được tạo tự động ở
 lần chạy đầu. Không thấy lỗi nào in ra là thành công.
+
+Lệnh này cũng tạo/cập nhật các bảng phục vụ tính năng mới, bao gồm bảng
+Object Storage Audit. Sau mỗi lần `git pull`, luôn chạy lại
+`alembic upgrade head` trước khi restart dịch vụ.
 
 ## 8. Chạy 3 tiến trình
 
@@ -276,6 +316,14 @@ cho các thay đổi CODE (không phải cấu hình) — khi đó dùng lại
 
 ```bash
 pytest
+```
+
+Khi chỉ thay đổi Object Storage, có thể chạy nhanh nhóm hồi quy liên quan:
+
+```bash
+pytest -q tests/test_dashboard_object_storage.py \
+  tests/test_dashboard_object_storage_users.py
+node --check dashboard/static/app.js
 ```
 
 Mặc định loại trừ nhóm test `live` (gọi SSH/API thật ra cụm Ceph/API AI
