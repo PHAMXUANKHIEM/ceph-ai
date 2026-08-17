@@ -374,6 +374,67 @@ def execute_s3_user_action_with(host: str, action: str, uid: str, params: dict,
         raise RgwLogError(f"Thao tác S3 user thất bại trên {host}: {exc}") from exc
 
 
+def _new_s3_key(payload: object, existing: set[str]) -> dict:
+    if isinstance(payload, dict) and payload.get("access_key") and payload.get("secret_key"):
+        candidates = [payload]
+    elif isinstance(payload, dict):
+        candidates = payload.get("keys") or []
+    else:
+        candidates = []
+    fresh = [key for key in candidates if isinstance(key, dict) and key.get("access_key") not in existing]
+    if len(fresh) != 1 or not fresh[0].get("secret_key"):
+        raise RgwLogError("RGW không trả về duy nhất một access key mới")
+    return {"access_key": str(fresh[0]["access_key"]), "secret_key": str(fresh[0]["secret_key"])}
+
+
+def create_s3_access_key(host: str, uid: str) -> dict:
+    before = fetch_s3_user_info(host, uid) or {}
+    existing = {str(key.get("access_key")) for key in (before.get("keys") or []) if isinstance(key, dict)}
+    inner = f"radosgw-admin key create --uid={shlex.quote(uid)} --key-type=s3 --gen-access-key --gen-secret --format json"
+    command = ceph_client.build_exec_command(settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner)
+    try:
+        output = run_command_on_node(host, command)
+        return _new_s3_key(json.loads(output), existing)
+    except RgwLogError:
+        raise
+    except Exception as exc:
+        raise RgwLogError(f"Không tạo được access key trên {host}: {exc}") from exc
+
+
+def create_s3_access_key_with(host: str, uid: str, ssh_user: str, ssh_key_path: str,
+                              exec_mode: str, rgw_container_name: str) -> dict:
+    before = fetch_s3_user_info_with(host, uid, ssh_user, ssh_key_path, exec_mode, rgw_container_name) or {}
+    existing = {str(key.get("access_key")) for key in (before.get("keys") or []) if isinstance(key, dict)}
+    inner = f"radosgw-admin key create --uid={shlex.quote(uid)} --key-type=s3 --gen-access-key --gen-secret --format json"
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        return _new_s3_key(json.loads(output), existing)
+    except RgwLogError:
+        raise
+    except Exception as exc:
+        raise RgwLogError(f"Không tạo được access key trên {host}: {exc}") from exc
+
+
+def revoke_s3_access_key(host: str, uid: str, access_key: str) -> None:
+    inner = f"radosgw-admin key rm --uid={shlex.quote(uid)} --key-type=s3 --access-key={shlex.quote(access_key)}"
+    command = ceph_client.build_exec_command(settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner)
+    try:
+        run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Không revoke được access key trên {host}: {exc}") from exc
+
+
+def revoke_s3_access_key_with(host: str, uid: str, access_key: str, ssh_user: str,
+                              ssh_key_path: str, exec_mode: str, rgw_container_name: str) -> None:
+    inner = f"radosgw-admin key rm --uid={shlex.quote(uid)} --key-type=s3 --access-key={shlex.quote(access_key)}"
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Không revoke được access key trên {host}: {exc}") from exc
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately

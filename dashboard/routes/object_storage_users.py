@@ -29,6 +29,10 @@ from watcher.rgw_access_log import (
     build_s3_user_action_command,
     execute_s3_user_action,
     execute_s3_user_action_with,
+    create_s3_access_key,
+    create_s3_access_key_with,
+    revoke_s3_access_key,
+    revoke_s3_access_key_with,
 )
 
 router = APIRouter()
@@ -141,6 +145,31 @@ def _audit_rows(cluster_id: str, limit: int = 50) -> list[dict]:
         } for row in rows]
 
 
+def _valid_access_key(value: object) -> str:
+    key = str(value or "").strip()
+    if not key or len(key) > 128 or any(ord(char) < 33 for char in key):
+        raise HTTPException(status_code=400, detail="Access key không hợp lệ")
+    return key
+
+
+def _key_action(cluster, action: str, uid: str, access_key: str = "") -> dict | None:
+    host = _host(cluster)
+    if cluster.is_default:
+        if action == "create_key":
+            return create_s3_access_key(host, uid)
+        revoke_s3_access_key(host, uid, access_key)
+        return None
+    ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+    if action == "create_key":
+        return create_s3_access_key_with(
+            host, uid, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
+        )
+    revoke_s3_access_key_with(
+        host, uid, access_key, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
+    )
+    return None
+
+
 def _inventory(cluster, query: str, page: int) -> dict:
     host = _host(cluster)
     users = _list(cluster, host)
@@ -232,6 +261,61 @@ async def audit_api(request: Request, user: str = Depends(require_login)):
     _require_admin(user)
     cluster = selected_cluster(request)
     return {"entries": await asyncio.to_thread(_audit_rows, cluster.id)}
+
+
+@router.post("/api/object-storage/users/keys/preview")
+async def key_action_preview(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    body = await request.json()
+    action = str(body.get("action") or "")
+    if action not in {"create_key", "revoke_key"}:
+        raise HTTPException(status_code=400, detail="Thao tác access key không hợp lệ")
+    uid = _valid_uid(str(body.get("uid") or ""))
+    access_key = _valid_access_key(body.get("access_key")) if action == "revoke_key" else ""
+    cluster = selected_cluster(request)
+    preview = (
+        f"Tạo access key mới cho S3 user {uid}; secret chỉ hiển thị một lần"
+        if action == "create_key" else f"Revoke access key {access_key} của S3 user {uid}"
+    )
+    return {
+        "action": action, "uid": uid, "cluster_id": cluster.id, "cluster_name": cluster.name,
+        "risk": "high" if action == "revoke_key" else "medium", "preview": preview,
+        "confirmation_required": access_key if action == "revoke_key" else uid,
+    }
+
+
+@router.post("/api/object-storage/users/keys/execute")
+async def key_action_execute(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    body = await request.json()
+    action = str(body.get("action") or "")
+    if action not in {"create_key", "revoke_key"}:
+        raise HTTPException(status_code=400, detail="Thao tác access key không hợp lệ")
+    uid = _valid_uid(str(body.get("uid") or ""))
+    access_key = _valid_access_key(body.get("access_key")) if action == "revoke_key" else ""
+    expected = access_key if action == "revoke_key" else uid
+    if str(body.get("confirmation") or "") != expected:
+        raise HTTPException(status_code=400, detail="Giá trị xác nhận không chính xác")
+    cluster = selected_cluster(request)
+    preview = (
+        f"create S3 access key for uid={uid} (secret redacted)"
+        if action == "create_key" else f"revoke S3 access key={access_key} for uid={uid}"
+    )
+    try:
+        audit_id = await asyncio.to_thread(_start_audit, cluster.id, user, action, uid, preview)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        credential = await asyncio.to_thread(_key_action, cluster, action, uid, access_key)
+    except RgwLogError as exc:
+        await asyncio.to_thread(_finish_audit, audit_id, "failed", str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
+    response = {"ok": True, "action": action, "uid": uid, "request_id": audit_id}
+    if credential is not None:
+        response["credential"] = credential
+        response["secret_shown_once"] = True
+    return response
 
 
 @router.get("/object-storage/users", response_class=HTMLResponse)

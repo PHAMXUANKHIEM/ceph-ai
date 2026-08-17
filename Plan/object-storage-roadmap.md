@@ -103,8 +103,10 @@ cluster đang chọn, không có fallback sample hoặc cross-cluster leak.
 - [~] **2.2 Create/modify/disable S3 user**: đã có API preview/execute, admin
   RBAC, form UI hai bước, xác nhận UID, validation, command allowlist,
   audit persistence/viewer và create không sinh access key.
-- [ ] **2.3 Access-key lifecycle**: tạo, disable/enable, rotate và revoke;
-  secret chỉ hiển thị một lần, không persistence/log.
+- [~] **2.3 Access-key lifecycle**: đã có preview/execute tạo và revoke, admin
+  RBAC, confirmation, audit redaction và secret chỉ trả một lần, không
+  persistence/log. RGW không có trạng thái disable key độc lập trong adaptor
+  hiện tại; rotate dùng flow an toàn tạo key mới rồi revoke key cũ riêng.
 - [ ] **2.4 Quota và capability editor** theo allowlist; giải thích tác động
   quyền trước khi submit.
 - [ ] **2.5 Test**: RBAC, secret redaction, action confirmation, cluster scope,
@@ -217,6 +219,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 2.1 | Đang làm | Thêm S3 user inventory/detail read-only, search/pagination, cluster scope và allowlist response loại bỏ toàn bộ key material. | `.venv/bin/pytest -q tests/test_dashboard_object_storage_users.py tests/test_dashboard_object_storage.py tests/test_rgw_access_log.py tests/test_dashboard_bucket_access_log.py`: 60 passed; `node --check dashboard/static/app.js` và `git diff --check` sạch. | Chưa commit; tiếp theo thiết kế preview/audit cho 2.2. |
 | 2026-08-17 | 2.2 | Đang làm | Thêm create/modify/suspend/enable qua command allowlist; API và UI bắt buộc preview, admin RBAC và xác nhận lại UID. Create dùng `--generate-key=false`; structured audit log không chứa credential. | Suite Object Storage liên quan: 65 passed; `node --check dashboard/static/object_storage_users.js`, `node --check dashboard/static/app.js` và `git diff --check` sạch. | Chưa commit; còn audit persistence/viewer trước khi đóng 2.2. |
 | 2026-08-17 | 2.2 audit | Đang làm | Thêm bảng audit riêng scoped theo cluster, fail-closed nếu không tạo được audit record, lưu success/failure/request ID và viewer/API admin-only. | Object Storage + migration regression: 74 passed; Alembic có một head `c8d41f7a2e90`; JS syntax và `git diff --check` sạch. | Chưa commit; sau khi merge có thể đóng 2.2 và chuyển sang 2.3. |
+| 2026-08-17 | 2.3 | Đang làm | Thêm tạo/revoke S3 access key với preview, admin RBAC, confirmation, audit redaction và UI one-time secret. Rotate là flow hai bước create rồi revoke để tránh mất quyền truy cập ngoài ý muốn. | User/key + adaptor + migration regression: 46 passed; JS syntax và `git diff --check` sạch. | Chưa commit; cần kiểm chứng capability trên RGW thật và hoàn thiện test cluster phụ trước khi đóng 2.3. |
 
 ## Ghi chú bàn giao
 

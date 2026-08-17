@@ -32,3 +32,34 @@
       .catch(function (error) { status.textContent = "Lỗi: " + error.message; execute.disabled = false; });
   });
 })();
+
+(function () {
+  var form = document.getElementById("s3-key-action-form");
+  if (!form) return;
+  var action = document.getElementById("s3-key-action");
+  var uid = document.getElementById("s3-key-uid");
+  var accessKey = document.getElementById("s3-access-key");
+  var preview = document.getElementById("s3-key-preview");
+  var summary = document.getElementById("s3-key-preview-summary");
+  var confirmation = document.getElementById("s3-key-confirmation");
+  var execute = document.getElementById("s3-key-execute");
+  var status = document.getElementById("s3-key-status");
+  var secretBox = document.getElementById("s3-one-time-secret");
+  var approved = null;
+  function body() { return {action: action.value, uid: uid.value.trim(), access_key: accessKey.value.trim()}; }
+  function endpoint(kind) { return "/api/object-storage/users/keys/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
+  function parse(response) { return response.ok ? response.json() : response.json().then(function (data) { throw new Error(data.detail || "Thao tác thất bại"); }); }
+  form.addEventListener("submit", function (event) {
+    event.preventDefault(); approved = null; preview.hidden = true; secretBox.hidden = true; execute.disabled = true; status.textContent = "Đang tạo preview...";
+    fetch(endpoint("preview"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body())})
+      .then(parse).then(function (data) { approved = body(); approved.expected = data.confirmation_required; summary.textContent = data.preview + " · " + data.cluster_name + " · rủi ro " + data.risk; confirmation.value = ""; preview.hidden = false; status.textContent = "Kiểm tra preview và nhập giá trị xác nhận."; })
+      .catch(function (error) { status.textContent = "Lỗi: " + error.message; });
+  });
+  confirmation.addEventListener("input", function () { execute.disabled = !approved || confirmation.value !== approved.expected; });
+  execute.addEventListener("click", function () {
+    if (!approved) return; execute.disabled = true; var payload = {action: approved.action, uid: approved.uid, access_key: approved.access_key, confirmation: confirmation.value}; status.textContent = "Đang thực thi...";
+    fetch(endpoint("execute"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)})
+      .then(parse).then(function (data) { if (data.credential) { document.getElementById("s3-created-access-key").textContent = data.credential.access_key; document.getElementById("s3-created-secret-key").textContent = data.credential.secret_key; secretBox.hidden = false; } status.textContent = "Thao tác thành công. Request ID: " + data.request_id; approved = null; preview.hidden = true; })
+      .catch(function (error) { status.textContent = "Lỗi: " + error.message; execute.disabled = false; });
+  });
+})();

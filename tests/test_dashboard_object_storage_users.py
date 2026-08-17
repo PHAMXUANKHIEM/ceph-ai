@@ -73,6 +73,8 @@ def test_users_page_search_and_empty_state(dashboard_client, monkeypatch):
 
     assert response.status_code == 200
     assert "Không có S3 user phù hợp." in response.text
+    assert 'href="/openstack/auth-pool"' in response.text
+    assert 'href="/deploy-cluster"' in response.text
 
 
 def test_user_detail_rejects_path_like_uid(dashboard_client, monkeypatch):
@@ -131,6 +133,8 @@ def test_admin_page_exposes_two_step_action_form(dashboard_client, monkeypatch):
     assert response.status_code == 200
     assert 'id="s3-user-action-form"' in response.text
     assert 'id="s3-execute"' in response.text
+    assert 'id="s3-key-action-form"' in response.text
+    assert 'id="s3-one-time-secret"' in response.text
     assert "Tạo user không tự sinh access key" in response.text
 
 
@@ -212,3 +216,48 @@ def test_audit_api_is_admin_only_and_cluster_scoped(dashboard_client, monkeypatc
 
     monkeypatch.setattr(route.auth, "is_admin_user", lambda user: False)
     assert dashboard_client.get("/api/object-storage/audit").status_code == 403
+
+
+def test_create_access_key_returns_secret_once_but_never_persists_it(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(
+        route, "create_s3_access_key",
+        lambda host, uid: {"access_key": "NEWACCESS", "secret_key": "ONE-TIME-SECRET"},
+    )
+    _login(dashboard_client)
+
+    preview = dashboard_client.post("/api/object-storage/users/keys/preview", json={
+        "action": "create_key", "uid": "alice",
+    })
+    response = dashboard_client.post("/api/object-storage/users/keys/execute", json={
+        "action": "create_key", "uid": "alice", "confirmation": "alice",
+    })
+
+    assert preview.status_code == 200
+    assert "ONE-TIME-SECRET" not in preview.text
+    assert response.status_code == 200
+    assert response.json()["credential"]["secret_key"] == "ONE-TIME-SECRET"
+    assert response.json()["secret_shown_once"] is True
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, response.json()["request_id"])
+        assert "ONE-TIME-SECRET" not in audit.preview
+        assert "ONE-TIME-SECRET" not in (audit.error_message or "")
+
+
+def test_revoke_access_key_requires_exact_key_confirmation(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr(route, "revoke_s3_access_key", lambda *args: calls.append(args))
+    _login(dashboard_client)
+    payload = {"action": "revoke_key", "uid": "alice", "access_key": "OLDKEY"}
+
+    bad = dashboard_client.post(
+        "/api/object-storage/users/keys/execute", json={**payload, "confirmation": "alice"}
+    )
+    good = dashboard_client.post(
+        "/api/object-storage/users/keys/execute", json={**payload, "confirmation": "OLDKEY"}
+    )
+
+    assert bad.status_code == 400
+    assert good.status_code == 200
+    assert calls == [("10.20.1.90", "alice", "OLDKEY")]

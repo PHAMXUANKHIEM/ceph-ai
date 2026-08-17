@@ -265,6 +265,25 @@ def test_s3_user_action_builder_is_closed_quotes_input_and_never_generates_key()
         pass
 
 
+def test_new_s3_key_returns_only_the_new_credential():
+    result = ral._new_s3_key({"keys": [
+        {"access_key": "OLD", "secret_key": "old-secret"},
+        {"access_key": "NEW", "secret_key": "new-secret"},
+    ]}, {"OLD"})
+    assert result == {"access_key": "NEW", "secret_key": "new-secret"}
+
+
+def test_new_s3_key_fails_closed_when_rgws_response_is_ambiguous():
+    try:
+        ral._new_s3_key({"keys": [
+            {"access_key": "A", "secret_key": "one"},
+            {"access_key": "B", "secret_key": "two"},
+        ]}, set())
+        assert False, "ambiguous credential responses must not be returned"
+    except ral.RgwLogError:
+        pass
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 
