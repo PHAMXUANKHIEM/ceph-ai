@@ -289,9 +289,12 @@
 
   function proposeMutation(url, payload, button) {
     button.disabled = true;
+    var idempotencyKey = (window.crypto && window.crypto.randomUUID)
+      ? window.crypto.randomUUID()
+      : "ui-" + Date.now() + "-" + Math.random().toString(16).slice(2);
     requestJson(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(payload)
     }).then(function (data) {
       mutationResult.hidden = false;

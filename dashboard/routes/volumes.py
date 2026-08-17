@@ -147,6 +147,7 @@ VM_PERF_BENCHMARK_ACTION_ID = "vm_perf_benchmark"
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
 _RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 _RBD_VOLUME_MUTATION_ACTION_IDS = (
@@ -546,11 +547,15 @@ def _propose_rbd_volume_mutation(
     *, cluster, pool: str, image: str, action_id: str,
     ceph_code: str, user: str, rationale: str,
     extra_params: dict | None = None, conflicting_images: set[str] | None = None,
+    idempotency_key: str | None = None,
 ) -> str:
     mon_nodes, _container, _ssh_user, _ssh_key, _exec_mode = cluster_connection(cluster)
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="Cluster chưa cấu hình MON node")
     params = {"pool_name": pool, "image": image, **(extra_params or {})}
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+        params["requested_by"] = user
     conflict_names = conflicting_images or {image}
     try:
         preview = executor_commands.get_command(action_id, mon_nodes[0], params)
@@ -600,6 +605,38 @@ def _propose_rbd_volume_mutation(
         return action.id
 
 
+def _idempotency_replay(
+    request: Request, *, action_id: str, user: str, cluster_id: str, intent: dict,
+) -> tuple[str | None, dict | None]:
+    raw_key = request.headers.get("Idempotency-Key")
+    if raw_key is None:
+        return None, None
+    key = raw_key.strip()
+    if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+        raise HTTPException(status_code=400, detail="Idempotency-Key phải dài 8-128 ký tự an toàn")
+    with db.SessionLocal() as session:
+        rows = session.query(Action).all()
+        for action in rows:
+            try:
+                params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if params.get("idempotency_key") != key:
+                continue
+            incident = session.get(Incident, action.incident_id)
+            same_intent = (
+                action.action_id == action_id
+                and params.get("requested_by") == user
+                and incident is not None
+                and incident.cluster_id == cluster_id
+                and all(params.get(field) == value for field, value in intent.items())
+            )
+            if not same_intent:
+                raise HTTPException(status_code=409, detail="Idempotency-Key đã được dùng cho yêu cầu khác")
+            return key, {"action_id": action.id, "status": action.status, "replayed": True}
+    return key, None
+
+
 @router.post("/api/volumes/{pool}/inventory/create")
 async def propose_volume_create(
     request: Request, pool: str, user: str = Depends(require_login)
@@ -615,6 +652,12 @@ async def propose_volume_create(
     size_gib = body.get("size_gib")
     if isinstance(size_gib, bool) or not isinstance(size_gib, int) or not (1 <= size_gib <= 65536):
         raise HTTPException(status_code=400, detail="Dung lượng phải là số nguyên từ 1 đến 65536 GiB")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_create_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "size_mib": size_gib * 1024},
+    )
+    if replay:
+        return replay
     try:
         inventory = (
             ceph_client.query_rbd_inventory(pool)
@@ -636,6 +679,7 @@ async def propose_volume_create(
     action_pk = _propose_rbd_volume_mutation(
         cluster=cluster, pool=pool, image=image, extra_params={"size_mib": size_gib * 1024},
         action_id="rbd_create_volume", ceph_code=RBD_VOLUME_CREATE_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
         rationale=f"Tạo Volume {pool}/{image} dung lượng {size_gib} GiB trên cluster {cluster.name}",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
@@ -655,6 +699,12 @@ async def propose_volume_resize(
     size_gib = body.get("size_gib")
     if isinstance(size_gib, bool) or not isinstance(size_gib, int) or not (1 <= size_gib <= 65536):
         raise HTTPException(status_code=400, detail="Dung lượng phải là số nguyên từ 1 đến 65536 GiB")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_resize_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "size_mib": size_gib * 1024},
+    )
+    if replay:
+        return replay
     try:
         detail = (
             ceph_client.query_rbd_image_detail(pool, image)
@@ -677,6 +727,7 @@ async def propose_volume_resize(
     action_pk = _propose_rbd_volume_mutation(
         cluster=cluster, pool=pool, image=image, extra_params={"size_mib": size_gib * 1024},
         action_id="rbd_resize_volume", ceph_code=RBD_VOLUME_RESIZE_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
         rationale=f"Mở rộng Volume {pool}/{image} từ {_format_bytes(current_bytes)} lên {size_gib} GiB",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
@@ -696,6 +747,12 @@ async def propose_volume_rename(
         raise HTTPException(status_code=400, detail="Tên Volume nguồn hoặc đích không hợp lệ")
     if new_image == image:
         raise HTTPException(status_code=409, detail="Tên mới phải khác tên hiện tại")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_rename_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "new_image": new_image},
+    )
+    if replay:
+        return replay
     try:
         detail = (
             ceph_client.query_rbd_image_detail(pool, image)
@@ -717,6 +774,7 @@ async def propose_volume_rename(
         cluster=cluster, pool=pool, image=image, extra_params={"new_image": new_image},
         conflicting_images={image, new_image}, action_id="rbd_rename_volume",
         ceph_code=RBD_VOLUME_RENAME_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
         rationale=f"Đổi tên Volume {pool}/{image} thành {pool}/{new_image}; thao tác yêu cầu downtime",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
@@ -732,6 +790,12 @@ async def propose_volume_trash_move(
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     if not _RBD_IMAGE_NAME_RE.fullmatch(image):
         raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_trash_move_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image},
+    )
+    if replay:
+        return replay
     try:
         detail = (
             ceph_client.query_rbd_image_detail(pool, image)
@@ -765,6 +829,7 @@ async def propose_volume_trash_move(
     action_pk = _propose_rbd_volume_mutation(
         cluster=cluster, pool=pool, image=image, action_id="rbd_trash_move_volume",
         ceph_code=RBD_VOLUME_TRASH_MOVE_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
         rationale=f"Chuyển mềm Volume {pool}/{image} vào RBD Trash để có thể khôi phục",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
@@ -782,6 +847,12 @@ async def propose_volume_trash_restore(
     image = str(body.get("image") or "").strip()
     if not _RBD_IMAGE_NAME_RE.fullmatch(image):
         raise HTTPException(status_code=400, detail="Tên Volume khôi phục không hợp lệ")
+    idempotency_key, replay = _idempotency_replay(
+        request, action_id="rbd_trash_restore_volume", user=user, cluster_id=cluster.id,
+        intent={"pool_name": pool, "image": image, "trash_id": trash_id},
+    )
+    if replay:
+        return replay
     try:
         trash = (
             ceph_client.query_rbd_trash(pool)
@@ -803,6 +874,7 @@ async def propose_volume_trash_restore(
         cluster=cluster, pool=pool, image=image,
         extra_params={"trash_id": trash_id}, action_id="rbd_trash_restore_volume",
         ceph_code=RBD_VOLUME_TRASH_RESTORE_CEPH_CODE, user=user,
+        idempotency_key=idempotency_key,
         rationale=f"Khôi phục Trash {pool}/{trash_id} thành Volume {pool}/{image}",
     )
     return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)

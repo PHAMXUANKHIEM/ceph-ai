@@ -1602,6 +1602,56 @@ def test_propose_create_volume_rejects_duplicate_in_flight_action(dashboard_clie
         assert len(actions) == 1
 
 
+def test_create_volume_idempotency_key_replays_same_action_before_preflight(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+    headers = {"Idempotency-Key": "create-vm-new-001"}
+
+    first = dashboard_client.post(
+        "/api/volumes/vms/inventory/create",
+        json={"image": "vm-new", "size_gib": 10}, headers=headers,
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory",
+        lambda pool: (_ for _ in ()).throw(AssertionError("replay must skip Ceph preflight")),
+    )
+    replay = dashboard_client.post(
+        "/api/volumes/vms/inventory/create",
+        json={"image": "vm-new", "size_gib": 10}, headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 200
+    assert replay.json() == {
+        "action_id": first.json()["action_id"], "status": "PENDING_APPROVAL", "replayed": True,
+    }
+
+
+def test_idempotency_key_rejects_different_intent_and_invalid_key(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+    headers = {"Idempotency-Key": "create-vm-new-002"}
+    first = dashboard_client.post(
+        "/api/volumes/vms/inventory/create",
+        json={"image": "vm-new", "size_gib": 10}, headers=headers,
+    )
+
+    conflict = dashboard_client.post(
+        "/api/volumes/vms/inventory/create",
+        json={"image": "vm-new", "size_gib": 11}, headers=headers,
+    )
+    invalid = dashboard_client.post(
+        "/api/volumes/vms/inventory/create",
+        json={"image": "other", "size_gib": 1}, headers={"Idempotency-Key": "short"},
+    )
+
+    assert first.status_code == 201
+    assert conflict.status_code == 409
+    assert invalid.status_code == 400
+
+
 def test_propose_resize_volume_is_expand_only_and_creates_risky_action(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _stub_volume_mutation_preflight(monkeypatch, current_size=10 * 1024 ** 3)

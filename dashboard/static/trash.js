@@ -30,7 +30,12 @@
         if (cluster) url.searchParams.set("cluster", cluster);
         const response = await fetch(url, {
           method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": (window.crypto && window.crypto.randomUUID)
+              ? window.crypto.randomUUID()
+              : `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`
+          },
           body: JSON.stringify({ image: form.elements.image.value.trim() })
         });
         const body = await response.json().catch(() => ({}));
