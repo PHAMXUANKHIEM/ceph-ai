@@ -57,6 +57,20 @@ def test_parse_get_object_line_is_download():
     assert r["action"] == "Tải xuống"
     assert r["remote_addr"] == "10.20.1.5"
     assert r["status"] == 200
+    assert r["requester"] == "operator"
+    assert r["bytes_sent"] == 1024
+    assert r["latency_ms"] == 10.0
+
+
+def test_parse_optional_user_agent_from_combined_log_tail():
+    line = GET_OBJECT_LINE.replace("- - - latency", '"-" "aws-cli/2.15" - latency')
+    record = ral.parse_beast_access_log(line)[0]
+    assert record["user_agent"] == "aws-cli/2.15"
+
+
+def test_bucket_creation_time_accepts_iso_without_microseconds():
+    summary = ral.summarize_bucket_stats({"creation_time": "2026-08-17T01:02:03Z"})
+    assert summary["creation_time"].year == 2026
 
 
 def test_parse_put_object_line_is_upload():

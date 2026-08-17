@@ -140,7 +140,7 @@
       ["/", "Dashboard"],
       ["/nodes", "Cluster Metrics"],
       ["/volumes", "Volumes"],
-      ["/bucket-access-log", "Bucket Access Log"],
+      ["/bucket-access-log", "Bucket Logging"],
       ["/openstack/auth-pool", "Auth-Pool"],
       ["/deploy-cluster", "Deploy Cluster"],
       ["/delete-cluster", "Delete Cluster"],

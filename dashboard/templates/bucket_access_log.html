@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bucket Access Log — Ceph AIOps</title>
+  <title>Bucket Logging — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -24,7 +24,7 @@
             <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
             <a href="/backups" class="nav-dropdown-item">Backup</a>
             <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
-            <a href="/bucket-access-log" class="nav-dropdown-item nav-dropdown-item-active">Bucket Access Log</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item nav-dropdown-item-active">Bucket Logging</a>
           </div>
         </div>
         <div class="nav-dropdown">
@@ -54,45 +54,13 @@
       </select>
     </form>
     {% endif %}
-    <section class="card">
-      <div class="card-header"><h2>Bucket Access Log — {{ selected_cluster.name }}</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          Tương đương tính năng "S3 Bucket Logging" cho các phiên bản Ceph chưa có sẵn — đọc trực
-          tiếp dòng access log mà RGW (frontend Beast) đã tự ghi cho mỗi request (IP nguồn, thời
-          gian, hành động, mã trạng thái HTTP), không cần access/secret key S3 nào. Chỉ hỗ trợ
-          request path-style (<code>/bucket/key</code>) — request virtual-hosted-style (bucket nằm
-          trong Host header) sẽ không xác định được tên bucket.
-        </p>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="card-header"><h2>Cấu hình RGW</h2></div>
-      <div class="card-body">
-        <p class="hint">
-          2 trường bên dưới dùng chung với mục "Kết nối cụm Ceph" ở trang
-          <a href="/settings">Settings</a> — lưu ở đây cũng cập nhật ở đó, và ngược lại.
-        </p>
-        {% if config_error %}<p class="error">{{ config_error }}</p>{% endif %}
-        {% if config_success %}<p class="success">{{ config_success }}</p>{% endif %}
-        <form method="post" action="/bucket-access-log/settings?cluster={{ selected_cluster.id }}" class="audit-filters">
-          <label>RGW nodes (IP, phân tách dấu phẩy)
-            <input type="text" name="ceph_rgw_nodes" value="{{ ceph_rgw_nodes }}" placeholder="10.0.0.8,10.0.0.9">
-          </label>
-          {% if ceph_exec_mode in ("docker", "podman") %}
-          <label>RGW container name
-            <input type="text" name="ceph_rgw_container_name" value="{{ ceph_rgw_container_name }}" placeholder="ceph-rgw-B">
-          </label>
-          {% endif %}
-          <button type="submit" class="btn btn-primary btn-sm">Lưu cấu hình</button>
-        </form>
-        <p class="hint">
-          Kiểu deploy (exec mode) hiện tại: <code>{{ ceph_exec_mode }}</code> — đổi ở trang
-          <a href="/settings">Settings</a> nếu cần (không sửa được ở đây).
-        </p>
-      </div>
-    </section>
+    <section class="card"><div class="card-header"><h2>Bucket Logging</h2></div><div class="card-body">
+      <p><strong>Ghi vết tự động:</strong> Lưu lại lịch sử truy cập GET, PUT và DELETE vào bucket.</p>
+      <p><strong>Kiểm toán bảo mật:</strong> Xác định ai đã truy cập, vào lúc nào và đã thực hiện thao tác gì.</p>
+      <h3>📊 Dữ liệu thu thập</h3><ul><li><strong>Định danh:</strong> IP nguồn, Requester và User-Agent.</li><li><strong>Thao tác:</strong> Action, timestamp chính xác và tài nguyên bị tác động.</li><li><strong>Kết quả:</strong> HTTP status, kích thước phản hồi và độ trễ hệ thống.</li></ul>
+      <h3>⚙️ Cơ chế vận hành</h3><ul><li><strong>Tách biệt lưu trữ:</strong> Với S3 server access logging, log nên được đẩy sang bucket đích khác để tránh vòng lặp.</li><li><strong>Prefix:</strong> Có thể dùng tiền tố như <code>logs/</code> để phân loại.</li><li><strong>Độ trễ:</strong> Cơ chế server access logging gom và chuyển log bất đồng bộ nên dữ liệu có thể xuất hiện sau vài giờ.</li></ul>
+      <p class="hint">Trang hiện tại đọc access log RGW gần nhất. Cấu hình node/container RGW được quản lý tập trung tại <a href="/settings">Settings</a>.</p>
+    </div></section>
 
     <section class="card">
       <div class="card-header"><h2>Xem log</h2></div>
@@ -129,18 +97,18 @@
               <tr>
                 <th>Thời gian</th>
                 <th>IP nguồn</th>
-                <th>Hành động</th>
+                <th>Requester</th><th>User-Agent</th><th>Hành động</th>
                 <th>Method</th>
                 <th>Bucket</th>
                 <th>Object</th>
-                <th>Status</th>
+                <th>Status</th><th>Kích thước</th><th>Latency</th>
               </tr>
             </thead>
             <tbody id="bal-table-body"></tbody>
           </table>
         </div>
         {% else %}
-        <p class="hint">Chưa cấu hình node RGW nào — điền ở mục "Cấu hình RGW" phía trên.</p>
+        <p class="hint">Chưa cấu hình node RGW nào — cấu hình tại <a href="/settings">Settings</a>.</p>
         {% endif %}
       </div>
     </section>

@@ -109,11 +109,15 @@
       var tr = document.createElement("tr");
       tr.appendChild(cell(formatVnDateTime(r.timestamp)));
       tr.appendChild(cell(r.remote_addr));
+      tr.appendChild(cell(r.requester || "—"));
+      tr.appendChild(cell(r.user_agent || "—"));
       tr.appendChild(cell(r.action));
       tr.appendChild(cell(r.method));
       tr.appendChild(cell(r.bucket || "—"));
       tr.appendChild(cell(r.object || "—"));
       tr.appendChild(statusCell(r.status));
+      tr.appendChild(cell(formatBytes(r.bytes_sent)));
+      tr.appendChild(cell(r.latency_ms === null || r.latency_ms === undefined ? "—" : r.latency_ms.toFixed(3) + " ms"));
       tableBody.appendChild(tr);
     });
     tableWrap.hidden = false;

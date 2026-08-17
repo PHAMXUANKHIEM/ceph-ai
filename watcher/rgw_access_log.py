@@ -45,7 +45,7 @@ _BEAST_LOG_RE = re.compile(
     r"(?P<remote_addr>\S+)\s+-\s+(?P<user>\S+)\s+"
     r"\[(?P<timestamp>[^\]]+)\]\s+"
     r'"(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+HTTP/[\d.]+"\s+'
-    r"(?P<status>\d+)\s+(?P<bytes_sent>\S+)"
+    r"(?P<status>\d+)\s+(?P<bytes_sent>\S+)(?P<tail>.*)$"
 )
 
 # strptime format for the beast access log's own timestamp field, e.g.
@@ -99,10 +99,15 @@ def _parse_timestamp(value: str) -> datetime | None:
 def _parse_creation_time(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
-    try:
-        return datetime.strptime(value, _CREATION_TIME_FORMAT)
-    except ValueError:
-        return None
+    for parser in (
+        lambda raw: datetime.strptime(raw, _CREATION_TIME_FORMAT),
+        lambda raw: datetime.fromisoformat(raw.replace("Z", "+00:00")),
+    ):
+        try:
+            return parser(value)
+        except ValueError:
+            continue
+    return None
 
 
 def parse_beast_access_log(raw_text: str) -> list[dict]:
@@ -119,9 +124,16 @@ def parse_beast_access_log(raw_text: str) -> list[dict]:
         method = match.group("method")
         path = match.group("path")
         bucket, obj = _parse_bucket_and_object(path)
+        tail = match.group("tail") or ""
+        latency_match = re.search(r"\blatency=([0-9.]+)s\b", tail)
+        quoted = re.findall(r'"([^"]*)"', tail)
+        user_agent = quoted[1] if len(quoted) > 1 else (quoted[0] if len(quoted) == 1 else None)
+        bytes_sent = match.group("bytes_sent")
         records.append(
             {
                 "remote_addr": match.group("remote_addr"),
+                "requester": match.group("user"),
+                "user_agent": user_agent if user_agent and user_agent != "-" else None,
                 "timestamp": _parse_timestamp(match.group("timestamp")),
                 "timestamp_raw": match.group("timestamp"),
                 "method": method,
@@ -130,7 +142,8 @@ def parse_beast_access_log(raw_text: str) -> list[dict]:
                 "object": obj,
                 "action": _action_label(method, obj is not None),
                 "status": int(match.group("status")),
-                "bytes_sent": match.group("bytes_sent"),
+                "bytes_sent": int(bytes_sent) if bytes_sent.isdigit() else None,
+                "latency_ms": float(latency_match.group(1)) * 1000 if latency_match else None,
             }
         )
     records.sort(key=lambda r: r["timestamp"] or datetime.min.replace(tzinfo=None), reverse=True)

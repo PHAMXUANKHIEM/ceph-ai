@@ -225,6 +225,8 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
         "records": [
             {
                 "remote_addr": r["remote_addr"],
+                "requester": r.get("requester"),
+                "user_agent": r.get("user_agent"),
                 "timestamp": to_utc_iso(r["timestamp"]) if r["timestamp"] else None,
                 "timestamp_raw": r["timestamp_raw"],
                 "method": r["method"],
@@ -234,6 +236,7 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
                 "action": r["action"],
                 "status": r["status"],
                 "bytes_sent": r["bytes_sent"],
+                "latency_ms": r.get("latency_ms"),
             }
             for r in records
         ],

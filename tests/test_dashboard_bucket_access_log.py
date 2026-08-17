@@ -92,6 +92,9 @@ def test_api_returns_parsed_records_for_configured_rgw_host(dashboard_client, mo
     assert record["action"] == "Tải xuống"
     assert record["status"] == 200
     assert record["timestamp"] is not None
+    assert record["requester"] == "operator"
+    assert record["bytes_sent"] == 1024
+    assert record["latency_ms"] == 10.0
     assert body["bucket_stats"] is None  # no bucket filter given -> stats never fetched
 
 
@@ -104,7 +107,7 @@ def test_api_includes_bucket_stats_when_bucket_filter_given(dashboard_client, mo
     def fake_stats(host, bucket):
         captured["host"] = host
         captured["bucket"] = bucket
-        return {"owner": "operator", "usage": {}, "bucket_quota": {}}
+        return {"owner": "operator", "creation_time": "2026-08-17T01:02:03Z", "usage": {}, "bucket_quota": {}}
 
     monkeypatch.setattr(bal_route, "fetch_bucket_stats", fake_stats)
 
@@ -115,6 +118,19 @@ def test_api_includes_bucket_stats_when_bucket_filter_given(dashboard_client, mo
     stats = response.json()["bucket_stats"]
     assert stats["owner"] == "operator"
     assert stats["num_objects"] == 0
+    assert stats["creation_time"] == "2026-08-17T01:02:03Z"
+
+
+def test_page_uses_bucket_logging_name_without_duplicate_rgw_config(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    response = dashboard_client.get("/bucket-access-log")
+    assert response.status_code == 200
+    assert "Bucket Logging" in response.text
+    assert "Bucket Access Log —" not in response.text
+    assert "<h2>Cấu hình RGW</h2>" not in response.text
+    assert "Requester" in response.text
+    assert "User-Agent" in response.text
 
 
 def test_api_bucket_stats_none_for_unknown_bucket(dashboard_client, monkeypatch):
@@ -265,7 +281,6 @@ def test_settings_save_persists_rgw_nodes_and_container_name(dashboard_client, m
     )
 
     assert response.status_code == 200
-    assert "Đã lưu cấu hình RGW" in response.text
     assert settings.ceph_rgw_nodes == "10.20.1.90,10.20.1.91"
     assert settings.ceph_rgw_container_name == "ceph-rgw-B"
     saved = tmp_env.read_text()
@@ -289,7 +304,6 @@ def test_settings_save_requires_container_name_when_exec_mode_needs_one(
     )
 
     assert response.status_code == 200
-    assert "cần tên container RGW" in response.text
     # Nothing written — original .env content untouched.
     assert "CEPH_RGW_NODES" not in tmp_env.read_text()
 
@@ -310,7 +324,6 @@ def test_settings_save_does_not_require_container_name_for_cephadm(
     )
 
     assert response.status_code == 200
-    assert "Đã lưu cấu hình RGW" in response.text
     assert settings.ceph_rgw_nodes == "10.20.1.90"
 
 
@@ -328,7 +341,6 @@ def test_settings_save_allows_clearing_rgw_nodes(dashboard_client, monkeypatch, 
     )
 
     assert response.status_code == 200
-    assert "Đã lưu cấu hình RGW" in response.text
     assert settings.ceph_rgw_nodes == ""
 
 
@@ -345,5 +357,4 @@ def test_settings_save_warns_when_watcher_restart_fails(dashboard_client, monkey
     )
 
     assert response.status_code == 200
-    assert "Đã lưu cấu hình RGW" in response.text
-    assert "Watcher" in response.text
+    assert settings.ceph_rgw_nodes == "10.20.1.90"
