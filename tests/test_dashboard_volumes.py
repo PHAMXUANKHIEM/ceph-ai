@@ -1477,6 +1477,7 @@ def test_volume_inventory_api_uses_selected_secondary_cluster(dashboard_client, 
 
 def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route, "discover_cinder_volume", lambda cluster, image: {"status": "not_cinder", "verified": False})
     monkeypatch.setattr(
         volumes_route.ceph_client, "query_rbd_image_detail",
         lambda pool, image: {
@@ -1501,6 +1502,37 @@ def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(d
     assert response.json()["snapshots"] == [{"name": "daily"}]
     assert response.json()["children"] == ["vms/clone"]
     assert response.json()["attachment_summary"]["mutation_supported"] is False
+
+
+def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {
+            "pool": pool, "name": image, "watchers": [], "locks": [],
+            "attachment_summary": {"attached": False, "watcher_count": 0,
+                                   "lock_count": 0, "management_source": "unknown",
+                                   "mutation_supported": False},
+        },
+    )
+    monkeypatch.setattr(
+        volumes_route, "discover_cinder_volume",
+        lambda cluster, image: {
+            "status": "managed", "verified": True, "volume_id": volume_id,
+            "attachments": [{"attachment_id": "attach-1", "instance_id": "vm-1"}],
+        },
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/api/volumes/vms/inventory/volume-{volume_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cinder"]["volume_id"] == volume_id
+    assert payload["attachment_summary"]["management_source"] == "openstack_cinder"
+    assert payload["attachment_summary"]["consumer_count"] == 1
+    assert payload["attachment_summary"]["mutation_supported"] is False
 
 
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):

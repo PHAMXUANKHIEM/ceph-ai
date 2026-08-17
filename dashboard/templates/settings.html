@@ -674,6 +674,11 @@
               <input type="text" name="ceph_config_path" value="{{ openstack_ceph_config_path }}" required placeholder="/etc/ceph" autocomplete="off">
               <small>Sau khi tạo Auth User, keyring của user, admin keyring và ceph.conf sẽ được chuyển tới thư mục này trên tất cả Controller/Compute.</small>
             </label>
+            <label class="settings-field">
+              <span class="settings-field-heading"><strong>OpenStack openrc trên Controller</strong><em class="is-optional">Cinder discovery</em></span>
+              <input type="text" name="openrc_path" value="{{ openstack_openrc_path }}" placeholder="/root/admin-openrc" autocomplete="off">
+              <small>Dashboard chỉ source file này trên Controller để chạy truy vấn Cinder read-only; nội dung credential không được tải về.</small>
+            </label>
           </div>
           <div class="settings-form-actions">
             <p><strong>Lưu ý:</strong> Việc chuyển file chỉ chạy sau khi Create Auth User thành công.</p>

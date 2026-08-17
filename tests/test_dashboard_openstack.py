@@ -129,6 +129,7 @@ def test_settings_saves_openstack_nodes(dashboard_client):
         "controller_nodes": "10.0.0.10, 10.0.0.11",
         "compute_nodes": "10.0.0.20, 10.0.0.21",
         "ceph_config_path": "/etc/ceph/openstack",
+        "openrc_path": "/root/admin-openrc",
     })
     assert response.status_code == 200
     assert "Đã lưu cấu hình OpenStack" in response.text
@@ -137,6 +138,7 @@ def test_settings_saves_openstack_nodes(dashboard_client):
         assert cluster.openstack_controller_nodes == "10.0.0.10,10.0.0.11"
         assert cluster.openstack_compute_nodes == "10.0.0.20,10.0.0.21"
         assert cluster.openstack_ceph_config_path == "/etc/ceph/openstack"
+        assert cluster.openstack_openrc_path == "/root/admin-openrc"
 
 
 def test_settings_tests_openstack_nodes_without_saving(dashboard_client, monkeypatch):

@@ -16,12 +16,12 @@ thử và điểm cần làm tiếp.
   volume trước khi thay đổi.
 - Mọi thao tác ghi đều có validation, preview, phân loại rủi ro, audit và trạng
   thái thực thi có thể kiểm chứng.
-- Tích hợp được với OpenStack Cinder, Kubernetes CSI và các quy trình backup/DR
+- Tích hợp được với OpenStack Cinder và các quy trình backup/DR
   mà không làm lộ credential.
 
 ## Ngoài phạm vi ban đầu
 
-- Không thay thế trực tiếp control plane của OpenStack Cinder hoặc Kubernetes.
+- Không thay thế trực tiếp control plane của OpenStack Cinder.
 - Không cung cấp terminal/shell tự do từ Dashboard.
 - Không tự động xóa volume, snapshot hoặc backup chỉ dựa trên đề xuất của AI.
 - Không triển khai CephFS, RGW/S3 hoặc quản trị thiết bị OSD trong roadmap này.
@@ -64,7 +64,7 @@ thử và điểm cần làm tiếp.
     attachment trên trang Volume.
   - [ ] Chưa có create/resize/attach/detach/rename/move/soft-delete/restore từ
     trash cho volume đang hoạt động.
-  - [ ] Chưa có ánh xạ RBD image với Cinder volume hoặc Kubernetes PV/PVC.
+  - [~] Đã bắt đầu ánh xạ RBD image chuẩn `volume-<UUID>` với Cinder volume.
 - [~] **0.2 Backup/restore volume hiện có**
   - [x] Có backup RBD thủ công và theo lịch; lần đầu full `rbd export`, các lần
     sau incremental `rbd export-diff` từ snapshot, có full-refresh cadence.
@@ -123,11 +123,11 @@ một “tính năng hoàn thành” nếu executor hoặc guard chưa có.
 |---:|---|---|---|---|
 | 1 | **BS-01 Inventory read-only `[~]`** | `rbd ls/info/du/status`, volume detail, size/used, feature, watcher/lock, snapshot và parent/child; search/filter/pagination theo cluster/pool. | Không | Test default/secondary/inactive cluster, timeout/partial error và không cross-cluster. |
 | 2 | **BS-02 Volume CRUD nền tảng `[~]`** | Create, expand-only resize, rename, move-to-trash và restore-from-trash; quota/capacity/dependency preflight, idempotency và reconciliation. | BS-01 | Mọi write qua Worker; retry không tạo trùng; delete bị chặn khi busy/dependent. |
-| 3 | **BS-03 Attachment `[~]`** | Inventory watcher/lock và mapping consumer; attach/detach qua control plane được hỗ trợ, exclusive/shared guard và force-detach approval. | BS-01, Cinder/CSI discovery | Không mutate trực tiếp volume do Cinder/CSI quản lý; có post-check consumer. |
+| 3 | **BS-03 Attachment `[~]`** | Inventory watcher/lock và mapping consumer; attach/detach qua Cinder, exclusive/shared guard và force-detach approval. | BS-01, Cinder discovery | Không mutate trực tiếp volume do Cinder quản lý; có post-check consumer. |
 | 4 | **BS-04 Snapshot/Clone** | Snapshot thủ công + lịch/retention, restore-as-new mặc định, rollback in-place có guard, clone, dependency graph và flatten. | BS-01, BS-02 | Không xóa protected/parent snapshot; scheduler dedup; rollback yêu cầu detached. |
 | 5 | **BS-05 Restore an toàn** | Chọn full/diff recovery point, restore sang volume mới, preflight capacity/compatibility, verify size/read và promote có approval. | BS-02, backup hiện có | Không ghi đè production mặc định; evidence ghi rõ chain và post-check. |
 | 6 | **BS-06 QoS/Capacity** | Throughput, queue depth, latency percentile, used/provisioned/freshness; QoS template/diff/rollback; dự báo 80/90/95%. | BS-01 và metric schema mới | Counter reset/stale metric được xử lý; QoS unsupported fail-closed. |
-| 7 | **BS-07 OpenStack/CSI mapping** | Cinder volume/instance/project và CSI StorageClass/PV/PVC/Pod mapping, orphan report và source-of-truth routing. | BS-01, credential/capability | Tenant isolation; không có mutation bypass control plane. |
+| 7 | **BS-07 OpenStack Cinder mapping** | Cinder volume/instance/project mapping, orphan report và source-of-truth routing. | BS-01, credential/capability | Tenant isolation; không có mutation bypass Cinder. |
 | 8 | **BS-08 DR/RBD Mirror** | Peer/bootstrap, relationship inventory, lag/RPO, planned failover/failback, fencing và DR drill liên site. | BS-05, runbook/failure-domain policy | Test split-brain/fencing; không auto-failover từ một tín hiệu. |
 | 9 | **BS-09 AI/Automation** | Stale/waste insight, performance diagnosis và recommendation cho resize/QoS/flatten/retention bằng evidence; action id đóng. | BS-01–BS-08 ổn định | Prompt injection/redaction/post-check test; AI không có shell hoặc đường bypass policy. |
 
@@ -139,7 +139,7 @@ một “tính năng hoàn thành” nếu executor hoặc guard chưa có.
   purge hiện tại bằng async RISKY job qua Worker.
 - **Sprint 3 — BS-04 + BS-05:** snapshot/clone và restore-as-new; giữ restore ghi
   đè hiện tại sau feature flag cho tới khi luồng mới được nghiệm thu.
-- **Sprint 4 — BS-03 + BS-07:** tích hợp attachment cùng Cinder/CSI để tránh xây
+- **Sprint 4 — BS-03 + BS-07:** tích hợp attachment cùng Cinder để tránh xây
   một đường map/unmap trực tiếp sai source of truth.
 - **Sprint 5 — BS-06:** mở rộng metric/QoS/capacity sau khi inventory và identity
   volume đã ổn định.
@@ -155,7 +155,7 @@ một “tính năng hoàn thành” nếu executor hoặc guard chưa có.
 | Viewer | Xem inventory, topology, metric, health và lịch sử job. |
 | Operator | Tạo/attach/detach/resize/snapshot/clone theo policy được cấp. |
 | Storage Admin | Quản lý pool, QoS, replication, backup/restore và thao tác phá hủy. |
-| System Admin | Cấu hình backend, credential, tích hợp Cinder/CSI và DR liên cluster. |
+| System Admin | Cấu hình backend, credential, tích hợp Cinder và DR liên cluster. |
 
 Giai đoạn đầu có thể ánh xạ các vai trò này vào `is_admin` hiện tại, nhưng
 route/service phải dùng capability riêng để có thể tách RBAC mà không đổi API.
@@ -248,7 +248,7 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
     multipath và trạng thái consumer trước thao tác.
   - Đã có inventory watcher + exclusive lock và attachment summary trong Volume
     Detail. Management source hiện để `unknown` và mutation fail-closed; chưa có
-    attach/detach cho tới khi hoàn tất discovery Cinder/CSI source of truth.
+    attach/detach cho tới khi hoàn tất discovery Cinder source of truth.
 - [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
   - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
@@ -366,22 +366,19 @@ capacity và không áp QoS hoặc benchmark sai target.
 **Hoàn thành khi:** hệ thống chặn thao tác làm giảm độ bền dưới policy và không
 force-unlock/delete pool chỉ từ một tín hiệu quan sát.
 
-### 7. Tích hợp OpenStack, Kubernetes và giao thức — ưu tiên P1/P2
+### 7. Tích hợp OpenStack Cinder và giao thức — ưu tiên P1/P2
 
 - [ ] **7.1 OpenStack Cinder mapping**
   - Hiển thị project/volume/attachment/instance, đối soát orphan hai chiều và
     giữ OpenStack là source of truth cho tài nguyên do Cinder quản lý.
-- [ ] **7.2 Kubernetes CSI mapping**
-  - Ánh xạ StorageClass/PV/PVC/Pod tới RBD image; không mutate trực tiếp image do
-    CSI quản lý nếu chưa đi qua control plane Kubernetes.
-- [ ] **7.3 Boot-from-volume và image service**
+- [ ] **7.2 Boot-from-volume và image service**
   - Hiển thị dependency Glance/Cinder/VM, bảo vệ volume boot và snapshot đang dùng.
-- [ ] **7.4 Multipath/NVMe-oF/iSCSI** nếu sản phẩm hỗ trợ gateway
+- [ ] **7.3 Multipath/NVMe-oF/iSCSI** nếu sản phẩm hỗ trợ gateway
   - Inventory gateway/path/session, health và controlled reconnect/failover.
-- [ ] **7.5 API/CLI/IaC contract**
+- [ ] **7.4 API/CLI/IaC contract**
   - API versioning, OpenAPI, idempotency, webhook/job status và ví dụ Terraform
     hoặc SDK; không tạo một đường thực thi bỏ qua policy của Dashboard.
-- [ ] **7.6 Test**: orphan mapping, deleted consumer, multi-attach, control-plane
+- [ ] **7.5 Test**: orphan mapping, deleted consumer, multi-attach, control-plane
   outage, tenant isolation và eventual consistency.
 
 **Hoàn thành khi:** thao tác đối với volume được quản lý bởi control plane ngoài
@@ -433,7 +430,7 @@ qua cùng RBAC/policy/executor như thao tác thủ công.
 | M2 — Core MVP | Mục 2 và 3 | Create/resize/attach/detach, snapshot/restore/clone an toàn. |
 | M3 — Data protection | Mục 4 | Backup có integrity check, restore drill và DR visibility. |
 | M4 — Operations | Mục 5 và 6 | Metric, QoS, capacity, health và pool governance. |
-| M5 — Ecosystem | Mục 7 | Cinder/CSI mapping và API contract ổn định. |
+| M5 — Ecosystem | Mục 7 | Cinder mapping và API contract ổn định. |
 | M6 — Intelligence | Mục 8 | AI diagnosis/recommendation và action đóng có post-check. |
 
 Mục 9 là release gate xuyên suốt, không phải việc dồn lại ở cuối. Nên hoàn
@@ -480,7 +477,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-02 Idempotency | Hoàn thành code | Create/resize/rename/trash/restore nhận `Idempotency-Key` 8–128 ký tự; key scope theo user, cluster và exact intent. Retry trả Action/status cũ trước Ceph preflight; tái dùng key cho intent khác trả 409. UI tự sinh UUID cho mutation. | `7 passed`; `py_compile`, hai `node --check` và `git diff --check` đạt. | Tiếp theo scanner cho Action EXECUTING bị kẹt sau timeout/restart. |
 | 2026-08-17 | BS-02 Stuck Action Scanner | Hoàn thành code | Mỗi Worker poll tìm RBD Action APPROVED có Incident EXECUTING và `updated_at` quá 10 phút; chạy lệnh `rbd info`/`trash ls` read-only để kết luận. State khớp đóng EXECUTED, lệch đóng FAILED, lỗi kết nối giữ nguyên để retry; không replay mutation. | `9 passed`; `py_compile` và `git diff --check` đạt. | Tiếp theo TTL recycle policy; live Ceph vẫn cần nghiệm thu. |
 | 2026-08-17 | BS-02 Trash TTL | Hoàn thành code | Thêm `RBD_TRASH_RETENTION_DAYS` mặc định 7 ngày; tính hạn từ `deletion_time`, hiển thị số ngày còn lại. Item thiếu timestamp hoặc chưa hết TTL không có nút hard-delete; API đơn lẻ và purge-all cùng enforce lại server-side. | Nhóm Trash `27 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | BS-02 code nền tảng đã đủ; tiếp theo live Ceph acceptance hoặc BS-03 Attachment. |
-| 2026-08-17 | BS-03 Attachment Inventory | Đang làm | Volume Detail đọc thêm `rbd lock list`, chuẩn hóa watcher/lock và attachment summary; UI hiển thị attachment guard. Khi chưa xác định Cinder/CSI source of truth, management source là `unknown` và mutation bị khóa fail-closed. | Parser detail `2 passed`; nhóm Volume Inventory `6 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | Tiếp theo discovery/mapping consumer Cinder/CSI; chỉ mở attach/detach qua control plane đã xác minh. |
+| 2026-08-17 | BS-03 Attachment Inventory | Đang làm | Volume Detail đọc thêm `rbd lock list`, chuẩn hóa watcher/lock và attachment summary; UI hiển thị attachment guard. Khi chưa xác định Cinder source of truth, management source là `unknown` và mutation bị khóa fail-closed. | Parser detail `2 passed`; nhóm Volume Inventory `6 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | Tiếp theo discovery/mapping consumer Cinder; chỉ mở attach/detach qua control plane đã xác minh. |
+| 2026-08-17 | BS-03 Cinder Discovery | Đang làm | Thêm cấu hình `openstack_openrc_path` theo cluster; nhận diện RBD `volume-<UUID>`, truy vấn `openstack volume show` read-only trên Controller và hiển thị project/type/status/backend cùng attachment instance/host/device. Credential ở lại Controller; lỗi/thiếu cấu hình fail-closed và không bật mutation. Phạm vi Kubernetes/CSI đã loại khỏi roadmap. | Discovery `2 passed`; Settings `1 passed`; Volume Detail `2 passed`; một Alembic head; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo đối soát watcher/lock với Cinder attachment và phát hiện orphan/mismatch trước khi xây attach/detach qua Cinder. |
 
 ## Ghi chú bàn giao
 
@@ -490,7 +488,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
   chỉ còn một head trước khi bàn giao.
 - Tách rõ lỗi hạ tầng/test ngoài phạm vi; không dùng chúng để che việc chưa có
   bằng chứng nghiệm thu.
-- Mọi feature phụ thuộc phiên bản Ceph/OpenStack/CSI phải có capability detection
+- Mọi feature phụ thuộc phiên bản Ceph/OpenStack phải có capability detection
   và trạng thái `unsupported` rõ ràng.
 - Ưu tiên API/service/executor và policy đúng trước; UI không được gọi lệnh cluster
   trực tiếp hoặc tạo một đường tắt bỏ qua Worker/audit.

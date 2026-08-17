@@ -80,6 +80,7 @@ class Cluster(Base):
     openstack_controller_nodes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     openstack_compute_nodes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     openstack_ceph_config_path: Mapped[str] = mapped_column(Text, nullable=False, default="/etc/ceph")
+    openstack_openrc_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # watcher/collector.py's log-collection needs these two: MON hostnames
     # (parses a mon NAME out of `ceph health detail` text, then maps it back
     # to an IP via this list — same positional pairing with ceph_mon_nodes

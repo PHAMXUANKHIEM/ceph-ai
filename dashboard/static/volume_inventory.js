@@ -178,6 +178,25 @@
       " · Control plane: " + (attachment.management_source || "unknown") +
       " · Attach/detach trực tiếp: " + (attachment.mutation_supported ? "cho phép" : "đã khóa");
     detail.appendChild(attachmentGuard);
+    var cinder = data.cinder || {};
+    if (cinder.status === "managed") {
+      var cinderSummary = document.createElement("p");
+      cinderSummary.className = "hint";
+      cinderSummary.textContent = "Cinder: " + cinder.volume_id +
+        " · Status: " + (cinder.volume_status || "—") +
+        " · Project: " + (cinder.project_id || "—") +
+        " · Type: " + (cinder.volume_type || "—") +
+        " · Multiattach: " + (cinder.multiattach ? "có" : "không");
+      detail.appendChild(cinderSummary);
+      addListSection(detail, "Cinder Attachment", cinder.attachments || [], function (item) {
+        return [item.attachment_id, item.instance_id, item.host, item.device].filter(Boolean).join(" · ") || JSON.stringify(item);
+      });
+    } else if (cinder.status === "error" || cinder.status === "not_configured") {
+      var cinderWarning = document.createElement("p");
+      cinderWarning.className = "error";
+      cinderWarning.textContent = "Cinder discovery: " + (cinder.error || cinder.status);
+      detail.appendChild(cinderWarning);
+    }
     addListSection(detail, "Watcher", data.watchers || [], function (item) {
       return [item.address, item.client, item.cookie].filter(Boolean).join(" · ") || JSON.stringify(item);
     });

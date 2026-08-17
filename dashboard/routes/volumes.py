@@ -12,6 +12,7 @@ from sqlalchemy import or_
 
 from config.settings import settings
 from dashboard import volume_perf_analysis
+from dashboard.cinder_discovery import discover_cinder_volume
 from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
@@ -924,6 +925,15 @@ async def volume_inventory_detail_api(
     except CephQueryError as exc:
         logger.warning("volume_inventory_detail_api: cluster=%s volume=%s/%s: %s", cluster.id, pool, image, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được chi tiết Volume: {exc}")
+    cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
+    detail["cinder"] = cinder
+    if cinder.get("verified"):
+        summary = detail.setdefault("attachment_summary", {})
+        summary["management_source"] = "openstack_cinder"
+        summary["cinder_verified"] = True
+        summary["consumer_count"] = len(cinder.get("attachments") or [])
+        summary["mutation_supported"] = False
+        summary["blocked_reason"] = "Attach/detach qua Cinder chưa được bật."
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **detail}
 
 

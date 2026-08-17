@@ -897,6 +897,7 @@ def _settings_context(
         context["openstack_ceph_config_path"] = (
             openstack_cluster.openstack_ceph_config_path if openstack_cluster else "/etc/ceph"
         )
+        context["openstack_openrc_path"] = openstack_cluster.openstack_openrc_path if openstack_cluster else ""
     context.update(database_values if database_values is not None else _database_form_values())
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
     context.update(
@@ -1003,12 +1004,14 @@ async def openstack_settings_submit(
     controller_nodes: str = Form(""),
     compute_nodes: str = Form(""),
     ceph_config_path: str = Form("/etc/ceph"),
+    openrc_path: str = Form(""),
     cluster_id: str = Form(""),
 ):
     _require_admin_privilege(user)
     controllers = ",".join(_parse_node_list(controller_nodes))
     computes = ",".join(_parse_node_list(compute_nodes))
     destination = ceph_config_path.strip().rstrip("/") or "/etc/ceph"
+    openrc = openrc_path.strip()
     if not controllers:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
             user, openstack_error="Vui lòng cấu hình ít nhất một OpenStack Controller node."
@@ -1016,6 +1019,10 @@ async def openstack_settings_submit(
     if not destination.startswith("/") or "\x00" in destination:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
             user, openstack_error="Đường dẫn nhận file Ceph phải là đường dẫn tuyệt đối."
+        ))
+    if openrc and (not openrc.startswith("/") or "\x00" in openrc):
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, openstack_error="Đường dẫn openrc phải là đường dẫn tuyệt đối trên Controller."
         ))
     with db.SessionLocal() as session:
         cluster = session.get(Cluster, cluster_id) if cluster_id else session.query(Cluster).filter_by(is_default=True).one_or_none()
@@ -1026,6 +1033,7 @@ async def openstack_settings_submit(
         cluster.openstack_controller_nodes = controllers
         cluster.openstack_compute_nodes = computes
         cluster.openstack_ceph_config_path = destination
+        cluster.openstack_openrc_path = openrc
         session.commit()
     return templates.TemplateResponse(request, "settings.html", _settings_context(
         user, openstack_success="Đã lưu cấu hình OpenStack và đường dẫn nhận file Ceph.",
