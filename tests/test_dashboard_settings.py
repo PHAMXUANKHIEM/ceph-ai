@@ -952,6 +952,18 @@ def test_find_watcher_pids_uses_correct_pgrep_pattern_with_double_dash(monkeypat
     assert captured_args == [["pgrep", "-f", "--", settings_route.WATCHER_PGREP_PATTERN]]
 
 
+@pytest.mark.parametrize(
+    "pattern",
+    [settings_route.WORKER_PGREP_PATTERN, settings_route.WATCHER_PGREP_PATTERN],
+)
+def test_process_pgrep_patterns_are_valid_posix_ere(pattern):
+    result = settings_route.subprocess.run(
+        ["pgrep", "-f", "--", pattern], capture_output=True, text=True, timeout=5
+    )
+
+    assert result.returncode in (0, 1), result.stderr
+
+
 def test_find_worker_pids_accepts_relative_python_path_but_scopes_by_cwd(monkeypatch):
     class FakeResult:
         returncode = 0

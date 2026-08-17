@@ -145,7 +145,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # /var/log/ceph-aiops-*.log paths as before.
 LOG_TAG = PROJECT_ROOT.name
 WORKER_MODULE = "worker.main"
-WORKER_PGREP_PATTERN = r"(?:^|\s)-m\s+worker\.main(?:\s|$)"
+# pgrep uses POSIX ERE, not Python's regex dialect: non-capturing groups
+# `(?:...)` and `\s` are invalid on CentOS procps-ng and make restart fail
+# with exit 2. Use portable character classes and ordinary groups.
+WORKER_PGREP_PATTERN = r"(^|[[:space:]])-m[[:space:]]+worker\.main([[:space:]]|$)"
 WORKER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-worker.log")
 WORKER_STOP_TIMEOUT_SECONDS = 5.0
 WORKER_START_CHECK_DELAY_SECONDS = 1.5
@@ -154,7 +157,7 @@ PGREP_TIMEOUT_SECONDS = 5.0
 # Story 5.1: same process-management pattern as Worker above, applied to
 # Watcher so a cluster-connection config change takes effect immediately.
 WATCHER_MODULE = "watcher.main"
-WATCHER_PGREP_PATTERN = r"(?:^|\s)-m\s+watcher\.main(?:\s|$)"
+WATCHER_PGREP_PATTERN = r"(^|[[:space:]])-m[[:space:]]+watcher\.main([[:space:]]|$)"
 WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-watcher.log")
 
 # Restarting the Dashboard itself — unlike Worker/Watcher, this is the very
