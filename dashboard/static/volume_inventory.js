@@ -23,6 +23,7 @@
   var overviewError = document.getElementById("volume-pool-overview-error");
   var healthChecks = document.getElementById("volume-pool-health-checks");
   var state = { page: 1, pages: 1, loading: false };
+  var PAGE_SIZE = 10;
 
   function bytes(value) {
     var n = Number(value || 0);
@@ -72,6 +73,7 @@
     }
     data.items.forEach(function (item) {
       var row = document.createElement("tr");
+      row.className = "volume-inventory-row";
       var nameCell = cell(row, item.name);
       var code = document.createElement("code");
       code.textContent = item.name;
@@ -85,7 +87,7 @@
       var button = document.createElement("button");
       button.type = "button";
       button.className = "btn btn-ghost btn-sm";
-      button.textContent = "Chi tiết";
+      button.textContent = "Xem chi tiết";
       button.addEventListener("click", function () { loadDetail(item.name); });
       action.appendChild(button);
       tbody.appendChild(row);
@@ -93,7 +95,7 @@
     state.page = data.page;
     state.pages = data.pages;
     pager.hidden = data.total <= data.page_size;
-    pageStatus.textContent = "Trang " + data.page + " / " + data.pages + " · " + data.total + " Volume";
+    pageStatus.textContent = "Trang " + data.page + " / " + data.pages + " · " + data.total + " volumes · 10 dòng/trang";
     prev.disabled = data.page <= 1;
     next.disabled = data.page >= data.pages;
     freshness.textContent = "Cập nhật live: " + new Date(data.collected_at).toLocaleString("vi-VN") +
@@ -106,7 +108,7 @@
     error.hidden = true;
     var params = new URLSearchParams({
       search: search.value.trim(), sort: sort.value, order: "asc",
-      page: String(state.page), page_size: "25"
+      page: String(state.page), page_size: String(PAGE_SIZE)
     });
     requestJson("/api/volumes/" + encodeURIComponent(pool) + "/inventory?" + params.toString())
       .then(renderRows)

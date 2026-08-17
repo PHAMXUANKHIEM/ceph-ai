@@ -118,6 +118,84 @@ code {
 .bucket-feature-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bucket-feature-panel[hidden] { display: none; }
 
+/* Volume inventory workspace */
+.volume-inventory-card { overflow: hidden; border-color: rgba(79, 140, 255, .24); }
+.volume-inventory-header {
+  align-items: flex-start;
+  padding: 22px 24px;
+  background: linear-gradient(135deg, rgba(79, 140, 255, .11), rgba(22, 25, 34, .25) 55%);
+}
+.volume-inventory-heading { min-width: 250px; }
+.volume-inventory-heading h2 { font-size: 1.15rem; }
+.volume-inventory-heading h2 span { color: var(--accent); }
+.volume-inventory-eyebrow {
+  color: var(--accent); font: 700 .65rem/1 var(--font-mono); letter-spacing: .14em;
+}
+.volume-inventory-header .metrics-panel-desc { max-width: 650px; margin: 0; }
+.volume-inventory-body { display: grid; gap: 18px; padding: 20px 24px 24px; }
+.volume-inventory-summary { margin: 0; grid-template-columns: repeat(6, minmax(105px, 1fr)); }
+.volume-inventory-summary .summary-item {
+  min-height: 76px; padding: 13px 14px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: rgba(255, 255, 255, .018);
+}
+.volume-inventory-summary .summary-item span { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; }
+.volume-inventory-summary .summary-item strong { margin-top: 6px; font-size: 1rem; }
+.volume-inventory-toolbar {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
+  padding: 15px 16px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+}
+.volume-inventory-toolbar > div { display: grid; gap: 3px; min-width: 150px; }
+.volume-inventory-toolbar > div > strong { font-size: .86rem; }
+.volume-inventory-toolbar > div > span { color: var(--text-muted); font-size: .74rem; }
+.volume-inventory-toolbar .audit-filters { margin: 0; justify-content: flex-end; }
+.volume-inventory-filters { background: transparent; }
+.volume-inventory-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-md); }
+.volume-inventory-table-wrap table { margin: 0; }
+.volume-inventory-table-wrap thead { background: rgba(79, 140, 255, .07); }
+.volume-inventory-table-wrap th { color: #aeb8cc; font-size: .68rem; letter-spacing: .07em; text-transform: uppercase; }
+.volume-inventory-row { transition: background .15s ease; }
+.volume-inventory-row:hover { background: rgba(79, 140, 255, .065); }
+.volume-inventory-row td:first-child code { color: #d9e5ff; border-color: rgba(79, 140, 255, .25); }
+.volume-inventory-pagination {
+  justify-content: space-between; margin-top: -6px; padding: 13px 0 0;
+  border-top: 1px solid var(--border);
+}
+.object-storage-audit-controls {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+  padding: 14px 16px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  background: var(--bg-surface-2);
+}
+.object-storage-audit-controls label { display: grid; gap: 5px; color: var(--text-muted); font-size: .72rem; font-weight: 600; }
+.object-storage-audit-controls input, .object-storage-audit-controls select {
+  height: 36px; min-width: 180px; padding: 0 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text);
+}
+.object-storage-audit-controls label:first-child { flex: 1 1 260px; }
+.object-storage-audit-controls label:first-child input { width: 100%; }
+.object-storage-audit-pagination {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px; border-top: 1px solid var(--border); color: var(--text-muted);
+}
+.object-storage-audit-pagination span { font: 600 .72rem/1.3 var(--font-mono); text-align: center; }
+.object-storage-audit-pagination .btn:disabled { cursor: not-allowed; opacity: .4; }
+@media (max-width: 620px) {
+  .object-storage-audit-controls { display: grid; }
+  .object-storage-audit-controls input, .object-storage-audit-controls select { width: 100%; }
+  .object-storage-audit-pagination { flex-wrap: wrap; justify-content: center; }
+  .object-storage-audit-pagination span { order: -1; width: 100%; }
+}
+@media (max-width: 1050px) {
+  .volume-inventory-summary { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+  .volume-inventory-toolbar { align-items: stretch; flex-direction: column; }
+  .volume-inventory-toolbar .audit-filters { justify-content: flex-start; }
+}
+@media (max-width: 620px) {
+  .volume-inventory-header { display: grid; gap: 12px; padding: 18px; }
+  .volume-inventory-body { padding: 16px; }
+  .volume-inventory-summary { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+}
+
 /* ===== Generic completion progress bar (e.g. cluster upgrade progress) ===== */
 .progress-bar {
   width: 100%;

@@ -515,7 +515,7 @@ async def volume_inventory_api(
     sort: str = Query("name"),
     order: str = Query("asc"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    page_size: int = Query(10, ge=1, le=10),
     user: str = Depends(require_login),
 ):
     """Live, read-only inventory from ``rbd du`` for the selected cluster."""

@@ -114,3 +114,71 @@
       .catch(function (error) { status.textContent = "Lỗi: " + error.message; execute.disabled = false; });
   });
 })();
+
+(function () {
+  var headings = Array.prototype.slice.call(document.querySelectorAll("main.page section.card h2"));
+  var heading = headings.find(function (item) { return item.textContent.trim() === "Object Storage Audit"; });
+  if (!heading) return;
+  var panel = heading.closest("section.card");
+  var table = panel.querySelector("table");
+  var tbody = table && table.querySelector("tbody");
+  if (!tbody) return;
+  var rows = Array.prototype.slice.call(tbody.querySelectorAll("tr:not(.empty-row)"));
+  var page = 1;
+  var pageSize = 10;
+  var noResults = document.createElement("tr");
+  noResults.className = "empty-row object-storage-audit-no-results";
+  noResults.innerHTML = '<td colspan="6"><div class="empty-state">Không có bản ghi audit phù hợp.</div></td>';
+  noResults.hidden = true;
+  tbody.appendChild(noResults);
+
+  var controls = document.createElement("div");
+  controls.className = "object-storage-audit-controls";
+  controls.innerHTML = '<label>Tìm kiếm<input type="search" maxlength="120" placeholder="Actor, action, target hoặc request ID"></label>' +
+    '<label>Action<select><option value="">Tất cả action</option></select></label>' +
+    '<label>Kết quả<select><option value="">Tất cả kết quả</option><option value="succeeded">Succeeded</option><option value="failed">Failed</option><option value="pending">Pending</option></select></label>';
+  panel.insertBefore(controls, table.closest(".table-wrap"));
+  var search = controls.querySelector("input");
+  var actionFilter = controls.querySelectorAll("select")[0];
+  var resultFilter = controls.querySelectorAll("select")[1];
+  Array.from(new Set(rows.map(function (row) { return row.cells[2].textContent.trim(); }))).sort().forEach(function (action) {
+    var option = document.createElement("option");
+    option.value = action;
+    option.textContent = action;
+    actionFilter.appendChild(option);
+  });
+
+  var pagination = document.createElement("div");
+  pagination.className = "object-storage-audit-pagination";
+  pagination.innerHTML = '<button type="button" class="btn btn-ghost btn-sm">← Trang trước</button>' +
+    '<span></span><button type="button" class="btn btn-ghost btn-sm">Trang sau →</button>';
+  panel.appendChild(pagination);
+  var previous = pagination.querySelectorAll("button")[0];
+  var next = pagination.querySelectorAll("button")[1];
+  var status = pagination.querySelector("span");
+
+  function render() {
+    var query = search.value.trim().toLowerCase();
+    var filtered = rows.filter(function (row) {
+      var action = row.cells[2].textContent.trim();
+      var result = row.cells[4].textContent.trim().toLowerCase();
+      return (!query || row.textContent.toLowerCase().indexOf(query) !== -1) &&
+        (!actionFilter.value || action === actionFilter.value) &&
+        (!resultFilter.value || result === resultFilter.value);
+    });
+    var pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    page = Math.min(page, pages);
+    rows.forEach(function (row) { row.hidden = true; });
+    filtered.slice((page - 1) * pageSize, page * pageSize).forEach(function (row) { row.hidden = false; });
+    noResults.hidden = filtered.length !== 0 || rows.length === 0;
+    status.textContent = "Trang " + page + " / " + pages + " · " + filtered.length + " bản ghi · 10 dòng/trang";
+    previous.disabled = page === 1;
+    next.disabled = page === pages;
+  }
+  [search, actionFilter, resultFilter].forEach(function (control) {
+    control.addEventListener(control === search ? "input" : "change", function () { page = 1; render(); });
+  });
+  previous.addEventListener("click", function () { page = Math.max(1, page - 1); render(); });
+  next.addEventListener("click", function () { page += 1; render(); });
+  render();
+})();

@@ -195,6 +195,8 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     assert response.status_code == 200
     assert 'id="volume-inventory-panel"' in response.text
     assert 'id="volumes-panel"' not in response.text
+    assert 'class="card volume-inventory-card"' in response.text
+    assert 'class="trash-pagination volume-inventory-pagination"' in response.text
 
 
 def test_volume_performance_page_is_separate_from_volume_inventory(dashboard_client, monkeypatch):
@@ -1447,6 +1449,25 @@ def test_volume_inventory_api_searches_sorts_and_pages(dashboard_client, monkeyp
     assert [item["name"] for item in body["items"]] == ["web-02"]
     assert body["cluster_id"]
     assert body["summary"] == {"image_count": 2, "provisioned_size": 30, "used_size": 12}
+
+
+def test_volume_inventory_defaults_to_ten_rows_and_rejects_larger_pages(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [
+        {"name": f"volume-{index:02d}", "image_id": str(index), "provisioned_size": 10,
+         "used_size": 1, "snapshot_count": 0}
+        for index in range(12)
+    ])
+    _login(dashboard_client)
+
+    first_page = dashboard_client.get("/api/volumes/vms/inventory")
+    oversized = dashboard_client.get("/api/volumes/vms/inventory?page_size=11")
+
+    assert first_page.status_code == 200
+    assert first_page.json()["page_size"] == 10
+    assert len(first_page.json()["items"]) == 10
+    assert first_page.json()["pages"] == 2
+    assert oversized.status_code == 422
 
 
 def test_volume_inventory_api_uses_selected_secondary_cluster(dashboard_client, monkeypatch):

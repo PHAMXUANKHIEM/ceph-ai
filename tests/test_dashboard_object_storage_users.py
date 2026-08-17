@@ -159,6 +159,17 @@ def test_s3_user_features_are_presented_as_single_visible_tab():
     assert 'tab.setAttribute("aria-selected", String(active))' in source
 
 
+def test_object_storage_audit_filters_and_paginates_ten_rows_client_side():
+    source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
+    assert 'var pageSize = 10;' in source
+    assert 'placeholder="Actor, action, target hoặc request ID"' in source
+    assert 'Tất cả action' in source
+    assert 'Tất cả kết quả' in source
+    assert "filtered.slice((page - 1) * pageSize, page * pageSize)" in source
+    assert '10 dòng/trang' in source
+    assert "Không có bản ghi audit phù hợp." in source
+
+
 def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     _login(dashboard_client)

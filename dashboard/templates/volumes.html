@@ -90,10 +90,11 @@
     <div class="tabbed-content">
     {% if selected_view in ["volumes", "performance"] and selected_pool %}
     {% if selected_view == "volumes" %}
-    <section class="card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
-      <div class="card-header">
-        <div class="metrics-panel-title">
-          <h2>Inventory Volume — {{ selected_pool }}</h2>
+    <section class="card volume-inventory-card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
+      <div class="card-header volume-inventory-header">
+        <div class="metrics-panel-title volume-inventory-heading">
+          <span class="volume-inventory-eyebrow">RBD INVENTORY</span>
+          <h2>Inventory Volume <span>— {{ selected_pool }}</span></h2>
           <span class="hint" id="volume-inventory-freshness">Đang tải dữ liệu live…</span>
         </div>
         <p class="hint metrics-panel-desc">
@@ -101,8 +102,8 @@
           mẫu I/O. Bấm một volume để xem feature, snapshot, parent/child và watcher đang attach.
         </p>
       </div>
-      <div class="card-body">
-        <div class="node-summary-grid" id="volume-pool-overview" aria-live="polite">
+      <div class="card-body volume-inventory-body">
+        <div class="node-summary-grid volume-inventory-summary" id="volume-pool-overview" aria-live="polite">
           <div class="summary-item"><span>Kiểu Pool</span><strong data-field="type">—</strong></div>
           <div class="summary-item"><span>Độ bền</span><strong data-field="durability">—</strong></div>
           <div class="summary-item"><span>PG</span><strong data-field="pg">—</strong></div>
@@ -113,7 +114,7 @@
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
         {% if is_admin %}
-        <form class="audit-filters" id="volume-create-form">
+        <div class="volume-inventory-toolbar volume-inventory-create"><div><strong>Tạo volume mới</strong><span>Action RISKY, cần phê duyệt trước khi thực thi.</span></div><form class="audit-filters" id="volume-create-form">
           <label>Tên Volume
             <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01">
           </label>
@@ -121,11 +122,10 @@
             <input name="size_gib" required type="number" min="1" max="65536" value="10">
           </label>
           <button type="submit" class="btn btn-primary btn-sm">Đề xuất tạo Volume</button>
-        </form>
-        <p class="hint">Tạo và resize luôn tạo action RISKY chờ duyệt; Dashboard không chạy lệnh RBD trực tiếp.</p>
+        </form></div>
         <p id="volume-mutation-result" class="hint" hidden></p>
         {% endif %}
-        <form class="audit-filters" id="volume-inventory-filter">
+        <div class="volume-inventory-toolbar volume-inventory-filters"><div><strong>Danh sách volume</strong><span>Tìm kiếm và sắp xếp trong pool hiện tại.</span></div><form class="audit-filters" id="volume-inventory-filter">
           <label>Tìm Volume
             <input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tên hoặc ID Volume" autocomplete="off">
           </label>
@@ -138,15 +138,15 @@
             </select>
           </label>
           <button type="submit" class="btn btn-primary btn-sm">Áp dụng</button>
-        </form>
+        </form></div>
         <p class="error" id="volume-inventory-error" hidden></p>
-        <div class="table-wrap">
+        <div class="table-wrap volume-inventory-table-wrap">
           <table id="volume-inventory-table">
             <thead><tr><th>Volume</th><th>Image ID</th><th>Đã dùng</th><th>Logic</th><th>Snapshot</th><th></th></tr></thead>
             <tbody><tr><td colspan="6" class="hint">Đang tải inventory…</td></tr></tbody>
           </table>
         </div>
-        <div class="trash-pagination" id="volume-inventory-pagination" hidden>
+        <div class="trash-pagination volume-inventory-pagination" id="volume-inventory-pagination" hidden>
           <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-prev">← Trang trước</button>
           <span id="volume-inventory-page-status"></span>
           <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-next">Trang sau →</button>
