@@ -40,7 +40,7 @@
         <table>
           <thead><tr><th>Bucket</th><th>Owner</th><th>Objects</th><th>Dung lượng</th><th>Quota</th><th>Ngày tạo</th><th>Trạng thái</th></tr></thead>
           <tbody>
-          {% for row in inventory.items %}
+          {% for row in inventory["items"] %}
             <tr>
               <td><a href="/object-storage/buckets/{{ quote_bucket(row.name) }}?cluster={{ selected_cluster.id }}"><strong>{{ row.name }}</strong></a></td>
               {% if row.stats_available %}

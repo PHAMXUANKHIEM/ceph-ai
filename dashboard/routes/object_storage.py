@@ -63,7 +63,8 @@ def _list_from_first_reachable_rgw(cluster, hosts: list[str]) -> tuple[str, list
         try:
             if cluster.is_default:
                 return host, fetch_bucket_list(host)
-            ssh_user, ssh_key_path, exec_mode, container = resolve_ssh_creds(cluster)
+            ssh_user, ssh_key_path, exec_mode, _mon_container = resolve_ssh_creds(cluster)
+            container = cluster.ceph_rgw_container_name
             return host, fetch_bucket_list_with(host, ssh_user, ssh_key_path, exec_mode, container)
         except RgwLogError as exc:
             errors.append(str(exc))
@@ -75,7 +76,8 @@ def _bucket_summary(cluster, host: str, name: str) -> dict:
         if cluster.is_default:
             raw = fetch_bucket_stats(host, name)
         else:
-            ssh_user, ssh_key_path, exec_mode, container = resolve_ssh_creds(cluster)
+            ssh_user, ssh_key_path, exec_mode, _mon_container = resolve_ssh_creds(cluster)
+            container = cluster.ceph_rgw_container_name
             raw = fetch_bucket_stats_with(host, name, ssh_user, ssh_key_path, exec_mode, container)
         if raw is None:
             return {"name": name, "stats_available": False, "stats_error": None}
