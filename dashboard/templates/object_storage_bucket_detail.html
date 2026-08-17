@@ -57,6 +57,21 @@
       <div class="card-footer"><button id="object-browser-next" class="btn btn-ghost btn-sm" type="button" hidden>Trang sau</button></div>
     </section>
     <section class="card" id="object-detail-card" hidden><div class="card-header"><div><h2>Object Detail</h2><p id="object-detail-key" class="hint"></p></div></div><div class="card-body"><p id="object-detail-status" class="hint"></p><div id="object-detail-content"></div></div></section>
+    {% if is_admin %}<section class="card"><div class="card-header"><div><h2>Upload / Download URL</h2><p class="hint">Presigned URL tối đa 15 phút. Credential chỉ dùng trong request ký và không được lưu.</p></div></div><div class="card-body">
+      <form id="object-presign-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}" data-bucket="{{ bucket }}" data-owner="{{ detail.owner }}">
+        <label>Thao tác<select id="presign-action"><option value="download">Download</option><option value="upload">Upload</option></select></label>
+        <label>Object key<input id="presign-key" maxlength="1024" required></label>
+        <label>Version ID<input id="presign-version" maxlength="1024"></label>
+        <label>S3 endpoint<input id="presign-endpoint" type="url" maxlength="2048" required></label>
+        <label>Access key<input id="presign-access-key" type="password" autocomplete="off" required></label>
+        <label>Secret key<input id="presign-secret-key" type="password" autocomplete="off" required></label>
+        <label>Thời hạn (giây)<input id="presign-expires" type="number" min="60" max="900" value="300"></label>
+        <label>Content-Type upload<select id="presign-content-type"><option>application/octet-stream</option><option>application/json</option><option>application/pdf</option><option>text/plain</option><option>text/csv</option><option>image/jpeg</option><option>image/png</option><option>application/gzip</option><option>application/zip</option></select></label>
+        <label>Upload tối đa (byte)<input id="presign-max-bytes" type="number" min="1" max="5368709120" value="104857600"></label>
+        <button class="btn btn-primary btn-sm" type="submit">Preview</button>
+      </form>
+      <pre id="presign-preview" class="command-preview" hidden></pre><div id="presign-confirm-wrap" hidden><label>Xác nhận object key<input id="presign-confirm"></label><button id="presign-execute" class="btn btn-danger btn-sm" type="button">Tạo URL</button></div><p id="presign-status" class="hint"></p><div id="presign-result"></div>
+    </div></section>{% endif %}
     {% endif %}
     {% if detail and detail.activity %}
     <section class="card">

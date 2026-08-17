@@ -511,6 +511,8 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
         "/api/object-storage/buckets/policy-acl/execute",
         "/api/object-storage/buckets/delete/preview",
         "/api/object-storage/buckets/delete/execute",
+        "/api/object-storage/objects/presign/preview",
+        "/api/object-storage/objects/presign/execute",
     ]
 
     assert [(path, dashboard_client.post(path, json={}).status_code) for path in paths] == [
@@ -972,3 +974,80 @@ def test_object_detail_nautilus_skips_unsupported_tags_and_retention(dashboard_c
     assert response.json()["tags_supported"] is False
     assert "Octopus 15" in response.json()["tags_unavailable_reason"]
     assert response.json()["retention_supported"] is False
+
+
+def test_presigned_upload_is_size_type_limited_audited_and_secret_free(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice"))
+    calls = []
+
+    class FakeS3:
+        def generate_presigned_post(self, **kwargs):
+            calls.append(kwargs)
+            return {"url": "https://rgw.example.test/archive", "fields": {"policy": "signed-policy"}}
+
+    client_args = []
+    monkeypatch.setattr(object_storage_route.boto3, "client",
+                        lambda *args, **kwargs: client_args.append(kwargs) or FakeS3())
+    _login(dashboard_client)
+    body = {"action": "upload", "bucket": "archive", "owner": "alice", "key": "reports/a.pdf",
+            "endpoint": "https://rgw.example.test", "access_key": "ACCESS123",
+            "secret_key": "super-secret", "expires_seconds": 300,
+            "content_type": "application/pdf", "max_bytes": 1048576}
+    preview = dashboard_client.post("/api/object-storage/objects/presign/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/objects/presign/execute",
+                                     json={**body, "confirmation": "reports/a.pdf"})
+
+    assert preview.status_code == 200
+    assert "super-secret" not in json.dumps(preview.json())
+    assert "ACCESS123" not in json.dumps(preview.json())
+    assert executed.status_code == 200
+    assert executed.json()["fields"] == {"policy": "signed-policy"}
+    assert calls == [{"Bucket": "archive", "Key": "reports/a.pdf",
+                      "Fields": {"Content-Type": "application/pdf"},
+                      "Conditions": [{"Content-Type": "application/pdf"},
+                                     ["content-length-range", 1, 1048576]], "ExpiresIn": 300}]
+    assert client_args[0]["aws_secret_access_key"] == "super-secret"
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, executed.json()["request_id"])
+        assert audit.result == "succeeded"
+        assert "super-secret" not in audit.preview
+        assert "ACCESS123" not in audit.preview
+
+
+def test_presigned_download_supports_version_and_rejects_unsafe_upload_limits(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice"))
+    calls = []
+
+    class FakeS3:
+        def generate_presigned_url(self, operation, **kwargs):
+            calls.append((operation, kwargs)); return "https://signed.example/download"
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    base = {"bucket": "archive", "owner": "alice", "key": "a.txt",
+            "endpoint": "https://rgw.example.test", "access_key": "ACCESS123",
+            "secret_key": "super-secret", "expires_seconds": 60}
+    response = dashboard_client.post("/api/object-storage/objects/presign/execute", json={
+        **base, "action": "download", "version_id": "v1", "confirmation": "a.txt"})
+    bad_type = dashboard_client.post("/api/object-storage/objects/presign/preview", json={
+        **base, "action": "upload", "content_type": "text/html", "max_bytes": 10})
+    too_large = dashboard_client.post("/api/object-storage/objects/presign/preview", json={
+        **base, "action": "upload", "content_type": "text/plain", "max_bytes": 5368709121})
+
+    assert response.status_code == 200
+    assert calls == [("get_object", {"Params": {"Bucket": "archive", "Key": "a.txt", "VersionId": "v1"},
+                                      "ExpiresIn": 60})]
+    assert bad_type.status_code == 400
+    assert too_large.status_code == 400

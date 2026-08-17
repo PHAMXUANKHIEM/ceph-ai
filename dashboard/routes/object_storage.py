@@ -62,6 +62,12 @@ MAX_METADATA_SCAN = 500
 MAX_LIFECYCLE_SCAN = 1000
 MAX_PURGE_BATCHES = 10000
 MAX_OBJECT_BROWSER_SCAN = 2000
+MAX_PRESIGNED_EXPIRY_SECONDS = 900
+MAX_PRESIGNED_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
+PRESIGNED_UPLOAD_TYPES = {
+    "application/octet-stream", "application/json", "application/pdf", "text/plain",
+    "text/csv", "image/jpeg", "image/png", "application/gzip", "application/zip",
+}
 LIFECYCLE_STORAGE_CLASSES = {
     "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "REDUCED_REDUNDANCY",
 }
@@ -1060,6 +1066,67 @@ def _object_detail(cluster, bucket: str, key: str, version_id: str, owner: str,
     return _with_owner_s3(cluster, payload, read)
 
 
+def _presigned_payload(body: dict) -> dict:
+    action = str(body.get("action") or "")
+    if action not in {"upload", "download"}:
+        raise HTTPException(status_code=400, detail="Thao tác presigned URL không hợp lệ")
+    base = _create_payload({"name": body.get("bucket"), "owner": body.get("owner"),
+                            "endpoint": body.get("endpoint")})
+    key = str(body.get("key") or "")
+    access_key = str(body.get("access_key") or "").strip()
+    secret_key = str(body.get("secret_key") or "")
+    try:
+        expires = int(body.get("expires_seconds", 300))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Thời hạn URL không hợp lệ") from exc
+    if not key or len(key) > 1024 or any(ord(char) < 32 for char in key):
+        raise HTTPException(status_code=400, detail="Object key không hợp lệ")
+    if not access_key or len(access_key) > 256 or not secret_key or len(secret_key) > 2048:
+        raise HTTPException(status_code=400, detail="S3 credential không hợp lệ")
+    if not 60 <= expires <= MAX_PRESIGNED_EXPIRY_SECONDS:
+        raise HTTPException(status_code=400, detail="URL chỉ được có thời hạn 60–900 giây")
+    payload = {"action": action, "bucket": base["name"], "owner": base["owner"],
+               "endpoint": base["endpoint"], "key": key, "access_key": access_key,
+               "secret_key": secret_key, "expires_seconds": expires}
+    version_id = str(body.get("version_id") or "")
+    if version_id:
+        if action != "download" or len(version_id) > 1024 or any(ord(c) < 32 for c in version_id):
+            raise HTTPException(status_code=400, detail="Version ID không hợp lệ")
+        payload["version_id"] = version_id
+    if action == "upload":
+        content_type = str(body.get("content_type") or "")
+        try:
+            max_bytes = int(body.get("max_bytes"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Giới hạn upload không hợp lệ") from exc
+        if content_type not in PRESIGNED_UPLOAD_TYPES:
+            raise HTTPException(status_code=400, detail="Content-Type upload không nằm trong allowlist")
+        if not 1 <= max_bytes <= MAX_PRESIGNED_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="Upload phải giới hạn từ 1 byte đến 5 GiB")
+        payload.update(content_type=content_type, max_bytes=max_bytes)
+    return payload
+
+
+def _presigned_result(cluster, payload: dict) -> dict:
+    detail = _detail(cluster, payload["bucket"])
+    if detail.get("owner") != payload["owner"]:
+        raise HTTPException(status_code=409, detail="Owner không khớp bucket trên cluster đang chọn")
+    client = boto3.client("s3", endpoint_url=payload["endpoint"],
+        aws_access_key_id=payload["access_key"], aws_secret_access_key=payload["secret_key"],
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
+    if payload["action"] == "upload":
+        return client.generate_presigned_post(Bucket=payload["bucket"], Key=payload["key"],
+            Fields={"Content-Type": payload["content_type"]},
+            Conditions=[{"Content-Type": payload["content_type"]},
+                        ["content-length-range", 1, payload["max_bytes"]]],
+            ExpiresIn=payload["expires_seconds"])
+    params = {"Bucket": payload["bucket"], "Key": payload["key"]}
+    if payload.get("version_id"):
+        params["VersionId"] = payload["version_id"]
+    return {"url": client.generate_presigned_url("get_object", Params=params,
+                                                   ExpiresIn=payload["expires_seconds"])}
+
+
 @router.get("/api/object-storage/buckets")
 async def bucket_inventory_api(
     request: Request,
@@ -1470,6 +1537,63 @@ async def bucket_object_detail_api(
     result.update(cluster_id=cluster.id, cluster_name=cluster.name,
                   ceph_version=capability["ceph_version"], ceph_release=capability["ceph_release"])
     return result
+
+
+@router.post("/api/object-storage/objects/presign/preview")
+async def object_presign_preview(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được tạo presigned URL")
+    payload = _presigned_payload(await request.json())
+    cluster = selected_cluster(request)
+    capability = await asyncio.to_thread(_capabilities, cluster)
+    if not capability["object_browser"]["supported"]:
+        raise HTTPException(status_code=409, detail=capability["object_browser"]["unavailable_reason"])
+    detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+    if detail.get("owner") != payload["owner"]:
+        raise HTTPException(status_code=409, detail="Owner không khớp bucket trên cluster đang chọn")
+    return {"action": payload["action"], "bucket": payload["bucket"], "key": payload["key"],
+            "version_id": payload.get("version_id"), "expires_seconds": payload["expires_seconds"],
+            "content_type": payload.get("content_type"), "max_bytes": payload.get("max_bytes"),
+            "confirmation_required": payload["key"], "cluster_id": cluster.id,
+            "cluster_name": cluster.name, "ceph_version": capability["ceph_version"],
+            "risk": "medium", "credential_handling": "Secret chỉ dùng trong request ký URL; không lưu/audit/trả về."}
+
+
+@router.post("/api/object-storage/objects/presign/execute")
+async def object_presign_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được tạo presigned URL")
+    body = await request.json()
+    payload = _presigned_payload(body)
+    if str(body.get("confirmation") or "") != payload["key"]:
+        raise HTTPException(status_code=400, detail="Nhập chính xác object key để xác nhận")
+    cluster = selected_cluster(request)
+    capability = await asyncio.to_thread(_capabilities, cluster)
+    if not capability["object_browser"]["supported"]:
+        raise HTTPException(status_code=409, detail=capability["object_browser"]["unavailable_reason"])
+    preview = (f"presign_{payload['action']} bucket={payload['bucket']} key={payload['key']} "
+               f"version={payload.get('version_id') or 'current'} expires={payload['expires_seconds']}s "
+               f"content_type={payload.get('content_type') or '-'} max_bytes={payload.get('max_bytes') or '-'}")
+    audit_payload = {"action": f"presign_{payload['action']}", "bucket": payload["bucket"]}
+    try:
+        audit_id = await asyncio.to_thread(_start_governance_audit, cluster.id, user, audit_payload, preview)
+        result = await asyncio.to_thread(_presigned_result, cluster, payload)
+    except ObjectStorageError as exc:
+        if 'audit_id' in locals():
+            await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", _safe_error(exc))
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except HTTPException:
+        if 'audit_id' in locals():
+            await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", "Target validation failed")
+        raise
+    except Exception as exc:
+        if 'audit_id' in locals():
+            await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", "Không ký được presigned URL")
+        raise HTTPException(status_code=502, detail="Không ký được presigned URL") from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": payload["action"], "bucket": payload["bucket"],
+            "key": payload["key"], "expires_seconds": payload["expires_seconds"],
+            "request_id": audit_id, **result}
 
 
 @router.get("/object-storage/buckets", response_class=HTMLResponse)

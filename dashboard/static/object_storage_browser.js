@@ -88,4 +88,42 @@
   form.addEventListener("submit", function (event) { event.preventDefault(); load(true); });
   next.addEventListener("click", function () { load(false); });
   load(true);
+
+  const presignForm = document.getElementById("object-presign-form");
+  if (presignForm) {
+    let approved = null;
+    const presignStatus = document.getElementById("presign-status");
+    function presignPayload() {
+      const action = document.getElementById("presign-action").value;
+      const payload = {action: action, bucket: presignForm.dataset.bucket, owner: presignForm.dataset.owner,
+        key: document.getElementById("presign-key").value, version_id: document.getElementById("presign-version").value,
+        endpoint: document.getElementById("presign-endpoint").value,
+        access_key: document.getElementById("presign-access-key").value,
+        secret_key: document.getElementById("presign-secret-key").value,
+        expires_seconds: Number(document.getElementById("presign-expires").value)};
+      if (action === "upload") { payload.content_type = document.getElementById("presign-content-type").value; payload.max_bytes = Number(document.getElementById("presign-max-bytes").value); }
+      return payload;
+    }
+    async function presignCall(kind, payload) {
+      const response = await fetch("/api/object-storage/objects/presign/" + kind + "?cluster=" + encodeURIComponent(presignForm.dataset.cluster),
+        {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+      const body = await response.json(); if (!response.ok) throw new Error(body.detail || "Không tạo được URL"); return body;
+    }
+    presignForm.addEventListener("submit", async function (event) {
+      event.preventDefault(); presignStatus.textContent = "Đang preview…";
+      try { const payload = presignPayload(); approved = await presignCall("preview", payload);
+        const preview = document.getElementById("presign-preview"); preview.hidden = false;
+        preview.textContent = approved.action + " s3://" + approved.bucket + "/" + approved.key + "\nHết hạn: " + approved.expires_seconds + " giây" + (approved.max_bytes ? "\nGiới hạn: " + approved.max_bytes + " byte · " + approved.content_type : "");
+        document.getElementById("presign-confirm-wrap").hidden = false; presignStatus.textContent = approved.credential_handling;
+      } catch (error) { presignStatus.textContent = "Lỗi: " + error.message; }
+    });
+    document.getElementById("presign-execute").addEventListener("click", async function () {
+      if (!approved) return; const payload = presignPayload(); payload.confirmation = document.getElementById("presign-confirm").value;
+      try { const body = await presignCall("execute", payload); const result = document.getElementById("presign-result"); result.replaceChildren();
+        const link = document.createElement("a"); link.href = body.url; link.textContent = body.action === "download" ? "Mở URL download" : "Upload endpoint"; link.rel = "noopener noreferrer"; result.appendChild(link);
+        if (body.fields) { const pre = document.createElement("pre"); pre.className = "command-preview"; pre.textContent = JSON.stringify({url: body.url, fields: body.fields}, null, 2); result.appendChild(pre); }
+        document.getElementById("presign-secret-key").value = ""; presignStatus.textContent = "URL đã tạo; hết hạn sau " + body.expires_seconds + " giây.";
+      } catch (error) { presignStatus.textContent = "Lỗi: " + error.message; }
+    });
+  }
 })();
