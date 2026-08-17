@@ -31,6 +31,26 @@ def test_dashboard_health_api_uses_live_daemon_counts(dashboard_client, monkeypa
     assert body["placement_groups"] == "OKAY"
 
 
+def test_dashboard_health_reuses_cached_ceph_status(dashboard_client, monkeypatch):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    calls = []
+    status = {"health": {"status": "HEALTH_OK"}, "monmap": {"mons": []}, "quorum_names": [],
+              "osdmap": {"num_osds": 0, "num_up_osds": 0, "num_pools": 0}, "pgmap": {}}
+
+    def fake(*args):
+        calls.append(args[-1])
+        if args[-1] == "ceph -s":
+            return "mon1", status
+        return "mon1", {}
+
+    monkeypatch.setattr(incidents, "run_ceph_json_command_with", fake)
+    assert dashboard_client.get("/api/dashboard/health").status_code == 200
+    assert dashboard_client.get("/api/dashboard/health").status_code == 200
+    assert calls.count("ceph -s") == 1
+    assert calls.count("ceph osd perf") == 1
+    assert calls.count("ceph osd dump") == 1
+
+
 def test_dashboard_health_payload_exposes_live_metrics_and_servers():
     cluster = type("ClusterConfig", (), {
         "ceph_mon_nodes": "10.0.0.1", "ceph_mgr_nodes": "10.0.0.2",

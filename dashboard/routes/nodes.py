@@ -9,6 +9,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.cluster_nodes import resolve_ssh_creds
+from shared.object_storage_cache import get_or_load
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 from watcher.ceph_log import CephLogError, fetch_ceph_log, fetch_ceph_log_with
 from watcher.rgw_log import RgwLogError, fetch_rgw_log, fetch_rgw_log_with
@@ -67,11 +68,12 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
     if host not in allowed_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách đã cấu hình")
     try:
-        if cluster.is_default:
-            metrics = collect_node_metrics(host)
-        else:
+        def load_metrics():
+            if cluster.is_default:
+                return collect_node_metrics(host)
             ssh_user, ssh_key_path, _mode, _container = resolve_ssh_creds(cluster)
-            metrics = collect_node_metrics_with(host, ssh_user, ssh_key_path)
+            return collect_node_metrics_with(host, ssh_user, ssh_key_path)
+        metrics = get_or_load("node-metrics", f"{cluster.id}:{host}", load_metrics, ttl_seconds=300)
     except NodeMetricsError as exc:
         logger.warning("node_metrics_api: %s", exc)
         raise HTTPException(status_code=502, detail=f"Không lấy được metrics từ node: {exc}")

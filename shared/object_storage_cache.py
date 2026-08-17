@@ -1,4 +1,4 @@
-"""Small process-local cache for expensive RGW inventory reads."""
+"""Process-local stale-if-error cache for expensive cluster read operations."""
 
 from __future__ import annotations
 

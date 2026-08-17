@@ -20,6 +20,7 @@ from shared import db, heartbeat
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
+from shared.object_storage_cache import get_or_load
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,18 @@ templates = make_templates()
 # interval rather than a fixed number of seconds, so it scales with
 # whatever watcher_poll_interval_seconds is configured to.
 HEARTBEAT_STALE_MULTIPLIER = 3
+
+
+def _cached_monitor_command(cluster_id: str, mon_nodes, container_name: str, ssh_user: str,
+                            ssh_key_path: str, exec_mode: str, command: str):
+    return get_or_load(
+        "monitor",
+        f"{cluster_id}:{command}",
+        lambda: run_ceph_json_command_with(
+            mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode, command
+        ),
+        ttl_seconds=300,
+    )
 
 # Incident statuses that mean "still needs attention" — anything else
 # (RESOLVED / AUTO_FIXED / REJECTED) is considered closed for status purposes.
@@ -508,7 +521,8 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
             raise CephQueryError("Cụm chưa cấu hình MON node")
         ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
         _host, payload = await asyncio.to_thread(
-            run_ceph_json_command_with,
+            _cached_monitor_command,
+            selected_cluster.id,
             mon_nodes,
             container_name,
             ssh_user,
@@ -523,14 +537,14 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
         cluster_nodes = None
         try:
             _host, osd_perf = await asyncio.to_thread(
-                run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
+                _cached_monitor_command, selected_cluster.id, mon_nodes, container_name, ssh_user,
                 ssh_key_path, exec_mode, "ceph osd perf",
             )
         except Exception as exc:
             logger.info("dashboard_health: osd latency unavailable: %s", exc)
         try:
             _host, osd_dump = await asyncio.to_thread(
-                run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
+                _cached_monitor_command, selected_cluster.id, mon_nodes, container_name, ssh_user,
                 ssh_key_path, exec_mode, "ceph osd dump",
             )
         except Exception as exc:
@@ -539,7 +553,7 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
         for node_command in node_commands:
             try:
                 _host, cluster_nodes = await asyncio.to_thread(
-                    run_ceph_json_command_with, mon_nodes, container_name, ssh_user,
+                    _cached_monitor_command, selected_cluster.id, mon_nodes, container_name, ssh_user,
                     ssh_key_path, exec_mode, node_command,
                 )
                 break

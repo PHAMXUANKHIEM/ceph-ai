@@ -103,6 +103,17 @@ def test_metrics_api_returns_collected_metrics_for_configured_host(dashboard_cli
     assert body["cpu_percent"] == 42.0
 
 
+def test_metrics_api_reuses_cached_node_metrics(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    calls = []
+    monkeypatch.setattr(nodes_route, "collect_node_metrics", lambda host: calls.append(host) or {"cpu_percent": 12.0})
+
+    assert dashboard_client.get("/api/nodes/10.20.1.150/metrics").status_code == 200
+    assert dashboard_client.get("/api/nodes/10.20.1.150/metrics").status_code == 200
+    assert calls == ["10.20.1.150"]
+
+
 def test_metrics_api_rejects_host_not_in_configured_list_without_calling_collector(
     dashboard_client, monkeypatch
 ):

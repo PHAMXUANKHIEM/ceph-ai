@@ -15,6 +15,7 @@ from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.templating import make_templates
 from shared import audit, db
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.object_storage_cache import get_or_load, invalidate as invalidate_cluster_cache
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from worker.executor import commands as executor_commands
@@ -154,6 +155,35 @@ def _format_bytes(value) -> str:
     return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
 
 
+def _query_pool_rows(cluster) -> list[dict]:
+    commands = ("ceph osd pool ls detail", "ceph df detail", "ceph osd pool stats", "ceph osd crush rule dump")
+    connection = cluster_connection(cluster)
+
+    def fetch(command: str):
+        if cluster.is_default:
+            return ceph_client.run_ceph_json_command(command)[1]
+        return run_ceph_json_command_with(*connection, command)[1]
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        payloads = list(executor.map(fetch, commands))
+    rows = _normalize_pool_rows(*payloads)
+    for row in rows:
+        row["used"] = _format_bytes(row.pop("used_bytes"))
+    return rows
+
+
+def _query_pg_rows(cluster) -> list[dict]:
+    connection = cluster_connection(cluster)
+    if cluster.is_default:
+        pool_payload = ceph_client.run_ceph_json_command("ceph osd pool ls detail")[1]
+        pg_payload = ceph_client.run_ceph_json_command("ceph pg dump pgs")[1]
+    else:
+        pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")[1]
+        pg_payload = run_ceph_json_command_with(*connection, "ceph pg dump pgs")[1]
+    return _normalize_pg_rows(pg_payload, _pool_names_by_id(pool_payload))
+
+
 def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None = None) -> list[dict]:
     """Normalize the cluster-wide ``ceph pg dump pgs`` response."""
     if isinstance(payload, list):
@@ -199,22 +229,10 @@ def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None =
 @router.get("/pgs", response_class=HTMLResponse)
 async def pgs_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
-    connection = cluster_connection(cluster)
     rows: list[dict] = []
     query_error: str | None = None
     try:
-        query = ceph_client.run_ceph_json_command if cluster.is_default else None
-        if query is not None:
-            _host, pool_payload = await asyncio.to_thread(query, "ceph osd pool ls detail")
-            _host, pg_payload = await asyncio.to_thread(query, "ceph pg dump pgs")
-        else:
-            _host, pool_payload = await asyncio.to_thread(
-                run_ceph_json_command_with, *connection, "ceph osd pool ls detail"
-            )
-            _host, pg_payload = await asyncio.to_thread(
-                run_ceph_json_command_with, *connection, "ceph pg dump pgs"
-            )
-        rows = _normalize_pg_rows(pg_payload, _pool_names_by_id(pool_payload))
+        rows = await asyncio.to_thread(get_or_load, "pgs", f"{cluster.id}:inventory", lambda: _query_pg_rows(cluster))
     except CephQueryError as exc:
         logger.warning("pgs_page: failed to query all PGs for cluster %s: %s", cluster.id, exc)
         query_error = str(exc)
@@ -240,31 +258,17 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
 @router.get("/pools", response_class=HTMLResponse)
 async def pools_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
-    connection = cluster_connection(cluster)
     rows: list[dict] = []
     query_error: str | None = None
-    commands = (
-        "ceph osd pool ls detail",
-        "ceph df detail",
-        "ceph osd pool stats",
-        "ceph osd crush rule dump",
-    )
     try:
-        query = ceph_client.run_ceph_json_command if cluster.is_default else None
-        async def fetch(command: str):
-            if query is not None:
-                return (await asyncio.to_thread(query, command))[1]
-            return (await asyncio.to_thread(
-                run_ceph_json_command_with, *connection, command
-            ))[1]
-
-        # These commands are independent read-only snapshots. Running them
-        # sequentially made page latency equal the sum of four SSH/Ceph
-        # round trips; gather keeps it close to the slowest single query.
-        payloads = await asyncio.gather(*(fetch(command) for command in commands))
-        rows = _normalize_pool_rows(*payloads)
-        for row in rows:
-            row["used"] = _format_bytes(row.pop("used_bytes"))
+        action_pending = request.query_params.get("create_success") == "1" or bool(
+            request.query_params.get("action_success", "").strip()
+        )
+        rows = await asyncio.to_thread(
+            _query_pool_rows if action_pending else
+            lambda selected: get_or_load("pools", f"{selected.id}:inventory", lambda: _query_pool_rows(selected)),
+            cluster,
+        )
     except CephQueryError as exc:
         logger.warning("pools_page: failed to query pools for cluster %s: %s", cluster.id, exc)
         query_error = str(exc)
@@ -349,6 +353,9 @@ async def create_pool(
             actor=user,
         )
         session.commit()
+
+    invalidate_cluster_cache(cluster.id, "pools")
+    invalidate_cluster_cache(cluster.id, "pgs")
 
     return RedirectResponse(
         url=f"/pools?cluster={cluster.id}&create_success=1",
@@ -443,6 +450,9 @@ async def pool_action(
         session.flush()
         audit.record(session, incident_id=incident.id, action_id=action.id, event_type=audit.EVENT_CHAT_ACTION_REQUESTED, actor=user)
         session.commit()
+
+    invalidate_cluster_cache(cluster.id, "pools")
+    invalidate_cluster_cache(cluster.id, "pgs")
 
     return RedirectResponse(
         url=f"/pools?{urlencode({'cluster': cluster.id, 'pool': name, 'action_success': action_id})}",

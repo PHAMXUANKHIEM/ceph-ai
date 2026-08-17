@@ -56,6 +56,22 @@ def test_pools_page_renders_requested_columns(dashboard_client, monkeypatch):
     assert "2.0 KiB" in response.text
 
 
+def test_pools_page_reuses_cluster_cache(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        pools_route.ceph_client,
+        "run_ceph_json_command",
+        lambda command: calls.append(command) or ("mon1", []),
+    )
+    _login(dashboard_client)
+
+    assert dashboard_client.get("/pools").status_code == 200
+    assert dashboard_client.get("/pools").status_code == 200
+    assert sorted(calls) == sorted([
+        "ceph osd pool ls detail", "ceph df detail", "ceph osd pool stats", "ceph osd crush rule dump",
+    ])
+
+
 def test_volume_performance_does_not_render_create_pool(dashboard_client, monkeypatch):
     monkeypatch.setattr("dashboard.routes.volumes._rbd_pools_for_request", lambda request: ["volumes"])
     _login(dashboard_client)
