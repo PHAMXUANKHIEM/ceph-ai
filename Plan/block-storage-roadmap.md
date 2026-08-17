@@ -253,9 +253,9 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
 - [~] **2.5 Delete và recycle policy**
   - Mặc định soft-delete/trash với thời hạn khôi phục; hard-delete yêu cầu xác
     nhận nâng cao và chặn khi còn attachment/snapshot/clone/backup dependency.
-  - Đã có move-to-trash và restore-by-ID qua Worker, chặn watcher/snapshot/
-    clone child/backup đang chạy và tên restore trùng. Còn phải thay luồng
-    purge-all `--force` trực tiếp bằng job approval-gated và bổ sung TTL.
+  - Đã có move-to-trash, restore-by-ID và purge-all qua Worker; chặn watcher/
+    snapshot/clone child/backup đang chạy và tên restore trùng. Purge-all lưu
+    snapshot tối đa 500 Trash ID, bắt buộc approval; còn thiếu TTL.
 - [~] **2.6 Idempotency và reconciliation**
   - Retry không tạo volume hoặc attachment trùng; watcher đối soát job với trạng
     thái cluster sau timeout/restart.
@@ -466,7 +466,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-01 Health | Hoàn thành code | Map pool-specific và capacity-global health check từ `ceph health detail`, hiển thị health/near-full cùng summary trên Pool Overview; không leak cảnh báo riêng của pool khác. | Nhóm BS-01: `11 passed`; `py_compile` và `node --check` đạt. | Chờ xác minh live Ceph để đóng nghiệm thu vận hành; code tiếp theo là BS-02 Volume CRUD. |
 | 2026-08-17 | BS-02 Create/Resize | Đang làm | Thêm UI/API tạo volume và resize expand-only; preflight tên/dung lượng/max-available; tạo Incident + action RISKY theo cluster, dedup in-flight và thực thi qua command builder Worker có `rbd info` post-check. | `8 passed`; `py_compile`, `node --check` và `git diff --check` đạt; chưa xác minh live Ceph. | Tiếp theo làm rename và trash/restore an toàn, sau đó bổ sung reconciliation. |
 | 2026-08-17 | BS-02 Rename | Hoàn thành code | Thêm UI/API rename cùng pool; preflight tên nguồn/đích và watcher; action RISKY qua Worker với `rbd mv` + `rbd info` post-check; dedup chéo create/resize/rename theo tên nguồn/đích. | `7 passed`; `py_compile`, `node --check` và `git diff --check` đạt; chưa xác minh live Ceph. | Tiếp theo triển khai move-to-trash và restore-from-trash an toàn. |
-| 2026-08-17 | BS-02 Trash/Restore | Đang làm | Thêm UI/API move-to-trash và restore-by-ID; chặn attachment/snapshot/clone child/backup RUNNING, tên restore trùng; action RISKY qua Worker và giữ cluster scope trên request JS. | Route mutation `10 passed`; command/policy `20 passed`; `py_compile`, hai `node --check` và `git diff --check` đạt; chưa xác minh live Ceph. | Thay purge-all trực tiếp bằng approval-gated job, bổ sung TTL/reconciliation. |
+| 2026-08-17 | BS-02 Trash/Restore | Đang làm | Thêm UI/API move-to-trash và restore-by-ID; chặn attachment/snapshot/clone child/backup RUNNING, tên restore trùng; action RISKY qua Worker và giữ cluster scope trên request JS. Purge-all không còn thực thi trực tiếp: snapshot Trash ID, dedup theo pool và chờ approval. | Purge-all tập trung `11 passed`; nhóm Trash rộng `24 passed, 1 UI expectation cũ đã sửa, 1 lỗi fixture SQLite lifespan đã biết`; chưa xác minh live Ceph. | Bổ sung TTL và reconciliation sau timeout/restart. |
 
 ## Ghi chú bàn giao
 

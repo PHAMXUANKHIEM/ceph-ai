@@ -144,7 +144,7 @@ def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client,
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert response.text.count("Xoá tất cả</button>") == 2
+    assert response.text.count("Đề xuất xoá tất cả</button>") == 2
     assert 'action="/volumes/vms/trash/purge-all"' in response.text
     assert 'action="/volumes/backups/trash/purge-all"' in response.text
 
@@ -1299,75 +1299,66 @@ def test_purge_all_trash_rejects_pool_not_in_configured_list(dashboard_client, m
     assert response.status_code == 404
 
 
-def test_purge_all_trash_success_records_executed_action_and_audit_entry(
+def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
     dashboard_client, monkeypatch
 ):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
         volumes_route.ceph_client,
-        "force_purge_rbd_trash",
+        "query_rbd_trash",
         lambda pool: [
-            {"id": "id-1", "name": "disk-1", "error": None},
-            {"id": "id-2", "name": "disk-2", "error": None},
+            {"id": "id-1", "name": "disk-1"},
+            {"id": "id-2", "name": "disk-2"},
         ],
     )
-    _stub_no_trash(monkeypatch)
     _login(dashboard_client)
 
-    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+    response = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
 
-    assert response.status_code == 200
-    assert "Đã xoá 2/2 volume" in response.text
+    assert response.status_code == 303
 
     with db_module.SessionLocal() as session:
         action = (
             session.query(Action)
-            .filter_by(action_id="rbd_trash_remove", status=ActionStatus.EXECUTED.value)
+            .filter_by(action_id="rbd_trash_purge_all", status=ActionStatus.PENDING_APPROVAL.value)
             .one()
         )
         assert action.classification == "RISKY"
         params = json.loads(action.action_params)
-        assert params["bulk"] is True
-        assert params["force"] is True
         assert set(params["trash_ids"]) == {"id-1", "id-2"}
+        assert json.loads(action.target_nodes) == ["10.20.1.150"]
+        assert "--force" in action.proposed_command
 
         incident = session.get(Incident, action.incident_id)
         assert incident.ceph_code == "RBD_TRASH_PURGE_ALL"
-        assert incident.status == IncidentStatus.RESOLVED.value
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
 
 
-def test_purge_all_trash_reports_partial_failure(dashboard_client, monkeypatch):
+def test_purge_all_trash_rejects_duplicate_in_flight_proposal(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
         volumes_route.ceph_client,
-        "force_purge_rbd_trash",
-        lambda pool: [
-            {"id": "id-1", "name": "disk-1", "error": None},
-            {"id": "id-2", "name": "disk-2", "error": "still in use"},
-        ],
+        "query_rbd_trash", lambda pool: [{"id": "id-1", "name": "disk-1"}],
     )
-    _stub_no_trash(monkeypatch)
     _login(dashboard_client)
 
-    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+    first = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
+    duplicate = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
 
-    assert response.status_code == 200
-    assert "Đã xoá 1/2 volume" in response.text
-    assert "still in use" in response.text
+    assert first.status_code == 303
+    assert duplicate.status_code == 409
 
 
 def test_purge_all_trash_empty_trash_reports_nothing_to_delete(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
-    monkeypatch.setattr(volumes_route.ceph_client, "force_purge_rbd_trash", lambda pool: [])
-    _stub_no_trash(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: [])
     _login(dashboard_client)
 
     response = dashboard_client.post("/volumes/vms/trash/purge-all")
 
-    assert response.status_code == 200
-    assert "đang trống" in response.text
+    assert response.status_code == 409
     with db_module.SessionLocal() as session:
-        assert session.query(Action).filter_by(action_id="rbd_trash_remove").count() == 0
+        assert session.query(Action).filter_by(action_id="rbd_trash_purge_all").count() == 0
 
 
 def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkeypatch):
@@ -1376,16 +1367,14 @@ def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkey
     def broken(pool):
         raise CephQueryError("all MON nodes unreachable")
 
-    monkeypatch.setattr(volumes_route.ceph_client, "force_purge_rbd_trash", broken)
-    _stub_no_trash(monkeypatch)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", broken)
     _login(dashboard_client)
 
     response = dashboard_client.post("/volumes/vms/trash/purge-all")
 
-    assert response.status_code == 200
-    assert "Không lấy được danh sách trash" in response.text
+    assert response.status_code == 502
     with db_module.SessionLocal() as session:
-        assert session.query(Action).filter_by(action_id="rbd_trash_remove").count() == 0
+        assert session.query(Action).filter_by(action_id="rbd_trash_purge_all").count() == 0
 
 
 def test_volume_inventory_api_searches_sorts_and_pages(dashboard_client, monkeypatch):

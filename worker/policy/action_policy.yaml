@@ -63,6 +63,7 @@ management_action_ids:
   - rbd_rename_volume
   - rbd_trash_move_volume
   - rbd_trash_restore_volume
+  - rbd_trash_purge_all
 
 # v1 (Story 3.1): Safe/Risky classification (AD-5). Anything NOT in `safe`
 # defaults to RISKY — including action_ids present in `action_ids` above but
@@ -340,6 +341,7 @@ risky:
   - rbd_rename_volume
   - rbd_trash_move_volume
   - rbd_trash_restore_volume
+  - rbd_trash_purge_all
   # 2026-07-29: writes real (if scratch-only) I/O load to the cluster for
   # several minutes — always requires explicit approval, no exceptions,
   # same conservative default as the rest of this file.

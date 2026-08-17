@@ -278,8 +278,8 @@
                 <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>
                 {% if is_admin and selected_cluster.is_default and summary.entry_count %}
                 <form method="post" action="/volumes/{{ summary.pool }}/trash/purge-all" class="inline-form"
-                  onsubmit="return confirm('XOÁ VĨNH VIỄN tất cả {{ summary.entry_count }} volume trong Trash của pool {{ summary.pool }}? Thao tác dùng --force, không thể hoàn tác và thực thi ngay.');">
-                  <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Xoá tất cả</button>
+                  onsubmit="return confirm('Tạo đề xuất XOÁ VĨNH VIỄN tất cả {{ summary.entry_count }} volume trong Trash của pool {{ summary.pool }}? Action cần được duyệt trước khi Worker thực thi.');">
+                  <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Đề xuất xoá tất cả</button>
                 </form>
                 {% endif %}
               </td>
@@ -301,15 +301,15 @@
             <a href="/trash" class="btn btn-ghost btn-sm">Chọn pool khác</a>
             {% if is_admin and selected_cluster.is_default and trash_entries %}
             <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form"
-              onsubmit="return confirm('XOÁ VĨNH VIỄN tất cả {{ trash_entries|length }} volume trong Trash của pool {{ selected_pool }}? Thao tác dùng --force, không thể hoàn tác và thực thi ngay.');">
-              <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Xoá tất cả</button>
+              onsubmit="return confirm('Tạo đề xuất XOÁ VĨNH VIỄN tất cả {{ trash_entries|length }} volume trong Trash của pool {{ selected_pool }}? Action cần được duyệt trước khi Worker thực thi.');">
+              <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Đề xuất xoá tất cả</button>
             </form>
             {% endif %}
           </div>
         </div>
       </div>
       <div class="card-body">
-        <p class="hint metrics-panel-desc">Chỉ hiển thị Volume đã xoá mềm thuộc pool <code>{{ selected_pool }}</code>. Xoá từng volume cần duyệt; nút <strong>Xoá tất cả</strong> dành cho admin sẽ dùng <code>--force</code> và thực thi ngay.</p>
+        <p class="hint metrics-panel-desc">Chỉ hiển thị Volume đã xoá mềm thuộc pool <code>{{ selected_pool }}</code>. Xoá từng volume và purge-all đều tạo action RISKY, cần duyệt trước khi Worker thực thi.</p>
         {% if purge_error %}<p class="error">{{ purge_error }}</p>{% endif %}
         {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
         {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}

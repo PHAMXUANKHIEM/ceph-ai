@@ -730,6 +730,7 @@ def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("rbd_rename_volume") is True
     assert commands_module.has_command("rbd_trash_move_volume") is True
     assert commands_module.has_command("rbd_trash_restore_volume") is True
+    assert commands_module.has_command("rbd_trash_purge_all") is True
     assert commands_module.has_command("finalize_pacific_osd_release") is True
 
 
@@ -785,6 +786,23 @@ def test_rbd_trash_move_and_restore_commands_are_guarded_and_post_checked():
         commands_module.get_command(
             "rbd_trash_restore_volume",
             params={"pool_name": "vms", "trash_id": "--force", "image": "vm-restored"},
+        )
+
+
+def test_rbd_trash_purge_all_snapshots_validated_ids_and_post_checks():
+    command = commands_module.get_command(
+        "rbd_trash_purge_all", params={"pool_name": "vms", "trash_ids": ["id-1", "id-2"]}
+    )
+
+    assert command == (
+        "rbd trash rm vms/id-1 --force && rbd trash rm vms/id-2 --force && "
+        "rbd trash ls vms --format json"
+    )
+    with pytest.raises(ExecutorError):
+        commands_module.get_command("rbd_trash_purge_all", params={"pool_name": "vms", "trash_ids": []})
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_trash_purge_all", params={"pool_name": "vms", "trash_ids": ["id-1", "id-1"]}
         )
 
 

@@ -124,13 +124,10 @@ templates = make_templates()
 # operator explicitly clicking "Xoá" on the Volumes page.
 RBD_TRASH_REMOVE_CEPH_CODE = "RBD_TRASH_REMOVE"
 RBD_TRASH_REMOVE_ACTION_ID = "rbd_trash_remove"
-# 2026-07-28: same synthetic incident, distinct ceph_code — the "Xoá tất cả
-# trash" button below (purge_all_rbd_trash) executes immediately with no
-# approval step, so it needs its own code to avoid a purge-all's Incident
-# ever being mistaken for a per-image proposal still awaiting approval
-# (_in_flight_trash_actions/propose_rbd_trash_remove's duplicate-check only
-# ever look at RBD_TRASH_REMOVE_ACTION_ID rows, but keeping the ceph_code
-# distinct too makes the Incident list/Audit Trail unambiguous at a glance).
+RBD_TRASH_PURGE_ALL_ACTION_ID = "rbd_trash_purge_all"
+# Distinct synthetic incident for the approval-gated bulk purge. Keeping its
+# code/action family separate from per-image removal makes dedup and audit
+# evidence unambiguous and records the exact trash-ID snapshot being approved.
 RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
 RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
 RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
@@ -1357,28 +1354,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
 
 @router.post("/volumes/{pool}/trash/purge-all", response_class=HTMLResponse)
 async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(require_login)):
-    """"Xoá tất cả trash" button — force-removes EVERY entry currently in
-    this pool's trash immediately, with NO propose/approve step. By
-    explicit operator request, a deliberate one-off exception to this
-    codebase's usual RISKY-action posture (worker/policy/action_policy.yaml
-    calls rbd_trash_remove out by name as always requiring approval, "no
-    exceptions" — this button IS that exception, scoped to exactly this one
-    bulk-purge path; the per-image "Xoá" button above still goes through
-    the normal propose/approve flow unchanged). Admin-gated as the
-    substitute safety check for skipping that second-person approval.
-
-    Mirrors the operator's own shell loop (`for id in $(rbd trash ls pool |
-    awk '{print $1}'); do rbd trash rm pool/$id --force; done`) as a single
-    click — see watcher/ceph_client.py::force_purge_rbd_trash for the
-    --force implications (bypasses the still-in-use-image protection the
-    per-image button's Command deliberately keeps).
-
-    Still recorded to the Incident/Action/Audit Trail (RBD_TRASH_PURGE_ALL_
-    CEPH_CODE, status EXECUTED — never PENDING_APPROVAL, since nothing here
-    is pending anything by the time this Incident/Action row is written),
-    same "every action is traceable to who/when/what" guarantee every other
-    feature in this app keeps, even though this one skips approval itself.
-    """
+    """Snapshot current trash IDs into one RISKY action; never purge inline."""
     _require_admin_privilege(user)
     _require_default_cluster_operation(request)
     pools = await asyncio.to_thread(_rbd_pools_for_request, request)
@@ -1387,36 +1363,38 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
 
     try:
-        results = await asyncio.to_thread(ceph_client.force_purge_rbd_trash, pool)
+        entries = await asyncio.to_thread(ceph_client.query_rbd_trash, pool)
     except CephQueryError as exc:
-        logger.warning("purge_all_rbd_trash: failed to list/purge trash for pool %r: %s", pool, exc)
-        return templates.TemplateResponse(
-            request,
-            "volumes.html",
-            _volumes_page_context(
-                request, user, pool, pools, purge_error=f"Không lấy được danh sách trash: {exc}",
-                selected_view="trash",
-            ),
+        raise HTTPException(status_code=502, detail=f"Không lấy được danh sách trash: {exc}")
+    trash_ids = [str(entry["id"]) for entry in entries]
+    if not trash_ids:
+        raise HTTPException(status_code=409, detail="Trash của pool này đang trống")
+    mon_nodes = ceph_client.get_mon_nodes()
+    if not mon_nodes:
+        raise HTTPException(status_code=400, detail="Chưa cấu hình CEPH_MON_NODES")
+    action_params = {"pool_name": pool, "trash_ids": trash_ids}
+    try:
+        preview = executor_commands.get_command(
+            RBD_TRASH_PURGE_ALL_ACTION_ID, mon_nodes[0], action_params
         )
-
-    if not results:
-        return templates.TemplateResponse(
-            request,
-            "volumes.html",
-            _volumes_page_context(request, user, pool, pools, purge_success="Trash của pool này đang trống, không có gì để xoá.", selected_view="trash"),
-        )
-
-    failures = [r for r in results if r["error"]]
-    succeeded_count = len(results) - len(failures)
-    summary = f"Đã xoá {succeeded_count}/{len(results)} volume trong trash của pool {pool}."
-    if failures:
-        summary += " Lỗi: " + "; ".join(f"{r['name']} ({r['id']}): {r['error']}" for r in failures)
-
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
     with db.SessionLocal() as session:
+        existing = session.query(Action).filter(
+            Action.action_id == RBD_TRASH_PURGE_ALL_ACTION_ID,
+            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+        ).all()
+        for row in existing:
+            try:
+                params = json.loads(row.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if params.get("pool_name") == pool:
+                raise HTTPException(status_code=409, detail="Pool này đã có đề xuất purge-all đang chờ")
         incident = Incident(
             ceph_code=RBD_TRASH_PURGE_ALL_CEPH_CODE,
-            status=IncidentStatus.RESOLVED.value,
-            log_excerpt=f"Xoá tất cả trash (force, không qua duyệt) trong pool {pool} bởi {user}. {summary}",
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"Đề xuất purge-all {len(trash_ids)} Trash item trong pool {pool} bởi {user}",
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
@@ -1424,14 +1402,13 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
 
         action = Action(
             incident_id=incident.id,
-            action_id=RBD_TRASH_REMOVE_ACTION_ID,
+            action_id=RBD_TRASH_PURGE_ALL_ACTION_ID,
             classification=ActionClassification.RISKY.value,
-            status=ActionStatus.EXECUTED.value,
-            rationale=summary,
-            target_nodes=json.dumps([]),
-            action_params=json.dumps(
-                {"pool_name": pool, "trash_ids": [r["id"] for r in results], "bulk": True, "force": True}
-            ),
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=f"Xoá vĩnh viễn {len(trash_ids)} Trash item trong pool {pool}; không thể hoàn tác",
+            target_nodes=json.dumps([mon_nodes[0]]),
+            action_params=json.dumps(action_params),
+            proposed_command=preview,
         )
         session.add(action)
         session.flush()
@@ -1440,21 +1417,9 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
             session,
             incident_id=incident.id,
             action_id=action.id,
-            event_type=audit.EVENT_RISKY_ACTION_EXECUTED,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
             actor=user,
         )
         session.commit()
 
-    return templates.TemplateResponse(
-        request,
-        "volumes.html",
-        _volumes_page_context(
-            request,
-            user,
-            pool,
-            pools,
-            purge_error=summary if failures else None,
-            purge_success=None if failures else summary,
-            selected_view="trash",
-        ),
-    )
+    return RedirectResponse(url=f"/trash?pool={pool}", status_code=303)

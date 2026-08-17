@@ -404,6 +404,23 @@ def _rbd_trash_restore_volume_command(params: dict) -> str:
     return f"rbd trash restore {trash_spec} --image {shlex.quote(image)} && rbd info {restored_spec} --format json"
 
 
+def _rbd_trash_purge_all_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    trash_ids = params.get("trash_ids")
+    if not isinstance(trash_ids, list) or not trash_ids or len(trash_ids) > 500:
+        raise ExecutorError("trash_ids must be a non-empty list with at most 500 entries")
+    validated: list[str] = []
+    for trash_id in trash_ids:
+        validated.append(_require_trash_id({"trash_id": trash_id}))
+    if len(set(validated)) != len(validated):
+        raise ExecutorError("trash_ids must not contain duplicates")
+    removals = [
+        f"rbd trash rm {shlex.quote(pool)}/{shlex.quote(trash_id)} --force"
+        for trash_id in validated
+    ]
+    return " && ".join([*removals, f"rbd trash ls {shlex.quote(pool)} --format json"])
+
+
 def _execute_node_command(params: dict) -> str:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip() or len(command) > 2000:
@@ -433,6 +450,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_rename_volume": _rbd_rename_volume_command,
     "rbd_trash_move_volume": _rbd_trash_move_volume_command,
     "rbd_trash_restore_volume": _rbd_trash_restore_volume_command,
+    "rbd_trash_purge_all": _rbd_trash_purge_all_command,
 }
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {
