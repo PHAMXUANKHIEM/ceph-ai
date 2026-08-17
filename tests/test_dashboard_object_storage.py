@@ -83,6 +83,21 @@ def test_bucket_feature_tabs_only_show_the_selected_panel():
     assert 'item.setAttribute("aria-selected", String(active))' in source
 
 
+def test_lifecycle_and_policy_use_option_builders_instead_of_raw_json():
+    template = open("dashboard/templates/object_storage_buckets.html", encoding="utf-8").read()
+    source = open("dashboard/static/object_storage_buckets.js", encoding="utf-8").read()
+    assert 'id="bucket-lifecycle-generated-json"' in template
+    assert 'id="bucket-policy-generated-json"' in template
+    assert 'id="bucket-lifecycle-rules"' not in template
+    assert 'id="bucket-policy-json"' not in template
+    assert 'option value="expiration_days"' in source
+    assert 'option value="s3:GetObject"' in template
+    assert 'rulesLabel.hidden = !ready || action.value !== "lifecycle_put"' in source
+    assert 'policyLabel.hidden = !baseReady || action.value !== "policy_put"' in source
+    assert 'JSON.stringify(buildRules(), null, 2)' in source
+    assert 'JSON.stringify(buildPolicy(), null, 2)' in source
+
+
 def test_capability_api_detects_live_reef_version_and_requires_s3_for_bucket_create(dashboard_client, monkeypatch):
     monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
         "current_version": "18.2.4", "is_mixed": False,

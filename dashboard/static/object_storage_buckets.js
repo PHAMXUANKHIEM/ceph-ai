@@ -58,6 +58,7 @@
         disableForm("bucket-lifecycle-form", lifecycle.unavailable_reason);
         document.getElementById("bucket-lifecycle-status").textContent = lifecycle.unavailable_reason;
       } else if (!lifecycle.transition_supported) {
+        document.querySelectorAll("[data-capability='lifecycle-transition']").forEach(function (option) { option.disabled = true; option.title = lifecycle.transition_unavailable_reason; });
         document.getElementById("bucket-lifecycle-status").textContent = lifecycle.transition_unavailable_reason + " Các rule expiration vẫn được phép.";
       }
       if (!data.bucket_policy_acl.supported) {
@@ -107,6 +108,11 @@
   var action = document.getElementById("bucket-policy-action");
   var policyLabel = document.getElementById("bucket-policy-json-label");
   var aclLabel = document.getElementById("bucket-policy-acl-label");
+  var bucket = document.getElementById("bucket-policy-name");
+  var owner = document.getElementById("bucket-policy-owner");
+  var gateway = document.getElementById("bucket-policy-endpoint");
+  var submit = document.getElementById("bucket-policy-submit");
+  var generated = document.getElementById("bucket-policy-generated-json");
   var preview = document.getElementById("bucket-policy-preview");
   var diff = document.getElementById("bucket-policy-diff");
   var warning = document.getElementById("bucket-policy-warning");
@@ -114,19 +120,32 @@
   var execute = document.getElementById("bucket-policy-execute");
   var status = document.getElementById("bucket-policy-status");
   var approved = null;
-  function refresh() { policyLabel.hidden = action.value !== "policy_put"; aclLabel.hidden = action.value !== "acl_set"; preview.hidden = true; approved = null; }
+  function ready() { return Boolean(action.value && bucket.value.trim() && owner.value.trim() && gateway.value.trim() && gateway.checkValidity()); }
+  function buildPolicy() {
+    var bucketArn = "arn:aws:s3:::" + bucket.value.trim();
+    var resourceChoice = document.getElementById("bucket-policy-resource").value;
+    var resources = resourceChoice === "both" ? [bucketArn, bucketArn + "/*"] : [resourceChoice === "bucket" ? bucketArn : bucketArn + "/*"];
+    var principal = document.getElementById("bucket-policy-principal").value === "public" ? "*" : {AWS: "arn:aws:iam:::user/" + owner.value.trim()};
+    return {Version: "2012-10-17", Statement: [{Sid: "DashboardManagedRule", Effect: document.getElementById("bucket-policy-effect").value, Principal: principal, Action: [document.getElementById("bucket-policy-s3-action").value], Resource: resources}]};
+  }
+  function refresh() {
+    var baseReady = ready();
+    policyLabel.hidden = !baseReady || action.value !== "policy_put";
+    aclLabel.hidden = !baseReady || action.value !== "acl_set";
+    submit.hidden = !baseReady;
+    if (baseReady && action.value === "policy_put") generated.textContent = JSON.stringify(buildPolicy(), null, 2);
+    preview.hidden = true; approved = null;
+  }
   function payload() {
-    var policy = null;
-    if (action.value === "policy_put") policy = JSON.parse(document.getElementById("bucket-policy-json").value);
-    return {action: action.value, bucket: document.getElementById("bucket-policy-name").value.trim(), owner: document.getElementById("bucket-policy-owner").value.trim(), endpoint: document.getElementById("bucket-policy-endpoint").value.trim(), acl: document.getElementById("bucket-policy-acl").value, policy: policy};
+    return {action: action.value, bucket: bucket.value.trim(), owner: owner.value.trim(), endpoint: gateway.value.trim(), acl: document.getElementById("bucket-policy-acl").value, policy: action.value === "policy_put" ? buildPolicy() : null};
   }
   function endpoint(kind) { return "/api/object-storage/buckets/policy-acl/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
-  action.addEventListener("change", refresh);
+  [action, bucket, owner, gateway, document.getElementById("bucket-policy-effect"), document.getElementById("bucket-policy-principal"), document.getElementById("bucket-policy-s3-action"), document.getElementById("bucket-policy-resource")].forEach(function (control) { control.addEventListener(control.tagName === "INPUT" ? "input" : "change", refresh); });
   form.addEventListener("submit", function (event) {
     event.preventDefault(); execute.disabled = true; preview.hidden = true; status.textContent = "Đang validate policy và đọc cấu hình hiện tại...";
     var body;
-    try { body = payload(); } catch (error) { status.textContent = "Lỗi JSON: " + error.message; return; }
+    try { body = payload(); } catch (error) { status.textContent = "Lỗi cấu hình: " + error.message; return; }
     fetch(endpoint("preview"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
       .then(parse).then(function (data) { approved = body; approved.expected = data.confirmation_required; diff.textContent = "Ceph " + data.ceph_version + " (" + data.ceph_release + ") · rủi ro " + data.risk + "\n\nTRƯỚC:\n" + JSON.stringify({policy: data.diff.before_policy, acl: data.diff.before_acl}, null, 2) + "\n\nSAU:\n" + JSON.stringify(data.diff.after, null, 2); warning.textContent = data.warning || "Không phát hiện public Principal/ACL."; confirmation.value = ""; preview.hidden = false; status.textContent = "Nhập " + data.confirmation_required + " để xác nhận."; })
       .catch(function (error) { status.textContent = "Lỗi: " + error.message; });
@@ -182,26 +201,59 @@
   var form = document.getElementById("bucket-lifecycle-form");
   if (!form) return;
   var action = document.getElementById("bucket-lifecycle-action");
-  var rules = document.getElementById("bucket-lifecycle-rules");
   var rulesLabel = document.getElementById("bucket-lifecycle-rules-label");
+  var ruleList = document.getElementById("bucket-lifecycle-rule-list");
+  var generated = document.getElementById("bucket-lifecycle-generated-json");
+  var bucket = document.getElementById("bucket-lifecycle-name");
+  var owner = document.getElementById("bucket-lifecycle-owner");
+  var gateway = document.getElementById("bucket-lifecycle-endpoint");
+  var submit = document.getElementById("bucket-lifecycle-submit");
   var preview = document.getElementById("bucket-lifecycle-preview");
   var summary = document.getElementById("bucket-lifecycle-summary");
   var confirmation = document.getElementById("bucket-lifecycle-confirmation");
   var execute = document.getElementById("bucket-lifecycle-execute");
   var status = document.getElementById("bucket-lifecycle-status");
   var approved = null;
+  function baseReady() { return Boolean(action.value && bucket.value.trim() && owner.value.trim() && gateway.value.trim() && gateway.checkValidity()); }
+  function buildRules() {
+    return Array.prototype.slice.call(ruleList.querySelectorAll(".bucket-lifecycle-rule")).map(function (row) {
+      var type = row.querySelector("[data-rule-type]").value;
+      var rule = {id: row.querySelector("[data-rule-id]").value.trim(), prefix: row.querySelector("[data-rule-prefix]").value, status: row.querySelector("[data-rule-status]").value};
+      rule[type] = Number(row.querySelector("[data-rule-days]").value);
+      if (type === "transition_days") rule.storage_class = row.querySelector("[data-rule-storage]").value;
+      return rule;
+    });
+  }
+  function refreshBuilder() {
+    var ready = baseReady();
+    rulesLabel.hidden = !ready || action.value !== "lifecycle_put";
+    rulesLabel.querySelectorAll("input, select, button").forEach(function (control) { control.disabled = rulesLabel.hidden; });
+    submit.hidden = !ready;
+    if (!rulesLabel.hidden) generated.textContent = JSON.stringify(buildRules(), null, 2);
+    preview.hidden = true; approved = null;
+  }
+  function addRule() {
+    var row = document.createElement("div");
+    row.className = "bucket-lifecycle-rule bucket-rule-grid";
+    row.innerHTML = '<label>Rule ID<input data-rule-id maxlength="255" required placeholder="expire-logs"></label><label>Prefix<input data-rule-prefix maxlength="1024" placeholder="logs/"></label><label>Trạng thái<select data-rule-status><option value="Enabled">Enabled</option><option value="Disabled">Disabled</option></select></label><label>Hành động<select data-rule-type><option value="expiration_days">Expire object</option><option value="noncurrent_expiration_days">Expire noncurrent version</option><option value="abort_multipart_days">Abort multipart upload</option><option value="transition_days" data-capability="lifecycle-transition">Chuyển storage class</option></select></label><label>Số ngày<input data-rule-days type="number" min="1" max="36500" value="30" required></label><label data-storage-label hidden>Storage class<select data-rule-storage><option value="STANDARD_IA">STANDARD_IA</option><option value="ONEZONE_IA">ONEZONE_IA</option><option value="INTELLIGENT_TIERING">INTELLIGENT_TIERING</option><option value="REDUCED_REDUNDANCY">REDUCED_REDUNDANCY</option></select></label><button type="button" class="btn btn-ghost btn-sm" data-remove-rule>Xóa rule</button>';
+    ruleList.appendChild(row);
+    row.addEventListener("input", refreshBuilder);
+    row.addEventListener("change", function (event) { row.querySelector("[data-storage-label]").hidden = row.querySelector("[data-rule-type]").value !== "transition_days"; refreshBuilder(); });
+    row.querySelector("[data-remove-rule]").addEventListener("click", function () { if (ruleList.children.length > 1) { row.remove(); refreshBuilder(); } });
+    refreshBuilder();
+  }
   function payload() {
-    var parsed = [];
-    if (action.value === "lifecycle_put") parsed = JSON.parse(rules.value);
-    return {action: action.value, bucket: document.getElementById("bucket-lifecycle-name").value.trim(), owner: document.getElementById("bucket-lifecycle-owner").value.trim(), endpoint: document.getElementById("bucket-lifecycle-endpoint").value.trim(), rules: parsed};
+    return {action: action.value, bucket: bucket.value.trim(), owner: owner.value.trim(), endpoint: gateway.value.trim(), rules: action.value === "lifecycle_put" ? buildRules() : []};
   }
   function endpoint(kind) { return "/api/object-storage/buckets/lifecycle/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
-  action.addEventListener("change", function () { rulesLabel.hidden = action.value === "lifecycle_delete"; approved = null; preview.hidden = true; });
+  [action, bucket, owner, gateway].forEach(function (control) { control.addEventListener(control.tagName === "INPUT" ? "input" : "change", refreshBuilder); });
+  document.getElementById("bucket-lifecycle-add-rule").addEventListener("click", addRule);
+  addRule();
   form.addEventListener("submit", function (event) {
     event.preventDefault(); approved = null; preview.hidden = true; execute.disabled = true; status.textContent = "Đang validate và quét mẫu object...";
     var body;
-    try { body = payload(); } catch (error) { status.textContent = "Lỗi JSON: " + error.message; return; }
+    try { body = payload(); } catch (error) { status.textContent = "Lỗi cấu hình: " + error.message; return; }
     fetch(endpoint("preview"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
       .then(parse).then(function (data) { approved = body; var scan = data.dry_run; summary.textContent = "Ceph " + data.ceph_version + " (" + data.ceph_release + ") · rủi ro " + data.risk + "\nĐã quét: " + scan.scanned_objects + (scan.truncated ? " (bị giới hạn)" : "") + "\nƯớc lượng object hiện tại bị tác động: " + scan.estimated_current_objects_affected + "\nMultipart/noncurrent: " + scan.multipart_and_noncurrent_estimate + "\nRules mới:\n" + JSON.stringify(data.rules, null, 2); confirmation.value = ""; preview.hidden = false; status.textContent = "Kiểm tra dry-run rồi nhập lại tên bucket."; })
       .catch(function (error) { status.textContent = "Lỗi: " + error.message; });
