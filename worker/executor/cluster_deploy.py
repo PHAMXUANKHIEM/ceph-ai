@@ -92,8 +92,9 @@ _METADATA_BACKUP_FRESHNESS_HOURS = 24
 # one this codebase ever installs from). Directly checked
 # download.ceph.com's real directory listings for three major versions
 # (rpm-nautilus/el8, rpm-quincy/el9, rpm-18.2.8/el9) — NONE of them ship a
-# standalone `ceph-volume*.rpm` at all; `ceph-volume` is bundled inside
-# `ceph-osd`'s own RPM there, for every version. Pinning
+# standalone `ceph-volume*.rpm`; `ceph-volume` was bundled inside
+# `ceph-osd`'s own RPM there. Newer Reef EL9 repositories, however, do
+# publish `ceph-volume` as a separate noarch RPM. Pinning
 # "ceph-volume-<version>" for an RPM install therefore 404s ALWAYS ("Error:
 # Unable to find a match: ceph-volume-14.2.22" — confirmed live on
 # el8/Nautilus), not just for some versions.
@@ -102,9 +103,9 @@ _METADATA_BACKUP_FRESHNESS_HOURS = 24
 # distinct from `ceph-osd_*.deb`, though — genuinely a packaging
 # difference between the two distros' upstream builds, not the same fact
 # misapplied. Two separate tables below, one per package manager, instead
-# of one shared list — RPM installs never request ceph-volume at all now
-# (relies on ceph-osd's RPM providing it), APT installs still request it
-# explicitly.
+# of one shared list — the initial RPM install relies on ceph-osd, then the
+# package phase installs standalone ceph-volume only when the executable is
+# still absent. APT installs it explicitly in the initial transaction.
 # "rgw" added alongside mon/mgr/osd (see this module's own RGW phases
 # below) — package NAME differs by manager the same way it already does for
 # ceph-volume above: upstream Ceph ships the RPM build as `ceph-radosgw`
@@ -1006,10 +1007,17 @@ def _phase_ceph_deploy_packages(nodes: list[dict], action_params: dict, on_host_
             # Fail in the package phase with an actionable message instead
             # of reaching the destructive OSD phase and failing with the
             # opaque `bash: ceph-volume: command not found` error. On RPM
-            # systems ceph-volume is supplied by ceph-osd; on Debian it is
-            # the separate package included in apt_packages above.
+            # systems older Ceph repos bundle ceph-volume in ceph-osd while
+            # newer Reef EL9 repos publish a standalone noarch RPM. Install
+            # that RPM only when ceph-osd did not provide the executable, so
+            # both repository layouts remain supported. On Debian it is the
+            # separate package already included in apt_packages above.
             full_command += (
                 f" && {_CEPH_VOLUME_PATH_PREFIX}"
+                " && if command -v rpm >/dev/null 2>&1"
+                "; then (command -v ceph-volume >/dev/null 2>&1"
+                " || dnf install -y ceph-volume || yum install -y ceph-volume)"
+                "; fi"
                 " && (command -v ceph-volume >/dev/null 2>&1"
                 " || { echo 'ceph-volume is missing after installing Ceph OSD packages' >&2; exit 127; })"
             )
@@ -3170,7 +3178,7 @@ def _build_base_dependency_install_command(*, install_container_runtime: bool = 
         "(command -v python3 >/dev/null 2>&1 || apt-get install -y python3) && "
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
-        "apt-get update -y && apt-get install -y chrony && "
+        "apt-get update -y && apt-get install -y chrony lvm2 && "
         "systemctl enable --now chrony && "
         "(chronyc makestep || true)"
         f"{container_apt}"
@@ -3180,7 +3188,7 @@ def _build_base_dependency_install_command(*, install_container_runtime: bool = 
         "(systemctl stop firewalld 2>/dev/null || true) && "
         "(command -v setenforce >/dev/null 2>&1 && setenforce 0 || true) && "
         "rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo && "
-        "(dnf install -y chrony epel-release || yum install -y chrony epel-release) && "
+        "(dnf install -y chrony epel-release lvm2 || yum install -y chrony epel-release lvm2) && "
         "systemctl enable --now chronyd && "
         "(chronyc makestep || true)"
         f"{container_rpm}"

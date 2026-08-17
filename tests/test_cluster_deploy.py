@@ -486,6 +486,8 @@ def test_cephadm_deploy_installs_and_starts_chrony_before_bootstrap(monkeypatch)
     assert chrony_index < bootstrap_index
     assert "systemctl enable --now chrony" in seen_commands[chrony_index]
     assert "systemctl enable --now chronyd" in seen_commands[chrony_index]
+    assert "apt-get install -y chrony lvm2" in seen_commands[chrony_index]
+    assert "dnf install -y chrony epel-release lvm2" in seen_commands[chrony_index]
 
 
 def test_ceph_deploy_dependencies_clears_stale_ceph_repo_before_installing_chrony(monkeypatch):
@@ -514,7 +516,7 @@ def test_ceph_deploy_dependencies_clears_stale_ceph_repo_before_installing_chron
 
     command = next(cmd for cmd in seen_commands if "chrony" in cmd)
     cleanup_pos = command.index("rm -f /etc/yum.repos.d/download.ceph.com_rpm-*.repo")
-    install_pos = command.index("dnf install -y chrony")
+    install_pos = command.index("dnf install -y chrony epel-release lvm2")
     assert cleanup_pos < install_pos
 
 
@@ -980,6 +982,7 @@ def test_ceph_deploy_packages_verifies_ceph_volume_with_system_sbin_path(monkeyp
     assert len(seen_commands) == 1
     assert "export PATH=/usr/local/sbin:/usr/sbin:/sbin:$PATH" in seen_commands[0]
     assert "command -v ceph-volume" in seen_commands[0]
+    assert "dnf install -y ceph-volume || yum install -y ceph-volume" in seen_commands[0]
 
 
 def test_ceph_deploy_rgw_create_skips_cleanly_when_no_rgw_nodes(monkeypatch):
