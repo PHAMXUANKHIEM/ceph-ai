@@ -1656,6 +1656,40 @@ def test_cinder_attach_rejects_in_use_exclusive_volume(dashboard_client, monkeyp
     assert "multiattach=true" in response.json()["detail"]
 
 
+def test_cinder_snapshot_create_is_approval_gated_and_forces_attached_volume(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+
+    async def fake_preflight(cluster, pool, image):
+        return {}, {
+            "status": "managed", "verified": True, "volume_id": volume_id,
+            "volume_status": "in-use", "attachments": [{"instance_id": "vm-1"}],
+        }, {"status": "healthy", "safe": True}
+
+    monkeypatch.setattr(volumes_route, "_cinder_attachment_preflight", fake_preflight)
+    monkeypatch.setattr(
+        volumes_route, "discover_cinder_snapshots",
+        lambda cluster, cinder_volume_id: {"status": "ok", "items": [], "count": 0},
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/snapshots",
+        headers={"Idempotency-Key": "snapshot-test-1"},
+        json={"snapshot_name": "daily-01"},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(action_id="cinder_create_snapshot").one()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        params = json.loads(action.action_params)
+        assert params["snapshot_name"] == "daily-01"
+        assert params["force"] is True
+        assert "snapshot create" in action.proposed_command
+        assert "--force" in action.proposed_command
+
+
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _create_user("viewer", "viewer-password", is_admin=False)

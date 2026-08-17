@@ -80,6 +80,7 @@ def test_management_action_ids_loaded_from_policy_yaml():
             "rbd_trash_purge_all",
             "cinder_attach_volume",
             "cinder_detach_volume",
+            "cinder_create_snapshot",
             "finalize_pacific_osd_release",
     }
 
@@ -119,6 +120,7 @@ def test_rbd_volume_mutations_are_classified_risky():
     assert classify_action("rbd_trash_restore_volume") == ActionClassification.RISKY
     assert classify_action("cinder_attach_volume") == ActionClassification.RISKY
     assert classify_action("cinder_detach_volume") == ActionClassification.RISKY
+    assert classify_action("cinder_create_snapshot") == ActionClassification.RISKY
     assert classify_action("rbd_trash_purge_all") == ActionClassification.RISKY
 
 

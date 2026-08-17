@@ -826,6 +826,27 @@ def test_cinder_attachment_commands_use_openstack_control_plane_and_validate_ids
         )
 
 
+def test_cinder_create_snapshot_command_uses_force_only_when_explicit():
+    params = {
+        "volume_id": "12345678-1234-4123-8123-1234567890ab",
+        "snapshot_name": "daily-01", "openrc_path": "/root/admin-openrc",
+        "force": False,
+    }
+    normal = commands_module.get_command("cinder_create_snapshot", params=params)
+    attached = commands_module.get_command(
+        "cinder_create_snapshot", params={**params, "force": True}
+    )
+
+    assert "snapshot create --volume" in normal
+    assert " --force " not in normal
+    assert " --force " in attached
+    assert "snapshot list --volume" in attached
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "cinder_create_snapshot", params={**params, "snapshot_name": "bad/name"}
+        )
+
+
 def test_get_command_finalize_pacific_osd_release():
     assert commands_module.get_command("finalize_pacific_osd_release") == (
         "ceph osd require-osd-release pacific --yes-i-really-mean-it"

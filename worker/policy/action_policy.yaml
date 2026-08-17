@@ -66,6 +66,7 @@ management_action_ids:
   - rbd_trash_purge_all
   - cinder_attach_volume
   - cinder_detach_volume
+  - cinder_create_snapshot
 
 # v1 (Story 3.1): Safe/Risky classification (AD-5). Anything NOT in `safe`
 # defaults to RISKY — including action_ids present in `action_ids` above but
@@ -347,6 +348,7 @@ risky:
   - rbd_trash_purge_all
   - cinder_attach_volume
   - cinder_detach_volume
+  - cinder_create_snapshot
   # 2026-07-29: writes real (if scratch-only) I/O load to the cluster for
   # several minutes — always requires explicit approval, no exceptions,
   # same conservative default as the rest of this file.

@@ -39,3 +39,18 @@ def test_cinder_post_check_fails_closed_on_state_mismatch(action_id, attachments
 def test_cinder_post_check_rejects_malformed_output():
     with pytest.raises(ExecutorError, match="JSON"):
         cinder_reconciliation.reconcile("cinder_attach_volume", PARAMS, "not-json")
+
+
+def test_cinder_snapshot_post_check_requires_named_non_error_snapshot():
+    params = {"snapshot_name": "daily-01"}
+    cinder_reconciliation.reconcile(
+        "cinder_create_snapshot", params,
+        json.dumps([{"Name": "daily-01", "Status": "creating"}]),
+    )
+    with pytest.raises(ExecutorError, match="không tìm thấy"):
+        cinder_reconciliation.reconcile("cinder_create_snapshot", params, "[]")
+    with pytest.raises(ExecutorError, match="trạng thái lỗi"):
+        cinder_reconciliation.reconcile(
+            "cinder_create_snapshot", params,
+            json.dumps([{"name": "daily-01", "status": "error"}]),
+        )

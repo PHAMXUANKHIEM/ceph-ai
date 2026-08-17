@@ -229,6 +229,38 @@
     });
     if (isAdmin) {
       if (cinder.status === "managed" && reconciliation.status === "healthy") {
+        if ((data.cinder_snapshots || {}).status === "ok") {
+          var snapshotForm = document.createElement("form");
+          snapshotForm.className = "audit-filters";
+          var snapshotLabel = document.createElement("label");
+          snapshotLabel.textContent = "Tên snapshot crash-consistent";
+          var snapshotInput = document.createElement("input");
+          snapshotInput.type = "text";
+          snapshotInput.required = true;
+          snapshotInput.maxLength = 128;
+          snapshotInput.pattern = "[A-Za-z0-9][A-Za-z0-9_.-]*";
+          snapshotLabel.appendChild(snapshotInput);
+          snapshotForm.appendChild(snapshotLabel);
+          var snapshotSubmit = document.createElement("button");
+          snapshotSubmit.type = "submit";
+          snapshotSubmit.className = "btn btn-primary btn-sm";
+          snapshotSubmit.textContent = "Đề xuất tạo snapshot";
+          snapshotForm.appendChild(snapshotSubmit);
+          if (cinder.volume_status === "in-use") {
+            var snapshotHint = document.createElement("span");
+            snapshotHint.className = "error";
+            snapshotHint.textContent = " Volume đang attached; Cinder sẽ tạo snapshot với --force.";
+            snapshotForm.appendChild(snapshotHint);
+          }
+          snapshotForm.addEventListener("submit", function (event) {
+            event.preventDefault();
+            proposeMutation(
+              "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/snapshots",
+              { snapshot_name: snapshotInput.value.trim() }, snapshotSubmit
+            );
+          });
+          detail.appendChild(snapshotForm);
+        }
         var canAttach = cinder.volume_status === "available" ||
           (cinder.volume_status === "in-use" && cinder.multiattach === true);
         if (canAttach) {

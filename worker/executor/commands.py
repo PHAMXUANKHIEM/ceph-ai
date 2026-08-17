@@ -454,6 +454,29 @@ def _cinder_detach_volume_command(params: dict) -> str:
     return _cinder_attachment_command(params, "detach")
 
 
+_CINDER_SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _cinder_create_snapshot_command(params: dict) -> str:
+    volume_id = params.get("volume_id")
+    snapshot_name = params.get("snapshot_name")
+    openrc_path = params.get("openrc_path")
+    if not isinstance(volume_id, str) or not _OPENSTACK_UUID_RE.fullmatch(volume_id):
+        raise ExecutorError(f"invalid or missing Cinder volume ID: {volume_id!r}")
+    if not isinstance(snapshot_name, str) or not _CINDER_SNAPSHOT_NAME_RE.fullmatch(snapshot_name):
+        raise ExecutorError(f"invalid or missing Cinder snapshot name: {snapshot_name!r}")
+    if not isinstance(openrc_path, str) or not openrc_path.startswith("/") or "\x00" in openrc_path:
+        raise ExecutorError("openrc_path must be an absolute path")
+    force = " --force" if params.get("force") is True else ""
+    inner = (
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
+        f"openstack volume snapshot create --volume {shlex.quote(volume_id)}{force} "
+        f"{shlex.quote(snapshot_name)} -f json >/dev/null && "
+        f"openstack volume snapshot list --volume {shlex.quote(volume_id)} -f json"
+    )
+    return "sh -c " + shlex.quote(inner)
+
+
 def _execute_node_command(params: dict) -> str:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip() or len(command) > 2000:
@@ -486,6 +509,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "rbd_trash_purge_all": _rbd_trash_purge_all_command,
     "cinder_attach_volume": _cinder_attach_volume_command,
     "cinder_detach_volume": _cinder_detach_volume_command,
+    "cinder_create_snapshot": _cinder_create_snapshot_command,
 }
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {

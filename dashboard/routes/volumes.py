@@ -141,6 +141,7 @@ RBD_VOLUME_TRASH_MOVE_CEPH_CODE = "RBD_VOLUME_TRASH_MOVE"
 RBD_VOLUME_TRASH_RESTORE_CEPH_CODE = "RBD_VOLUME_TRASH_RESTORE"
 CINDER_VOLUME_ATTACH_CEPH_CODE = "CINDER_VOLUME_ATTACH"
 CINDER_VOLUME_DETACH_CEPH_CODE = "CINDER_VOLUME_DETACH"
+CINDER_SNAPSHOT_CREATE_CEPH_CODE = "CINDER_SNAPSHOT_CREATE"
 
 # 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
 # incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
@@ -158,6 +159,7 @@ _OPENSTACK_UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
+_CINDER_SNAPSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
@@ -165,6 +167,7 @@ _RBD_VOLUME_MUTATION_ACTION_IDS = (
     "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
     "rbd_trash_move_volume", "rbd_trash_restore_volume",
     "cinder_attach_volume", "cinder_detach_volume",
+    "cinder_create_snapshot",
 )
 
 
@@ -697,6 +700,63 @@ def _propose_cinder_attachment_mutation(
         return action.id
 
 
+def _propose_cinder_snapshot_create(
+    *, cluster, pool: str, image: str, volume_id: str, snapshot_name: str,
+    force: bool, user: str, idempotency_key: str | None,
+) -> str:
+    controllers = [node.strip() for node in cluster.openstack_controller_nodes.split(",") if node.strip()]
+    if not controllers or not cluster.openstack_openrc_path:
+        raise HTTPException(status_code=400, detail="Cluster chưa cấu hình OpenStack Controller/openrc")
+    params = {
+        "pool_name": pool, "image": image, "volume_id": volume_id,
+        "snapshot_name": snapshot_name, "force": force,
+        "openrc_path": cluster.openstack_openrc_path, "requested_by": user,
+    }
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+    try:
+        preview = executor_commands.get_command("cinder_create_snapshot", controllers[0], params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Thông tin Cinder snapshot không hợp lệ: {exc}") from exc
+    rationale = (
+        f"Tạo Cinder snapshot crash-consistent {snapshot_name} cho volume {volume_id}"
+        + (" khi volume đang attached" if force else "")
+    )
+    with db.SessionLocal() as session:
+        for existing in session.query(Action).filter(
+            Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS),
+            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+        ).all():
+            try:
+                existing_params = json.loads(existing.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if existing_params.get("pool_name") == pool and existing_params.get("image") == image:
+                raise HTTPException(status_code=409, detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi")
+        incident = Incident(
+            cluster_id=cluster.id, ceph_code=CINDER_SNAPSHOT_CREATE_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="cinder_create_snapshot",
+            classification=gate.classify_action("cinder_create_snapshot").value,
+            status=ActionStatus.PENDING_APPROVAL.value, rationale=rationale,
+            target_nodes=json.dumps([controllers[0]]), action_params=json.dumps(params),
+            proposed_command=preview,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(
+            session, incident_id=incident.id, action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=user,
+        )
+        session.commit()
+        return action.id
+
+
 def _idempotency_replay(
     request: Request, *, action_id: str, user: str, cluster_id: str, intent: dict,
 ) -> tuple[str | None, dict | None]:
@@ -1117,6 +1177,48 @@ async def propose_cinder_volume_detach(
         cluster=cluster, pool=pool, image=image, volume_id=volume_id, server_id=server_id,
         action_id="cinder_detach_volume", ceph_code=CINDER_VOLUME_DETACH_CEPH_CODE,
         user=user, idempotency_key=key,
+    )
+    return JSONResponse({"action_id": action_id, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/snapshots")
+async def propose_cinder_snapshot_create(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    snapshot_name = str(body.get("snapshot_name") or "").strip()
+    if not _CINDER_SNAPSHOT_NAME_RE.fullmatch(snapshot_name):
+        raise HTTPException(status_code=400, detail="Tên Cinder snapshot không hợp lệ")
+    volume_id = _cinder_volume_id_from_image(image)
+    intent = {
+        "pool_name": pool, "image": image, "volume_id": volume_id,
+        "snapshot_name": snapshot_name,
+    }
+    key, replay = _idempotency_replay(
+        request, action_id="cinder_create_snapshot", user=user,
+        cluster_id=cluster.id, intent=intent,
+    )
+    if replay:
+        return replay
+    _detail, cinder, _reconciliation = await _cinder_attachment_preflight(cluster, pool, image)
+    if str(cinder.get("volume_id") or "").lower() != volume_id.lower():
+        raise HTTPException(status_code=409, detail="Cinder volume ID không khớp RBD image")
+    snapshot_inventory = await asyncio.to_thread(discover_cinder_snapshots, cluster, volume_id)
+    if snapshot_inventory.get("status") != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail="Không kiểm tra được snapshot hiện có: " + str(snapshot_inventory.get("error") or "unknown"),
+        )
+    if any(str(item.get("name") or "") == snapshot_name for item in snapshot_inventory.get("items") or []):
+        raise HTTPException(status_code=409, detail="Tên Cinder snapshot đã tồn tại")
+    force = cinder.get("volume_status") == "in-use"
+    action_id = _propose_cinder_snapshot_create(
+        cluster=cluster, pool=pool, image=image, volume_id=volume_id,
+        snapshot_name=snapshot_name, force=force, user=user, idempotency_key=key,
     )
     return JSONResponse({"action_id": action_id, "status": "PENDING_APPROVAL"}, status_code=201)
 

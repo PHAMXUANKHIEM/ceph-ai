@@ -289,7 +289,9 @@ không báo thành công trước khi đã xác minh trạng thái thực tế.
   type (`crash-consistent` trước; `application-consistent` khi có agent/hook).
   - Đã có inventory read-only qua `openstack volume snapshot list --volume`
     cho volume Cinder, hiển thị ID/tên/status/size/thời gian trong Volume Detail.
-    Lỗi snapshot degrade riêng; chưa có create/delete/protect workflow.
+    Lỗi snapshot degrade riêng. Đã có create crash-consistent qua Cinder: tên
+    duy nhất, Action RISKY/idempotent, volume attached hiển thị và dùng `--force`,
+    Worker hậu kiểm snapshot xuất hiện và không ở trạng thái lỗi. Chưa có delete.
 - [ ] **3.2 Snapshot policy** theo lịch, timezone, số bản giữ và capacity guard;
   scheduler có dedup, retry và missed-run handling.
 - [ ] **3.3 Restore/rollback**
@@ -490,6 +492,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-03 Cinder Attach/Detach | Hoàn thành code | Thêm form/API attach và detach bằng Nova server UUID; chỉ đề xuất khi Cinder/Ceph reconciliation `healthy`. Action RISKY chờ approval, idempotency scope theo exact intent, thực thi `openstack server add/remove volume` trên Controller và parse `openstack volume show` để hậu kiểm server attachment; không có `rbd map/unmap`. | Command/policy/post-check `5 passed`; Volume API/detail `4 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack trước khi đóng BS-03. |
 | 2026-08-17 | BS-03 Cinder Multi-attach Guard | Hoàn thành code | Tách form attach/detach; cho attach thêm volume `in-use` chỉ khi Cinder trả `multiattach=true`, reconciliation `healthy` và Nova server đích chưa có attachment. Volume exclusive hoặc server trùng bị chặn server-side trước khi tạo Action. | Nhóm Cinder Volume API `6 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack; force-detach chưa triển khai để tránh bypass trạng thái consumer. |
 | 2026-08-17 | BS-04 Cinder Snapshot Inventory | Đang làm | Volume Detail đọc snapshot bằng OpenStack CLI trên Controller, scope theo exact Cinder volume ID; chuẩn hóa ID/tên/status/size/created-at. Snapshot query lỗi degrade độc lập và không làm mất volume/attachment metadata. | Cinder discovery `11 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo create snapshot crash-consistent qua Cinder với approval, idempotency và post-check. |
+| 2026-08-17 | BS-04 Cinder Snapshot Create | Hoàn thành code | Form/API tạo snapshot crash-consistent chỉ khi Cinder/Ceph reconciliation `healthy`; preflight inventory chặn tên trùng. Action RISKY chờ approval, idempotency exact intent, target Controller; volume `in-use` dùng `--force` rõ trong preview. Worker list lại snapshot và fail nếu thiếu hoặc status lỗi. | Command `2 passed`; policy `4 passed`; post-check `5 passed`; Volume API/detail `3 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo delete snapshot qua Cinder với dependency/status guard và post-check. |
 
 ## Ghi chú bàn giao
 
