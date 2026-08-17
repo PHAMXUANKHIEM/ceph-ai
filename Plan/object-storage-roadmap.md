@@ -158,8 +158,16 @@ thể gọi API ghi dù cố gửi request trực tiếp.
     Preview đọc policy/ACL hiện tại và trả diff; public Principal hoặc canned
     ACL rộng yêu cầu xác nhận `PUBLIC:<bucket>`. Put/delete policy và set ACL
     đều admin-only, audit persistent, owner-matched và credential tạm.
-- [ ] **3.5 Delete bucket**: hiển thị object count/size, yêu cầu nhập lại tên
+- [x] **3.5 Delete bucket**: hiển thị object count/size, yêu cầu nhập lại tên
   bucket; xóa non-empty phải là flow riêng có xác nhận rủi ro cao.
+  - `delete_empty` chỉ được phép khi bucket stats và S3 sample đều xác nhận
+    không còn current object, version hay delete marker. `purge_delete` yêu
+    cầu `PURGE:<bucket>:<object_count>`, recheck count ngay trước audit, xóa
+    version/delete-marker và current object theo batch tối đa 1.000 rồi mới
+    gọi DeleteBucket. Không gửi bypass-governance nên RGW/Object Lock vẫn có
+    quyền từ chối; lỗi từng object hoặc vượt batch guard sẽ dừng trước khi xóa
+    bucket. Cả hai flow owner-matched, admin-only, version-gated, audited và
+    dùng credential tạm.
 - [ ] **3.6 Test**: policy validation, confirmation, action audit, unsupported
   capability và không có lệnh free-form.
 
@@ -260,6 +268,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 3.3 | Hoàn thành | Thêm lifecycle JSON editor schema đóng, preview policy trước/sau, dry-run current object giới hạn 1.000, put/delete qua S3, owner check, audit và temporary-key cleanup. Transition chỉ nhận storage class allowlist tương thích SDK. | Test Lifecycle riêng: 2 passed; Object Storage route/adaptor: 54 passed; chạy lại full regression trước commit. | Chưa commit; tiếp theo 3.4 Bucket policy/ACL. |
 | 2026-08-17 | Capability audit | Hoàn thành | Bổ sung matrix theo live major version và lý do tối thiểu: placement từ Jewel 10, lifecycle/versioning baseline xác minh ở Mimic 13, lifecycle transition/storage class từ Nautilus 14, Object Lock từ Octopus 15. UI hiển thị phiên bản thực tế, disable option không hỗ trợ; preview/execute vẫn chặn server-side để chống bypass. | Thêm regression Mimic cho API capability và server-side reject Object Lock/Transition; chạy lại full suite trước commit. | Chưa commit; duy trì fail-closed cho mixed/unknown release. |
 | 2026-08-17 | 3.4 | Hoàn thành | Thêm Bucket Policy/ACL editor, Reef action allowlist, per-action version gate, same-bucket resource validation, public detection, diff, strong confirmation, audit và temporary-key cleanup. | Route regression 27 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.5 Delete Bucket. |
+| 2026-08-17 | 3.5 | Hoàn thành | Tách delete-empty và purge-delete; impact preview, count-bound strong confirmation, version/delete-marker/current-object batch purge, retention-safe behavior, audit và credential cleanup. | Route regression 29 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.6 regression gate. |
 
 ## Ghi chú bàn giao
 

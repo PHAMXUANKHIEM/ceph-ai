@@ -472,6 +472,7 @@ def test_purge_delete_requires_count_bound_confirmation_and_deletes_versions(das
         def delete_objects(self, **kwargs):
             deletions.append(kwargs)
             state["purged"] = True
+            return {}
 
         def delete_bucket(self, **kwargs): deletions.append(kwargs)
 

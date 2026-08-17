@@ -722,7 +722,9 @@ def _execute_delete_bucket(cluster, payload: dict) -> None:
                            for item in (page.get("Versions") or []) + (page.get("DeleteMarkers") or [])]
                 if not objects:
                     break
-                client.delete_objects(Bucket=payload["bucket"], Delete={"Objects": objects, "Quiet": True})
+                result = client.delete_objects(Bucket=payload["bucket"], Delete={"Objects": objects, "Quiet": True})
+                if result.get("Errors"):
+                    raise ObjectStorageError("RGW từ chối xóa một hoặc nhiều object version; không tiếp tục xóa bucket.")
             else:
                 raise ObjectStorageError("Dừng purge vì vượt giới hạn batch an toàn; bucket chưa bị xóa.")
             for _index in range(MAX_PURGE_BATCHES):
@@ -730,7 +732,9 @@ def _execute_delete_bucket(cluster, payload: dict) -> None:
                 objects = [{"Key": item["Key"]} for item in (page.get("Contents") or [])]
                 if not objects:
                     break
-                client.delete_objects(Bucket=payload["bucket"], Delete={"Objects": objects, "Quiet": True})
+                result = client.delete_objects(Bucket=payload["bucket"], Delete={"Objects": objects, "Quiet": True})
+                if result.get("Errors"):
+                    raise ObjectStorageError("RGW từ chối xóa một hoặc nhiều object; không tiếp tục xóa bucket.")
             else:
                 raise ObjectStorageError("Dừng purge object vì vượt giới hạn batch an toàn; bucket chưa bị xóa.")
         client.delete_bucket(Bucket=payload["bucket"])
