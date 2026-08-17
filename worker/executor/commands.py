@@ -164,6 +164,8 @@ _OSD_ID_RANGE = (0, 9999)
 # `[A-Za-z0-9_-]` class alone would still accept "--force", since every one
 # of those characters is individually allowed).
 _TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_RBD_SIZE_MIB_RANGE = (1, 64 * 1024 * 1024)
 
 
 def _require_trash_id(params: dict) -> str:
@@ -178,6 +180,13 @@ def _require_pool_name(params: dict) -> str:
     if not isinstance(pool_name, str) or not _POOL_NAME_RE.match(pool_name):
         raise ExecutorError(f"invalid or missing pool_name: {pool_name!r}")
     return pool_name
+
+
+def _require_rbd_image(params: dict) -> str:
+    image = params.get("image")
+    if not isinstance(image, str) or not _RBD_IMAGE_RE.fullmatch(image):
+        raise ExecutorError(f"invalid or missing RBD image: {image!r}")
+    return image
 
 
 def _require_int(params: dict, key: str, bounds: tuple[int, int]) -> int:
@@ -348,6 +357,24 @@ def _rbd_trash_remove_command(params: dict) -> str:
     return f"rbd trash rm {shlex.quote(pool_name)}/{shlex.quote(trash_id)}"
 
 
+def _rbd_create_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    size_mib = _require_int(params, "size_mib", _RBD_SIZE_MIB_RANGE)
+    spec = shlex.quote(f"{pool}/{image}")
+    return f"rbd create --size {size_mib} {spec} && rbd info {spec} --format json"
+
+
+def _rbd_resize_volume_command(params: dict) -> str:
+    pool = _require_pool_name(params)
+    image = _require_rbd_image(params)
+    size_mib = _require_int(params, "size_mib", _RBD_SIZE_MIB_RANGE)
+    spec = shlex.quote(f"{pool}/{image}")
+    # Deliberately no --allow-shrink: even if the image changes between
+    # proposal and approval, Ceph itself refuses any accidental shrink.
+    return f"rbd resize --size {size_mib} {spec} && rbd info {spec} --format json"
+
+
 def _execute_node_command(params: dict) -> str:
     command = params.get("command")
     if not isinstance(command, str) or not command.strip() or len(command) > 2000:
@@ -372,6 +399,8 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "enable_pool_application": _enable_pool_application_command,
     "finalize_pacific_osd_release": _finalize_pacific_osd_release_command,
     "rbd_trash_remove": _rbd_trash_remove_command,
+    "rbd_create_volume": _rbd_create_volume_command,
+    "rbd_resize_volume": _rbd_resize_volume_command,
 }
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {

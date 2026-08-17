@@ -179,8 +179,12 @@ def _restore_plan_text(nodes: list[dict], version: str) -> str:
 
 @router.get("/restore-cluster", response_class=HTMLResponse)
 async def restore_cluster_page(request: Request, user: str = Depends(require_login)):
-    require_default_cluster(request, "Restore Cluster")
     try:
+        # Cluster selection reads the same database as the action history.
+        # Keep it inside the graceful database-error boundary so a missing
+        # migration renders the intended 503 instead of escaping through the
+        # test client/application exception handler.
+        require_default_cluster(request, "Restore Cluster")
         with db.SessionLocal() as session:
             last_action = (
                 session.query(Action)

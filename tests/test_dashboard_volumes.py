@@ -1487,6 +1487,8 @@ def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_clie
             "min_size": 2, "pg_num": 32, "pgp_num": 32, "crush_rule": 0,
             "erasure_code_profile": None, "rbd_enabled": True, "bytes_used": 2048,
             "max_available": 8192, "percent_used": 20.0, "objects": 5,
+            "health": "warning", "near_full": True,
+            "health_checks": [{"code": "OSD_NEARFULL", "severity": "HEALTH_WARN", "summary": "1 osd nearfull"}],
         },
     )
     _login(dashboard_client)
@@ -1497,6 +1499,7 @@ def test_volume_pool_overview_api_returns_durability_and_capacity(dashboard_clie
     assert response.json()["replica_size"] == 3
     assert response.json()["rbd_enabled"] is True
     assert response.json()["bytes_used"] == 2048
+    assert response.json()["near_full"] is True
 
 
 def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dashboard_client, monkeypatch):
@@ -1522,3 +1525,96 @@ def test_volume_inventory_rejects_inactive_cluster_without_default_fallback(dash
     assert response.status_code == 409
     assert "không fallback" in response.json()["detail"]
     assert default_calls == []
+
+
+def _stub_volume_mutation_preflight(monkeypatch, *, current_size=10 * 1024 ** 3, max_available=100 * 1024 ** 3):
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_inventory", lambda pool: [])
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"pool": pool, "name": image, "size": current_size},
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_pool_overview",
+        lambda pool: {"pool": pool, "max_available": max_available},
+    )
+
+
+def test_propose_create_volume_creates_risky_cluster_scoped_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/create", json={"image": "vm-new", "size_gib": 20}
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "rbd_create_volume"
+        assert action.classification == "RISKY"
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert json.loads(action.action_params) == {"pool_name": "vms", "image": "vm-new", "size_mib": 20480}
+        incident = session.get(Incident, action.incident_id)
+        assert incident.cluster_id is not None
+        assert incident.ceph_code == "RBD_VOLUME_CREATE"
+
+
+def test_propose_create_volume_rejects_existing_or_over_capacity(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch, max_available=5 * 1024 ** 3)
+    _login(dashboard_client)
+
+    too_large = dashboard_client.post(
+        "/api/volumes/vms/inventory/create", json={"image": "vm-new", "size_gib": 10}
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_inventory",
+        lambda pool: [{"name": "exists", "image_id": "1", "provisioned_size": 1, "used_size": 1, "snapshot_count": 0}],
+    )
+    exists = dashboard_client.post(
+        "/api/volumes/vms/inventory/create", json={"image": "exists", "size_gib": 1}
+    )
+
+    assert too_large.status_code == 409
+    assert exists.status_code == 409
+
+
+def test_propose_create_volume_rejects_duplicate_in_flight_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    first = dashboard_client.post(
+        "/api/volumes/vms/inventory/create", json={"image": "vm-new", "size_gib": 10}
+    )
+    duplicate = dashboard_client.post(
+        "/api/volumes/vms/inventory/create", json={"image": "vm-new", "size_gib": 10}
+    )
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 409
+    with db_module.SessionLocal() as session:
+        actions = session.query(Action).filter(Action.action_id == "rbd_create_volume").all()
+        assert len(actions) == 1
+
+
+def test_propose_resize_volume_is_expand_only_and_creates_risky_action(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch, current_size=10 * 1024 ** 3)
+    _login(dashboard_client)
+
+    shrink = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/resize", json={"size_gib": 9}
+    )
+    expand = dashboard_client.post(
+        "/api/volumes/vms/inventory/vm-01/resize", json={"size_gib": 20}
+    )
+
+    assert shrink.status_code == 409
+    assert expand.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, expand.json()["action_id"])
+        assert action.action_id == "rbd_resize_volume"
+        assert action.classification == "RISKY"
+        assert "--allow-shrink" not in action.proposed_command

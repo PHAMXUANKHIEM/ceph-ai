@@ -88,7 +88,7 @@
 
     <div class="tabbed-content">
     {% if selected_view == "pools" and selected_pool %}
-    <section class="card" id="volume-inventory-panel" data-pool="{{ selected_pool }}">
+    <section class="card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
       <div class="card-header">
         <div class="metrics-panel-title">
           <h2>Inventory Volume — {{ selected_pool }}</h2>
@@ -106,8 +106,23 @@
           <div class="summary-item"><span>PG</span><strong data-field="pg">—</strong></div>
           <div class="summary-item"><span>Physical usage</span><strong data-field="physical">—</strong></div>
           <div class="summary-item"><span>RBD</span><strong data-field="rbd">—</strong></div>
+          <div class="summary-item"><span>Health</span><strong data-field="health">—</strong></div>
         </div>
+        <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
+        {% if is_admin %}
+        <form class="audit-filters" id="volume-create-form">
+          <label>Tên Volume
+            <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01">
+          </label>
+          <label>Dung lượng (GiB)
+            <input name="size_gib" required type="number" min="1" max="65536" value="10">
+          </label>
+          <button type="submit" class="btn btn-primary btn-sm">Đề xuất tạo Volume</button>
+        </form>
+        <p class="hint">Tạo và resize luôn tạo action RISKY chờ duyệt; Dashboard không chạy lệnh RBD trực tiếp.</p>
+        <p id="volume-mutation-result" class="hint" hidden></p>
+        {% endif %}
         <form class="audit-filters" id="volume-inventory-filter">
           <label>Tìm Volume
             <input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tên hoặc ID Volume" autocomplete="off">

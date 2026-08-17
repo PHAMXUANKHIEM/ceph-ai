@@ -106,29 +106,13 @@
     if (window.innerWidth >= 1024) setMenu(false);
   });
 
-  var title = document.title.split("—")[0].trim()
-    .replace("Ceph AIOps Dashboard", "Operations overview");
-  var heading = document.createElement("header");
-  heading.className = "page-heading";
-  heading.innerHTML =
-    '<div><span class="page-eyebrow">CEPH AI · CONTROL PLANE</span>' +
-    '<h1></h1><p>Giám sát, phân tích và vận hành hạ tầng Ceph trong một không gian thống nhất.</p></div>' +
-    '<span class="page-live"><i></i> SYSTEM LIVE</span>';
-  heading.querySelector("h1").textContent = title;
-  // The React Pools workspace owns its breadcrumb/header inside the panel.
-  // Avoid rendering the generic shell heading above it a second time.
-  // Pools owns its own workspace heading, while Settings already has a
-  // context-specific heading in each selected panel.
-  if (window.location.pathname !== "/pools" && window.location.pathname !== "/settings") {
-    main.insertBefore(heading, main.firstChild);
-  }
-
   var iconByPath = {
     "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
-    "/backups": "□", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/bucket-access-log": "≡", "/pgs": "∷",
+    "/backups": "□", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
+    "/object-storage/user-settings": "⚙", "/bucket-access-log": "≡", "/pgs": "∷",
     "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+"
   };
 
@@ -138,6 +122,35 @@
     mainNav.querySelectorAll("a").forEach(function (link) {
       linksByPath[new URL(link.href, window.location.origin).pathname] = link;
     });
+
+    // A few feature pages use a deliberately small server-rendered header.
+    // Seed every destination that is available to all authenticated Ceph
+    // users before regrouping, otherwise opening one of those pages makes
+    // entire sidebar sections disappear. Permission-gated links (CRUSH map,
+    // users, notifications and clusters) still come only from the server.
+    function ensureSharedLink(path, label) {
+      if (linksByPath[path]) return;
+      var link = document.createElement("a");
+      link.href = path;
+      link.className = window.location.pathname === path ? "nav-link active" : "nav-link";
+      link.textContent = label;
+      linksByPath[path] = link;
+    }
+    [
+      ["/", "Dashboard"],
+      ["/nodes", "Cluster Metrics"],
+      ["/volumes", "Volumes"],
+      ["/bucket-access-log", "Bucket Access Log"],
+      ["/openstack/auth-pool", "Auth-Pool"],
+      ["/deploy-cluster", "Deploy Cluster"],
+      ["/delete-cluster", "Delete Cluster"],
+      ["/upgrade", "Upgrade Cluster"],
+      ["/patch", "Patch Ceph"],
+      ["/convert-cluster", "Convert to Cephadm"],
+      ["/backups", "Backup"],
+      ["/restore-cluster", "Restore Cluster"],
+      ["/settings", "Settings"]
+    ].forEach(function (entry) { ensureSharedLink(entry[0], entry[1]); });
     if (!linksByPath["/pgs"]) {
       var pgLink = document.createElement("a");
       pgLink.href = "/pgs";

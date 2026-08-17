@@ -317,7 +317,45 @@ def query_rbd_image_detail_with(
     )
 
 
-def _normalize_rbd_pool_overview(pool: str, pool_detail: dict | list, df: dict | list) -> dict:
+_GLOBAL_CAPACITY_HEALTH_CHECKS = {
+    "OSD_NEARFULL", "OSD_BACKFILLFULL", "OSD_FULL", "POOL_NEAR_FULL", "POOL_FULL",
+}
+
+
+def _normalize_pool_health(pool: str, health: dict | list | None) -> tuple[str, bool, list[dict]]:
+    if not isinstance(health, dict):
+        return "unknown", False, []
+    checks = health.get("checks")
+    if not isinstance(checks, dict):
+        return ("ok" if health.get("status") == "HEALTH_OK" else "unknown"), False, []
+    pool_token = pool.casefold()
+    matched: list[dict] = []
+    near_full = False
+    for code, value in checks.items():
+        if not isinstance(value, dict):
+            continue
+        serialized = json.dumps(value, ensure_ascii=False).casefold()
+        is_capacity_global = code in _GLOBAL_CAPACITY_HEALTH_CHECKS
+        if pool_token not in serialized and not is_capacity_global:
+            continue
+        severity = str(value.get("severity") or "HEALTH_WARN")
+        summary = value.get("summary")
+        if isinstance(summary, dict):
+            summary = summary.get("message")
+        matched.append({"code": code, "severity": severity, "summary": str(summary or code)})
+        near_full = near_full or is_capacity_global
+    if any(item["severity"] == "HEALTH_ERR" for item in matched):
+        status = "error"
+    elif matched:
+        status = "warning"
+    else:
+        status = "ok"
+    return status, near_full, matched
+
+
+def _normalize_rbd_pool_overview(
+    pool: str, pool_detail: dict | list, df: dict | list, health: dict | list | None = None,
+) -> dict:
     detail_rows = pool_detail if isinstance(pool_detail, list) else pool_detail.get("pools", []) if isinstance(pool_detail, dict) else []
     detail = next(
         (row for row in detail_rows if isinstance(row, dict) and (row.get("pool_name") or row.get("name")) == pool),
@@ -332,6 +370,7 @@ def _normalize_rbd_pool_overview(pool: str, pool_detail: dict | list, df: dict |
     pool_type = detail.get("type") if isinstance(detail, dict) else None
     if pool_type is None and isinstance(detail, dict):
         pool_type = "erasure" if detail.get("erasure_code_profile") else "replicated"
+    health_status, near_full, health_checks = _normalize_pool_health(pool, health)
     return {
         "pool": pool,
         "pool_id": detail.get("pool") if isinstance(detail, dict) else None,
@@ -347,13 +386,17 @@ def _normalize_rbd_pool_overview(pool: str, pool_detail: dict | list, df: dict |
         "max_available": _as_int(usage.get("max_avail")) if isinstance(usage, dict) else 0,
         "percent_used": _as_float(usage.get("percent_used")) if isinstance(usage, dict) else 0.0,
         "objects": _as_int(usage.get("objects")) if isinstance(usage, dict) else 0,
+        "health": health_status,
+        "near_full": near_full,
+        "health_checks": health_checks,
     }
 
 
 def query_rbd_pool_overview(pool: str) -> dict:
     detail = run_ceph_json_command("ceph osd pool ls detail")[1]
     usage = run_ceph_json_command("ceph df detail")[1]
-    return _normalize_rbd_pool_overview(pool, detail, usage)
+    health = run_ceph_json_command("ceph health detail")[1]
+    return _normalize_rbd_pool_overview(pool, detail, usage, health)
 
 
 def query_rbd_pool_overview_with(
@@ -363,7 +406,8 @@ def query_rbd_pool_overview_with(
     connection = (mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode)
     detail = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")[1]
     usage = run_ceph_json_command_with(*connection, "ceph df detail")[1]
-    return _normalize_rbd_pool_overview(pool, detail, usage)
+    health = run_ceph_json_command_with(*connection, "ceph health detail")[1]
+    return _normalize_rbd_pool_overview(pool, detail, usage, health)
 
 
 def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:

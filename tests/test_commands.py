@@ -725,7 +725,27 @@ def test_has_command_true_for_action_ids_with_a_real_command():
     assert commands_module.has_command("create_pool") is True
     assert commands_module.has_command("enable_pool_application") is True
     assert commands_module.has_command("rbd_trash_remove") is True
+    assert commands_module.has_command("rbd_create_volume") is True
+    assert commands_module.has_command("rbd_resize_volume") is True
     assert commands_module.has_command("finalize_pacific_osd_release") is True
+
+
+def test_rbd_volume_commands_validate_and_never_allow_shrink_flag():
+    create = commands_module.get_command(
+        "rbd_create_volume", params={"pool_name": "vms", "image": "vm-01", "size_mib": 10240}
+    )
+    resize = commands_module.get_command(
+        "rbd_resize_volume", params={"pool_name": "vms", "image": "vm-01", "size_mib": 20480}
+    )
+
+    assert create == "rbd create --size 10240 vms/vm-01 && rbd info vms/vm-01 --format json"
+    assert resize == "rbd resize --size 20480 vms/vm-01 && rbd info vms/vm-01 --format json"
+    assert "--allow-shrink" not in resize
+
+    with pytest.raises(ExecutorError):
+        commands_module.get_command(
+            "rbd_create_volume", params={"pool_name": "vms", "image": "bad/name", "size_mib": 1}
+        )
 
 
 def test_get_command_finalize_pacific_osd_release():

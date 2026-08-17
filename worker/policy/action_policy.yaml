@@ -58,6 +58,8 @@ management_action_ids:
   # command-builder validation is identical, not because it goes through
   # dashboard/routes/chat.py's confirm flow.
   - rbd_trash_remove
+  - rbd_create_volume
+  - rbd_resize_volume
 
 # v1 (Story 3.1): Safe/Risky classification (AD-5). Anything NOT in `safe`
 # defaults to RISKY — including action_ids present in `action_ids` above but
@@ -328,6 +330,10 @@ risky:
   # default (AD-5) applies here, always requires explicit Dashboard
   # approval.
   - rbd_trash_remove
+  # Dedicated Dashboard Block Storage flow. Both mutate live storage and
+  # always require preview + explicit approval, even create (capacity impact).
+  - rbd_create_volume
+  - rbd_resize_volume
   # 2026-07-29: writes real (if scratch-only) I/O load to the cluster for
   # several minutes — always requires explicit approval, no exceptions,
   # same conservative default as the rest of this file.

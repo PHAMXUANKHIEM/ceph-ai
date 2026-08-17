@@ -16,8 +16,12 @@
   var next = document.getElementById("volume-inventory-next");
   var pageStatus = document.getElementById("volume-inventory-page-status");
   var detail = document.getElementById("volume-inventory-detail");
+  var createForm = document.getElementById("volume-create-form");
+  var mutationResult = document.getElementById("volume-mutation-result");
+  var isAdmin = panel.dataset.isAdmin === "true";
   var overview = document.getElementById("volume-pool-overview");
   var overviewError = document.getElementById("volume-pool-overview-error");
+  var healthChecks = document.getElementById("volume-pool-health-checks");
   var state = { page: 1, pages: 1, loading: false };
 
   function bytes(value) {
@@ -28,8 +32,10 @@
     return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[i];
   }
 
-  function requestJson(url) {
-    return fetch(url, { credentials: "same-origin" }).then(function (response) {
+  function requestJson(url, options) {
+    var requestOptions = options || {};
+    requestOptions.credentials = "same-origin";
+    return fetch(url, requestOptions).then(function (response) {
       if (response.redirected && response.url.indexOf("/login") !== -1) {
         window.location.reload();
         throw new Error("unauthenticated");
@@ -162,6 +168,33 @@
     addListSection(detail, "Children / Clone", data.children || [], function (item) {
       return typeof item === "string" ? item : String(item.pool || "") + "/" + String(item.image || item.name || "");
     });
+    if (isAdmin) {
+      var resizeForm = document.createElement("form");
+      resizeForm.className = "audit-filters";
+      var label = document.createElement("label");
+      label.textContent = "Mở rộng tới (GiB)";
+      var input = document.createElement("input");
+      input.type = "number";
+      input.min = "1";
+      input.max = "65536";
+      input.required = true;
+      input.value = String(Math.max(1, Math.ceil(Number(data.size || 0) / Math.pow(1024, 3)) + 1));
+      label.appendChild(input);
+      resizeForm.appendChild(label);
+      var submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = "btn btn-primary btn-sm";
+      submit.textContent = "Đề xuất mở rộng";
+      resizeForm.appendChild(submit);
+      resizeForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        proposeMutation(
+          "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/resize",
+          { size_gib: Number(input.value) }, submit
+        );
+      });
+      detail.appendChild(resizeForm);
+    }
     detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
@@ -193,6 +226,10 @@
         setOverview("pg", String(data.pg_num || 0) + " / PGP " + String(data.pgp_num || 0));
         setOverview("physical", bytes(data.bytes_used) + " · " + Number(data.percent_used || 0).toFixed(1) + "%");
         setOverview("rbd", data.rbd_enabled ? "Enabled" : "Disabled");
+        setOverview("health", data.near_full ? "⚠ Near full" : (data.health || "unknown"));
+        healthChecks.textContent = (data.health_checks || []).map(function (item) {
+          return item.code + ": " + item.summary;
+        }).join(" · ");
       })
       .catch(function (exc) {
         if (exc.message === "unauthenticated") return;
@@ -201,11 +238,43 @@
       });
   }
 
+  function proposeMutation(url, payload, button) {
+    button.disabled = true;
+    requestJson(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (data) {
+      mutationResult.hidden = false;
+      mutationResult.className = "success";
+      mutationResult.textContent = "Đã tạo đề xuất " + data.action_id + ". Hãy duyệt trong Dashboard/Audit Trail.";
+    }).catch(function (exc) {
+      if (exc.message === "unauthenticated") return;
+      mutationResult.hidden = false;
+      mutationResult.className = "error";
+      mutationResult.textContent = exc.message;
+    }).finally(function () { button.disabled = false; });
+  }
+
   form.addEventListener("submit", function (event) {
     event.preventDefault();
     state.page = 1;
     loadInventory();
   });
+  if (createForm) {
+    createForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var button = createForm.querySelector('button[type="submit"]');
+      proposeMutation(
+        "/api/volumes/" + encodeURIComponent(pool) + "/inventory/create",
+        {
+          image: createForm.elements.image.value.trim(),
+          size_gib: Number(createForm.elements.size_gib.value)
+        },
+        button
+      );
+    });
+  }
   prev.addEventListener("click", function () { if (state.page > 1) { state.page -= 1; loadInventory(); } });
   next.addEventListener("click", function () { if (state.page < state.pages) { state.page += 1; loadInventory(); } });
   loadOverview();

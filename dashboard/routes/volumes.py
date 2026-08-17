@@ -131,6 +131,8 @@ RBD_TRASH_REMOVE_ACTION_ID = "rbd_trash_remove"
 # ever look at RBD_TRASH_REMOVE_ACTION_ID rows, but keeping the ceph_code
 # distinct too makes the Incident list/Audit Trail unambiguous at a glance).
 RBD_TRASH_PURGE_ALL_CEPH_CODE = "RBD_TRASH_PURGE_ALL"
+RBD_VOLUME_CREATE_CEPH_CODE = "RBD_VOLUME_CREATE"
+RBD_VOLUME_RESIZE_CEPH_CODE = "RBD_VOLUME_RESIZE"
 
 # 2026-07-29: "Đo hiệu năng tối đa" (load sweep) button — same synthetic-
 # incident trick as RBD_TRASH_REMOVE_CEPH_CODE above (an operator-initiated
@@ -143,6 +145,7 @@ VM_PERF_BENCHMARK_CEPH_CODE = "VM_PERF_BENCHMARK"
 VM_PERF_BENCHMARK_ACTION_ID = "vm_perf_benchmark"
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
+_RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 _IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
 
@@ -526,6 +529,143 @@ async def volume_inventory_overview_api(
         logger.warning("volume_inventory_overview_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được tổng quan Pool: {exc}")
     return {"cluster_id": cluster.id, "collected_at": datetime.utcnow().isoformat() + "Z", **overview}
+
+
+def _propose_rbd_volume_mutation(
+    *, cluster, pool: str, image: str, size_mib: int, action_id: str,
+    ceph_code: str, user: str, rationale: str,
+) -> str:
+    mon_nodes, _container, _ssh_user, _ssh_key, _exec_mode = cluster_connection(cluster)
+    if not mon_nodes:
+        raise HTTPException(status_code=400, detail="Cluster chưa cấu hình MON node")
+    params = {"pool_name": pool, "image": image, "size_mib": size_mib}
+    try:
+        preview = executor_commands.get_command(action_id, mon_nodes[0], params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Thông tin Volume không hợp lệ: {exc}") from exc
+
+    with db.SessionLocal() as session:
+        in_flight = session.query(Action).filter(
+            Action.action_id == action_id,
+            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+        ).all()
+        for existing in in_flight:
+            try:
+                existing_params = json.loads(existing.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if existing_params.get("pool_name") == pool and existing_params.get("image") == image:
+                raise HTTPException(status_code=409, detail="Volume này đã có một thay đổi đang chờ duyệt hoặc thực thi")
+
+        incident = Incident(
+            cluster_id=cluster.id,
+            ceph_code=ceph_code,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"{rationale} — yêu cầu bởi {user}",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=action_id,
+            classification=gate.classify_action(action_id).value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=rationale,
+            target_nodes=json.dumps([mon_nodes[0]]),
+            action_params=json.dumps(params),
+            proposed_command=preview,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(
+            session, incident_id=incident.id, action_id=action.id,
+            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=user,
+        )
+        session.commit()
+        return action.id
+
+
+@router.post("/api/volumes/{pool}/inventory/create")
+async def propose_volume_create(
+    request: Request, pool: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    image = str(body.get("image") or "").strip()
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    size_gib = body.get("size_gib")
+    if isinstance(size_gib, bool) or not isinstance(size_gib, int) or not (1 <= size_gib <= 65536):
+        raise HTTPException(status_code=400, detail="Dung lượng phải là số nguyên từ 1 đến 65536 GiB")
+    try:
+        inventory = (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight tạo Volume: {exc}")
+    if any(row["name"] == image for row in inventory):
+        raise HTTPException(status_code=409, detail="Volume đã tồn tại trong pool")
+    requested_bytes = size_gib * 1024 ** 3
+    if overview["max_available"] and requested_bytes > overview["max_available"]:
+        raise HTTPException(status_code=409, detail="Dung lượng yêu cầu vượt max available của pool")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, size_mib=size_gib * 1024,
+        action_id="rbd_create_volume", ceph_code=RBD_VOLUME_CREATE_CEPH_CODE, user=user,
+        rationale=f"Tạo Volume {pool}/{image} dung lượng {size_gib} GiB trên cluster {cluster.name}",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
+
+
+@router.post("/api/volumes/{pool}/inventory/{image}/resize")
+async def propose_volume_resize(
+    request: Request, pool: str, image: str, user: str = Depends(require_login)
+):
+    _require_admin_privilege(user)
+    cluster, allowed_pools = _allowed_pools_for_request(request)
+    if pool not in allowed_pools:
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    body = await request.json()
+    if not _RBD_IMAGE_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Tên Volume không hợp lệ")
+    size_gib = body.get("size_gib")
+    if isinstance(size_gib, bool) or not isinstance(size_gib, int) or not (1 <= size_gib <= 65536):
+        raise HTTPException(status_code=400, detail="Dung lượng phải là số nguyên từ 1 đến 65536 GiB")
+    try:
+        detail = (
+            ceph_client.query_rbd_image_detail(pool, image)
+            if cluster.is_default
+            else ceph_client.query_rbd_image_detail_with(pool, image, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_overview_with(pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được preflight resize Volume: {exc}")
+    requested_bytes = size_gib * 1024 ** 3
+    current_bytes = int(detail.get("size") or 0)
+    if requested_bytes <= current_bytes:
+        raise HTTPException(status_code=409, detail="Resize chỉ hỗ trợ mở rộng; dung lượng mới phải lớn hơn hiện tại")
+    if overview["max_available"] and requested_bytes - current_bytes > overview["max_available"]:
+        raise HTTPException(status_code=409, detail="Phần dung lượng tăng thêm vượt max available của pool")
+    action_pk = _propose_rbd_volume_mutation(
+        cluster=cluster, pool=pool, image=image, size_mib=size_gib * 1024,
+        action_id="rbd_resize_volume", ceph_code=RBD_VOLUME_RESIZE_CEPH_CODE, user=user,
+        rationale=f"Mở rộng Volume {pool}/{image} từ {_format_bytes(current_bytes)} lên {size_gib} GiB",
+    )
+    return JSONResponse({"action_id": action_pk, "status": "PENDING_APPROVAL"}, status_code=201)
 
 
 @router.get("/api/volumes/{pool}/inventory/{image}")

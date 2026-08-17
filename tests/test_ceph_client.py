@@ -989,6 +989,10 @@ def test_normalize_rbd_pool_overview_combines_durability_and_usage():
             "crush_rule": 1, "application_metadata": {"rbd": {}},
         }],
         {"pools": [{"name": "vms", "stats": {"bytes_used": 1024, "max_avail": 8192, "percent_used": 12.5, "objects": 10}}]},
+        {"status": "HEALTH_WARN", "checks": {
+            "POOL_NEAR_FULL": {"severity": "HEALTH_WARN", "summary": {"message": "pool 'vms' is near full"}},
+            "MDS_DAMAGE": {"severity": "HEALTH_ERR", "summary": {"message": "unrelated filesystem issue"}},
+        }},
     )
 
     assert overview == {
@@ -996,7 +1000,22 @@ def test_normalize_rbd_pool_overview_combines_durability_and_usage():
         "min_size": 2, "pg_num": 64, "pgp_num": 64, "crush_rule": 1,
         "erasure_code_profile": None, "rbd_enabled": True, "bytes_used": 1024,
         "max_available": 8192, "percent_used": 12.5, "objects": 10,
+        "health": "warning", "near_full": True,
+        "health_checks": [{"code": "POOL_NEAR_FULL", "severity": "HEALTH_WARN", "summary": "pool 'vms' is near full"}],
     }
+
+
+def test_pool_health_does_not_leak_unrelated_pool_specific_check():
+    status, near_full, checks = ceph_client._normalize_pool_health(
+        "vms",
+        {"status": "HEALTH_WARN", "checks": {
+            "CUSTOM_POOL_WARN": {"severity": "HEALTH_WARN", "summary": {"message": "pool backups has a warning"}},
+        }},
+    )
+
+    assert status == "ok"
+    assert near_full is False
+    assert checks == []
 
 
 def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):
