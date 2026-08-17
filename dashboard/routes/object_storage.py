@@ -58,6 +58,7 @@ PAGE_SIZE = 25
 MAX_QUERY_LENGTH = 120
 MAX_METADATA_SCAN = 500
 MAX_LIFECYCLE_SCAN = 1000
+MAX_PURGE_BATCHES = 10000
 LIFECYCLE_STORAGE_CLASSES = {
     "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "REDUCED_REDUNDANCY",
 }
@@ -175,6 +176,12 @@ def _capabilities(cluster) -> dict:
             "action_compatibility": "Validated per action against the detected Ceph major release.",
             "public_access_requires_strong_confirmation": True,
             "documentation": f"https://docs.ceph.com/en/{release}/radosgw/bucketpolicy/",
+        },
+        "bucket_delete": {
+            "supported": True,
+            "non_empty_requires_purge_flow": True,
+            "bypass_governance_retention": False,
+            "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/bucketops/",
         },
     }
 
@@ -508,7 +515,7 @@ def _with_owner_s3(cluster, payload: dict, callback):
     except RgwLogError as cleanup_exc:
         raise ObjectStorageError("Không thu hồi được access key tạm; cần thu hồi key thủ công ngay.") from cleanup_exc
     if operation_error:
-        raise ObjectStorageError(f"Thao tác S3 lifecycle thất bại: {_safe_error(operation_error)}") from operation_error
+        raise ObjectStorageError(f"Thao tác S3 thất bại: {_safe_error(operation_error)}") from operation_error
     return result
 
 
@@ -669,6 +676,64 @@ def _execute_policy_acl(cluster, payload: dict) -> None:
             client.delete_bucket_policy(Bucket=payload["bucket"])
         else:
             client.put_bucket_acl(Bucket=payload["bucket"], ACL=payload["acl"])
+    _with_owner_s3(cluster, payload, execute)
+
+
+def _delete_payload(body: dict) -> dict:
+    action = str(body.get("action") or "")
+    if action not in {"delete_empty", "purge_delete"}:
+        raise HTTPException(status_code=400, detail="Luồng xóa bucket không hợp lệ")
+    base = _create_payload({"name": body.get("bucket"), "owner": body.get("owner"),
+                            "endpoint": body.get("endpoint")})
+    payload = {"action": action, "bucket": base["name"], "owner": base["owner"],
+               "endpoint": base["endpoint"]}
+    if body.get("expected_objects") is not None:
+        try:
+            payload["expected_objects"] = max(0, int(body["expected_objects"]))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Số object xác nhận không hợp lệ") from exc
+    return payload
+
+
+def _delete_bucket_inspect(cluster, payload: dict, detail: dict) -> dict:
+    def inspect(client):
+        versions = client.list_object_versions(Bucket=payload["bucket"], MaxKeys=1000)
+        current = client.list_objects_v2(Bucket=payload["bucket"], MaxKeys=1000)
+        version_count = len(versions.get("Versions") or [])
+        marker_count = len(versions.get("DeleteMarkers") or [])
+        current_count = len(current.get("Contents") or [])
+        return {"sample_current_objects": current_count, "sample_versions": version_count,
+                "sample_delete_markers": marker_count,
+                "sample_truncated": bool(versions.get("IsTruncated") or current.get("IsTruncated"))}
+    sample = _with_owner_s3(cluster, payload, inspect)
+    count = int(detail.get("num_objects") or 0)
+    return {**sample, "object_count": count, "size_bytes": int(detail.get("size_bytes") or 0),
+            "size": detail.get("size"), "object_lock_status": detail.get("object_lock_status", "unknown"),
+            "empty_delete_allowed": count == 0 and sample["sample_current_objects"] == 0 and
+                                    sample["sample_versions"] == 0 and sample["sample_delete_markers"] == 0}
+
+
+def _execute_delete_bucket(cluster, payload: dict) -> None:
+    def execute(client):
+        if payload["action"] == "purge_delete":
+            for _index in range(MAX_PURGE_BATCHES):
+                page = client.list_object_versions(Bucket=payload["bucket"], MaxKeys=1000)
+                objects = [{"Key": item["Key"], "VersionId": item["VersionId"]}
+                           for item in (page.get("Versions") or []) + (page.get("DeleteMarkers") or [])]
+                if not objects:
+                    break
+                client.delete_objects(Bucket=payload["bucket"], Delete={"Objects": objects, "Quiet": True})
+            else:
+                raise ObjectStorageError("Dừng purge vì vượt giới hạn batch an toàn; bucket chưa bị xóa.")
+            for _index in range(MAX_PURGE_BATCHES):
+                page = client.list_objects_v2(Bucket=payload["bucket"], MaxKeys=1000)
+                objects = [{"Key": item["Key"]} for item in (page.get("Contents") or [])]
+                if not objects:
+                    break
+                client.delete_objects(Bucket=payload["bucket"], Delete={"Objects": objects, "Quiet": True})
+            else:
+                raise ObjectStorageError("Dừng purge object vì vượt giới hạn batch an toàn; bucket chưa bị xóa.")
+        client.delete_bucket(Bucket=payload["bucket"])
     _with_owner_s3(cluster, payload, execute)
 
 
@@ -1127,6 +1192,77 @@ async def bucket_policy_acl_execute(request: Request, user: str = Depends(requir
         raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
     try:
         await asyncio.to_thread(_execute_policy_acl, cluster, payload)
+    except ObjectStorageError as exc:
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
+
+
+@router.post("/api/object-storage/buckets/delete/preview")
+async def bucket_delete_preview(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa bucket")
+    payload = _delete_payload(await request.json())
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
+        impact = await asyncio.to_thread(_delete_bucket_inspect, cluster, payload, detail)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    if payload["action"] == "delete_empty" and not impact["empty_delete_allowed"]:
+        allowed = False
+        reason = "Bucket còn object/version/delete-marker; phải dùng luồng Purge & Delete riêng."
+    else:
+        allowed = True
+        reason = None
+    confirmation = (payload["bucket"] if payload["action"] == "delete_empty" else
+                    f"PURGE:{payload['bucket']}:{impact['object_count']}")
+    return {"action": payload["action"], "bucket": payload["bucket"], "cluster_id": cluster.id,
+        "cluster_name": cluster.name, "ceph_version": capability["ceph_version"],
+        "ceph_release": capability["ceph_release"], "risk": "critical" if payload["action"] == "purge_delete" else "high",
+        "allowed": allowed, "blocked_reason": reason, "confirmation_required": confirmation,
+        "expected_objects": impact["object_count"], "impact": impact,
+        "retention_warning": "Không bypass Object Lock/Governance/Compliance retention; RGW sẽ từ chối object đang khóa."}
+
+
+@router.post("/api/object-storage/buckets/delete/execute")
+async def bucket_delete_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa bucket")
+    body = await request.json()
+    payload = _delete_payload(body)
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target({**payload, "action": "versioning_enable"}, detail)
+        impact = await asyncio.to_thread(_delete_bucket_inspect, cluster, payload, detail)
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    del capability
+    if payload["action"] == "delete_empty":
+        if not impact["empty_delete_allowed"]:
+            raise HTTPException(status_code=409, detail="Bucket không rỗng; từ chối luồng delete-empty")
+        expected_confirmation = payload["bucket"]
+    else:
+        if "expected_objects" not in payload or payload["expected_objects"] != impact["object_count"]:
+            raise HTTPException(status_code=409, detail="Số object đã thay đổi; cần preview lại trước khi purge")
+        expected_confirmation = f"PURGE:{payload['bucket']}:{impact['object_count']}"
+    if str(body.get("confirmation") or "") != expected_confirmation:
+        raise HTTPException(status_code=400, detail=f"Nhập chính xác {expected_confirmation} để xác nhận")
+    preview = (f"{payload['action']} objects={impact['object_count']} size_bytes={impact['size_bytes']} "
+               f"versions_sample={impact['sample_versions']} delete_markers_sample={impact['sample_delete_markers']}")
+    try:
+        audit_id = await asyncio.to_thread(_start_governance_audit, cluster.id, user, payload, preview)
+    except Exception as exc:
+        logger.exception("cannot persist delete bucket audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        await asyncio.to_thread(_execute_delete_bucket, cluster, payload)
     except ObjectStorageError as exc:
         safe_error = _safe_error(exc)
         await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)

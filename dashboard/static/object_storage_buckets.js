@@ -38,8 +38,38 @@
     })
     .catch(function (error) {
       capabilityStatus.textContent = "Không xác định được phiên bản/capability Ceph: " + error.message + ". Các thao tác ghi đã bị khóa.";
-      ["bucket-create-form", "bucket-governance-form", "bucket-lifecycle-form", "bucket-policy-form"].forEach(function (id) { disableForm(id, error.message); });
+      ["bucket-create-form", "bucket-governance-form", "bucket-lifecycle-form", "bucket-policy-form", "bucket-delete-form"].forEach(function (id) { disableForm(id, error.message); });
     });
+})();
+
+(function () {
+  var form = document.getElementById("bucket-delete-form");
+  if (!form) return;
+  var preview = document.getElementById("bucket-delete-preview");
+  var impact = document.getElementById("bucket-delete-impact");
+  var warning = document.getElementById("bucket-delete-warning");
+  var confirmation = document.getElementById("bucket-delete-confirmation");
+  var execute = document.getElementById("bucket-delete-execute");
+  var status = document.getElementById("bucket-delete-status");
+  var approved = null;
+  function payload() { return {action: document.getElementById("bucket-delete-action").value, bucket: document.getElementById("bucket-delete-name").value.trim(), owner: document.getElementById("bucket-delete-owner").value.trim(), endpoint: document.getElementById("bucket-delete-endpoint").value.trim()}; }
+  function endpoint(kind) { return "/api/object-storage/buckets/delete/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
+  function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
+  form.addEventListener("submit", function (event) {
+    event.preventDefault(); approved = null; preview.hidden = true; execute.disabled = true; status.textContent = "Đang kiểm tra object, version và delete marker...";
+    var body = payload();
+    fetch(endpoint("preview"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+      .then(parse).then(function (data) { impact.textContent = "Ceph " + data.ceph_version + " (" + data.ceph_release + ") · rủi ro " + data.risk + "\nObjects: " + data.impact.object_count + "\nDung lượng: " + (data.impact.size || data.impact.size_bytes + " bytes") + "\nSample versions: " + data.impact.sample_versions + "\nSample delete markers: " + data.impact.sample_delete_markers + (data.impact.sample_truncated ? "\nSample bị giới hạn ở 1.000 entries." : ""); warning.textContent = data.blocked_reason || data.retention_warning; preview.hidden = false; confirmation.value = ""; if (data.allowed) { approved = Object.assign({}, body, {expected_objects: data.expected_objects, expected: data.confirmation_required}); status.textContent = "Nhập chính xác " + data.confirmation_required + " để xác nhận."; } else { status.textContent = "Không thể thực thi: " + data.blocked_reason; } })
+      .catch(function (error) { status.textContent = "Lỗi: " + error.message; });
+  });
+  confirmation.addEventListener("input", function () { execute.disabled = !approved || confirmation.value !== approved.expected; });
+  execute.addEventListener("click", function () {
+    if (!approved) return; execute.disabled = true; status.textContent = "Đang xóa vĩnh viễn...";
+    var body = Object.assign({}, approved, {confirmation: confirmation.value}); delete body.expected;
+    fetch(endpoint("execute"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+      .then(parse).then(function (data) { status.textContent = "Đã xóa bucket. Request ID: " + data.request_id; approved = null; preview.hidden = true; window.location.reload(); })
+      .catch(function (error) { status.textContent = "Lỗi: " + error.message; execute.disabled = false; });
+  });
 })();
 
 (function () {

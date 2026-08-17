@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shlex
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -196,6 +197,19 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cl
         client.close()
 
 
+def _run_rbd_command(mon_ip: str, command: str, cluster: "Cluster | None" = None) -> None:
+    """Run a small non-streaming verification/cleanup command."""
+    client = _ssh_connect(mon_ip, cluster)
+    try:
+        _stdin, stdout, stderr = client.exec_command(command)
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            error_output = stderr.read().decode(errors="replace")
+            raise RestoreError(f"{command} exited {exit_status}: {error_output}")
+    finally:
+        client.close()
+
+
 def restore_image(
     pool: str,
     image: str,
@@ -203,6 +217,7 @@ def restore_image(
     dest_pool: str,
     dest_image: str,
     cluster_id: str | None = None,
+    cleanup_new_destination_on_failure: bool = False,
 ) -> RestoreResult:
     """Rebuilds `dest_pool/dest_image` (on `cluster_id`'s own cluster --
     `None` means the default cluster/`settings.ceph_mon_nodes`, Phase 3)
@@ -225,18 +240,25 @@ def restore_image(
     total_size = 0
     applied_diff_ids: list[str] = []
     tmp_paths: list[str] = []
+    destination_created = False
+    destination_spec = f"{shlex.quote(dest_pool)}/{shlex.quote(dest_image)}"
     try:
         full_path, full_size = _download_and_verify(storage, full_job)
         tmp_paths.append(full_path)
         total_size += full_size
-        _stream_file_to_rbd(mon_ip, full_path, f"rbd import - {dest_pool}/{dest_image}", cluster)
+        _stream_file_to_rbd(mon_ip, full_path, f"rbd import - {destination_spec}", cluster)
+        destination_created = True
 
         for diff_job in diff_jobs:
             diff_path, diff_size = _download_and_verify(storage, diff_job)
             tmp_paths.append(diff_path)
             total_size += diff_size
-            _stream_file_to_rbd(mon_ip, diff_path, f"rbd import-diff - {dest_pool}/{dest_image}", cluster)
+            _stream_file_to_rbd(mon_ip, diff_path, f"rbd import-diff - {destination_spec}", cluster)
             applied_diff_ids.append(diff_job.id)
+
+        # Do not treat a successful import stream as sufficient evidence:
+        # Ceph must be able to resolve the resulting image afterwards.
+        _run_rbd_command(mon_ip, f"rbd info {destination_spec} --format json", cluster)
 
         return RestoreResult(
             success=True,
@@ -249,6 +271,11 @@ def restore_image(
         logger.exception(
             "restore.restore_image: failed restoring %s/%s into %s/%s", pool, image, dest_pool, dest_image
         )
+        if cleanup_new_destination_on_failure and destination_created:
+            try:
+                _run_rbd_command(mon_ip, f"rbd rm {destination_spec}", cluster)
+            except Exception:
+                logger.exception("restore.restore_image: failed cleaning partial destination %s", destination_spec)
         return RestoreResult(
             success=False,
             full_job_id=full_job.id,

@@ -1254,6 +1254,17 @@ def _restore_rbd_image_to_production_preview_command(host: str | None, params: d
     )
 
 
+def _restore_rbd_image_as_new_preview_command(host: str | None, params: dict) -> str:
+    pool = params.get("pool", "?")
+    image = params.get("image", "?")
+    dest_pool = params.get("dest_pool", "?")
+    dest_image = params.get("dest_image", "?")
+    return (
+        f"Khôi phục {pool}/{image} từ full backup + chain export-diff sang volume MỚI "
+        f"{dest_pool}/{dest_image}, kiểm tra volume đích sau import; không thay đổi volume nguồn."
+    )
+
+
 # 2026-07-31 (Story 9.7): same reasoning as _VOLUME_PERF_COMMAND_BUILDERS above —
 # worker/backup/engine.py is its own bespoke orchestrator (see that module's
 # docstring), so approve_action's has_command() gate needs an entry here too,
@@ -1265,6 +1276,7 @@ def _restore_rbd_image_to_production_preview_command(host: str | None, params: d
 # through this approve gate) or not yet implemented (backup_delete_manual).
 _BACKUP_COMMAND_BUILDERS = {
     "restore_rbd_image_to_production": _restore_rbd_image_to_production_preview_command,
+    "restore_rbd_image_as_new": _restore_rbd_image_as_new_preview_command,
 }
 
 

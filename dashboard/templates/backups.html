@@ -116,7 +116,7 @@
                 <td>
                   {% if is_admin %}
                   <button type="button" class="btn btn-sm btn-backup-now" data-pool="{{ item.pool }}" data-image="{{ item.image }}">Backup ngay</button>
-                  <button type="button" class="btn btn-sm btn-restore-image" data-pool="{{ item.pool }}" data-image="{{ item.image }}" {% if pending_restore_action or not item.last_run_at %}disabled{% endif %}>Khôi phục</button>
+                  <button type="button" class="btn btn-sm btn-restore-image" data-pool="{{ item.pool }}" data-image="{{ item.image }}" {% if pending_restore_action or not item.last_run_at %}disabled{% endif %}>Khôi phục thành volume mới</button>
                   {% endif %}
                 </td>
               </tr>
@@ -124,7 +124,7 @@
             </tbody>
           </table>
         </div>
-        <p class="hint">"Khôi phục" ghi ĐÈ dữ liệu hiện tại của image bằng bản backup full gần nhất + toàn bộ chain export-diff — chỉ dùng khi image đó bị hỏng/mất dữ liệu, không phải để dựng lại cả cụm (xem trang <a href="/restore-cluster">Restore Cluster</a> cho trường hợp đó).</p>
+        <p class="hint">Khôi phục mặc định tạo một volume mới từ full backup gần nhất + toàn bộ chain export-diff và không thay đổi volume nguồn. Xem trang <a href="/restore-cluster">Restore Cluster</a> khi cần dựng lại cả cụm.</p>
         {% else %}
         <p class="hint">Chưa cấu hình <code>tracked_images</code> nào trong <code>worker/policy/backup_policy.yaml</code>.</p>
         {% endif %}

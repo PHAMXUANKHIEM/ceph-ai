@@ -198,6 +198,7 @@ backup_action_ids:
   - retention_sweep_delete
   - restore_drill_execute
   - restore_rbd_image_to_production
+  - restore_rbd_image_as_new
   - backup_delete_manual
   - backup_metadata_run
 
@@ -357,6 +358,7 @@ risky:
   # retention_sweep_delete/restore_drill_execute are Safe instead — see
   # the safe: list above for why.
   - restore_rbd_image_to_production
+  - restore_rbd_image_as_new
   - backup_delete_manual
   # 2026-08-01 (Story C): moves real data off a live OSD — always requires
   # explicit Dashboard approval, no exceptions, same conservative default as

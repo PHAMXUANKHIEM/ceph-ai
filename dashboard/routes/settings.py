@@ -164,6 +164,7 @@ WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-watcher.log")
 DASHBOARD_LOG_PATH = Path(f"/var/log/{LOG_TAG}-dashboard.log")
 DASHBOARD_RESTART_GRACE_SECONDS = 1.0
 DASHBOARD_RESTART_WAIT_SECONDS = 10.0
+SYSTEMD_SERVICE_RE = re.compile(r"(?:^|/)([A-Za-z0-9_.@-]+\.service)$")
 
 # 2026-07-24: this app now has real per-account roles (shared/models.py::User,
 # created via the "Người dùng" card below) instead of the single hardcoded
@@ -644,6 +645,46 @@ def _dashboard_restart_script(pid: int, host: str, port: int) -> str:
     )
 
 
+def _current_systemd_service_unit(cgroup_text: str | None = None) -> str | None:
+    """Return the systemd service owning this process, when there is one.
+
+    A detached child still remains in its parent's systemd cgroup.  Starting
+    Uvicorn from that child therefore makes every self-restart another nested
+    Dashboard process.  Reading the cgroup lets us ask PID 1 to restart the
+    existing unit instead.
+    """
+    if cgroup_text is None:
+        try:
+            cgroup_text = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            return None
+    for line in cgroup_text.splitlines():
+        path = line.rsplit(":", 1)[-1]
+        match = SYSTEMD_SERVICE_RE.search(path)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _schedule_systemd_dashboard_restart(unit: str, pid: int) -> None:
+    """Schedule restart in a separate transient unit owned by PID 1."""
+    subprocess.run(
+        [
+            "systemd-run",
+            "--quiet",
+            f"--unit=ceph-ai-dashboard-restart-{pid}",
+            f"--on-active={DASHBOARD_RESTART_GRACE_SECONDS}s",
+            "/bin/systemctl",
+            "restart",
+            unit,
+        ],
+        check=True,
+        timeout=5,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def restart_dashboard_process(host: str, port: int) -> None:
     """Restarts the CURRENT Dashboard process — the one handling THIS
     request — not a separate child process like Worker/Watcher.
@@ -666,6 +707,11 @@ def restart_dashboard_process(host: str, port: int) -> None:
     the current connection, those don't).
     """
     pid = os.getpid()
+    systemd_unit = _current_systemd_service_unit()
+    if systemd_unit:
+        _schedule_systemd_dashboard_restart(systemd_unit, pid)
+        return
+
     script = _dashboard_restart_script(pid, host, port)
     script_path = Path(tempfile.gettempdir()) / f"ceph_aiops_dashboard_restart_{pid}.sh"
     script_path.write_text(script)

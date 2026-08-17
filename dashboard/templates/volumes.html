@@ -280,7 +280,7 @@
               {% endif %}
               <td>
                 <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>
-                {% if is_admin and selected_cluster.is_default and summary.entry_count %}
+                {% if is_admin and selected_cluster.is_default and summary.eligible_count %}
                 <form method="post" action="/volumes/{{ summary.pool }}/trash/purge-all" class="inline-form"
                   onsubmit="return confirm('Tạo đề xuất XOÁ VĨNH VIỄN tất cả {{ summary.entry_count }} volume trong Trash của pool {{ summary.pool }}? Action cần được duyệt trước khi Worker thực thi.');">
                   <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Đề xuất xoá tất cả</button>
@@ -303,7 +303,7 @@
           <h2>Trash — {{ selected_pool }}</h2>
           <div>
             <a href="/trash" class="btn btn-ghost btn-sm">Chọn pool khác</a>
-            {% if is_admin and selected_cluster.is_default and trash_entries %}
+            {% if is_admin and selected_cluster.is_default and trash_entries|selectattr('purge_eligible')|list|length %}
             <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form"
               onsubmit="return confirm('Tạo đề xuất XOÁ VĨNH VIỄN tất cả {{ trash_entries|length }} volume trong Trash của pool {{ selected_pool }}? Action cần được duyệt trước khi Worker thực thi.');">
               <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Đề xuất xoá tất cả</button>
@@ -313,7 +313,7 @@
         </div>
       </div>
       <div class="card-body">
-        <p class="hint metrics-panel-desc">Chỉ hiển thị Volume đã xoá mềm thuộc pool <code>{{ selected_pool }}</code>. Xoá từng volume và purge-all đều tạo action RISKY, cần duyệt trước khi Worker thực thi.</p>
+        <p class="hint metrics-panel-desc">Volume được giữ tối thiểu <strong>{{ trash_retention_days }} ngày</strong> để khôi phục. Xoá vĩnh viễn chỉ mở sau khi hết TTL và luôn cần duyệt.</p>
         {% if purge_error %}<p class="error">{{ purge_error }}</p>{% endif %}
         {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
         {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
@@ -327,19 +327,20 @@
           <span id="trash-filter-result" role="status" aria-live="polite">Hiển thị 1-{{ [trash_entries|length, 10]|min }} / {{ trash_entries|length }} Trash</span>
         </div>
         <div class="table-wrap"><table id="trash-entry-list">
-          <thead><tr><th>Volume</th><th>ID</th><th>Đã dùng</th><th>Logic</th><th>Thời điểm xoá</th><th>Trạng thái</th><th></th></tr></thead>
+          <thead><tr><th>Volume</th><th>ID</th><th>Đã dùng</th><th>Logic</th><th>Thời điểm xoá</th><th>TTL</th><th>Trạng thái</th><th></th></tr></thead>
           <tbody>{% for entry in trash_entries %}
           <tr id="trash-{{ entry.id }}" data-trash-id="{{ entry.id }}"{% if loop.index > 10 %} hidden{% endif %}>
             <td><details><summary><code>{{ entry.name }}</code></summary><p class="hint">Pool: {{ entry.pool }}<br>ID: {{ entry.id }}<br>Đã dùng: {{ entry.used_size_human }}<br>Dung lượng logic: {{ entry.size_human }}<br>Xoá mềm: {{ entry.deletion_time or "—" }}</p></details></td>
             <td><code>{{ entry.id }}</code></td><td>{{ entry.used_size_human }}</td><td>{{ entry.size_human }}</td>
-            <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.status or "—" }}</td>
+            <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.retention_label }}</td><td>{{ entry.status or "—" }}</td>
             <td>
               {% set pending_action = trash_pending.get(entry.pool ~ '/' ~ entry.id) %}
               {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
               <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button class="btn btn-approve btn-sm">Duyệt xoá</button></form>
               <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
               {% elif pending_action %}<span class="hint">Đang chờ Worker</span>
-              {% else %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>{% endif %}
+              {% elif entry.purge_eligible %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>
+              {% else %}<span class="hint">Chưa hết TTL</span>{% endif %}
               {% if is_admin %}
               <form class="inline-form trash-restore-form" data-pool="{{ entry.pool }}" data-trash-id="{{ entry.id }}">
                 <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" value="{{ entry.name }}" aria-label="Tên Volume khôi phục">

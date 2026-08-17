@@ -459,6 +459,26 @@ def test_restore_to_production_succeeds_when_full_backup_exists(isolated_db, fak
     assert bytes(FakeSSHClient.imported_calls[0][1]) == b"full backup content"
 
 
+def test_restore_as_new_uses_distinct_destination_and_verifies_it(isolated_db, fake_backend_and_ssh):
+    _make_success_full_backup_job(fake_backend_and_ssh)
+    incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_as_new")
+
+    succeeded = engine.run(
+        action_pk,
+        "restore_rbd_image_as_new",
+        {"pool": "vms", "image": "web01", "dest_pool": "recovery", "dest_image": "web01-restored"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is True
+    commands = [row[0] for row in FakeSSHClient.imported_calls]
+    assert "rbd import - recovery/web01-restored" in commands
+    assert "rbd info recovery/web01-restored --format json" in commands
+
+
 def test_restore_to_production_fails_when_no_full_backup_exists(isolated_db, fake_backend_and_ssh):
     incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
 

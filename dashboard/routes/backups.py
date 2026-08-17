@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard.routes import auth
-from dashboard.cluster_scope import cluster_selection, selected_cluster
+from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
@@ -51,6 +52,8 @@ from worker.backup.cluster_scope import parse_tracked_images
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from worker.policy import gate
+from watcher import ceph_client
+from watcher.ceph_client import CephQueryError
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,7 @@ BACKUP_PROGRESS_ACTION_IDS = (
     "backup_metadata_run",
     "restore_drill_execute",
     "restore_rbd_image_to_production",
+    "restore_rbd_image_as_new",
 )
 # Same constant, same values, as dashboard/routes/volumes.py|deploy_cluster.py|
 # patch.py|upgrade.py|delete_cluster.py|convert_cluster.py — no shared helper
@@ -86,7 +90,10 @@ ANOMALY_LIMIT = 20
 # a tracked image and clicking "Khôi phục").
 RESTORE_CEPH_CODE = "RESTORE_RBD_IMAGE_TO_PRODUCTION"
 RESTORE_ACTION_ID = "restore_rbd_image_to_production"
+RESTORE_AS_NEW_ACTION_ID = "restore_rbd_image_as_new"
 MANUAL_BACKUP_CEPH_CODE = "BACKUP_MANUAL"
+RESTORE_AS_NEW_CEPH_CODE = "RESTORE_RBD_IMAGE_AS_NEW"
+_RBD_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
 def _require_admin_privilege(user: str) -> None:
@@ -116,7 +123,7 @@ def _pending_restore_action(cluster=None) -> Action | None:
     with db.SessionLocal() as session:
         return (
             session.query(Action).join(Incident, Action.incident_id == Incident.id)
-            .filter(Action.action_id == RESTORE_ACTION_ID, Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+            .filter(Action.action_id.in_((RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID)), Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
                     _job_scope(Incident.cluster_id, cluster) if cluster is not None else True)
             .order_by(Action.created_at.desc())
             .first()
@@ -405,6 +412,117 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
         session.commit()
         action_pk = action.id
 
+    return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.post("/backups/restore-as-new/propose")
+async def propose_restore_as_new(request: Request, user: str = Depends(require_login)):
+    """Restore the latest verified chain into a new RBD image.
+
+    This is the safe default restore path: the source image is never mutated.
+    Live destination existence/capacity checks are repeated by Ceph itself at
+    execution time because ``rbd import`` fails closed if the name appears in
+    the approval gap.
+    """
+    _require_admin_privilege(user)
+    body = await request.json()
+    pool = str(body.get("pool", "")).strip()
+    image = str(body.get("image", "")).strip()
+    dest_pool = str(body.get("dest_pool", "")).strip()
+    dest_image = str(body.get("dest_image", "")).strip()
+    if not all(_RBD_NAME_RE.fullmatch(value) for value in (pool, image, dest_pool, dest_image)):
+        raise HTTPException(status_code=400, detail="Pool/image chỉ được chứa chữ, số, dấu chấm, gạch dưới hoặc gạch ngang.")
+    if pool == dest_pool and image == dest_image:
+        raise HTTPException(status_code=400, detail="Volume đích phải khác volume nguồn.")
+
+    cluster = selected_cluster(request)
+    if not any(t["pool"] == pool and t["image"] == image for t in _tracked_images(cluster)):
+        raise HTTPException(status_code=400, detail="Image nguồn không nằm trong tracked_images.")
+    with db.SessionLocal() as session:
+        full_job = (
+            session.query(BackupJob)
+            .filter(
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                BackupJob.job_type == "full",
+                BackupJob.status == "SUCCESS",
+                _job_scope(BackupJob.cluster_id, cluster),
+            )
+            .order_by(BackupJob.created_at.desc())
+            .first()
+        )
+    if full_job is None:
+        raise HTTPException(status_code=409, detail="Chưa có bản full backup thành công để khôi phục.")
+
+    try:
+        inventory = (
+            ceph_client.query_rbd_inventory(dest_pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(dest_pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không kiểm tra được pool đích: {exc}") from exc
+    if any(row.get("name") == dest_image for row in inventory):
+        raise HTTPException(status_code=409, detail=f"Volume đích {dest_pool}/{dest_image} đã tồn tại.")
+    max_available = int(overview.get("max_available") or 0)
+    if max_available and int(full_job.size_bytes or 0) > max_available:
+        raise HTTPException(status_code=409, detail="Pool đích không đủ dung lượng cho bản full backup.")
+
+    mon_nodes = [n["host"] for n in configured_nodes(None if cluster.is_default else cluster) if "MON" in n["roles"]]
+    if not mon_nodes:
+        raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
+    params = {"pool": pool, "image": image, "dest_pool": dest_pool, "dest_image": dest_image}
+    try:
+        preview_command = executor_commands.get_command(RESTORE_AS_NEW_ACTION_ID, None, params)
+    except ExecutorError as exc:
+        raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}") from exc
+
+    with db.SessionLocal() as session:
+        existing = (
+            session.query(Action)
+            .join(Incident, Action.incident_id == Incident.id)
+            .filter(
+                Action.action_id.in_((RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID)),
+                Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+                _job_scope(Incident.cluster_id, cluster),
+            )
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Đã có một restore đang chờ duyệt hoặc thực thi trên cluster này.")
+        incident = Incident(
+            cluster_id=None if cluster.is_default else cluster.id,
+            ceph_code=RESTORE_AS_NEW_CEPH_CODE,
+            status=IncidentStatus.PENDING_APPROVAL.value,
+            log_excerpt=f"Đề xuất restore {pool}/{image} thành {dest_pool}/{dest_image} bởi {user}",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id,
+            action_id=RESTORE_AS_NEW_ACTION_ID,
+            classification=gate.classify_action(RESTORE_AS_NEW_ACTION_ID).value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            rationale=(
+                f"Khôi phục {pool}/{image} từ full backup gần nhất và chain incremental "
+                f"sang volume mới {dest_pool}/{dest_image}; không thay đổi volume nguồn."
+            ),
+            target_nodes=json.dumps([mon_nodes[0]]),
+            action_params=json.dumps(params),
+            proposed_command=preview_command,
+        )
+        session.add(action)
+        session.flush()
+        audit.record(session, incident_id=incident.id, action_id=action.id,
+                     event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=user)
+        session.commit()
+        action_pk = action.id
     return JSONResponse({"action_id": action_pk}, status_code=201)
 
 

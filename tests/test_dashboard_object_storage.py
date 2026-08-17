@@ -411,6 +411,92 @@ def test_bucket_policy_rejects_unknown_reef_action_and_cross_bucket_resource(das
     assert cross_bucket.status_code == 400
 
 
+def test_delete_empty_bucket_requires_verified_empty_state(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["empty-bucket"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats", lambda host, name: _stats(owner="alice", size=0, objects=0))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+    deleted = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs): return {"Versions": [], "DeleteMarkers": []}
+        def list_objects_v2(self, **kwargs): return {"Contents": []}
+        def delete_bucket(self, **kwargs): deleted.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "delete_empty", "bucket": "empty-bucket", "owner": "alice",
+            "endpoint": "https://rgw.example.test"}
+    preview = dashboard_client.post("/api/object-storage/buckets/delete/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/delete/execute",
+                                     json={**body, "confirmation": "empty-bucket"})
+    assert preview.status_code == 200
+    assert preview.json()["allowed"] is True
+    assert executed.status_code == 200
+    assert deleted == [{"Bucket": "empty-bucket"}]
+
+
+def test_purge_delete_requires_count_bound_confirmation_and_deletes_versions(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["data-bucket"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats", lambda host, name: _stats(owner="alice", size=4096, objects=2))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+    state = {"purged": False, "version_calls": 0}
+    deletions = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            state["version_calls"] += 1
+            if state["purged"]:
+                return {"Versions": [], "DeleteMarkers": []}
+            return {"Versions": [{"Key": "a", "VersionId": "v1"}],
+                    "DeleteMarkers": [{"Key": "b", "VersionId": "d1"}]}
+
+        def list_objects_v2(self, **kwargs):
+            return {"Contents": [] if state["purged"] else [{"Key": "a"}, {"Key": "b"}]}
+
+        def delete_objects(self, **kwargs):
+            deletions.append(kwargs)
+            state["purged"] = True
+
+        def delete_bucket(self, **kwargs): deletions.append(kwargs)
+
+    fake = FakeS3()
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: fake)
+    _login(dashboard_client)
+    body = {"action": "purge_delete", "bucket": "data-bucket", "owner": "alice",
+            "endpoint": "https://rgw.example.test"}
+    preview = dashboard_client.post("/api/object-storage/buckets/delete/preview", json=body)
+    weak = dashboard_client.post("/api/object-storage/buckets/delete/execute", json={
+        **body, "expected_objects": 2, "confirmation": "data-bucket",
+    })
+    executed = dashboard_client.post("/api/object-storage/buckets/delete/execute", json={
+        **body, "expected_objects": 2, "confirmation": "PURGE:data-bucket:2",
+    })
+    assert preview.status_code == 200
+    assert preview.json()["confirmation_required"] == "PURGE:data-bucket:2"
+    assert weak.status_code == 400
+    assert executed.status_code == 200
+    assert deletions[0]["Delete"]["Objects"] == [
+        {"Key": "a", "VersionId": "v1"}, {"Key": "b", "VersionId": "d1"},
+    ]
+    assert deletions[-1] == {"Bucket": "data-bucket"}
+
+
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: [])

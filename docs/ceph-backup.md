@@ -2,7 +2,7 @@
 
 Tài liệu này mô tả toàn bộ hệ thống Backup & DR của ceph-aiops (Epic 9):
 sao lưu RBD image + metadata cụm, lưu trữ 2 bản sao độc lập, chính sách giữ
-bản (retention), giám sát/cảnh báo bằng AI, và 2 luồng khôi phục (khôi phục
+bản (retention), giám sát/cảnh báo bằng AI, và 3 luồng khôi phục (khôi phục
 một volume đè lên production, và khôi phục toàn bộ cụm sau thảm hoạ).
 
 Xem thêm **[runbook-dr.md](./runbook-dr.md)** — hướng dẫn thao tác từng
@@ -368,9 +368,26 @@ Digest được lưu bền vào `BackupDigestLog` (Dashboard trang **Backups** h
 thị lại) và cũng đi qua `alerting.send_alert("info", ...)` — dùng lại đúng
 cơ chế webhook đã có, không tạo đường gửi thứ hai.
 
-## 8. Khôi phục (Restore) — 2 kịch bản khác nhau
+## 8. Khôi phục (Restore) — 3 kịch bản khác nhau
 
-### 8.1. Khôi phục MỘT image đè lên production (`restore_rbd_image_to_production`)
+### 8.1. Khôi phục MỘT image thành volume mới (`restore_rbd_image_as_new`)
+
+Đây là luồng mặc định trên trang **Backups**: vận hành viên chọn pool/image
+đích mới, hệ thống giữ nguyên image nguồn và tạo action chờ duyệt.
+
+- API kiểm tra tên Ceph hợp lệ, bắt buộc đích khác nguồn, chặn image đích đã
+  tồn tại và kiểm tra dung lượng pool cơ bản trước khi tạo action.
+- Action vẫn được phân loại **RISKY** vì tạo dữ liệu thật trong cụm và luôn cần
+  duyệt; audit lưu rõ source và destination.
+- Worker tải bản full thành công mới nhất và toàn bộ diff chain, verify từng
+  artifact trước khi import, sau đó chạy `rbd info` trên image mới.
+- Nếu import hoặc post-check thất bại sau khi image đích được tạo, Worker cố
+  gắng dọn image chưa hoàn chỉnh. Cleanup lỗi được ghi log và không che mất lỗi
+  restore ban đầu.
+- Phiên bản hiện tại chưa có Recovery Point selector và post-verify checksum/
+  read/feature đầy đủ; xem `Plan/backup-roadmap.md` mục 5.1–5.3.
+
+### 8.2. Khôi phục MỘT image đè lên production (`restore_rbd_image_to_production`)
 
 Dùng khi: **một image cụ thể** bị hỏng/mất dữ liệu, nhưng **cụm vẫn đang
 chạy bình thường** — không cần dựng lại gì cả. Trang **Backups**
@@ -380,7 +397,7 @@ chạy bình thường** — không cần dựng lại gì cả. Trang **Backups
 - Luôn **RISKY**, luôn cần duyệt thủ công — hành động này **ghi đè trực
   tiếp** lên dữ liệu production đang tồn tại.
 - Toàn bộ logic thực sự nằm trong `worker/backup/restore.py::restore_image()`
-  — dùng CHUNG với cả bước 12 của khôi phục toàn cụm (mục 8.2): tải bản
+  — dùng CHUNG với cả bước 12 của khôi phục toàn cụm (mục 8.3): tải bản
   **full** gần nhất + **toàn bộ chuỗi incremental** đã build trên đúng bản
   full đó (theo `base_job_id`), **áp dụng theo đúng thứ tự tạo** —
   `rbd import` cho full, rồi `rbd import-diff` lần lượt cho từng incremental.
@@ -392,7 +409,7 @@ chạy bình thường** — không cần dựng lại gì cả. Trang **Backups
   error_message=...)` để nơi gọi (route Dashboard hoặc phase DR) tự quyết
   định cách ghi nhận/báo cáo theo ngữ cảnh riêng của mình.
 
-### 8.2. Khôi phục TOÀN BỘ cụm sau thảm hoạ (`restore_cluster_from_backup`)
+### 8.3. Khôi phục TOÀN BỘ cụm sau thảm hoạ (`restore_cluster_from_backup`)
 
 Dùng khi cụm **đã sập hoàn toàn**, cần dựng lại từ đầu trên node mới. Đi qua
 `worker/executor/cluster_deploy.py` (cùng orchestrator với dựng/xoá/chuyển
@@ -412,11 +429,12 @@ tại **[runbook-dr.md](./runbook-dr.md)**.
 | `retention_sweep_delete` | SAFE | Chỉ xoá các BẢN BACKUP cũ (ở đích lưu trữ), không đụng cụm |
 | `backup_metadata_run` | SAFE | 5 lệnh `ceph ... get*/export/dump`, hoàn toàn read-only với cụm nguồn |
 | `restore_drill_execute` | SAFE | Chỉ đụng scratch pool/image riêng, không đụng dữ liệu thật |
+| `restore_rbd_image_as_new` | **RISKY**, luôn cần duyệt | Tạo volume thật trong cụm nhưng không thay đổi image nguồn; đích phải chưa tồn tại |
 | `restore_rbd_image_to_production` | **RISKY**, luôn cần duyệt | Ghi đè dữ liệu THẬT đang tồn tại — không có ngoại lệ |
 | `backup_delete_manual` | **RISKY**, luôn cần duyệt | Xoá một bản backup NGOÀI lịch retention tự động — chưa được triển khai thực thi (`engine.run()` trả `False` với log rõ ràng nếu action_id này được duyệt, chờ story sau) |
 | `restore_cluster_from_backup` | **RISKY**, luôn cần duyệt | Dựng lại toàn bộ cụm — cùng mức rủi ro với dựng/xoá cụm |
 
-`worker/policy/action_policy.yaml` đăng ký **cả 6 action_id** (kể cả
+`worker/policy/action_policy.yaml` đăng ký toàn bộ action backup (kể cả
 `backup_delete_manual` chưa có logic thật) ngay từ Story 9.1 — cùng tiền lệ
 "đăng ký cả họ, nối logic thực thi dần dần" mà `cluster_deploy_action_ids`
 đã thiết lập ở Epic 8, để các Story sau (9.3/9.4/9.7) không cần đổi gì ở
@@ -448,7 +466,7 @@ không âm thầm bỏ qua đích đó.
 - Bản thân module gốc `worker/backup/engine.py` không tự gắn cảnh báo "chưa
   kiểm chứng trên cụm thật" như `watcher/volume_monitor.py`/
   `worker/executor/cluster_deploy.py`'s convert-to-cephadm — nhưng phần
-  **khôi phục monmap** trong luồng DR toàn cụm (mục 8.2, chi tiết ở
+  **khôi phục monmap** trong luồng DR toàn cụm (mục 8.3, chi tiết ở
   runbook-dr.md) có ghi rõ là **best-effort, chưa kiểm chứng trên cụm lab
   thật**, vì fsid của cụm mới dựng khác fsid gốc trong monmap backup — có
   thể bị Ceph từ chối `--inject-monmap` tuỳ phiên bản.

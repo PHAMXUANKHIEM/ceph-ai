@@ -218,7 +218,7 @@ def run(
         )
     if action_id == "restore_drill_execute":
         return restore_drill.run(action_pk, action_params, incident_id, write_progress)
-    if action_id == "restore_rbd_image_to_production":
+    if action_id in ("restore_rbd_image_to_production", "restore_rbd_image_as_new"):
         return _run_restore_to_production(
             action_pk, action_params, incident_id, cluster_id, write_progress
         )
@@ -505,6 +505,8 @@ def _run_restore_to_production(
     and turns the result into progress/log output."""
     pool = action_params.get("pool")
     image = action_params.get("image")
+    dest_pool = action_params.get("dest_pool") or pool
+    dest_image = action_params.get("dest_image") or image
     if not pool or not image:
         logger.error(
             "backup_engine._run_restore_to_production: missing pool/image in action_params for action %s",
@@ -525,7 +527,16 @@ def _run_restore_to_production(
         return False
 
     backend = get_backend_for_cluster(cluster) if cluster is not None else get_backend(slot, settings)
-    result = restore.restore_image(pool, image, backend, pool, image, cluster_id=cluster_id)
+    restore_as_new = dest_pool != pool or dest_image != image
+    result = restore.restore_image(
+        pool,
+        image,
+        backend,
+        dest_pool,
+        dest_image,
+        cluster_id=cluster_id,
+        cleanup_new_destination_on_failure=restore_as_new,
+    )
 
     if not result.success:
         progress[0]["status"] = "failed"
@@ -533,8 +544,8 @@ def _run_restore_to_production(
         write_progress(action_pk, progress)
         logger.error(
             "backup_engine._run_restore_to_production: restore failed for %s/%s: %s",
-            pool,
-            image,
+            dest_pool,
+            dest_image,
             result.error_message,
         )
         return False

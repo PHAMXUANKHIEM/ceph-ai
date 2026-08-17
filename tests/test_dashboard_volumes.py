@@ -46,6 +46,14 @@ def _login_as(client, username, password):
 def _configure_pools(monkeypatch):
     monkeypatch.setattr(settings, "ceph_rbd_pools", "vms,backups")
     monkeypatch.setattr(volumes_route, "_rbd_pools_for_request", lambda request: ["vms", "backups"])
+    monkeypatch.setattr(
+        volumes_route.ceph_client, "query_rbd_trash",
+        lambda pool: [
+            {"id": trash_id, "name": name, "deletion_time": "2020-01-01 00:00:00",
+             "status": "expired", "size_bytes": 1, "used_size_bytes": 1}
+            for trash_id, name in (("1234567890ab", "old-disk"), ("other-id", "other-disk"))
+        ],
+    )
 
 
 def _configure_openstack_controller():
@@ -1320,8 +1328,8 @@ def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
         volumes_route.ceph_client,
         "query_rbd_trash",
         lambda pool: [
-            {"id": "id-1", "name": "disk-1"},
-            {"id": "id-2", "name": "disk-2"},
+            {"id": "id-1", "name": "disk-1", "deletion_time": "2020-01-01 00:00:00"},
+            {"id": "id-2", "name": "disk-2", "deletion_time": "2020-01-01 00:00:00"},
         ],
     )
     _login(dashboard_client)
@@ -1351,7 +1359,8 @@ def test_purge_all_trash_rejects_duplicate_in_flight_proposal(dashboard_client, 
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
         volumes_route.ceph_client,
-        "query_rbd_trash", lambda pool: [{"id": "id-1", "name": "disk-1"}],
+        "query_rbd_trash",
+        lambda pool: [{"id": "id-1", "name": "disk-1", "deletion_time": "2020-01-01 00:00:00"}],
     )
     _login(dashboard_client)
 
@@ -1372,6 +1381,29 @@ def test_purge_all_trash_empty_trash_reports_nothing_to_delete(dashboard_client,
     assert response.status_code == 409
     with db_module.SessionLocal() as session:
         assert session.query(Action).filter_by(action_id="rbd_trash_purge_all").count() == 0
+
+
+def test_trash_ttl_blocks_early_delete_and_purge_all(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(settings, "rbd_trash_retention_days", 30)
+    fresh = {
+        "id": "fresh-id", "name": "fresh-disk",
+        "deletion_time": datetime.utcnow().isoformat(), "status": "normal",
+        "size_bytes": 1, "used_size_bytes": 1,
+    }
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: [fresh])
+    _login(dashboard_client)
+
+    page = dashboard_client.get("/trash?pool=vms")
+    single = dashboard_client.post("/volumes/vms/trash/fresh-id/propose")
+    bulk = dashboard_client.post("/volumes/vms/trash/purge-all")
+
+    assert page.status_code == 200
+    assert "Còn 30 ngày" in page.text
+    assert "Chưa hết TTL" in page.text
+    assert 'action="/volumes/vms/trash/fresh-id/propose"' not in page.text
+    assert single.status_code == 409
+    assert bulk.status_code == 409
 
 
 def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkeypatch):

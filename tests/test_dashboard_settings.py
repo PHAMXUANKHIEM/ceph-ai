@@ -1574,6 +1574,32 @@ def test_dashboard_restart_script_contains_pid_host_port_and_execs_uvicorn():
     )
 
 
+def test_current_systemd_service_unit_extracts_owning_service():
+    assert settings_route._current_systemd_service_unit(
+        "0::/system.slice/ceph-ai-dashboard-runtime.service\n"
+    ) == "ceph-ai-dashboard-runtime.service"
+    assert settings_route._current_systemd_service_unit("0::/user.slice/session-1.scope\n") is None
+
+
+def test_restart_dashboard_uses_pid1_when_running_in_systemd(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        settings_route,
+        "_current_systemd_service_unit",
+        lambda: "ceph-ai-dashboard-runtime.service",
+    )
+    monkeypatch.setattr(settings_route.os, "getpid", lambda: 12345)
+    monkeypatch.setattr(
+        settings_route,
+        "_schedule_systemd_dashboard_restart",
+        lambda unit, pid: captured.append((unit, pid)),
+    )
+
+    settings_route.restart_dashboard_process("10.3.55.213", 8000)
+
+    assert captured == [("ceph-ai-dashboard-runtime.service", 12345)]
+
+
 # --- Admin-only restart controls (Worker/Watcher/Dashboard) ----------------
 #
 # 2026-07-24: this app now has real per-account roles (shared/models.py::User)

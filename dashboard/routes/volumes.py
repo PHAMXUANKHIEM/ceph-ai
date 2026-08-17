@@ -268,12 +268,14 @@ def _volumes_page_context(
                 continue
             rows = result
             try:
+                retention_rows = [_trash_retention(dict(row)) for row in rows]
                 total_used_size_bytes = sum(max(0, int(row.get("used_size_bytes") or 0)) for row in rows)
                 total_provisioned_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
                 trash_pool_summaries.append(
                     {
                         "pool": trash_pool,
                         "entry_count": len(rows),
+                        "eligible_count": sum(1 for retention in retention_rows if retention["purge_eligible"]),
                         "total_used_size_bytes": total_used_size_bytes,
                         "total_used_size_human": _format_bytes(total_used_size_bytes),
                         "total_provisioned_size_bytes": total_provisioned_size_bytes,
@@ -288,6 +290,7 @@ def _volumes_page_context(
                     item["pool"] = trash_pool
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
                     item["used_size_human"] = _format_bytes(item.get("used_size_bytes", 0))
+                    item.update(_trash_retention(item))
                     trash_entries.append(item)
             except (TypeError, ValueError) as exc:
                 logger.warning("_volumes_page_context: invalid trash response for pool %r: %s", trash_pool, exc)
@@ -317,6 +320,7 @@ def _volumes_page_context(
         "purge_success": purge_success,
         "clusters": clusters or [],
         "selected_cluster": selected_cluster,
+        "trash_retention_days": max(1, min(int(settings.rbd_trash_retention_days), 3650)),
     }
 
 
@@ -328,6 +332,27 @@ def _format_bytes(value: int | float) -> str:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
     return "0 B"
+
+
+def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:
+    ttl_days = max(1, min(int(settings.rbd_trash_retention_days), 3650))
+    raw = str(entry.get("deletion_time") or entry.get("deleted_at") or "").strip()
+    try:
+        deleted_at = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return {
+            "purge_eligible": False, "expires_at": None,
+            "retention_label": "Không xác định thời điểm xoá", "retention_days": ttl_days,
+        }
+    expires_at = deleted_at + timedelta(days=ttl_days)
+    remaining_seconds = (expires_at - (now or datetime.utcnow())).total_seconds()
+    remaining_days = max(0, int((remaining_seconds + 86399) // 86400))
+    return {
+        "purge_eligible": remaining_seconds <= 0,
+        "expires_at": expires_at.isoformat() + "Z",
+        "retention_label": "Đã hết TTL" if remaining_seconds <= 0 else f"Còn {remaining_days} ngày",
+        "retention_days": ttl_days,
+    }
 
 
 @router.get("/volumes", response_class=HTMLResponse)
@@ -1354,6 +1379,16 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
     allowed_pools = set(ceph_client.configured_rbd_pools())
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    try:
+        entries = ceph_client.query_rbd_trash(pool)
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không kiểm tra được TTL Trash: {exc}")
+    entry = next((row for row in entries if str(row.get("id")) == trash_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Trash ID không còn tồn tại trong pool")
+    retention = _trash_retention(dict(entry))
+    if not retention["purge_eligible"]:
+        raise HTTPException(status_code=409, detail=f"Volume chưa hết TTL: {retention['retention_label']}")
 
     # 2026-07-28 fix: this used to be target_nodes=[] — worker/llm/
     # router_client.py::_execute_approved_action requires a NON-EMPTY host
@@ -1444,9 +1479,9 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         entries = await asyncio.to_thread(ceph_client.query_rbd_trash, pool)
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không lấy được danh sách trash: {exc}")
-    trash_ids = [str(entry["id"]) for entry in entries]
+    trash_ids = [str(entry["id"]) for entry in entries if _trash_retention(dict(entry))["purge_eligible"]]
     if not trash_ids:
-        raise HTTPException(status_code=409, detail="Trash của pool này đang trống")
+        raise HTTPException(status_code=409, detail="Không có Trash item nào đã hết TTL để purge")
     mon_nodes = ceph_client.get_mon_nodes()
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="Chưa cấu hình CEPH_MON_NODES")

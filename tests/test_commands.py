@@ -865,6 +865,16 @@ def test_get_command_restore_rbd_image_to_production_builds_preview_text():
     assert "vms/web01" in preview
 
 
+def test_get_command_restore_rbd_image_as_new_builds_safe_preview_text():
+    preview = commands_module.get_command(
+        "restore_rbd_image_as_new",
+        None,
+        {"pool": "vms", "image": "web01", "dest_pool": "recovery", "dest_image": "web01-copy"},
+    )
+    assert "recovery/web01-copy" in preview
+    assert "không thay đổi volume nguồn" in preview
+
+
 def test_has_command_false_for_backup_delete_manual_not_yet_implemented():
     # backup_delete_manual is registered in the policy enum (Story 9.1) but
     # has no engine.py execution and no preview builder yet — has_command()

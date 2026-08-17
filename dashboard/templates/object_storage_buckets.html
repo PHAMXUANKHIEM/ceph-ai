@@ -132,6 +132,10 @@
       </form>
       <div id="bucket-policy-preview" hidden><pre id="bucket-policy-diff"></pre><p id="bucket-policy-warning" class="warning"></p><label>Nhập giá trị xác nhận<input id="bucket-policy-confirmation" maxlength="255" autocomplete="off"></label><button id="bucket-policy-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
       <p id="bucket-policy-status" class="hint"></p>
+    </div></section>
+    <section class="card"><div class="card-header"><div><h2>Delete Bucket</h2><p class="hint">Bucket rỗng và bucket có dữ liệu là hai luồng riêng. Purge xóa vĩnh viễn toàn bộ object versions và delete markers; hệ thống không bypass retention/Object Lock.</p></div></div><div class="card-body">
+      <form id="bucket-delete-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}"><label>Luồng xóa<select id="bucket-delete-action"><option value="delete_empty">Xóa bucket rỗng</option><option value="purge_delete">Purge dữ liệu &amp; xóa bucket</option></select></label><label>Bucket<input id="bucket-delete-name" maxlength="63" required></label><label>Owner UID<input id="bucket-delete-owner" maxlength="128" required></label><label>RGW S3 endpoint<input id="bucket-delete-endpoint" type="url" required placeholder="https://rgw.example.com"></label><button class="btn btn-danger btn-sm" type="submit">Kiểm tra tác động</button></form>
+      <div id="bucket-delete-preview" hidden><pre id="bucket-delete-impact"></pre><p id="bucket-delete-warning" class="warning"></p><label>Nhập giá trị xác nhận<input id="bucket-delete-confirmation" maxlength="255" autocomplete="off"></label><button id="bucket-delete-execute" class="btn btn-danger btn-sm" type="button" disabled>Xóa vĩnh viễn</button></div><p id="bucket-delete-status" class="hint"></p>
     </div></section>{% endif %}
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>

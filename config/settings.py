@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     # poll cost control, or a pool you deliberately don't want watched) —
     # once set, it's the ONLY list used, auto-discovery is skipped entirely.
     ceph_rbd_pools: str = ""
+    # Minimum recovery window before a soft-deleted RBD image becomes
+    # eligible for permanent removal. Restore remains available throughout.
+    rbd_trash_retention_days: int = 7
 
     # 2026-08-01 (Story C, DeviceHealth-driven evacuation proposals) —
     # watcher/device_health_monitor.py's own scan cadence, deliberately

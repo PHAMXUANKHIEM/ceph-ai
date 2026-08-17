@@ -15,6 +15,7 @@
     backup_metadata_run: "Backup metadata cụm",
     restore_drill_execute: "RestoreDrill",
     restore_rbd_image_to_production: "Khôi phục volume",
+    restore_rbd_image_as_new: "Khôi phục thành volume mới",
   };
 
   function fmt(v, digits) {
@@ -110,21 +111,27 @@
     });
   }
 
-  // --- Khôi phục 1 volume (Story 9.7, restore_rbd_image_to_production) ---
+  // Safe default: restore into a new image and leave production untouched.
 
   Array.prototype.forEach.call(document.querySelectorAll(".btn-restore-image"), function (btn) {
     btn.addEventListener("click", function () {
       var pool = btn.getAttribute("data-pool");
       var image = btn.getAttribute("data-image");
-      if (!window.confirm("Xác nhận đề xuất khôi phục " + pool + "/" + image + " từ backup? Thao tác này sẽ GHI ĐÈ dữ liệu hiện tại của image này sau khi được duyệt.")) {
+      var destPool = window.prompt("Pool đích cho volume khôi phục:", pool);
+      if (destPool === null) return;
+      var destImage = window.prompt("Tên volume mới:", image + "-restored");
+      if (destImage === null) return;
+      destPool = destPool.trim();
+      destImage = destImage.trim();
+      if (!destPool || !destImage || !window.confirm("Khôi phục " + pool + "/" + image + " thành volume mới " + destPool + "/" + destImage + "? Volume nguồn sẽ không bị thay đổi.")) {
         return;
       }
       btn.disabled = true;
-      fetch("/backups/restore/propose", {
+      fetch("/backups/restore-as-new/propose", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pool: pool, image: image })
+        body: JSON.stringify({ pool: pool, image: image, dest_pool: destPool, dest_image: destImage })
       })
         .then(function (response) {
           if (!response.ok) {

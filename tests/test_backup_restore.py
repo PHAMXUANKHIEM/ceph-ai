@@ -212,9 +212,10 @@ def test_restore_image_applies_full_then_diffs_in_order(isolated_db):
         "rbd import - vms/web01",
         "rbd import-diff - vms/web01",
         "rbd import-diff - vms/web01",
+        "rbd info vms/web01 --format json",
     ]
     payloads = [bytes(sink) for _cmd, sink in FakeSSHClient.imported_calls]
-    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT]
+    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT, b""]
 
 
 def test_restore_image_restores_into_a_different_dest(isolated_db):
@@ -226,6 +227,22 @@ def test_restore_image_restores_into_a_different_dest(isolated_db):
 
     assert result.success is True
     assert FakeSSHClient.imported_calls[0][0] == "rbd import - restored/web01-copy"
+    assert FakeSSHClient.imported_calls[-1][0] == "rbd info restored/web01-copy --format json"
+
+
+def test_restore_as_new_cleans_partial_destination_when_verify_fails(isolated_db):
+    storage = FakeStorageBackend()
+    storage.put("full/vms/web01/backup-1.bin", FULL_CONTENT)
+    _make_full_job()
+    FakeSSHClient.exit_status_by_cmd["rbd info restored/web01-copy --format json"] = 1
+
+    result = restore.restore_image(
+        "vms", "web01", storage, "restored", "web01-copy",
+        cleanup_new_destination_on_failure=True,
+    )
+
+    assert result.success is False
+    assert FakeSSHClient.imported_calls[-1][0] == "rbd rm restored/web01-copy"
 
 
 def test_restore_image_fails_when_no_successful_full_backup_exists(isolated_db):
@@ -283,4 +300,4 @@ def test_restore_image_ignores_failed_incremental_jobs(isolated_db):
     assert result.success is True
     assert result.applied_diff_job_ids == []
     commands = [cmd for cmd, _sink in FakeSSHClient.imported_calls]
-    assert commands == ["rbd import - vms/web01"]
+    assert commands == ["rbd import - vms/web01", "rbd info vms/web01 --format json"]

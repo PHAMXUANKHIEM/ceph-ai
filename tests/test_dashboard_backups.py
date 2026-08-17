@@ -367,6 +367,78 @@ def test_restore_propose_rejects_when_no_successful_full_exists(dashboard_client
     assert "full backup" in response.json()["detail"]
 
 
+def _stub_restore_as_new_preflight(monkeypatch, inventory=None, max_available=10_000):
+    monkeypatch.setattr(backups_route.ceph_client, "query_rbd_inventory", lambda pool: inventory or [])
+    monkeypatch.setattr(
+        backups_route.ceph_client,
+        "query_rbd_pool_overview",
+        lambda pool: {"max_available": max_available},
+    )
+
+
+def test_restore_as_new_propose_creates_pending_risky_action(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_as_new_preflight(monkeypatch)
+    monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _seed_successful_full()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/backups/restore-as-new/propose",
+        json={"pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "disk1-copy"},
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert action.action_id == "restore_rbd_image_as_new"
+        assert action.classification == "RISKY"
+        assert json.loads(action.action_params) == {
+            "pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "disk1-copy"
+        }
+        assert "không thay đổi volume nguồn" in action.rationale
+
+
+def test_restore_as_new_rejects_existing_destination(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_as_new_preflight(monkeypatch, inventory=[{"name": "disk1-copy"}])
+    monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
+    _seed_successful_full()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/backups/restore-as-new/propose",
+        json={"pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "disk1-copy"},
+    )
+
+    assert response.status_code == 409
+    assert "đã tồn tại" in response.json()["detail"]
+
+
+def test_restore_as_new_rejects_same_source_and_destination(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/backups/restore-as-new/propose",
+        json={"pool": "vms", "image": "disk1", "dest_pool": "vms", "dest_image": "disk1"},
+    )
+
+    assert response.status_code == 400
+    assert "phải khác" in response.json()["detail"]
+
+
+def test_backups_page_uses_restore_as_new_as_safe_default(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _seed_successful_full()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/backups")
+
+    assert "Khôi phục thành volume mới" in response.text
+    assert "không thay đổi volume nguồn" in response.text
+
+
 def test_admin_can_queue_manual_rbd_backup(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
