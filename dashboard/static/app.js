@@ -182,7 +182,7 @@
     if (!linksByPath["/object-storage/buckets"]) {
       var objectStorageLink = document.createElement("a");
       objectStorageLink.href = "/object-storage/buckets";
-      objectStorageLink.className = window.location.pathname.indexOf("/object-storage/") === 0 ? "nav-link active" : "nav-link";
+      objectStorageLink.className = window.location.pathname.indexOf("/object-storage/buckets") === 0 ? "nav-link active" : "nav-link";
       objectStorageLink.textContent = "Buckets";
       linksByPath["/object-storage/buckets"] = objectStorageLink;
     }
