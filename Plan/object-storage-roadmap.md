@@ -118,12 +118,18 @@ thể gọi API ghi dù cố gửi request trực tiếp.
 
 ### 3. Bucket Operations và Data Governance — ưu tiên P1 `[~] Đang triển khai 2026-08-17`
 
-- [~] **3.1 Create bucket**: tên hợp lệ, owner, placement/storage class và
+- [x] **3.1 Create bucket**: tên hợp lệ, owner, placement/storage class và
   quota tùy khả năng cluster; preview trước khi tạo.
   - Đã thêm live capability gate đọc `ceph versions`, map đúng release docs
     và xác nhận create bucket phải dùng S3 API (không dựng lệnh
     `radosgw-admin bucket create` không tồn tại). Mixed/unknown version
-    fail-closed; tiếp theo bổ sung RGW S3 endpoint an toàn và flow create.
+    fail-closed. Flow preview/execute validate tên DNS, owner và endpoint,
+    hỗ trợ placement theo `zonegroup_api_name:placement_target`, tạo access
+    key tạm nội bộ cho owner, gọi S3 `CreateBucket`, rồi luôn thu hồi key;
+    secret không vào response/audit. Storage class được khai báo rõ là thuộc
+    lúc ghi object, không phải tham số bucket-create. Quota bucket được giữ ở
+    mục 3.2 để có preview/rollback độc lập, tránh báo create thất bại khi
+    bucket thực tế đã tồn tại.
 - [ ] **3.2 Cập nhật quota, versioning và object-lock/retention** khi RGW hỗ
   trợ; capability detection phải ẩn/khóa tính năng không được hỗ trợ.
 - [ ] **3.3 Lifecycle policy**: editor có schema validation, preview rule,
@@ -227,6 +233,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 2.3 | Đang làm | Thêm tạo/revoke S3 access key với preview, admin RBAC, confirmation, audit redaction và UI one-time secret. Rotate là flow hai bước create rồi revoke để tránh mất quyền truy cập ngoài ý muốn. | User/key + adaptor + migration regression: 46 passed; JS syntax và `git diff --check` sạch. | Chưa commit; cần kiểm chứng capability trên RGW thật và hoàn thiện test cluster phụ trước khi đóng 2.3. |
 | 2026-08-17 | 2.4 | Đang làm | Thêm API và UI hai bước cho quota set/enable/disable, capability add/remove với allowlist, effect preview, admin RBAC, confirmation, audit và cluster scope. | User/settings + adaptor regression: 44 passed; JS syntax và `git diff --check` sạch. | Chưa commit; sau khi merge chuyển sang regression gate 2.5. |
 | 2026-08-17 | 2.5 | Đang làm | Bổ sung direct-write RBAC cho toàn bộ preview/execute API, key action cluster phụ và redaction credential ở cả HTTP error/audit failure. | S3 user/key/settings + adaptor + migration: 56 passed; JS syntax và `git diff --check` sạch. | Chưa commit; sau khi merge có thể đóng pha 2 và chuyển sang 3.1 Create Bucket. |
+| 2026-08-17 | 3.1 | Hoàn thành | Thêm create bucket hai bước qua S3 API, live Ceph release gate, DNS/endpoint/owner validation, optional Reef placement constraint, admin RBAC, persistent audit và credential tạm được thu hồi sau request. Không giả lập storage class ở bucket-create; quota chuyển sang 3.2. | Object Storage regression: 89 passed; JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 3.2 quota/versioning/object-lock capability editor. |
 
 ## Ghi chú bàn giao
 

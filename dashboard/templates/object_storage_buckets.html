@@ -31,7 +31,7 @@
   <main class="page">
     <section class="card">
       <div class="card-header">
-        <div><h2>Bucket Overview</h2><p class="hint">Bucket RGW trên cụm <strong>{{ selected_cluster.name }}</strong>. Chỉ đọc metadata; chưa thực hiện thay đổi trên Object Storage.</p></div>
+        <div><h2>Bucket Overview</h2><p class="hint">Bucket RGW trên cụm <strong>{{ selected_cluster.name }}</strong>. Metadata được đọc trực tiếp từ RGW.</p></div>
       </div>
       <div class="card-body">
           <form method="get" action="/object-storage/buckets" class="audit-filters">
@@ -74,7 +74,20 @@
         {% if inventory.page_count > 1 %}<span>{% if inventory.page > 1 %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page - 1 }}">Trước</a>{% endif %}{% if inventory.page < inventory.page_count %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}{{ filters }}&amp;page={{ inventory.page + 1 }}">Sau</a>{% endif %}</span>{% endif %}
       </div>
     </section>
+    {% if is_admin %}<section class="card"><div class="card-header"><div><h2>Tạo bucket</h2><p class="hint">Kiểm tra phiên bản Ceph trực tiếp, tạo bucket qua S3 API và dùng access key tạm của owner; key được thu hồi ngay sau request.</p></div></div><div class="card-body">
+      <form id="bucket-create-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
+        <label>Tên bucket<input id="bucket-create-name" maxlength="63" required placeholder="team-archive"></label>
+        <label>Owner UID<input id="bucket-create-owner" maxlength="128" required></label>
+        <label>RGW S3 endpoint<input id="bucket-create-endpoint" type="url" required placeholder="https://rgw.example.com"></label>
+        <label>Zonegroup API name<input id="bucket-create-api-name" maxlength="128" placeholder="default"></label>
+        <label>Placement target<input id="bucket-create-placement" maxlength="128" placeholder="new-placement"></label>
+        <button class="btn btn-primary btn-sm" type="submit">Xem trước</button>
+      </form>
+      <div id="bucket-create-preview" hidden><p id="bucket-create-summary"></p><label>Nhập lại tên bucket<input id="bucket-create-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-create-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
+      <p id="bucket-create-status" class="hint"></p>
+    </div></section>{% endif %}
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/object_storage_buckets.js?v={{ static_version }}"></script>
 </body>
 </html>

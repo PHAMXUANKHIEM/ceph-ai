@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import bcrypt
 from config.settings import settings
 from shared import db
-from shared.models import Cluster, User
+from shared.models import Cluster, ObjectStorageAuditEntry, User
 from watcher.rgw_access_log import RgwLogError
 
 
@@ -81,6 +81,69 @@ def test_capability_api_fails_closed_for_mixed_cluster(dashboard_client, monkeyp
     response = dashboard_client.get("/api/object-storage/capabilities")
     assert response.status_code == 502
     assert "lẫn phiên bản" in response.json()["detail"]
+
+
+def test_create_bucket_uses_s3_api_temporary_owner_key_and_audit(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {
+        "user_id": uid, "suspended": 0,
+    })
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    revoked = []
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda host, uid, key: revoked.append((host, uid, key)))
+    created = []
+
+    class FakeS3:
+        def create_bucket(self, **kwargs):
+            created.append(kwargs)
+
+    client_args = []
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: client_args.append((args, kwargs)) or FakeS3())
+    _login(dashboard_client)
+    body = {"name": "team-archive", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "api_name": "default", "placement": "archive"}
+
+    preview = dashboard_client.post("/api/object-storage/buckets/actions/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/actions/execute", json={**body, "confirmation": "team-archive"})
+
+    assert preview.status_code == 200
+    assert preview.json()["ceph_release"] == "reef"
+    assert executed.status_code == 200
+    assert created == [{"Bucket": "team-archive", "CreateBucketConfiguration": {"LocationConstraint": "default:archive"}}]
+    assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")]
+    assert client_args[0][1]["aws_secret_access_key"] == "temp-secret"
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, executed.json()["request_id"])
+        assert audit.result == "succeeded"
+        assert audit.action == "create_bucket"
+        assert "temp-secret" not in audit.preview
+
+
+def test_create_bucket_rejects_operator_and_invalid_payload(dashboard_client, monkeypatch):
+    _login_operator(dashboard_client)
+    body = {"name": "Bad_Name", "owner": "alice", "endpoint": "https://rgw.example.test"}
+    assert dashboard_client.post("/api/object-storage/buckets/actions/preview", json=body).status_code == 403
+    _login(dashboard_client)
+    assert dashboard_client.post("/api/object-storage/buckets/actions/preview", json=body).status_code == 400
+
+
+def test_create_bucket_fails_closed_before_audit_on_mixed_ceph(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": None, "is_mixed": True,
+    })
+    _login(dashboard_client)
+    body = {"name": "team-archive", "owner": "alice", "endpoint": "https://rgw.example.test",
+            "confirmation": "team-archive"}
+    response = dashboard_client.post("/api/object-storage/buckets/actions/execute", json=body)
+    assert response.status_code == 502
+    with db.SessionLocal() as session:
+        assert session.query(ObjectStorageAuditEntry).filter_by(action="create_bucket").count() == 0
 
 
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
