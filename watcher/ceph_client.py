@@ -956,8 +956,9 @@ def run_ceph_json_command_with(
         try:
             output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
         except Exception as exc:
-            logger.warning("run_ceph_json_command_with: %s failed: %s", host, exc)
-            errors.append(f"{host}: {exc}")
+            error = str(exc) or type(exc).__name__
+            logger.warning("run_ceph_json_command_with: %s failed: %s", host, error)
+            errors.append(f"{host}: {error}")
             continue
         try:
             parsed = json.loads(output)

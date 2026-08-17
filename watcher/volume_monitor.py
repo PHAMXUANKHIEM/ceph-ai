@@ -165,6 +165,13 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
                 "check_volumes: cluster %s failed to query RBD pool %r: %s",
                 effective_cluster_id or "default", pool, exc,
             )
+            # ``rbd perf image iostat`` can wait indefinitely for its first
+            # sample when rbd_support has no fresh client statistics.  Once
+            # every MON has timed out, retrying the same command for every
+            # remaining pool multiplies one outage into a minutes-long poll
+            # and makes the Watcher heartbeat appear dead.
+            if "TimeoutError" in str(exc):
+                break
             continue
 
         for sample in samples:
