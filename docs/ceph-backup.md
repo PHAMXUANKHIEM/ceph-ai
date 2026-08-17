@@ -384,8 +384,12 @@ cơ chế webhook đã có, không tạo đường gửi thứ hai.
 - Nếu import hoặc post-check thất bại sau khi image đích được tạo, Worker cố
   gắng dọn image chưa hoàn chỉnh. Cleanup lỗi được ghi log và không che mất lỗi
   restore ban đầu.
-- Phiên bản hiện tại chưa có Recovery Point selector và post-verify checksum/
-  read/feature đầy đủ; xem `Plan/backup-roadmap.md` mục 5.1–5.3.
+- Dashboard tải các recovery point thành công đúng cluster, hiển thị loại,
+  thời điểm, target và độ dài chain; action lưu exact `recovery_point_job_id`
+  để Worker không tự chuyển sang backup mới hơn trong thời gian chờ duyệt.
+- Phiên bản hiện tại chưa có SHA-256/verify metadata, gap detection và
+  post-verify checksum/read/feature đầy đủ; xem `Plan/backup-roadmap.md`
+  mục 5.1–5.3.
 
 ### 8.2. Khôi phục MỘT image đè lên production (`restore_rbd_image_to_production`)
 

@@ -114,24 +114,53 @@
   // Safe default: restore into a new image and leave production untouched.
 
   Array.prototype.forEach.call(document.querySelectorAll(".btn-restore-image"), function (btn) {
-    btn.addEventListener("click", function () {
+    btn.addEventListener("click", async function () {
       var pool = btn.getAttribute("data-pool");
       var image = btn.getAttribute("data-image");
+      btn.disabled = true;
+      var recoveryPointId = "";
+      try {
+        var pointsResponse = await fetch(
+          "/api/backups/recovery-points?pool=" + encodeURIComponent(pool) + "&image=" + encodeURIComponent(image),
+          { credentials: "same-origin" }
+        );
+        var pointsBody = await pointsResponse.json();
+        if (!pointsResponse.ok) throw new Error(pointsBody.detail || "Không tải được recovery point");
+        var points = pointsBody.recovery_points || [];
+        if (!points.length) throw new Error("Không có recovery point hợp lệ để khôi phục");
+        var choices = points.map(function (point, index) {
+          return (index + 1) + ". " + new Date(point.created_at).toLocaleString("vi-VN") +
+            " · " + point.job_type + " · chain " + point.chain_length + " · target " +
+            (point.backup_target_slot || "—");
+        }).join("\n");
+        var selected = window.prompt("Chọn recovery point (nhập số):\n\n" + choices, "1");
+        if (selected === null) { btn.disabled = false; return; }
+        var selectedIndex = Number(selected) - 1;
+        if (!Number.isInteger(selectedIndex) || !points[selectedIndex]) {
+          throw new Error("Recovery point đã chọn không hợp lệ");
+        }
+        recoveryPointId = points[selectedIndex].job_id;
+      } catch (err) {
+        btn.disabled = false;
+        window.alert(err.message || "Không tải được recovery point");
+        return;
+      }
       var destPool = window.prompt("Pool đích cho volume khôi phục:", pool);
-      if (destPool === null) return;
+      if (destPool === null) { btn.disabled = false; return; }
       var destImage = window.prompt("Tên volume mới:", image + "-restored");
-      if (destImage === null) return;
+      if (destImage === null) { btn.disabled = false; return; }
       destPool = destPool.trim();
       destImage = destImage.trim();
       if (!destPool || !destImage || !window.confirm("Khôi phục " + pool + "/" + image + " thành volume mới " + destPool + "/" + destImage + "? Volume nguồn sẽ không bị thay đổi.")) {
+        btn.disabled = false;
         return;
       }
-      btn.disabled = true;
       fetch("/backups/restore-as-new/propose", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pool: pool, image: image, dest_pool: destPool, dest_image: destImage })
+        body: JSON.stringify({ pool: pool, image: image, dest_pool: destPool, dest_image: destImage,
+          recovery_point_job_id: recoveryPointId })
       })
         .then(function (response) {
           if (!response.ok) {

@@ -105,6 +105,69 @@ def _job_scope(column, cluster):
     return or_(column == cluster.id, column.is_(None)) if cluster.is_default else column == cluster.id
 
 
+def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
+    """Return restorable full/incremental points with their exact chain."""
+    expected_cluster_id = None if cluster.is_default else cluster.id
+    with db.SessionLocal() as session:
+        jobs = (
+            session.query(BackupJob)
+            .filter(
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                BackupJob.cluster_id == expected_cluster_id,
+                BackupJob.status == "SUCCESS",
+                BackupJob.job_type.in_(("full", "incremental")),
+            )
+            .order_by(BackupJob.created_at.desc())
+            .all()
+        )
+        by_id = {job.id: job for job in jobs}
+        points = []
+        for job in jobs:
+            full = job if job.job_type == "full" else by_id.get(job.base_job_id)
+            if full is None or full.job_type != "full" or full.status != "SUCCESS":
+                continue
+            if job.backup_target_slot != full.backup_target_slot:
+                continue
+            diffs = sorted(
+                (
+                    candidate for candidate in jobs
+                    if candidate.job_type == "incremental"
+                    and candidate.base_job_id == full.id
+                    and candidate.backup_target_slot == full.backup_target_slot
+                    and candidate.created_at <= job.created_at
+                ),
+                key=lambda candidate: candidate.created_at,
+            )
+            chain = [full] + diffs
+            if job.job_type == "incremental" and (not diffs or diffs[-1].id != job.id):
+                continue
+            points.append({
+                "job_id": job.id,
+                "run_id": job.run_id,
+                "job_type": job.job_type,
+                "created_at": job.created_at.isoformat() + "Z",
+                "size_bytes": job.size_bytes or 0,
+                "backup_target_slot": job.backup_target_slot,
+                "base_job_id": full.id,
+                "chain_job_ids": [item.id for item in chain],
+                "chain_length": len(chain),
+            })
+        return points
+
+
+@router.get("/api/backups/recovery-points")
+async def recovery_points_api(request: Request, pool: str, image: str, user: str = Depends(require_login)):
+    del user
+    if not _RBD_NAME_RE.fullmatch(pool) or not _RBD_NAME_RE.fullmatch(image):
+        raise HTTPException(status_code=400, detail="Pool/image không hợp lệ.")
+    cluster = selected_cluster(request)
+    if not any(t["pool"] == pool and t["image"] == image for t in _tracked_images(cluster)):
+        raise HTTPException(status_code=404, detail="Image không nằm trong tracked_images.")
+    return {"pool": pool, "image": image, "cluster_id": cluster.id,
+            "recovery_points": _recovery_points(pool, image, cluster)}
+
+
 def _latest_running_backup_action(cluster=None) -> Action | None:
     with db.SessionLocal() as session:
         return (
@@ -430,6 +493,7 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
     image = str(body.get("image", "")).strip()
     dest_pool = str(body.get("dest_pool", "")).strip()
     dest_image = str(body.get("dest_image", "")).strip()
+    recovery_point_job_id = str(body.get("recovery_point_job_id", "")).strip()
     if not all(_RBD_NAME_RE.fullmatch(value) for value in (pool, image, dest_pool, dest_image)):
         raise HTTPException(status_code=400, detail="Pool/image chỉ được chứa chữ, số, dấu chấm, gạch dưới hoặc gạch ngang.")
     if pool == dest_pool and image == dest_image:
@@ -438,21 +502,16 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
     cluster = selected_cluster(request)
     if not any(t["pool"] == pool and t["image"] == image for t in _tracked_images(cluster)):
         raise HTTPException(status_code=400, detail="Image nguồn không nằm trong tracked_images.")
-    with db.SessionLocal() as session:
-        full_job = (
-            session.query(BackupJob)
-            .filter(
-                BackupJob.pool == pool,
-                BackupJob.image == image,
-                BackupJob.job_type == "full",
-                BackupJob.status == "SUCCESS",
-                _job_scope(BackupJob.cluster_id, cluster),
-            )
-            .order_by(BackupJob.created_at.desc())
-            .first()
-        )
-    if full_job is None:
+    points = _recovery_points(pool, image, cluster)
+    selected_point = next((point for point in points if point["job_id"] == recovery_point_job_id), None)
+    if recovery_point_job_id and selected_point is None:
+        raise HTTPException(status_code=409, detail="Recovery point không hợp lệ, không đầy đủ hoặc thuộc cluster khác.")
+    if selected_point is None and points:
+        selected_point = points[0]
+    if selected_point is None:
         raise HTTPException(status_code=409, detail="Chưa có bản full backup thành công để khôi phục.")
+    with db.SessionLocal() as session:
+        full_job = session.get(BackupJob, selected_point["base_job_id"])
 
     try:
         inventory = (
@@ -476,7 +535,8 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
     mon_nodes = [n["host"] for n in configured_nodes(None if cluster.is_default else cluster) if "MON" in n["roles"]]
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
-    params = {"pool": pool, "image": image, "dest_pool": dest_pool, "dest_image": dest_image}
+    params = {"pool": pool, "image": image, "dest_pool": dest_pool, "dest_image": dest_image,
+              "recovery_point_job_id": selected_point["job_id"]}
     try:
         preview_command = executor_commands.get_command(RESTORE_AS_NEW_ACTION_ID, None, params)
     except ExecutorError as exc:
@@ -510,7 +570,8 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
             classification=gate.classify_action(RESTORE_AS_NEW_ACTION_ID).value,
             status=ActionStatus.PENDING_APPROVAL.value,
             rationale=(
-                f"Khôi phục {pool}/{image} từ full backup gần nhất và chain incremental "
+                f"Khôi phục {pool}/{image} từ recovery point {selected_point['job_id']} "
+                f"({selected_point['created_at']}, chain {selected_point['chain_length']} artifact) "
                 f"sang volume mới {dest_pool}/{dest_image}; không thay đổi volume nguồn."
             ),
             target_nodes=json.dumps([mon_nodes[0]]),

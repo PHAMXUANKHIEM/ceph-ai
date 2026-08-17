@@ -50,8 +50,7 @@ def _create_running_action(session, action_id, progress):
 
 def _seed_successful_full(pool="vms", image="disk1"):
     with db_module.SessionLocal() as session:
-        session.add(
-            BackupJob(
+        job = BackupJob(
                 run_id=f"full-{pool}-{image}",
                 pool=pool,
                 image=image,
@@ -62,8 +61,9 @@ def _seed_successful_full(pool="vms", image="disk1"):
                 created_at=datetime.utcnow(),
                 finished_at=datetime.utcnow(),
             )
-        )
+        session.add(job)
         session.commit()
+        return job.id
 
 
 def test_unauthenticated_get_backups_redirects_to_login(dashboard_client):
@@ -380,7 +380,7 @@ def test_restore_as_new_propose_creates_pending_risky_action(dashboard_client, m
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     _stub_restore_as_new_preflight(monkeypatch)
     monkeypatch.setattr(backups_route.settings, "ceph_mon_nodes", "10.20.1.112", raising=False)
-    _seed_successful_full()
+    full_id = _seed_successful_full()
     _login(dashboard_client)
 
     response = dashboard_client.post(
@@ -394,7 +394,8 @@ def test_restore_as_new_propose_creates_pending_risky_action(dashboard_client, m
         assert action.action_id == "restore_rbd_image_as_new"
         assert action.classification == "RISKY"
         assert json.loads(action.action_params) == {
-            "pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "disk1-copy"
+            "pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "disk1-copy",
+            "recovery_point_job_id": full_id,
         }
         assert "không thay đổi volume nguồn" in action.rationale
 
@@ -437,6 +438,42 @@ def test_backups_page_uses_restore_as_new_as_safe_default(dashboard_client, monk
 
     assert "Khôi phục thành volume mới" in response.text
     assert "không thay đổi volume nguồn" in response.text
+
+
+def test_recovery_points_api_returns_exact_full_and_incremental_chains(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    full_id = _seed_successful_full()
+    with db_module.SessionLocal() as session:
+        diff = BackupJob(run_id="diff-1", pool="vms", image="disk1", job_type="incremental",
+            status="SUCCESS", base_job_id=full_id, backup_target_slot="a", remote_key="diff.bin",
+            size_bytes=123, created_at=datetime.utcnow(), finished_at=datetime.utcnow())
+        session.add(diff)
+        session.commit()
+        diff_id = diff.id
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/backups/recovery-points?pool=vms&image=disk1")
+
+    assert response.status_code == 200
+    points = response.json()["recovery_points"]
+    assert points[0]["job_id"] == diff_id
+    assert points[0]["chain_job_ids"] == [full_id, diff_id]
+    assert points[0]["chain_length"] == 2
+
+
+def test_restore_as_new_rejects_unknown_recovery_point(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_as_new_preflight(monkeypatch)
+    _seed_successful_full()
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/restore-as-new/propose", json={
+        "pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "copy",
+        "recovery_point_job_id": "not-a-real-job",
+    })
+
+    assert response.status_code == 409
+    assert "Recovery point" in response.json()["detail"]
 
 
 def test_admin_can_queue_manual_rbd_backup(dashboard_client, monkeypatch):

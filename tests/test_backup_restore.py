@@ -218,6 +218,27 @@ def test_restore_image_applies_full_then_diffs_in_order(isolated_db):
     assert payloads == [FULL_CONTENT, DIFF1_CONTENT, DIFF2_CONTENT, b""]
 
 
+def test_restore_image_stops_at_selected_incremental_recovery_point(isolated_db):
+    storage = FakeStorageBackend()
+    storage.put("full/vms/web01/backup-1.bin", FULL_CONTENT)
+    storage.put("incremental/vms/web01/diff-1.bin", DIFF1_CONTENT)
+    storage.put("incremental/vms/web01/diff-2.bin", DIFF2_CONTENT)
+    t0 = datetime.utcnow()
+    full_id = _make_full_job(created_at=t0)
+    selected_id = _make_diff_job(full_id, remote_key="incremental/vms/web01/diff-1.bin",
+                                 created_at=t0 + timedelta(minutes=10))
+    _make_diff_job(full_id, remote_key="incremental/vms/web01/diff-2.bin",
+                   created_at=t0 + timedelta(minutes=20))
+
+    result = restore.restore_image("vms", "web01", storage, "recovery", "copy",
+                                   recovery_point_job_id=selected_id)
+
+    assert result.success is True
+    assert result.applied_diff_job_ids == [selected_id]
+    payloads = [bytes(sink) for _cmd, sink in FakeSSHClient.imported_calls]
+    assert payloads == [FULL_CONTENT, DIFF1_CONTENT, b""]
+
+
 def test_restore_image_restores_into_a_different_dest(isolated_db):
     storage = FakeStorageBackend()
     storage.put("full/vms/web01/backup-1.bin", FULL_CONTENT)

@@ -84,13 +84,20 @@ công mới nhất; preflight sâu và re-check tại Worker thuộc mục 5.2�
 không thay đổi image nguồn; failure dọn sạch artifact/image chưa hoàn chỉnh và
 audit ghi rõ recovery point cùng destination.
 
-### 5.2 Recovery Point selector `[ ]`
+### 5.2 Recovery Point selector `[~]`
 
-- Liệt kê recovery point theo cluster/pool/image/target.
-- Hiển thị full/incremental, thời điểm, kích thước, SHA-256 và trạng thái verify.
-- Hiển thị dependency chain và cảnh báo gap.
-- Cho phép chọn mốc khôi phục thay vì luôn dùng bản mới nhất.
+- [x] Liệt kê recovery point theo cluster/pool/image/target.
+- [~] Hiển thị full/incremental, thời điểm, kích thước và target; SHA-256 cùng
+  trạng thái verify cần bổ sung cột/model integrity.
+- [~] Hiển thị dependency chain chính xác theo job ID; chưa có metadata để phát
+  hiện sequence gap bên trong export-diff.
+- [x] Cho phép chọn mốc khôi phục thay vì luôn dùng bản mới nhất.
 - Phân trang, search và filter theo thời gian/target/status.
+
+API `GET /api/backups/recovery-points` chỉ trả job SUCCESS đúng cluster và bỏ
+incremental mất full base hoặc lệch target slot. Action lưu
+`recovery_point_job_id`; Worker resolve lại exact full + diff đến mốc đã duyệt,
+không tự nhảy sang backup mới hơn xuất hiện trong approval gap.
 
 **Hoàn thành khi:** operator nhìn thấy chính xác full + các diff cần thiết trước
 khi đề xuất restore; API từ chối recovery point không đầy đủ hoặc khác cluster.
@@ -345,6 +352,7 @@ bảng khi một khái niệm không thể biểu diễn chính xác bằng sche
 |---|---|---|---|---|---|
 | 2026-08-17 | Audit/kế hoạch | Hoàn thành | Rà soát Dashboard route/template, backup engine, scheduler, policy, storage backend, restore/drill, alerting, model và tài liệu hiện có; tạo roadmap P0–P2. | Review code/tài liệu; chưa thay đổi runtime. | Bắt đầu mục 5.5 multi-cluster audit, sau đó định nghĩa Recovery Point cho 5.2. |
 | 2026-08-17 | Restore-as-new nền tảng | Đang triển khai | Thêm propose API, destination preflight cơ bản, action/approval, executor full+diff, `rbd info` post-check, cleanup khi lỗi và chuyển nút Restore sang mặc định an toàn. | 277 test liên quan passed; JS check, Python compile và diff check đều đạt; chưa kiểm chứng trên cụm Ceph thật. | Hoàn thiện post-verify sâu, Worker re-check, Recovery Point selector và Advanced Mode cho in-place restore. |
+| 2026-08-17 | Recovery Point selector nền tảng | Đang triển khai | Thêm API cluster-scoped, chain job IDs, UI chọn mốc và khóa exact recovery point vào action/Worker để không dịch chuyển trong approval gap. | Regression mở rộng 282 passed; JS, Python compile và diff check đạt. | Bổ sung SHA-256/verify metadata, gap detection, filter/pagination và UX modal thay prompt. |
 
 ## 14. Quy tắc cập nhật tài liệu
 

@@ -507,6 +507,7 @@ def _run_restore_to_production(
     image = action_params.get("image")
     dest_pool = action_params.get("dest_pool") or pool
     dest_image = action_params.get("dest_image") or image
+    recovery_point_job_id = action_params.get("recovery_point_job_id")
     if not pool or not image:
         logger.error(
             "backup_engine._run_restore_to_production: missing pool/image in action_params for action %s",
@@ -517,7 +518,9 @@ def _run_restore_to_production(
     write_progress(action_pk, progress)
 
     cluster = get_cluster(cluster_id)
-    slot = restore.latest_backup_target_slot(pool, image, cluster_id=cluster_id)
+    slot = restore.latest_backup_target_slot(
+        pool, image, cluster_id=cluster_id, recovery_point_job_id=recovery_point_job_id
+    )
     if slot is None:
         message = f"Không có bản backup full thành công nào cho {pool}/{image} để khôi phục"
         logger.error("backup_engine._run_restore_to_production: %s", message)
@@ -536,6 +539,7 @@ def _run_restore_to_production(
         dest_image,
         cluster_id=cluster_id,
         cleanup_new_destination_on_failure=restore_as_new,
+        recovery_point_job_id=recovery_point_job_id,
     )
 
     if not result.success:

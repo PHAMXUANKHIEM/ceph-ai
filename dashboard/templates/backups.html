@@ -124,7 +124,7 @@
             </tbody>
           </table>
         </div>
-        <p class="hint">Khôi phục mặc định tạo một volume mới từ full backup gần nhất + toàn bộ chain export-diff và không thay đổi volume nguồn. Xem trang <a href="/restore-cluster">Restore Cluster</a> khi cần dựng lại cả cụm.</p>
+        <p class="hint">Khôi phục cho phép chọn recovery point, hiển thị full/incremental chain và tạo một volume mới mà không thay đổi volume nguồn. Xem trang <a href="/restore-cluster">Restore Cluster</a> khi cần dựng lại cả cụm.</p>
         {% else %}
         <p class="hint">Chưa cấu hình <code>tracked_images</code> nào trong <code>worker/policy/backup_policy.yaml</code>.</p>
         {% endif %}

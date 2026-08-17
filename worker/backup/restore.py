@@ -64,7 +64,12 @@ class RestoreResult:
     error_message: str | None = None
 
 
-def _backup_chain(pool: str, image: str, cluster_id: str | None = None) -> tuple[BackupJob | None, list[BackupJob]]:
+def _backup_chain(
+    pool: str,
+    image: str,
+    cluster_id: str | None = None,
+    recovery_point_job_id: str | None = None,
+) -> tuple[BackupJob | None, list[BackupJob]]:
     """The latest successful full backup for (pool, image) IN cluster_id's
     OWN cluster (Phase 3 -- `None` means the default cluster, same as
     every other BackupJob query in this module family), plus every
@@ -72,34 +77,61 @@ def _backup_chain(pool: str, image: str, cluster_id: str | None = None) -> tuple
     lineage, Story 9.1), oldest-first — the exact order `rbd import-diff`
     must apply them in."""
     with db.SessionLocal() as session:
-        full_job = (
-            session.query(BackupJob)
-            .filter(
-                BackupJob.pool == pool,
-                BackupJob.image == image,
-                BackupJob.cluster_id == cluster_id,
-                BackupJob.job_type == "full",
-                BackupJob.status == "SUCCESS",
-            )
-            .order_by(BackupJob.created_at.desc())
-            .first()
-        )
-        if full_job is None:
+        target_job = session.get(BackupJob, recovery_point_job_id) if recovery_point_job_id else None
+        if recovery_point_job_id and (
+            target_job is None
+            or target_job.pool != pool
+            or target_job.image != image
+            or target_job.cluster_id != cluster_id
+            or target_job.status != "SUCCESS"
+            or target_job.job_type not in ("full", "incremental")
+        ):
             return None, []
-        diff_jobs = (
+        if target_job is not None and target_job.job_type == "incremental":
+            full_job = session.get(BackupJob, target_job.base_job_id) if target_job.base_job_id else None
+        elif target_job is not None:
+            full_job = target_job
+        else:
+            full_job = (
+                session.query(BackupJob)
+                .filter(
+                    BackupJob.pool == pool,
+                    BackupJob.image == image,
+                    BackupJob.cluster_id == cluster_id,
+                    BackupJob.job_type == "full",
+                    BackupJob.status == "SUCCESS",
+                )
+                .order_by(BackupJob.created_at.desc())
+                .first()
+            )
+        if (
+            full_job is None
+            or full_job.pool != pool
+            or full_job.image != image
+            or full_job.cluster_id != cluster_id
+            or full_job.job_type != "full"
+            or full_job.status != "SUCCESS"
+            or (target_job is not None and target_job.backup_target_slot != full_job.backup_target_slot)
+        ):
+            return None, []
+        diff_query = (
             session.query(BackupJob)
             .filter(
                 BackupJob.base_job_id == full_job.id,
                 BackupJob.job_type == "incremental",
                 BackupJob.status == "SUCCESS",
+                BackupJob.backup_target_slot == full_job.backup_target_slot,
             )
-            .order_by(BackupJob.created_at.asc())
-            .all()
         )
+        if target_job is not None:
+            diff_query = diff_query.filter(BackupJob.created_at <= target_job.created_at)
+        diff_jobs = diff_query.order_by(BackupJob.created_at.asc()).all()
         return full_job, diff_jobs
 
 
-def latest_backup_target_slot(pool: str, image: str, cluster_id: str | None = None) -> str | None:
+def latest_backup_target_slot(
+    pool: str, image: str, cluster_id: str | None = None, recovery_point_job_id: str | None = None
+) -> str | None:
     """Which `BackupTarget` slot ("a"/"b", or "cluster" for an additional
     cluster's own single target) the latest successful full backup for
     (pool, image) was written to. Callers need this to pick the right
@@ -109,7 +141,8 @@ def latest_backup_target_slot(pool: str, image: str, cluster_id: str | None = No
     job internally once given a backend, but has no way to pick a backend
     on its own. Shared by both Story 9.7 consumers (Task 2, Task 3) so
     neither re-queries this itself."""
-    full_job, _ = _backup_chain(pool, image, cluster_id=cluster_id)
+    full_job, _ = _backup_chain(pool, image, cluster_id=cluster_id,
+                                recovery_point_job_id=recovery_point_job_id)
     return full_job.backup_target_slot if full_job is not None else None
 
 
@@ -218,6 +251,7 @@ def restore_image(
     dest_image: str,
     cluster_id: str | None = None,
     cleanup_new_destination_on_failure: bool = False,
+    recovery_point_job_id: str | None = None,
 ) -> RestoreResult:
     """Rebuilds `dest_pool/dest_image` (on `cluster_id`'s own cluster --
     `None` means the default cluster/`settings.ceph_mon_nodes`, Phase 3)
@@ -230,7 +264,9 @@ def restore_image(
     way."""
     started_at = datetime.utcnow()
     cluster = get_cluster(cluster_id)
-    full_job, diff_jobs = _backup_chain(pool, image, cluster_id=cluster_id)
+    full_job, diff_jobs = _backup_chain(
+        pool, image, cluster_id=cluster_id, recovery_point_job_id=recovery_point_job_id
+    )
     if full_job is None:
         message = f"No successful full backup found for {pool}/{image} — nothing to restore"
         logger.error("restore.restore_image: %s", message)
