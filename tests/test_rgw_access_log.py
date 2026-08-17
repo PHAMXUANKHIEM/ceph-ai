@@ -284,6 +284,29 @@ def test_new_s3_key_fails_closed_when_rgws_response_is_ambiguous():
         pass
 
 
+def test_s3_user_setting_builder_enforces_quota_and_capability_allowlists():
+    assert ral.build_s3_user_setting_command("quota_set", "alice", {
+        "scope": "user", "max_size_bytes": 1073741824, "max_objects": 1000,
+    }) == "radosgw-admin quota set --quota-scope=user --uid=alice --max-size=1073741824 --max-objects=1000"
+    assert ral.build_s3_user_setting_command("cap_add", "alice", {
+        "cap_type": "usage", "cap_perm": "read",
+    }) == "radosgw-admin caps add --uid=alice --caps=usage=read"
+    for params in (
+        {"scope": "realm", "max_size_bytes": 1, "max_objects": 1},
+        {"scope": "user", "max_size_bytes": 0, "max_objects": 1},
+    ):
+        try:
+            ral.build_s3_user_setting_command("quota_set", "alice", params)
+            assert False, "invalid quota must fail closed"
+        except ValueError:
+            pass
+    try:
+        ral.build_s3_user_setting_command("cap_add", "alice", {"cap_type": "zone", "cap_perm": "*"})
+        assert False, "unknown capability must fail closed"
+    except ValueError:
+        pass
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 

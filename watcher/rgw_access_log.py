@@ -435,6 +435,54 @@ def revoke_s3_access_key_with(host: str, uid: str, access_key: str, ssh_user: st
         raise RgwLogError(f"Không revoke được access key trên {host}: {exc}") from exc
 
 
+S3_CAP_TYPES = {"users", "buckets", "metadata", "usage"}
+S3_CAP_PERMS = {"read", "write", "read,write"}
+
+
+def build_s3_user_setting_command(action: str, uid: str, params: dict) -> str:
+    quoted_uid = shlex.quote(uid)
+    if action in {"quota_set", "quota_enable", "quota_disable"}:
+        scope = str(params.get("scope") or "")
+        if scope not in {"user", "bucket"}:
+            raise ValueError("Unsupported quota scope")
+        base = f"radosgw-admin quota {action.removeprefix('quota_')} --quota-scope={scope} --uid={quoted_uid}"
+        if action == "quota_set":
+            max_size = int(params["max_size_bytes"])
+            max_objects = int(params["max_objects"])
+            if max_size != -1 and max_size <= 0 or max_objects != -1 and max_objects <= 0:
+                raise ValueError("Quota limits must be positive or -1")
+            base += f" --max-size={max_size} --max-objects={max_objects}"
+        return base
+    if action in {"cap_add", "cap_remove"}:
+        cap_type = str(params.get("cap_type") or "")
+        cap_perm = str(params.get("cap_perm") or "")
+        if cap_type not in S3_CAP_TYPES or cap_perm not in S3_CAP_PERMS:
+            raise ValueError("Unsupported S3 capability")
+        verb = "add" if action == "cap_add" else "rm"
+        return f"radosgw-admin caps {verb} --uid={quoted_uid} --caps={shlex.quote(f'{cap_type}={cap_perm}')}"
+    raise ValueError("Unsupported S3 user setting action")
+
+
+def execute_s3_user_setting(host: str, action: str, uid: str, params: dict) -> None:
+    inner = build_s3_user_setting_command(action, uid, params)
+    command = ceph_client.build_exec_command(settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner)
+    try:
+        run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Không cập nhật được quota/capability trên {host}: {exc}") from exc
+
+
+def execute_s3_user_setting_with(host: str, action: str, uid: str, params: dict,
+                                 ssh_user: str, ssh_key_path: str, exec_mode: str,
+                                 rgw_container_name: str) -> None:
+    inner = build_s3_user_setting_command(action, uid, params)
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Không cập nhật được quota/capability trên {host}: {exc}") from exc
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately

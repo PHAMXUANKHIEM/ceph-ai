@@ -33,6 +33,9 @@ from watcher.rgw_access_log import (
     create_s3_access_key_with,
     revoke_s3_access_key,
     revoke_s3_access_key_with,
+    build_s3_user_setting_command,
+    execute_s3_user_setting,
+    execute_s3_user_setting_with,
 )
 
 router = APIRouter()
@@ -168,6 +171,38 @@ def _key_action(cluster, action: str, uid: str, access_key: str = "") -> dict | 
         host, uid, access_key, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
     )
     return None
+
+
+def _setting_payload(body: dict) -> tuple[str, str, dict]:
+    action = str(body.get("action") or "")
+    if action not in {"quota_set", "quota_enable", "quota_disable", "cap_add", "cap_remove"}:
+        raise HTTPException(status_code=400, detail="Thao tác quota/capability không hợp lệ")
+    uid = _valid_uid(str(body.get("uid") or ""))
+    if action.startswith("quota_"):
+        params = {"scope": str(body.get("scope") or "")}
+        if action == "quota_set":
+            try:
+                params.update(max_size_bytes=int(body.get("max_size_bytes")), max_objects=int(body.get("max_objects")))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="Giới hạn quota không hợp lệ") from exc
+    else:
+        params = {"cap_type": str(body.get("cap_type") or ""), "cap_perm": str(body.get("cap_perm") or "")}
+    try:
+        build_s3_user_setting_command(action, uid, params)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return action, uid, params
+
+
+def _setting_action(cluster, action: str, uid: str, params: dict) -> None:
+    host = _host(cluster)
+    if cluster.is_default:
+        execute_s3_user_setting(host, action, uid, params)
+        return
+    ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+    execute_s3_user_setting_with(
+        host, action, uid, params, ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name
+    )
 
 
 def _inventory(cluster, query: str, page: int) -> dict:
@@ -316,6 +351,48 @@ async def key_action_execute(request: Request, user: str = Depends(require_login
         response["credential"] = credential
         response["secret_shown_once"] = True
     return response
+
+
+@router.post("/api/object-storage/users/settings/preview")
+async def setting_preview(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    action, uid, params = _setting_payload(await request.json())
+    cluster = selected_cluster(request)
+    command = build_s3_user_setting_command(action, uid, params)
+    effects = {
+        "quota_set": "Đặt giới hạn quota; cần enable scope để bắt đầu enforcement.",
+        "quota_enable": "Bật enforcement quota cho scope đã chọn.",
+        "quota_disable": "Tắt enforcement quota; giới hạn đã cấu hình vẫn được giữ.",
+        "cap_add": "Cấp thêm quyền Admin Ops cho S3 user.",
+        "cap_remove": "Thu hồi quyền Admin Ops khỏi S3 user.",
+    }
+    return {
+        "action": action, "uid": uid, "cluster_id": cluster.id, "cluster_name": cluster.name,
+        "risk": "high" if action in {"quota_disable", "cap_add", "cap_remove"} else "medium",
+        "preview": command, "effect": effects[action], "confirmation_required": uid,
+    }
+
+
+@router.post("/api/object-storage/users/settings/execute")
+async def setting_execute(request: Request, user: str = Depends(require_login)):
+    _require_admin(user)
+    body = await request.json()
+    action, uid, params = _setting_payload(body)
+    if str(body.get("confirmation") or "") != uid:
+        raise HTTPException(status_code=400, detail="Nhập chính xác UID để xác nhận")
+    cluster = selected_cluster(request)
+    preview = build_s3_user_setting_command(action, uid, params)
+    try:
+        audit_id = await asyncio.to_thread(_start_audit, cluster.id, user, action, uid, preview)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        await asyncio.to_thread(_setting_action, cluster, action, uid, params)
+    except RgwLogError as exc:
+        await asyncio.to_thread(_finish_audit, audit_id, "failed", str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    await asyncio.to_thread(_finish_audit, audit_id, "succeeded")
+    return {"ok": True, "action": action, "uid": uid, "request_id": audit_id}
 
 
 @router.get("/object-storage/users", response_class=HTMLResponse)

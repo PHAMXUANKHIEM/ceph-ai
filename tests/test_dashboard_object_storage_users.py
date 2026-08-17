@@ -261,3 +261,36 @@ def test_revoke_access_key_requires_exact_key_confirmation(dashboard_client, mon
     assert bad.status_code == 400
     assert good.status_code == 200
     assert calls == [("10.20.1.90", "alice", "OLDKEY")]
+
+
+def test_quota_preview_explains_effect_and_execute_is_audited(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr(route, "execute_s3_user_setting", lambda *args: calls.append(args))
+    _login(dashboard_client)
+    payload = {"action": "quota_set", "uid": "alice", "scope": "user",
+               "max_size_bytes": 1024, "max_objects": 10}
+
+    preview = dashboard_client.post("/api/object-storage/users/settings/preview", json=payload)
+    executed = dashboard_client.post(
+        "/api/object-storage/users/settings/execute", json={**payload, "confirmation": "alice"}
+    )
+
+    assert preview.status_code == 200
+    assert "enforcement" in preview.json()["effect"]
+    assert executed.status_code == 200
+    assert calls == [("10.20.1.90", "quota_set", "alice", {
+        "scope": "user", "max_size_bytes": 1024, "max_objects": 10,
+    })]
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, executed.json()["request_id"])
+        assert audit.action == "quota_set"
+        assert audit.result == "succeeded"
+
+
+def test_capability_preview_rejects_values_outside_allowlist(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/users/settings/preview", json={
+        "action": "cap_add", "uid": "alice", "cap_type": "zone", "cap_perm": "*",
+    })
+    assert response.status_code == 400
