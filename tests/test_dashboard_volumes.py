@@ -173,7 +173,7 @@ def test_volumes_page_with_no_pool_selects_nothing_and_shows_empty_state(dashboa
 
     assert response.status_code == 200
     assert 'id="volumes-panel"' not in response.text
-    assert "Chọn một pool để xem hiệu năng Volume" in response.text
+    assert "Chọn một pool để xem Volume" in response.text
 
 
 def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatch):
@@ -184,7 +184,20 @@ def test_volumes_page_with_explicit_pool_selects_it(dashboard_client, monkeypatc
     response = dashboard_client.get("/volumes?pool=vms")
 
     assert response.status_code == 200
+    assert 'id="volume-inventory-panel"' in response.text
+    assert 'id="volumes-panel"' not in response.text
+
+
+def test_volume_performance_page_is_separate_from_volume_inventory(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/volume-performance?pool=vms")
+
+    assert response.status_code == 200
     assert 'id="volumes-panel"' in response.text
+    assert 'id="vm-perf-panel"' in response.text
+    assert 'id="volume-inventory-panel"' not in response.text
     assert 'data-pool="vms"' in response.text
 
 
@@ -193,7 +206,7 @@ def test_volumes_page_uses_vm_benchmark_instead_of_legacy_pool_sweep(dashboard_c
     _stub_no_trash(monkeypatch)
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volume-performance?pool=vms")
 
     assert response.status_code == 200
     assert 'id="vm-perf-form"' in response.text
@@ -220,7 +233,7 @@ def test_volumes_page_does_not_surface_legacy_perf_sweep_pending_action(dashboar
     propose = dashboard_client.post("/volumes/vms/perf-sweep/propose")
     action_id = propose.json()["action_id"]
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volume-performance?pool=vms")
 
     assert response.status_code == 200
     assert f'action="/actions/{action_id}/approve"' not in response.text
@@ -240,7 +253,7 @@ def test_volumes_page_does_not_show_legacy_perf_sweep_running_indicator(dashboar
         session.get(Action, action_id).status = ActionStatus.APPROVED.value
         session.commit()
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volume-performance?pool=vms")
 
     assert response.status_code == 200
     assert "Đang đo hiệu năng — xem tiến độ bên dưới" not in response.text
@@ -623,7 +636,7 @@ def test_vm_perf_form_prompts_for_ip_key_and_suggested_disks(dashboard_client, m
     _configure_pools(monkeypatch)
     _login(dashboard_client)
 
-    response = dashboard_client.get("/volumes?pool=vms")
+    response = dashboard_client.get("/volume-performance?pool=vms")
 
     assert response.status_code == 200
     assert 'name="vm_ip"' in response.text

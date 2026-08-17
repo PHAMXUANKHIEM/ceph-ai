@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ 'Trash' if selected_view == 'trash' else 'Volume Performance' }} — Ceph AIOps</title>
+  <title>{{ 'Trash' if selected_view == 'trash' else ('Performance' if selected_view == 'performance' else 'Volumes') }} — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -16,7 +16,8 @@
           <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
           <div class="nav-dropdown-menu">
             <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
-            <a href="/volumes" class="nav-dropdown-item nav-dropdown-item-active">Volumes</a>
+            <a href="/volumes" class="nav-dropdown-item{% if selected_view == 'volumes' %} nav-dropdown-item-active{% endif %}">Volumes</a>
+            <a href="/volume-performance" class="nav-dropdown-item{% if selected_view == 'performance' %} nav-dropdown-item-active{% endif %}">Performance</a>
             <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
             <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
             <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
@@ -40,7 +41,7 @@
         {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
       </nav>
       {% if clusters|length > 1 %}
-      <form method="get" action="{{ '/trash' if selected_view == 'trash' else '/volumes' }}" class="topbar-cluster-switcher">
+      <form method="get" action="{{ '/trash' if selected_view == 'trash' else ('/volume-performance' if selected_view == 'performance' else '/volumes') }}" class="topbar-cluster-switcher">
         {% if selected_view == 'trash' and selected_pool %}<input type="hidden" name="pool" value="{{ selected_pool }}">{% endif %}
         <select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">
           {% for c in clusters %}
@@ -58,7 +59,7 @@
 
   <main class="page">
     <div class="tabbed-page">
-    {% if selected_view == "pools" %}
+    {% if selected_view in ["volumes", "performance"] %}
     <nav class="tabbed-sidebar" id="pool-selector">
       <div class="node-sidebar-header">
         <span class="hint">Pool</span>
@@ -66,7 +67,7 @@
       {% if pools %}
         {% for pool in pools %}
         <a
-          href="/volumes?pool={{ pool }}"
+          href="{{ '/volume-performance' if selected_view == 'performance' else '/volumes' }}?pool={{ pool }}"
           class="tabbed-nav-item {% if pool == selected_pool %}active{% endif %}"
           data-pool="{{ pool }}"
         >
@@ -87,7 +88,8 @@
     {% endif %}
 
     <div class="tabbed-content">
-    {% if selected_view == "pools" and selected_pool %}
+    {% if selected_view in ["volumes", "performance"] and selected_pool %}
+    {% if selected_view == "volumes" %}
     <section class="card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
       <div class="card-header">
         <div class="metrics-panel-title">
@@ -153,6 +155,7 @@
       </div>
     </section>
 
+    {% else %}
     <section class="card" id="volumes-panel" data-pool="{{ selected_pool }}">
       <div class="card-header">
         <div class="metrics-panel-title">
@@ -258,6 +261,7 @@
       </div>
     </section>
 
+    {% endif %}
     {% elif selected_view == "trash" %}
     <section class="card">
       <div class="card-header"><h2>Trash theo Pool</h2></div>
@@ -359,7 +363,7 @@
     {% else %}
     <section class="empty-node-state">
       <span class="empty-node-icon" aria-hidden="true">&#128421;</span>
-      <p class="empty-node-text">Chọn một pool để xem hiệu năng Volume</p>
+      <p class="empty-node-text">Chọn một pool để xem {{ 'hiệu năng' if selected_view == 'performance' else 'Volume' }}</p>
     </section>
     {% endif %}
     </div>
@@ -368,8 +372,8 @@
   {% if selected_view == "trash" and selected_pool and trash_entries %}<script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
 
   <script src="/static/app.js?v={{ static_version }}"></script>
-  <script src="/static/volumes.js?v={{ static_version }}"></script>
-  <script src="/static/volume_inventory.js?v={{ static_version }}"></script>
-  <script src="/static/vm_perf.js?v={{ static_version }}"></script>
+  {% if selected_view == 'performance' %}<script src="/static/volumes.js?v={{ static_version }}"></script>{% endif %}
+  {% if selected_view == 'volumes' %}<script src="/static/volume_inventory.js?v={{ static_version }}"></script>{% endif %}
+  {% if selected_view == 'performance' %}<script src="/static/vm_perf.js?v={{ static_version }}"></script>{% endif %}
 </body>
 </html>

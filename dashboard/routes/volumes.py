@@ -331,16 +331,22 @@ def _format_bytes(value: int | float) -> str:
 
 @router.get("/volumes", response_class=HTMLResponse)
 async def volumes_page(request: Request, user: str = Depends(require_login)):
-    clusters, cluster = cluster_selection(request)
-    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
-    requested_pool = request.query_params.get("pool")
-    selected_view = request.query_params.get("view", "pools")
-    if selected_view not in {"pools", "trash"}:
-        raise HTTPException(status_code=404, detail="Mục Volume không hợp lệ")
-    if selected_view == "trash":
+    if request.query_params.get("view") == "trash":
         cluster_query = request.query_params.get("cluster", "").strip()
         suffix = f"?cluster={cluster_query}" if cluster_query else ""
         return RedirectResponse(url=f"/trash{suffix}", status_code=307)
+    return await _volume_workspace_page(request, user, "volumes")
+
+
+@router.get("/volume-performance", response_class=HTMLResponse)
+async def volume_performance_page(request: Request, user: str = Depends(require_login)):
+    return await _volume_workspace_page(request, user, "performance")
+
+
+async def _volume_workspace_page(request: Request, user: str, selected_view: str):
+    clusters, cluster = cluster_selection(request)
+    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
+    requested_pool = request.query_params.get("pool")
     if requested_pool and requested_pool not in pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     # No default pool — same "must actually pick one" posture as
