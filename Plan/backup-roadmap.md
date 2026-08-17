@@ -138,10 +138,11 @@ nào chưa từng được drill?” và “nếu restore bây giờ mất kho�
 
 ### 5.5 Audit và sửa multi-cluster scope `[ ]`
 
-- Join `Incident.cluster_id` trong mọi query dedup/in-flight Action.
+- [x] Join `Incident.cluster_id` trong mọi query dedup/in-flight Action của Backup Dashboard.
 - Scope BackupJob, anomaly, digest, drill, retention và restore chain thống nhất.
-- Cho phép backup ở hai cluster chạy song song khi không dùng chung resource.
-- Không để action cluster A chặn hoặc đọc lịch sử cluster B.
+- [x] Cho phép backup thủ công ở hai cluster chạy song song; action của cluster A
+  không chặn hoặc xuất hiện trong progress/pending restore của cluster B.
+- Không để action cluster A đọc lịch sử cluster B.
 - Ghi cluster trong audit, alert, history và artifact key/prefix.
 - Liệt kê rõ tính năng còn default-cluster-only; không hiển thị như đã hỗ trợ.
 

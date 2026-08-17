@@ -109,6 +109,19 @@ def _job_scope(column, cluster):
     return or_(column == cluster.id, column.is_(None)) if cluster.is_default else column == cluster.id
 
 
+def _in_flight_action_query(session, action_ids: tuple[str, ...], cluster=None):
+    """Scope backup/restore deduplication to the action's owning cluster."""
+    return (
+        session.query(Action)
+        .join(Incident, Action.incident_id == Incident.id)
+        .filter(
+            Action.action_id.in_(action_ids),
+            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+            _job_scope(Incident.cluster_id, cluster) if cluster is not None else True,
+        )
+    )
+
+
 def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
     """Return restorable full/incremental points with their exact chain."""
     expected_cluster_id = None if cluster.is_default else cluster.id
@@ -239,12 +252,7 @@ async def recovery_points_api(request: Request, pool: str, image: str, user: str
 def _latest_running_backup_action(cluster=None) -> Action | None:
     with db.SessionLocal() as session:
         return (
-            session.query(Action).join(Incident, Action.incident_id == Incident.id)
-            .filter(
-                Action.action_id.in_(BACKUP_PROGRESS_ACTION_IDS),
-                Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-                _job_scope(Incident.cluster_id, cluster) if cluster is not None else True,
-            )
+            _in_flight_action_query(session, BACKUP_PROGRESS_ACTION_IDS, cluster)
             .order_by(Action.created_at.desc())
             .first()
         )
@@ -253,9 +261,9 @@ def _latest_running_backup_action(cluster=None) -> Action | None:
 def _pending_restore_action(cluster=None) -> Action | None:
     with db.SessionLocal() as session:
         return (
-            session.query(Action).join(Incident, Action.incident_id == Incident.id)
-            .filter(Action.action_id.in_((RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID)), Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-                    _job_scope(Incident.cluster_id, cluster) if cluster is not None else True)
+            _in_flight_action_query(
+                session, (RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID), cluster
+            )
             .order_by(Action.created_at.desc())
             .first()
         )
@@ -630,9 +638,9 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
 
     with db.SessionLocal() as session:
         existing = (
-            session.query(Action)
-            .filter(Action.action_id == RESTORE_ACTION_ID)
-            .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
+            _in_flight_action_query(
+                session, (RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID), cluster
+            )
             .first()
         )
         if existing is not None:
@@ -737,12 +745,8 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
 
     with db.SessionLocal() as session:
         existing = (
-            session.query(Action)
-            .join(Incident, Action.incident_id == Incident.id)
-            .filter(
-                Action.action_id.in_((RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID)),
-                Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-                _job_scope(Incident.cluster_id, cluster),
+            _in_flight_action_query(
+                session, (RESTORE_ACTION_ID, RESTORE_AS_NEW_ACTION_ID), cluster
             )
             .first()
         )
@@ -789,10 +793,8 @@ def _create_manual_backup_action(action_id: str, action_params: dict, user: str,
 
     with db.SessionLocal() as session:
         existing = (
-            session.query(Action)
-            .filter(
-                Action.action_id.in_(("rbd_backup_run", "backup_metadata_run")),
-                Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
+            _in_flight_action_query(
+                session, ("rbd_backup_run", "backup_metadata_run"), cluster
             )
             .first()
         )

@@ -11,6 +11,7 @@ from shared.models import (
     BackupAnomaly,
     BackupDigestLog,
     BackupJob,
+    Cluster,
     Incident,
     IncidentStatus,
 )
@@ -28,8 +29,9 @@ def _stub_tracked_images(monkeypatch, tracked):
     )
 
 
-def _create_running_action(session, action_id, progress):
+def _create_running_action(session, action_id, progress, cluster_id=None):
     incident = Incident(
+        cluster_id=cluster_id,
         ceph_code="BACKUP_JOB",
         status=IncidentStatus.PENDING_APPROVAL.value,
         detected_at=datetime.utcnow(),
@@ -47,6 +49,22 @@ def _create_running_action(session, action_id, progress):
     session.add(action)
     session.commit()
     return action.id
+
+
+def _create_additional_cluster(session, *, name="backup-secondary"):
+    cluster = Cluster(
+        name=name,
+        ceph_mon_nodes="10.20.2.112",
+        ssh_user="root",
+        ssh_key_path="/tmp/test-key",
+        backup_enabled=True,
+        backup_tracked_images="vms/disk1",
+    )
+    session.add(cluster)
+    session.commit()
+    session.refresh(cluster)
+    session.expunge(cluster)
+    return cluster
 
 
 def _seed_successful_full(pool="vms", image="disk1"):
@@ -387,6 +405,38 @@ def test_progress_api_returns_latest_running_rbd_backup(dashboard_client):
     assert body["status"] == "APPROVED"
     assert body["progress"][0]["pct"] == 42
     assert body["progress"][0]["speed_mbps"] == 3.5
+
+
+def test_progress_api_does_not_read_running_action_from_another_cluster(dashboard_client):
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        cluster = _create_additional_cluster(session)
+        _create_running_action(session, "rbd_backup_run", [{"pct": 25}])
+
+    response = dashboard_client.get(f"/api/backups/progress?cluster={cluster.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"action_id": None, "status": None, "progress": []}
+
+
+def test_manual_backup_is_only_blocked_by_same_cluster(dashboard_client):
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        cluster = _create_additional_cluster(session)
+        _create_running_action(session, "rbd_backup_run", [{"pct": 25}])
+
+    first = dashboard_client.post(
+        f"/backups/run-now?cluster={cluster.id}", json={"pool": "vms", "image": "disk1"}
+    )
+    second = dashboard_client.post(
+        f"/backups/run-now?cluster={cluster.id}", json={"pool": "vms", "image": "disk1"}
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, first.json()["action_id"])
+        assert session.get(Incident, action.incident_id).cluster_id == cluster.id
 
 
 def test_progress_api_formats_step_timestamps_as_vietnam_local_clock(dashboard_client):
