@@ -179,10 +179,17 @@ thể gọi API ghi dù cố gửi request trực tiếp.
 **Hoàn thành khi:** mọi thay đổi có preview/audit, và thao tác xóa không thể xảy
 ra chỉ bằng một click hoặc qua request thiếu capability.
 
-### 4. Object Browser — ưu tiên P1
+### 4. Object Browser — ưu tiên P1 `[~] Đang triển khai 2026-08-17`
 
-- [ ] **4.1 Duyệt object theo prefix** có pagination, sort, search và hiển thị
+- [x] **4.1 Duyệt object theo prefix** có pagination, sort, search và hiển thị
   size/content type/last modified/version.
+  - Đã thêm Object Browser read-only ngay trong Bucket Detail và API scoped
+    theo cluster. Dùng lệnh đóng `radosgw-admin bucket list --bucket` với
+    `--max-entries`/`--marker`, không tạo hoặc trả S3 credential; normalize
+    allowlist key, size, content type, mtime, etag và version instance.
+    Page size tối đa 100, filter scan tối đa 2.000 index entry, prefix/search
+    và sort chỉ áp dụng trên cửa sổ bounded. Live Ceph version gate yêu cầu
+    Nautilus 14+, bản cũ nhận lý do unsupported rõ ràng.
 - [ ] **4.2 Xem object metadata, tags, version và retention state**.
 - [ ] **4.3 Upload/download qua pre-signed URL ngắn hạn**; giới hạn size/type,
   không proxy file lớn qua Dashboard.
@@ -275,6 +282,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 3.4 | Hoàn thành | Thêm Bucket Policy/ACL editor, Reef action allowlist, per-action version gate, same-bucket resource validation, public detection, diff, strong confirmation, audit và temporary-key cleanup. | Route regression 27 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.5 Delete Bucket. |
 | 2026-08-17 | 3.5 | Hoàn thành | Tách delete-empty và purge-delete; impact preview, count-bound strong confirmation, version/delete-marker/current-object batch purge, retention-safe behavior, audit và credential cleanup. | Route regression 29 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.6 regression gate. |
 | 2026-08-17 | 3.6 | Hoàn thành | Bổ sung release gate cho RBAC trên toàn bộ API ghi, chặn free-form action trước audit, mutation cluster phụ giữ đúng connection scope và purge failure được audit nhưng không xóa bucket. Các test sẵn có tiếp tục bao phủ policy validation, confirmation và capability theo live Ceph version. | `.venv/bin/pytest -q tests/test_dashboard_object_storage.py tests/test_dashboard_object_storage_users.py tests/test_rgw_access_log.py tests/test_dashboard_bucket_access_log.py`: 104 passed; Python syntax và `git diff --check` sạch. | Chưa commit; pha 3 hoàn thành, tiếp theo 4.1 Object Browser read-only. |
+| 2026-08-17 | 4.1 | Hoàn thành | Thêm Object Browser read-only theo prefix, search/sort bounded, marker pagination, object metadata/version, cluster scope và capability gate Nautilus 14+. Command builder đóng, quote bucket/marker và không dùng S3 secret. Đối chiếu man page `radosgw-admin` chính thức theo Ceph Reef trước khi triển khai. | Full Object Storage regression: 108 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.2 object metadata/tags/version/retention detail. |
 
 ## Ghi chú bàn giao
 

@@ -846,3 +846,54 @@ def test_bucket_detail_summarizes_request_and_error_trend(dashboard_client, monk
     assert "2</strong> lỗi HTTP 4xx/5xx" in response.text
     assert "66.7%" in response.text
     assert response.text.count("2026-08-17T0") >= 2
+
+
+def test_object_browser_lists_bounded_metadata_and_continuation_marker(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice"))
+    calls = []
+
+    def objects(host, bucket, marker, limit):
+        calls.append((host, bucket, marker, limit))
+        return [
+            {"name": "logs/a.txt", "instance": "v1", "meta": {
+                "size": 4, "mtime": "2026-08-17T01:00:00Z", "content_type": "text/plain",
+                "etag": "abc",
+            }},
+            {"name": "logs/b.json", "instance": "", "meta": {
+                "size": 8, "mtime": "2026-08-17T02:00:00Z", "content_type": "application/json",
+            }},
+        ]
+
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_objects", objects)
+    _login(dashboard_client)
+    response = dashboard_client.get(
+        "/api/object-storage/buckets/archive/objects?prefix=logs/&page_size=1&sort=size&order=desc"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == [{
+        "key": "logs/a.txt", "size_bytes": 4, "size": "4 B", "content_type": "text/plain",
+        "last_modified": "2026-08-17T01:00:00Z", "etag": "abc", "version_id": "v1",
+    }]
+    assert body["truncated"] is True
+    assert body["next_marker"] == "logs/a.txt"
+    assert calls == [("10.20.1.90", "archive", "", 101)]
+
+
+def test_object_browser_old_ceph_is_explicitly_unsupported(dashboard_client, monkeypatch):
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "13.2.10", "is_mixed": False,
+    })
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/object-storage/buckets/archive/objects")
+
+    assert response.status_code == 409
+    assert "Nautilus 14" in response.json()["detail"]

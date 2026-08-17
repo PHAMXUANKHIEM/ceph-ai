@@ -245,6 +245,55 @@ def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
         raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
 
 
+def build_bucket_object_list_command(bucket: str, marker: str = "", max_entries: int = 101) -> str:
+    """Build the closed, ordered RGW bucket-index listing used by Object Browser."""
+    if not bucket or len(bucket) > 255 or any(ord(char) < 32 for char in bucket):
+        raise ValueError("Invalid bucket name")
+    if marker and (len(marker) > 1024 or any(ord(char) < 32 for char in marker)):
+        raise ValueError("Invalid object marker")
+    if not 1 <= int(max_entries) <= 1001:
+        raise ValueError("Invalid object page size")
+    command = (f"radosgw-admin bucket list --bucket={shlex.quote(bucket)} "
+               f"--max-entries={int(max_entries)}")
+    if marker:
+        command += f" --marker={shlex.quote(marker)}"
+    return command + " --format json"
+
+
+def _bucket_object_rows(payload: object) -> list[dict]:
+    if not isinstance(payload, list):
+        raise RgwLogError("RGW trả về danh sách object không hợp lệ")
+    return [row for row in payload if isinstance(row, dict) and isinstance(row.get("name"), str)]
+
+
+def fetch_bucket_objects(host: str, bucket: str, marker: str = "", max_entries: int = 101) -> list[dict]:
+    inner = build_bucket_object_list_command(bucket, marker, max_entries)
+    command = ceph_client.build_exec_command(
+        settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner
+    )
+    try:
+        return _bucket_object_rows(json.loads(run_command_on_node(host, command)))
+    except RgwLogError:
+        raise
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được danh sách object trên {host}: {exc}") from exc
+
+
+def fetch_bucket_objects_with(host: str, bucket: str, marker: str, max_entries: int,
+                              ssh_user: str, ssh_key_path: str, exec_mode: str,
+                              rgw_container_name: str) -> list[dict]:
+    inner = build_bucket_object_list_command(bucket, marker, max_entries)
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        return _bucket_object_rows(json.loads(
+            run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        ))
+    except RgwLogError:
+        raise
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được danh sách object trên {host}: {exc}") from exc
+
+
 def _user_ids(payload: object) -> list[str]:
     values = payload.get("users", []) if isinstance(payload, dict) else payload
     if not isinstance(values, list):

@@ -345,6 +345,31 @@ def test_bucket_quota_builder_is_closed_and_targets_one_bucket():
             pass
 
 
+def test_bucket_object_list_builder_is_bounded_and_shell_quotes_inputs():
+    command = ral.build_bucket_object_list_command("team archive", "logs/a;touch /tmp/x", 51)
+    assert command == (
+        "radosgw-admin bucket list --bucket='team archive' --max-entries=51 "
+        "--marker='logs/a;touch /tmp/x' --format json"
+    )
+    for marker, limit in (("", 0), ("bad\nmarker", 50), ("", 1002)):
+        try:
+            ral.build_bucket_object_list_command("team-archive", marker, limit)
+            assert False, "invalid object listing input must fail closed"
+        except ValueError:
+            pass
+
+
+def test_fetch_bucket_objects_normalizes_only_name_bearing_rows(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_exec_mode", "cephadm", raising=False)
+    monkeypatch.setattr(ral, "run_command_on_node", lambda host, command: '[{"name":"a.txt","meta":{"size":4}},null,{}]')
+
+    assert ral.fetch_bucket_objects("10.20.1.90", "team-archive", max_entries=10) == [
+        {"name": "a.txt", "meta": {"size": 4}}
+    ]
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 

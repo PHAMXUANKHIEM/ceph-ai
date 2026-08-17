@@ -48,6 +48,8 @@ from watcher.rgw_access_log import (
     build_bucket_quota_command,
     execute_bucket_quota,
     execute_bucket_quota_with,
+    fetch_bucket_objects,
+    fetch_bucket_objects_with,
 )
 
 
@@ -59,6 +61,7 @@ MAX_QUERY_LENGTH = 120
 MAX_METADATA_SCAN = 500
 MAX_LIFECYCLE_SCAN = 1000
 MAX_PURGE_BATCHES = 10000
+MAX_OBJECT_BROWSER_SCAN = 2000
 LIFECYCLE_STORAGE_CLASSES = {
     "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "REDUCED_REDUNDANCY",
 }
@@ -182,6 +185,15 @@ def _capabilities(cluster) -> dict:
             "non_empty_requires_purge_flow": True,
             "bypass_governance_retention": False,
             "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/bucketops/",
+        },
+        "object_browser": {
+            "supported": major >= 14,
+            "min_ceph_major": 14,
+            "unavailable_reason": None if major >= 14 else
+                "Object Browser cần radosgw-admin bucket object listing của Ceph Nautilus 14 trở lên.",
+            "max_page_size": 100,
+            "max_filter_scan": MAX_OBJECT_BROWSER_SCAN,
+            "documentation": f"https://docs.ceph.com/en/{release}/man/8/radosgw-admin/",
         },
     }
 
@@ -928,6 +940,63 @@ def _detail(cluster, name: str, include_activity: bool = False) -> dict:
     return detail
 
 
+def _object_browser(cluster, bucket: str, marker: str, prefix: str, query: str,
+                    page_size: int, sort: str, order: str) -> dict:
+    detail = _detail(cluster, bucket)
+    host = detail["host"]
+    rows: list[dict] = []
+    cursor = marker
+    continuation_marker = marker
+    last_return_marker = marker
+    scanned = 0
+    truncated = False
+    while len(rows) <= page_size and scanned < MAX_OBJECT_BROWSER_SCAN:
+        limit = min(101, MAX_OBJECT_BROWSER_SCAN - scanned)
+        if cluster.is_default:
+            chunk = fetch_bucket_objects(host, bucket, cursor, limit)
+        else:
+            ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+            chunk = fetch_bucket_objects_with(host, bucket, cursor, limit, ssh_user, ssh_key,
+                                                mode, cluster.ceph_rgw_container_name)
+        if not chunk:
+            break
+        scanned += len(chunk)
+        cursor = str(chunk[-1]["name"])
+        for raw in chunk:
+            name = str(raw.get("name") or "")
+            continuation_marker = name
+            if prefix and not name.startswith(prefix):
+                continue
+            if query and query.casefold() not in name.casefold():
+                continue
+            if len(rows) >= page_size:
+                truncated = True
+                continuation_marker = last_return_marker
+                break
+            meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+            rows.append({
+                "key": name, "size_bytes": int(meta.get("size") or 0),
+                "size": _format_bytes(meta.get("size")), "content_type": meta.get("content_type") or "—",
+                "last_modified": str(meta.get("mtime") or ""), "etag": meta.get("etag") or None,
+                "version_id": str(raw.get("instance") or "") or None,
+            })
+            last_return_marker = name
+        if len(chunk) < limit or truncated:
+            break
+    if scanned >= MAX_OBJECT_BROWSER_SCAN and len(rows) <= page_size:
+        truncated = True
+    visible = rows[:page_size]
+    sort_keys = {"key": lambda row: row["key"].casefold(),
+                 "size": lambda row: row["size_bytes"],
+                 "modified": lambda row: row["last_modified"]}
+    visible.sort(key=sort_keys[sort], reverse=order == "desc")
+    next_marker = continuation_marker if truncated and visible else None
+    return {"bucket": bucket, "items": visible, "prefix": prefix, "query": query,
+            "marker": marker or None, "next_marker": next_marker, "truncated": truncated,
+            "scanned": scanned, "page_size": page_size, "sort": sort, "order": order,
+            "filter_scan_limit": MAX_OBJECT_BROWSER_SCAN}
+
+
 @router.get("/api/object-storage/buckets")
 async def bucket_inventory_api(
     request: Request,
@@ -1282,6 +1351,35 @@ async def bucket_detail_api(request: Request, bucket: str, user: str = Depends(r
         return await asyncio.to_thread(_detail, selected_cluster(request), bucket)
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/api/object-storage/buckets/{bucket}/objects")
+async def bucket_objects_api(
+    request: Request,
+    bucket: str,
+    user: str = Depends(require_login),
+    marker: str = Query("", max_length=1024),
+    prefix: str = Query("", max_length=1024),
+    query: str = Query("", max_length=MAX_QUERY_LENGTH),
+    page_size: int = Query(50, ge=1, le=100),
+    sort: Literal["key", "size", "modified"] = "key",
+    order: SortOrder = "asc",
+):
+    del user
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        browser = capability["object_browser"]
+        if not browser["supported"]:
+            raise HTTPException(status_code=409, detail=browser["unavailable_reason"])
+        result = await asyncio.to_thread(
+            _object_browser, cluster, bucket, marker, prefix, query.strip(), page_size, sort, order
+        )
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    result.update(cluster_id=cluster.id, cluster_name=cluster.name,
+                  ceph_version=capability["ceph_version"], ceph_release=capability["ceph_release"])
+    return result
 
 
 @router.get("/object-storage/buckets", response_class=HTMLResponse)
