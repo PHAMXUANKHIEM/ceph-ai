@@ -40,21 +40,23 @@
       {% endif %}
     </section>
     {% if detail %}
-    <section class="card" id="object-browser" data-bucket="{{ bucket }}" data-cluster="{{ selected_cluster.id }}">
+    <section class="card" id="object-browser" data-bucket="{{ bucket }}" data-owner="{{ detail.owner }}" data-cluster="{{ selected_cluster.id }}">
       <div class="card-header"><div><h2>Object Browser</h2><p class="hint">Read-only từ bucket index RGW; mỗi trang tối đa 100 object, không tải toàn bộ bucket vào bộ nhớ.</p></div></div>
       <div class="card-body">
         <form id="object-browser-form" class="audit-filters">
           <label>Prefix<input id="object-prefix" maxlength="1024" placeholder="logs/2026/"></label>
           <label>Tìm trong key<input id="object-query" maxlength="120" placeholder="report.csv"></label>
+          <label>S3 endpoint<input id="object-endpoint" type="url" maxlength="2048" placeholder="https://rgw.example.com" required></label>
           <label>Sắp xếp<select id="object-sort"><option value="key">Key</option><option value="size">Dung lượng</option><option value="modified">Last modified</option></select></label>
           <label>Thứ tự<select id="object-order"><option value="asc">Tăng dần</option><option value="desc">Giảm dần</option></select></label>
           <button class="btn btn-primary btn-sm" type="submit">Duyệt object</button>
         </form>
         <p id="object-browser-status" class="hint">Đang tải…</p>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Key</th><th>Dung lượng</th><th>Content-Type</th><th>Last modified</th><th>Version</th></tr></thead><tbody id="object-browser-rows"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Key</th><th>Dung lượng</th><th>Content-Type</th><th>Last modified</th><th>Version</th><th></th></tr></thead><tbody id="object-browser-rows"></tbody></table></div>
       <div class="card-footer"><button id="object-browser-next" class="btn btn-ghost btn-sm" type="button" hidden>Trang sau</button></div>
     </section>
+    <section class="card" id="object-detail-card" hidden><div class="card-header"><div><h2>Object Detail</h2><p id="object-detail-key" class="hint"></p></div></div><div class="card-body"><p id="object-detail-status" class="hint"></p><div id="object-detail-content"></div></div></section>
     {% endif %}
     {% if detail and detail.activity %}
     <section class="card">

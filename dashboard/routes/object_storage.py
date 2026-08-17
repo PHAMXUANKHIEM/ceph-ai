@@ -195,6 +195,11 @@ def _capabilities(cluster) -> dict:
                 "Object Browser cần radosgw-admin bucket object listing của Ceph Nautilus 14 trở lên.",
             "max_page_size": 100,
             "max_filter_scan": MAX_OBJECT_BROWSER_SCAN,
+            "metadata_supported": major >= 14,
+            "tags_supported": major >= 15,
+            "tags_unavailable_reason": None if major >= 15 else "Object Tagging detail cần Ceph Octopus 15 trở lên.",
+            "retention_supported": object_lock_supported,
+            "retention_unavailable_reason": None if object_lock_supported else "Object retention/legal hold cần Ceph Octopus 15 trở lên.",
             "documentation": f"https://docs.ceph.com/en/{release}/man/8/radosgw-admin/",
         },
     }
@@ -999,6 +1004,62 @@ def _object_browser(cluster, bucket: str, marker: str, prefix: str, query: str,
             "filter_scan_limit": MAX_OBJECT_BROWSER_SCAN}
 
 
+def _object_detail(cluster, bucket: str, key: str, version_id: str, owner: str,
+                   endpoint: str, capability: dict) -> dict:
+    if not key or len(key) > 1024 or any(ord(char) < 32 for char in key):
+        raise HTTPException(status_code=400, detail="Object key không hợp lệ")
+    base = _create_payload({"name": bucket, "owner": owner, "endpoint": endpoint})
+    bucket_detail = _detail(cluster, bucket)
+    if bucket_detail.get("owner") != owner:
+        raise HTTPException(status_code=409, detail="Owner không khớp bucket trên cluster đang chọn")
+    payload = {"bucket": base["name"], "owner": base["owner"], "endpoint": base["endpoint"]}
+    browser = capability["object_browser"]
+
+    def read(client):
+        version_args = {"VersionId": version_id} if version_id else {}
+        head = client.head_object(Bucket=bucket, Key=key, **version_args)
+        tags = None
+        retention = None
+        legal_hold = None
+        if browser["tags_supported"]:
+            try:
+                tags = client.get_object_tagging(Bucket=bucket, Key=key, **version_args).get("TagSet") or []
+            except client.exceptions.ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if code not in {"NoSuchTagSet", "NoSuchKey"}:
+                    raise
+                tags = []
+        if browser["retention_supported"]:
+            try:
+                retention = client.get_object_retention(Bucket=bucket, Key=key, **version_args).get("Retention")
+            except client.exceptions.ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if code not in {"NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError", "NoSuchKey"}:
+                    raise
+            try:
+                legal_hold = client.get_object_legal_hold(Bucket=bucket, Key=key, **version_args).get("LegalHold")
+            except client.exceptions.ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if code not in {"NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError", "NoSuchKey"}:
+                    raise
+        modified = head.get("LastModified")
+        return {
+            "key": key, "version_id": head.get("VersionId") or version_id or None,
+            "size_bytes": int(head.get("ContentLength") or 0), "size": _format_bytes(head.get("ContentLength")),
+            "content_type": head.get("ContentType") or None, "etag": str(head.get("ETag") or "").strip('"') or None,
+            "last_modified": modified.isoformat() if isinstance(modified, datetime) else str(modified or "") or None,
+            "storage_class": head.get("StorageClass") or "STANDARD",
+            "cache_control": head.get("CacheControl"), "content_disposition": head.get("ContentDisposition"),
+            "metadata": {str(k): str(v) for k, v in (head.get("Metadata") or {}).items()},
+            "tags": tags, "tags_supported": browser["tags_supported"],
+            "tags_unavailable_reason": browser["tags_unavailable_reason"],
+            "retention": retention, "legal_hold": legal_hold,
+            "retention_supported": browser["retention_supported"],
+            "retention_unavailable_reason": browser["retention_unavailable_reason"],
+        }
+    return _with_owner_s3(cluster, payload, read)
+
+
 @router.get("/api/object-storage/buckets")
 async def bucket_inventory_api(
     request: Request,
@@ -1376,6 +1437,33 @@ async def bucket_objects_api(
             raise HTTPException(status_code=409, detail=browser["unavailable_reason"])
         result = await asyncio.to_thread(
             _object_browser, cluster, bucket, marker, prefix, query.strip(), page_size, sort, order
+        )
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    result.update(cluster_id=cluster.id, cluster_name=cluster.name,
+                  ceph_version=capability["ceph_version"], ceph_release=capability["ceph_release"])
+    return result
+
+
+@router.get("/api/object-storage/buckets/{bucket}/object-detail")
+async def bucket_object_detail_api(
+    request: Request,
+    bucket: str,
+    key: str = Query(..., min_length=1, max_length=1024),
+    owner: str = Query(..., min_length=1, max_length=255),
+    endpoint: str = Query(..., min_length=1, max_length=2048),
+    version_id: str = Query("", max_length=1024),
+    user: str = Depends(require_login),
+):
+    del user
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        browser = capability["object_browser"]
+        if not browser["supported"]:
+            raise HTTPException(status_code=409, detail=browser["unavailable_reason"])
+        result = await asyncio.to_thread(
+            _object_detail, cluster, bucket, key, version_id, owner, endpoint, capability
         )
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc

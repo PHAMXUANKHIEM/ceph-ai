@@ -897,3 +897,78 @@ def test_object_browser_old_ceph_is_explicitly_unsupported(dashboard_client, mon
 
     assert response.status_code == 409
     assert "Nautilus 14" in response.json()["detail"]
+
+
+def test_object_detail_returns_metadata_tags_version_and_retention(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice"))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    revoked = []
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: revoked.append(args))
+
+    class FakeS3:
+        def head_object(self, **kwargs):
+            assert kwargs == {"Bucket": "archive", "Key": "logs/a.txt", "VersionId": "v1"}
+            return {"ContentLength": 4, "ContentType": "text/plain", "ETag": '"abc"',
+                    "VersionId": "v1", "StorageClass": "STANDARD", "Metadata": {"team": "ops"},
+                    "LastModified": datetime(2026, 8, 17, 1, 0, tzinfo=timezone.utc)}
+
+        def get_object_tagging(self, **kwargs): return {"TagSet": [{"Key": "env", "Value": "prod"}]}
+        def get_object_retention(self, **kwargs): return {"Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": "2027-01-01T00:00:00Z"}}
+        def get_object_legal_hold(self, **kwargs): return {"LegalHold": {"Status": "ON"}}
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    response = dashboard_client.get(
+        "/api/object-storage/buckets/archive/object-detail?key=logs%2Fa.txt&version_id=v1"
+        "&owner=alice&endpoint=https%3A%2F%2Frgw.example.test"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"] == {"team": "ops"}
+    assert body["tags"] == [{"Key": "env", "Value": "prod"}]
+    assert body["retention"]["Mode"] == "COMPLIANCE"
+    assert body["legal_hold"] == {"Status": "ON"}
+    assert body["etag"] == "abc"
+    assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")]
+
+
+def test_object_detail_nautilus_skips_unsupported_tags_and_retention(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "14.2.22", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice"))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+
+    class FakeS3:
+        def head_object(self, **kwargs): return {"ContentLength": 1, "Metadata": {}}
+        def get_object_tagging(self, **kwargs): raise AssertionError("tags must be version-gated")
+        def get_object_retention(self, **kwargs): raise AssertionError("retention must be version-gated")
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    response = dashboard_client.get(
+        "/api/object-storage/buckets/archive/object-detail?key=a&owner=alice"
+        "&endpoint=https%3A%2F%2Frgw.example.test"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tags_supported"] is False
+    assert "Octopus 15" in response.json()["tags_unavailable_reason"]
+    assert response.json()["retention_supported"] is False
