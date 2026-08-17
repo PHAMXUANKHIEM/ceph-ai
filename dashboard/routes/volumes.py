@@ -1056,8 +1056,20 @@ async def propose_cinder_volume_attach(
     if replay:
         return replay
     _detail, cinder, _reconciliation = await _cinder_attachment_preflight(cluster, pool, image)
-    if cinder.get("volume_status") != "available" or cinder.get("attachments"):
-        raise HTTPException(status_code=409, detail="Cinder volume phải ở trạng thái available và chưa có attachment")
+    attachments = cinder.get("attachments") if isinstance(cinder.get("attachments"), list) else []
+    if any(str(item.get("instance_id") or "").lower() == server_id.lower() for item in attachments):
+        raise HTTPException(status_code=409, detail="Nova server đã attach Cinder volume này")
+    first_attach = cinder.get("volume_status") == "available" and not attachments
+    shared_attach = (
+        cinder.get("volume_status") == "in-use"
+        and bool(cinder.get("multiattach"))
+        and bool(attachments)
+    )
+    if not (first_attach or shared_attach):
+        raise HTTPException(
+            status_code=409,
+            detail="Volume đang in-use chỉ được attach thêm khi Cinder xác nhận multiattach=true",
+        )
     if str(cinder["volume_id"]).lower() != volume_id.lower():
         raise HTTPException(status_code=409, detail="Cinder volume ID không khớp RBD image")
     action_id = _propose_cinder_attachment_mutation(

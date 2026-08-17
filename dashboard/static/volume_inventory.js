@@ -217,35 +217,61 @@
     });
     if (isAdmin) {
       if (cinder.status === "managed" && reconciliation.status === "healthy") {
-        var cinderForm = document.createElement("form");
-        cinderForm.className = "audit-filters";
-        var serverLabel = document.createElement("label");
-        var serverInput = document.createElement("input");
-        serverInput.type = "text";
-        serverInput.required = true;
-        serverInput.pattern = "[0-9a-fA-F-]{36}";
-        if (cinder.volume_status === "available") {
-          serverLabel.textContent = "Nova server UUID cần attach";
-        } else {
-          serverLabel.textContent = "Nova server UUID cần detach";
-          if ((cinder.attachments || []).length === 1) serverInput.value = cinder.attachments[0].instance_id || "";
+        var canAttach = cinder.volume_status === "available" ||
+          (cinder.volume_status === "in-use" && cinder.multiattach === true);
+        if (canAttach) {
+          var attachForm = document.createElement("form");
+          attachForm.className = "audit-filters";
+          var attachLabel = document.createElement("label");
+          attachLabel.textContent = cinder.volume_status === "in-use" ? "Nova server UUID cần multi-attach" : "Nova server UUID cần attach";
+          var attachInput = document.createElement("input");
+          attachInput.type = "text";
+          attachInput.required = true;
+          attachInput.pattern = "[0-9a-fA-F-]{36}";
+          attachLabel.appendChild(attachInput);
+          attachForm.appendChild(attachLabel);
+          var attachSubmit = document.createElement("button");
+          attachSubmit.type = "submit";
+          attachSubmit.className = "btn btn-primary btn-sm";
+          attachSubmit.textContent = cinder.volume_status === "in-use" ? "Đề xuất multi-attach" : "Đề xuất attach qua Cinder";
+          attachForm.appendChild(attachSubmit);
+          attachForm.addEventListener("submit", function (event) {
+            event.preventDefault();
+            proposeMutation(
+              "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/attach",
+              { server_id: attachInput.value.trim() }, attachSubmit
+            );
+          });
+          detail.appendChild(attachForm);
         }
-        serverLabel.appendChild(serverInput);
-        cinderForm.appendChild(serverLabel);
-        var cinderSubmit = document.createElement("button");
-        cinderSubmit.type = "submit";
-        cinderSubmit.className = cinder.volume_status === "available" ? "btn btn-primary btn-sm" : "btn btn-reject btn-sm";
-        cinderSubmit.textContent = cinder.volume_status === "available" ? "Đề xuất attach qua Cinder" : "Đề xuất detach qua Cinder";
-        cinderForm.appendChild(cinderSubmit);
-        cinderForm.addEventListener("submit", function (event) {
-          event.preventDefault();
-          var operation = cinder.volume_status === "available" ? "attach" : "detach";
-          proposeMutation(
-            "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/" + operation,
-            { server_id: serverInput.value.trim() }, cinderSubmit
-          );
-        });
-        detail.appendChild(cinderForm);
+        if ((cinder.attachments || []).length) {
+          var detachForm = document.createElement("form");
+          detachForm.className = "audit-filters";
+          var detachLabel = document.createElement("label");
+          detachLabel.textContent = "Nova server UUID cần detach";
+          var detachSelect = document.createElement("select");
+          (cinder.attachments || []).forEach(function (item) {
+            var option = document.createElement("option");
+            option.value = item.instance_id || "";
+            option.textContent = [item.instance_id, item.host, item.device].filter(Boolean).join(" · ");
+            detachSelect.appendChild(option);
+          });
+          detachLabel.appendChild(detachSelect);
+          detachForm.appendChild(detachLabel);
+          var detachSubmit = document.createElement("button");
+          detachSubmit.type = "submit";
+          detachSubmit.className = "btn btn-reject btn-sm";
+          detachSubmit.textContent = "Đề xuất detach qua Cinder";
+          detachForm.appendChild(detachSubmit);
+          detachForm.addEventListener("submit", function (event) {
+            event.preventDefault();
+            proposeMutation(
+              "/api/volumes/" + encodeURIComponent(pool) + "/inventory/" + encodeURIComponent(data.name) + "/detach",
+              { server_id: detachSelect.value }, detachSubmit
+            );
+          });
+          detail.appendChild(detachForm);
+        }
       }
       var resizeForm = document.createElement("form");
       resizeForm.className = "audit-filters";

@@ -251,7 +251,8 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
     `mismatch`, `stale_attachment`, `orphan` hoặc `unknown`; mọi trạng thái chưa
     an toàn đều fail-closed. Admin có thể đề xuất attach/detach qua Cinder cho
     trạng thái `healthy`; action RISKY chờ duyệt, idempotent, target Controller
-    và hậu kiểm attachment từ Cinder. Không dùng `rbd map/unmap`.
+    và hậu kiểm attachment từ Cinder. Attach thêm khi `in-use` chỉ mở nếu Cinder
+    xác nhận `multiattach=true`; server đã attach bị chặn. Không dùng `rbd map/unmap`.
 - [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
   - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
@@ -484,6 +485,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-03 Cinder Discovery | Đang làm | Thêm cấu hình `openstack_openrc_path` theo cluster; nhận diện RBD `volume-<UUID>`, truy vấn `openstack volume show` read-only trên Controller và hiển thị project/type/status/backend cùng attachment instance/host/device. Credential ở lại Controller; lỗi/thiếu cấu hình fail-closed và không bật mutation. Phạm vi Kubernetes/CSI đã loại khỏi roadmap. | Discovery `2 passed`; Settings `1 passed`; Volume Detail `2 passed`; một Alembic head; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo đối soát watcher/lock với Cinder attachment và phát hiện orphan/mismatch trước khi xây attach/detach qua Cinder. |
 | 2026-08-17 | BS-03 Cinder Reconciliation | Hoàn thành code | Đối soát Cinder status/attachment/multiattach với Ceph watcher/lock; phân loại `healthy`, `mismatch`, `stale_attachment`, `orphan`, `unknown` và hiển thị evidence/reason trong Volume Detail. Cinder UUID không còn record được tách khỏi lỗi kết nối; mọi trạng thái ngoài `healthy` đều fail-closed. | Reconciliation/discovery `9 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo thiết kế attach/detach chỉ qua Cinder với approval, idempotency và post-check hai phía. |
 | 2026-08-17 | BS-03 Cinder Attach/Detach | Hoàn thành code | Thêm form/API attach và detach bằng Nova server UUID; chỉ đề xuất khi Cinder/Ceph reconciliation `healthy`. Action RISKY chờ approval, idempotency scope theo exact intent, thực thi `openstack server add/remove volume` trên Controller và parse `openstack volume show` để hậu kiểm server attachment; không có `rbd map/unmap`. | Command/policy/post-check `5 passed`; Volume API/detail `4 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack trước khi đóng BS-03. |
+| 2026-08-17 | BS-03 Cinder Multi-attach Guard | Hoàn thành code | Tách form attach/detach; cho attach thêm volume `in-use` chỉ khi Cinder trả `multiattach=true`, reconciliation `healthy` và Nova server đích chưa có attachment. Volume exclusive hoặc server trùng bị chặn server-side trước khi tạo Action. | Nhóm Cinder Volume API `6 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack; force-detach chưa triển khai để tránh bypass trạng thái consumer. |
 
 ## Ghi chú bàn giao
 

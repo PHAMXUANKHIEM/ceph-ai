@@ -1595,6 +1595,59 @@ def test_cinder_detach_proposal_requires_matching_attachment(dashboard_client, m
         assert "openstack server remove volume" in action.proposed_command
 
 
+def test_cinder_multiattach_requires_capability_and_new_server(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+    existing_server = "abcdefab-1234-4123-8123-1234567890ab"
+    new_server = "fedcbafe-1234-4123-8123-1234567890ab"
+
+    async def fake_preflight(cluster, pool, image):
+        return {}, {
+            "status": "managed", "verified": True, "volume_id": volume_id,
+            "volume_status": "in-use", "multiattach": True,
+            "attachments": [{"attachment_id": "attach-1", "instance_id": existing_server}],
+        }, {"status": "healthy", "safe": True}
+
+    monkeypatch.setattr(volumes_route, "_cinder_attachment_preflight", fake_preflight)
+    _login(dashboard_client)
+    duplicate = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/attach",
+        json={"server_id": existing_server},
+    )
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/attach",
+        json={"server_id": new_server},
+    )
+
+    assert duplicate.status_code == 409
+    assert "đã attach" in duplicate.json()["detail"]
+    assert response.status_code == 201
+
+
+def test_cinder_attach_rejects_in_use_exclusive_volume(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _configure_openstack_controller()
+    volume_id = "12345678-1234-4123-8123-1234567890ab"
+
+    async def fake_preflight(cluster, pool, image):
+        return {}, {
+            "status": "managed", "verified": True, "volume_id": volume_id,
+            "volume_status": "in-use", "multiattach": False,
+            "attachments": [{"instance_id": "abcdefab-1234-4123-8123-1234567890ab"}],
+        }, {"status": "healthy", "safe": True}
+
+    monkeypatch.setattr(volumes_route, "_cinder_attachment_preflight", fake_preflight)
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/api/volumes/vms/inventory/volume-{volume_id}/attach",
+        json={"server_id": "fedcbafe-1234-4123-8123-1234567890ab"},
+    )
+
+    assert response.status_code == 409
+    assert "multiattach=true" in response.json()["detail"]
+
+
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _create_user("viewer", "viewer-password", is_admin=False)
