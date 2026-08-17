@@ -199,6 +199,18 @@
       addListSection(detail, "Cinder Attachment", cinder.attachments || [], function (item) {
         return [item.attachment_id, item.instance_id, item.host, item.device].filter(Boolean).join(" · ") || JSON.stringify(item);
       });
+      var cinderSnapshots = data.cinder_snapshots || { items: [] };
+      if (cinderSnapshots.status === "ok") {
+        addListSection(detail, "Cinder Snapshot", cinderSnapshots.items || [], function (item) {
+          return [item.name || item.snapshot_id, item.status, item.size_gib ? item.size_gib + " GiB" : "", item.created_at]
+            .filter(Boolean).join(" · ");
+        });
+      } else if (cinderSnapshots.status !== "not_applicable") {
+        var snapshotWarning = document.createElement("p");
+        snapshotWarning.className = "error";
+        snapshotWarning.textContent = "Cinder snapshot inventory: " + (cinderSnapshots.error || cinderSnapshots.status);
+        detail.appendChild(snapshotWarning);
+      }
     } else if (["error", "not_configured", "not_found"].indexOf(cinder.status) !== -1) {
       var cinderWarning = document.createElement("p");
       cinderWarning.className = "error";

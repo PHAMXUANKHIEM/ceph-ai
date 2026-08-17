@@ -1525,6 +1525,13 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
             "attachments": [{"attachment_id": "attach-1", "instance_id": "vm-1"}],
         },
     )
+    monkeypatch.setattr(
+        volumes_route, "discover_cinder_snapshots",
+        lambda cluster, volume_id: {
+            "status": "ok", "count": 1,
+            "items": [{"snapshot_id": "snap-1", "name": "daily", "status": "available"}],
+        },
+    )
     _login(dashboard_client)
 
     response = dashboard_client.get(f"/api/volumes/vms/inventory/volume-{volume_id}")
@@ -1536,6 +1543,7 @@ def test_volume_inventory_detail_marks_verified_cinder_consumer(dashboard_client
     assert payload["attachment_summary"]["consumer_count"] == 1
     assert payload["attachment_summary"]["mutation_supported"] is False
     assert payload["attachment_reconciliation"]["status"] == "mismatch"
+    assert payload["cinder_snapshots"]["items"][0]["snapshot_id"] == "snap-1"
 
 
 def test_cinder_attach_proposal_is_approval_gated_and_targets_controller(dashboard_client, monkeypatch):

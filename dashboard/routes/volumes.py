@@ -12,7 +12,11 @@ from sqlalchemy import or_
 
 from config.settings import settings
 from dashboard import volume_perf_analysis
-from dashboard.cinder_discovery import discover_cinder_volume, reconcile_cinder_attachment
+from dashboard.cinder_discovery import (
+    discover_cinder_snapshots,
+    discover_cinder_volume,
+    reconcile_cinder_attachment,
+)
 from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
@@ -989,6 +993,11 @@ async def volume_inventory_detail_api(
         raise HTTPException(status_code=502, detail=f"Không đọc được chi tiết Volume: {exc}")
     cinder = await asyncio.to_thread(discover_cinder_volume, cluster, image)
     detail["cinder"] = cinder
+    detail["cinder_snapshots"] = (
+        await asyncio.to_thread(discover_cinder_snapshots, cluster, str(cinder.get("volume_id")))
+        if cinder.get("status") == "managed" and cinder.get("verified")
+        else {"status": "not_applicable", "items": [], "count": 0}
+    )
     reconciliation = reconcile_cinder_attachment(
         cinder, detail.get("watchers") or [], detail.get("locks") or []
     )

@@ -77,6 +77,48 @@ def test_discover_cinder_volume_distinguishes_missing_cinder_record(monkeypatch)
     assert result == {"status": "not_found", "verified": True, "volume_id": VOLUME_ID}
 
 
+def test_discover_cinder_snapshots_normalizes_inventory(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cinder_discovery, "resolve_ssh_creds",
+        lambda cluster: ("root", "/tmp/id_ed25519", "none", ""),
+    )
+
+    def fake_execute(host, command, user=None, key_path=None):
+        calls.append((host, command))
+        return json.dumps([
+            {"ID": "snap-1", "Name": "daily", "Status": "available", "Size": 20,
+             "Created At": "2026-08-17T01:02:03Z"},
+        ])
+
+    monkeypatch.setattr(cinder_discovery, "execute_command", fake_execute)
+    result = cinder_discovery.discover_cinder_snapshots(_cluster(), VOLUME_ID)
+
+    assert result == {
+        "status": "ok", "count": 1,
+        "items": [{"snapshot_id": "snap-1", "name": "daily", "status": "available",
+                   "size_gib": 20, "created_at": "2026-08-17T01:02:03Z"}],
+    }
+    assert "openstack volume snapshot list --volume" in calls[0][1]
+
+
+def test_discover_cinder_snapshots_degrades_independently(monkeypatch):
+    monkeypatch.setattr(
+        cinder_discovery, "resolve_ssh_creds",
+        lambda cluster: ("root", "/tmp/id_ed25519", "none", ""),
+    )
+    monkeypatch.setattr(
+        cinder_discovery, "execute_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ExecutorError("Cinder timeout")),
+    )
+
+    result = cinder_discovery.discover_cinder_snapshots(_cluster(), VOLUME_ID)
+
+    assert result["status"] == "error"
+    assert result["items"] == []
+    assert "timeout" in result["error"]
+
+
 @pytest.mark.parametrize(
     ("cinder", "watchers", "locks", "expected"),
     [

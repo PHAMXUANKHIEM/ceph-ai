@@ -124,7 +124,7 @@ một “tính năng hoàn thành” nếu executor hoặc guard chưa có.
 | 1 | **BS-01 Inventory read-only `[~]`** | `rbd ls/info/du/status`, volume detail, size/used, feature, watcher/lock, snapshot và parent/child; search/filter/pagination theo cluster/pool. | Không | Test default/secondary/inactive cluster, timeout/partial error và không cross-cluster. |
 | 2 | **BS-02 Volume CRUD nền tảng `[~]`** | Create, expand-only resize, rename, move-to-trash và restore-from-trash; quota/capacity/dependency preflight, idempotency và reconciliation. | BS-01 | Mọi write qua Worker; retry không tạo trùng; delete bị chặn khi busy/dependent. |
 | 3 | **BS-03 Attachment `[~]`** | Inventory watcher/lock và mapping consumer; attach/detach qua Cinder, exclusive/shared guard và force-detach approval. | BS-01, Cinder discovery | Không mutate trực tiếp volume do Cinder quản lý; có post-check consumer. |
-| 4 | **BS-04 Snapshot/Clone** | Snapshot thủ công + lịch/retention, restore-as-new mặc định, rollback in-place có guard, clone, dependency graph và flatten. | BS-01, BS-02 | Không xóa protected/parent snapshot; scheduler dedup; rollback yêu cầu detached. |
+| 4 | **BS-04 Snapshot/Clone `[~]`** | Snapshot thủ công + lịch/retention, restore-as-new mặc định, rollback in-place có guard, clone, dependency graph và flatten. | BS-01, BS-02 | Không xóa protected/parent snapshot; scheduler dedup; rollback yêu cầu detached. |
 | 5 | **BS-05 Restore an toàn** | Chọn full/diff recovery point, restore sang volume mới, preflight capacity/compatibility, verify size/read và promote có approval. | BS-02, backup hiện có | Không ghi đè production mặc định; evidence ghi rõ chain và post-check. |
 | 6 | **BS-06 QoS/Capacity** | Throughput, queue depth, latency percentile, used/provisioned/freshness; QoS template/diff/rollback; dự báo 80/90/95%. | BS-01 và metric schema mới | Counter reset/stale metric được xử lý; QoS unsupported fail-closed. |
 | 7 | **BS-07 OpenStack Cinder mapping** | Cinder volume/instance/project mapping, orphan report và source-of-truth routing. | BS-01, credential/capability | Tenant isolation; không có mutation bypass Cinder. |
@@ -285,8 +285,11 @@ không báo thành công trước khi đã xác minh trạng thái thực tế.
 
 ### 3. Snapshot, Clone và Image Template — ưu tiên P0
 
-- [ ] **3.1 Snapshot thủ công** với tên, mô tả, retention class và consistency
+- [~] **3.1 Snapshot thủ công** với tên, mô tả, retention class và consistency
   type (`crash-consistent` trước; `application-consistent` khi có agent/hook).
+  - Đã có inventory read-only qua `openstack volume snapshot list --volume`
+    cho volume Cinder, hiển thị ID/tên/status/size/thời gian trong Volume Detail.
+    Lỗi snapshot degrade riêng; chưa có create/delete/protect workflow.
 - [ ] **3.2 Snapshot policy** theo lịch, timezone, số bản giữ và capacity guard;
   scheduler có dedup, retry và missed-run handling.
 - [ ] **3.3 Restore/rollback**
@@ -486,6 +489,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-03 Cinder Reconciliation | Hoàn thành code | Đối soát Cinder status/attachment/multiattach với Ceph watcher/lock; phân loại `healthy`, `mismatch`, `stale_attachment`, `orphan`, `unknown` và hiển thị evidence/reason trong Volume Detail. Cinder UUID không còn record được tách khỏi lỗi kết nối; mọi trạng thái ngoài `healthy` đều fail-closed. | Reconciliation/discovery `9 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo thiết kế attach/detach chỉ qua Cinder với approval, idempotency và post-check hai phía. |
 | 2026-08-17 | BS-03 Cinder Attach/Detach | Hoàn thành code | Thêm form/API attach và detach bằng Nova server UUID; chỉ đề xuất khi Cinder/Ceph reconciliation `healthy`. Action RISKY chờ approval, idempotency scope theo exact intent, thực thi `openstack server add/remove volume` trên Controller và parse `openstack volume show` để hậu kiểm server attachment; không có `rbd map/unmap`. | Command/policy/post-check `5 passed`; Volume API/detail `4 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack trước khi đóng BS-03. |
 | 2026-08-17 | BS-03 Cinder Multi-attach Guard | Hoàn thành code | Tách form attach/detach; cho attach thêm volume `in-use` chỉ khi Cinder trả `multiattach=true`, reconciliation `healthy` và Nova server đích chưa có attachment. Volume exclusive hoặc server trùng bị chặn server-side trước khi tạo Action. | Nhóm Cinder Volume API `6 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Còn nghiệm thu live OpenStack; force-detach chưa triển khai để tránh bypass trạng thái consumer. |
+| 2026-08-17 | BS-04 Cinder Snapshot Inventory | Đang làm | Volume Detail đọc snapshot bằng OpenStack CLI trên Controller, scope theo exact Cinder volume ID; chuẩn hóa ID/tên/status/size/created-at. Snapshot query lỗi degrade độc lập và không làm mất volume/attachment metadata. | Cinder discovery `11 passed`; Volume Detail `2 passed`; `py_compile`, `node --check`, `git diff --check` đạt. | Tiếp theo create snapshot crash-consistent qua Cinder với approval, idempotency và post-check. |
 
 ## Ghi chú bàn giao
 

@@ -12,6 +12,10 @@ _CINDER_IMAGE_RE = re.compile(
     r"^volume-(?P<id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
 )
+_OPENSTACK_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
 
 
 def _field(payload: dict, *names: str):
@@ -162,3 +166,41 @@ def discover_cinder_volume(cluster, image: str) -> dict:
         if _is_not_found_error(str(exc)):
             return {"status": "not_found", "verified": True, "volume_id": volume_id}
         return {"status": "error", "verified": False, "volume_id": volume_id, "error": str(exc)}
+
+
+def discover_cinder_snapshots(cluster, volume_id: str) -> dict:
+    """List snapshots through Cinder; never inspect Cinder-owned RBD snapshots directly."""
+    if not _OPENSTACK_UUID_RE.fullmatch(volume_id):
+        return {"status": "error", "items": [], "error": "Cinder volume ID không hợp lệ."}
+    controllers = [item.strip() for item in cluster.openstack_controller_nodes.split(",") if item.strip()]
+    openrc_path = (cluster.openstack_openrc_path or "").strip()
+    if not controllers or not openrc_path:
+        return {
+            "status": "not_configured", "items": [],
+            "error": "Chưa cấu hình OpenStack Controller và openrc cho cluster.",
+        }
+    command = "sh -c " + shlex.quote(
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
+        f"openstack volume snapshot list --volume {shlex.quote(volume_id)} -f json"
+    )
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    try:
+        payload = json.loads(
+            execute_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
+        )
+        if not isinstance(payload, list):
+            raise ValueError("Cinder snapshot CLI không trả về JSON array")
+        items = []
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            items.append({
+                "snapshot_id": _field(row, "id"),
+                "name": _field(row, "name"),
+                "status": _field(row, "status"),
+                "size_gib": _field(row, "size"),
+                "created_at": _field(row, "created_at", "created at"),
+            })
+        return {"status": "ok", "items": items, "count": len(items)}
+    except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
+        return {"status": "error", "items": [], "error": str(exc)}
