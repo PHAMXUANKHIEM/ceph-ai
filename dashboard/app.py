@@ -20,6 +20,7 @@ from dashboard.routes import (
     block_storage,
     bucket_access_log,
     object_storage,
+    object_storage_users,
     chat,
     clusters as clusters_routes,
     convert_cluster,
@@ -154,6 +155,7 @@ def create_app() -> FastAPI:
     application.include_router(restore_cluster.router)
     application.include_router(bucket_access_log.router)
     application.include_router(object_storage.router)
+    application.include_router(object_storage_users.router)
     application.include_router(telegram_alerts.router)
     application.include_router(crush_map.router)
     application.include_router(clusters_routes.router)

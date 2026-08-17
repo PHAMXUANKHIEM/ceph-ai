@@ -237,6 +237,19 @@ def test_summarize_bucket_stats_reports_optional_capabilities_without_guessing()
     assert enriched["lifecycle_available"] is True
 
 
+def test_summarize_s3_user_discards_all_key_material():
+    summary = ral.summarize_s3_user({
+        "user_id": "alice",
+        "keys": [{"access_key": "AKIA", "secret_key": "SECRET"}],
+        "caps": [{"type": "users", "perm": "read"}],
+    })
+    assert summary["uid"] == "alice"
+    assert summary["key_count"] == 1
+    assert summary["caps"] == ["users"]
+    assert "AKIA" not in str(summary)
+    assert "SECRET" not in str(summary)
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 

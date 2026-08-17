@@ -61,34 +61,34 @@ nhưng route/service phải có một lớp capability riêng để có thể t�
 
 ## Các giai đoạn triển khai
 
-### 1. Bucket Overview — ưu tiên P0 `[~] Đang triển khai 2026-08-16`
+### 1. Bucket Overview — ưu tiên P0 `[x] Hoàn thành 2026-08-17`
 
-- [~] **1.1 API danh sách bucket scoped theo cluster**
+- [x] **1.1 API danh sách bucket scoped theo cluster**
   - Trả bucket name, owner, creation time, số object, logical size, quota,
     versioning/object-lock state nếu RGW cung cấp.
   - Có search, sort, pagination, timeout và trạng thái empty/error riêng.
-- [~] Đã có endpoint read-only `/api/object-storage/buckets` và
+- [x] Đã có endpoint read-only `/api/object-storage/buckets` và
   `/api/object-storage/buckets/{bucket}`: tên bucket, owner, creation time,
   số object, logical size, quota, search theo tên, pagination 25 item và lỗi
   RGW; đã có sort và filter owner/quota/usage. Versioning/object-lock được
   chuẩn hóa khi `bucket stats` cung cấp và trả `unknown` minh bạch trên bản RGW
   không có field tương ứng.
-- [~] **1.2 Trang `/object-storage/buckets`**
+- [x] **1.2 Trang `/object-storage/buckets`**
   - Table tổng quan, bộ lọc owner/quota/usage và deep link tới bucket detail.
   - Không hiển thị dữ liệu mẫu khi RGW trả danh sách rỗng.
-- [~] Đã có table overview, tìm theo tên, pagination, empty/error state,
+- [x] Đã có table overview, tìm theo tên, pagination, empty/error state,
   filter owner/quota/usage, sort và deep link.
-- [~] **1.3 Bucket detail read-only**
+- [x] **1.3 Bucket detail read-only**
   - Metadata, quota, usage, policy/lifecycle/versioning summary, request/error
     trend và access-log lọc sẵn theo bucket.
-- [~] Đã có bucket detail metadata/quota/placement/RGW node, trạng thái
+- [x] Đã có bucket detail metadata/quota/placement/RGW node, trạng thái
   versioning/object-lock fail-soft, chỉ báo policy/lifecycle và link Access Log
   được lọc sẵn theo bucket; detail có request/error trend theo tối đa 12 giờ
   xuất hiện trong đoạn RGW log gần nhất.
-- [~] **1.4 Kiểm thử và nghiệm thu**
+- [x] **1.4 Kiểm thử và nghiệm thu**
   - Test empty/error/pagination, cluster scope, non-admin read-only capability
     và redaction.
-- [~] Regression bao phủ empty/error, search/pagination/filter/sort, stats lỗi,
+- [x] Regression bao phủ empty/error, search/pagination/filter/sort, stats lỗi,
   detail/404, cluster phụ, operator read-only, activity fail-soft và giới hạn
   metadata fan-out. Suite liên quan chạy được trong `.venv`; còn giữ `[~]` đến
   khi thay đổi được commit/merge.
@@ -96,9 +96,9 @@ nhưng route/service phải có một lớp capability riêng để có thể t�
 **Hoàn thành khi:** operator xem được danh sách và chi tiết bucket thật của
 cluster đang chọn, không có fallback sample hoặc cross-cluster leak.
 
-### 2. S3 Users và Access Keys — ưu tiên P0
+### 2. S3 Users và Access Keys — ưu tiên P0 `[~] Đang triển khai 2026-08-17`
 
-- [ ] **2.1 S3 user inventory/detail**: uid, display name, bucket quota,
+- [~] **2.1 S3 user inventory/detail**: uid, display name, bucket quota,
   capabilities, trạng thái và metadata an toàn.
 - [ ] **2.2 Create/modify/disable S3 user** với preview, validation và audit.
 - [ ] **2.3 Access-key lifecycle**: tạo, disable/enable, rotate và revoke;
@@ -211,7 +211,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 |---|---:|---|---|---|---|
 | 2026-08-16 | Kế hoạch | Hoàn thành | Tạo roadmap, tiêu chí an toàn, thứ tự triển khai và quy trình bàn giao. Baseline access-log đã được rà mã nguồn nhưng chưa audit test trong roadmap này. | Chưa chạy — tài liệu kế hoạch | Bắt đầu từ 0.4 và 1.1 |
 | 2026-08-16 | 1.1–1.4 | Đang làm | Thêm Object Storage Bucket Overview/Detail read-only, API scoped theo cluster, RGW bucket-list/stats adaptor an toàn, search tên, pagination, empty/error state, per-row stats degradation và điều hướng. Thêm regression suite. | `python3 -m py_compile` route/adaptor/test và `node --check dashboard/static/app.js` đạt; `git diff --check` sạch. `pytest` chưa chạy: Python thiếu pytest/FastAPI và ensurepip nên không tạo được venv tạm. | Chưa commit. Cài `python3-venv` hoặc cung cấp môi trường test rồi chạy `tests/test_dashboard_object_storage.py` + hồi quy RGW; hoàn tất filter/sort và detail enrichment. |
-| 2026-08-17 | 1.1–1.4 | Đang làm | Thêm filter owner/quota/usage, sort, pagination giữ filter, capability versioning/object-lock fail-soft, chỉ báo policy/lifecycle, deep link Access Log điền sẵn bucket, request/error trend, operator read-only, giới hạn metadata fan-out và redaction credential trong lỗi RGW. | `.venv/bin/pytest -q tests/test_rgw_access_log.py tests/test_dashboard_object_storage.py tests/test_dashboard_bucket_access_log.py`: 54 passed; `git diff --check` sạch. | Chưa commit; pha 1 đủ regression liên quan nhưng giữ `[~]` theo quy ước đến khi commit/merge. |
+| 2026-08-17 | 1.1–1.4 | Hoàn thành | Thêm filter owner/quota/usage, sort, pagination giữ filter, capability versioning/object-lock fail-soft, chỉ báo policy/lifecycle, deep link Access Log điền sẵn bucket, request/error trend, operator read-only, giới hạn metadata fan-out và redaction credential trong lỗi RGW. | `.venv/bin/pytest -q tests/test_rgw_access_log.py tests/test_dashboard_object_storage.py tests/test_dashboard_bucket_access_log.py`: 54 passed; `git diff --check` sạch. | Commit `699560f`, đã push `main`. |
+| 2026-08-17 | 2.1 | Đang làm | Thêm S3 user inventory/detail read-only, search/pagination, cluster scope và allowlist response loại bỏ toàn bộ key material. | `.venv/bin/pytest -q tests/test_dashboard_object_storage_users.py tests/test_dashboard_object_storage.py tests/test_rgw_access_log.py tests/test_dashboard_bucket_access_log.py`: 60 passed; `node --check dashboard/static/app.js` và `git diff --check` sạch. | Chưa commit; tiếp theo thiết kế preview/audit cho 2.2. |
 
 ## Ghi chú bàn giao
 

@@ -232,6 +232,103 @@ def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
         raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
 
 
+def _user_ids(payload: object) -> list[str]:
+    values = payload.get("users", []) if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        return []
+    users = {
+        value.strip() for value in values
+        if isinstance(value, str) and value.strip()
+    }
+    return sorted(users, key=str.casefold)
+
+
+def _parse_json_object(output: str) -> dict | None:
+    try:
+        payload = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def fetch_s3_user_list(host: str) -> list[str]:
+    exec_mode = settings.ceph_exec_mode
+    if exec_mode not in ("cephadm", "none") and not settings.ceph_rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW.")
+    command = ceph_client.build_exec_command(
+        exec_mode, settings.ceph_rgw_container_name, "radosgw-admin user list --format json"
+    )
+    try:
+        output = run_command_on_node(host, command)
+        return _user_ids(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách S3 user không hợp lệ") from exc
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được danh sách S3 user trên {host}: {exc}") from exc
+
+
+def fetch_s3_user_list_with(host: str, ssh_user: str, ssh_key_path: str,
+                            exec_mode: str, rgw_container_name: str) -> list[str]:
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+    command = ceph_client.build_exec_command(
+        exec_mode, rgw_container_name, "radosgw-admin user list --format json"
+    )
+    try:
+        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        return _user_ids(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách S3 user không hợp lệ") from exc
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được danh sách S3 user trên {host}: {exc}") from exc
+
+
+def fetch_s3_user_info(host: str, uid: str) -> dict | None:
+    if settings.ceph_exec_mode not in ("cephadm", "none") and not settings.ceph_rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW.")
+    command = ceph_client.build_exec_command(
+        settings.ceph_exec_mode,
+        settings.ceph_rgw_container_name,
+        f"radosgw-admin user info --uid={shlex.quote(uid)} --format json",
+    )
+    try:
+        return _parse_json_object(run_command_on_node(host, command))
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
+
+
+def fetch_s3_user_info_with(host: str, uid: str, ssh_user: str, ssh_key_path: str,
+                            exec_mode: str, rgw_container_name: str) -> dict | None:
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+    command = ceph_client.build_exec_command(
+        exec_mode, rgw_container_name,
+        f"radosgw-admin user info --uid={shlex.quote(uid)} --format json",
+    )
+    try:
+        return _parse_json_object(run_command_on_node_with(host, command, ssh_user, ssh_key_path))
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được thông tin S3 user trên {host}: {exc}") from exc
+
+
+def summarize_s3_user(raw: dict) -> dict:
+    """Allowlist non-secret fields; key objects are deliberately discarded."""
+    user_quota = raw.get("user_quota") or {}
+    bucket_quota = raw.get("bucket_quota") or {}
+    return {
+        "uid": raw.get("user_id") or raw.get("uid"),
+        "display_name": raw.get("display_name"),
+        "email": raw.get("email"),
+        "suspended": bool(raw.get("suspended", False)),
+        "max_buckets": raw.get("max_buckets"),
+        "key_count": len(raw.get("keys") or []),
+        "subuser_count": len(raw.get("subusers") or []),
+        "caps": [str(cap.get("type")) for cap in (raw.get("caps") or []) if isinstance(cap, dict) and cap.get("type")],
+        "user_quota_enabled": bool(user_quota.get("enabled", False)),
+        "bucket_quota_enabled": bool(bucket_quota.get("enabled", False)),
+    }
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately
