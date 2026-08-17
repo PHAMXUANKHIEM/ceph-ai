@@ -79,6 +79,35 @@
     </section>
     {% endif %}
 
+    <section class="card" id="backup-protection-overview">
+      <div class="card-header"><h2>RPO / RTO</h2><span class="hint">Mục tiêu RPO: {{ protection.rpo_hours }} giờ</span></div>
+      <div class="card-body">
+        <div class="node-summary-grid">
+          <div class="summary-item"><span>Healthy</span><strong>{{ protection.counts.healthy }}/{{ protection.total }}</strong></div>
+          <div class="summary-item"><span>RPO có nguy cơ</span><strong>{{ protection.counts.at_risk }}</strong></div>
+          <div class="summary-item"><span>Vi phạm RPO</span><strong>{{ protection.counts.breached }}</strong></div>
+          <div class="summary-item"><span>Chưa từng backup</span><strong>{{ protection.counts.never }}</strong></div>
+        </div>
+        {% if protection.latest_drill %}
+        <p class="hint">Restore drill gần nhất: <strong>{{ protection.latest_drill.status }}</strong>
+          lúc {{ protection.latest_drill.created_at|vntime }} · RTO thực tế
+          {% if protection.latest_drill.duration_seconds is not none %}{{ "%.1f"|format(protection.latest_drill.duration_seconds) }} giây{% else %}chưa có{% endif %}.
+        </p>
+        {% else %}<p class="hint">Chưa có RestoreDrill để xác nhận RTO thực tế.</p>{% endif %}
+        {% if protection.rows %}
+        <div class="table-wrap"><table>
+          <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th>Tuổi recovery point</th><th>Còn lại trước RPO</th></tr></thead>
+          <tbody>{% for item in protection.rows %}<tr class="{% if item.status in ['breached', 'never'] %}progress-item-failed{% endif %}">
+            <td><code>{{ item.pool }}/{{ item.image }}</code></td>
+            <td>{% if item.status == 'healthy' %}Healthy{% elif item.status == 'at_risk' %}RPO at risk{% elif item.status == 'breached' %}RPO breached{% else %}Never backed up{% endif %}</td>
+            <td>{% if item.age_hours is not none %}{{ "%.1f"|format(item.age_hours) }} giờ{% else %}—{% endif %}</td>
+            <td>{% if item.status == 'never' %}0 giờ{% elif item.status == 'breached' %}Đã quá hạn{% else %}{{ "%.1f"|format(item.remaining_hours) }} giờ{% endif %}</td>
+          </tr>{% endfor %}</tbody>
+        </table></div>
+        {% endif %}
+      </div>
+    </section>
+
     <section class="card" id="backup-progress-panel">
       <div class="card-header"><h2>Đang chạy</h2></div>
       <div class="card-body">

@@ -83,6 +83,8 @@ HISTORY_LIMIT_PER_IMAGE = 30
 # progress panel only ever showing the single latest running job.
 DIGEST_LIMIT = 10
 ANOMALY_LIMIT = 20
+DEFAULT_RPO_HOURS = 24
+RPO_AT_RISK_RATIO = 0.75
 
 # Synthetic Incident.ceph_code — same trick every other propose route in
 # this project uses (AuditEntry.incident_id is a required FK, and this has
@@ -328,6 +330,48 @@ def _queue(tracked: list[dict], cluster=None) -> list[dict]:
     return entries
 
 
+def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    policy = load_backup_policy()
+    try:
+        rpo_hours = max(1, min(int(policy.get("rpo_hours", DEFAULT_RPO_HOURS)), 24 * 365))
+    except (TypeError, ValueError):
+        rpo_hours = DEFAULT_RPO_HOURS
+    rows = []
+    counts = {"healthy": 0, "at_risk": 0, "breached": 0, "never": 0}
+    with db.SessionLocal() as session:
+        for target in tracked:
+            latest = (
+                session.query(BackupJob)
+                .filter(BackupJob.pool == target["pool"], BackupJob.image == target["image"],
+                        BackupJob.job_type.in_(("full", "incremental")), BackupJob.status == "SUCCESS",
+                        _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
+                .order_by(BackupJob.created_at.desc()).first()
+            )
+            if latest is None:
+                status, age_hours, remaining = "never", None, 0.0
+            else:
+                age_hours = max(0.0, (now - latest.created_at).total_seconds() / 3600)
+                remaining = max(0.0, rpo_hours - age_hours)
+                status = ("breached" if age_hours >= rpo_hours else
+                          "at_risk" if age_hours >= rpo_hours * RPO_AT_RISK_RATIO else "healthy")
+            counts[status] += 1
+            rows.append({"pool": target["pool"], "image": target["image"], "status": status,
+                         "latest_at": latest.created_at if latest else None,
+                         "age_hours": age_hours, "remaining_hours": remaining,
+                         "rpo_hours": rpo_hours})
+        latest_drill = (
+            session.query(BackupJob).filter(BackupJob.job_type == "restore_drill",
+                _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
+            .order_by(BackupJob.created_at.desc()).first()
+        )
+    return {"rows": rows, "counts": counts, "total": len(rows), "rpo_hours": rpo_hours,
+            "latest_drill": None if latest_drill is None else {
+                "status": latest_drill.status, "created_at": latest_drill.created_at,
+                "duration_seconds": latest_drill.duration_seconds,
+                "pool": latest_drill.pool, "image": latest_drill.image}}
+
+
 def _history(tracked: list[dict], cluster=None) -> list[dict]:
     """AC #4: >= `HISTORY_LIMIT_PER_IMAGE` most recent runs PER (pool,
     image) — Story 9.1's `Index(pool, image, created_at)` (the same one
@@ -416,6 +460,7 @@ def _anomalies(cluster=None) -> list[dict]:
 async def index(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     tracked = _tracked_images(cluster)
+    protection = _protection_overview(tracked, cluster)
     return templates.TemplateResponse(
         request,
         "backups.html",
@@ -423,6 +468,7 @@ async def index(request: Request, user: str = Depends(require_login)):
             "user": user,
             "is_admin": auth.is_admin_user(user),
             "queue": _queue(tracked, cluster),
+            "protection": protection,
             "history": _history(tracked, cluster),
             "digests": _digests(cluster),
             "anomalies": _anomalies(cluster),

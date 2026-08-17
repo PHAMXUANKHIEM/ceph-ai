@@ -237,8 +237,8 @@ Job `backup_alert_check` (mỗi 5 phút) kiểm tra **từng ảnh đã theo dõ
 metadata cụm, cảnh báo `warning` nếu:
 - Chưa từng có backup thành công nào, HOẶC
 - Bản gần nhất `FAILED`, HOẶC
-- Bản thành công gần nhất đã **quá 24 giờ** (RPO cố định — hằng số
-  `RPO_HOURS`, không đọc từ policy).
+- Bản thành công gần nhất đã quá ngưỡng `rpo_hours` trong
+  `backup_policy.yaml` (mặc định 24 giờ).
 
 Cơ chế cảnh báo dùng chung một hàm `send_alert()`: **luôn ghi log** (mức
 `CRITICAL`/`WARNING`), rồi gửi qua **từng kênh đã cấu hình, độc lập với
@@ -486,9 +486,9 @@ không âm thầm bỏ qua đích đó.
   kéo dài nhiều chu kỳ 5 phút sẽ gửi lại webhook mỗi lần, cho tới khi Story
   9.5's phân loại độ nghiêm trọng + digest (đã có) hoặc một cơ chế de-dup
   tương lai xử lý.
-- RPO cảnh báo quá hạn (24 giờ) là **hằng số cố định trong code**
-  (`alerting.py::RPO_HOURS`), không đọc từ `backup_policy.yaml` — muốn đổi
-  phải sửa code, không chỉ sửa policy.
+- RPO cảnh báo quá hạn và Dashboard cùng đọc `rpo_hours` từ
+  `backup_policy.yaml` (mặc định 24 giờ). Cấu hình override riêng theo
+  cluster/workload chưa được hỗ trợ.
 
 ## 12. Các file liên quan trong mã nguồn
 

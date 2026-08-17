@@ -243,6 +243,38 @@ def test_check_overdue_and_failed_backups_silent_when_fresh_and_successful(isola
     assert alerts == []
 
 
+def test_check_overdue_and_failed_backups_uses_policy_rpo_hours(isolated_db, monkeypatch):
+    monkeypatch.setattr(
+        alerting,
+        "load_backup_policy",
+        lambda: {
+            "tracked_images": [{"pool": "vms", "image": "web01"}],
+            "rpo_hours": 48,
+        },
+    )
+    backup_time = datetime.utcnow() - timedelta(hours=25)
+    with db_module.SessionLocal() as session:
+        session.add(
+            BackupJob(
+                run_id="r1", pool="vms", image="web01", job_type="full", status="SUCCESS",
+                created_at=backup_time, finished_at=backup_time,
+            )
+        )
+        _add_fresh_metadata_success(session)
+        session.commit()
+
+    alerts = []
+    monkeypatch.setattr(
+        alerting,
+        "send_alert",
+        lambda severity, message, backup_job_id=None, cluster=None: alerts.append((severity, message)),
+    )
+
+    alerting.check_overdue_and_failed_backups()
+
+    assert alerts == []
+
+
 def test_check_overdue_and_failed_backups_alerts_for_metadata_never_run(isolated_db, monkeypatch):
     monkeypatch.setattr(alerting, "load_backup_policy", lambda: {"tracked_images": []})
 

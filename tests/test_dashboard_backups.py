@@ -109,6 +109,33 @@ def test_backups_page_lists_queue_and_history(dashboard_client, monkeypatch):
     assert "SUCCESS" in response.text
 
 
+def test_backups_page_summarizes_rpo_states_and_latest_drill(dashboard_client, monkeypatch):
+    tracked = [{"pool": "vms", "image": name} for name in ("healthy", "risk", "breach", "never")]
+    monkeypatch.setattr(backups_route, "load_backup_policy",
+                        lambda: {"tracked_images": tracked, "rpo_hours": 24})
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        for name, age in (("healthy", 2), ("risk", 19), ("breach", 25)):
+            session.add(BackupJob(run_id=f"run-{name}", pool="vms", image=name,
+                job_type="full", status="SUCCESS", created_at=now - timedelta(hours=age),
+                finished_at=now - timedelta(hours=age)))
+        session.add(BackupJob(run_id="drill", pool="vms", image="healthy",
+            job_type="restore_drill", status="SUCCESS", duration_seconds=42.5,
+            created_at=now, finished_at=now))
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/backups")
+
+    assert response.status_code == 200
+    assert "Healthy" in response.text
+    assert "RPO at risk" in response.text
+    assert "RPO breached" in response.text
+    assert "Never backed up" in response.text
+    assert "42.5 giây" in response.text
+    assert "Mục tiêu RPO: 24 giờ" in response.text
+
+
 def test_queue_success_time_does_not_get_replaced_by_newer_failed_run(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     success_at = datetime.utcnow() - timedelta(hours=2)

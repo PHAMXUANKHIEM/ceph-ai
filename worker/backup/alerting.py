@@ -154,7 +154,8 @@ def send_alert(
 
 
 def _check_target(
-    pool: str | None, image: str | None, label: str, cutoff: datetime, cluster: "Cluster | None" = None
+    pool: str | None, image: str | None, label: str, cutoff: datetime,
+    cluster: "Cluster | None" = None, rpo_hours: int = RPO_HOURS,
 ) -> None:
     """Shared by the default cluster's loop and the additional-clusters'
     loop below — `cluster_id` is ALWAYS filtered explicitly (never left
@@ -182,7 +183,7 @@ def _check_target(
     if latest.created_at < cutoff:
         send_alert(
             "warning",
-            f"{label} quá hạn RPO {RPO_HOURS}h — lần backup thành công gần nhất lúc {latest.created_at.isoformat()}",
+            f"{label} quá hạn RPO {rpo_hours}h — lần backup thành công gần nhất lúc {latest.created_at.isoformat()}",
             backup_job_id=latest.id,
             cluster=cluster,
         )
@@ -196,7 +197,11 @@ def check_overdue_and_failed_backups() -> None:
     `backup_tracked_images`) — alerts if the latest BackupJob is FAILED,
     missing entirely, or older than the RPO."""
     policy = load_backup_policy()
-    cutoff = datetime.utcnow() - timedelta(hours=RPO_HOURS)
+    try:
+        rpo_hours = max(1, min(int(policy.get("rpo_hours", RPO_HOURS)), 24 * 365))
+    except (TypeError, ValueError):
+        rpo_hours = RPO_HOURS
+    cutoff = datetime.utcnow() - timedelta(hours=rpo_hours)
 
     targets: list[tuple[str | None, str | None, str]] = [
         (t.get("pool"), t.get("image"), f"{t.get('pool')}/{t.get('image')}")
@@ -206,7 +211,7 @@ def check_overdue_and_failed_backups() -> None:
     targets.append((None, None, "metadata cụm"))
 
     for pool, image, label in targets:
-        _check_target(pool, image, label, cutoff)
+        _check_target(pool, image, label, cutoff, rpo_hours=rpo_hours)
 
     with db.SessionLocal() as session:
         clusters = [c for c in list_active_clusters(session) if not c.is_default and c.backup_enabled]
@@ -219,4 +224,4 @@ def check_overdue_and_failed_backups() -> None:
         ]
         cluster_targets.append((None, None, f"metadata cụm ({cluster.name})"))
         for pool, image, label in cluster_targets:
-            _check_target(pool, image, label, cutoff, cluster=cluster)
+            _check_target(pool, image, label, cutoff, cluster=cluster, rpo_hours=rpo_hours)

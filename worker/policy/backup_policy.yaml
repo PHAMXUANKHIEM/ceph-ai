@@ -23,6 +23,10 @@ backup_targets:
 # list starts empty until an operator adds real entries.
 tracked_images: []
 
+# Maximum acceptable age of the latest successful recovery point. Shared by
+# Dashboard protection status and the periodic overdue alert.
+rpo_hours: 24
+
 # keep_full_count/keep_incremental_count are PER (pool, image, job_type) —
 # see worker/backup/engine.py::_sweep_retention_after_success for why full
 # and incremental are swept with separate counts, not a combined one.
