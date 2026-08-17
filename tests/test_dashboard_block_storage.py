@@ -24,6 +24,10 @@ def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monk
     response = dashboard_client.get("/block-storage")
 
     assert response.status_code == 200
+    assert "Block Storage Control Plane" in response.text
+    assert "Volumes" in response.text
+    assert "Trash & Restore" in response.text
+    assert "Performance" in response.text
     for heading in ("Name", "Pool", "Namespace", "Size"):
         assert f">{heading}<" in response.text
     assert "volume-a" in response.text

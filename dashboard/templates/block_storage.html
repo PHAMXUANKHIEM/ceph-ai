@@ -22,6 +22,20 @@
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
   </div></header>
   <main class="page">
+    <section class="card">
+      <div class="card-header block-storage-header">
+        <div><h2>Block Storage Control Plane</h2><p class="hint">Inventory, vòng đời Volume, hiệu năng và recycle flow được hợp nhất trong cùng nhóm điều hướng.</p></div>
+      </div>
+      <div class="card-body">
+        <div class="node-summary-grid">
+          <a class="summary-item" href="/block-storage{% if selected_cluster %}?cluster={{ selected_cluster.id }}{% endif %}"><span>Overview</span><strong>{{ images|length }} images</strong><small>Inventory đa pool/namespace</small></a>
+          <a class="summary-item" href="/volumes{% if pools %}?pool={{ pools[0] }}&cluster={{ selected_cluster.id }}{% else %}?cluster={{ selected_cluster.id }}{% endif %}"><span>Volumes</span><strong>Create & lifecycle</strong><small>Resize, rename, move-to-trash</small></a>
+          <a class="summary-item" href="/trash?cluster={{ selected_cluster.id }}"><span>Trash & Restore</span><strong>Recycle policy</strong><small>Restore và purge có approval</small></a>
+          <a class="summary-item" href="/volumes{% if pools %}?pool={{ pools[0] }}&cluster={{ selected_cluster.id }}{% else %}?cluster={{ selected_cluster.id }}{% endif %}#volumes-panel"><span>Performance</span><strong>IOPS & latency</strong><small>Lịch sử, peak và benchmark</small></a>
+        </div>
+        {% if is_admin %}<p class="hint">Các thao tác thay đổi dữ liệu chỉ hiện với admin và luôn tạo action chờ duyệt.</p>{% endif %}
+      </div>
+    </section>
     <section class="card block-storage-card">
       <div class="card-header block-storage-header">
         <div><h2>Block Storage</h2><p class="hint">RBD images trên cụm <strong>{{ selected_cluster.name }}</strong>, bao gồm namespace mặc định và namespace riêng.</p></div>
@@ -33,7 +47,7 @@
           <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th>Size</th></tr></thead>
           <tbody>
           {% for image in images %}
-            <tr><td><strong>{{ image.name }}</strong></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td></tr>
+            <tr><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td></tr>
           {% else %}
             <tr class="empty-row"><td colspan="4"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
           {% endfor %}

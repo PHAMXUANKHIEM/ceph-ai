@@ -47,6 +47,9 @@ def test_shared_navigation_seeds_every_non_permission_gated_group():
 
     assert '"/object-storage/user-settings"' in source
     assert 'paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"]' in source
+    assert 'paths: ["/block-storage", "/volumes", "/trash"]' in source
+    assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] }' in source
+    assert '{ label: "Pool", paths: ["/pools", "/pgs"] }' in source
 
 
 def test_permission_gated_links_are_not_synthesized_by_shared_navigation():

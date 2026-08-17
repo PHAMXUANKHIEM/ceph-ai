@@ -111,5 +111,6 @@ async def block_storage_page(request: Request, user: str = Depends(require_login
         "clusters": clusters,
         "selected_cluster": cluster,
         "images": images,
+        "pools": sorted({image["pool"] for image in images}),
         "error": error,
     })

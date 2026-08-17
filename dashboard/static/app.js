@@ -217,10 +217,10 @@
     // links from the server (admin-only destinations may not exist), then
     // regroup only those that were actually rendered.
     var navGroups = [
-      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/volumes", "/crush-map"] },
-      { label: "Pool", paths: ["/pools", "/pgs", "/trash"] },
+      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
+      { label: "Pool", paths: ["/pools", "/pgs"] },
       { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"] },
-      { label: "Block Storage", paths: ["/block-storage"] },
+      { label: "Block Storage", paths: ["/block-storage", "/volumes", "/trash"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/restore-cluster"] },
@@ -251,7 +251,9 @@
         if (window.location.pathname === path) link.classList.add("active");
         link.classList.remove("nav-dropdown-item", "nav-dropdown-item-active");
         link.classList.add("nav-link");
-        if (path === "/volumes") link.textContent = "Volume Performance";
+        if (path === "/block-storage") link.textContent = "Overview";
+        if (path === "/volumes") link.textContent = "Volumes & Performance";
+        if (path === "/trash") link.textContent = "Trash & Restore";
         items.appendChild(link);
       });
 
