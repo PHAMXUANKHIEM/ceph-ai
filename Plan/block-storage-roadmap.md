@@ -260,8 +260,9 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
   - Retry không tạo volume hoặc attachment trùng; watcher đối soát job với trạng
     thái cluster sau timeout/restart.
   - Đã dedup chéo action create/resize/rename theo pool và tên nguồn/đích khi
-    còn chờ duyệt hoặc đã duyệt; còn thiếu idempotency key và reconciliation
-    sau timeout/restart.
+    còn chờ duyệt hoặc đã duyệt. Worker đã reconciliation JSON hậu kiểm cho
+    create/resize/rename/trash/restore/purge và đánh FAILED nếu state lệch;
+    còn thiếu idempotency key và cơ chế quét lại action kẹt sau timeout/restart.
 - [~] **2.7 Test**
   - Quota/capacity race, duplicate request, busy/locked image, partial failure,
     inactive cluster, RBAC, CSRF và destructive-action guard.
@@ -468,6 +469,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-02 Rename | Hoàn thành code | Thêm UI/API rename cùng pool; preflight tên nguồn/đích và watcher; action RISKY qua Worker với `rbd mv` + `rbd info` post-check; dedup chéo create/resize/rename theo tên nguồn/đích. | `7 passed`; `py_compile`, `node --check` và `git diff --check` đạt; chưa xác minh live Ceph. | Tiếp theo triển khai move-to-trash và restore-from-trash an toàn. |
 | 2026-08-17 | BS-02 Trash/Restore | Đang làm | Thêm UI/API move-to-trash và restore-by-ID; chặn attachment/snapshot/clone child/backup RUNNING, tên restore trùng; action RISKY qua Worker và giữ cluster scope trên request JS. Purge-all không còn thực thi trực tiếp: snapshot Trash ID, dedup theo pool và chờ approval. | Purge-all tập trung `11 passed`; nhóm Trash rộng `24 passed, 1 UI expectation cũ đã sửa, 1 lỗi fixture SQLite lifespan đã biết`; chưa xác minh live Ceph. | Bổ sung TTL và reconciliation sau timeout/restart. |
 | 2026-08-17 | Block Storage IA | Hoàn thành code | Hợp nhất Overview, Volumes, Performance, Trash & Restore vào một nhóm sidebar; tách `/volumes` chỉ chứa inventory/CRUD và `/volume-performance` chỉ chứa metric/benchmark. Overview tập trung vào inventory và image link về đúng pool/cluster. | Nhóm route cũ/rộng `21 passed`; lượt cuối `14 passed`; `py_compile`, hai `node --check` và `git diff --check` đạt. | Sau khi nghiệm thu UI, tiếp tục TTL/reconciliation của BS-02. |
+| 2026-08-17 | BS-02 Reconciliation | Đang làm | Worker parse JSON hậu kiểm của `rbd info`/`rbd trash ls`; xác minh image, exact size, destination name và membership Trash trước khi đánh EXECUTED. State lệch hoặc JSON lỗi chuyển Action/Incident sang FAILED và lưu lỗi trong progress. | `7 passed`; `py_compile` và `git diff --check` đạt. | Tiếp theo quét/reconcile action kẹt do timeout/restart và bổ sung idempotency key. |
 
 ## Ghi chú bàn giao
 

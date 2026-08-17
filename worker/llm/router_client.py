@@ -31,7 +31,7 @@ from shared.telegram_alerts import (
     send_update_failure_alert,
 )
 from worker.backup import engine as backup_engine
-from worker.executor import cluster_deploy, commands, vm_perf, volume_perf
+from worker.executor import cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.redaction import default_redactor
@@ -1812,6 +1812,7 @@ def _execute_approved_action(action_pk: str) -> None:
         try:
             command_output = execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
             executed_any = True
+            rbd_reconciliation.reconcile(action_id_str, action_params or {}, command_output)
         except ExecutorError as exc:
             logger.exception(
                 "_execute_approved_action: execution of action_id=%s failed on node %s "

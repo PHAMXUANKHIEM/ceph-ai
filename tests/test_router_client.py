@@ -943,6 +943,32 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
 
 
+def test_execute_approved_rbd_action_fails_when_post_check_disagrees(isolated_db, monkeypatch):
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *args, **kwargs: json.dumps({"name": "vm-01", "size": 9 * 1024 * 1024}),
+    )
+    _create_incident("incident-rbd-reconcile")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(
+            session, "incident-rbd-reconcile", action_id="rbd_resize_volume"
+        )
+        action.action_params = json.dumps({"pool_name": "vms", "image": "vm-01", "size_mib": 10})
+        session.commit()
+        action_pk = action.id
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, "incident-rbd-reconcile")
+        progress = json.loads(action.execution_progress)
+        assert action.status == ActionStatus.FAILED.value
+        assert incident.status == IncidentStatus.FAILED.value
+        assert progress[0]["status"] == "failed"
+        assert "size mismatch" in progress[0]["error"]
+
+
 def test_execute_node_command_posts_stdout_back_to_chat(isolated_db, monkeypatch):
     monkeypatch.setattr(router_client, "execute_command", lambda *args, **kwargs: "RAM used: 98%\nOOM killed pid 42")
     _create_incident("incident-node-command-result")
