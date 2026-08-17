@@ -116,7 +116,7 @@ cluster đang chọn, không có fallback sample hoặc cross-cluster leak.
 **Hoàn thành khi:** system admin quản lý user/key an toàn, còn operator không
 thể gọi API ghi dù cố gửi request trực tiếp.
 
-### 3. Bucket Operations và Data Governance — ưu tiên P1 `[~] Đang triển khai 2026-08-17`
+### 3. Bucket Operations và Data Governance — ưu tiên P1 `[x] Hoàn thành 2026-08-17`
 
 - [x] **3.1 Create bucket**: tên hợp lệ, owner, placement/storage class và
   quota tùy khả năng cluster; preview trước khi tạo.
@@ -168,8 +168,13 @@ thể gọi API ghi dù cố gửi request trực tiếp.
     quyền từ chối; lỗi từng object hoặc vượt batch guard sẽ dừng trước khi xóa
     bucket. Cả hai flow owner-matched, admin-only, version-gated, audited và
     dùng credential tạm.
-- [ ] **3.6 Test**: policy validation, confirmation, action audit, unsupported
+- [x] **3.6 Test**: policy validation, confirmation, action audit, unsupported
   capability và không có lệnh free-form.
+  - Regression gate bao phủ toàn bộ 10 API ghi preview/execute với operator,
+    action allowlist chống payload dạng lệnh tự do, strong confirmation,
+    policy schema/resource/action validation, live Ceph capability fail-closed,
+    mutation trên cluster phụ đúng RGW/SSH/container và audit thất bại khi RGW
+    từ chối purge trước khi gọi DeleteBucket.
 
 **Hoàn thành khi:** mọi thay đổi có preview/audit, và thao tác xóa không thể xảy
 ra chỉ bằng một click hoặc qua request thiếu capability.
@@ -269,6 +274,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | Capability audit | Hoàn thành | Bổ sung matrix theo live major version và lý do tối thiểu: placement từ Jewel 10, lifecycle/versioning baseline xác minh ở Mimic 13, lifecycle transition/storage class từ Nautilus 14, Object Lock từ Octopus 15. UI hiển thị phiên bản thực tế, disable option không hỗ trợ; preview/execute vẫn chặn server-side để chống bypass. | Thêm regression Mimic cho API capability và server-side reject Object Lock/Transition; chạy lại full suite trước commit. | Chưa commit; duy trì fail-closed cho mixed/unknown release. |
 | 2026-08-17 | 3.4 | Hoàn thành | Thêm Bucket Policy/ACL editor, Reef action allowlist, per-action version gate, same-bucket resource validation, public detection, diff, strong confirmation, audit và temporary-key cleanup. | Route regression 27 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.5 Delete Bucket. |
 | 2026-08-17 | 3.5 | Hoàn thành | Tách delete-empty và purge-delete; impact preview, count-bound strong confirmation, version/delete-marker/current-object batch purge, retention-safe behavior, audit và credential cleanup. | Route regression 29 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.6 regression gate. |
+| 2026-08-17 | 3.6 | Hoàn thành | Bổ sung release gate cho RBAC trên toàn bộ API ghi, chặn free-form action trước audit, mutation cluster phụ giữ đúng connection scope và purge failure được audit nhưng không xóa bucket. Các test sẵn có tiếp tục bao phủ policy validation, confirmation và capability theo live Ceph version. | `.venv/bin/pytest -q tests/test_dashboard_object_storage.py tests/test_dashboard_object_storage_users.py tests/test_rgw_access_log.py tests/test_dashboard_bucket_access_log.py`: 104 passed; Python syntax và `git diff --check` sạch. | Chưa commit; pha 3 hoàn thành, tiếp theo 4.1 Object Browser read-only. |
 
 ## Ghi chú bàn giao
 

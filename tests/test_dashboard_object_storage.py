@@ -498,6 +498,130 @@ def test_purge_delete_requires_count_bound_confirmation_and_deletes_versions(das
     assert deletions[-1] == {"Bucket": "data-bucket"}
 
 
+def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
+    _login_operator(dashboard_client)
+    paths = [
+        "/api/object-storage/buckets/actions/preview",
+        "/api/object-storage/buckets/actions/execute",
+        "/api/object-storage/buckets/governance/preview",
+        "/api/object-storage/buckets/governance/execute",
+        "/api/object-storage/buckets/lifecycle/preview",
+        "/api/object-storage/buckets/lifecycle/execute",
+        "/api/object-storage/buckets/policy-acl/preview",
+        "/api/object-storage/buckets/policy-acl/execute",
+        "/api/object-storage/buckets/delete/preview",
+        "/api/object-storage/buckets/delete/execute",
+    ]
+
+    assert [(path, dashboard_client.post(path, json={}).status_code) for path in paths] == [
+        (path, 403) for path in paths
+    ]
+
+
+def test_bucket_operation_families_reject_free_form_actions(dashboard_client):
+    _login(dashboard_client)
+    attempts = [
+        ("/api/object-storage/buckets/governance/preview", "radosgw-admin quota set --bucket victim"),
+        ("/api/object-storage/buckets/lifecycle/preview", "aws s3api delete-bucket --bucket victim"),
+        ("/api/object-storage/buckets/policy-acl/preview", "s3:PutBucketPolicy"),
+        ("/api/object-storage/buckets/delete/preview", "purge --yes-i-really-mean-it"),
+    ]
+
+    for path, action in attempts:
+        response = dashboard_client.post(path, json={"action": action})
+        assert response.status_code == 400
+
+    with db.SessionLocal() as session:
+        assert session.query(ObjectStorageAuditEntry).count() == 0
+
+
+def test_secondary_cluster_bucket_quota_mutation_keeps_connection_scope(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = Cluster(
+            name="cluster-rgw-write", ceph_mon_nodes="10.99.1.10", ceph_rgw_nodes="10.99.1.90",
+            ceph_container_name="mon-write", ceph_rgw_container_name="rgw-write",
+            ssh_user="ceph-write", ssh_key_path="/keys/ceph-write", ceph_exec_mode="docker",
+            is_default=False, is_active=True,
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+    monkeypatch.setattr(object_storage_route, "_capabilities", lambda cluster: {
+        "ceph_version": "18.2.4", "ceph_release": "reef",
+        "bucket_governance": {"versioning": True, "versioning_unavailable_reason": None,
+                              "object_lock_at_create": True, "default_retention": True,
+                              "object_lock_unavailable_reason": None},
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list_with", lambda *args: ["secondary-bucket"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats_with",
+                        lambda *args: _stats(owner="secondary-owner"))
+    calls = []
+    monkeypatch.setattr(object_storage_route, "execute_bucket_quota_with",
+                        lambda *args: calls.append(args))
+
+    response = dashboard_client.post(
+        f"/api/object-storage/buckets/governance/execute?cluster={cluster_id}",
+        json={"action": "quota_enable", "bucket": "secondary-bucket",
+              "confirmation": "secondary-bucket"},
+    )
+
+    assert response.status_code == 200
+    assert calls == [("10.99.1.90", "enable", "secondary-bucket", -1, -1,
+                      "ceph-write", "/keys/ceph-write", "docker", "rgw-write")]
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, response.json()["request_id"])
+        assert audit.cluster_id == cluster_id
+        assert audit.result == "succeeded"
+
+
+def test_purge_failure_is_audited_and_never_deletes_bucket(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["locked-bucket"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats",
+                        lambda host, name: _stats(owner="alice", objects=1))
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: None)
+    bucket_deletes = []
+
+    class FakeS3:
+        def list_object_versions(self, **kwargs):
+            return {"Versions": [{"Key": "locked", "VersionId": "v1"}], "DeleteMarkers": []}
+
+        def list_objects_v2(self, **kwargs):
+            return {"Contents": [{"Key": "locked"}]}
+
+        def delete_objects(self, **kwargs):
+            return {"Errors": [{"Key": "locked", "VersionId": "v1", "Code": "AccessDenied"}]}
+
+        def delete_bucket(self, **kwargs):
+            bucket_deletes.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    response = dashboard_client.post("/api/object-storage/buckets/delete/execute", json={
+        "action": "purge_delete", "bucket": "locked-bucket", "owner": "alice",
+        "endpoint": "https://rgw.example.test", "expected_objects": 1,
+        "confirmation": "PURGE:locked-bucket:1",
+    })
+
+    assert response.status_code == 502
+    assert bucket_deletes == []
+    with db.SessionLocal() as session:
+        audit = session.query(ObjectStorageAuditEntry).filter_by(
+            action="purge_delete", target_id="locked-bucket").one()
+        assert audit.result == "failed"
+        assert "không tiếp tục xóa bucket" in audit.error_message
+        assert "temp-secret" not in audit.preview
+        assert "temp-secret" not in audit.error_message
+
+
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: [])
