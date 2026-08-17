@@ -2,7 +2,7 @@ import dashboard.routes.bucket_access_log as bal_route
 from config.settings import settings
 from shared import env_config
 from shared import db
-from shared.models import Cluster
+from shared.models import BucketLoggingConfig, Cluster, ObjectStorageAuditEntry
 from watcher.rgw_access_log import RgwLogError, parse_beast_access_log
 
 _RESTARTED_OK = {"restarted": True, "new_pid": 12345, "error": None}
@@ -123,6 +123,9 @@ def test_api_includes_bucket_stats_when_bucket_filter_given(dashboard_client, mo
 
 def test_page_uses_bucket_logging_name_without_duplicate_rgw_config(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
+    monkeypatch.setattr(bal_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
     _login(dashboard_client)
     response = dashboard_client.get("/bucket-access-log")
     assert response.status_code == 200
@@ -131,6 +134,81 @@ def test_page_uses_bucket_logging_name_without_duplicate_rgw_config(dashboard_cl
     assert "<h2>Cấu hình RGW</h2>" not in response.text
     assert "Requester" in response.text
     assert "User-Agent" in response.text
+    assert "chưa hỗ trợ native S3 Bucket Logging" in response.text
+    assert "HTTP access log của RGW Beast" in response.text
+    assert "log nên được đẩy sang bucket đích" not in response.text
+
+
+def test_bucket_logging_capability_requires_tentacle_20(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    monkeypatch.setattr(bal_route, "fetch_bucket_access_log", lambda host, bucket: [])
+
+    monkeypatch.setattr(bal_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "19.2.3", "is_mixed": False,
+    })
+    squid = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90").json()["logging_capability"]
+    assert squid["native_supported"] is False
+    assert squid["mode"] == "beast_access_log"
+    assert "Tentacle 20" in squid["reason"]
+
+    monkeypatch.setattr(bal_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "20.2.0", "is_mixed": False,
+    })
+    tentacle = dashboard_client.get("/api/bucket-access-log?host=10.20.1.90").json()["logging_capability"]
+    assert tentacle["native_supported"] is True
+    assert tentacle["mode"] == "native_available"
+
+
+def test_bucket_logging_execute_auto_selects_compatibility_and_persists_config(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    monkeypatch.setattr(bal_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(bal_route, "_logging_targets", lambda cluster, payload: None)
+    body = {"action": "enable", "source_bucket": "application-data",
+            "target_bucket": "audit-logs", "prefix": "logs/", "owner": "alice",
+            "endpoint": "https://rgw.example.test", "confirmation": "application-data"}
+
+    response = dashboard_client.post("/api/bucket-logging/execute", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "compatibility"
+    with db.SessionLocal() as session:
+        config = session.query(BucketLoggingConfig).one()
+        assert config.mode == "compatibility"
+        assert config.source_bucket == "application-data"
+        assert config.target_bucket == "audit-logs"
+        audit = session.get(ObjectStorageAuditEntry, response.json()["request_id"])
+        assert audit.result == "succeeded"
+
+
+def test_native_bucket_logging_uses_put_bucket_logging(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    _login(dashboard_client)
+    monkeypatch.setattr(bal_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "20.2.0", "is_mixed": False,
+    })
+    monkeypatch.setattr(bal_route, "_logging_targets", lambda cluster, payload: None)
+    calls = []
+    import dashboard.routes.object_storage as object_storage_route
+
+    class FakeS3:
+        def put_bucket_logging(self, **kwargs): calls.append(kwargs)
+
+    monkeypatch.setattr(object_storage_route, "_with_owner_s3",
+                        lambda cluster, payload, callback: callback(FakeS3()))
+    body = {"action": "enable", "source_bucket": "application-data",
+            "target_bucket": "audit-logs", "prefix": "logs/", "owner": "alice",
+            "endpoint": "https://rgw.example.test", "confirmation": "application-data"}
+
+    response = dashboard_client.post("/api/bucket-logging/execute", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "native"
+    assert calls == [{"Bucket": "application-data", "BucketLoggingStatus": {"LoggingEnabled": {
+        "TargetBucket": "audit-logs", "TargetPrefix": "logs/"}}}]
 
 
 def test_api_bucket_stats_none_for_unknown_bucket(dashboard_client, monkeypatch):

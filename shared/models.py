@@ -322,6 +322,28 @@ class ObjectStorageAuditEntry(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class BucketLoggingConfig(Base):
+    """Version-selected native or compatibility bucket logging config."""
+
+    __tablename__ = "bucket_logging_configs"
+    __table_args__ = (UniqueConstraint("cluster_id", "source_bucket", name="uq_bucket_logging_source"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    source_bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    prefix: Mapped[str] = mapped_column(String(1024), nullable=False, default="logs/")
+    owner: Mapped[str] = mapped_column(String(255), nullable=False)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    checkpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class NodeDiagnosticRun(Base):
     """Audit trail for the Dashboard's read-only diagnostic CLI (Nodes page).
 

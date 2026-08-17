@@ -159,4 +159,36 @@
     event.preventDefault();
     loadLog();
   });
+
+  var configForm = document.getElementById("bucket-logging-config-form");
+  if (configForm) {
+    var previewData = null;
+    var configStatus = document.getElementById("bl-config-status");
+    function configPayload() {
+      return {action: document.getElementById("bl-action").value,
+        source_bucket: document.getElementById("bl-source").value.trim(),
+        target_bucket: document.getElementById("bl-target").value.trim(),
+        prefix: document.getElementById("bl-prefix").value,
+        owner: document.getElementById("bl-owner").value.trim(),
+        endpoint: document.getElementById("bl-endpoint").value.trim()};
+    }
+    function configUrl(kind) { return "/api/bucket-logging/" + kind + "?cluster=" + encodeURIComponent(configForm.dataset.cluster); }
+    configForm.addEventListener("submit", async function (event) {
+      event.preventDefault(); configStatus.textContent = "Đang kiểm tra version và target…";
+      var response = await fetch(configUrl("preview"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(configPayload())});
+      var body = await response.json();
+      if (!response.ok) { configStatus.textContent = "Lỗi: " + (body.detail || "Preview thất bại"); return; }
+      previewData = body;
+      var preview = document.getElementById("bl-preview"); preview.hidden = false;
+      preview.textContent = "Mode: " + body.mode + "\nCeph: " + body.ceph_version + "\nSource: " + body.source_bucket + "\nTarget: " + (body.target_bucket || "—") + "\nPrefix: " + body.prefix + (body.warning ? "\nCảnh báo: " + body.warning : "");
+      document.getElementById("bl-confirm-wrap").hidden = false; configStatus.textContent = "Preview sẵn sàng.";
+    });
+    document.getElementById("bl-execute").addEventListener("click", async function () {
+      if (!previewData) return;
+      var payload = configPayload(); payload.confirmation = document.getElementById("bl-confirm").value;
+      var response = await fetch(configUrl("execute"), {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+      var body = await response.json();
+      configStatus.textContent = response.ok ? "Đã áp dụng chế độ " + body.mode + "." : "Lỗi: " + (body.detail || "Không áp dụng được");
+    });
+  }
 })();

@@ -19,20 +19,22 @@ these 2 fields, not the only one.
 
 import asyncio
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from config.settings import settings
 from dashboard.routes import auth
-from dashboard.cluster_scope import cluster_selection, selected_cluster
+from dashboard.cluster_scope import cluster_connection, cluster_selection, selected_cluster
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import restart_watcher, restart_worker
 from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes as _configured_nodes, resolve_ssh_creds
 from shared import db
-from shared.models import Cluster
+from shared.models import BucketLoggingConfig, Cluster, ObjectStorageAuditEntry
+from shared.ceph_releases import codename_for_version
 from shared.env_config import CLUSTER_ENV_NAMES, update_env_file_batch
 from watcher.rgw_access_log import (
     RgwLogError,
@@ -42,11 +44,121 @@ from watcher.rgw_access_log import (
     fetch_bucket_stats_with,
     summarize_bucket_stats,
 )
+from watcher import ceph_client
+from watcher.ceph_client import CephQueryError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = make_templates()
+
+
+def _logging_payload(body: dict) -> dict:
+    action = str(body.get("action") or "enable")
+    if action not in {"enable", "disable"}:
+        raise HTTPException(status_code=400, detail="Thao tác Bucket Logging không hợp lệ")
+    source = str(body.get("source_bucket") or "").strip()
+    target = str(body.get("target_bucket") or "").strip()
+    owner = str(body.get("owner") or "").strip()
+    endpoint = str(body.get("endpoint") or "").strip()
+    prefix = str(body.get("prefix") or "logs/")
+    if not source or len(source) > 255 or "/" in source:
+        raise HTTPException(status_code=400, detail="Source bucket không hợp lệ")
+    if action == "enable" and (not target or target == source or len(target) > 255 or "/" in target):
+        raise HTTPException(status_code=400, detail="Target bucket phải hợp lệ và khác source bucket")
+    if not owner or not endpoint.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Owner/endpoint không hợp lệ")
+    if len(prefix) > 1024 or any(ord(char) < 32 for char in prefix):
+        raise HTTPException(status_code=400, detail="Prefix không hợp lệ")
+    return {"action": action, "source_bucket": source, "target_bucket": target,
+            "owner": owner, "endpoint": endpoint, "prefix": prefix}
+
+
+def _logging_targets(cluster, payload: dict) -> None:
+    from dashboard.routes.object_storage import _detail
+    source = _detail(cluster, payload["source_bucket"])
+    if source.get("owner") != payload["owner"]:
+        raise HTTPException(status_code=409, detail="Source bucket không thuộc owner đã chọn")
+    if payload["action"] == "disable":
+        return
+    target = _detail(cluster, payload["target_bucket"])
+    if target.get("owner") != payload["owner"]:
+        raise HTTPException(status_code=409, detail="Source, target và owner phải cùng chủ sở hữu trong chế độ hiện tại")
+
+
+def _apply_logging(cluster, payload: dict, mode: str) -> None:
+    from dashboard.routes.object_storage import _with_owner_s3
+    if mode == "native":
+        def apply(client):
+            status = {} if payload["action"] == "disable" else {"LoggingEnabled": {
+                "TargetBucket": payload["target_bucket"], "TargetPrefix": payload["prefix"]}}
+            client.put_bucket_logging(Bucket=payload["source_bucket"], BucketLoggingStatus=status)
+        _with_owner_s3(cluster, payload, apply)
+    with db.SessionLocal() as session:
+        row = session.query(BucketLoggingConfig).filter_by(
+            cluster_id=cluster.id, source_bucket=payload["source_bucket"]).one_or_none()
+        if payload["action"] == "disable":
+            if row:
+                row.enabled = False
+                row.updated_at = datetime.utcnow()
+            session.commit()
+            return
+        if row is None:
+            row = BucketLoggingConfig(cluster_id=cluster.id, source_bucket=payload["source_bucket"])
+            session.add(row)
+        row.target_bucket = payload["target_bucket"]
+        row.prefix = payload["prefix"]
+        row.owner = payload["owner"]
+        row.endpoint = payload["endpoint"]
+        row.mode = mode
+        row.enabled = True
+        row.last_error = None
+        row.updated_at = datetime.utcnow()
+        session.commit()
+
+
+def _logging_capability(cluster) -> dict:
+    """Detect native S3 Bucket Logging from the live Ceph release.
+
+    Native bucket-to-bucket logging is new in Tentacle (major 20).  The
+    Beast HTTP access log parsed by this page is a separate fallback and must
+    never be presented as native S3 Bucket Logging.
+    """
+    try:
+        if cluster.is_default:
+            versions = ceph_client.summarize_cluster_versions()
+        else:
+            _host, payload = ceph_client.run_ceph_json_command_with(
+                *cluster_connection(cluster), "ceph versions"
+            )
+            versions = ceph_client.summarize_versions_payload(payload)
+    except CephQueryError as exc:
+        logger.warning("bucket logging capability check failed: %s", exc)
+        return {"known": False, "native_supported": False, "fallback_supported": False,
+                "reason": "Không lấy được phiên bản Ceph của cluster đang chọn."}
+    version = versions.get("current_version")
+    if not version:
+        return {"known": False, "native_supported": False, "fallback_supported": False,
+                "reason": "Cluster đang chạy lẫn hoặc không xác định được phiên bản Ceph."}
+    try:
+        major = int(str(version).split(".", 1)[0])
+    except ValueError:
+        return {"known": False, "native_supported": False, "fallback_supported": False,
+                "reason": f"Không đọc được major version từ Ceph {version}."}
+    native = major >= 20
+    fallback = major >= 14
+    return {
+        "known": True, "ceph_version": version, "ceph_release": codename_for_version(version),
+        "native_supported": native, "native_min_ceph_major": 20,
+        "fallback_supported": fallback, "fallback_min_ceph_major": 14,
+        "mode": "native_available" if native else "beast_access_log" if fallback else "unsupported",
+        "reason": None if native else (
+            "Native S3 Bucket Logging cần Ceph Tentacle 20 trở lên. "
+            + ("Trang này chỉ đọc HTTP access log của RGW Beast; log không được ghi sang bucket đích."
+               if fallback else "Ceph hiện tại cũng chưa đạt mốc Nautilus 14 cho fallback Beast đã kiểm chứng.")
+        ),
+        "documentation": "https://docs.ceph.com/en/latest/radosgw/bucket_logging/",
+    }
 
 
 def _rgw_hosts(cluster) -> list[dict]:
@@ -62,6 +174,7 @@ def _context(
     bucket: str = "",
     config_error: str | None = None,
     config_success: str | None = None,
+    logging_capability: dict | None = None,
 ) -> dict:
     exec_mode = settings.ceph_exec_mode if cluster.is_default else cluster.ceph_exec_mode
     return {
@@ -76,6 +189,7 @@ def _context(
         "config_error": config_error,
         "config_success": config_success,
         "bucket": bucket,
+        "logging_capability": logging_capability,
     }
 
 
@@ -86,8 +200,11 @@ async def index(
     bucket: str = Query("", max_length=255),
 ):
     clusters, cluster = cluster_selection(request)
+    capability = await asyncio.to_thread(_logging_capability, cluster)
     return templates.TemplateResponse(
-        request, "bucket_access_log.html", _context(user, cluster, clusters, bucket=bucket.strip())
+        request, "bucket_access_log.html", _context(
+            user, cluster, clusters, bucket=bucket.strip(), logging_capability=capability
+        )
     )
 
 
@@ -179,6 +296,7 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
     # rgw_log_api — `host` is attacker-reachable input, only an
     # already-configured RGW node may ever be queried.
     cluster = selected_cluster(request)
+    capability = await asyncio.to_thread(_logging_capability, cluster)
     rgw_hosts = {n["host"] for n in _rgw_hosts(cluster)}
     if host not in rgw_hosts:
         raise HTTPException(status_code=404, detail="Node không nằm trong danh sách RGW đã cấu hình")
@@ -222,6 +340,7 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
         "host": host,
         "bucket": bucket,
         "bucket_stats": bucket_stats,
+        "logging_capability": capability,
         "records": [
             {
                 "remote_addr": r["remote_addr"],
@@ -241,3 +360,59 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
             for r in records
         ],
     }
+
+
+@router.post("/api/bucket-logging/preview")
+async def bucket_logging_preview(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được cấu hình Bucket Logging")
+    payload = _logging_payload(await request.json())
+    cluster = selected_cluster(request)
+    capability = await asyncio.to_thread(_logging_capability, cluster)
+    if not capability.get("known") or not capability.get("fallback_supported"):
+        raise HTTPException(status_code=409, detail=capability.get("reason") or "Version không hỗ trợ")
+    await asyncio.to_thread(_logging_targets, cluster, payload)
+    mode = "native" if capability["native_supported"] else "compatibility"
+    return {"action": payload["action"], "source_bucket": payload["source_bucket"],
+            "target_bucket": payload["target_bucket"], "prefix": payload["prefix"],
+            "mode": mode, "ceph_version": capability["ceph_version"],
+            "confirmation_required": payload["source_bucket"], "risk": "medium",
+            "warning": None if mode == "native" else
+                "Chế độ tương thích gom Beast access log định kỳ; không có đầy đủ bảo đảm native Tentacle."}
+
+
+@router.post("/api/bucket-logging/execute")
+async def bucket_logging_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được cấu hình Bucket Logging")
+    body = await request.json()
+    payload = _logging_payload(body)
+    if str(body.get("confirmation") or "") != payload["source_bucket"]:
+        raise HTTPException(status_code=400, detail="Nhập chính xác source bucket để xác nhận")
+    cluster = selected_cluster(request)
+    capability = await asyncio.to_thread(_logging_capability, cluster)
+    if not capability.get("known") or not capability.get("fallback_supported"):
+        raise HTTPException(status_code=409, detail=capability.get("reason") or "Version không hỗ trợ")
+    await asyncio.to_thread(_logging_targets, cluster, payload)
+    mode = "native" if capability["native_supported"] else "compatibility"
+    preview = (f"{payload['action']} mode={mode} source={payload['source_bucket']} "
+               f"target={payload['target_bucket']} prefix={payload['prefix']}")
+    with db.SessionLocal() as session:
+        audit = ObjectStorageAuditEntry(cluster_id=cluster.id, actor=user,
+            action=f"bucket_logging_{payload['action']}", target_type="bucket",
+            target_id=payload["source_bucket"], preview=preview, result="pending")
+        session.add(audit)
+        session.commit()
+        audit_id = audit.id
+    try:
+        await asyncio.to_thread(_apply_logging, cluster, payload, mode)
+    except Exception as exc:
+        with db.SessionLocal() as session:
+            row = session.get(ObjectStorageAuditEntry, audit_id)
+            row.result = "failed"; row.error_message = "Không áp dụng được Bucket Logging"; row.completed_at = datetime.utcnow()
+            session.commit()
+        raise HTTPException(status_code=502, detail="Không áp dụng được Bucket Logging") from exc
+    with db.SessionLocal() as session:
+        row = session.get(ObjectStorageAuditEntry, audit_id)
+        row.result = "succeeded"; row.completed_at = datetime.utcnow(); session.commit()
+    return {"ok": True, "mode": mode, "request_id": audit_id}

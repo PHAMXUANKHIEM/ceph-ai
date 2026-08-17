@@ -97,6 +97,8 @@ for _action in REEF_POLICY_ACTIONS:
         POLICY_ACTION_MIN_MAJOR[_action] = 15
     if "BucketEncryption" in _action:
         POLICY_ACTION_MIN_MAJOR[_action] = 18
+    if "BucketLogging" in _action:
+        POLICY_ACTION_MIN_MAJOR[_action] = 20
 logger = logging.getLogger(__name__)
 
 QuotaFilter = Literal["all", "enabled", "disabled"]

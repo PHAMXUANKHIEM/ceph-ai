@@ -34,6 +34,14 @@ tiếp biết chính xác trạng thái, bằng chứng kiểm thử và điểm
     một bucket đã có mã; cần audit test/regression.
   - [~] Đã audit regression test, quyền operator read-only và giới hạn fan-out
     metadata; còn giữ `[~]` đến khi thay đổi được commit/merge.
+  - [~] Đã sửa capability Bucket Logging theo live Ceph version: native S3
+    Bucket Logging chỉ có từ Tentacle 20; Nautilus 14–Squid 19 được ghi rõ là
+    Beast HTTP access-log fallback, không còn mô tả sai target bucket/prefix.
+  - [~] Đã thêm cấu hình source/target/prefix tự chọn backend theo live
+    version: Tentacle 20+ dùng native PutBucketLogging; Ceph 14–19 dùng worker
+    compatibility gom phần Beast log mới theo checkpoint và ghi JSONL sang
+    target bucket mỗi 5 phút. Cả hai flow có preview, xác nhận, audit, cluster
+    scope và credential tạm được thu hồi.
 
 ## Thiết kế chung
 
@@ -283,6 +291,8 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 3.5 | Hoàn thành | Tách delete-empty và purge-delete; impact preview, count-bound strong confirmation, version/delete-marker/current-object batch purge, retention-safe behavior, audit và credential cleanup. | Route regression 29 passed; chạy full Object Storage suite trước commit. | Chưa commit; tiếp theo 3.6 regression gate. |
 | 2026-08-17 | 3.6 | Hoàn thành | Bổ sung release gate cho RBAC trên toàn bộ API ghi, chặn free-form action trước audit, mutation cluster phụ giữ đúng connection scope và purge failure được audit nhưng không xóa bucket. Các test sẵn có tiếp tục bao phủ policy validation, confirmation và capability theo live Ceph version. | `.venv/bin/pytest -q tests/test_dashboard_object_storage.py tests/test_dashboard_object_storage_users.py tests/test_rgw_access_log.py tests/test_dashboard_bucket_access_log.py`: 104 passed; Python syntax và `git diff --check` sạch. | Chưa commit; pha 3 hoàn thành, tiếp theo 4.1 Object Browser read-only. |
 | 2026-08-17 | 4.1 | Hoàn thành | Thêm Object Browser read-only theo prefix, search/sort bounded, marker pagination, object metadata/version, cluster scope và capability gate Nautilus 14+. Command builder đóng, quote bucket/marker và không dùng S3 secret. Đối chiếu man page `radosgw-admin` chính thức theo Ceph Reef trước khi triển khai. | Full Object Storage regression: 108 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 4.2 object metadata/tags/version/retention detail. |
+| 2026-08-17 | Bucket Logging capability | Hoàn thành | Sửa nhầm lẫn giữa native S3 Bucket Logging và Beast HTTP access log. API/UI kiểm tra live Ceph version, chỉ báo native từ Tentacle 20+, fallback từ Nautilus 14 và fail-closed khi mixed/unknown; bỏ mô tả target bucket/prefix/delay khỏi fallback. | Full Object Storage regression: 109 passed; Python/JS syntax và `git diff --check` sạch. | Chưa commit; native target-bucket configuration chưa triển khai. |
+| 2026-08-17 | Bucket Logging delivery | Đang làm | Thêm flow cấu hình tự chọn native/compatibility, persistence/checkpoint, worker delivery 5 phút, preview/confirmation/audit và UI. Native dùng PutBucketLogging từ Tentacle 20; compatibility ghi JSONL từ Beast log trên Ceph 14–19. | Targeted logging regression: 56 passed; Alembic một head `e5a7b9c2d401`; chạy full regression trước commit. | Chưa commit; cần kiểm chứng với RGW thật và policy của target bucket. |
 
 ## Ghi chú bàn giao
 
