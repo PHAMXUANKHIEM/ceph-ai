@@ -367,12 +367,16 @@ def test_restore_propose_rejects_when_no_successful_full_exists(dashboard_client
     assert "full backup" in response.json()["detail"]
 
 
-def _stub_restore_as_new_preflight(monkeypatch, inventory=None, max_available=10_000):
+def _stub_restore_as_new_preflight(monkeypatch, inventory=None, max_available=10_000, **overview):
     monkeypatch.setattr(backups_route.ceph_client, "query_rbd_inventory", lambda pool: inventory or [])
     monkeypatch.setattr(
         backups_route.ceph_client,
         "query_rbd_pool_overview",
-        lambda pool: {"max_available": max_available},
+        lambda pool: {"max_available": max_available, **overview},
+    )
+    monkeypatch.setattr(
+        backups_route.ceph_client, "query_rbd_image_detail",
+        lambda pool, image: {"watchers": [], "snapshots": [], "children": [], "partial_errors": {}},
     )
 
 
@@ -393,10 +397,13 @@ def test_restore_as_new_propose_creates_pending_risky_action(dashboard_client, m
         action = session.get(Action, response.json()["action_id"])
         assert action.action_id == "restore_rbd_image_as_new"
         assert action.classification == "RISKY"
-        assert json.loads(action.action_params) == {
+        params = json.loads(action.action_params)
+        assert {key: params[key] for key in ("pool", "image", "dest_pool", "dest_image",
+                                               "recovery_point_job_id")} == {
             "pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "disk1-copy",
-            "recovery_point_job_id": full_id,
-        }
+            "recovery_point_job_id": full_id}
+        assert params["preflight"]["passed"] is True
+        assert params["preflight"]["destination"]["exists"] is False
         assert "không thay đổi volume nguồn" in action.rationale
 
 
@@ -413,7 +420,20 @@ def test_restore_as_new_rejects_existing_destination(dashboard_client, monkeypat
     )
 
     assert response.status_code == 409
-    assert "đã tồn tại" in response.json()["detail"]
+    assert "destination_exists" in response.json()["detail"]["blockers"]
+
+
+def test_restore_as_new_preflight_rejects_near_full_pool(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    _stub_restore_as_new_preflight(monkeypatch, near_full=True)
+    _seed_successful_full()
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/backups/restore-as-new/propose", json={
+        "pool": "vms", "image": "disk1", "dest_pool": "recovery", "dest_image": "copy"})
+
+    assert response.status_code == 409
+    assert "destination_pool_near_full" in response.json()["detail"]["blockers"]
 
 
 def test_restore_as_new_rejects_same_source_and_destination(dashboard_client, monkeypatch):

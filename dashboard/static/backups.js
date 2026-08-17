@@ -165,7 +165,11 @@
         .then(function (response) {
           if (!response.ok) {
             return response.json().then(function (data) {
-              throw new Error(data.detail || "HTTP " + response.status);
+              var detail = data.detail;
+              if (detail && typeof detail === "object") {
+                detail = detail.message + ((detail.blockers || []).length ? "\nBlockers: " + detail.blockers.join(", ") : "");
+              }
+              throw new Error(detail || "HTTP " + response.status);
             });
           }
           return response.json();

@@ -35,7 +35,7 @@ import paramiko
 
 from config.settings import settings
 from shared import audit, db
-from shared.cluster_nodes import resolve_ssh_creds
+from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import BackupJob
 from worker.backup import ai_analysis, anomaly
 from worker.backup import metadata as backup_metadata
@@ -47,6 +47,8 @@ from worker.backup.storage.base import RetentionPolicyLike
 from worker.backup.storage.factory import get_backend, get_backend_for_cluster
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
 from worker.policy.gate import VALID_BACKUP_ACTION_IDS
+from watcher import ceph_client
+from watcher.ceph_client import CephQueryError
 
 if TYPE_CHECKING:
     from shared.models import Cluster
@@ -514,18 +516,55 @@ def _run_restore_to_production(
             action_pk,
         )
         return False
-    progress = [{"step": "restore", "status": "running", "started_at": datetime.utcnow().isoformat()}]
+    progress = [{"step": "preflight_recheck", "status": "running", "started_at": datetime.utcnow().isoformat()},
+                {"step": "restore", "status": "pending"}]
     write_progress(action_pk, progress)
 
     cluster = get_cluster(cluster_id)
+    approved_preflight = action_params.get("preflight")
+    if isinstance(approved_preflight, dict):
+        try:
+            if cluster is None:
+                inventory = ceph_client.query_rbd_inventory(dest_pool)
+                overview = ceph_client.query_rbd_pool_overview(dest_pool)
+            else:
+                nodes = [row["host"] for row in configured_nodes(cluster) if "MON" in row["roles"]]
+                ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
+                connection = (nodes, container_name, ssh_user, ssh_key_path, exec_mode)
+                inventory = ceph_client.query_rbd_inventory_with(dest_pool, *connection)
+                overview = ceph_client.query_rbd_pool_overview_with(dest_pool, *connection)
+            required_bytes = int(approved_preflight.get("required_bytes") or 0)
+            blockers = []
+            if any(row.get("name") == dest_image for row in inventory):
+                blockers.append("destination_exists")
+            if overview.get("near_full"):
+                blockers.append("destination_pool_near_full")
+            if overview.get("rbd_enabled") is False:
+                blockers.append("destination_pool_rbd_disabled")
+            max_available = int(overview.get("max_available") or 0)
+            if max_available and required_bytes > max_available:
+                blockers.append("insufficient_capacity")
+            if blockers:
+                raise BackupEngineError("Restore preflight re-check failed: " + ", ".join(blockers))
+        except (CephQueryError, ValueError, BackupEngineError) as exc:
+            progress[0]["status"] = "failed"
+            progress[0]["message"] = str(exc)
+            progress[0]["finished_at"] = datetime.utcnow().isoformat()
+            write_progress(action_pk, progress)
+            logger.error("backup_engine._run_restore_to_production: %s", exc)
+            return False
+    progress[0]["status"] = "done"
+    progress[0]["finished_at"] = datetime.utcnow().isoformat()
+    progress[1].update({"status": "running", "started_at": datetime.utcnow().isoformat()})
+    write_progress(action_pk, progress)
     slot = restore.latest_backup_target_slot(
         pool, image, cluster_id=cluster_id, recovery_point_job_id=recovery_point_job_id
     )
     if slot is None:
         message = f"Không có bản backup full thành công nào cho {pool}/{image} để khôi phục"
         logger.error("backup_engine._run_restore_to_production: %s", message)
-        progress[0]["status"] = "failed"
-        progress[0]["message"] = message
+        progress[1]["status"] = "failed"
+        progress[1]["message"] = message
         write_progress(action_pk, progress)
         return False
 
@@ -543,8 +582,8 @@ def _run_restore_to_production(
     )
 
     if not result.success:
-        progress[0]["status"] = "failed"
-        progress[0]["message"] = result.error_message
+        progress[1]["status"] = "failed"
+        progress[1]["message"] = result.error_message
         write_progress(action_pk, progress)
         logger.error(
             "backup_engine._run_restore_to_production: restore failed for %s/%s: %s",
@@ -554,8 +593,8 @@ def _run_restore_to_production(
         )
         return False
 
-    progress[0]["status"] = "done"
-    progress[0]["finished_at"] = datetime.utcnow().isoformat()
+    progress[1]["status"] = "done"
+    progress[1]["finished_at"] = datetime.utcnow().isoformat()
     write_progress(action_pk, progress)
     return True
 

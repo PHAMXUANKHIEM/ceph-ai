@@ -156,6 +156,70 @@ def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
         return points
 
 
+def _restore_preflight(
+    cluster, pool: str, image: str, dest_pool: str, dest_image: str,
+    selected_point: dict, required_bytes: int,
+) -> dict:
+    """Collect live, auditable evidence for a restore-as-new proposal."""
+    connection = cluster_connection(cluster) if not cluster.is_default else None
+    try:
+        inventory = (
+            ceph_client.query_rbd_inventory(dest_pool) if connection is None
+            else ceph_client.query_rbd_inventory_with(dest_pool, *connection)
+        )
+        overview = (
+            ceph_client.query_rbd_pool_overview(dest_pool) if connection is None
+            else ceph_client.query_rbd_pool_overview_with(dest_pool, *connection)
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không chạy được restore preflight: {exc}") from exc
+    try:
+        source = (
+            ceph_client.query_rbd_image_detail(pool, image) if connection is None
+            else ceph_client.query_rbd_image_detail_with(pool, image, *connection)
+        )
+    except CephQueryError as exc:
+        # A missing/damaged source image is a normal reason to restore. Record
+        # that evidence, but never block restore-as-new because of it.
+        source = {"watchers": [], "snapshots": [], "children": [],
+                  "partial_errors": {"source": str(exc)}, "available": False}
+    destination_exists = any(row.get("name") == dest_image for row in inventory)
+    max_available = int(overview.get("max_available") or 0)
+    blockers = []
+    if destination_exists:
+        blockers.append("destination_exists")
+    if overview.get("near_full"):
+        blockers.append("destination_pool_near_full")
+    if max_available and required_bytes > max_available:
+        blockers.append("insufficient_capacity")
+    if overview.get("rbd_enabled") is False:
+        blockers.append("destination_pool_rbd_disabled")
+    with db.SessionLocal() as session:
+        backup_in_flight = session.query(BackupJob.id).filter(
+            BackupJob.pool == pool, BackupJob.image == image, BackupJob.status == "RUNNING",
+            _job_scope(BackupJob.cluster_id, cluster),
+        ).first() is not None
+    if backup_in_flight:
+        blockers.append("backup_in_flight")
+    return {
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "cluster_id": cluster.id,
+        "source": {"pool": pool, "image": image, "watcher_count": len(source.get("watchers") or []),
+                   "snapshot_count": len(source.get("snapshots") or []),
+                   "child_count": len(source.get("children") or []),
+                   "partial_errors": source.get("partial_errors") or {},
+                   "available": source.get("available", True)},
+        "destination": {"pool": dest_pool, "image": dest_image, "exists": destination_exists,
+                        "max_available": max_available, "near_full": bool(overview.get("near_full")),
+                        "rbd_enabled": overview.get("rbd_enabled")},
+        "recovery_point_job_id": selected_point["job_id"],
+        "chain_job_ids": selected_point["chain_job_ids"],
+        "required_bytes": required_bytes,
+        "blockers": blockers,
+        "passed": not blockers,
+    }
+
+
 @router.get("/api/backups/recovery-points")
 async def recovery_points_api(request: Request, pool: str, image: str, user: str = Depends(require_login)):
     del user
@@ -513,30 +577,20 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
     with db.SessionLocal() as session:
         full_job = session.get(BackupJob, selected_point["base_job_id"])
 
-    try:
-        inventory = (
-            ceph_client.query_rbd_inventory(dest_pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_inventory_with(dest_pool, *cluster_connection(cluster))
-        )
-        overview = (
-            ceph_client.query_rbd_pool_overview(dest_pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_pool_overview_with(dest_pool, *cluster_connection(cluster))
-        )
-    except CephQueryError as exc:
-        raise HTTPException(status_code=502, detail=f"Không kiểm tra được pool đích: {exc}") from exc
-    if any(row.get("name") == dest_image for row in inventory):
-        raise HTTPException(status_code=409, detail=f"Volume đích {dest_pool}/{dest_image} đã tồn tại.")
-    max_available = int(overview.get("max_available") or 0)
-    if max_available and int(full_job.size_bytes or 0) > max_available:
-        raise HTTPException(status_code=409, detail="Pool đích không đủ dung lượng cho bản full backup.")
+    required_bytes = int(full_job.size_bytes or 0)
+    preflight = _restore_preflight(
+        cluster, pool, image, dest_pool, dest_image, selected_point, required_bytes
+    )
+    if not preflight["passed"]:
+        raise HTTPException(status_code=409, detail={"message": "Restore preflight không đạt.",
+                                                     "blockers": preflight["blockers"],
+                                                     "preflight": preflight})
 
     mon_nodes = [n["host"] for n in configured_nodes(None if cluster.is_default else cluster) if "MON" in n["roles"]]
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
     params = {"pool": pool, "image": image, "dest_pool": dest_pool, "dest_image": dest_image,
-              "recovery_point_job_id": selected_point["job_id"]}
+              "recovery_point_job_id": selected_point["job_id"], "preflight": preflight}
     try:
         preview_command = executor_commands.get_command(RESTORE_AS_NEW_ACTION_ID, None, params)
     except ExecutorError as exc:
@@ -572,7 +626,9 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
             rationale=(
                 f"Khôi phục {pool}/{image} từ recovery point {selected_point['job_id']} "
                 f"({selected_point['created_at']}, chain {selected_point['chain_length']} artifact) "
-                f"sang volume mới {dest_pool}/{dest_image}; không thay đổi volume nguồn."
+                f"sang volume mới {dest_pool}/{dest_image}; preflight đạt lúc {preflight['checked_at']} "
+                f"(available {preflight['destination']['max_available']} byte, cần {required_bytes} byte); "
+                f"không thay đổi volume nguồn."
             ),
             target_nodes=json.dumps([mon_nodes[0]]),
             action_params=json.dumps(params),
@@ -584,7 +640,7 @@ async def propose_restore_as_new(request: Request, user: str = Depends(require_l
                      event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL, actor=user)
         session.commit()
         action_pk = action.id
-    return JSONResponse({"action_id": action_pk}, status_code=201)
+    return JSONResponse({"action_id": action_pk, "preflight": preflight}, status_code=201)
 
 
 def _create_manual_backup_action(action_id: str, action_params: dict, user: str, cluster=None) -> str:

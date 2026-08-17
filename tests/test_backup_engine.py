@@ -479,6 +479,30 @@ def test_restore_as_new_uses_distinct_destination_and_verifies_it(isolated_db, f
     assert "rbd info recovery/web01-restored --format json" in commands
 
 
+def test_restore_as_new_rechecks_destination_and_fails_if_it_appeared(
+    isolated_db, fake_backend_and_ssh, monkeypatch
+):
+    full_id = _make_success_full_backup_job(fake_backend_and_ssh)
+    monkeypatch.setattr(engine.ceph_client, "query_rbd_inventory",
+                        lambda pool: [{"name": "web01-restored"}])
+    monkeypatch.setattr(engine.ceph_client, "query_rbd_pool_overview",
+                        lambda pool: {"max_available": 10_000, "near_full": False})
+    incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_as_new")
+    writes = []
+
+    succeeded = engine.run(action_pk, "restore_rbd_image_as_new", {
+        "pool": "vms", "image": "web01", "dest_pool": "recovery",
+        "dest_image": "web01-restored", "recovery_point_job_id": full_id,
+        "preflight": {"required_bytes": 10},
+    }, incident_id, None, lambda _pk, progress: writes.append(json.loads(json.dumps(progress))),
+       _allow_execution)
+
+    assert succeeded is False
+    assert FakeSSHClient.imported_calls == []
+    assert writes[-1][0]["status"] == "failed"
+    assert "destination_exists" in writes[-1][0]["message"]
+
+
 def test_restore_to_production_fails_when_no_full_backup_exists(isolated_db, fake_backend_and_ssh):
     incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
 

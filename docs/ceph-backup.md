@@ -379,6 +379,10 @@ cơ chế webhook đã có, không tạo đường gửi thứ hai.
   tồn tại và kiểm tra dung lượng pool cơ bản trước khi tạo action.
 - Action vẫn được phân loại **RISKY** vì tạo dữ liệu thật trong cụm và luôn cần
   duyệt; audit lưu rõ source và destination.
+- Trước khi tạo action, Dashboard lưu evidence gồm recovery chain, trạng thái
+  nguồn, sự tồn tại của đích, RBD application, near-full và capacity. Worker
+  kiểm tra lại các điều kiện đích ngay trước import; thay đổi trong thời gian
+  chờ duyệt khiến action fail-closed.
 - Worker tải bản full thành công mới nhất và toàn bộ diff chain, verify từng
   artifact trước khi import, sau đó chạy `rbd info` trên image mới.
 - Nếu import hoặc post-check thất bại sau khi image đích được tạo, Worker cố
