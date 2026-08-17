@@ -128,7 +128,8 @@ execute; thay đổi trạng thái giữa hai thời điểm làm action fail-cl
   định volume không đủ bản sao.
 - [~] RPO đọc từ `backup_policy.yaml` và dùng chung cho Dashboard/alerting;
   chưa hỗ trợ override riêng theo cluster hoặc workload.
-- Cảnh báo rõ metadata backup và restore drill quá hạn.
+- [x] Cảnh báo và hiển thị rõ metadata backup/RestoreDrill chưa chạy, thất bại
+  hoặc quá hạn; drill chỉ được giám sát khi đã cấu hình đầy đủ.
 
 **Hoàn thành khi:** overview trả lời được “volume nào không đạt RPO?”, “backup
 nào chưa từng được drill?” và “nếu restore bây giờ mất khoảng bao lâu?”.

@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 RPO_HOURS = 24
+METADATA_RPO_HOURS = 12
+RESTORE_DRILL_RPO_HOURS = 192
 WEBHOOK_TIMEOUT_SECONDS = 10
 _MAX_TELEGRAM_MESSAGE_CHARS = 700
 
@@ -156,6 +158,7 @@ def send_alert(
 def _check_target(
     pool: str | None, image: str | None, label: str, cutoff: datetime,
     cluster: "Cluster | None" = None, rpo_hours: int = RPO_HOURS,
+    job_type: str | None = None,
 ) -> None:
     """Shared by the default cluster's loop and the additional-clusters'
     loop below — `cluster_id` is ALWAYS filtered explicitly (never left
@@ -165,10 +168,11 @@ def _check_target(
     cluster_id = cluster.id if cluster is not None else None
     with db.SessionLocal() as session:
         query = session.query(BackupJob).filter(BackupJob.cluster_id == cluster_id)
-        if pool is not None:
-            query = query.filter(BackupJob.pool == pool, BackupJob.image == image, BackupJob.job_type != "restore_drill")
-        else:
-            query = query.filter(BackupJob.job_type == "metadata")
+        if job_type is not None:
+            query = query.filter(BackupJob.job_type == job_type)
+        elif pool is not None:
+            query = query.filter(BackupJob.pool == pool, BackupJob.image == image,
+                                 BackupJob.job_type.in_(("full", "incremental")))
         latest = query.order_by(BackupJob.created_at.desc()).first()
 
     if latest is None:
@@ -197,10 +201,15 @@ def check_overdue_and_failed_backups() -> None:
     `backup_tracked_images`) — alerts if the latest BackupJob is FAILED,
     missing entirely, or older than the RPO."""
     policy = load_backup_policy()
-    try:
-        rpo_hours = max(1, min(int(policy.get("rpo_hours", RPO_HOURS)), 24 * 365))
-    except (TypeError, ValueError):
-        rpo_hours = RPO_HOURS
+    def _hours(key: str, default: int) -> int:
+        try:
+            return max(1, min(int(policy.get(key, default)), 24 * 365))
+        except (TypeError, ValueError):
+            return default
+
+    rpo_hours = _hours("rpo_hours", RPO_HOURS)
+    metadata_rpo_hours = _hours("metadata_rpo_hours", METADATA_RPO_HOURS)
+    drill_rpo_hours = _hours("restore_drill_rpo_hours", RESTORE_DRILL_RPO_HOURS)
     cutoff = datetime.utcnow() - timedelta(hours=rpo_hours)
 
     targets: list[tuple[str | None, str | None, str]] = [
@@ -208,10 +217,17 @@ def check_overdue_and_failed_backups() -> None:
         for t in (policy.get("tracked_images") or [])
         if t.get("pool") and t.get("image")
     ]
-    targets.append((None, None, "metadata cụm"))
-
     for pool, image, label in targets:
         _check_target(pool, image, label, cutoff, rpo_hours=rpo_hours)
+    _check_target(None, None, "metadata cụm",
+                  datetime.utcnow() - timedelta(hours=metadata_rpo_hours),
+                  rpo_hours=metadata_rpo_hours, job_type="metadata")
+
+    drill_config = policy.get("restore_drill") or {}
+    if all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image")):
+        _check_target(drill_config["pool"], drill_config["image"], "RestoreDrill",
+                      datetime.utcnow() - timedelta(hours=drill_rpo_hours),
+                      rpo_hours=drill_rpo_hours, job_type="restore_drill")
 
     with db.SessionLocal() as session:
         clusters = [c for c in list_active_clusters(session) if not c.is_default and c.backup_enabled]
@@ -222,6 +238,8 @@ def check_overdue_and_failed_backups() -> None:
             (pool, image, f"{pool}/{image} (cụm {cluster.name})")
             for pool, image in parse_tracked_images(cluster.backup_tracked_images)
         ]
-        cluster_targets.append((None, None, f"metadata cụm ({cluster.name})"))
         for pool, image, label in cluster_targets:
             _check_target(pool, image, label, cutoff, cluster=cluster, rpo_hours=rpo_hours)
+        _check_target(None, None, f"metadata cụm ({cluster.name})",
+                      datetime.utcnow() - timedelta(hours=metadata_rpo_hours),
+                      cluster=cluster, rpo_hours=metadata_rpo_hours, job_type="metadata")

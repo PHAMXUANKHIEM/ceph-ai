@@ -233,12 +233,18 @@ rỗng không đăng ký job backup nào.
 
 ### 7.2. Cảnh báo lỗi/quá hạn (`worker/backup/alerting.py`)
 
-Job `backup_alert_check` (mỗi 5 phút) kiểm tra **từng ảnh đã theo dõi** +
-metadata cụm, cảnh báo `warning` nếu:
+Job `backup_alert_check` (mỗi 5 phút) kiểm tra **từng ảnh đã theo dõi**,
+metadata cụm và RestoreDrill đã bật, cảnh báo `warning` nếu:
 - Chưa từng có backup thành công nào, HOẶC
 - Bản gần nhất `FAILED`, HOẶC
 - Bản thành công gần nhất đã quá ngưỡng `rpo_hours` trong
   `backup_policy.yaml` (mặc định 24 giờ).
+
+Metadata dùng ngưỡng `metadata_rpo_hours` (mặc định 12 giờ). RestoreDrill
+dùng `restore_drill_rpo_hours` (mặc định 192 giờ, tương đương lịch tuần cộng
+24 giờ đệm) và chỉ được kiểm tra khi `restore_drill:` có đủ bốn trường. Cả
+hai trạng thái cũng xuất hiện trên Dashboard Backup dưới dạng `Healthy`,
+`Quá hạn`, `Thất bại` hoặc `Chưa từng chạy`.
 
 Cơ chế cảnh báo dùng chung một hàm `send_alert()`: **luôn ghi log** (mức
 `CRITICAL`/`WARNING`), rồi gửi qua **từng kênh đã cấu hình, độc lập với
@@ -453,7 +459,8 @@ tầng policy khi thêm action_id mới.
 1. **`worker/policy/backup_policy.yaml`** — `backup_targets:` (transport
    nào cho slot a/b, slot nào immutable), `tracked_images:` (danh sách
    `(pool, image)` cần backup định kỳ — rỗng nghĩa là chưa bật gì),
-   `retention:`, `schedule:`, `anomaly_threshold_stddev`, `restore_drill:`.
+   `retention:`, `schedule:`, `rpo_hours`, `metadata_rpo_hours`,
+   `restore_drill_rpo_hours`, `anomaly_threshold_stddev`, `restore_drill:`.
 2. **Biến môi trường / trang Cài đặt** (`config/settings.py`) — với MỖI slot
    `a`/`b` đã chọn transport trong bước 1:
    - SSH: `backup_target_<slot>_ssh_host/user/key_path/landing_dir`

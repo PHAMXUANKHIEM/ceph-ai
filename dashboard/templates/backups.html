@@ -94,6 +94,14 @@
           {% if protection.latest_drill.duration_seconds is not none %}{{ "%.1f"|format(protection.latest_drill.duration_seconds) }} giây{% else %}chưa có{% endif %}.
         </p>
         {% else %}<p class="hint">Chưa có RestoreDrill để xác nhận RTO thực tế.</p>{% endif %}
+        <p class="hint">Metadata backup:
+          <strong>{% if protection.metadata.status == 'healthy' %}Healthy{% elif protection.metadata.status == 'overdue' %}Quá hạn{% elif protection.metadata.status == 'failed' %}Thất bại{% else %}Chưa từng chạy{% endif %}</strong>
+          · ngưỡng {{ protection.metadata.threshold_hours }} giờ
+          {% if protection.metadata.age_hours is not none %}· tuổi {{ "%.1f"|format(protection.metadata.age_hours) }} giờ{% endif %}.
+          {% if protection.drill_freshness %} RestoreDrill:
+          <strong>{% if protection.drill_freshness.status == 'healthy' %}Healthy{% elif protection.drill_freshness.status == 'overdue' %}Quá hạn{% elif protection.drill_freshness.status == 'failed' %}Thất bại{% else %}Chưa từng chạy{% endif %}</strong>
+          · ngưỡng {{ protection.drill_freshness.threshold_hours }} giờ.{% endif %}
+        </p>
         {% if protection.rows %}
         <div class="table-wrap"><table>
           <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th>Tuổi recovery point</th><th>Còn lại trước RPO</th></tr></thead>

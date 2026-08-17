@@ -287,6 +287,46 @@ def test_check_overdue_and_failed_backups_alerts_for_metadata_never_run(isolated
     assert "metadata" in alerts[0][1]
 
 
+def test_check_overdue_and_failed_backups_uses_metadata_threshold(isolated_db, monkeypatch):
+    monkeypatch.setattr(alerting, "load_backup_policy",
+                        lambda: {"tracked_images": [], "metadata_rpo_hours": 12})
+    stale_time = datetime.utcnow() - timedelta(hours=13)
+    with db_module.SessionLocal() as session:
+        session.add(BackupJob(run_id="meta", job_type="metadata", status="SUCCESS",
+                              created_at=stale_time, finished_at=stale_time))
+        session.commit()
+    alerts = []
+    monkeypatch.setattr(alerting, "send_alert",
+                        lambda severity, message, backup_job_id=None, cluster=None:
+                        alerts.append((severity, message)))
+
+    alerting.check_overdue_and_failed_backups()
+
+    assert len(alerts) == 1
+    assert "metadata" in alerts[0][1]
+    assert "12h" in alerts[0][1]
+
+
+def test_check_overdue_and_failed_backups_checks_configured_restore_drill(isolated_db, monkeypatch):
+    monkeypatch.setattr(alerting, "load_backup_policy", lambda: {
+        "tracked_images": [], "restore_drill_rpo_hours": 192,
+        "restore_drill": {"pool": "vms", "image": "web01",
+                          "scratch_pool": "scratch", "scratch_image": "drill01"},
+    })
+    with db_module.SessionLocal() as session:
+        _add_fresh_metadata_success(session)
+        session.commit()
+    alerts = []
+    monkeypatch.setattr(alerting, "send_alert",
+                        lambda severity, message, backup_job_id=None, cluster=None:
+                        alerts.append((severity, message)))
+
+    alerting.check_overdue_and_failed_backups()
+
+    assert len(alerts) == 1
+    assert "RestoreDrill" in alerts[0][1]
+
+
 def _make_additional_cluster(session, **overrides):
     from shared.models import Cluster
 

@@ -84,6 +84,8 @@ HISTORY_LIMIT_PER_IMAGE = 30
 DIGEST_LIMIT = 10
 ANOMALY_LIMIT = 20
 DEFAULT_RPO_HOURS = 24
+DEFAULT_METADATA_RPO_HOURS = 12
+DEFAULT_RESTORE_DRILL_RPO_HOURS = 192
 RPO_AT_RISK_RATIO = 0.75
 
 # Synthetic Incident.ceph_code — same trick every other propose route in
@@ -333,10 +335,15 @@ def _queue(tracked: list[dict], cluster=None) -> list[dict]:
 def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     policy = load_backup_policy()
-    try:
-        rpo_hours = max(1, min(int(policy.get("rpo_hours", DEFAULT_RPO_HOURS)), 24 * 365))
-    except (TypeError, ValueError):
-        rpo_hours = DEFAULT_RPO_HOURS
+    def _hours(key: str, default: int) -> int:
+        try:
+            return max(1, min(int(policy.get(key, default)), 24 * 365))
+        except (TypeError, ValueError):
+            return default
+
+    rpo_hours = _hours("rpo_hours", DEFAULT_RPO_HOURS)
+    metadata_rpo_hours = _hours("metadata_rpo_hours", DEFAULT_METADATA_RPO_HOURS)
+    drill_rpo_hours = _hours("restore_drill_rpo_hours", DEFAULT_RESTORE_DRILL_RPO_HOURS)
     rows = []
     counts = {"healthy": 0, "at_risk": 0, "breached": 0, "never": 0}
     with db.SessionLocal() as session:
@@ -365,7 +372,23 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                 _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
             .order_by(BackupJob.created_at.desc()).first()
         )
+        latest_metadata = (
+            session.query(BackupJob).filter(BackupJob.job_type == "metadata",
+                _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
+            .order_by(BackupJob.created_at.desc()).first()
+        )
+    def _freshness(job, threshold_hours: int) -> dict:
+        age = None if job is None else max(0.0, (now - job.created_at).total_seconds() / 3600)
+        return {"status": "never" if job is None else "failed" if job.status != "SUCCESS"
+                else "overdue" if age >= threshold_hours else "healthy",
+                "created_at": None if job is None else job.created_at,
+                "age_hours": age, "threshold_hours": threshold_hours}
+
+    drill_config = policy.get("restore_drill") or {}
+    drill_configured = all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image"))
     return {"rows": rows, "counts": counts, "total": len(rows), "rpo_hours": rpo_hours,
+            "metadata": _freshness(latest_metadata, metadata_rpo_hours),
+            "drill_freshness": _freshness(latest_drill, drill_rpo_hours) if drill_configured else None,
             "latest_drill": None if latest_drill is None else {
                 "status": latest_drill.status, "created_at": latest_drill.created_at,
                 "duration_seconds": latest_drill.duration_seconds,

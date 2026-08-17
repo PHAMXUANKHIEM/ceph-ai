@@ -27,6 +27,11 @@ tracked_images: []
 # Dashboard protection status and the periodic overdue alert.
 rpo_hours: 24
 
+# Freshness SLOs for control-plane metadata and the weekly restore canary.
+# The drill threshold allows one day of grace beyond its default weekly run.
+metadata_rpo_hours: 12
+restore_drill_rpo_hours: 192
+
 # keep_full_count/keep_incremental_count are PER (pool, image, job_type) —
 # see worker/backup/engine.py::_sweep_retention_after_success for why full
 # and incremental are swept with separate counts, not a combined one.

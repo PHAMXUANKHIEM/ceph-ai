@@ -136,6 +136,30 @@ def test_backups_page_summarizes_rpo_states_and_latest_drill(dashboard_client, m
     assert "Mục tiêu RPO: 24 giờ" in response.text
 
 
+def test_protection_overview_reports_metadata_and_drill_freshness(dashboard_client, monkeypatch):
+    now = datetime.utcnow()
+    monkeypatch.setattr(backups_route, "load_backup_policy", lambda: {
+        "tracked_images": [], "metadata_rpo_hours": 12, "restore_drill_rpo_hours": 192,
+        "restore_drill": {"pool": "vms", "image": "web01",
+                          "scratch_pool": "scratch", "scratch_image": "drill01"},
+    })
+    with db_module.SessionLocal() as session:
+        session.add_all([
+            BackupJob(run_id="meta", job_type="metadata", status="SUCCESS",
+                      created_at=now - timedelta(hours=13)),
+            BackupJob(run_id="drill", pool="vms", image="web01", job_type="restore_drill",
+                      status="FAILED", created_at=now - timedelta(hours=1)),
+        ])
+        session.commit()
+
+    overview = backups_route._protection_overview([], now=now)
+
+    assert overview["metadata"]["status"] == "overdue"
+    assert overview["metadata"]["threshold_hours"] == 12
+    assert overview["drill_freshness"]["status"] == "failed"
+    assert overview["drill_freshness"]["threshold_hours"] == 192
+
+
 def test_queue_success_time_does_not_get_replaced_by_newer_failed_run(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     success_at = datetime.utcnow() - timedelta(hours=2)
