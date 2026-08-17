@@ -14,7 +14,7 @@ import worker.backup.restore as restore
 from config.settings import settings
 from shared import db as db_module
 from shared.db import Base
-from shared.models import BackupJob
+from shared.models import BackupJob, Cluster
 
 
 @pytest.fixture()
@@ -147,10 +147,12 @@ def fakes(monkeypatch):
     yield
 
 
-def _make_full_job(pool="vms", image="web01", remote_key="full/vms/web01/backup-1.bin", created_at=None):
+def _make_full_job(pool="vms", image="web01", remote_key="full/vms/web01/backup-1.bin", created_at=None,
+                   cluster_id=None):
     with db_module.SessionLocal() as session:
         job = BackupJob(
             run_id="run-1",
+            cluster_id=cluster_id,
             pool=pool,
             image=image,
             job_type="full",
@@ -165,10 +167,12 @@ def _make_full_job(pool="vms", image="web01", remote_key="full/vms/web01/backup-
         return job.id
 
 
-def _make_diff_job(base_job_id, pool="vms", image="web01", remote_key="incremental/vms/web01/diff-1.bin", created_at=None, status="SUCCESS"):
+def _make_diff_job(base_job_id, pool="vms", image="web01", remote_key="incremental/vms/web01/diff-1.bin",
+                   created_at=None, status="SUCCESS", cluster_id=None):
     with db_module.SessionLocal() as session:
         job = BackupJob(
             run_id="run-1",
+            cluster_id=cluster_id,
             pool=pool,
             image=image,
             job_type="incremental",
@@ -182,6 +186,28 @@ def _make_diff_job(base_job_id, pool="vms", image="web01", remote_key="increment
         session.add(job)
         session.commit()
         return job.id
+
+
+def _make_cluster(name):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(name=name, ceph_mon_nodes="10.20.1.112", ssh_user="root",
+                          ssh_key_path="/tmp/test-key")
+        session.add(cluster)
+        session.commit()
+        return cluster.id
+
+
+def test_backup_chain_ignores_incremental_from_another_cluster(isolated_db):
+    cluster_a = _make_cluster("cluster-a")
+    cluster_b = _make_cluster("cluster-b")
+    full_id = _make_full_job(cluster_id=cluster_a)
+    own_diff_id = _make_diff_job(full_id, cluster_id=cluster_a)
+    _make_diff_job(full_id, remote_key="incremental/vms/web01/cross-cluster.bin", cluster_id=cluster_b)
+
+    full, diffs = restore._backup_chain("vms", "web01", cluster_id=cluster_a)
+
+    assert full.id == full_id
+    assert [item.id for item in diffs] == [own_diff_id]
 
 
 def test_restore_image_applies_full_then_diffs_in_order(isolated_db):

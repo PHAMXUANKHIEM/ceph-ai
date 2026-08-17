@@ -146,6 +146,14 @@ nào chưa từng được drill?” và “nếu restore bây giờ mất kho�
 - Ghi cluster trong audit, alert, history và artifact key/prefix.
 - Liệt kê rõ tính năng còn default-cluster-only; không hiển thị như đã hỗ trợ.
 
+Tiến độ audit:
+
+- [x] History, queue, overview, anomaly baseline, cảnh báo, retention và restore
+  chain đã lọc theo cluster; AI không coi success ở cluster khác là đã phục hồi.
+- [ ] Backup Digest và RestoreDrill vẫn chỉ chạy cho cluster mặc định vì lịch/
+  cấu hình hiện là singleton trong `backup_policy.yaml`; Dashboard chủ động ẩn
+  Digest ở cluster phụ. Cần thiết kế policy theo cluster trước khi bật hai tính năng này.
+
 **Hoàn thành khi:** test hai cluster chứng minh không cross-read/cross-block/
 cross-restore và cluster inactive bị từ chối.
 

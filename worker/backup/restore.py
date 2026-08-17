@@ -118,6 +118,7 @@ def _backup_chain(
             session.query(BackupJob)
             .filter(
                 BackupJob.base_job_id == full_job.id,
+                BackupJob.cluster_id == cluster_id,
                 BackupJob.job_type == "incremental",
                 BackupJob.status == "SUCCESS",
                 BackupJob.backup_target_slot == full_job.backup_target_slot,

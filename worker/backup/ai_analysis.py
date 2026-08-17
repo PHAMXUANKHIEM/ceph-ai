@@ -206,9 +206,7 @@ async def analyze(context: dict) -> dict:
 
 
 def _has_since_recovered(job: BackupJob) -> bool:
-    """AC #3 de-dup: a later SUCCESS already exists for the same
-    (pool, image, job_type) — the failure already self-recovered, so it
-    must not be classified/alerted as critical."""
+    """AC #3 de-dup: a later SUCCESS exists for the same workload and cluster."""
     if job.pool is None or job.image is None:
         return False
     with db.SessionLocal() as session:
@@ -217,6 +215,7 @@ def _has_since_recovered(job: BackupJob) -> bool:
             .filter(
                 BackupJob.pool == job.pool,
                 BackupJob.image == job.image,
+                BackupJob.cluster_id == job.cluster_id,
                 BackupJob.job_type == job.job_type,
                 BackupJob.status == "SUCCESS",
                 BackupJob.created_at > job.created_at,

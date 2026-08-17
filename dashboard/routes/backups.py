@@ -425,6 +425,7 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                         chain_size_bytes = full.size_bytes or 0
                         diffs = session.query(BackupJob).filter(
                             BackupJob.base_job_id == full.id,
+                            _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True,
                             BackupJob.job_type == "incremental", BackupJob.status == "SUCCESS",
                             BackupJob.backup_target_slot == full.backup_target_slot,
                             BackupJob.created_at <= latest.created_at,

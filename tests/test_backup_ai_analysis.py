@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 import worker.backup.ai_analysis as ai_analysis
 from shared import db as db_module
 from shared.db import Base
-from shared.models import BackupAnomaly, BackupJob
+from shared.models import BackupAnomaly, BackupJob, Cluster
 
 
 @pytest.fixture()
@@ -76,7 +76,7 @@ def _install_fake_client(monkeypatch, completion):
     monkeypatch.setattr(ai_analysis, "_get_client", lambda: FakeClient())
 
 
-def _make_job(pool, image, job_type, status, error_message=None, created_at=None) -> BackupJob:
+def _make_job(pool, image, job_type, status, error_message=None, created_at=None, cluster_id=None) -> BackupJob:
     with db_module.SessionLocal() as session:
         job = BackupJob(
             run_id="run-1",
@@ -84,6 +84,7 @@ def _make_job(pool, image, job_type, status, error_message=None, created_at=None
             image=image,
             job_type=job_type,
             status=status,
+            cluster_id=cluster_id,
             error_message=error_message,
             created_at=created_at or datetime.utcnow(),
         )
@@ -92,6 +93,19 @@ def _make_job(pool, image, job_type, status, error_message=None, created_at=None
         job_id = job.id
     with db_module.SessionLocal() as session:
         return session.get(BackupJob, job_id)
+
+
+def _make_cluster(name: str) -> str:
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name=name,
+            ceph_mon_nodes="10.20.1.112",
+            ssh_user="root",
+            ssh_key_path="/tmp/test-key",
+        )
+        session.add(cluster)
+        session.commit()
+        return cluster.id
 
 
 def test_call_router_extracts_args_from_matching_tool_call(monkeypatch):
@@ -271,6 +285,23 @@ def test_analyze_backup_job_downgrades_recovered_failure_to_warning_alert(isolat
     ai_analysis.analyze_backup_job(job)
 
     assert alerts == ["warning"]
+
+
+def test_failure_is_not_recovered_by_success_from_another_cluster(isolated_db):
+    failed_cluster_id = _make_cluster("failed-cluster")
+    healthy_cluster_id = _make_cluster("healthy-cluster")
+    failed = _make_job(
+        "vms", "web01", "full", "FAILED",
+        created_at=datetime.utcnow() - timedelta(hours=2),
+        cluster_id=failed_cluster_id,
+    )
+    _make_job(
+        "vms", "web01", "full", "SUCCESS",
+        created_at=datetime.utcnow(),
+        cluster_id=healthy_cluster_id,
+    )
+
+    assert ai_analysis._has_since_recovered(failed) is False
 
 
 def test_analyze_backup_job_falls_back_when_ai_call_fails(isolated_db, monkeypatch):
