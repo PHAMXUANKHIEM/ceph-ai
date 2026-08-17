@@ -77,6 +77,19 @@ def test_users_page_search_and_empty_state(dashboard_client, monkeypatch):
     assert 'href="/deploy-cluster"' in response.text
 
 
+def test_s3_user_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
+    _configure(monkeypatch)
+    calls = []
+    monkeypatch.setattr(route, "fetch_s3_user_list", lambda host: calls.append(host) or [])
+    _login(dashboard_client)
+
+    first = dashboard_client.get("/object-storage/users")
+    second = dashboard_client.get("/api/object-storage/users")
+
+    assert first.status_code == second.status_code == 200
+    assert calls == ["10.20.1.90"]
+
+
 def test_user_detail_rejects_path_like_uid(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     _login(dashboard_client)

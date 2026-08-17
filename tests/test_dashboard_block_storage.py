@@ -56,6 +56,26 @@ def test_block_storage_overview_displays_at_most_ten_volumes(dashboard_client, m
     assert ">12 images<" in response.text
 
 
+def test_block_storage_reuses_cluster_inventory_cache(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        block_storage_route,
+        "_query_block_storage",
+        lambda cluster: calls.append(cluster.id) or [{
+            "name": "cached-volume", "pool": "volumes", "namespace": "",
+            "size_bytes": 1024, "size": "1.0 KiB",
+        }],
+    )
+    _login(dashboard_client)
+
+    first = dashboard_client.get("/block-storage")
+    second = dashboard_client.get("/block-storage")
+
+    assert first.status_code == second.status_code == 200
+    assert "cached-volume" in first.text + second.text
+    assert len(calls) == 1
+
+
 def test_query_block_storage_discovers_rbd_pools_and_namespaces(monkeypatch):
     commands = []
 

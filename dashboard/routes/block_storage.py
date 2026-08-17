@@ -10,6 +10,7 @@ from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
+from shared.object_storage_cache import get_or_load
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 
 
@@ -97,6 +98,12 @@ def _query_block_storage(cluster) -> list[dict]:
     return sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"]))
 
 
+def _cached_block_storage(cluster) -> list[dict]:
+    return get_or_load(
+        "block-storage", f"{cluster.id}:inventory", lambda: _query_block_storage(cluster)
+    )
+
+
 @router.get("/block-storage", response_class=HTMLResponse)
 async def block_storage_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
@@ -104,7 +111,7 @@ async def block_storage_page(request: Request, user: str = Depends(require_login
     total_images = 0
     error = None
     try:
-        images = await asyncio.to_thread(_query_block_storage, cluster)
+        images = await asyncio.to_thread(_cached_block_storage, cluster)
         total_images = len(images)
         images = images[:BLOCK_STORAGE_OVERVIEW_LIMIT]
     except CephQueryError as exc:

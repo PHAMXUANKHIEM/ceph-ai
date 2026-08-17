@@ -27,6 +27,7 @@ from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.ceph_releases import codename_for_version
 from shared.models import ObjectStorageAuditEntry
+from shared.object_storage_cache import get_or_load, invalidate as invalidate_object_storage_cache
 from dashboard.cluster_scope import cluster_connection
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
@@ -211,6 +212,10 @@ def _capabilities(cluster) -> dict:
     }
 
 
+def _cached_capabilities(cluster) -> dict:
+    return get_or_load("capabilities", f"{cluster.id}:capabilities", lambda: _capabilities(cluster))
+
+
 _SECRET_PATTERN = re.compile(
     r"(?i)\b(access[_ -]?key|secret(?:[_ -]?access)?[_ -]?key|session[_ -]?token)\b"
     r"(\s*[:=]\s*|\s+)([^\s,;]+)"
@@ -260,13 +265,17 @@ def _bucket_audit_start(cluster_id: str, actor: str, payload: dict) -> str:
 
 
 def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -> None:
+    cluster_id = None
     with db.SessionLocal() as session:
         row = session.get(ObjectStorageAuditEntry, audit_id)
         if row:
+            cluster_id = row.cluster_id
             row.result = result
             row.error_message = error
             row.completed_at = datetime.utcnow()
             session.commit()
+    if result == "succeeded" and cluster_id:
+        invalidate_object_storage_cache(cluster_id, "buckets")
 
 
 def _start_governance_audit(cluster_id: str, actor: str, payload: dict, preview: str) -> str:
@@ -934,6 +943,15 @@ def _inventory(
     }
 
 
+def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: QuotaFilter = "all",
+                      usage: UsageFilter = "all", sort: SortField = "name", order: SortOrder = "asc") -> dict:
+    key = f"{cluster.id}:{query}:{page}:{owner}:{quota}:{usage}:{sort}:{order}"
+    return get_or_load(
+        "buckets", key,
+        lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order),
+    )
+
+
 def _detail(cluster, name: str, include_activity: bool = False) -> dict:
     bucket_name = name.strip()
     if not bucket_name or len(bucket_name) > 255 or "/" in bucket_name:
@@ -1142,7 +1160,7 @@ async def bucket_inventory_api(
     del user
     try:
         return await asyncio.to_thread(
-            _inventory, selected_cluster(request), query, page, owner, quota, usage, sort, order
+            _cached_inventory, selected_cluster(request), query, page, owner, quota, usage, sort, order
         )
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -1152,7 +1170,7 @@ async def bucket_inventory_api(
 async def capabilities_api(request: Request, user: str = Depends(require_login)):
     del user
     try:
-        return await asyncio.to_thread(_capabilities, selected_cluster(request))
+        return await asyncio.to_thread(_cached_capabilities, selected_cluster(request))
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -1612,7 +1630,7 @@ async def bucket_inventory_page(
     inventory = {"items": [], "query": query.strip(), "page": page, "page_count": 1, "total": 0}
     error = None
     try:
-        inventory = await asyncio.to_thread(_inventory, cluster, query, page, owner, quota, usage, sort, order)
+        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page, owner, quota, usage, sort, order)
     except ObjectStorageError as exc:
         error = str(exc)
     return templates.TemplateResponse(request, "object_storage_buckets.html", {

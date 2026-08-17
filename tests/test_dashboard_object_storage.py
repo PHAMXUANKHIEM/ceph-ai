@@ -63,6 +63,19 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert 'id="bucket-create-panel" class="card bucket-feature-panel" role="tabpanel" hidden' in response.text
 
 
+def test_bucket_inventory_reuses_cluster_cache(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    calls = []
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: calls.append(host) or [])
+    _login(dashboard_client)
+
+    first = dashboard_client.get("/object-storage/buckets")
+    second = dashboard_client.get("/api/object-storage/buckets")
+
+    assert first.status_code == second.status_code == 200
+    assert calls == ["10.20.1.90"]
+
+
 def test_bucket_feature_tabs_only_show_the_selected_panel():
     source = open("dashboard/static/object_storage_buckets.js", encoding="utf-8").read()
     assert 'document.querySelectorAll("[data-bucket-tab]")' in source

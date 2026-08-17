@@ -84,6 +84,8 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     to exist, unique per test, cleaned up by pytest automatically) makes
     the suite depend on nothing outside its own tmp dir.
     """
+    from shared.object_storage_cache import clear as clear_object_storage_cache
+    clear_object_storage_cache()
     test_ssh_key_path = tmp_path / "ceph_lab_watcher_test_key"
     test_ssh_key_path.write_text("fake test-only private key, never used for a real SSH connection\n")
 

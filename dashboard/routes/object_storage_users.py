@@ -20,6 +20,7 @@ from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared import db
 from shared.models import ObjectStorageAuditEntry
+from shared.object_storage_cache import get_or_load, invalidate as invalidate_object_storage_cache
 from watcher.rgw_access_log import (
     RgwLogError,
     fetch_s3_user_info,
@@ -124,14 +125,18 @@ def _start_audit(cluster_id: str, actor: str, action: str, uid: str, preview: st
 
 
 def _finish_audit(audit_id: str, result: str, error: str | None = None) -> None:
+    cluster_id = None
     with db.SessionLocal() as session:
         row = session.get(ObjectStorageAuditEntry, audit_id)
         if row is None:
             return
+        cluster_id = row.cluster_id
         row.result = result
         row.error_message = error
         row.completed_at = datetime.utcnow()
         session.commit()
+    if result == "succeeded" and cluster_id:
+        invalidate_object_storage_cache(cluster_id, "s3-users")
 
 
 def _audit_rows(cluster_id: str, limit: int = 50) -> list[dict]:
@@ -223,6 +228,11 @@ def _inventory(cluster, query: str, page: int) -> dict:
             "page_count": page_count, "total": total}
 
 
+def _cached_inventory(cluster, query: str, page: int) -> dict:
+    key = f"{cluster.id}:{query}:{page}"
+    return get_or_load("s3-users", key, lambda: _inventory(cluster, query, page))
+
+
 def _detail(cluster, uid: str) -> dict:
     uid = _valid_uid(uid)
     host = _host(cluster)
@@ -237,7 +247,7 @@ async def users_api(request: Request, query: str = Query("", max_length=MAX_QUER
                     page: int = Query(1, ge=1), user: str = Depends(require_login)):
     del user
     try:
-        return await asyncio.to_thread(_inventory, selected_cluster(request), query, page)
+        return await asyncio.to_thread(_cached_inventory, selected_cluster(request), query, page)
     except RgwLogError as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
 
@@ -410,7 +420,7 @@ async def users_page(request: Request, user: str = Depends(require_login),
     inventory = {"items": [], "query": query.strip(), "page": page, "page_count": 1, "total": 0}
     error = None
     try:
-        inventory = await asyncio.to_thread(_inventory, cluster, query, page)
+        inventory = await asyncio.to_thread(_cached_inventory, cluster, query, page)
     except RgwLogError as exc:
         error = str(exc)
     return templates.TemplateResponse(request, "object_storage_users.html", {
