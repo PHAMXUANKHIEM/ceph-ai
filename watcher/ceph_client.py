@@ -243,10 +243,23 @@ def query_rbd_inventory_with(
 def _normalize_rbd_image_detail(
     pool: str, image: str, info: dict | list, snapshots: dict | list,
     status: dict | list, children: dict | list, errors: dict | None = None,
+    locks: dict | list | None = None,
 ) -> dict:
     info_row = info if isinstance(info, dict) else {}
     snapshot_rows = snapshots if isinstance(snapshots, list) else snapshots.get("snapshots", []) if isinstance(snapshots, dict) else []
     watcher_rows = status.get("watchers", []) if isinstance(status, dict) else []
+    if isinstance(locks, dict) and isinstance(locks.get("lockers"), list):
+        lock_rows = locks["lockers"]
+    elif isinstance(locks, list):
+        lock_rows = locks
+    elif isinstance(locks, dict):
+        lock_rows = []
+        for locker_id, value in locks.items():
+            row = dict(value) if isinstance(value, dict) else {"value": value}
+            row.setdefault("locker_id", locker_id)
+            lock_rows.append(row)
+    else:
+        lock_rows = []
     child_rows = children if isinstance(children, list) else children.get("children", []) if isinstance(children, dict) else []
     features = info_row.get("features") or []
     if isinstance(features, str):
@@ -266,6 +279,15 @@ def _normalize_rbd_image_detail(
         "parent": parent,
         "snapshots": snapshot_rows if isinstance(snapshot_rows, list) else [],
         "watchers": watcher_rows if isinstance(watcher_rows, list) else [],
+        "locks": lock_rows,
+        "attachment_summary": {
+            "attached": bool(watcher_rows or lock_rows),
+            "watcher_count": len(watcher_rows) if isinstance(watcher_rows, list) else 0,
+            "lock_count": len(lock_rows),
+            "management_source": "unknown",
+            "mutation_supported": False,
+            "blocked_reason": "Chưa xác định Cinder/CSI source of truth.",
+        },
         "children": child_rows if isinstance(child_rows, list) else [],
         "partial_errors": errors or {},
     }
@@ -283,12 +305,13 @@ def query_rbd_image_detail(pool: str, image: str) -> dict:
             errors[section] = str(exc)
             return []
 
+    locks = optional("locks", f"rbd lock list {spec}")
     return _normalize_rbd_image_detail(
         pool, image, info,
         optional("snapshots", f"rbd snap ls {spec}"),
         optional("watchers", f"rbd status {spec}"),
         optional("children", f"rbd children {spec}"),
-        errors,
+        errors, locks,
     )
 
 
@@ -308,12 +331,13 @@ def query_rbd_image_detail_with(
             errors[section] = str(exc)
             return []
 
+    locks = optional("locks", f"rbd lock list {spec}")
     return _normalize_rbd_image_detail(
         pool, image, info,
         optional("snapshots", f"rbd snap ls {spec}"),
         optional("watchers", f"rbd status {spec}"),
         optional("children", f"rbd children {spec}"),
-        errors,
+        errors, locks,
     )
 
 

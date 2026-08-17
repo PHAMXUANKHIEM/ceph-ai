@@ -954,12 +954,16 @@ def test_normalize_rbd_image_detail_exposes_dependencies_and_watchers():
         [{"id": 1, "name": "snap-a"}],
         {"watchers": [{"address": "10.0.0.8:0/1", "client": "client.1"}]},
         ["vms/child"],
+        locks={"client.1": {"cookie": "auto 1"}},
     )
 
     assert detail["image_id"] == "img-2"
     assert detail["parent"] == {"pool": "vms", "image": "base"}
     assert detail["snapshots"][0]["name"] == "snap-a"
     assert detail["watchers"][0]["client"] == "client.1"
+    assert detail["locks"] == [{"cookie": "auto 1", "locker_id": "client.1"}]
+    assert detail["attachment_summary"]["attached"] is True
+    assert detail["attachment_summary"]["mutation_supported"] is False
     assert detail["children"] == ["vms/child"]
 
 
@@ -977,7 +981,7 @@ def test_query_rbd_image_detail_keeps_info_when_optional_section_fails(monkeypat
 
     assert detail["image_id"] == "img-1"
     assert detail["watchers"] == [{"client": "client.7"}]
-    assert set(detail["partial_errors"]) == {"snapshots", "children"}
+    assert set(detail["partial_errors"]) == {"snapshots", "children", "locks"}
 
 
 def test_normalize_rbd_pool_overview_combines_durability_and_usage():

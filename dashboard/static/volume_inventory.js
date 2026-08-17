@@ -168,8 +168,22 @@
       return String(item.name || item.snap_name || item.id || "snapshot") +
         (item.size ? " · " + bytes(item.size) : "");
     });
-    addListSection(detail, "Watcher / Attachment", data.watchers || [], function (item) {
+    var attachment = data.attachment_summary || {};
+    var attachmentGuard = document.createElement("p");
+    attachmentGuard.className = attachment.attached ? "error" : "hint";
+    attachmentGuard.textContent = "Attachment guard: " +
+      (attachment.attached ? "đang có consumer" : "không phát hiện consumer") +
+      " · Watcher: " + Number(attachment.watcher_count || 0) +
+      " · Lock: " + Number(attachment.lock_count || 0) +
+      " · Control plane: " + (attachment.management_source || "unknown") +
+      " · Attach/detach trực tiếp: " + (attachment.mutation_supported ? "cho phép" : "đã khóa");
+    detail.appendChild(attachmentGuard);
+    addListSection(detail, "Watcher", data.watchers || [], function (item) {
       return [item.address, item.client, item.cookie].filter(Boolean).join(" · ") || JSON.stringify(item);
+    });
+    addListSection(detail, "Lock", data.locks || [], function (item) {
+      return [item.locker_id, item.locker, item.client, item.address, item.cookie, item.description]
+        .filter(Boolean).join(" · ") || JSON.stringify(item);
     });
     addListSection(detail, "Children / Clone", data.children || [], function (item) {
       return typeof item === "string" ? item : String(item.pool || "") + "/" + String(item.image || item.name || "");

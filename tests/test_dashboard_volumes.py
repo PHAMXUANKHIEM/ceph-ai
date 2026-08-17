@@ -1485,6 +1485,10 @@ def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(d
             "features": ["layering"], "flags": [], "created_at": None,
             "parent": None, "snapshots": [{"name": "daily"}],
             "watchers": [{"client": "client.1"}], "children": ["vms/clone"],
+            "locks": [{"locker_id": "client.1"}],
+            "attachment_summary": {"attached": True, "watcher_count": 1,
+                                   "lock_count": 1, "management_source": "unknown",
+                                   "mutation_supported": False},
         },
     )
     _login(dashboard_client)
@@ -1496,6 +1500,7 @@ def test_volume_inventory_detail_rejects_invalid_name_and_returns_dependencies(d
     assert response.status_code == 200
     assert response.json()["snapshots"] == [{"name": "daily"}]
     assert response.json()["children"] == ["vms/clone"]
+    assert response.json()["attachment_summary"]["mutation_supported"] is False
 
 
 def test_volume_inventory_api_is_read_only_for_non_admin_and_surfaces_backend_error(dashboard_client, monkeypatch):

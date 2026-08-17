@@ -123,7 +123,7 @@ một “tính năng hoàn thành” nếu executor hoặc guard chưa có.
 |---:|---|---|---|---|
 | 1 | **BS-01 Inventory read-only `[~]`** | `rbd ls/info/du/status`, volume detail, size/used, feature, watcher/lock, snapshot và parent/child; search/filter/pagination theo cluster/pool. | Không | Test default/secondary/inactive cluster, timeout/partial error và không cross-cluster. |
 | 2 | **BS-02 Volume CRUD nền tảng `[~]`** | Create, expand-only resize, rename, move-to-trash và restore-from-trash; quota/capacity/dependency preflight, idempotency và reconciliation. | BS-01 | Mọi write qua Worker; retry không tạo trùng; delete bị chặn khi busy/dependent. |
-| 3 | **BS-03 Attachment** | Inventory watcher/lock và mapping consumer; attach/detach qua control plane được hỗ trợ, exclusive/shared guard và force-detach approval. | BS-01, Cinder/CSI discovery | Không mutate trực tiếp volume do Cinder/CSI quản lý; có post-check consumer. |
+| 3 | **BS-03 Attachment `[~]`** | Inventory watcher/lock và mapping consumer; attach/detach qua control plane được hỗ trợ, exclusive/shared guard và force-detach approval. | BS-01, Cinder/CSI discovery | Không mutate trực tiếp volume do Cinder/CSI quản lý; có post-check consumer. |
 | 4 | **BS-04 Snapshot/Clone** | Snapshot thủ công + lịch/retention, restore-as-new mặc định, rollback in-place có guard, clone, dependency graph và flatten. | BS-01, BS-02 | Không xóa protected/parent snapshot; scheduler dedup; rollback yêu cầu detached. |
 | 5 | **BS-05 Restore an toàn** | Chọn full/diff recovery point, restore sang volume mới, preflight capacity/compatibility, verify size/read và promote có approval. | BS-02, backup hiện có | Không ghi đè production mặc định; evidence ghi rõ chain và post-check. |
 | 6 | **BS-06 QoS/Capacity** | Throughput, queue depth, latency percentile, used/provisioned/freshness; QoS template/diff/rollback; dự báo 80/90/95%. | BS-01 và metric schema mới | Counter reset/stale metric được xử lý; QoS unsupported fail-closed. |
@@ -243,9 +243,12 @@ cluster đang chọn, không có cross-cluster leak hoặc fallback sample.
     và cảnh báo filesystem/guest phải được mở rộng riêng.
   - Đã chặn shrink ở API và command builder, kiểm tra phần dung lượng tăng thêm
     với max-available, đồng thời post-check bằng `rbd info` sau lệnh resize.
-- [ ] **2.3 Attach/detach**
+- [~] **2.3 Attach/detach**
   - Hỗ trợ consumer đã đăng ký; kiểm tra exclusive/shared mode, watcher/lock,
     multipath và trạng thái consumer trước thao tác.
+  - Đã có inventory watcher + exclusive lock và attachment summary trong Volume
+    Detail. Management source hiện để `unknown` và mutation fail-closed; chưa có
+    attach/detach cho tới khi hoàn tất discovery Cinder/CSI source of truth.
 - [~] **2.4 Rename/move/copy theo capability**
   - Preview downtime, dung lượng và dependency; copy/move là async job có tiến độ.
   - Đã có rename cùng pool qua Worker, chặn watcher/tên đích tồn tại và dedup
@@ -477,6 +480,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | BS-02 Idempotency | Hoàn thành code | Create/resize/rename/trash/restore nhận `Idempotency-Key` 8–128 ký tự; key scope theo user, cluster và exact intent. Retry trả Action/status cũ trước Ceph preflight; tái dùng key cho intent khác trả 409. UI tự sinh UUID cho mutation. | `7 passed`; `py_compile`, hai `node --check` và `git diff --check` đạt. | Tiếp theo scanner cho Action EXECUTING bị kẹt sau timeout/restart. |
 | 2026-08-17 | BS-02 Stuck Action Scanner | Hoàn thành code | Mỗi Worker poll tìm RBD Action APPROVED có Incident EXECUTING và `updated_at` quá 10 phút; chạy lệnh `rbd info`/`trash ls` read-only để kết luận. State khớp đóng EXECUTED, lệch đóng FAILED, lỗi kết nối giữ nguyên để retry; không replay mutation. | `9 passed`; `py_compile` và `git diff --check` đạt. | Tiếp theo TTL recycle policy; live Ceph vẫn cần nghiệm thu. |
 | 2026-08-17 | BS-02 Trash TTL | Hoàn thành code | Thêm `RBD_TRASH_RETENTION_DAYS` mặc định 7 ngày; tính hạn từ `deletion_time`, hiển thị số ngày còn lại. Item thiếu timestamp hoặc chưa hết TTL không có nút hard-delete; API đơn lẻ và purge-all cùng enforce lại server-side. | Nhóm Trash `27 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | BS-02 code nền tảng đã đủ; tiếp theo live Ceph acceptance hoặc BS-03 Attachment. |
+| 2026-08-17 | BS-03 Attachment Inventory | Đang làm | Volume Detail đọc thêm `rbd lock list`, chuẩn hóa watcher/lock và attachment summary; UI hiển thị attachment guard. Khi chưa xác định Cinder/CSI source of truth, management source là `unknown` và mutation bị khóa fail-closed. | Parser detail `2 passed`; nhóm Volume Inventory `6 passed`; `py_compile`, `node --check` và `git diff --check` đạt. | Tiếp theo discovery/mapping consumer Cinder/CSI; chỉ mở attach/detach qua control plane đã xác minh. |
 
 ## Ghi chú bàn giao
 
