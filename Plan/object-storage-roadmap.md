@@ -130,8 +130,15 @@ thể gọi API ghi dù cố gửi request trực tiếp.
     lúc ghi object, không phải tham số bucket-create. Quota bucket được giữ ở
     mục 3.2 để có preview/rollback độc lập, tránh báo create thất bại khi
     bucket thực tế đã tồn tại.
-- [ ] **3.2 Cập nhật quota, versioning và object-lock/retention** khi RGW hỗ
+- [x] **3.2 Cập nhật quota, versioning và object-lock/retention** khi RGW hỗ
   trợ; capability detection phải ẩn/khóa tính năng không được hỗ trợ.
+  - Capability được lấy sau live `ceph versions` và liên kết đúng tài liệu
+    release. Bucket quota dùng allowlist `radosgw-admin quota
+    set|enable|disable --quota-scope=bucket --bucket=...`; versioning và
+    default retention dùng S3 API với credential tạm của owner. Object Lock
+    chỉ có thể bật lúc CreateBucket; retention từ chối sớm nếu metadata xác
+    nhận bucket không bật Object Lock, còn trạng thái metadata `unknown` được
+    hiển thị trung thực và để RGW quyết định thay vì suy đoán.
 - [ ] **3.3 Lifecycle policy**: editor có schema validation, preview rule,
   dry-run số object bị ảnh hưởng và lịch sử thay đổi.
 - [ ] **3.4 Bucket policy/ACL**: policy JSON validator, kiểm tra public access
@@ -234,6 +241,7 @@ Khi bắt đầu một mục, đổi checkbox cha thành `[~]`. Khi hoàn thành
 | 2026-08-17 | 2.4 | Đang làm | Thêm API và UI hai bước cho quota set/enable/disable, capability add/remove với allowlist, effect preview, admin RBAC, confirmation, audit và cluster scope. | User/settings + adaptor regression: 44 passed; JS syntax và `git diff --check` sạch. | Chưa commit; sau khi merge chuyển sang regression gate 2.5. |
 | 2026-08-17 | 2.5 | Đang làm | Bổ sung direct-write RBAC cho toàn bộ preview/execute API, key action cluster phụ và redaction credential ở cả HTTP error/audit failure. | S3 user/key/settings + adaptor + migration: 56 passed; JS syntax và `git diff --check` sạch. | Chưa commit; sau khi merge có thể đóng pha 2 và chuyển sang 3.1 Create Bucket. |
 | 2026-08-17 | 3.1 | Hoàn thành | Thêm create bucket hai bước qua S3 API, live Ceph release gate, DNS/endpoint/owner validation, optional Reef placement constraint, admin RBAC, persistent audit và credential tạm được thu hồi sau request. Không giả lập storage class ở bucket-create; quota chuyển sang 3.2. | Object Storage regression: 89 passed; JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 3.2 quota/versioning/object-lock capability editor. |
+| 2026-08-17 | 3.2 | Hoàn thành | Thêm editor quota/versioning/default retention hai bước; Object Lock tại CreateBucket; live release gate, owner check, temporary-key cleanup, admin RBAC và audit. Tuân theo giới hạn Reef: không bật Object Lock muộn. | Object Storage regression: 92 passed trước test retention cuối; Python/JS syntax và `git diff --check` sạch. | Chưa commit; tiếp theo 3.3 Lifecycle policy. |
 
 ## Ghi chú bàn giao
 

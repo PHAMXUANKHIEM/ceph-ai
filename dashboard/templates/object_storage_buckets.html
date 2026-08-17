@@ -81,10 +81,26 @@
         <label>RGW S3 endpoint<input id="bucket-create-endpoint" type="url" required placeholder="https://rgw.example.com"></label>
         <label>Zonegroup API name<input id="bucket-create-api-name" maxlength="128" placeholder="default"></label>
         <label>Placement target<input id="bucket-create-placement" maxlength="128" placeholder="new-placement"></label>
+        <label><input id="bucket-create-object-lock" type="checkbox"> Bật Object Lock ngay khi tạo (không thể bật muộn)</label>
         <button class="btn btn-primary btn-sm" type="submit">Xem trước</button>
       </form>
       <div id="bucket-create-preview" hidden><p id="bucket-create-summary"></p><label>Nhập lại tên bucket<input id="bucket-create-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-create-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
       <p id="bucket-create-status" class="hint"></p>
+    </div></section>
+    <section class="card"><div class="card-header"><div><h2>Quota, Versioning &amp; Retention</h2><p class="hint">Mọi thay đổi đều kiểm tra live Ceph capability, preview và yêu cầu nhập lại tên bucket. Versioning/retention dùng credential tạm của owner.</p></div></div><div class="card-body">
+      <form id="bucket-governance-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
+        <label>Thao tác<select id="bucket-governance-action"><option value="quota_set">Đặt quota</option><option value="quota_enable">Bật quota</option><option value="quota_disable">Tắt quota</option><option value="versioning_enable">Bật versioning</option><option value="versioning_suspend">Suspend versioning</option><option value="retention_set">Đặt default retention</option></select></label>
+        <label>Bucket<input id="bucket-governance-name" maxlength="63" required></label>
+        <label data-governance-s3>Owner UID<input id="bucket-governance-owner" maxlength="128"></label>
+        <label data-governance-s3>RGW S3 endpoint<input id="bucket-governance-endpoint" type="url" placeholder="https://rgw.example.com"></label>
+        <label data-governance-quota>Max size (bytes, -1 bỏ giới hạn)<input id="bucket-governance-size" type="number" value="-1"></label>
+        <label data-governance-quota>Max objects (-1 bỏ giới hạn)<input id="bucket-governance-objects" type="number" value="-1"></label>
+        <label data-governance-retention>Retention mode<select id="bucket-governance-mode"><option value="GOVERNANCE">GOVERNANCE</option><option value="COMPLIANCE">COMPLIANCE</option></select></label>
+        <label data-governance-retention>Số ngày<input id="bucket-governance-days" type="number" min="1" max="36500" value="30"></label>
+        <button class="btn btn-primary btn-sm" type="submit">Xem trước</button>
+      </form>
+      <div id="bucket-governance-preview" hidden><p id="bucket-governance-summary"></p><label>Nhập lại tên bucket<input id="bucket-governance-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-governance-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
+      <p id="bucket-governance-status" class="hint"></p>
     </div></section>{% endif %}
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>

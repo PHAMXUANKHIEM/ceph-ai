@@ -502,6 +502,42 @@ def execute_s3_user_setting_with(host: str, action: str, uid: str, params: dict,
         raise RgwLogError(f"Không cập nhật được quota/capability trên {host}: {exc}") from exc
 
 
+def build_bucket_quota_command(action: str, bucket: str, max_size_bytes: int = -1,
+                               max_objects: int = -1) -> str:
+    """Closed Reef-compatible command builder for one bucket's quota."""
+    if action not in {"set", "enable", "disable"}:
+        raise ValueError("Unsupported bucket quota action")
+    if not bucket or len(bucket) > 255 or "/" in bucket or any(ord(char) < 32 for char in bucket):
+        raise ValueError("Invalid bucket name")
+    command = f"radosgw-admin quota {action} --quota-scope=bucket --bucket={shlex.quote(bucket)}"
+    if action == "set":
+        if max_size_bytes != -1 and max_size_bytes <= 0 or max_objects != -1 and max_objects <= 0:
+            raise ValueError("Quota limits must be positive or -1")
+        command += f" --max-size={int(max_size_bytes)} --max-objects={int(max_objects)}"
+    return command
+
+
+def execute_bucket_quota(host: str, action: str, bucket: str,
+                         max_size_bytes: int = -1, max_objects: int = -1) -> None:
+    inner = build_bucket_quota_command(action, bucket, max_size_bytes, max_objects)
+    command = ceph_client.build_exec_command(settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner)
+    try:
+        run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Không cập nhật được quota bucket trên {host}: {exc}") from exc
+
+
+def execute_bucket_quota_with(host: str, action: str, bucket: str, max_size_bytes: int,
+                              max_objects: int, ssh_user: str, ssh_key_path: str,
+                              exec_mode: str, rgw_container_name: str) -> None:
+    inner = build_bucket_quota_command(action, bucket, max_size_bytes, max_objects)
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Không cập nhật được quota bucket trên {host}: {exc}") from exc
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately

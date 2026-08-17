@@ -329,6 +329,22 @@ def test_s3_user_setting_builder_enforces_quota_and_capability_allowlists():
         pass
 
 
+def test_bucket_quota_builder_is_closed_and_targets_one_bucket():
+    assert ral.build_bucket_quota_command("set", "team-archive", 1024, 50) == (
+        "radosgw-admin quota set --quota-scope=bucket --bucket=team-archive "
+        "--max-size=1024 --max-objects=50"
+    )
+    assert ral.build_bucket_quota_command("enable", "team-archive") == (
+        "radosgw-admin quota enable --quota-scope=bucket --bucket=team-archive"
+    )
+    for action, size in (("delete", 1), ("set", 0)):
+        try:
+            ral.build_bucket_quota_command(action, "team-archive", size, 1)
+            assert False, "unsupported quota input must fail closed"
+        except ValueError:
+            pass
+
+
 def test_fetch_bucket_stats_docker_mode_requires_container_name(monkeypatch):
     from config.settings import settings
 

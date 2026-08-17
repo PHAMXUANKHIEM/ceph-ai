@@ -44,6 +44,9 @@ from watcher.rgw_access_log import (
     fetch_s3_user_info_with,
     revoke_s3_access_key,
     revoke_s3_access_key_with,
+    build_bucket_quota_command,
+    execute_bucket_quota,
+    execute_bucket_quota_with,
 )
 
 
@@ -81,6 +84,11 @@ def _capabilities(cluster) -> dict:
     release = codename_for_version(version)
     if not release:
         raise ObjectStorageError(f"Chưa có capability matrix cho Ceph {version}.")
+    try:
+        major = int(str(version).split(".", 1)[0])
+    except ValueError as exc:
+        raise ObjectStorageError(f"Không đọc được major version Ceph từ {version}.") from exc
+    object_lock_supported = major >= 15  # introduced in Ceph Octopus
     return {
         "ceph_version": version,
         "ceph_release": release,
@@ -92,6 +100,14 @@ def _capabilities(cluster) -> dict:
             "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/",
             "placement_supported": True,
             "storage_class_at_bucket_create": False,
+        },
+        "bucket_governance": {
+            "quota": True,
+            "versioning": True,
+            "object_lock_at_create": object_lock_supported,
+            "object_lock_after_create": False,
+            "default_retention": object_lock_supported,
+            "documentation": f"https://docs.ceph.com/en/{release}/radosgw/s3/bucketops/",
         },
     }
 
@@ -115,6 +131,7 @@ def _create_payload(body: dict) -> dict:
     endpoint = str(body.get("endpoint") or "").strip().rstrip("/")
     api_name = str(body.get("api_name") or "").strip()
     placement = str(body.get("placement") or "").strip()
+    object_lock = body.get("object_lock") is True
     if not _BUCKET_RE.fullmatch(name):
         raise HTTPException(status_code=400, detail="Tên bucket phải dài 3–63 ký tự và đúng định dạng DNS S3")
     if not owner or len(owner) > 128 or "/" in owner or any(ord(char) < 32 for char in owner):
@@ -127,12 +144,14 @@ def _create_payload(body: dict) -> dict:
     for value in (api_name, placement):
         if value and (len(value) > 128 or not re.fullmatch(r"[A-Za-z0-9._-]+", value)):
             raise HTTPException(status_code=400, detail="Placement không hợp lệ")
-    return {"name": name, "owner": owner, "endpoint": endpoint, "api_name": api_name, "placement": placement}
+    return {"name": name, "owner": owner, "endpoint": endpoint, "api_name": api_name,
+            "placement": placement, "object_lock": object_lock}
 
 
 def _bucket_audit_start(cluster_id: str, actor: str, payload: dict) -> str:
     location = f"{payload['api_name']}:{payload['placement']}" if payload["placement"] else "default"
-    preview = f"S3 CreateBucket name={payload['name']} owner={payload['owner']} endpoint={payload['endpoint']} placement={location}"
+    preview = (f"S3 CreateBucket name={payload['name']} owner={payload['owner']} "
+               f"endpoint={payload['endpoint']} placement={location} object_lock={payload['object_lock']}")
     with db.SessionLocal() as session:
         row = ObjectStorageAuditEntry(cluster_id=cluster_id, actor=actor, action="create_bucket",
             target_type="bucket", target_id=payload["name"], preview=preview, result="pending")
@@ -149,6 +168,15 @@ def _bucket_audit_finish(audit_id: str, result: str, error: str | None = None) -
             row.error_message = error
             row.completed_at = datetime.utcnow()
             session.commit()
+
+
+def _start_governance_audit(cluster_id: str, actor: str, payload: dict, preview: str) -> str:
+    with db.SessionLocal() as session:
+        row = ObjectStorageAuditEntry(cluster_id=cluster_id, actor=actor, action=payload["action"],
+            target_type="bucket", target_id=payload["bucket"], preview=preview, result="pending")
+        session.add(row)
+        session.commit()
+        return row.id
 
 
 def _owner_info(cluster, host: str, uid: str) -> dict | None:
@@ -195,6 +223,8 @@ def _create_bucket(cluster, payload: dict) -> None:
             config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
         kwargs = {"Bucket": payload["name"]}
+        if payload["object_lock"]:
+            kwargs["ObjectLockEnabledForBucket"] = True
         if payload["placement"]:
             kwargs["CreateBucketConfiguration"] = {
                 "LocationConstraint": f"{payload['api_name']}:{payload['placement']}"
@@ -213,6 +243,93 @@ def _create_bucket(cluster, payload: dict) -> None:
         ) from cleanup_exc
     if operation_error:
         raise ObjectStorageError(f"S3 CreateBucket thất bại: {_safe_error(operation_error)}") from operation_error
+
+
+def _ensure_capability(payload: dict, capability: dict) -> None:
+    governance = capability["bucket_governance"]
+    if payload.get("object_lock") and not governance["object_lock_at_create"]:
+        raise HTTPException(status_code=409, detail="Ceph release này không hỗ trợ Object Lock khi tạo bucket")
+    if payload.get("action") == "retention_set" and not governance["default_retention"]:
+        raise HTTPException(status_code=409, detail="Ceph release này không hỗ trợ Object Lock retention")
+
+
+def _governance_payload(body: dict) -> dict:
+    action = str(body.get("action") or "")
+    if action not in {"quota_set", "quota_enable", "quota_disable", "versioning_enable",
+                      "versioning_suspend", "retention_set"}:
+        raise HTTPException(status_code=400, detail="Thao tác quản trị bucket không hợp lệ")
+    bucket = str(body.get("bucket") or "").strip()
+    if not _BUCKET_RE.fullmatch(bucket):
+        raise HTTPException(status_code=400, detail="Tên bucket không hợp lệ")
+    payload = {"action": action, "bucket": bucket}
+    if action == "quota_set":
+        try:
+            payload["max_size_bytes"] = int(body.get("max_size_bytes"))
+            payload["max_objects"] = int(body.get("max_objects"))
+            build_bucket_quota_command("set", bucket, payload["max_size_bytes"], payload["max_objects"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Quota phải là số dương hoặc -1") from exc
+    if action.startswith("versioning_") or action == "retention_set":
+        base = _create_payload({"name": bucket, "owner": body.get("owner"),
+                                "endpoint": body.get("endpoint")})
+        payload.update(owner=base["owner"], endpoint=base["endpoint"])
+    if action == "retention_set":
+        mode = str(body.get("mode") or "").upper()
+        try:
+            days = int(body.get("days"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Số ngày retention không hợp lệ") from exc
+        if mode not in {"GOVERNANCE", "COMPLIANCE"} or not 1 <= days <= 36500:
+            raise HTTPException(status_code=400, detail="Retention cần mode hợp lệ và 1–36500 ngày")
+        payload.update(mode=mode, days=days)
+    return payload
+
+
+def _execute_governance(cluster, payload: dict) -> None:
+    hosts = _rgw_hosts(cluster)
+    if not hosts:
+        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+    host = hosts[0]
+    action = payload["action"]
+    if action.startswith("quota_"):
+        verb = action.removeprefix("quota_")
+        size = int(payload.get("max_size_bytes", -1))
+        objects = int(payload.get("max_objects", -1))
+        if cluster.is_default:
+            execute_bucket_quota(host, verb, payload["bucket"], size, objects)
+        else:
+            ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+            execute_bucket_quota_with(host, verb, payload["bucket"], size, objects,
+                ssh_user, ssh_key, mode, cluster.ceph_rgw_container_name)
+        return
+    owner = _owner_info(cluster, host, payload["owner"])
+    if not owner or bool(owner.get("suspended")):
+        raise ObjectStorageError("Owner S3 không tồn tại hoặc đang bị vô hiệu hóa.")
+    credential = _temporary_key(cluster, host, payload["owner"])
+    access_key = str(credential.get("access_key") or "")
+    secret_key = str(credential.get("secret_key") or "")
+    if not access_key or not secret_key:
+        raise ObjectStorageError("RGW không trả về credential tạm hợp lệ.")
+    operation_error: Exception | None = None
+    try:
+        client = boto3.client("s3", endpoint_url=payload["endpoint"], aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
+        if action.startswith("versioning_"):
+            status = "Enabled" if action == "versioning_enable" else "Suspended"
+            client.put_bucket_versioning(Bucket=payload["bucket"], VersioningConfiguration={"Status": status})
+        else:
+            client.put_object_lock_configuration(Bucket=payload["bucket"],
+                ObjectLockConfiguration={"ObjectLockEnabled": "Enabled", "Rule": {
+                    "DefaultRetention": {"Mode": payload["mode"], "Days": payload["days"]}}})
+    except Exception as exc:
+        operation_error = exc
+    try:
+        _revoke_temporary_key(cluster, host, payload["owner"], access_key)
+    except RgwLogError as cleanup_exc:
+        raise ObjectStorageError("Không thu hồi được access key tạm; cần thu hồi key thủ công ngay.") from cleanup_exc
+    if operation_error:
+        raise ObjectStorageError(f"Thao tác S3 bucket thất bại: {_safe_error(operation_error)}") from operation_error
 
 
 def _format_bytes(value: object) -> str:
@@ -444,6 +561,7 @@ async def bucket_create_preview(request: Request, user: str = Depends(require_lo
         owner = await asyncio.to_thread(_owner_info, cluster, host, payload["owner"])
     except (ObjectStorageError, RgwLogError, IndexError) as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    _ensure_capability(payload, capability)
     if not owner:
         raise HTTPException(status_code=404, detail="Không tìm thấy owner S3 trên cluster đang chọn")
     if bool(owner.get("suspended")):
@@ -466,10 +584,13 @@ async def bucket_create_execute(request: Request, user: str = Depends(require_lo
         raise HTTPException(status_code=400, detail="Nhập chính xác tên bucket để xác nhận")
     cluster = selected_cluster(request)
     try:
-        await asyncio.to_thread(_capabilities, cluster)
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        _ensure_capability(payload, capability)
         audit_id = await asyncio.to_thread(_bucket_audit_start, cluster.id, user, payload)
     except ObjectStorageError as exc:
         raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("cannot persist create bucket audit entry")
         raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
@@ -481,6 +602,85 @@ async def bucket_create_execute(request: Request, user: str = Depends(require_lo
         raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
     return {"ok": True, "bucket": payload["name"], "owner": payload["owner"], "request_id": audit_id}
+
+
+def _governance_preview(payload: dict) -> str:
+    labels = {
+        "quota_enable": "Bật enforcement quota",
+        "quota_disable": "Tắt enforcement quota (giữ nguyên giới hạn)",
+        "versioning_enable": "Bật versioning cho object mới",
+        "versioning_suspend": "Suspend versioning; version cũ không bị xóa",
+    }
+    if payload["action"] == "quota_set":
+        return (f"Đặt quota bucket max_size={payload['max_size_bytes']} bytes, "
+                f"max_objects={payload['max_objects']}; cần enable để enforcement")
+    if payload["action"] == "retention_set":
+        return (f"Đặt default retention {payload['mode']} trong {payload['days']} ngày; "
+                "chỉ thành công nếu Object Lock đã bật lúc tạo bucket")
+    return labels[payload["action"]]
+
+
+def _validate_governance_target(payload: dict, detail: dict) -> None:
+    if payload["action"].startswith("versioning_") or payload["action"] == "retention_set":
+        if payload["owner"] != str(detail.get("owner") or ""):
+            raise HTTPException(status_code=409, detail="Owner UID không khớp owner hiện tại của bucket")
+    if payload["action"] == "retention_set" and detail.get("object_lock_status") == "disabled":
+        raise HTTPException(status_code=409, detail="Bucket không bật Object Lock lúc tạo; không thể cấu hình retention")
+
+
+@router.post("/api/object-storage/buckets/governance/preview")
+async def bucket_governance_preview(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi quản trị bucket")
+    payload = _governance_payload(await request.json())
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    _ensure_capability(payload, capability)
+    _validate_governance_target(payload, detail)
+    risk = "high" if payload["action"] in {"quota_disable", "versioning_suspend", "retention_set"} else "medium"
+    return {"action": payload["action"], "bucket": payload["bucket"], "owner": detail.get("owner"),
+        "cluster_id": cluster.id, "cluster_name": cluster.name, "ceph_version": capability["ceph_version"],
+        "ceph_release": capability["ceph_release"], "risk": risk,
+        "confirmation_required": payload["bucket"], "preview": _governance_preview(payload),
+        "object_lock_status": detail.get("object_lock_status", "unknown")}
+
+
+@router.post("/api/object-storage/buckets/governance/execute")
+async def bucket_governance_execute(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi quản trị bucket")
+    body = await request.json()
+    payload = _governance_payload(body)
+    if str(body.get("confirmation") or "") != payload["bucket"]:
+        raise HTTPException(status_code=400, detail="Nhập chính xác tên bucket để xác nhận")
+    cluster = selected_cluster(request)
+    try:
+        capability = await asyncio.to_thread(_capabilities, cluster)
+        _ensure_capability(payload, capability)
+        detail = await asyncio.to_thread(_detail, cluster, payload["bucket"])
+        _validate_governance_target(payload, detail)
+        audit_id = await asyncio.to_thread(
+            _start_governance_audit, cluster.id, user, payload, _governance_preview(payload)
+        )
+    except ObjectStorageError as exc:
+        raise HTTPException(status_code=502, detail=_safe_error(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("cannot persist bucket governance audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        await asyncio.to_thread(_execute_governance, cluster, payload)
+    except (ObjectStorageError, RgwLogError) as exc:
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
 
 
 @router.get("/api/object-storage/buckets/{bucket}")

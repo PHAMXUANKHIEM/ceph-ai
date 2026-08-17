@@ -106,7 +106,7 @@ def test_create_bucket_uses_s3_api_temporary_owner_key_and_audit(dashboard_clien
     monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: client_args.append((args, kwargs)) or FakeS3())
     _login(dashboard_client)
     body = {"name": "team-archive", "owner": "alice", "endpoint": "https://rgw.example.test",
-            "api_name": "default", "placement": "archive"}
+            "api_name": "default", "placement": "archive", "object_lock": True}
 
     preview = dashboard_client.post("/api/object-storage/buckets/actions/preview", json=body)
     executed = dashboard_client.post("/api/object-storage/buckets/actions/execute", json={**body, "confirmation": "team-archive"})
@@ -114,7 +114,8 @@ def test_create_bucket_uses_s3_api_temporary_owner_key_and_audit(dashboard_clien
     assert preview.status_code == 200
     assert preview.json()["ceph_release"] == "reef"
     assert executed.status_code == 200
-    assert created == [{"Bucket": "team-archive", "CreateBucketConfiguration": {"LocationConstraint": "default:archive"}}]
+    assert created == [{"Bucket": "team-archive", "ObjectLockEnabledForBucket": True,
+                        "CreateBucketConfiguration": {"LocationConstraint": "default:archive"}}]
     assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")]
     assert client_args[0][1]["aws_secret_access_key"] == "temp-secret"
     with db.SessionLocal() as session:
@@ -144,6 +145,82 @@ def test_create_bucket_fails_closed_before_audit_on_mixed_ceph(dashboard_client,
     assert response.status_code == 502
     with db.SessionLocal() as session:
         assert session.query(ObjectStorageAuditEntry).filter_by(action="create_bucket").count() == 0
+
+
+def test_bucket_quota_governance_uses_closed_command_and_audit(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["team-archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats", lambda host, name: {
+        **_stats(owner="alice"), "object_lock_enabled": True,
+    })
+    calls = []
+    monkeypatch.setattr(object_storage_route, "execute_bucket_quota", lambda *args: calls.append(args))
+    _login(dashboard_client)
+    body = {"action": "quota_set", "bucket": "team-archive", "max_size_bytes": 2048,
+            "max_objects": 100}
+
+    preview = dashboard_client.post("/api/object-storage/buckets/governance/preview", json=body)
+    executed = dashboard_client.post("/api/object-storage/buckets/governance/execute",
+                                     json={**body, "confirmation": "team-archive"})
+
+    assert preview.status_code == 200
+    assert "cần enable" in preview.json()["preview"]
+    assert executed.status_code == 200
+    assert calls == [("10.20.1.90", "set", "team-archive", 2048, 100)]
+    with db.SessionLocal() as session:
+        audit = session.get(ObjectStorageAuditEntry, executed.json()["request_id"])
+        assert audit.result == "succeeded"
+        assert audit.action == "quota_set"
+
+
+def test_bucket_versioning_uses_s3_owner_key_and_always_revokes(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route.ceph_client, "summarize_cluster_versions", lambda: {
+        "current_version": "18.2.4", "is_mixed": False,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list", lambda host: ["team-archive"])
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_stats", lambda host, name: {
+        **_stats(owner="alice"), "object_lock_enabled": True,
+    })
+    monkeypatch.setattr(object_storage_route, "fetch_s3_user_info", lambda host, uid: {"user_id": uid})
+    monkeypatch.setattr(object_storage_route, "create_s3_access_key", lambda host, uid: {
+        "access_key": "TEMPACCESS", "secret_key": "temp-secret",
+    })
+    revoked = []
+    monkeypatch.setattr(object_storage_route, "revoke_s3_access_key", lambda *args: revoked.append(args))
+    calls = []
+
+    class FakeS3:
+        def put_bucket_versioning(self, **kwargs):
+            calls.append(("versioning", kwargs))
+
+        def put_object_lock_configuration(self, **kwargs):
+            calls.append(("retention", kwargs))
+
+    monkeypatch.setattr(object_storage_route.boto3, "client", lambda *args, **kwargs: FakeS3())
+    _login(dashboard_client)
+    body = {"action": "versioning_enable", "bucket": "team-archive", "owner": "alice",
+            "endpoint": "https://rgw.example.test", "confirmation": "team-archive"}
+
+    response = dashboard_client.post("/api/object-storage/buckets/governance/execute", json=body)
+    retention = dashboard_client.post("/api/object-storage/buckets/governance/execute", json={
+        "action": "retention_set", "bucket": "team-archive", "owner": "alice",
+        "endpoint": "https://rgw.example.test", "mode": "COMPLIANCE", "days": 30,
+        "confirmation": "team-archive",
+    })
+
+    assert response.status_code == 200
+    assert retention.status_code == 200
+    assert calls == [
+        ("versioning", {"Bucket": "team-archive", "VersioningConfiguration": {"Status": "Enabled"}}),
+        ("retention", {"Bucket": "team-archive", "ObjectLockConfiguration": {
+            "ObjectLockEnabled": "Enabled", "Rule": {"DefaultRetention": {
+                "Mode": "COMPLIANCE", "Days": 30}}}}),
+    ]
+    assert revoked == [("10.20.1.90", "alice", "TEMPACCESS")] * 2
 
 
 def test_inventory_page_keeps_auth_and_cluster_lifecycle_navigation(dashboard_client, monkeypatch):
