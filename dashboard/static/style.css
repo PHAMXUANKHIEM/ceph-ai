@@ -1729,6 +1729,7 @@ a { transition: color 140ms ease; }
 }
 .settings-page .settings-sidebar {
   grid-area: sidebar;
+  align-self: start;
   flex-basis: 258px;
   top: 20px;
   padding: 10px;
@@ -2635,3 +2636,280 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .vitastor-remediation-item > p.vitastor-muted { color: #6f8b84; font: 650 .66rem/1.4 var(--font-mono); }
 .vitastor-remediation-item pre { margin: 8px 0 0; padding: 9px 11px; overflow-x: auto; border: 1px solid rgba(108,190,173,.12); border-radius: 7px; background: rgba(0,0,0,.28); color: #8fe5d2; font-size: .72rem; white-space: pre-wrap; }
 .vitastor-remediation-buttons { display: flex; gap: 8px; margin-top: 10px; }
+
+/* =========================================================================
+   Shared control-plane surfaces
+
+   Settings established the visual language for the product: generous but
+   deliberate spacing, quiet layered surfaces, compact technical labels and
+   a single blue focus colour.  These rules bring the rest of Ceph and the
+   separate Vitastor product into that same system without changing the DOM
+   contracts used by their route-specific JavaScript.
+   ========================================================================= */
+.app-shell .card,
+.app-shell .tabbed-sidebar,
+.app-shell .settings-sidebar {
+  border-color: #273244;
+  background: #111925;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .16);
+}
+.app-shell .card { border-radius: 14px; }
+.app-shell .card-header {
+  min-height: 58px;
+  padding: 16px 20px;
+  border-bottom-color: #273244;
+  background: #151e2b;
+}
+.app-shell .card-header h2 { color: #eff5fd; font-size: .98rem; }
+.app-shell .card-body { padding: 20px; }
+.app-shell .tabbed-sidebar { padding: 10px; border-radius: 14px; }
+.shell-workspace,
+.shell-product-status { display: none; }
+.app-shell .tabbed-nav-item {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  border-radius: 9px;
+}
+.app-shell .tabbed-nav-item.active {
+  border-color: rgba(85, 167, 255, .32);
+  background: rgba(85, 167, 255, .11);
+  box-shadow: inset 3px 0 #55a7ff;
+}
+.app-shell .login-box,
+.app-shell .audit-filters {
+  border-color: #2b384b;
+  border-radius: 11px;
+  background: rgba(7, 13, 23, .34);
+}
+.app-shell input,
+.app-shell textarea,
+.app-shell select {
+  border-color: #344258;
+  border-radius: 8px;
+  background: #0b121d;
+}
+.app-shell input:focus,
+.app-shell textarea:focus,
+.app-shell select:focus { border-color: #55a7ff; box-shadow: 0 0 0 3px rgba(85, 167, 255, .11); }
+.app-shell thead th { background: rgba(3, 9, 17, .34); color: #8292a8; }
+.app-shell tbody tr:hover td { background: rgba(85, 167, 255, .045); }
+
+/* Vitastor keeps its mint product marker, but now shares the Settings
+   control-plane shell, surface depth and responsive behaviour. */
+.vitastor-control-shell { --vitastor-rail: 252px; background: #0b0f14; }
+.vitastor-menu-toggle {
+  display: none;
+  width: 38px;
+  height: 38px;
+  padding: 9px;
+  border: 1px solid #2b384b;
+  border-radius: 10px;
+  background: #151e2b;
+  cursor: pointer;
+}
+.vitastor-menu-toggle span { display: block; height: 2px; margin: 4px 0; border-radius: 2px; background: #dbe7f4; }
+.vitastor-nav-section { display: grid; gap: 4px; }
+.vitastor-nav-section + .vitastor-nav-section { margin-top: 14px; }
+.vitastor-nav-section-label {
+  padding: 0 10px;
+  color: #596779;
+  font-size: .63rem;
+  font-weight: 750;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.vitastor-nav-section-items { display: grid; gap: 3px; }
+.vitastor-nav-icon {
+  width: 21px;
+  height: 21px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 21px;
+  color: #718096;
+  font-family: var(--font-mono);
+  font-size: .8rem;
+}
+.vitastor-control-shell .vitastor-shell,
+.vitastor-control-shell > .vitastor-settings-page {
+  width: auto;
+  max-width: none;
+  min-height: 100vh;
+  margin-left: var(--vitastor-rail);
+  padding: 32px clamp(24px, 3vw, 48px) 52px;
+}
+.vitastor-control-shell > .vitastor-settings-page { align-items: start; }
+.vitastor-control-shell .vitastor-workspace { min-height: 100vh; margin-left: var(--vitastor-rail); }
+.vitastor-control-shell .vitastor-dashboard { padding: 30px clamp(24px, 3vw, 48px) 52px; }
+.vitastor-control-shell .vitastor-dashboard-head,
+.vitastor-control-shell .vitastor-section-heading {
+  padding-bottom: 20px;
+  border-bottom: 1px solid #273244;
+}
+.vitastor-control-shell .vitastor-section-heading { margin-bottom: 24px; }
+.vitastor-control-shell .vitastor-section-heading h1,
+.vitastor-control-shell .vitastor-dashboard-head h1 { color: #eff5fd; letter-spacing: -.035em; }
+.vitastor-control-shell .product-suite-label { color: #6bb8ff; }
+.vitastor-control-shell .vitastor-section-heading p,
+.vitastor-control-shell .vitastor-dashboard-head p { color: #8390a2; }
+.vitastor-control-shell .vitastor-panel,
+.vitastor-control-shell .vitastor-health-card,
+.vitastor-control-shell .vitastor-stat-card,
+.vitastor-control-shell .vitastor-monitor-card {
+  border-color: #273244;
+  background: #111925;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .16);
+}
+.vitastor-control-shell .vitastor-panel { border-radius: 14px; }
+.vitastor-control-shell .vitastor-panel h2,
+.vitastor-control-shell .vitastor-monitor-card h2 { color: #eff5fd; }
+.vitastor-control-shell .vitastor-panel .login-box {
+  border-color: #2b384b;
+  border-radius: 11px;
+  background: rgba(7, 13, 23, .34);
+}
+.vitastor-control-shell .vitastor-panel input,
+.vitastor-control-shell .vitastor-panel textarea,
+.vitastor-control-shell .vitastor-panel select,
+.vitastor-control-shell .vitastor-cluster-picker select,
+.vitastor-control-shell .vitastor-form-grid input,
+.vitastor-control-shell .vitastor-form-grid select {
+  border-color: #344258;
+  border-radius: 8px;
+  background: #0b121d;
+}
+.vitastor-control-shell .vitastor-panel input:focus,
+.vitastor-control-shell .vitastor-panel textarea:focus,
+.vitastor-control-shell .vitastor-panel select:focus,
+.vitastor-control-shell .vitastor-form-grid input:focus,
+.vitastor-control-shell .vitastor-form-grid select:focus { border-color: #55a7ff; box-shadow: 0 0 0 3px rgba(85, 167, 255, .11); }
+.vitastor-control-shell .vitastor-table-wrap th { background: rgba(3, 9, 17, .34); color: #8292a8; }
+.vitastor-control-shell .vitastor-table-wrap tbody tr:hover td { background: rgba(85, 167, 255, .045); }
+
+@media (min-width: 1024px) {
+  .app-shell .shell-workspace {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin: 16px 0 0;
+    padding: 11px;
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 9px;
+    background: #121923;
+  }
+  .shell-workspace > span:last-of-type,
+  .shell-product-status > span:last-of-type { display: grid; line-height: 1.25; }
+  .shell-workspace small { color: #6f7c8e; font-size: .61rem; }
+  .shell-workspace strong { color: #dce4ee; font-size: .76rem; }
+  .shell-workspace em { margin-left: auto; padding: 3px 5px; border-radius: 4px; background: rgba(50,213,131,.1); color: #62dca0; font-size: .55rem; font-style: normal; font-weight: 750; }
+  .shell-workspace-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #37c98b; box-shadow: 0 0 0 4px rgba(55,201,139,.12); }
+  .app-shell .shell-product-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-top: auto;
+    padding: 11px;
+    border-top: 1px solid rgba(255,255,255,.07);
+    border-bottom: 1px solid rgba(255,255,255,.07);
+  }
+  .shell-product-status strong { color: #aeb9c8; font-size: .65rem; }
+  .shell-product-status small { color: #5f6c7d; font-size: .59rem; }
+  .vitastor-control-shell .vitastor-topbar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: var(--vitastor-rail);
+    height: 100vh;
+    padding: 21px 14px 16px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0;
+    overflow-y: auto;
+    border-right: 1px solid #273244;
+    border-bottom: 0;
+    background: #0f141b;
+    box-shadow: 18px 0 50px rgba(0, 0, 0, .14);
+    backdrop-filter: none;
+  }
+  .vitastor-control-shell .vitastor-brand { min-height: 46px; padding: 0 9px 18px; border-bottom: 1px solid #273244; }
+  .vitastor-control-shell .vitastor-brand-mark { width: 34px; height: 34px; border-radius: 11px; }
+  .vitastor-control-shell .vitastor-nav { display: grid; margin: 0; padding: 18px 0; }
+  .vitastor-control-shell .vitastor-nav a {
+    min-height: 39px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    color: #8f9daf;
+    font-size: .82rem;
+  }
+  .vitastor-control-shell .vitastor-nav a:hover { color: #dce5ef; background: rgba(255,255,255,.035); }
+  .vitastor-control-shell .vitastor-nav a.active {
+    color: #eef7ff;
+    border-color: rgba(85, 167, 255, .25);
+    background: linear-gradient(90deg, rgba(85, 167, 255, .16), rgba(85, 167, 255, .045));
+    box-shadow: inset 3px 0 #55a7ff;
+  }
+  .vitastor-control-shell .vitastor-nav a.active .vitastor-nav-icon { color: #78b8ff; }
+  .vitastor-control-shell .topbar-user { width: 100%; margin-top: auto; padding: 14px 3px 0; border-top: 1px solid #273244; }
+  .vitastor-control-shell .vitastor-workspace > .chat-panel { top: 0; height: 100vh; }
+}
+
+@media (max-width: 1023px) {
+  .vitastor-control-shell .vitastor-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    height: var(--shell-bar);
+    padding: 0 16px;
+    border-bottom-color: #273244;
+    background: #0f141b;
+  }
+  .vitastor-control-shell .vitastor-brand { margin-right: auto; }
+  .vitastor-control-shell .vitastor-menu-toggle { display: block; order: 3; }
+  .vitastor-control-shell .vitastor-nav {
+    position: fixed;
+    z-index: 80;
+    inset: var(--shell-bar) 0 0 auto;
+    width: min(340px, 88vw);
+    height: calc(100vh - var(--shell-bar));
+    display: block;
+    margin: 0;
+    padding: 18px 16px;
+    overflow-y: auto;
+    border-left: 1px solid #273244;
+    background: #0f141b;
+    box-shadow: -24px 0 60px rgba(0,0,0,.38);
+    transform: translateX(105%);
+    transition: transform 190ms ease;
+  }
+  .vitastor-nav-open .vitastor-nav { transform: translateX(0); }
+  .vitastor-nav-open::after { content: ""; position: fixed; z-index: 70; inset: var(--shell-bar) 0 0; background: rgba(2,6,12,.62); backdrop-filter: blur(2px); }
+  .vitastor-control-shell .vitastor-nav-section + .vitastor-nav-section { margin-top: 18px; }
+  .vitastor-control-shell .vitastor-nav a { display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 10px 12px; color: #a4b1c1; }
+  .vitastor-control-shell .vitastor-nav a.active { border-radius: 9px; background: rgba(85, 167, 255, .11); color: #eff5fd; }
+  .vitastor-control-shell .topbar-user { order: 4; margin-left: 12px; }
+  .vitastor-control-shell .vitastor-shell,
+  .vitastor-control-shell > .vitastor-settings-page,
+  .vitastor-control-shell .vitastor-workspace { margin-left: 0; }
+  .vitastor-control-shell .vitastor-shell,
+  .vitastor-control-shell > .vitastor-settings-page { padding: 28px 24px 44px; }
+  .vitastor-control-shell .vitastor-dashboard { padding: 26px 24px 44px; }
+}
+
+@media (max-width: 680px) {
+  .vitastor-control-shell .vitastor-brand small,
+  .vitastor-control-shell .topbar-user .user-chip { display: none; }
+  .vitastor-control-shell .topbar-user .btn { min-width: 0; font-size: 0; }
+  .vitastor-control-shell .topbar-user .btn::before { content: "↪"; font-size: 1rem; }
+  .vitastor-control-shell .vitastor-shell,
+  .vitastor-control-shell > .vitastor-settings-page { padding: 20px 12px 36px; }
+  .vitastor-control-shell .vitastor-dashboard { padding: 20px 12px 36px; }
+  .vitastor-control-shell .vitastor-panel { padding: 16px; border-radius: 12px; }
+  .vitastor-control-shell .vitastor-section-heading h1 { font-size: 1.55rem; }
+}

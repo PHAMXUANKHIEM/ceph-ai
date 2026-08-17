@@ -169,6 +169,69 @@ def fetch_bucket_access_log_with(host: str, bucket: str | None, ssh_user: str, s
     return [row for row in records if row["bucket"] == bucket] if bucket else records
 
 
+def _bucket_names(payload: object) -> list[str]:
+    """Normalize the JSON returned by ``radosgw-admin bucket list``.
+
+    Current RGW versions return a JSON array of bucket names.  Accepting a
+    ``{"buckets": [...]}`` wrapper and name-bearing objects makes the
+    read-only inventory tolerant of older/vendor builds without ever treating
+    arbitrary values as a command argument.
+    """
+    values = payload.get("buckets", []) if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        return []
+    names = set()
+    for value in values:
+        name = value.get("bucket") or value.get("name") if isinstance(value, dict) else value
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return sorted(names, key=str.casefold)
+
+
+def fetch_bucket_list(host: str) -> list[str]:
+    """List bucket names from one configured RGW host, without S3 keys.
+
+    The command is deliberately a fixed literal.  Bucket details use the
+    existing, safely quoted ``fetch_bucket_stats`` path separately, so the
+    page can fetch stats only for the current pagination window instead of
+    launching one SSH command per bucket in the entire cluster.
+    """
+    exec_mode = settings.ceph_exec_mode
+    if exec_mode not in ("cephadm", "none") and not settings.ceph_rgw_container_name:
+        raise RgwLogError(
+            "Chưa cấu hình tên container RGW — điền ở mục \"Cấu hình RGW\" phía trên."
+        )
+    command = ceph_client.build_exec_command(
+        exec_mode, settings.ceph_rgw_container_name, "radosgw-admin bucket list --format json"
+    )
+    try:
+        output = run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được danh sách bucket trên {host}: {exc}") from exc
+    try:
+        return _bucket_names(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
+
+
+def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
+                           exec_mode: str, rgw_container_name: str) -> list[str]:
+    """Cluster-scoped variant of :func:`fetch_bucket_list`."""
+    if exec_mode not in ("cephadm", "none") and not rgw_container_name:
+        raise RgwLogError("Chưa cấu hình tên container RGW cho cụm đang chọn.")
+    command = ceph_client.build_exec_command(
+        exec_mode, rgw_container_name, "radosgw-admin bucket list --format json"
+    )
+    try:
+        output = run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Không lấy được danh sách bucket trên {host}: {exc}") from exc
+    try:
+        return _bucket_names(json.loads(output))
+    except (TypeError, ValueError) as exc:
+        raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
+
+
 def fetch_bucket_stats(host: str, bucket: str) -> dict | None:
     """Real bucket metadata (owner, creation time, object count, size,
     quota) via `radosgw-admin bucket stats --bucket=<name>` — deliberately

@@ -75,6 +75,22 @@
   menuButton.innerHTML = "<span></span><span></span><span></span>";
   topbar.querySelector(".topbar-inner").insertBefore(menuButton, topbar.querySelector(".main-nav"));
 
+  // Bring the small context/status blocks from the Settings control plane
+  // into every Ceph screen.  They are presentational only; live cluster
+  // data remains in the page itself and no status is fabricated here.
+  var workspace = document.createElement("div");
+  workspace.className = "shell-workspace";
+  workspace.innerHTML = '<span class="shell-workspace-dot" aria-hidden="true"></span><span><small>Workspace</small><strong>Ceph control plane</strong></span><em>LIVE</em>';
+  topbar.querySelector(".topbar-inner").insertBefore(workspace, menuButton);
+
+  var account = topbar.querySelector(".topbar-user");
+  if (account) {
+    var status = document.createElement("div");
+    status.className = "shell-product-status";
+    status.innerHTML = '<span class="shell-workspace-dot" aria-hidden="true"></span><span><strong>Dashboard available</strong><small>Local control plane</small></span>';
+    account.parentNode.insertBefore(status, account);
+  }
+
   function setMenu(open) {
     document.body.classList.toggle("nav-open", open);
     menuButton.setAttribute("aria-expanded", open ? "true" : "false");
@@ -101,14 +117,18 @@
   heading.querySelector("h1").textContent = title;
   // The React Pools workspace owns its breadcrumb/header inside the panel.
   // Avoid rendering the generic shell heading above it a second time.
-  if (window.location.pathname !== "/pools") main.insertBefore(heading, main.firstChild);
+  // Pools owns its own workspace heading, while Settings already has a
+  // context-specific heading in each selected panel.
+  if (window.location.pathname !== "/pools" && window.location.pathname !== "/settings") {
+    main.insertBefore(heading, main.firstChild);
+  }
 
   var iconByPath = {
     "/": "⌁", "/nodes": "◫", "/volumes": "◉", "/pools": "◎", "/trash": "♲", "/block-storage": "▱", "/settings": "⚙",
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
-    "/backups": "□", "/restore-cluster": "↶", "/bucket-access-log": "≡", "/pgs": "∷",
+    "/backups": "□", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/bucket-access-log": "≡", "/pgs": "∷",
     "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+"
   };
 
@@ -146,6 +166,13 @@
       blockStorageLink.textContent = "Block Storage";
       linksByPath["/block-storage"] = blockStorageLink;
     }
+    if (!linksByPath["/object-storage/buckets"]) {
+      var objectStorageLink = document.createElement("a");
+      objectStorageLink.href = "/object-storage/buckets";
+      objectStorageLink.className = window.location.pathname.indexOf("/object-storage/") === 0 ? "nav-link active" : "nav-link";
+      objectStorageLink.textContent = "Buckets";
+      linksByPath["/object-storage/buckets"] = objectStorageLink;
+    }
     if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/auth-user/create"]) {
       var createAuthLink = document.createElement("a");
       createAuthLink.href = "/openstack/auth-user/create";
@@ -160,7 +187,7 @@
     var navGroups = [
       { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/volumes", "/crush-map"] },
       { label: "Pool", paths: ["/pools", "/pgs", "/trash"] },
-      { label: "Object Storage", paths: ["/bucket-access-log"] },
+      { label: "Object Storage", paths: ["/object-storage/buckets", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
@@ -419,5 +446,81 @@
   document.addEventListener("click", closeAll);
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape") closeAll();
+  });
+})();
+
+(function () {
+  // Vitastor used to keep a separate horizontal navigation bar, which made
+  // moving between the two products feel like switching applications.  Reuse
+  // the same control-plane vocabulary as Ceph: a persistent rail on desktop
+  // and an explicit drawer on narrow screens.  This only reorganises the
+  // server-rendered links, so permission-aware links remain permission-aware.
+  var bar = document.querySelector(".vitastor-topbar");
+  if (!bar || document.body.classList.contains("vitastor-control-shell")) return;
+
+  document.body.classList.add("vitastor-control-shell");
+  var nav = bar.querySelector(".vitastor-nav");
+  if (!nav) return;
+
+  var menuButton = document.createElement("button");
+  menuButton.type = "button";
+  menuButton.className = "vitastor-menu-toggle";
+  menuButton.setAttribute("aria-label", "Mở menu điều hướng");
+  menuButton.setAttribute("aria-expanded", "false");
+  menuButton.innerHTML = "<span></span><span></span><span></span>";
+  bar.insertBefore(menuButton, nav);
+
+  function setMenu(open) {
+    document.body.classList.toggle("vitastor-nav-open", open);
+    menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+    menuButton.setAttribute("aria-label", open ? "Đóng menu điều hướng" : "Mở menu điều hướng");
+  }
+  menuButton.addEventListener("click", function () {
+    setMenu(!document.body.classList.contains("vitastor-nav-open"));
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") setMenu(false);
+  });
+  window.addEventListener("resize", function () {
+    if (window.innerWidth >= 1024) setMenu(false);
+  });
+
+  var links = {};
+  nav.querySelectorAll("a").forEach(function (link) {
+    links[new URL(link.href, window.location.origin).pathname] = link;
+  });
+  var groups = [
+    { label: "Monitoring", paths: ["/vitastor", "/vitastor/logs", "/vitastor/clusters"] },
+    { label: "Cluster lifecycle", paths: ["/vitastor/deploy-cluster", "/vitastor/upgrade", "/vitastor/backup", "/vitastor/delete-cluster"] },
+    { label: "Administration", paths: ["/vitastor/settings", "/vitastor/users"] }
+  ];
+  var iconByPath = {
+    "/vitastor": "⌁", "/vitastor/logs": "≡", "/vitastor/clusters": "◎",
+    "/vitastor/deploy-cluster": "+", "/vitastor/upgrade": "↑", "/vitastor/backup": "□",
+    "/vitastor/delete-cluster": "−", "/vitastor/settings": "⚙", "/vitastor/users": "♙"
+  };
+  nav.innerHTML = "";
+  groups.forEach(function (group) {
+    var available = group.paths.filter(function (path) { return links[path]; });
+    if (!available.length) return;
+    var section = document.createElement("section");
+    section.className = "vitastor-nav-section";
+    var label = document.createElement("span");
+    label.className = "vitastor-nav-section-label";
+    label.textContent = group.label;
+    var items = document.createElement("div");
+    items.className = "vitastor-nav-section-items";
+    available.forEach(function (path) {
+      var link = links[path];
+      var icon = document.createElement("span");
+      icon.className = "vitastor-nav-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = iconByPath[path] || "·";
+      link.insertBefore(icon, link.firstChild);
+      items.appendChild(link);
+    });
+    section.appendChild(label);
+    section.appendChild(items);
+    nav.appendChild(section);
   });
 })();

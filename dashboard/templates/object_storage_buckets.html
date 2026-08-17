@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Object Storage — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar"><div class="topbar-inner">
+    <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+    <nav class="main-nav">
+      <a href="/" class="nav-link">Dashboard</a><a href="/nodes" class="nav-link">Cluster</a>
+      <a href="/volumes" class="nav-link">Volumes</a><a href="/pools" class="nav-link">Pools</a>
+      <a href="/object-storage/buckets" class="nav-link active">Object Storage</a>
+      <a href="/bucket-access-log" class="nav-link">Bucket Access Log</a>
+      <a href="/block-storage" class="nav-link">Block Storage</a>
+      <a href="/settings" class="nav-link">Settings</a>
+      {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a><a href="/users" class="nav-link">Users</a><a href="/clusters" class="nav-link">Clusters</a>{% endif %}
+    </nav>
+    {% if clusters|length > 1 %}<form method="get" action="/object-storage/buckets" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>{% endfor %}</select></form>{% endif %}
+    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
+  </div></header>
+
+  <main class="page">
+    <section class="card">
+      <div class="card-header">
+        <div><h2>Bucket Overview</h2><p class="hint">Bucket RGW trên cụm <strong>{{ selected_cluster.name }}</strong>. Chỉ đọc metadata; chưa thực hiện thay đổi trên Object Storage.</p></div>
+      </div>
+      <div class="card-body">
+        <form method="get" action="/object-storage/buckets" class="audit-filters">
+          <input type="hidden" name="cluster" value="{{ selected_cluster.id }}">
+          <label>Tìm bucket<input type="search" name="query" value="{{ inventory.query }}" maxlength="120" placeholder="Tên bucket" autocomplete="off"></label>
+          <button type="submit" class="btn btn-primary btn-sm">Tìm</button>
+          {% if inventory.query %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}">Xóa bộ lọc</a>{% endif %}
+        </form>
+        {% if error %}<p class="error">Không tải được Object Storage: {{ error }}</p>{% endif %}
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Bucket</th><th>Owner</th><th>Objects</th><th>Dung lượng</th><th>Quota</th><th>Ngày tạo</th><th>Trạng thái</th></tr></thead>
+          <tbody>
+          {% for row in inventory.items %}
+            <tr>
+              <td><a href="/object-storage/buckets/{{ quote_bucket(row.name) }}?cluster={{ selected_cluster.id }}"><strong>{{ row.name }}</strong></a></td>
+              {% if row.stats_available %}
+                <td>{{ row.owner or "—" }}</td><td>{{ row.num_objects }}</td><td data-sort-value="{{ row.size_bytes }}">{{ row.size }}</td>
+                <td>{% if row.quota_enabled %}{{ row.quota_size }} / {{ row.quota_max_objects if row.quota_max_objects is not none else "—" }} objects{% else %}<span class="muted-value">Không giới hạn</span>{% endif %}</td>
+                <td>{% if row.creation_time %}<time datetime="{{ row.creation_time }}">{{ row.creation_time }}</time>{% else %}—{% endif %}</td><td><span class="status-badge healthy">Sẵn sàng</span></td>
+              {% else %}
+                <td colspan="5"><span class="muted-value">Không lấy được metadata{% if row.stats_error %}: {{ row.stats_error }}{% endif %}</span></td><td><span class="status-badge warning">Chưa đầy đủ</span></td>
+              {% endif %}
+            </tr>
+          {% else %}
+            <tr class="empty-row"><td colspan="7"><div class="empty-state"><span class="empty-icon">◫</span>{% if inventory.query %}Không tìm thấy bucket phù hợp.{% else %}Chưa có bucket trên cụm đang chọn.{% endif %}</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer">
+        <span>{{ inventory.total }} bucket{% if inventory.total != 1 %}s{% endif %} · Trang {{ inventory.page }} / {{ inventory.page_count }}</span>
+        {% if inventory.page_count > 1 %}<span>{% if inventory.page > 1 %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}&amp;query={{ quote_query(inventory.query) }}&amp;page={{ inventory.page - 1 }}">Trước</a>{% endif %}{% if inventory.page < inventory.page_count %}<a class="btn btn-ghost btn-sm" href="/object-storage/buckets?cluster={{ selected_cluster.id }}&amp;query={{ quote_query(inventory.query) }}&amp;page={{ inventory.page + 1 }}">Sau</a>{% endif %}</span>{% endif %}
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

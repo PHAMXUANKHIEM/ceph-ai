@@ -6,37 +6,45 @@
   <title>Settings — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
-<body class="settings-control-plane">
-  <div class="control-plane-shell">
-    <aside class="control-sidebar" id="control-sidebar">
-      <div class="control-brand"><span class="control-brand-mark">CA</span><span><strong>Ceph AI</strong><small>Control Plane</small></span></div>
-      <div class="control-workspace"><span class="settings-status-dot"></span><span><small>Workspace</small><strong>Production</strong></span><em>PROD</em></div>
-      <nav class="control-nav" aria-label="Điều hướng chính">
-        <a href="/"><span class="control-nav-icon">⌁</span>Overview</a>
-        <a href="/nodes"><span class="control-nav-icon">◇</span>Cluster</a>
-        <a href="/volumes"><span class="control-nav-icon">▱</span>Storage</a>
-        <a href="/settings#router"><span class="control-nav-icon control-nav-icon-text">AI</span>AI</a>
-        <a href="/nodes"><span class="control-nav-icon">◉</span>Monitoring</a>
-        {% if is_admin %}<a href="/users"><span class="control-nav-icon">♙</span>Users</a>{% endif %}
-        {% if is_admin %}<a href="/clusters"><span class="control-nav-icon">◎</span>Clusters</a>{% endif %}
-        {% if is_admin %}<a href="/crush-map"><span class="control-nav-icon">⌘</span>CRUSH Map</a>{% endif %}
-        <a href="/settings" class="active"><span class="control-nav-icon">⚙</span>Settings</a>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+          </div>
+        </div>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu"><a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a></div>
+        </div>
+        <a href="/settings" class="nav-link active">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
+        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
+        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
       </nav>
-      <div class="control-sidebar-footer">
-        <div class="control-system-status"><span class="settings-status-dot"></span><span><strong>All systems operational</strong><small>Control plane healthy</small></span></div>
-        <div class="control-user"><span class="control-avatar">{{ user[:1]|upper }}</span><span><strong>{{ user }}</strong><small>{{ 'Administrator' if is_admin else 'Operator' }}</small></span><form method="post" action="/logout"><button type="submit" aria-label="Đăng xuất">↗</button></form></div>
-        <span class="control-version">Ceph AI · v1.0</span>
-      </div>
-    </aside>
-    <div class="control-main">
-      <header class="control-mobile-header"><button type="button" class="control-menu-toggle" aria-controls="control-sidebar" aria-expanded="false">☰</button><strong>Ceph AI</strong><span>Settings</span></header>
-  <main class="settings-page">
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+  <main class="page settings-page">
     <nav class="settings-sidebar">
-      <div class="settings-sidebar-heading">
-        <span class="settings-sidebar-kicker">CEPH-AI</span>
-        <strong>Settings</strong>
-        <small>Manage infrastructure, integrations and system operations.</small>
-      </div>
       {% if is_admin %}
       <section class="settings-nav-group" data-settings-group="system">
         <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'database', 'server-log'] else 'false' }}">
@@ -832,8 +840,6 @@
     </section>
     </div>
   </main>
-    </div>
-  </div>
   <script src="/static/settings.js?v={{ static_version }}"></script>
   <script src="/static/settings_logs.js?v={{ static_version }}"></script>
   <script src="/static/app.js?v={{ static_version }}"></script>

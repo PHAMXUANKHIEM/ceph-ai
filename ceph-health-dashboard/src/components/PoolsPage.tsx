@@ -41,12 +41,6 @@ type PoolsBootstrap = {
   queryError?: string | null;
 };
 
-const samplePools: PoolRow[] = [
-  { name: ".mgr", redundancy: "3 replicas", size: 3, protected: true, pgs: 1, crush_rule: "replicated_rule", used: "925.7 kB", objects: 2, read_iops: 0, write_iops: 0 },
-  { name: "images", redundancy: "3 replicas", size: 3, protected: false, pgs: 16, crush_rule: "replicated_rule", used: "0 B", objects: 0, read_iops: 0, write_iops: 0 },
-  { name: "volumes", redundancy: "3 replicas", size: 3, protected: false, pgs: 16, crush_rule: "replicated_rule", used: "4.67 GB", objects: 776, read_iops: 0, write_iops: 0 },
-];
-
 function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, onClick }: { icon: React.ElementType; label: string; danger?: boolean; disabled?: boolean; onClick?: () => void }) {
   return (
     <button
@@ -64,7 +58,7 @@ function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, on
 }
 
 export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
-  const rows = bootstrap.pools.length ? bootstrap.pools : samplePools;
+  const rows = bootstrap.pools;
   const initial = bootstrap.selectedPool || (rows.some((row) => row.name === "test") ? "test" : rows[0]?.name || "");
   const [selected, setSelected] = useState(initial);
   const [createOpen, setCreateOpen] = useState(false);
@@ -148,7 +142,13 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row, index) => {
+              {filteredRows.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-3 py-12 text-center text-slate-500">
+                    {rows.length === 0 ? "Chưa có pool." : "Không tìm thấy pool phù hợp."}
+                  </td>
+                </tr>
+              ) : filteredRows.map((row, index) => {
                 const active = row.name === selected;
                 return (
                   <tr
