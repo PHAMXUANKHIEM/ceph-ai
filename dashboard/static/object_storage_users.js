@@ -1,4 +1,53 @@
 (function () {
+  var main = document.querySelector("main.page");
+  if (!main) return;
+  var panels = Array.prototype.slice.call(main.querySelectorAll(":scope > section.card"));
+  if (!panels.length) return;
+  var labels = ["Danh sách S3 user", "Quản lý S3 user", "Access-key lifecycle", "Object Storage Audit"];
+  var tabs = document.createElement("nav");
+  tabs.className = "bucket-feature-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "Tính năng S3 Users");
+
+  function activate(selected) {
+    Array.prototype.forEach.call(tabs.querySelectorAll("[data-s3-user-tab]"), function (tab) {
+      var active = tab === selected;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach(function (panel) { panel.hidden = panel.id !== selected.dataset.s3UserTab; });
+  }
+
+  panels.forEach(function (panel, index) {
+    var id = "s3-user-feature-" + index;
+    var button = document.createElement("button");
+    panel.id = id;
+    panel.classList.add("bucket-feature-panel");
+    panel.setAttribute("role", "tabpanel");
+    button.type = "button";
+    button.className = "bucket-feature-tab";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-controls", id);
+    button.dataset.s3UserTab = id;
+    button.textContent = labels[index] || panel.querySelector("h2").textContent;
+    button.addEventListener("click", function () { activate(button); });
+    button.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      var offset = event.key === "ArrowRight" ? 1 : -1;
+      var nextIndex = (index + offset + panels.length) % panels.length;
+      var next = tabs.querySelectorAll("[data-s3-user-tab]")[nextIndex];
+      activate(next);
+      next.focus();
+    });
+    tabs.appendChild(button);
+  });
+  main.insertBefore(tabs, panels[0]);
+  activate(tabs.querySelector("[data-s3-user-tab]"));
+})();
+
+(function () {
   var form = document.getElementById("s3-user-action-form");
   if (!form) return;
   var action = document.getElementById("s3-action");

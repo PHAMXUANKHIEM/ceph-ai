@@ -138,6 +138,14 @@ def test_admin_page_exposes_two_step_action_form(dashboard_client, monkeypatch):
     assert "Access-key lifecycle" in response.text
 
 
+def test_s3_user_features_are_presented_as_single_visible_tab():
+    source = open("dashboard/static/object_storage_users.js", encoding="utf-8").read()
+    assert 'tabs.setAttribute("role", "tablist")' in source
+    assert '["Danh sách S3 user", "Quản lý S3 user", "Access-key lifecycle", "Object Storage Audit"]' in source
+    assert "panel.hidden = panel.id !== selected.dataset.s3UserTab" in source
+    assert 'tab.setAttribute("aria-selected", String(active))' in source
+
+
 def test_execute_requires_admin_and_exact_uid_confirmation(dashboard_client, monkeypatch):
     _configure(monkeypatch)
     _login(dashboard_client)
