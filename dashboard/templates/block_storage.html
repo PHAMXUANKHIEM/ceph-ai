@@ -25,7 +25,7 @@
     <section class="card block-storage-card">
       <div class="card-header block-storage-header">
         <div><h2>Block Storage</h2><p class="hint">RBD images trên cụm <strong>{{ selected_cluster.name }}</strong>, bao gồm namespace mặc định và namespace riêng.</p></div>
-        <span class="summary-chip">{{ images|length }} image{% if images|length != 1 %}s{% endif %}</span>
+        <span class="summary-chip">{{ total_images }} image{% if total_images != 1 %}s{% endif %}</span>
       </div>
       {% if error %}<div class="card-body"><p class="error">Không tải được Block Storage: {{ error }}</p></div>{% endif %}
       {% if images %}
@@ -36,6 +36,7 @@
           </label>
           <button type="button" class="btn btn-ghost btn-sm" id="block-storage-filter-reset" disabled>Xóa bộ lọc</button>
           <span class="hint" id="block-storage-filter-result" role="status" aria-live="polite">{{ images|length }} kết quả</span>
+          {% if total_images > overview_limit %}<span class="hint">Chỉ hiển thị {{ overview_limit }} / {{ total_images }} volume đầu tiên. Xem đầy đủ tại Volumes.</span>{% endif %}
         </form>
       </div>
       {% endif %}

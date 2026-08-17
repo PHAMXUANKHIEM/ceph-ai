@@ -15,6 +15,7 @@ from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 
 router = APIRouter()
 templates = make_templates()
+BLOCK_STORAGE_OVERVIEW_LIMIT = 10
 
 
 def _rbd_pool_names(payload: dict | list) -> list[str]:
@@ -100,9 +101,12 @@ def _query_block_storage(cluster) -> list[dict]:
 async def block_storage_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     images: list[dict] = []
+    total_images = 0
     error = None
     try:
         images = await asyncio.to_thread(_query_block_storage, cluster)
+        total_images = len(images)
+        images = images[:BLOCK_STORAGE_OVERVIEW_LIMIT]
     except CephQueryError as exc:
         error = str(exc)
     return templates.TemplateResponse(request, "block_storage.html", {
@@ -111,5 +115,7 @@ async def block_storage_page(request: Request, user: str = Depends(require_login
         "clusters": clusters,
         "selected_cluster": cluster,
         "images": images,
+        "total_images": total_images,
+        "overview_limit": BLOCK_STORAGE_OVERVIEW_LIMIT,
         "error": error,
     })
