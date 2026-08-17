@@ -19,6 +19,12 @@ templates = make_templates()
 BLOCK_STORAGE_OVERVIEW_LIMIT = 10
 
 
+class BlockStorageInventory(list):
+    def __init__(self, rows=(), *, pools=()):
+        super().__init__(rows)
+        self.pools = list(pools)
+
+
 def _rbd_pool_names(payload: dict | list) -> list[str]:
     rows = payload if isinstance(payload, list) else payload.get("pools", []) if isinstance(payload, dict) else []
     return sorted({
@@ -83,8 +89,9 @@ def _format_size(size: int) -> str:
 def _query_block_storage(cluster) -> list[dict]:
     connection = cluster_connection(cluster)
     _host, pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")
-    images: list[dict] = []
-    for pool in _rbd_pool_names(pool_payload):
+    pool_names = _rbd_pool_names(pool_payload)
+    images: list[dict] = BlockStorageInventory(pools=pool_names)
+    for pool in pool_names:
         quoted_pool = shlex.quote(pool)
         _host, namespace_payload = run_ceph_json_command_with(
             *connection, f"rbd namespace list --pool {quoted_pool}"
@@ -112,10 +119,14 @@ async def block_storage_page(
     images: list[dict] = []
     total_images = 0
     total_pages = 1
+    create_pools: list[str] = []
     error = None
     try:
         images = await asyncio.to_thread(_cached_block_storage, cluster)
         total_images = len(images)
+        create_pools = list(getattr(images, "pools", ())) or sorted({
+            str(item["pool"]) for item in images if item.get("pool")
+        })
         total_pages = max(1, (total_images + BLOCK_STORAGE_OVERVIEW_LIMIT - 1) // BLOCK_STORAGE_OVERVIEW_LIMIT)
         page = min(page, total_pages)
         start = (page - 1) * BLOCK_STORAGE_OVERVIEW_LIMIT
@@ -132,5 +143,6 @@ async def block_storage_page(
         "overview_limit": BLOCK_STORAGE_OVERVIEW_LIMIT,
         "page": page,
         "total_pages": total_pages,
+        "create_pools": create_pools,
         "error": error,
     })

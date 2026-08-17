@@ -5,6 +5,7 @@
   if (!panel) return;
 
   var pool = panel.dataset.pool;
+  var selectedImage = panel.dataset.image;
   var form = document.getElementById("volume-inventory-filter");
   var search = document.getElementById("volume-inventory-search");
   var sort = document.getElementById("volume-inventory-sort");
@@ -475,4 +476,5 @@
   next.addEventListener("click", function () { if (state.page < state.pages) { state.page += 1; loadInventory(); } });
   loadOverview();
   loadInventory();
+  if (selectedImage) loadDetail(selectedImage);
 }());

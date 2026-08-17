@@ -7,7 +7,6 @@ APP_JS = Path("dashboard/static/app.js")
 SHARED_NAV_PATHS = {
     "/",
     "/nodes",
-    "/volumes",
     "/volume-performance",
     "/bucket-access-log",
     "/openstack/auth-pool",
@@ -48,7 +47,8 @@ def test_shared_navigation_seeds_every_non_permission_gated_group():
 
     assert '"/object-storage/user-settings"' in source
     assert 'paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"]' in source
-    assert 'paths: ["/block-storage", "/volumes", "/volume-performance", "/trash"]' in source
+    assert 'paths: ["/block-storage", "/volume-performance", "/trash"]' in source
+    assert 'if (path === "/volumes") link.textContent = "Volumes"' not in source
     assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] }' in source
     assert '{ label: "Pool", paths: ["/pools", "/pgs"] }' in source
 

@@ -30,6 +30,8 @@ def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monk
     assert 'data-pool="volumes"' in response.text
     assert 'data-namespace="openstack"' in response.text
     assert "/static/block_storage.js" in response.text
+    assert 'id="block-storage-create-form"' in response.text
+    assert 'name="pool"' in response.text
     for heading in ("Name", "Pool", "Namespace", "Size"):
         assert f">{heading}<" in response.text
     assert "volume-a" in response.text
@@ -52,6 +54,7 @@ def test_block_storage_overview_paginates_ten_volumes_per_page(dashboard_client,
     assert first.status_code == 200
     assert first.text.count('class="block-storage-image-row"') == 10
     assert 'data-name="volume-09"' in first.text
+    assert 'image=volume-09' in first.text
     assert 'data-name="volume-10"' not in first.text
     assert "Trang 1 / 2" in first.text
     assert "page=2" in first.text

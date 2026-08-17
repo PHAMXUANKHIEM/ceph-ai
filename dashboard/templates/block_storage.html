@@ -11,7 +11,6 @@
     <nav class="main-nav">
       <a href="/" class="nav-link">Dashboard</a>
       <a href="/nodes" class="nav-link">Cluster</a>
-      <a href="/volumes" class="nav-link">Volumes</a>
       <a href="/block-storage" class="nav-link active">Block Storage</a>
       <a href="/bucket-access-log" class="nav-link">Bucket Access Log</a>
       <a href="/openstack/auth-pool" class="nav-link">ceph-auth</a>
@@ -28,7 +27,18 @@
         <span class="summary-chip">{{ total_images }} image{% if total_images != 1 %}s{% endif %}</span>
       </div>
       {% if error %}<div class="card-body"><p class="error">Không tải được Block Storage: {{ error }}</p></div>{% endif %}
-      {% if images %}
+      {% if is_admin and create_pools %}
+      <div class="card-body volume-inventory-create">
+        <div><strong>Tạo volume mới</strong><span class="hint">Action RISKY, cần phê duyệt trước khi thực thi.</span></div>
+        <form class="audit-filters" id="block-storage-create-form">
+          <label>Pool<select name="pool" required>{% for pool in create_pools %}<option value="{{ pool }}">{{ pool }}</option>{% endfor %}</select></label>
+          <label>Tên Volume<input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01"></label>
+          <label>Dung lượng (GiB)<input name="size_gib" required type="number" min="1" max="65536" value="10"></label>
+          <button type="submit" class="btn btn-primary btn-sm">Đề xuất tạo Volume</button>
+        </form>
+        <p id="block-storage-create-result" class="hint" hidden></p>
+      </div>
+      {% endif %}
       <div class="card-body block-storage-filter-panel">
         <form class="audit-filters" id="block-storage-filter" role="search">
           <label>Tìm kiếm
@@ -39,13 +49,12 @@
           {% if total_pages > 1 %}<span class="hint">Trang {{ page }} / {{ total_pages }} · tối đa {{ overview_limit }} volume mỗi trang.</span>{% endif %}
         </form>
       </div>
-      {% endif %}
       <div class="table-wrap">
         <table class="block-storage-table" id="block-storage-table">
           <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th>Size</th></tr></thead>
           <tbody>
           {% for image in images %}
-            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td></tr>
+            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}&image={{ image.name }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td></tr>
           {% else %}
             <tr class="empty-row"><td colspan="4"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
           {% endfor %}

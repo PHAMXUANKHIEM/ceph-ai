@@ -90,7 +90,7 @@
     <div class="tabbed-content">
     {% if selected_view in ["volumes", "performance"] and selected_pool %}
     {% if selected_view == "volumes" %}
-    <section class="card volume-inventory-card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
+    <section class="card volume-inventory-card" id="volume-inventory-panel" data-pool="{{ selected_pool }}" data-image="{{ request.query_params.get('image', '') }}" data-is-admin="{{ 'true' if is_admin else 'false' }}">
       <div class="card-header volume-inventory-header">
         <div class="metrics-panel-title volume-inventory-heading">
           <span class="volume-inventory-eyebrow">RBD INVENTORY</span>
@@ -113,18 +113,7 @@
         </div>
         <div id="volume-pool-health-checks" class="hint"></div>
         <p class="error" id="volume-pool-overview-error" hidden></p>
-        {% if is_admin %}
-        <div class="volume-inventory-toolbar volume-inventory-create"><div><strong>Tạo volume mới</strong><span>Action RISKY, cần phê duyệt trước khi thực thi.</span></div><form class="audit-filters" id="volume-create-form">
-          <label>Tên Volume
-            <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01">
-          </label>
-          <label>Dung lượng (GiB)
-            <input name="size_gib" required type="number" min="1" max="65536" value="10">
-          </label>
-          <button type="submit" class="btn btn-primary btn-sm">Đề xuất tạo Volume</button>
-        </form></div>
-        <p id="volume-mutation-result" class="hint" hidden></p>
-        {% endif %}
+        {% if is_admin %}<p id="volume-mutation-result" class="hint" hidden></p>{% endif %}
         <div class="volume-inventory-toolbar volume-inventory-filters"><div><strong>Danh sách volume</strong><span>Tìm kiếm và sắp xếp trong pool hiện tại.</span></div><form class="audit-filters" id="volume-inventory-filter">
           <label>Tìm Volume
             <input type="search" id="volume-inventory-search" maxlength="128" placeholder="Tên hoặc ID Volume" autocomplete="off">
