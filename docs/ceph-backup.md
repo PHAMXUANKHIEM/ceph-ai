@@ -252,6 +252,13 @@ gần nhất. Overview hiển thị RTO dự kiến lớn nhất; nếu chưa c�
 có cả `size_bytes` và `duration_seconds`, hệ thống ghi rõ chưa thể ước tính,
 không dùng một tốc độ mặc định giả định.
 
+Copy compliance được tính trên recovery point mới nhất: các `BackupJob`
+phải cùng `run_id`, thành công và nằm trên các target slot khác nhau. Mặc định
+cluster chính yêu cầu `required_copy_count: 2`; từng entry `tracked_images`
+có thể override giá trị này. Cluster phụ hiện chỉ có một target riêng nên yêu
+cầu một bản. Dashboard hiển thị `Đủ`, `Degraded` hoặc `Không có`, đồng thời
+tổng hợp số volume không đạt yêu cầu.
+
 Cơ chế cảnh báo dùng chung một hàm `send_alert()`: **luôn ghi log** (mức
 `CRITICAL`/`WARNING`), rồi gửi qua **từng kênh đã cấu hình, độc lập với
 nhau** — một kênh lỗi không được phép chặn kênh còn lại:
@@ -465,7 +472,7 @@ tầng policy khi thêm action_id mới.
 1. **`worker/policy/backup_policy.yaml`** — `backup_targets:` (transport
    nào cho slot a/b, slot nào immutable), `tracked_images:` (danh sách
    `(pool, image)` cần backup định kỳ — rỗng nghĩa là chưa bật gì),
-   `retention:`, `schedule:`, `rpo_hours`, `metadata_rpo_hours`,
+   `retention:`, `schedule:`, `required_copy_count`, `rpo_hours`, `metadata_rpo_hours`,
    `restore_drill_rpo_hours`, `anomaly_threshold_stddev`, `restore_drill:`.
 2. **Biến môi trường / trang Cài đặt** (`config/settings.py`) — với MỖI slot
    `a`/`b` đã chọn transport trong bước 1:

@@ -126,8 +126,8 @@ execute; thay đổi trạng thái giữa hai thời điểm làm action fail-cl
 - [x] Hiển thị RTO thực tế của RestoreDrill và RTO dự kiến theo kích thước
   recovery chain/tốc độ RestoreDrill thành công gần nhất; thiếu dữ liệu thì
   fail-visible thay vì đưa số giả.
-- [~] Tổng số volume theo từng trạng thái; chưa có số bản sao tối thiểu để xác
-  định volume không đủ bản sao.
+- [x] Tổng số volume theo từng trạng thái và số volume không đủ bản sao;
+  `required_copy_count` có mặc định toàn cục và hỗ trợ override theo workload.
 - [~] RPO đọc từ `backup_policy.yaml` và dùng chung cho Dashboard/alerting;
   chưa hỗ trợ override riêng theo cluster hoặc workload.
 - [x] Cảnh báo và hiển thị rõ metadata backup/RestoreDrill chưa chạy, thất bại

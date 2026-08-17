@@ -14,6 +14,10 @@ backup_targets:
   - slot: b
     immutable: true
 
+# A recovery point is compliant only when this many distinct target slots
+# contain a verified SUCCESS row for the same run_id.
+required_copy_count: 2
+
 # Story 9.1: RBD images to back up on schedule. `full_refresh_every_n_days`
 # forces a full export instead of export-diff once the last full export is
 # this old (bounds how long an incremental chain can grow) — blank/absent

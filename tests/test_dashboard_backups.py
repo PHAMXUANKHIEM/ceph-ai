@@ -192,6 +192,38 @@ def test_protection_overview_estimates_rto_from_chain_and_drill_throughput(
     assert overview["estimated_rto_seconds"] == 15
 
 
+def test_protection_overview_reports_copy_compliance_per_recovery_point(
+    dashboard_client, monkeypatch
+):
+    now = datetime.utcnow()
+    tracked = [{"pool": "vms", "image": name} for name in ("ok", "degraded", "missing")]
+    monkeypatch.setattr(backups_route, "load_backup_policy", lambda: {
+        "tracked_images": tracked,
+        "backup_targets": [{"slot": "a"}, {"slot": "b"}],
+        "required_copy_count": 2,
+    })
+    with db_module.SessionLocal() as session:
+        session.add_all([
+            BackupJob(run_id="ok-run", pool="vms", image="ok", job_type="full",
+                      status="SUCCESS", backup_target_slot="a", created_at=now),
+            BackupJob(run_id="ok-run", pool="vms", image="ok", job_type="full",
+                      status="SUCCESS", backup_target_slot="b", created_at=now),
+            BackupJob(run_id="degraded-run", pool="vms", image="degraded", job_type="full",
+                      status="SUCCESS", backup_target_slot="a", created_at=now),
+        ])
+        session.commit()
+
+    overview = backups_route._protection_overview(tracked, now=now)
+    rows = {row["image"]: row for row in overview["rows"]}
+
+    assert rows["ok"]["copy_status"] == "compliant"
+    assert rows["ok"]["successful_copies"] == 2
+    assert rows["degraded"]["copy_status"] == "degraded"
+    assert rows["degraded"]["successful_copies"] == 1
+    assert rows["missing"]["copy_status"] == "missing"
+    assert overview["copy_counts"] == {"compliant": 1, "degraded": 1, "missing": 1}
+
+
 def test_queue_success_time_does_not_get_replaced_by_newer_failed_run(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
     success_at = datetime.utcnow() - timedelta(hours=2)

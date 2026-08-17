@@ -87,6 +87,7 @@
           <div class="summary-item"><span>RPO có nguy cơ</span><strong>{{ protection.counts.at_risk }}</strong></div>
           <div class="summary-item"><span>Vi phạm RPO</span><strong>{{ protection.counts.breached }}</strong></div>
           <div class="summary-item"><span>Chưa từng backup</span><strong>{{ protection.counts.never }}</strong></div>
+          <div class="summary-item"><span>Không đủ bản sao</span><strong>{{ protection.copy_counts.degraded + protection.copy_counts.missing }}</strong></div>
         </div>
         {% if protection.latest_drill %}
         <p class="hint">Restore drill gần nhất: <strong>{{ protection.latest_drill.status }}</strong>
@@ -108,10 +109,11 @@
         </p>
         {% if protection.rows %}
         <div class="table-wrap"><table>
-          <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th>Tuổi recovery point</th><th>Còn lại trước RPO</th><th>RTO dự kiến</th></tr></thead>
+          <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th>Bản sao</th><th>Tuổi recovery point</th><th>Còn lại trước RPO</th><th>RTO dự kiến</th></tr></thead>
           <tbody>{% for item in protection.rows %}<tr class="{% if item.status in ['breached', 'never'] %}progress-item-failed{% endif %}">
             <td><code>{{ item.pool }}/{{ item.image }}</code></td>
             <td>{% if item.status == 'healthy' %}Healthy{% elif item.status == 'at_risk' %}RPO at risk{% elif item.status == 'breached' %}RPO breached{% else %}Never backed up{% endif %}</td>
+            <td>{% if item.copy_status == 'compliant' %}Đủ {{ item.successful_copies }}/{{ item.required_copies }}{% elif item.copy_status == 'degraded' %}Degraded {{ item.successful_copies }}/{{ item.required_copies }}{% else %}Không có 0/{{ item.required_copies }}{% endif %}</td>
             <td>{% if item.age_hours is not none %}{{ "%.1f"|format(item.age_hours) }} giờ{% else %}—{% endif %}</td>
             <td>{% if item.status == 'never' %}0 giờ{% elif item.status == 'breached' %}Đã quá hạn{% else %}{{ "%.1f"|format(item.remaining_hours) }} giờ{% endif %}</td>
             <td>{% if item.estimated_rto_seconds is not none %}{{ "%.1f"|format(item.estimated_rto_seconds) }} giây{% else %}—{% endif %}</td>

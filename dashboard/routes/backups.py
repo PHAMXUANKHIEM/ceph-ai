@@ -346,6 +346,13 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
     drill_rpo_hours = _hours("restore_drill_rpo_hours", DEFAULT_RESTORE_DRILL_RPO_HOURS)
     rows = []
     counts = {"healthy": 0, "at_risk": 0, "breached": 0, "never": 0}
+    copy_counts = {"compliant": 0, "degraded": 0, "missing": 0}
+    configured_targets = len(policy.get("backup_targets") or []) or 1
+    try:
+        policy_required_copies = max(1, min(int(policy.get("required_copy_count", configured_targets)),
+                                                configured_targets))
+    except (TypeError, ValueError):
+        policy_required_copies = configured_targets
     with db.SessionLocal() as session:
         latest_successful_drill = (
             session.query(BackupJob).filter(BackupJob.job_type == "restore_drill",
@@ -374,6 +381,23 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                 status = ("breached" if age_hours >= rpo_hours else
                           "at_risk" if age_hours >= rpo_hours * RPO_AT_RISK_RATIO else "healthy")
             counts[status] += 1
+            required_copies = 1 if cluster is not None and not cluster.is_default else policy_required_copies
+            if target.get("required_copy_count") is not None and not (cluster is not None and not cluster.is_default):
+                try:
+                    required_copies = max(1, min(int(target["required_copy_count"]), configured_targets))
+                except (TypeError, ValueError):
+                    pass
+            successful_copies = 0
+            if latest is not None:
+                successful_copies = len({slot for (slot,) in session.query(BackupJob.backup_target_slot).filter(
+                    BackupJob.run_id == latest.run_id, BackupJob.pool == target["pool"],
+                    BackupJob.image == target["image"], BackupJob.job_type == latest.job_type,
+                    BackupJob.status == "SUCCESS",
+                    _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True,
+                ).all() if slot})
+            copy_status = ("missing" if successful_copies == 0 else
+                           "compliant" if successful_copies >= required_copies else "degraded")
+            copy_counts[copy_status] += 1
             chain_size_bytes = 0
             if latest is not None:
                 if latest.job_type == "full":
@@ -397,7 +421,9 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                          "latest_at": latest.created_at if latest else None,
                          "age_hours": age_hours, "remaining_hours": remaining,
                          "rpo_hours": rpo_hours, "chain_size_bytes": chain_size_bytes,
-                         "estimated_rto_seconds": estimated_rto_seconds})
+                         "estimated_rto_seconds": estimated_rto_seconds,
+                         "successful_copies": successful_copies,
+                         "required_copies": required_copies, "copy_status": copy_status})
         latest_drill = (
             session.query(BackupJob).filter(BackupJob.job_type == "restore_drill",
                 _job_scope(BackupJob.cluster_id, cluster) if cluster is not None else True)
@@ -419,6 +445,7 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
     drill_configured = all(drill_config.get(key) for key in ("pool", "image", "scratch_pool", "scratch_image"))
     estimates = [row["estimated_rto_seconds"] for row in rows if row["estimated_rto_seconds"] is not None]
     return {"rows": rows, "counts": counts, "total": len(rows), "rpo_hours": rpo_hours,
+            "copy_counts": copy_counts,
             "estimated_rto_seconds": max(estimates) if estimates else None,
             "restore_bytes_per_second": restore_bytes_per_second,
             "metadata": _freshness(latest_metadata, metadata_rpo_hours),
