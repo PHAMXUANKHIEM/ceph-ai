@@ -113,6 +113,7 @@ async def create_cluster(
     backup_enabled: str = Form(""),
     backup_tracked_images: str = Form(""),
     backup_full_refresh_days: str = Form(""),
+    backup_rpo_hours: str = Form("24"),
     backup_transport: str = Form(""),
     backup_ssh_host: str = Form(""),
     backup_ssh_user: str = Form(""),
@@ -174,6 +175,7 @@ async def create_cluster(
         "backup_enabled": backup_enabled.strip().lower() in ("true", "on", "1"),
         "backup_tracked_images": backup_tracked_images.strip(),
         "backup_full_refresh_days": backup_full_refresh_days.strip(),
+        "backup_rpo_hours": backup_rpo_hours.strip(),
         "backup_transport": backup_transport.strip(),
         "backup_ssh_host": backup_ssh_host.strip(),
         "backup_ssh_user": backup_ssh_user.strip(),
@@ -286,6 +288,10 @@ async def create_cluster(
                 backup_tracked_images=submitted["backup_tracked_images"],
                 backup_full_refresh_days=(
                     int(submitted["backup_full_refresh_days"]) if submitted["backup_full_refresh_days"].isdigit() else None
+                ),
+                backup_rpo_hours=(
+                    min(int(submitted["backup_rpo_hours"]), 24 * 365)
+                    if submitted["backup_rpo_hours"].isdigit() and int(submitted["backup_rpo_hours"]) > 0 else 24
                 ),
                 backup_transport=submitted["backup_transport"],
                 backup_ssh_host=submitted["backup_ssh_host"],
@@ -630,6 +636,7 @@ async def update_cluster_backup_config(
     backup_enabled: str = Form(""),
     backup_tracked_images: str = Form(""),
     backup_full_refresh_days: str = Form(""),
+    backup_rpo_hours: str = Form("24"),
     backup_transport: str = Form(""),
     backup_ssh_host: str = Form(""),
     backup_ssh_user: str = Form(""),
@@ -666,6 +673,7 @@ async def update_cluster_backup_config(
         "backup_enabled": backup_enabled.strip().lower() in ("true", "on", "1"),
         "backup_tracked_images": backup_tracked_images.strip(),
         "backup_full_refresh_days": backup_full_refresh_days.strip(),
+        "backup_rpo_hours": backup_rpo_hours.strip(),
         "backup_transport": backup_transport.strip(),
         "backup_ssh_host": backup_ssh_host.strip(),
         "backup_ssh_user": backup_ssh_user.strip(),
@@ -715,6 +723,10 @@ async def update_cluster_backup_config(
         cluster.backup_tracked_images = submitted["backup_tracked_images"]
         cluster.backup_full_refresh_days = (
             int(submitted["backup_full_refresh_days"]) if submitted["backup_full_refresh_days"].isdigit() else None
+        )
+        cluster.backup_rpo_hours = (
+            min(int(submitted["backup_rpo_hours"]), 24 * 365)
+            if submitted["backup_rpo_hours"].isdigit() and int(submitted["backup_rpo_hours"]) > 0 else 24
         )
         cluster.backup_transport = submitted["backup_transport"]
         cluster.backup_ssh_host = submitted["backup_ssh_host"]

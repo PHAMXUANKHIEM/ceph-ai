@@ -235,6 +235,7 @@ def test_backup_config_saves_fields_and_restarts_worker_only(dashboard_client, m
             "backup_enabled": "true",
             "backup_tracked_images": "rbd/vm1, rbd/vm2",
             "backup_full_refresh_days": "14",
+            "backup_rpo_hours": "48",
             "backup_transport": "s3",
             "backup_s3_endpoint": "https://s3.example.test",
             "backup_s3_access_key": "AKIA_TEST",
@@ -254,6 +255,7 @@ def test_backup_config_saves_fields_and_restarts_worker_only(dashboard_client, m
         assert saved.backup_enabled is True
         assert saved.backup_tracked_images == "rbd/vm1, rbd/vm2"
         assert saved.backup_full_refresh_days == 14
+        assert saved.backup_rpo_hours == 48
         assert saved.backup_transport == "s3"
         assert saved.backup_s3_access_key == "AKIA_TEST"
         assert saved.backup_s3_secret_key == "shh"

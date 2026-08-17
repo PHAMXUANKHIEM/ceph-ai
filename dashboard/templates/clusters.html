@@ -163,6 +163,9 @@
                       <label>Full refresh mỗi N ngày (tuỳ chọn — để trống nếu không giới hạn)
                         <input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ bv.backup_full_refresh_days if bv.backup_full_refresh_days is not none else '' }}">
                       </label>
+                      <label>RPO tối đa (giờ)
+                        <input type="number" min="1" max="8760" name="backup_rpo_hours" value="{{ bv.backup_rpo_hours or 24 }}">
+                      </label>
                       <label>Nơi lưu backup
                         <select name="backup_transport">
                           <option value="" {{ "selected" if not bv.backup_transport else "" }}>-- chưa chọn --</option>
@@ -275,6 +278,9 @@
             </label>
             <label>Full refresh mỗi N ngày (tuỳ chọn)
               <input type="text" inputmode="numeric" name="backup_full_refresh_days" value="{{ cluster_form_values.backup_full_refresh_days or '' }}">
+            </label>
+            <label>RPO tối đa (giờ)
+              <input type="number" min="1" max="8760" name="backup_rpo_hours" value="{{ cluster_form_values.backup_rpo_hours or 24 }}">
             </label>
             <label>Nơi lưu backup
               <select name="backup_transport">

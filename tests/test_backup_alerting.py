@@ -275,6 +275,27 @@ def test_check_overdue_and_failed_backups_uses_policy_rpo_hours(isolated_db, mon
     assert alerts == []
 
 
+def test_check_overdue_and_failed_backups_uses_workload_rpo_override(isolated_db, monkeypatch):
+    monkeypatch.setattr(alerting, "load_backup_policy", lambda: {
+        "tracked_images": [{"pool": "vms", "image": "web01", "rpo_hours": 48}],
+        "rpo_hours": 24,
+    })
+    backup_time = datetime.utcnow() - timedelta(hours=25)
+    with db_module.SessionLocal() as session:
+        session.add(BackupJob(run_id="r1", pool="vms", image="web01", job_type="full",
+                              status="SUCCESS", created_at=backup_time, finished_at=backup_time))
+        _add_fresh_metadata_success(session)
+        session.commit()
+    alerts = []
+    monkeypatch.setattr(alerting, "send_alert",
+                        lambda severity, message, backup_job_id=None, cluster=None:
+                        alerts.append((severity, message)))
+
+    alerting.check_overdue_and_failed_backups()
+
+    assert alerts == []
+
+
 def test_check_overdue_and_failed_backups_alerts_for_metadata_never_run(isolated_db, monkeypatch):
     monkeypatch.setattr(alerting, "load_backup_policy", lambda: {"tracked_images": []})
 
@@ -409,3 +430,26 @@ def test_check_overdue_and_failed_backups_additional_cluster_without_telegram_is
     # cluster's own 2 alerts (also never-run image + metadata) must be
     # silently skipped, not delivered over the global channel instead.
     assert len(telegram_calls) == 1  # default cluster's never-run metadata alert only
+
+
+def test_check_overdue_and_failed_backups_uses_additional_cluster_rpo(isolated_db, monkeypatch):
+    monkeypatch.setattr(alerting, "load_backup_policy", lambda: {"tracked_images": [], "rpo_hours": 24})
+    backup_time = datetime.utcnow() - timedelta(hours=25)
+    with db_module.SessionLocal() as session:
+        cluster = _make_additional_cluster(session, backup_rpo_hours=48)
+        session.add_all([
+            BackupJob(run_id="cluster-rbd", cluster_id=cluster.id, pool="rbd", image="vm1",
+                      job_type="full", status="SUCCESS", created_at=backup_time),
+            BackupJob(run_id="cluster-meta", cluster_id=cluster.id, job_type="metadata",
+                      status="SUCCESS", created_at=datetime.utcnow()),
+        ])
+        _add_fresh_metadata_success(session)
+        session.commit()
+    alerts = []
+    monkeypatch.setattr(alerting, "send_alert",
+                        lambda severity, message, backup_job_id=None, cluster=None:
+                        alerts.append((severity, message)))
+
+    alerting.check_overdue_and_failed_backups()
+
+    assert alerts == []

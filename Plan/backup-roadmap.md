@@ -119,7 +119,7 @@ khi đề xuất restore; API từ chối recovery point không đầy đủ ho�
 **Hoàn thành khi:** mọi restore đều có preflight ở lúc propose và re-check ở lúc
 execute; thay đổi trạng thái giữa hai thời điểm làm action fail-closed.
 
-### 5.4 Dashboard RPO/RTO `[~]`
+### 5.4 Dashboard RPO/RTO `[x]`
 
 - [x] Trạng thái `Healthy`, `RPO at risk`, `RPO breached`, `Never backed up`.
 - [x] Tuổi backup thành công gần nhất, RPO mục tiêu và thời gian còn lại.
@@ -128,8 +128,8 @@ execute; thay đổi trạng thái giữa hai thời điểm làm action fail-cl
   fail-visible thay vì đưa số giả.
 - [x] Tổng số volume theo từng trạng thái và số volume không đủ bản sao;
   `required_copy_count` có mặc định toàn cục và hỗ trợ override theo workload.
-- [~] RPO đọc từ `backup_policy.yaml` và dùng chung cho Dashboard/alerting;
-  chưa hỗ trợ override riêng theo cluster hoặc workload.
+- [x] RPO đọc từ `backup_policy.yaml`, hỗ trợ override theo workload và
+  `Cluster.backup_rpo_hours`; Dashboard/alerting dùng cùng một ngưỡng.
 - [x] Cảnh báo và hiển thị rõ metadata backup/RestoreDrill chưa chạy, thất bại
   hoặc quá hạn; drill chỉ được giám sát khi đã cấu hình đầy đủ.
 

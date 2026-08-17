@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import dashboard.routes.backups as backups_route
 from shared import db as db_module
@@ -222,6 +223,44 @@ def test_protection_overview_reports_copy_compliance_per_recovery_point(
     assert rows["degraded"]["successful_copies"] == 1
     assert rows["missing"]["copy_status"] == "missing"
     assert overview["copy_counts"] == {"compliant": 1, "degraded": 1, "missing": 1}
+
+
+def test_protection_overview_uses_workload_rpo_override(dashboard_client, monkeypatch):
+    now = datetime.utcnow()
+    tracked = [{"pool": "vms", "image": "slow", "rpo_hours": 48}]
+    monkeypatch.setattr(backups_route, "load_backup_policy",
+                        lambda: {"tracked_images": tracked, "rpo_hours": 24})
+    with db_module.SessionLocal() as session:
+        session.add(BackupJob(run_id="slow-run", pool="vms", image="slow", job_type="full",
+                              status="SUCCESS", backup_target_slot="a",
+                              created_at=now - timedelta(hours=25)))
+        session.commit()
+
+    row = backups_route._protection_overview(tracked, now=now)["rows"][0]
+
+    assert row["rpo_hours"] == 48
+    assert row["status"] == "healthy"
+    assert row["remaining_hours"] == 23
+
+
+def test_protection_overview_uses_additional_cluster_rpo(dashboard_client, monkeypatch):
+    now = datetime.utcnow()
+    cluster = SimpleNamespace(id="cluster-rpo", is_default=False, backup_rpo_hours=48)
+    monkeypatch.setattr(backups_route, "load_backup_policy",
+                        lambda: {"tracked_images": [], "rpo_hours": 24})
+    with db_module.SessionLocal() as session:
+        session.add(BackupJob(run_id="cluster-run", cluster_id=cluster.id, pool="rbd",
+                              image="vm1", job_type="full", status="SUCCESS",
+                              backup_target_slot="cluster",
+                              created_at=now - timedelta(hours=25)))
+        session.commit()
+
+    row = backups_route._protection_overview(
+        [{"pool": "rbd", "image": "vm1"}], cluster=cluster, now=now
+    )["rows"][0]
+
+    assert row["rpo_hours"] == 48
+    assert row["status"] == "healthy"
 
 
 def test_queue_success_time_does_not_get_replaced_by_newer_failed_run(dashboard_client, monkeypatch):

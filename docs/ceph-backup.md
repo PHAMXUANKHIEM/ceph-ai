@@ -240,6 +240,11 @@ metadata cụm và RestoreDrill đã bật, cảnh báo `warning` nếu:
 - Bản thành công gần nhất đã quá ngưỡng `rpo_hours` trong
   `backup_policy.yaml` (mặc định 24 giờ).
 
+Mỗi entry trong `tracked_images` có thể đặt `rpo_hours` riêng. Với cluster
+phụ, trường `backup_rpo_hours` được cấu hình ngay trên trang Cụm Ceph và áp
+dụng cho toàn bộ image của cluster đó. Dashboard và alerting cùng dùng các
+giá trị override này, giới hạn hợp lệ từ 1 đến 8760 giờ.
+
 Metadata dùng ngưỡng `metadata_rpo_hours` (mặc định 12 giờ). RestoreDrill
 dùng `restore_drill_rpo_hours` (mặc định 192 giờ, tương đương lịch tuần cộng
 24 giờ đệm) và chỉ được kiểm tra khi `restore_drill:` có đủ bốn trường. Cả
@@ -472,7 +477,8 @@ tầng policy khi thêm action_id mới.
 1. **`worker/policy/backup_policy.yaml`** — `backup_targets:` (transport
    nào cho slot a/b, slot nào immutable), `tracked_images:` (danh sách
    `(pool, image)` cần backup định kỳ — rỗng nghĩa là chưa bật gì),
-   `retention:`, `schedule:`, `required_copy_count`, `rpo_hours`, `metadata_rpo_hours`,
+   `retention:`, `schedule:`, `required_copy_count`, `rpo_hours` (có thể
+   override trong từng workload), `metadata_rpo_hours`,
    `restore_drill_rpo_hours`, `anomaly_threshold_stddev`, `restore_drill:`.
 2. **Biến môi trường / trang Cài đặt** (`config/settings.py`) — với MỖI slot
    `a`/`b` đã chọn transport trong bước 1:

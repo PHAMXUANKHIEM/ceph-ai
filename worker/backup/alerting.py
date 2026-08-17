@@ -210,15 +210,19 @@ def check_overdue_and_failed_backups() -> None:
     rpo_hours = _hours("rpo_hours", RPO_HOURS)
     metadata_rpo_hours = _hours("metadata_rpo_hours", METADATA_RPO_HOURS)
     drill_rpo_hours = _hours("restore_drill_rpo_hours", RESTORE_DRILL_RPO_HOURS)
-    cutoff = datetime.utcnow() - timedelta(hours=rpo_hours)
-
-    targets: list[tuple[str | None, str | None, str]] = [
-        (t.get("pool"), t.get("image"), f"{t.get('pool')}/{t.get('image')}")
-        for t in (policy.get("tracked_images") or [])
-        if t.get("pool") and t.get("image")
-    ]
-    for pool, image, label in targets:
-        _check_target(pool, image, label, cutoff, rpo_hours=rpo_hours)
+    targets: list[tuple[str, str, str, int]] = []
+    for target in policy.get("tracked_images") or []:
+        pool, image = target.get("pool"), target.get("image")
+        if not pool or not image:
+            continue
+        try:
+            target_rpo = max(1, min(int(target.get("rpo_hours", rpo_hours)), 24 * 365))
+        except (TypeError, ValueError):
+            target_rpo = rpo_hours
+        targets.append((pool, image, f"{pool}/{image}", target_rpo))
+    for pool, image, label, target_rpo in targets:
+        _check_target(pool, image, label, datetime.utcnow() - timedelta(hours=target_rpo),
+                      rpo_hours=target_rpo)
     _check_target(None, None, "metadata cụm",
                   datetime.utcnow() - timedelta(hours=metadata_rpo_hours),
                   rpo_hours=metadata_rpo_hours, job_type="metadata")
@@ -234,12 +238,15 @@ def check_overdue_and_failed_backups() -> None:
         session.expunge_all()
 
     for cluster in clusters:
+        cluster_rpo_hours = max(1, min(int(cluster.backup_rpo_hours or rpo_hours), 24 * 365))
         cluster_targets: list[tuple[str | None, str | None, str]] = [
             (pool, image, f"{pool}/{image} (cụm {cluster.name})")
             for pool, image in parse_tracked_images(cluster.backup_tracked_images)
         ]
         for pool, image, label in cluster_targets:
-            _check_target(pool, image, label, cutoff, cluster=cluster, rpo_hours=rpo_hours)
+            _check_target(pool, image, label,
+                          datetime.utcnow() - timedelta(hours=cluster_rpo_hours),
+                          cluster=cluster, rpo_hours=cluster_rpo_hours)
         _check_target(None, None, f"metadata cụm ({cluster.name})",
                       datetime.utcnow() - timedelta(hours=metadata_rpo_hours),
                       cluster=cluster, rpo_hours=metadata_rpo_hours, job_type="metadata")

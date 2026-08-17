@@ -366,6 +366,15 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
             if latest_successful_drill is not None else None
         )
         for target in tracked:
+            target_rpo_hours = rpo_hours
+            if cluster is not None and not cluster.is_default:
+                target_rpo_hours = max(1, min(int(getattr(cluster, "backup_rpo_hours", rpo_hours) or rpo_hours),
+                                              24 * 365))
+            elif target.get("rpo_hours") is not None:
+                try:
+                    target_rpo_hours = max(1, min(int(target["rpo_hours"]), 24 * 365))
+                except (TypeError, ValueError):
+                    pass
             latest = (
                 session.query(BackupJob)
                 .filter(BackupJob.pool == target["pool"], BackupJob.image == target["image"],
@@ -377,9 +386,9 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
                 status, age_hours, remaining = "never", None, 0.0
             else:
                 age_hours = max(0.0, (now - latest.created_at).total_seconds() / 3600)
-                remaining = max(0.0, rpo_hours - age_hours)
-                status = ("breached" if age_hours >= rpo_hours else
-                          "at_risk" if age_hours >= rpo_hours * RPO_AT_RISK_RATIO else "healthy")
+                remaining = max(0.0, target_rpo_hours - age_hours)
+                status = ("breached" if age_hours >= target_rpo_hours else
+                          "at_risk" if age_hours >= target_rpo_hours * RPO_AT_RISK_RATIO else "healthy")
             counts[status] += 1
             required_copies = 1 if cluster is not None and not cluster.is_default else policy_required_copies
             if target.get("required_copy_count") is not None and not (cluster is not None and not cluster.is_default):
@@ -420,7 +429,7 @@ def _protection_overview(tracked: list[dict], cluster=None, now: datetime | None
             rows.append({"pool": target["pool"], "image": target["image"], "status": status,
                          "latest_at": latest.created_at if latest else None,
                          "age_hours": age_hours, "remaining_hours": remaining,
-                         "rpo_hours": rpo_hours, "chain_size_bytes": chain_size_bytes,
+                         "rpo_hours": target_rpo_hours, "chain_size_bytes": chain_size_bytes,
                          "estimated_rto_seconds": estimated_rto_seconds,
                          "successful_copies": successful_copies,
                          "required_copies": required_copies, "copy_status": copy_status})

@@ -125,6 +125,9 @@ class Cluster(Base):
     # means never force a full refresh, same "blank = unbounded chain"
     # default the global policy's own field has.
     backup_full_refresh_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Maximum acceptable age of a successful recovery point for every
+    # tracked image in this additional cluster.
+    backup_rpo_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     backup_transport: Mapped[str] = mapped_column(String(16), nullable=False, default="")  # "ssh" | "s3" | ""
     backup_ssh_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     backup_ssh_user: Mapped[str] = mapped_column(String(64), nullable=False, default="")
