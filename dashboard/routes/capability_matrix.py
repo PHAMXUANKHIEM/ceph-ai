@@ -17,8 +17,11 @@ from fastapi.responses import HTMLResponse
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
+from config.settings import settings
 from dashboard.templating import make_templates
-from shared import capability_matrix
+from shared import capability_matrix, db
+from shared.clusters import list_active_clusters
+from watcher import capability_inventory
 
 router = APIRouter()
 templates = make_templates()
@@ -30,6 +33,27 @@ def _require_admin_privilege(user: str) -> None:
             status_code=403,
             detail="Chỉ tài khoản admin mới được phép thực hiện thao tác này",
         )
+
+
+def _coverage_by_cluster() -> list[dict]:
+    """Độ phủ matrix cho TỪNG cụm đang hoạt động, tính theo đúng phiên bản
+    Ceph mà Pha 0.1 dò được của cụm đó.
+
+    Tính theo cụm chứ không phải một con số chung, vì một entry chỉ phủ một
+    khoảng major version: cùng bảng matrix có thể đã đủ cho cụm Reef nhưng
+    vẫn hổng cho cụm Nautilus bên cạnh. Gộp lại thành một chỉ số duy nhất
+    sẽ giấu mất đúng cái hổng đó.
+    """
+    result = []
+    with db.SessionLocal() as session:
+        for cluster in list_active_clusters(session):
+            snapshot = capability_inventory.latest_snapshot(cluster.id, session=session)
+            ceph_major = snapshot.current_major if snapshot is not None else None
+            report = capability_matrix.coverage_report(ceph_major, session=session)
+            report["cluster_name"] = cluster.name
+            report["scanned"] = snapshot is not None
+            result.append(report)
+    return result
 
 
 def _context(
@@ -47,6 +71,8 @@ def _context(
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "entries": entries,
+        "coverage": _coverage_by_cluster(),
+        "enforcement_enabled": settings.ai_preflight_enforcement_enabled,
         "changes_by_entry": changes_by_entry,
         "create_error": create_error,
         "create_success": create_success,

@@ -49,6 +49,80 @@
 
   <main class="page">
     <section class="card">
+      <div class="card-header"><h2>Mức sẵn sàng bật cổng an toàn (Preflight)</h2></div>
+      <div class="card-body">
+        <p class="muted">
+          Preflight (Pha 0.3) chỉ gác đúng <strong>enum chẩn đoán sự cố</strong> — tức các hành động
+          mà AI tự đề xuất khi phát hiện sự cố. Nó <em>không</em> gác thao tác qua Chat hay nút bấm
+          thủ công trên Dashboard. Vì fail-closed, một action_id <strong>chưa có entry</strong> trong
+          matrix sẽ bị chặn khi enforcement được bật.
+        </p>
+        <p>
+          Trạng thái enforcement hiện tại:
+          {% if enforcement_enabled %}
+            <span class="badge badge-ok">ĐANG BẬT</span>
+          {% else %}
+            <span class="badge badge-warn">ĐANG TẮT</span>
+            <span class="muted">— validator vẫn chạy và ghi log verdict, nhưng không chặn gì.</span>
+          {% endif %}
+        </p>
+
+        {% if not coverage %}
+          <p class="muted">Chưa có cụm nào đang hoạt động.</p>
+        {% endif %}
+
+        {% for c in coverage %}
+        <h3>{{ c.cluster_name }}</h3>
+        {% if not c.scanned %}
+          <p class="muted">
+            Pha 0.1 chưa quét được phiên bản cụm này — preflight sẽ chặn ngay từ bước đó,
+            chưa tới bước tra matrix.
+          </p>
+        {% else %}
+          <p class="muted">Phiên bản Ceph phát hiện được: major {{ c.ceph_major or '(không xác định)' }}</p>
+        {% endif %}
+        <p>
+          {% if c.ready %}
+            <span class="badge badge-ok">Đủ phủ {{ c.covered }}/{{ c.total }}</span>
+            — có thể bật enforcement cho cụm này.
+          {% else %}
+            <span class="badge badge-warn">Phủ {{ c.covered }}/{{ c.total }}</span>
+            — nếu bật enforcement ngay bây giờ, <strong>{{ c.blocked }}</strong> hành động sẽ bị chặn.
+          {% endif %}
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>action_id</th><th>Trạng thái</th><th>Khi bật enforcement</th></tr></thead>
+            <tbody>
+              {% for row in c.rows %}
+              <tr>
+                <td><code>{{ row.command_id }}</code></td>
+                <td>
+                  {% if row.status == 'SUPPORTED' %}<span class="badge badge-ok">SUPPORTED</span>
+                    {% if row.is_stale %}<span class="badge badge-warn">cần kiểm lại</span>{% endif %}
+                  {% elif row.status == 'UNKNOWN' %}<span class="badge badge-warn">UNKNOWN — chưa có entry</span>
+                  {% else %}<span class="badge badge-err">{{ row.status }}</span>{% endif %}
+                </td>
+                <td>
+                  {% if row.blocked %}<span class="badge badge-err">bị chặn</span>
+                  {% else %}<span class="muted">đi qua</span>{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endfor %}
+
+        <p class="muted">
+          Mỗi entry cần một <strong>Doc URL trỏ tài liệu Ceph chính thức</strong> mà bạn đã tự đọc:
+          hệ thống cố ý không tự điền bảng này, và <code>verified_by</code> luôn là tài khoản admin
+          đang đăng nhập — để mỗi dòng đều quy trách nhiệm được về người thật đã kiểm chứng.
+        </p>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>Capability Matrix</h2></div>
       <div class="card-body">
         {% if create_error %}<p class="error">{{ create_error }}</p>{% endif %}

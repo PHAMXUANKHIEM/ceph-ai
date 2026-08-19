@@ -222,3 +222,69 @@ def list_changes(entry_id: str) -> list[CapabilityMatrixChange]:
         )
         session.expunge_all()
         return rows
+
+
+# --- Báo cáo độ phủ (2026-08-19) -----------------------------------------
+#
+# Vì sao cần: bảng này khởi tạo RỖNG một cách có chủ đích (operator phải tự
+# tra tài liệu Ceph chính thức rồi nhập, xem docstring đầu module). Nhưng
+# "hãy seed capability matrix" nghe như một việc vô hạn, trong khi thực tế
+# preflight (Pha 0.3) chỉ gác đúng enum chẩn đoán sự cố -- 7 action_id, và
+# chỉ 5 trong số đó có lệnh thật. Không nhìn thấy con số đó thì không ai
+# bắt đầu, nên cả lớp an toàn Pha 0 nằm im vô thời hạn.
+#
+# Hai hàm dưới biến việc mơ hồ ấy thành một checklist hữu hạn, và cho
+# operator thấy TRƯỚC hậu quả của việc bật enforcement thay vì phải bật lên
+# rồi mới biết cái gì gãy.
+
+
+def gated_command_ids() -> list[str]:
+    """Đúng tập action_id mà `worker/preflight.py` sẽ kiểm qua matrix.
+
+    Đọc thẳng `action_ids:` (enum chẩn đoán sự cố) từ action_policy.yaml --
+    KHÔNG phải toàn bộ action_id của hệ thống: preflight chỉ chạy ở nhánh
+    tạo Action mới trong `diagnose_incident`, nên các họ action khác
+    (management/Chat, cluster deploy, backup...) không bao giờ đi qua cổng
+    này và đưa chúng vào đây sẽ thổi phồng việc cần làm một cách sai lệch.
+
+    Đọc file trực tiếp thay vì import `worker/llm/router_client.py`
+    (VALID_ACTION_IDS) vì module đó kéo theo cả tầng thực thi -- cùng lý do
+    `watcher/log_analysis.py::_load_incident_diagnosis_action_ids` đã ghi.
+    """
+    import yaml
+
+    from worker.policy.gate import _POLICY_PATH
+
+    with open(_POLICY_PATH) as f:
+        policy = yaml.safe_load(f)
+    return sorted(policy.get("action_ids") or [])
+
+
+def coverage_report(ceph_major: int | None, session=None) -> dict:
+    """Với một phiên bản Ceph cụ thể: mỗi action_id bị gác đang ở trạng thái
+    nào, và nếu BẬT enforcement ngay bây giờ thì bao nhiêu cái bị chặn.
+
+    `ceph_major=None` nghĩa là Pha 0.1 chưa quét được phiên bản cụm -- lúc
+    đó preflight đã chặn từ bước trước khi tới matrix, nên mọi dòng đều báo
+    UNKNOWN và `blocked` bằng tổng số.
+    """
+    rows = []
+    for command_id in gated_command_ids():
+        result = check_capability(command_id, ceph_major, session=session)
+        rows.append({
+            "command_id": command_id,
+            "status": result.status.value,
+            "is_stale": bool(getattr(result, "is_stale", False)),
+            # SUPPORTED là trạng thái DUY NHẤT cho đi qua (fail-closed):
+            # UNKNOWN (chưa có entry) và UNSUPPORTED_VERSION đều chặn.
+            "blocked": result.status is not CapabilityStatus.SUPPORTED,
+        })
+    blocked = [r for r in rows if r["blocked"]]
+    return {
+        "ceph_major": ceph_major,
+        "rows": rows,
+        "total": len(rows),
+        "covered": len(rows) - len(blocked),
+        "blocked": len(blocked),
+        "ready": not blocked,
+    }

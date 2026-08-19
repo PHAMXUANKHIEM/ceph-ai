@@ -67,3 +67,59 @@ def test_deprecate_entry_via_form(dashboard_client):
     assert "Đã deprecate" in response.text
     assert cm.list_entries() == []
     assert cm.list_entries(include_deprecated=True)[0].status == "DEPRECATED"
+
+
+def test_page_shows_preflight_readiness_and_the_finite_gap(dashboard_client):
+    """Điểm cốt lõi của L-0.2: biến "hãy seed capability matrix" từ việc
+    nghe như vô hạn thành một checklist đếm được, và cho operator thấy TRƯỚC
+    hậu quả của việc bật enforcement."""
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/capability-matrix")
+
+    assert response.status_code == 200
+    assert "Mức sẵn sàng bật cổng an toàn" in response.text
+    assert "ĐANG TẮT" in response.text          # enforcement mặc định tắt
+    assert "sẽ bị chặn" in response.text        # hậu quả nếu bật ngay
+    assert "restart_osd_daemon" in response.text
+    # Và KHÔNG liệt kê họ management — chúng không đi qua cổng này.
+    assert "delete_pool" not in response.text
+
+
+def test_readiness_reflects_a_seeded_entry(dashboard_client):
+    """Cần ĐỦ hai tiền đề mới đi qua được: Pha 0.1 đã quét ra phiên bản cụm,
+    VÀ matrix có entry phủ đúng phiên bản đó. Thiếu bản quét thì dù đã seed
+    vẫn UNKNOWN — chính là fail-closed hoạt động đúng."""
+    from datetime import datetime
+
+    from shared import db as db_module
+    from shared.clusters import ensure_default_cluster
+    from shared.models import CapabilityStatus, ClusterCapabilityInventory
+
+    with db_module.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        session.add(ClusterCapabilityInventory(
+            cluster_id=cluster.id,
+            status=CapabilityStatus.SUPPORTED.value,
+            deployment_mode="cephadm",
+            current_version="18.2.2",
+            current_major=18,
+            collected_at=datetime.utcnow(),
+        ))
+        session.commit()
+
+    _login(dashboard_client)
+    dashboard_client.post(
+        "/capability-matrix/create",
+        data={
+            "command_id": "restart_osd_daemon",
+            "inner_command": "systemctl restart ceph-osd@N",
+            "doc_url": "https://docs.ceph.com/en/latest/rados/operations/operating/",
+            "min_major": "14",
+            "max_major": "",
+        },
+    )
+
+    response = dashboard_client.get("/capability-matrix")
+
+    assert "SUPPORTED" in response.text
