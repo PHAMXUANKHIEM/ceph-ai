@@ -357,3 +357,77 @@ def send_update_failure_alert(
         text,
         cluster_name,
     )
+
+
+# --- Log Intelligence L3 (Plan/log-intelligence-rca-plan.md) --------------
+#
+# Dùng chung kênh "Cụm Ceph" (telegram_incident_*) với send_ai_incident_alert
+# / send_trash_capacity_alert — KHÔNG mở kênh thứ 4. Đây là chẩn đoán AI về
+# sức khoẻ cụm, đúng loại nội dung kênh đó đang mang; và thiết kế 3 kênh
+# được giữ nguyên là 3 (xem docstring đầu module + AD-31).
+
+_LOG_FINDING_SEVERITY_PREFIX = {
+    "CRITICAL": "\U0001f534 NGHIÊM TRỌNG",  # red circle
+    "WARNING": "\U0001f7e1 CẢNH BÁO",       # yellow circle
+    "INFO": "\U0001f535 THÔNG TIN",         # blue circle
+}
+
+
+def send_log_finding_alert(
+    title: str,
+    severity: str,
+    confidence: str,
+    summary: str | None,
+    root_cause: str | None,
+    evidence_templates: list[str] | None = None,
+    recommended_action_id: str | None = None,
+    validation_notes: str | None = None,
+    *,
+    cluster_name: str | None = None,
+) -> None:
+    """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
+    (`watcher/log_analysis.py` chỉ gọi khi `dedupe_key` chưa có bản ghi nào
+    đang OPEN) — cùng nếp "một thông báo cho một vấn đề thật sự mới" mà
+    send_node_alert/send_osd_latency_alert/send_crush_skew_alert đã theo.
+
+    Luôn kèm EVIDENCE GỐC (mẫu log thật) chứ không chỉ kết luận của AI:
+    người trực phải tự đánh giá được, không phải tin lời model. Cùng lý do
+    `validation_notes` cũng được đưa vào — nếu server đã phải sửa/hạ cấp câu
+    trả lời của model thì người đọc cần biết ngay trên điện thoại, chứ không
+    phải mở Dashboard mới thấy."""
+    prefix = _LOG_FINDING_SEVERITY_PREFIX.get(severity, f"⚠️ {severity}")
+    lines = [
+        f"{prefix} Phát hiện từ log: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        f"🎯 Độ tin cậy: {confidence}",
+    ]
+    if summary:
+        lines.append(f"🧠 Tóm tắt: {_compact(summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    if root_cause:
+        lines.append(f"🔎 Nguyên nhân nghi ngờ: {_compact(root_cause, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    for template in (evidence_templates or [])[:3]:
+        lines.append(f"📄 Log: {_compact(template, _MAX_EXCERPT_CHARS)}")
+    if recommended_action_id:
+        lines.append(f"🔧 Đề xuất: {recommended_action_id} (cần Duyệt thủ công)")
+    if validation_notes:
+        lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        "\n".join(lines),
+        cluster_name,
+    )
+
+
+def send_log_finding_resolved_alert(title: str, *, cluster_name: str | None = None) -> None:
+    """Gửi khi các mẫu log của một phát hiện đã ngừng xuất hiện — đóng vòng
+    đời OPEN -> RESOLVED, để người trực biết vấn đề đã hết mà không phải tự
+    vào Dashboard kiểm tra."""
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        f"\U0001f7e2 Đã hết: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}\n"
+        f"Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
+        cluster_name,
+    )

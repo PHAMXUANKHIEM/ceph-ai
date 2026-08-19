@@ -769,6 +769,46 @@ def test_confirm_action_create_pool_auto_approves_with_resolved_command(dashboar
         assert action.proposed_command == "ceph osd pool create my_new_pool 32"
 
 
+def test_confirm_action_delete_pool_now_waits_for_a_second_approval(dashboard_client):
+    """2026-08-19: `delete_pool` chuyển `safe:` -> `destructive:`.
+
+    ĐÂY LÀ MỘT THAY ĐỔI HÀNH VI CÓ CHỦ Ý: trước đó confirm trên Chat là
+    thực thi ngay (Action tạo thẳng ở APPROVED cho Worker nhặt). Giờ nó
+    dừng ở PENDING_APPROVAL và hiện trên mục "Chờ duyệt" — operator vẫn
+    xem lệnh đã resolve ở bước confirm, rồi Duyệt lần hai trên Dashboard.
+
+    Lý do đầy đủ nằm trong worker/policy/action_policy.yaml; tóm tắt: DoD
+    của Pha 0.4 nêu đích danh "xóa pool" là thứ không được nằm trong luồng
+    auto-run, và kill-switch — lớp chặn cuối cho mọi action tự chạy — đã bị
+    gỡ 2026-08-11.
+    """
+    message_id = _stage_proposal(
+        action_id="delete_pool",
+        target_nodes=[A_MON_HOST],
+        params={"pool_name": "pool_bo_di"},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/api/chat/messages/{message_id}/confirm-action")
+
+    assert response.status_code == 200
+    with db_module.SessionLocal() as session:
+        message = session.get(ChatMessage, message_id)
+        incident = session.get(Incident, message.proposed_incident_id)
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert action.classification == ActionClassification.DESTRUCTIVE.value
+        # Điểm mấu chốt: KHÔNG phải APPROVED, nên poll_approved_actions()
+        # của Worker không bao giờ nhặt nó lên nếu chưa có người Duyệt.
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        # Vẫn giữ nguyên lệnh đã resolve để người duyệt đọc trước khi bấm.
+        assert "pool_bo_di" in (action.proposed_command or "")
+
+    home = dashboard_client.get("/")
+    assert "delete_pool" in home.text
+
+
 def test_confirm_action_delete_pool_rejects_invalid_pool_name(dashboard_client):
     # A pool name starting with "-" would parse as a CLI flag — commands.py's
     # builder rejects it, and confirm-action must surface that as a 400

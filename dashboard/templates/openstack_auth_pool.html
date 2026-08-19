@@ -23,6 +23,7 @@
           <a href="/backups" class="nav-dropdown-item">Backup</a>
           <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
           <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+            <a href="/log-intelligence" class="nav-dropdown-item">Log Intelligence</a>
         </div>
       </div>
       <div class="nav-dropdown">
@@ -33,7 +34,7 @@
       {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
       {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
       {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
-      {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
+      {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
     </nav>
     {% if clusters|length > 1 %}<form method="get" action="{{ '/openstack/auth-user/create' if active_view == 'create-user' else '/openstack/auth-pool' }}" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}</option>{% endfor %}</select></form>{% endif %}
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>

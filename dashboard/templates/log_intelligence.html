@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log Intelligence — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+      <nav class="main-nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
+            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
+            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
+            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
+            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
+            <a href="/upgrade" class="nav-dropdown-item">Upgrade Cluster</a>
+            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
+            <a href="/backups" class="nav-dropdown-item">Backup</a>
+            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
+            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+            <a href="/log-intelligence" class="nav-dropdown-item active">Log Intelligence</a>
+          </div>
+        </div>
+        <div class="nav-dropdown">
+          <button type="button" class="nav-link nav-dropdown-toggle">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
+          <div class="nav-dropdown-menu">
+            <a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a>
+          </div>
+        </div>
+        <a href="/settings" class="nav-link">Settings</a>
+        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
+        <a href="/users" class="nav-link">Users</a>
+        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
+      </nav>
+      <form method="post" action="/logout" class="topbar-user">
+        <span class="user-chip">{{ user }}</span>
+        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
+      </form>
+    </div>
+  </header>
+
+
+  <main class="page">
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+    <section class="card">
+      <div class="card-header"><h2>Trạng thái thu thập log</h2></div>
+      <div class="card-body">
+        <p class="muted">
+          Mọi kết luận bên dưới chỉ đáng tin bằng đúng độ đầy đủ của dữ liệu sinh ra nó.
+          <strong>PARTIAL</strong> nghĩa là có node không đọc được log trong cửa sổ đó — AI được
+          báo trước điều này và không được phép kết luận với độ tin cậy cao.
+        </p>
+        {% if not runs %}
+          <p class="muted">Chưa có lần quét nào. Bật <code>log_intel_enabled</code> trong cấu hình để bắt đầu.</p>
+        {% else %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Thời điểm</th><th>Cửa sổ</th><th>Nguồn</th><th>Trạng thái</th>
+                <th>Node</th><th>Dòng log</th><th>Mẫu</th><th>Mẫu mới</th><th>Gắn cờ</th><th>Lỗi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for run in runs %}
+              <tr>
+                <td>{{ run.created_at.strftime('%d/%m %H:%M') }}</td>
+                <td>{{ run.window_start.strftime('%H:%M') }}–{{ run.window_end.strftime('%H:%M') }}</td>
+                <td>{{ run.source }}</td>
+                <td>
+                  {% if run.status == 'OK' %}<span class="badge badge-ok">OK</span>
+                  {% elif run.status == 'PARTIAL' %}<span class="badge badge-warn">PARTIAL</span>
+                  {% else %}<span class="badge badge-err">FAILED</span>{% endif %}
+                </td>
+                <td>{{ run.hosts_scanned - run.hosts_failed }}/{{ run.hosts_scanned }}</td>
+                <td>{{ run.lines_scanned }}</td>
+                <td>{{ run.patterns_seen }}</td>
+                <td>{{ run.patterns_new }}</td>
+                <td>{% if run.patterns_flagged is none %}—{% else %}{{ run.patterns_flagged }}{% endif %}</td>
+                <td class="muted">{{ (run.error_message or '')[:120] }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Phát hiện từ log</h2></div>
+      <div class="card-body">
+        <p class="muted">
+          Đây là <strong>giả thuyết của AI</strong> đọc từ log, không phải phép đo. Mỗi phát hiện
+          luôn kèm bằng chứng gốc để bạn tự đánh giá. Phát hiện tự chuyển sang
+          <em>RESOLVED</em> khi các mẫu log của nó ngừng xuất hiện.
+        </p>
+        {% if not finding_rows %}
+          <p class="muted">Chưa có phát hiện nào.</p>
+        {% else %}
+        {% for item in finding_rows %}
+        {% set f = item.row %}
+        <div class="table-wrap" style="margin-bottom:1rem">
+          <table>
+            <tbody>
+              <tr>
+                <th style="width:14rem">Phát hiện</th>
+                <td>
+                  <strong>{{ f.title or '(không tiêu đề)' }}</strong>
+                  {% if f.severity == 'CRITICAL' %}<span class="badge badge-err">CRITICAL</span>
+                  {% elif f.severity == 'WARNING' %}<span class="badge badge-warn">WARNING</span>
+                  {% else %}<span class="badge">{{ f.severity }}</span>{% endif %}
+                  <span class="badge">{{ f.verdict }}</span>
+                  <span class="badge">Tin cậy: {{ f.confidence }}</span>
+                  {% if f.status == resolved_status %}<span class="badge badge-ok">Đã hết</span>
+                  {% elif f.status == acknowledged_status %}<span class="badge">Đã ghi nhận</span>
+                  {% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}
+                </td>
+              </tr>
+              {% if f.summary %}<tr><th>Tóm tắt</th><td>{{ f.summary }}</td></tr>{% endif %}
+              {% if f.root_cause_hypothesis %}<tr><th>Nguyên nhân nghi ngờ</th><td>{{ f.root_cause_hypothesis }}</td></tr>{% endif %}
+              <tr>
+                <th>Bằng chứng (mẫu log thật)</th>
+                <td>
+                  {% if item.evidence %}
+                    {% for template in item.evidence %}<div><code>{{ template }}</code></div>{% endfor %}
+                  {% else %}<span class="muted">Không trích dẫn được mẫu nào.</span>{% endif %}
+                </td>
+              </tr>
+              {% if f.recommended_action_id %}
+              <tr>
+                <th>Đề xuất</th>
+                <td><code>{{ f.recommended_action_id }}</code>
+                  <span class="muted">— đã tạo đề xuất chờ Duyệt ({{ item.ceph_code }}); không có gì tự chạy.</span></td>
+              </tr>
+              {% endif %}
+              {% if f.validation_notes %}
+              <tr>
+                <th>Hệ thống đã chỉnh câu trả lời của AI</th>
+                <td class="muted">{{ f.validation_notes }}</td>
+              </tr>
+              {% endif %}
+              <tr>
+                <th>Nguồn gốc</th>
+                <td class="muted">
+                  {{ f.created_at.strftime('%d/%m/%Y %H:%M') }} · model {{ f.model_name or '?' }} · prompt {{ f.prompt_version or '?' }}
+                </td>
+              </tr>
+              {% if f.status == open_status %}
+              <tr>
+                <th></th>
+                <td>
+                  <form method="post" action="/log-intelligence/findings/{{ f.id }}/acknowledge">
+                    <button type="submit" class="btn btn-ghost btn-sm">Đã ghi nhận</button>
+                  </form>
+                </td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+        {% endfor %}
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header"><h2>Mẫu log</h2></div>
+      <div class="card-body">
+        <p class="muted">
+          Gắn <strong>BENIGN</strong> cho mẫu nhiễu để tầng phân loại bỏ qua nó vĩnh viễn —
+          đây là cách tắt nhiễu mà không cần sửa code hay đổi ngưỡng.
+          <strong>NOTABLE</strong> thì ngược lại: luôn nổi lên kể cả khi tần suất bình thường.
+        </p>
+        {% if not patterns %}
+          <p class="muted">Chưa có mẫu log nào.</p>
+        {% else %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Mẫu</th><th>Daemon</th><th>Mức</th><th>Số lần</th><th>Lần cuối</th><th>Nhãn</th>{% if is_admin %}<th></th>{% endif %}</tr>
+            </thead>
+            <tbody>
+              {% for p in patterns %}
+              <tr>
+                <td><code>{{ p.template[:160] }}</code></td>
+                <td>{{ p.daemon_type }}</td>
+                <td>{{ p.severity if p.severity is not none else '—' }}</td>
+                <td>{{ p.total_count }}</td>
+                <td>{{ p.last_seen_at.strftime('%d/%m %H:%M') }}</td>
+                <td>
+                  {% if p.triage_label == 'BENIGN' %}<span class="badge">BENIGN</span>
+                  {% elif p.triage_label == 'NOTABLE' %}<span class="badge badge-warn">NOTABLE</span>
+                  {% else %}<span class="muted">—</span>{% endif %}
+                </td>
+                {% if is_admin %}
+                <td>
+                  <form method="post" action="/log-intelligence/patterns/{{ p.id }}/label" style="display:flex;gap:.25rem">
+                    <select name="label">
+                      <option value="UNKNOWN" {% if p.triage_label == 'UNKNOWN' %}selected{% endif %}>UNKNOWN</option>
+                      <option value="BENIGN" {% if p.triage_label == 'BENIGN' %}selected{% endif %}>BENIGN</option>
+                      <option value="NOTABLE" {% if p.triage_label == 'NOTABLE' %}selected{% endif %}>NOTABLE</option>
+                    </select>
+                    <button type="submit" class="btn btn-ghost btn-sm">Lưu</button>
+                  </form>
+                </td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

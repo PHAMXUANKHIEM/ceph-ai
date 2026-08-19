@@ -47,7 +47,10 @@ def test_propose_creates_pending_action_for_manual_exec_mode(dashboard_client, m
         action = session.get(Action, action_pk)
         assert action.action_id == "delete_cluster_manual"
         assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert action.classification == "RISKY"
+        # AI roadmap Pha 0.4 (2026-08-18): moved risky: -> destructive: —
+        # irreversibly tears down a real cluster. Always required explicit
+        # approval either way (unchanged above); stricter label only.
+        assert action.classification == "DESTRUCTIVE"
         params = json.loads(action.action_params)
         assert params["wipe_osd_disks"] is False
         node_ips = {n["ip"] for n in params["nodes"]}
@@ -73,7 +76,9 @@ def test_propose_creates_pending_action_for_cephadm_exec_mode(dashboard_client, 
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_pk)
         assert action.action_id == "delete_cluster_cephadm"
-        assert action.classification == "RISKY"
+        # AI roadmap Pha 0.4 (2026-08-18): see the manual-exec-mode test
+        # above for why this is DESTRUCTIVE now, not RISKY.
+        assert action.classification == "DESTRUCTIVE"
 
 
 def test_propose_with_wipe_requires_osd_disk_per_node(dashboard_client, monkeypatch):

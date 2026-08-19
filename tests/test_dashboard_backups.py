@@ -511,7 +511,13 @@ def test_restore_propose_creates_pending_risky_action(dashboard_client, monkeypa
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_id)
         assert action.action_id == "restore_rbd_image_to_production"
-        assert action.classification == "RISKY"
+        # AI roadmap Pha 0.4 (2026-08-18): moved risky: -> destructive: —
+        # restores a backup OVER a live production image, the exact "ghi
+        # đè production" case roadmap section 3.3 names explicitly. Still
+        # always required explicit Dashboard approval either way (this
+        # test's own PENDING_APPROVAL assertion below is unchanged) — a
+        # stricter classification, not a behavior change.
+        assert action.classification == "DESTRUCTIVE"
         assert action.status == ActionStatus.PENDING_APPROVAL.value
         assert json.loads(action.action_params) == {"pool": "vms", "image": "disk1"}
         assert json.loads(action.target_nodes) == ["10.20.1.112"]

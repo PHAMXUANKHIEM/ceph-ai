@@ -21,6 +21,8 @@ from dashboard.routes import (
     bucket_access_log,
     object_storage,
     object_storage_users,
+    capability_matrix as capability_matrix_routes,
+    log_intelligence as log_intelligence_routes,
     chat,
     clusters as clusters_routes,
     convert_cluster,
@@ -158,6 +160,8 @@ def create_app() -> FastAPI:
     application.include_router(object_storage_users.router)
     application.include_router(telegram_alerts.router)
     application.include_router(crush_map.router)
+    application.include_router(capability_matrix_routes.router)
+    application.include_router(log_intelligence_routes.router)
     application.include_router(clusters_routes.router)
     application.include_router(vitastor.router)
     application.include_router(vitastor_actions.router)

@@ -193,8 +193,31 @@ class Incident(Base):
 
 
 class ActionClassification(str, enum.Enum):
+    # AI roadmap Pha 0.4 (Plan/ai-missing-features-roadmap.md, section
+    # 3.3) -- 4-tier safety policy. READ_ONLY/SAFE both auto-execute
+    # (worker/llm/router_client.py::diagnose_incident,
+    # dashboard/routes/chat.py's confirm-immediately path) — READ_ONLY
+    # exists for a future action_id that provably touches no cluster state
+    # at all (nothing reclassified into it yet, see worker/policy/
+    # action_policy.yaml's own comment), kept distinct from SAFE only so a
+    # later capability check can tell "definitely read-only" apart from
+    # "mutates but judged low-risk". RISKY/DESTRUCTIVE both require
+    # explicit Dashboard/Telegram approval (dashboard/routes/actions.py::
+    # approve_action_core) and can NEVER auto-execute — enforced not just
+    # by policy but in code (worker/llm/router_client.py::
+    # _maybe_execute_safe_action and dashboard/routes/chat.py's SAFE-path
+    # both hard-assert the classification isn't DESTRUCTIVE before running
+    # anything, so a future policy-loading bug can't silently auto-run one).
+    # DESTRUCTIVE additionally marks an action_id as irreversible/data-
+    # destroying (pool purge, cluster teardown, overwrite-production
+    # restore) for worker/policy/gate.py::classify_action's own
+    # conservative-override precedence (DESTRUCTIVE beats every other list
+    # an action_id might mistakenly also appear in) — see that function's
+    # own docstring.
+    READ_ONLY = "READ_ONLY"
     SAFE = "SAFE"
     RISKY = "RISKY"
+    DESTRUCTIVE = "DESTRUCTIVE"
 
 
 class ActionStatus(str, enum.Enum):
@@ -217,6 +240,34 @@ class Action(Base):
         CheckConstraint(
             "status IN ('" + "','".join(s.value for s in ActionStatus) + "')",
             name="ck_actions_status_valid",
+        ),
+        # AI roadmap Pha 0.4 -- partial unique index (only enforced when
+        # idempotency_key IS NOT NULL AND status is still in-flight (same
+        # sqlite_where/postgresql_where pattern Cluster.is_default's own
+        # uq_clusters_single_default index already uses above). Scoped to
+        # in-flight statuses ONLY, deliberately NOT a permanent global
+        # uniqueness guarantee — idempotency_key is computed from
+        # (action_id, target nodes, params), not incident_id (see
+        # router_client.py's own comment at its call site), so a
+        # permanent constraint would forever block a legitimate FUTURE
+        # incident from proposing the exact same command against the same
+        # target again after an earlier one already finished (e.g.
+        # resync_ntp on the same node recurring days later) — this index
+        # only ever needs to catch a SECOND proposal for the same
+        # not-yet-resolved command while the first one is still PENDING/
+        # PENDING_APPROVAL/APPROVED. Every pre-Pha-0.4 Action row (NULL
+        # idempotency_key) and every action family that never opts in stay
+        # completely unaffected either way.
+        Index(
+            "uq_actions_idempotency_key_inflight",
+            "idempotency_key",
+            unique=True,
+            sqlite_where=text(
+                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED')"
+            ),
+            postgresql_where=text(
+                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED')"
+            ),
         ),
     )
 
@@ -277,6 +328,32 @@ class Action(Base):
     telegram_message_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     telegram_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # AI roadmap Pha 0.4 -- stale-evidence check for the approval flow
+    # (roadmap section 3.3's "expiry"/"stale-evidence check"). Set only by
+    # worker/llm/router_client.py::diagnose_incident's own Action-creation
+    # call site (settings.action_approval_expiry_hours after proposal
+    # time) — every OTHER action-creation call site in this codebase
+    # (Chat-with-AI, DeviceHealth, CRUSH skew, cluster upgrade/patch/
+    # deploy, etc.) leaves this NULL, meaning "no expiry check applies",
+    # same opt-in-column posture as execution_progress/telegram_* above.
+    # NULL is deliberately treated as "never expires" by
+    # dashboard/routes/actions.py::approve_action_core, not as "already
+    # expired" — an unset expiry must never accidentally block every
+    # pre-existing action family that doesn't populate it.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # AI roadmap Pha 0.4 -- deterministic hash of
+    # (incident_id, action_id, action_params) at classification time, set
+    # by the same router_client.py call site as expires_at above. A
+    # SECOND layer of duplicate-Action protection on top of the existing
+    # `existing_action = session.query(Action).filter_by(incident_id=...)`
+    # guard already in diagnose_incident (which only catches a re-run for
+    # the SAME incident_id) — this one is enforced by a real DB unique
+    # index (see the Pha 0.4 migration) so it also catches a hypothetical
+    # future caller that proposes the identical action from a DIFFERENT
+    # incident_id (e.g. two near-simultaneous incidents both diagnosing to
+    # the same command against the same target). NULL for every action
+    # family that doesn't opt in, same posture as expires_at.
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -1312,3 +1389,459 @@ class TelegramChannelConfigChange(Base):
     bot_token_masked: Mapped[str] = mapped_column(String(32), nullable=False)
     actor: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class CapabilityStatus(str, enum.Enum):
+    """AI roadmap Pha 0.1 (Plan/ai-missing-features-roadmap.md) -- the
+    standardized response every capability-aware AI feature must be able to
+    give BEFORE any proposal/action is generated for a cluster (fail-closed
+    posture, section 3.2 of that roadmap). This enum only covers the
+    coarse "do we have a usable version/deployment-mode inventory for this
+    cluster at all" question -- Pha 0.2's later per-command capability
+    matrix answers the finer "is THIS specific command/flag supported on
+    THIS version" question and is deliberately out of scope here.
+
+    - SUPPORTED: `ceph versions` succeeded, every daemon agrees on one
+      version, and that version's major release is one this codebase
+      recognizes (shared/ceph_releases.py::RELEASES) -- safe to build
+      version-aware capability checks on top of.
+    - UNSUPPORTED_VERSION: the query succeeded but the reported version's
+      major isn't in shared/ceph_releases.py's table (too old/too new/
+      unparseable) -- there is no reference data to check compatibility
+      against, so any version-aware feature must refuse rather than guess.
+    - UNAVAILABLE: the query itself failed (every MON node unreachable/
+      timed out) -- a transient condition, not a verdict on the cluster's
+      version; retried on the next scan.
+    - UNKNOWN: no snapshot has ever been collected yet for this cluster
+      (e.g. just added, watcher hasn't ticked once since).
+    """
+
+    SUPPORTED = "SUPPORTED"
+    UNSUPPORTED_VERSION = "UNSUPPORTED_VERSION"
+    UNAVAILABLE = "UNAVAILABLE"
+    UNKNOWN = "UNKNOWN"
+
+
+class ClusterCapabilityInventory(Base):
+    """AI roadmap Pha 0.1 -- one row per scan tick (append-only, mirrors
+    `CrushStructureSnapshot`'s history-not-upsert shape above) recording
+    what `watcher/capability_inventory.py::collect_and_store` observed for
+    one cluster: per-daemon-type Ceph version(s), whether they're mixed
+    (an interrupted/partial upgrade), the cluster's deployment mode, and
+    the resulting `CapabilityStatus`. Read back by
+    `dashboard/routes/clusters.py` (latest row per cluster) to show an
+    operator whether THIS cluster currently has a usable capability
+    inventory, and by any future version-aware AI feature (Pha 0.3+) as
+    the "is it even safe to consider a proposal for this cluster" gate.
+
+    Kept as history (not a single upserted row) on purpose: precisely the
+    signal Pha 0's own `[~] 0.1 ... cảnh báo mixed-version` needs is "was
+    this cluster mid-upgrade at time T", which a latest-row-only table
+    would silently overwrite the moment the upgrade finished.
+    """
+
+    __tablename__ = "cluster_capability_inventory"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('" + "','".join(s.value for s in CapabilityStatus) + "')",
+            name="ck_cluster_capability_inventory_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # "cephadm" / "docker" / "podman" / "none" / None (couldn't be
+    # determined -- e.g. the version query itself failed).
+    deployment_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # JSON: {daemon_type: [version, ...]} from summarize_versions_payload.
+    per_type_versions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[str] -- every distinct version string seen this scan.
+    distinct_versions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_mixed_version: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set only when every daemon agrees on one version (matches
+    # summarize_versions_payload's own "current_version" semantics).
+    current_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Set only for SUPPORTED/UNSUPPORTED_VERSION rows -- the current_version's
+    # major, e.g. 18 for "18.2.2" (None for UNAVAILABLE/UNKNOWN).
+    current_major: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Populated only for UNAVAILABLE rows -- the CephQueryError text, so an
+    # operator can see WHY without digging through watcher logs.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class CapabilityMatrixEntryStatus(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    DEPRECATED = "DEPRECATED"
+
+
+class CapabilityMatrixEntry(Base):
+    """AI roadmap Pha 0.2 (Plan/ai-missing-features-roadmap.md, section
+    3.2) -- "is THIS specific command/flag/module/backend supported on
+    THIS Ceph major version" reference data, each row traceable to a real
+    Ceph documentation source (`doc_url`) and the operator who verified it
+    (`verified_by`/`verified_at`) -- section 3.2 explicitly bans deciding
+    this from a blog/community answer, and section 3.1 bans any AI
+    conclusion without real evidence, so this table is deliberately
+    OPERATOR-MAINTAINED (via `dashboard/routes/capability_matrix.py`, an
+    admin-only CRUD page), never auto-populated by a model guessing at
+    upstream docs -- same "static reference data, extended by hand,
+    verified against the real download.ceph.com/docs.ceph.com source, not
+    auto-updated" posture as `shared/ceph_releases.py`'s own table.
+
+    A missing/empty table is the CORRECT fail-closed starting state (Pha 0
+    section 3.2: "Fail closed khi version hoặc capability chưa xác định")
+    -- `shared/capability_matrix.py::check_capability` returns UNKNOWN for
+    any `command_id` with no ACTIVE entry, never assumes SUPPORTED just
+    because nothing says otherwise.
+
+    History, not upsert (mirrors `ClusterCapabilityInventory`'s own
+    append-vs-overwrite reasoning): superseding an entry writes a NEW row
+    and DEPRECATES the old one (see
+    `shared/capability_matrix.py::deprecate_entry`) rather than editing it
+    in place, so `CapabilityMatrixChange` below always has a real diff to
+    show, and a capability check made yesterday against the row that was
+    active THEN stays reconstructable.
+    """
+
+    __tablename__ = "capability_matrix_entries"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('" + "','".join(s.value for s in CapabilityMatrixEntryStatus) + "')",
+            name="ck_capability_matrix_entries_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Matches watcher/ceph_client.py::DIAGNOSTIC_COMMANDS's keys for the
+    # commands this app already runs (e.g. "ceph_versions"), OR a future
+    # action_id/mgr-module identifier not in that closed dict yet -- this
+    # table does not itself constrain command_id to a fixed enum, since
+    # Pha 0.2's matrix is meant to grow ahead of which commands the app
+    # has wired up an executor for.
+    command_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # The literal command this row documents, e.g. "ceph orch upgrade
+    # start" -- denormalized copy for the admin page/audit trail to read
+    # without cross-referencing DIAGNOSTIC_COMMANDS, which may not even
+    # have an entry for a not-yet-wired-up command.
+    inner_command: Mapped[str] = mapped_column(Text, nullable=False)
+    flag: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    module: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    backend: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Inclusive major-version range this row applies to. max_major=None
+    # means "still supported as of the newest release verified_by checked"
+    # -- NOT "supported forever" (a later verification that finds it
+    # dropped writes a new bounded row + deprecates this one, see
+    # deprecate_entry's own docstring).
+    min_major: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_major: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    doc_url: Mapped[str] = mapped_column(Text, nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    verified_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=CapabilityMatrixEntryStatus.ACTIVE.value
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class CapabilityMatrixChange(Base):
+    """Append-only audit trail of every `CapabilityMatrixEntry` create/
+    deprecate -- same "who changed what, when" posture as
+    `TelegramChannelConfigChange` above, required by Pha 0.2's own DoD
+    ("có ... người duyệt và lịch sử thay đổi"). `entry_snapshot_json` holds
+    the full entry state AFTER the change (not a diff) so history stays
+    readable even if `CapabilityMatrixEntry` gains/loses columns later.
+    """
+
+    __tablename__ = "capability_matrix_changes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entry_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("capability_matrix_entries.id"), nullable=False, index=True
+    )
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    change_type: Mapped[str] = mapped_column(String(16), nullable=False)  # CREATED / DEPRECATED
+    entry_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class LogIngestStatus(str, enum.Enum):
+    """Outcome of ONE `watcher/log_intel.py::scan_and_store` tick.
+
+    PARTIAL is a first-class state, not an error: one unreachable node must
+    never abort a whole scan (same per-node best-effort posture
+    `watcher/collector.py::collect_relevant_logs` already has), but the
+    incompleteness has to be RECORDED -- the AI layer (step L2) is required
+    to answer INSUFFICIENT_EVIDENCE rather than guess when the window it is
+    reasoning over was only partially collected (Plan/log-intelligence-rca-
+    plan.md, constraint R3 / roadmap section 3.1).
+    """
+
+    OK = "OK"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+
+
+class LogIngestRun(Base):
+    """One row per log-collection tick (append-only) -- the provenance
+    record every later finding traces back to for "which window, which
+    source, how complete".
+
+    Deliberately stores COUNTS and STATUS only, never the log lines
+    themselves: this app's own database size is a monitored, alerting
+    resource (`watcher/database_capacity_monitor.py`), so raw log text
+    stays at its source (the node's own file, or Loki) and only the
+    fingerprints/counts derived from it are persisted here. See the plan's
+    constraint R1.
+    """
+
+    __tablename__ = "log_ingest_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('" + "','".join(s.value for s in LogIngestStatus) + "')",
+            name="ck_log_ingest_runs_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=False, index=True
+    )
+    # "ssh" / "loki" -- which watcher/log_source/ adapter produced this run.
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    hosts_scanned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hosts_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lines_scanned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    patterns_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    patterns_new: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # L1: số mẫu tầng triage (watcher/log_triage.py) gắn cờ trong lần quét
+    # này. Nullable vì mọi dòng ghi TRƯỚC khi L1 tồn tại không có giá trị
+    # này, và 0 ("đã kiểm tra, không có gì bất thường") phải phân biệt được
+    # với NULL ("lần quét đó chưa hề có tầng triage") -- cùng nguyên tắc
+    # "chưa đo được khác với đo ra 0" mà TriageResult.baseline_mean dùng.
+    patterns_flagged: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Why a PARTIAL/FAILED run was incomplete -- the per-host error text,
+    # so an operator sees the reason without digging through watcher logs
+    # (same role as ClusterCapabilityInventory.error_message above).
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+
+
+class LogPatternTriageLabel(str, enum.Enum):
+    """Operator-controlled verdict on a fingerprint, used by step L1's
+    triage to decide what is even worth looking at.
+
+    - UNKNOWN: default for a freshly discovered pattern.
+    - BENIGN: operator marked it as expected noise -- triage skips it
+      forever after, WITHOUT a code change (the plan's own reason for
+      making this a data field rather than a hardcoded ignore list).
+    - NOTABLE: operator marked it as always worth surfacing, even if its
+      rate looks unremarkable.
+    """
+
+    UNKNOWN = "UNKNOWN"
+    BENIGN = "BENIGN"
+    NOTABLE = "NOTABLE"
+
+
+class LogPattern(Base):
+    """One distinct log-line SHAPE (a "fingerprint"), after every variable
+    part -- timestamps, thread ids, addresses, osd/pg ids, uuids, numbers --
+    has been replaced by a placeholder.
+
+    This is the table that makes AI analysis affordable at all: a scan
+    window holding millions of raw lines normally collapses to a few
+    hundred rows here, and step L2 sends the AI these templates plus their
+    counts rather than the raw log (plan constraint R4). Fingerprinting
+    itself is fully deterministic -- no model involved -- so it stays
+    correct and free regardless of whether the AI layer is even enabled.
+    """
+
+    __tablename__ = "log_patterns"
+    __table_args__ = (
+        UniqueConstraint("cluster_id", "fingerprint", name="uq_log_patterns_cluster_fingerprint"),
+        CheckConstraint(
+            "triage_label IN ('" + "','".join(s.value for s in LogPatternTriageLabel) + "')",
+            name="ck_log_patterns_triage_label_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=False, index=True
+    )
+    # sha1 of (template + daemon_type) -- see log_intel.py::fingerprint_of.
+    fingerprint: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    # The normalized shape, e.g.
+    # "osd.<N> heartbeat_check: no reply from <ADDR> osd.<N> ever on either front or back"
+    template: Mapped[str] = mapped_column(Text, nullable=False)
+    # mon / mgr / osd / rgw
+    daemon_type: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    # Ceph's own numeric priority when parseable (-1 = error), else None.
+    severity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # One real line kept verbatim as a human-readable example. Bounded
+    # (truncated on write) and REDACTED before storage -- never a full log
+    # dump, see constraint R1/R6.
+    sample_line: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    total_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    triage_label: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=LogPatternTriageLabel.UNKNOWN.value
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class LogPatternObservation(Base):
+    """Per-hour occurrence count of one pattern on one host -- the time
+    series step L1's baseline/burst detection reads back ("is this rate
+    normal for this hour of the week, or 5x what it usually is").
+
+    Bucketed by HOUR rather than stored per line, on purpose: this is the
+    only table in this feature that grows with log VOLUME rather than log
+    VARIETY, so it carries its own, much shorter retention
+    (`log_intel_observation_retention_days`, default 30) -- see constraint
+    R1 and `watcher/database_capacity_monitor.py`.
+    """
+
+    __tablename__ = "log_pattern_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "pattern_id", "bucket_hour", "host", name="uq_log_pattern_observations_bucket"
+        ),
+        Index("ix_log_pattern_observations_bucket_hour", "bucket_hour"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    pattern_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("log_patterns.id"), nullable=False, index=True
+    )
+    # Truncated to the top of the hour (UTC) the lines fell in.
+    bucket_hour: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    host: Mapped[str] = mapped_column(String(64), nullable=False)
+    count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class LogFindingVerdict(str, enum.Enum):
+    """Kết luận của tầng phân tích AI (L2) cho một cửa sổ log.
+
+    `INSUFFICIENT_EVIDENCE` là công dân hạng nhất, không phải trường hợp
+    lỗi: roadmap mục 3.1 buộc AI phải trả nó khi evidence thiếu/quá cũ thay
+    vì đoán nguyên nhân. Nó cũng là chỗ server HẠ CẤP một câu trả lời không
+    qua được kiểm tra (bịa evidence id, lần quét PARTIAL...) -- xem
+    watcher/log_analysis.py::_validate.
+    """
+
+    FINDING = "FINDING"
+    NO_FINDING = "NO_FINDING"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
+class LogFindingSeverity(str, enum.Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+class LogFindingConfidence(str, enum.Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class LogFindingStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RESOLVED = "RESOLVED"
+
+
+class LogFinding(Base):
+    """Một kết luận của AI về một cửa sổ log (Log Intelligence L2).
+
+    Mọi câu khẳng định phải neo được vào evidence thật: `evidence_pattern_ids`
+    trỏ ngược về `log_patterns` và được server kiểm tra là CÓ THẬT và thuộc
+    đúng cửa sổ này trước khi hàng được ghi -- một finding trích dẫn mẫu
+    không tồn tại sẽ bị hạ xuống INSUFFICIENT_EVIDENCE, không được lưu như
+    một kết luận bình thường (roadmap mục 6.3: "không bịa timeline").
+
+    `recommended_action_id` đã đi qua allowlist của
+    `worker/policy/action_policy.yaml` VÀ bị cấm tuyệt đối nếu rơi vào nhóm
+    DESTRUCTIVE -- xem watcher/log_analysis.py::_validated_action_id. Đây
+    chỉ là GỢI Ý đọc: không có đường nào từ bảng này chạy thẳng ra cụm, mọi
+    hành động thật vẫn phải qua pipeline Incident/Action/Duyệt sẵn có (plan,
+    ràng buộc R5).
+    """
+
+    __tablename__ = "log_findings"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('" + "','".join(v.value for v in LogFindingVerdict) + "')",
+            name="ck_log_findings_verdict_valid",
+        ),
+        CheckConstraint(
+            "status IN ('" + "','".join(s.value for s in LogFindingStatus) + "')",
+            name="ck_log_findings_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), nullable=False, index=True
+    )
+    # Lần quét đã sinh ra finding này -- provenance: từ đó suy ra cửa sổ
+    # thời gian, nguồn log, và (quan trọng nhất) lần quét đó có đầy đủ hay
+    # chỉ PARTIAL.
+    ingest_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("log_ingest_runs.id"), nullable=False, index=True
+    )
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    root_cause_hypothesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[str] -- id của LogPattern, đã kiểm tra tồn tại thật.
+    evidence_pattern_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[str] -- host, đã đối chiếu với danh sách node đã cấu hình.
+    affected_hosts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    affected_daemons_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Chỉ được đặt khi vượt qua allowlist VÀ không thuộc nhóm DESTRUCTIVE.
+    recommended_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # JSON list[str] -- các bước thủ công, dạng văn bản thuần, không bao giờ
+    # là câu lệnh để chạy (AI không được phép sinh lệnh, xem plan R3).
+    recommended_manual_steps_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Chống lặp cảnh báo ở L3: cùng bộ mẫu evidence -> cùng khoá.
+    dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=LogFindingStatus.OPEN.value
+    )
+    # Truy vết được model nào/prompt nào đã kết luận -- bắt buộc khi kết
+    # luận của AI được đem ra trước người vận hành.
+    model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Lý do server hạ cấp/sửa câu trả lời của model (bịa evidence id, đề
+    # xuất action_id không hợp lệ, lần quét PARTIAL...). Có giá trị nghĩa là
+    # đã có ít nhất một lần can thiệp -- đọc được ngay trên Dashboard thay
+    # vì phải lục log.
+    validation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )

@@ -95,6 +95,11 @@ def test_action_has_required_columns():
         "telegram_message_ids",
         "telegram_notified_at",
         "executed_at",
+        # AI roadmap Pha 0.4 (2026-08-18): stale-evidence expiry +
+        # cross-incident idempotency guard — see Action's own column
+        # docstrings in shared/models.py.
+        "expires_at",
+        "idempotency_key",
         "created_at",
         "updated_at",
     }

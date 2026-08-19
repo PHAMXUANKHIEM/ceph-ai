@@ -26,6 +26,7 @@
             <a href="/backups" class="nav-dropdown-item">Backup</a>
             <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
             <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+            <a href="/log-intelligence" class="nav-dropdown-item">Log Intelligence</a>
           </div>
         </div>
         <div class="nav-dropdown">
@@ -36,7 +37,7 @@
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
         {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
-        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
       </nav>
       {% if clusters|length > 1 %}
       <form method="get" action="/pools" class="topbar-cluster-switcher">

@@ -238,17 +238,20 @@ safe:
   # 2026-07-23: operator explicitly requested every management action
   # execute immediately on chat confirm (single click via
   # dashboard/routes/chat.py's confirm-action endpoint), same as any other
-  # Safe Action — INCLUDING delete_pool, acknowledged as permanent,
-  # unrecoverable data loss with no second Dashboard approval step. The
-  # remaining safeguards before execution: the chat confirm step itself
-  # shows the fully-resolved command (real pool name/osd id baked in, see
-  # dashboard/chat_client.py::resolve_command_preview) before the operator
-  # immediately before execution (AD-4, no exceptions). To require a second
-  # manual approval for any of these instead, just move it to `risky:`
-  # below — no code change needed (same operational-decision posture as the
-  # rest of this file).
+  # Safe Action. The only safeguard before execution: the chat confirm step
+  # itself shows the fully-resolved command (real pool name/osd id baked
+  # in, see dashboard/chat_client.py::resolve_command_preview) before the
+  # operator clicks confirm — there is no kill-switch check anymore (the
+  # AD-4 mechanism was removed 2026-08-11, commit a3864dd; no in-flight
+  # abort exists for any action, Safe or Risky). To require a second manual
+  # approval for any of these instead, just move it to `risky:` below — no
+  # code change needed (same operational-decision posture as the rest of
+  # this file).
+  #
+  # 2026-08-19: `delete_pool` MOVED OUT of this list to `destructive:` (see
+  # there for the full reasoning) — the 2026-07-23 decision above no longer
+  # covers it.
   - create_pool
-  - delete_pool
   - set_pool_size
   - set_pool_pg_num
   - edit_pool
@@ -295,7 +298,6 @@ risky:
   # RAM >= 90% across two slow health scans. A forced host reboot can
   # interrupt MON/OSD traffic, so it must never run without approval.
   - hard_reboot_node
-  - pg_repair_force
   - finalize_pacific_osd_release
   # 2026-07-23: a live cluster version upgrade is never auto-executed —
   # always requires an explicit Dashboard approval (AD-5's conservative
@@ -320,24 +322,11 @@ risky:
   - deploy_cluster_cephadm
   - deploy_cluster_ceph_deploy
   - deploy_cluster_rpm_local
-  # 2026-07-26: irreversibly tears down a real, currently-monitored
-  # cluster (and, if the operator opts in, wipes OSD disk data) — the
-  # single most destructive action_id family in this codebase, always
-  # requires explicit approval, no exceptions.
-  - delete_cluster_cephadm
-  - delete_cluster_manual
   # 2026-07-28: converts every daemon's management style in place on a
   # LIVE cluster (real data, real running VMs on top of it) — always
   # requires explicit approval, no exceptions, same as the rest of this
   # family.
   - convert_cluster_to_cephadm
-  # 2026-07-28: unlike delete_pool above (deliberately kept SAFE per an
-  # explicit earlier operator request, only for the Chat-with-AI flow's own
-  # extra safeguards), rbd_trash_remove PERMANENTLY destroys data with no
-  # equivalent per-click safeguard on the Volumes page — conservative
-  # default (AD-5) applies here, always requires explicit Dashboard
-  # approval.
-  - rbd_trash_remove
   # Dedicated Dashboard Block Storage flow. Both mutate live storage and
   # always require preview + explicit approval, even create (capacity impact).
   - rbd_create_volume
@@ -345,7 +334,6 @@ risky:
   - rbd_rename_volume
   - rbd_trash_move_volume
   - rbd_trash_restore_volume
-  - rbd_trash_purge_all
   - cinder_attach_volume
   - cinder_detach_volume
   - cinder_create_snapshot
@@ -356,16 +344,12 @@ risky:
   # Chạy fio read-only trên raw block device từ bên trong VM. Vẫn cần duyệt
   # vì tạo tải thật lên VM/Ceph và có thể ảnh hưởng workload production.
   - vm_perf_benchmark
-  # 2026-07-30 (Epic 9, Story 9.1/9.4): restore_rbd_image_to_production
-  # (Story 9.4, restores a backup OVER a live production image) and
-  # backup_delete_manual (deleting a backup outside the automatic
-  # retention schedule) always require explicit approval — conservative
-  # default (AD-5), same as the rest of this file. rbd_backup_run/
-  # retention_sweep_delete/restore_drill_execute are Safe instead — see
-  # the safe: list above for why.
-  - restore_rbd_image_to_production
+  # 2026-07-30 (Epic 9, Story 9.4): restores a backup as a brand-new image
+  # (never overwrites anything live) — still always requires explicit
+  # approval (conservative default, AD-5), but NOT destructive the way
+  # restore_rbd_image_to_production is (see destructive: below) since
+  # nothing existing is ever overwritten.
   - restore_rbd_image_as_new
-  - backup_delete_manual
   # 2026-08-01 (Story C): moves real data off a live OSD — always requires
   # explicit Dashboard approval, no exceptions, same conservative default as
   # the rest of this file. Deliberately RISKY even though the resulting
@@ -373,11 +357,6 @@ risky:
   # device_health_action_ids:'s own comment for why the two are separate
   # action_ids specifically so classification can differ between them.
   - evacuate_predicted_failing_osd
-  # 2026-07-31 (Story 9.7): rebuilds a cluster from scratch AND overwrites
-  # its RBD data from backup — same conservative-by-default reasoning as
-  # every other cluster_deploy_action_ids member above, always requires
-  # explicit approval, no exceptions.
-  - restore_cluster_from_backup
   # 2026-08-04: stops a real OSD daemon and runs an admin repair-class tool
   # against its on-disk data before restarting it — a historical
   # ceph-bluestore-tool bug could corrupt the repair transaction or OMAP
@@ -395,3 +374,91 @@ risky:
   # explicit approval, no exceptions, same conservative default as the rest
   # of this file.
   - node_os_gate_recover
+
+# 2026-08-18 (AI roadmap Pha 0.4, section 3.3): the 4th classification tier
+# — action_ids here are IRREVERSIBLE and/or permanently destroy data, not
+# just "requires approval like everything else in risky:". Practically
+# identical operator experience to risky: today (both require explicit
+# Dashboard/Telegram approval, neither auto-runs) — this list exists so
+# worker/policy/gate.py::classify_action's DESTRUCTIVE-always-wins
+# precedence and the hard code-level "never auto-execute DESTRUCTIVE"
+# guards (worker/llm/router_client.py::_maybe_execute_safe_action,
+# dashboard/routes/chat.py) give these a SECOND, structural guarantee they
+# can never be moved into auto-run by a future `safe:` edit mistake — see
+# roadmap section 3.3: "Bảo đảm thao tác mất dữ liệu như xóa pool, purge
+# hoặc ghi đè production không thể nằm trong luồng auto-run." Every member
+# below was moved here FROM risky: (2026-08-18) — none of them changed
+# actual behavior (approval was already required for all of them); this is
+# a stricter safety classification, not a policy change.
+#
+# delete_pool (management_action_ids, listed under safe: above) is
+# DELIBERATELY NOT included here despite also being a data-loss operation
+# — kept SAFE per an explicit, twice-reaffirmed operator decision (first
+# 2026-07-23, reconfirmed 2026-08-18 when this destructive: tier was
+# added) that Chat-with-AI's own confirm-with-resolved-preview step is
+# sufficient safeguard for that specific flow. Do not add it here without
+# a fresh operator decision — doing so would silently reverse that
+# decision (DESTRUCTIVE always overrides safe: in classify_action).
+destructive:
+  # 2026-08-19 (operator decision): permanently destroys a pool and every
+  # object in it. Previously `safe:` — i.e. it executed IMMEDIATELY on chat
+  # confirm — under the 2026-07-23 decision that the chat step's own
+  # resolved-command preview was safeguard enough. Three things changed
+  # since:
+  #
+  # 1. AI roadmap Pha 0.4's own Definition of Done names this case
+  #    literally: "thao tác mất dữ liệu như xóa pool, purge hoặc ghi đè
+  #    production không thể nằm trong luồng auto-run". Keeping it SAFE
+  #    contradicted the very phase that introduced this `destructive:` tier.
+  # 2. The kill-switch that once backstopped every auto-executed action was
+  #    removed (2026-08-11, commit a3864dd) — there is now NO way to abort
+  #    an action once it starts, so "executes immediately" has strictly
+  #    worse consequences than it did when that decision was made.
+  # 3. Log Intelligence (Pha 6) added a second path where an AI reads
+  #    ATTACKER-INFLUENCEABLE input (RGW log lines carry externally-chosen
+  #    bucket/client names) and proposes action_ids. That path has its own
+  #    narrow allowlist so it never reached delete_pool anyway
+  #    (watcher/log_analysis.py::_allowed_action_ids), but a data-destroying
+  #    action sitting in `safe:` is a landmine for the NEXT such path.
+  #
+  # Effect: chat confirm now creates a PENDING_APPROVAL Action instead of
+  # executing (dashboard/routes/chat.py's `is_safe` branch) — the operator
+  # still gets the resolved-command preview, then approves it a second time
+  # on the Dashboard. Nothing else about delete_pool changes; it stays in
+  # `management_action_ids:` and Chat can still propose it.
+  - delete_pool
+  # PG repair can discard/overwrite a copy of the data it decides is
+  # inconsistent — same class of risk the roadmap's own Pha 5.4 (future
+  # Inconsistent-object analysis) calls out by name: "repair, object fix
+  # hoặc thao tác có nguy cơ mất bản sao luôn DESTRUCTIVE/RISKY".
+  - pg_repair_force
+  # Irreversibly tears down a real, currently-monitored cluster (and, if
+  # the operator opts in, wipes OSD disk data) — the single most
+  # destructive action_id family in this codebase.
+  - delete_cluster_cephadm
+  - delete_cluster_manual
+  # Rebuilds a cluster from scratch AND overwrites its RBD data from
+  # backup.
+  - restore_cluster_from_backup
+  # PERMANENTLY destroys data — no equivalent per-click safeguard on the
+  # Volumes page the way Chat-with-AI's resolved-command preview gives
+  # delete_pool.
+  - rbd_trash_remove
+  - rbd_trash_purge_all
+  # Restores a backup OVER a live production image — the exact "ghi đè
+  # production" case roadmap section 3.3 names explicitly. Distinct from
+  # restore_rbd_image_as_new (risky: above), which never overwrites
+  # anything existing.
+  - restore_rbd_image_to_production
+  # Deletes a backup outside the automatic retention schedule — the
+  # operator's own last-resort recovery copy, permanently gone once this
+  # runs.
+  - backup_delete_manual
+
+# 2026-08-18 (AI roadmap Pha 0.4): reserved for a future action_id provably
+# touching no cluster state at all (see ActionClassification.READ_ONLY's
+# own docstring in shared/models.py) — empty today, nothing in this
+# codebase has been re-audited into it yet. Declared here so
+# worker/policy/gate.py has a real (if currently empty) list to load
+# rather than needing a special-cased "this key might not exist yet".
+read_only: []

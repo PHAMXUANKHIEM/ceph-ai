@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -11,6 +12,7 @@ from dashboard.templating import make_templates
 from shared import db
 from shared.clusters import ensure_default_cluster
 from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, WatcherHeartbeat
+from watcher import capability_inventory
 from watcher.ceph_client import VALID_EXEC_MODES, CephQueryError, query_cluster_health_with
 
 VALID_BACKUP_TRANSPORTS = ("ssh", "s3", "")
@@ -42,6 +44,36 @@ def _list_clusters() -> list[Cluster]:
         return rows
 
 
+def _capability_by_cluster(clusters: list[Cluster]) -> dict:
+    """Latest `ClusterCapabilityInventory` row per cluster (AI roadmap Pha
+    0.1), keyed by cluster_id — one small query per cluster via
+    `capability_inventory.latest_snapshot`, cheap for the handful of
+    clusters this page ever lists (multi-cluster observability is still a
+    small-N feature, see Cluster's own docstring). Missing from the dict
+    entirely means "never scanned yet" (UNKNOWN, not scanned-and-unknown —
+    see ClusterCapabilityInventory's own docstring for why that's not a
+    real row)."""
+    result = {}
+    with db.SessionLocal() as session:
+        for cluster in clusters:
+            snapshot = capability_inventory.latest_snapshot(cluster.id, session=session)
+            if snapshot is None:
+                continue
+            result[cluster.id] = {
+                "status": snapshot.status,
+                "current_version": snapshot.current_version,
+                "is_mixed_version": snapshot.is_mixed_version,
+                "distinct_versions": (
+                    json.loads(snapshot.distinct_versions_json)
+                    if snapshot.distinct_versions_json
+                    else []
+                ),
+                "error_message": snapshot.error_message,
+                "collected_at": snapshot.collected_at,
+            }
+    return result
+
+
 def _clusters_context(
     user: str,
     *,
@@ -57,10 +89,12 @@ def _clusters_context(
     backup_config_cluster_id: str | None = None,
     backup_config_form_values: dict | None = None,
 ) -> dict:
+    clusters = _list_clusters()
     return {
         "user": user,
         "is_admin": auth.is_admin_user(user),
-        "clusters": _list_clusters(),
+        "clusters": clusters,
+        "capability_by_cluster": _capability_by_cluster(clusters),
         "cluster_create_error": cluster_create_error,
         "cluster_create_success": cluster_create_success,
         "cluster_toggle_error": cluster_toggle_error,

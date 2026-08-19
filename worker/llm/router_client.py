@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import yaml
+from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import audit, db
@@ -34,6 +36,7 @@ from worker.backup import engine as backup_engine
 from worker.executor import cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
+from worker.preflight import run_preflight
 from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
@@ -359,6 +362,29 @@ async def _call_router(user_content: str) -> dict:
     raise RouterDiagnosisError("Router response contained no report_diagnosis tool call")
 
 
+def _compute_idempotency_key(
+    action_id: str, nodes: list | None, action_params: dict | None
+) -> str:
+    """AI roadmap Pha 0.4: deterministic hash of the real-world command
+    this Action represents — `action_id` + target nodes + params —
+    deliberately EXCLUDING incident_id, so it's the same key regardless of
+    WHICH Incident proposed it (see Action.idempotency_key's own docstring
+    in shared/models.py for why that's the point: catching a duplicate
+    proposal across two different incident_ids, not just a re-run of the
+    same one). `nodes` sorted before hashing since envelope["nodes"]'s
+    order carries no meaning; `action_params`/keys sorted via
+    `sort_keys=True` for the same reason."""
+    payload = json.dumps(
+        {
+            "action_id": action_id,
+            "nodes": sorted(nodes) if isinstance(nodes, list) else None,
+            "action_params": action_params or None,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     """Real production `process_incident` callback (Story 2.3) — replaces
     `worker/main.py::default_process_incident`. Redacts (AD-6, single call
@@ -484,6 +510,37 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 session.commit()
                 return
         else:
+            # AI roadmap Pha 0.3: fail-closed capability/version preflight,
+            # run BEFORE classification/Action creation for every fresh
+            # proposal — see worker/preflight.py's own module docstring for
+            # what the 3 checks cover and why enforcement is gated behind
+            # settings.ai_preflight_enforcement_enabled (default False).
+            preflight = run_preflight(session, cluster_id=incident.cluster_id, action_id=action_id)
+            if not preflight.allowed:
+                if settings.ai_preflight_enforcement_enabled:
+                    logger.warning(
+                        "diagnose_incident: preflight BLOCKED action_id=%s for incident %s: %s",
+                        action_id, incident_id, preflight.reason,
+                    )
+                    incident.diagnosis_text = (
+                        f"{diagnosis_text}\n\n[Preflight — Pha 0.3] Bị chặn: {preflight.reason}"
+                    )
+                    incident.status = IncidentStatus.FAILED.value
+                    audit.record(
+                        session,
+                        incident_id=incident_id,
+                        action_id=None,
+                        event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT,
+                        actor=audit.ACTOR_SYSTEM,
+                    )
+                    session.commit()
+                    return
+                logger.warning(
+                    "diagnose_incident: preflight WOULD block action_id=%s for incident %s "
+                    "(ai_preflight_enforcement_enabled=false, allowing) — %s",
+                    action_id, incident_id, preflight.reason,
+                )
+
             classification = gate.classify_action(action_id)
             pool_choice_required = (
                 incident.ceph_code == _POOL_APP_CODE and action_id == "enable_pool_application"
@@ -520,9 +577,34 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # envelope is gone, still knows which host(s) to target.
                 target_nodes=json.dumps(nodes) if isinstance(nodes, list) else None,
                 action_params=json.dumps(action_params) if action_params else None,
+                # AI roadmap Pha 0.4 (section 3.3): expiry for the stale-
+                # evidence check on approval, idempotency_key for the
+                # in-flight-duplicate DB guard — see Action's own column
+                # docstrings in shared/models.py for both.
+                expires_at=datetime.utcnow() + timedelta(hours=settings.action_approval_expiry_hours),
+                idempotency_key=_compute_idempotency_key(action_id, nodes, action_params),
             )
             session.add(action)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # Pha 0.4's uq_actions_idempotency_key_inflight partial
+                # unique index fired — a DIFFERENT, still in-flight Action
+                # already proposes the exact same command against the same
+                # target (e.g. two near-simultaneous Incidents on the same
+                # node both diagnosing to resync_ntp). The existing_action
+                # guard above only catches a re-run for THIS SAME
+                # incident_id; this is the cross-incident case. Roll back
+                # and treat like the "already resolved" branch above — no
+                # second Action, no second alert/approval card for a
+                # command that's already proposed and pending.
+                session.rollback()
+                logger.warning(
+                    "diagnose_incident: idempotency_key collision for incident %s, "
+                    "action_id=%s — an equivalent Action is already in flight, skipping",
+                    incident_id, action_id,
+                )
+                return
             action_pk = action.id  # read while session is still open
             resolved_action_id = action_id
 
@@ -607,6 +689,25 @@ def _maybe_execute_safe_action(
     status=FAILED, not a retry (AC #3: retry/DLX is for transient Router
     failures, not for a command that's unlikely to succeed on a bare retry).
     """
+    # AI roadmap Pha 0.4 hard invariant (section 3.3: "RISKY/DESTRUCTIVE
+    # phải phê duyệt riêng; không được tự chạy từ Chat hoặc nội dung AI"):
+    # the ONLY caller of this function already gates on
+    # `classification == ActionClassification.SAFE` (classify_action can
+    # never return SAFE for a destructive: entry, see that function's own
+    # precedence docstring) — this is redundant today, but a second,
+    # independent check right here, on the actual execution path, means a
+    # future bug in the CALLER's gating (a copy-paste, a refactor that
+    # drops the check) still can't auto-run something DESTRUCTIVE. Belt-
+    # and-suspenders, same posture as this function's own docstring above.
+    if gate.classify_action(action_id) == ActionClassification.DESTRUCTIVE:
+        logger.error(
+            "_maybe_execute_safe_action: REFUSING to execute action_id=%s for incident %s — "
+            "classify_action() says DESTRUCTIVE; this function must never auto-run a "
+            "DESTRUCTIVE action (Pha 0.4 hard invariant)",
+            action_id, incident_id,
+        )
+        _record_execution_result(incident_id, action_pk, command=None, succeeded=False)
+        return
     nodes = envelope.get("nodes")
     if not isinstance(nodes, list) or not nodes or not all(
         isinstance(host, str) and host for host in nodes
@@ -1020,7 +1121,7 @@ def _execute_package_upgrade_action(
     once per role-phase it belongs to — its MON unit in the MON phase, its
     OSD unit in the OSD phase, never both together and never twice.
 
-    5-phase sequence (AD-4) — install and restart steps alike. A
+    5-phase sequence — install and restart steps alike. A
     mid-sequence trip stops immediately: every not-yet-run step (any
     phase) is recorded `skipped`; the Action reverts to PENDING_APPROVAL
     only if NOTHING executed anywhere yet, else ends FAILED with the

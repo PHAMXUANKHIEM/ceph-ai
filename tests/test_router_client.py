@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import worker.llm.router_client as router_client
+from config.settings import settings
 from shared import audit
 from shared import db as db_module
 from shared.db import Base
@@ -2555,3 +2556,236 @@ def test_warn_if_missing_worker_ssh_key_silent_when_path_exists(caplog, tmp_path
     with caplog.at_level("WARNING"):
         router_client._warn_if_missing_worker_ssh_key(str(real_path))
     assert "does not exist" not in caplog.text
+
+
+# --- AI roadmap Pha 0.3: preflight validator integration --------------------
+
+
+def test_diagnose_incident_creates_action_when_preflight_blocks_but_enforcement_disabled(
+    isolated_db, monkeypatch
+):
+    """settings.ai_preflight_enforcement_enabled defaults to False (see its
+    own docstring in config/settings.py) — a blocking preflight verdict must
+    still be computed/logged, but must NOT stop Action creation, so every
+    already-running deployment's live auto-remediation keeps working exactly
+    as before until an operator opts in."""
+    from worker.preflight import PreflightResult
+
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "MON clock is skewed beyond threshold; likely NTP drift.",
+            "action_id": "resync_ntp",
+            "rationale": "clock skew directly maps to NTP resync.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+    monkeypatch.setattr(
+        router_client,
+        "run_preflight",
+        lambda session, *, cluster_id, action_id: PreflightResult(False, reason="no matrix entry"),
+    )
+    assert settings.ai_preflight_enforcement_enabled is False  # the default this test relies on
+
+    _create_incident("incident-preflight-disabled")
+    envelope = dict(ENVELOPE, incident_id="incident-preflight-disabled")
+
+    asyncio.run(router_client.diagnose_incident("incident-preflight-disabled", envelope))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-preflight-disabled")
+        assert incident.status != IncidentStatus.FAILED.value
+        actions = session.query(Action).filter_by(incident_id="incident-preflight-disabled").all()
+        assert len(actions) == 1
+
+
+def test_diagnose_incident_blocks_action_when_preflight_fails_and_enforcement_enabled(
+    isolated_db, monkeypatch
+):
+    from worker.preflight import PreflightResult
+
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "MON clock is skewed beyond threshold; likely NTP drift.",
+            "action_id": "resync_ntp",
+            "rationale": "clock skew directly maps to NTP resync.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(
+        router_client,
+        "run_preflight",
+        lambda session, *, cluster_id, action_id: PreflightResult(
+            False, reason="capability matrix has no entry for resync_ntp",
+            capability_status="UNKNOWN",
+        ),
+    )
+
+    _create_incident("incident-preflight-enabled")
+    envelope = dict(ENVELOPE, incident_id="incident-preflight-enabled")
+
+    asyncio.run(router_client.diagnose_incident("incident-preflight-enabled", envelope))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-preflight-enabled")
+        assert incident.status == IncidentStatus.FAILED.value
+        assert "capability matrix has no entry for resync_ntp" in incident.diagnosis_text
+        assert session.query(Action).filter_by(incident_id="incident-preflight-enabled").count() == 0
+        audit_entries = session.query(AuditEntry).filter_by(
+            incident_id="incident-preflight-enabled"
+        ).all()
+        assert any(
+            e.event_type == audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT for e in audit_entries
+        )
+
+
+def test_diagnose_incident_creates_action_when_preflight_passes_and_enforcement_enabled(
+    isolated_db, monkeypatch
+):
+    from worker.preflight import PreflightResult
+
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "MON clock is skewed beyond threshold; likely NTP drift.",
+            "action_id": "resync_ntp",
+            "rationale": "clock skew directly maps to NTP resync.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(
+        router_client,
+        "run_preflight",
+        lambda session, *, cluster_id, action_id: PreflightResult(True, capability_status="SUPPORTED"),
+    )
+
+    _create_incident("incident-preflight-allowed")
+    envelope = dict(ENVELOPE, incident_id="incident-preflight-allowed")
+
+    asyncio.run(router_client.diagnose_incident("incident-preflight-allowed", envelope))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-preflight-allowed")
+        assert incident.status != IncidentStatus.FAILED.value
+        assert session.query(Action).filter_by(incident_id="incident-preflight-allowed").count() == 1
+
+
+# --- AI roadmap Pha 0.4: safety policy hardening ----------------------------
+
+
+def test_diagnose_incident_sets_expiry_and_idempotency_key(isolated_db, monkeypatch):
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "MON clock is skewed beyond threshold; likely NTP drift.",
+            "action_id": "resync_ntp",
+            "rationale": "clock skew directly maps to NTP resync.",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+
+    _create_incident("incident-expiry")
+    envelope = dict(ENVELOPE, incident_id="incident-expiry")
+
+    before = datetime.utcnow()
+    asyncio.run(router_client.diagnose_incident("incident-expiry", envelope))
+
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-expiry").one()
+        assert action.idempotency_key is not None
+        assert len(action.idempotency_key) == 64  # sha256 hex digest
+        assert action.expires_at is not None
+        expected = before + timedelta(hours=settings.action_approval_expiry_hours)
+        assert abs((action.expires_at - expected).total_seconds()) < 5
+
+
+def test_diagnose_incident_skips_duplicate_when_idempotency_key_collides(isolated_db, monkeypatch):
+    # Two DIFFERENT incidents both diagnosing to the identical command
+    # against the identical target while the first is still in flight
+    # (PENDING) — the uq_actions_idempotency_key_inflight index must
+    # refuse the second, not create a duplicate in-flight Action.
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "diagnosis",
+            "action_id": "restart_osd_daemon",
+            "rationale": "r",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+
+    _create_incident("incident-collide-1")
+    _create_incident("incident-collide-2")
+    envelope1 = dict(ENVELOPE, incident_id="incident-collide-1", nodes=["10.20.1.249"])
+    envelope2 = dict(ENVELOPE, incident_id="incident-collide-2", nodes=["10.20.1.249"])
+
+    asyncio.run(router_client.diagnose_incident("incident-collide-1", envelope1))
+    asyncio.run(router_client.diagnose_incident("incident-collide-2", envelope2))
+
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(incident_id="incident-collide-1").count() == 1
+        assert session.query(Action).filter_by(incident_id="incident-collide-2").count() == 0
+
+
+def test_diagnose_incident_allows_same_action_after_first_terminates(isolated_db, monkeypatch):
+    # Once the first Action reaches a terminal status, the partial unique
+    # index no longer applies — a genuinely new, later incident proposing
+    # the same command must not be permanently blocked.
+    async def fake_call_router(user_content):
+        return {
+            "diagnosis_text": "diagnosis",
+            "action_id": "restart_osd_daemon",
+            "rationale": "r",
+        }
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+
+    _create_incident("incident-seq-1")
+    envelope1 = dict(ENVELOPE, incident_id="incident-seq-1", nodes=["10.20.1.249"])
+    asyncio.run(router_client.diagnose_incident("incident-seq-1", envelope1))
+
+    with db_module.SessionLocal() as session:
+        first_action = session.query(Action).filter_by(incident_id="incident-seq-1").one()
+        first_action.status = ActionStatus.EXECUTED.value
+        session.commit()
+
+    _create_incident("incident-seq-2")
+    envelope2 = dict(ENVELOPE, incident_id="incident-seq-2", nodes=["10.20.1.249"])
+    asyncio.run(router_client.diagnose_incident("incident-seq-2", envelope2))
+
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(incident_id="incident-seq-2").count() == 1
+
+
+def test_maybe_execute_safe_action_refuses_destructive_hard_guard(isolated_db, monkeypatch):
+    # Defense-in-depth: even if _maybe_execute_safe_action were somehow
+    # called with a DESTRUCTIVE action_id, it must refuse to execute
+    # rather than trust its caller's gating.
+    monkeypatch.setattr(router_client.gate, "classify_action", lambda action_id: ActionClassification.DESTRUCTIVE)
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must never execute")),
+    )
+
+    _create_incident("incident-destructive-guard")
+    with db_module.SessionLocal() as session:
+        action = Action(
+            incident_id="incident-destructive-guard",
+            action_id="pg_repair_force",
+            classification=ActionClassification.DESTRUCTIVE.value,
+            status=ActionStatus.PENDING.value,
+        )
+        session.add(action)
+        session.commit()
+        action_pk = action.id
+
+    router_client._maybe_execute_safe_action(
+        "incident-destructive-guard", action_pk, "pg_repair_force",
+        dict(ENVELOPE, incident_id="incident-destructive-guard"),
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        assert action.status == ActionStatus.FAILED.value

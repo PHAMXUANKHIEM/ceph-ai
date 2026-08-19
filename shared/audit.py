@@ -7,7 +7,7 @@ ACTOR_SYSTEM = "system"
 EVENT_SAFE_ACTION_EXECUTED = "safe_action_executed"
 EVENT_SAFE_ACTION_FAILED = "safe_action_failed"
 
-# Story 4.2/4.3: RISKY-action lifecycle (FR8/FR9, AD-4).
+# Story 4.2/4.3: RISKY-action lifecycle (FR8/FR9).
 EVENT_RISKY_ACTION_PENDING_APPROVAL = "risky_action_pending_approval"
 EVENT_RISKY_ACTION_APPROVED = "risky_action_approved"
 EVENT_RISKY_ACTION_REJECTED = "risky_action_rejected"
@@ -65,6 +65,23 @@ EVENT_BACKUP_RETENTION_DELETE = "backup_retention_delete"
 # or metadata backup, separately from the Worker's eventual success/failure
 # event for the SAFE action.
 EVENT_BACKUP_MANUAL_REQUESTED = "backup_manual_requested"
+
+# AI roadmap Pha 0.3 (worker/preflight.py): fired instead of a normal
+# Action row whenever run_preflight() returns allowed=False AND
+# settings.ai_preflight_enforcement_enabled is True -- action_id is None
+# (same "no command was ever actually proposed" shape as
+# EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS above,
+# not a real Action row to attach to).
+EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT = "proposal_blocked_by_preflight"
+
+# AI roadmap Pha 0.4 (dashboard/routes/actions.py::approve_action_core):
+# fired when an operator/Telegram button tries to approve an Action past
+# its Action.expires_at (stale-evidence check, section 3.3) -- the
+# approval itself is refused (Action.status stays PENDING_APPROVAL,
+# unlike a real rejection), so this is a DISTINCT event from
+# EVENT_RISKY_ACTION_REJECTED even though both end with "operator did not
+# get their approval to go through".
+EVENT_RISKY_ACTION_APPROVAL_EXPIRED = "risky_action_approval_expired"
 
 
 def record(

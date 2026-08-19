@@ -25,6 +25,7 @@
             <a href="/backups" class="nav-dropdown-item">Backup</a>
             <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
             <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
+            <a href="/log-intelligence" class="nav-dropdown-item">Log Intelligence</a>
           </div>
         </div>
         <div class="nav-dropdown">
@@ -37,7 +38,7 @@
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         <a href="/users" class="nav-link">Users</a>
         <a href="/clusters" class="nav-link active">Clusters</a>
-        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}
+        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
       </nav>
       <form method="post" action="/logout" class="topbar-user">
         <span class="user-chip">{{ user }}</span>
@@ -87,14 +88,30 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Tên cụm</th><th>MON nodes</th><th>Exec mode</th><th>Trạng thái</th><th>Backup</th><th>Ngày thêm</th><th></th></tr>
+              <tr><th>Tên cụm</th><th>MON nodes</th><th>Exec mode</th><th>Ceph version</th><th>Trạng thái</th><th>Backup</th><th>Ngày thêm</th><th></th></tr>
             </thead>
             <tbody>
               {% for c in clusters %}
+              {% set cap = capability_by_cluster.get(c.id) %}
               <tr>
                 <td>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</td>
                 <td>{{ c.ceph_mon_nodes }}</td>
                 <td>{{ c.ceph_exec_mode }}</td>
+                <td>
+                  {% if not cap %}
+                  <span class="hint" title="Chưa quét được version">Chưa xác định</span>
+                  {% elif cap.status == "UNAVAILABLE" %}
+                  <span class="hint" title="{{ cap.error_message }}">Không truy cập được ({{ cap.collected_at|vntime }})</span>
+                  {% elif cap.is_mixed_version %}
+                  <span title="Đang có nhiều phiên bản khác nhau — có thể đang giữa quá trình nâng cấp">
+                    ⚠ Mixed: {{ cap.distinct_versions|join(", ") }}
+                  </span>
+                  {% elif cap.status == "UNSUPPORTED_VERSION" %}
+                  <span title="Phiên bản chưa được hệ thống nhận diện">{{ cap.current_version }} (chưa xác nhận hỗ trợ)</span>
+                  {% else %}
+                  {{ cap.current_version }}
+                  {% endif %}
+                </td>
                 <td>{{ "Đang hoạt động" if c.is_active else "Đã vô hiệu hoá" }}</td>
                 <td>
                   {% if c.is_default %}
@@ -126,7 +143,7 @@
               </tr>
               {% if not c.is_default %}
               <tr class="backup-config-row">
-                <td colspan="7">
+                <td colspan="8">
                   <details>
                     <summary>Sửa &amp; test lại kết nối — {{ c.name }}</summary>
                     <form method="post" action="/clusters/{{ c.id }}/connection" class="login-box">
@@ -149,7 +166,7 @@
               </tr>
               {% set bv = backup_config_form_values if backup_config_cluster_id == c.id else c %}
               <tr class="backup-config-row">
-                <td colspan="7">
+                <td colspan="8">
                   <details{% if backup_config_cluster_id == c.id %} open{% endif %}>
                     <summary>Cấu hình backup — {{ c.name }} ({{ "Bật" if c.backup_enabled else "Tắt" }})</summary>
                     <form method="post" action="/clusters/{{ c.id }}/backup-config" class="login-box">
@@ -211,7 +228,7 @@
               </tr>
               {% endif %}
               {% else %}
-              <tr class="empty-row"><td colspan="7" class="empty-state">Chưa có cụm nào.</td></tr>
+              <tr class="empty-row"><td colspan="8" class="empty-state">Chưa có cụm nào.</td></tr>
               {% endfor %}
             </tbody>
           </table>

@@ -131,6 +131,65 @@ def test_approve_action_sets_approved_and_audits_operator_as_actor(dashboard_cli
         assert entries[0].event_type == "risky_action_approved"
 
 
+def test_approve_expired_action_is_refused(dashboard_client):
+    # AI roadmap Pha 0.4 (section 3.3): stale-evidence check.
+    from datetime import timedelta
+
+    action_id = _pending_action("inc-expired")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        action.expires_at = datetime.utcnow() - timedelta(hours=1)
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        # Refused, not silently approved — Action stays PENDING_APPROVAL.
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        entries = session.query(AuditEntry).filter_by(incident_id="inc-expired").all()
+        assert len(entries) == 1
+        assert entries[0].event_type == "risky_action_approval_expired"
+
+
+def test_approve_action_with_no_expiry_never_blocked(dashboard_client):
+    # expires_at is NULL for every action family besides the Incident-
+    # diagnosis pipeline (see Action.expires_at's own docstring) — must
+    # never be treated as "already expired".
+    action_id = _pending_action("inc-no-expiry")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.expires_at is None
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.status == ActionStatus.APPROVED.value
+
+
+def test_approve_action_before_expiry_still_works(dashboard_client):
+    from datetime import timedelta
+
+    action_id = _pending_action("inc-not-yet-expired")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        action.expires_at = datetime.utcnow() + timedelta(hours=1)
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.status == ActionStatus.APPROVED.value
+
+
 def test_index_warns_about_uncovered_pending_action_on_other_cluster_without_mixing_details(
     dashboard_client, monkeypatch
 ):

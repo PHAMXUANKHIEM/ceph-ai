@@ -1237,7 +1237,10 @@ def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, 
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(action_id="rbd_trash_remove").one()
         assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert action.classification == "RISKY"
+        # AI roadmap Pha 0.4 (2026-08-18): moved risky: -> destructive: —
+        # permanently destroys data. Always required explicit approval
+        # either way (unchanged above); stricter label only.
+        assert action.classification == "DESTRUCTIVE"
         assert action.proposed_command == "rbd trash rm vms/1234567890ab"
         incident = session.get(Incident, action.incident_id)
         assert incident.ceph_code == "RBD_TRASH_REMOVE"

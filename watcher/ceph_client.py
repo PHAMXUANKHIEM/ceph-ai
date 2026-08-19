@@ -1054,8 +1054,9 @@ def query_cluster_health_with(
 # process rather than through the Action/approval pipeline: once
 # `ceph orch upgrade start` has been issued (see
 # worker/executor/commands.py::_upgrade_ceph_cluster_command), cephadm's own
-# mgr module drives the rest of the upgrade in the background — it is NOT
-# remediation command" guarantee (AD-4) does not apply to it once started.
+# mgr module drives the rest of the upgrade in the background — this app has
+# no per-command check that can abort it once started (there is no
+# kill-switch anymore either; see commit a3864dd, 2026-08-11).
 # Pause/resume are the operator's actual off-switch for an in-flight
 # upgrade; they are read as directly-actionable admin commands (like the
 # Nodes page's read-only diagnostics), not as a new Action row.

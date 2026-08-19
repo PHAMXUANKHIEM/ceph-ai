@@ -3,6 +3,7 @@ import json
 import re
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -84,6 +85,13 @@ class ApprovalOutcome(Enum):
     ACKNOWLEDGED = "acknowledged"  # no Command exists for this action_id (e.g. investigate_manually)
     APPROVED = "approved"
     REJECTED = "rejected"
+    # AI roadmap Pha 0.4 (section 3.3, stale-evidence check): Action.expires_at
+    # has passed — approval refused, Action stays PENDING_APPROVAL (NOT
+    # auto-rejected — an operator who still wants to run it explicitly
+    # rejects and lets Worker re-diagnose, or a future feature could add an
+    # explicit "duyệt dù đã hết hạn" override; this function never decides
+    # that on its own).
+    EXPIRED = "expired"
 
 
 @dataclass
@@ -131,6 +139,20 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
             # Dashboard while a Telegram button for the same Action was
             # still unanswered). No-op: the caller reflects reality back.
             return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
+
+        # AI roadmap Pha 0.4 (section 3.3): stale-evidence check. NULL
+        # expires_at (every action family besides the Incident-diagnosis
+        # pipeline — see Action.expires_at's own docstring) never expires.
+        if action.expires_at is not None and datetime.utcnow() > action.expires_at:
+            audit.record(
+                session,
+                incident_id=action.incident_id,
+                action_id=action.id,
+                event_type=audit.EVENT_RISKY_ACTION_APPROVAL_EXPIRED,
+                actor=actor,
+            )
+            session.commit()
+            return ApprovalResult(ApprovalOutcome.EXPIRED, action.id, action.incident_id)
 
         scoped_incident = session.get(Incident, action.incident_id)
         if scoped_incident is not None and scoped_incident.cluster_id is not None:

@@ -8,7 +8,7 @@
 <body>
   <header class="topbar"><div class="topbar-inner">
     <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-    <nav class="main-nav"><a href="/object-storage/buckets" class="nav-link">Buckets</a><a href="/object-storage/users" class="nav-link">S3 Users</a><a href="/object-storage/user-settings" class="nav-link active">Quota &amp; Capabilities</a>{% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a><a href="/users" class="nav-link">Users</a><a href="/clusters" class="nav-link">Clusters</a><a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}</nav>
+    <nav class="main-nav"><a href="/object-storage/buckets" class="nav-link">Buckets</a><a href="/object-storage/users" class="nav-link">S3 Users</a><a href="/object-storage/user-settings" class="nav-link active">Quota &amp; Capabilities</a>{% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a><a href="/users" class="nav-link">Users</a><a href="/clusters" class="nav-link">Clusters</a><a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}</nav>
     {% if clusters|length > 1 %}<form method="get" action="/object-storage/user-settings" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}</option>{% endfor %}</select></form>{% endif %}
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Logout</button></form>
   </div></header>

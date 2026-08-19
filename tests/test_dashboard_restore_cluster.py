@@ -76,7 +76,11 @@ def test_propose_creates_pending_risky_action(dashboard_client):
         action = session.get(Action, action_pk)
         assert action.action_id == "restore_cluster_from_backup"
         assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert action.classification == "RISKY"
+        # AI roadmap Pha 0.4 (2026-08-18): moved risky: -> destructive: —
+        # rebuilds a cluster from scratch AND overwrites its RBD data from
+        # backup. Always required explicit approval either way (unchanged
+        # above); stricter label only.
+        assert action.classification == "DESTRUCTIVE"
         params = json.loads(action.action_params)
         assert params["version"] == "18.2.8"
         assert params["method"] == "ceph-deploy"

@@ -505,12 +505,15 @@ _OUTCOME_EDIT_SUFFIX = {
     ApprovalOutcome.ACKNOWLEDGED: "\n\n✅ Đã xác nhận (không có lệnh tự động để chạy cho mục này).",
     ApprovalOutcome.REJECTED: "\n\n❌ ĐÃ TỪ CHỐI.",
     ApprovalOutcome.ALREADY_HANDLED: "\n\n⚠️ Đã được xử lý từ trước (có thể qua Dashboard hoặc kênh khác).",
+    # AI roadmap Pha 0.4 (section 3.3, stale-evidence check).
+    ApprovalOutcome.EXPIRED: "\n\n⌛ Đề xuất đã hết hạn — vào Dashboard để Từ chối và chờ chẩn đoán lại.",
 }
 _OUTCOME_TOAST = {
     ApprovalOutcome.APPROVED: "Đã duyệt",
     ApprovalOutcome.ACKNOWLEDGED: "Đã xác nhận",
     ApprovalOutcome.REJECTED: "Đã từ chối",
     ApprovalOutcome.ALREADY_HANDLED: "Đã được xử lý từ trước",
+    ApprovalOutcome.EXPIRED: "Đề xuất đã hết hạn",
 }
 
 

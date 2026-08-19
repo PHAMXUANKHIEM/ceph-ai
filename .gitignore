@@ -27,3 +27,7 @@ ceph-health-dashboard/*.tsbuildinfo
 # test_runner.py's baseline-upload route.
 test_runner_baselines/
 .codex-account/
+
+# Claude Code per-project account/session state (machine id, migration
+# flags) — tooling state, not source. Sibling of .codex-account/ above.
+.claude-account/

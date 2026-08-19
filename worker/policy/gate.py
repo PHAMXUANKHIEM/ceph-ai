@@ -10,10 +10,15 @@ logger = logging.getLogger(__name__)
 _POLICY_PATH = Path(__file__).resolve().parent / "action_policy.yaml"
 
 
-def _load_action_id_lists() -> tuple[frozenset[str], frozenset[str]]:
+def _load_action_id_lists() -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
     with open(_POLICY_PATH) as f:
         policy = yaml.safe_load(f)
-    return frozenset(policy.get("safe") or []), frozenset(policy.get("risky") or [])
+    return (
+        frozenset(policy.get("read_only") or []),
+        frozenset(policy.get("safe") or []),
+        frozenset(policy.get("risky") or []),
+        frozenset(policy.get("destructive") or []),
+    )
 
 
 def _load_management_action_ids() -> frozenset[str]:
@@ -90,7 +95,7 @@ def _load_bluestore_action_ids() -> frozenset[str]:
     return frozenset(policy.get("bluestore_action_ids") or [])
 
 
-SAFE_ACTION_IDS, RISKY_ACTION_IDS = _load_action_id_lists()
+READ_ONLY_ACTION_IDS, SAFE_ACTION_IDS, RISKY_ACTION_IDS, DESTRUCTIVE_ACTION_IDS = _load_action_id_lists()
 VALID_MANAGEMENT_ACTION_IDS = _load_management_action_ids()
 VALID_CLUSTER_UPGRADE_ACTION_IDS = _load_cluster_upgrade_action_ids()
 VALID_PATCH_ACTION_IDS = _load_patch_action_ids()
@@ -108,12 +113,41 @@ if _CONFLICTING_ACTION_IDS:
         sorted(_CONFLICTING_ACTION_IDS),
     )
 
+# AI roadmap Pha 0.4: DESTRUCTIVE always wins over every other list an
+# action_id might mistakenly also appear in (same conservative-override
+# spirit as the safe/risky conflict check above, just one level more
+# conservative) — a YAML authoring mistake that lists something as both
+# `safe:`/`risky:` AND `destructive:` must never let it auto-execute.
+_UNSAFE_DESTRUCTIVE_OVERLAP = DESTRUCTIVE_ACTION_IDS & (SAFE_ACTION_IDS | READ_ONLY_ACTION_IDS)
+if _UNSAFE_DESTRUCTIVE_OVERLAP:
+    logger.warning(
+        "action_policy.yaml lists %s in BOTH destructive: and safe:/read_only: — "
+        "treating as DESTRUCTIVE (conservative override, AD-5)",
+        sorted(_UNSAFE_DESTRUCTIVE_OVERLAP),
+    )
+
 
 def classify_action(action_id: str) -> ActionClassification:
-    """AD-5: conservative by default — SAFE only for an explicit allowlist
-    hit that isn't ALSO listed as risky, RISKY for everything else (including
-    an action_id that's neither in `safe` nor `risky`, one listed in both, and
-    any action_id not recognized at all)."""
-    if action_id in SAFE_ACTION_IDS and action_id not in RISKY_ACTION_IDS:
+    """AI roadmap Pha 0.4: 4-tier version of AD-5's original conservative-
+    by-default rule. Precedence, most conservative wins:
+
+    1. DESTRUCTIVE — action_id in `destructive:`, regardless of what else
+       it's listed under (see _UNSAFE_DESTRUCTIVE_OVERLAP above).
+    2. RISKY — action_id in `risky:`, or in BOTH `safe:` and `risky:`
+       (original AD-5 conflict rule, unchanged).
+    3. SAFE — action_id in `safe:` only.
+    4. READ_ONLY — action_id in `read_only:` only.
+    5. RISKY — the fail-safe default for anything not recognized in any
+       list (original AD-5 default, unchanged: an action_id absent from
+       every list, or newly added to `action_ids:` without an explicit
+       classification, is never silently auto-run).
+    """
+    if action_id in DESTRUCTIVE_ACTION_IDS:
+        return ActionClassification.DESTRUCTIVE
+    if action_id in RISKY_ACTION_IDS:
+        return ActionClassification.RISKY
+    if action_id in SAFE_ACTION_IDS:
         return ActionClassification.SAFE
+    if action_id in READ_ONLY_ACTION_IDS:
+        return ActionClassification.READ_ONLY
     return ActionClassification.RISKY

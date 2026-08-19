@@ -12,7 +12,15 @@ def test_classify_crash_archive_all_returns_safe():
 
 def test_classify_risky_action_id_returns_risky():
     assert classify_action("restart_osd_daemon") == ActionClassification.RISKY
-    assert classify_action("pg_repair_force") == ActionClassification.RISKY
+
+
+def test_classify_pg_repair_force_returns_destructive():
+    # AI roadmap Pha 0.4 (2026-08-18): moved from risky: to destructive: —
+    # PG repair can discard/overwrite a copy of data it decides is
+    # inconsistent (same class of risk roadmap Pha 5.4 calls out by name).
+    # Still always requires explicit Dashboard approval, same as before —
+    # this is a stricter classification, not a behavior change.
+    assert classify_action("pg_repair_force") == ActionClassification.DESTRUCTIVE
 
 
 def test_classify_action_absent_from_both_lists_returns_risky():
@@ -47,8 +55,10 @@ def test_risky_action_ids_loaded_from_policy_yaml():
     import worker.policy.gate as gate
 
     assert "restart_osd_daemon" in gate.RISKY_ACTION_IDS
-    assert "pg_repair_force" in gate.RISKY_ACTION_IDS
     assert "finalize_osd_release" in gate.RISKY_ACTION_IDS
+    # pg_repair_force moved to destructive: (Pha 0.4, 2026-08-18) — see
+    # test_classify_pg_repair_force_returns_destructive above.
+    assert "pg_repair_force" in gate.DESTRUCTIVE_ACTION_IDS
 
     import worker.llm.router_client as router_client
 
@@ -86,9 +96,10 @@ def test_management_action_ids_loaded_from_policy_yaml():
 
 
 def test_management_action_ids_are_classified_safe():
+    """`delete_pool` KHÔNG còn trong danh sách này — xem
+    test_delete_pool_is_classified_destructive bên dưới."""
     for action_id in [
         "create_pool",
-        "delete_pool",
         "set_pool_size",
         "set_pool_pg_num",
         "edit_pool",
@@ -102,14 +113,41 @@ def test_management_action_ids_are_classified_safe():
         assert classify_action(action_id) == ActionClassification.SAFE
 
 
-def test_rbd_trash_remove_is_classified_risky():
+def test_delete_pool_is_classified_destructive():
+    """2026-08-19 (quyết định của operator): chuyển `safe:` -> `destructive:`.
+
+    Trước đó nó THỰC THI NGAY khi confirm trên Chat. Ba lý do đổi, ghi đầy
+    đủ trong action_policy.yaml: (1) DoD của Pha 0.4 nêu đích danh "xóa
+    pool" là thứ không được nằm trong luồng auto-run; (2) kill-switch —
+    lớp chặn cuối cho mọi action tự chạy — đã bị gỡ 2026-08-11 nên "chạy
+    ngay" giờ nguy hiểm hơn lúc quyết định cũ được đưa ra; (3) Pha 6 mở
+    thêm một đường mà AI đọc dữ liệu người ngoài tác động được rồi đề xuất
+    action_id.
+
+    Hệ quả hành vi: confirm trên Chat giờ tạo Action PENDING_APPROVAL thay
+    vì thực thi — operator vẫn xem lệnh đã resolve, rồi Duyệt lần hai trên
+    Dashboard.
+    """
+    assert classify_action("delete_pool") == ActionClassification.DESTRUCTIVE
+
+
+def test_delete_pool_stays_proposable_from_chat():
+    """Chỉ đổi PHÂN LOẠI, không gỡ khỏi enum — Chat vẫn đề xuất được, chỉ
+    khác là phải Duyệt thêm một bước."""
+    import worker.policy.gate as gate
+
+    assert "delete_pool" in gate.VALID_MANAGEMENT_ACTION_IDS
+
+
+def test_rbd_trash_remove_is_classified_destructive():
     # 2026-07-28: unlike every other management_action_ids member above
     # (deliberately kept SAFE per an explicit earlier operator request, only
     # for Chat-with-AI's own extra safeguards), rbd_trash_remove
     # permanently destroys data with no equivalent per-click safeguard on
-    # the Volumes page — AD-5's conservative default applies, must always
-    # require explicit Dashboard approval.
-    assert classify_action("rbd_trash_remove") == ActionClassification.RISKY
+    # the Volumes page. Moved risky: -> destructive: in Pha 0.4
+    # (2026-08-18) — always required explicit Dashboard approval either
+    # way, this is a stricter classification, not a behavior change.
+    assert classify_action("rbd_trash_remove") == ActionClassification.DESTRUCTIVE
 
 
 def test_rbd_volume_mutations_are_classified_risky():
@@ -121,7 +159,13 @@ def test_rbd_volume_mutations_are_classified_risky():
     assert classify_action("cinder_attach_volume") == ActionClassification.RISKY
     assert classify_action("cinder_detach_volume") == ActionClassification.RISKY
     assert classify_action("cinder_create_snapshot") == ActionClassification.RISKY
-    assert classify_action("rbd_trash_purge_all") == ActionClassification.RISKY
+
+
+def test_rbd_trash_purge_all_is_classified_destructive():
+    # Pha 0.4 (2026-08-18): mass-purges every trashed image in a pool —
+    # moved risky: -> destructive:, same "stricter label, not a behavior
+    # change" reasoning as rbd_trash_remove above.
+    assert classify_action("rbd_trash_purge_all") == ActionClassification.DESTRUCTIVE
 
 
 def test_finalize_pacific_osd_release_is_classified_risky():
@@ -190,16 +234,21 @@ def test_deploy_cluster_action_ids_are_classified_risky():
     assert classify_action("deploy_cluster_cephadm") == ActionClassification.RISKY
     assert classify_action("deploy_cluster_ceph_deploy") == ActionClassification.RISKY
     assert classify_action("deploy_cluster_rpm_local") == ActionClassification.RISKY
-    # 2026-07-26: same reasoning, even more so — tearing down a real
-    # cluster (and optionally wiping OSD disk data) must never be Safe.
-    assert classify_action("delete_cluster_cephadm") == ActionClassification.RISKY
-    assert classify_action("delete_cluster_manual") == ActionClassification.RISKY
     # 2026-07-28: converts every daemon's management style in place on a
     # live cluster — same conservative-by-default reasoning, never Safe.
     assert classify_action("convert_cluster_to_cephadm") == ActionClassification.RISKY
-    # 2026-07-31 (Story 9.7): rebuilds a cluster from scratch AND overwrites
-    # its RBD data from backup — same conservative-by-default reasoning.
-    assert classify_action("restore_cluster_from_backup") == ActionClassification.RISKY
+
+
+def test_delete_and_restore_cluster_action_ids_are_classified_destructive():
+    # 2026-07-26, moved risky: -> destructive: in Pha 0.4 (2026-08-18):
+    # irreversibly tears down a real cluster (and optionally wipes OSD disk
+    # data) — always required explicit approval either way, this is a
+    # stricter classification, not a behavior change.
+    assert classify_action("delete_cluster_cephadm") == ActionClassification.DESTRUCTIVE
+    assert classify_action("delete_cluster_manual") == ActionClassification.DESTRUCTIVE
+    # 2026-07-31 (Story 9.7), same Pha 0.4 move: rebuilds a cluster from
+    # scratch AND overwrites its RBD data from backup.
+    assert classify_action("restore_cluster_from_backup") == ActionClassification.DESTRUCTIVE
 
 
 def test_cluster_deploy_action_ids_disjoint_from_other_families():

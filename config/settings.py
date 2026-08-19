@@ -388,4 +388,159 @@ class Settings(BaseSettings):
     # everything else) for no operational benefit. 1 hour by default.
     database_size_scan_interval_seconds: int = 3600
 
+    # watcher/capability_inventory.py's own cadence (AI roadmap Pha 0.1) --
+    # `ceph versions` is a single cheap JSON-RPC query through a MON (same
+    # cost class as osd_latency_scan_interval_seconds/crush_scan_interval_
+    # seconds above), but a cluster's version/deployment mode changes on
+    # the scale of an upgrade maintenance window, not seconds -- scanning
+    # every tick would be pure overhead. 5 minutes by default: frequent
+    # enough to catch a mixed-version window while an upgrade is actually
+    # in progress (see ClusterCapabilityInventory's own docstring for why
+    # that window matters), far slower than the 60s scans above.
+    capability_inventory_scan_interval_seconds: int = 300
+
+    # shared/capability_matrix.py's staleness threshold (AI roadmap Pha
+    # 0.2) -- a `CapabilityMatrixEntry` older than this many days still
+    # returns SUPPORTED (Ceph's official docs for an already-released
+    # version don't change), but `is_stale=True` is surfaced so the admin
+    # page can prompt an operator to re-verify it against the live docs
+    # rather than trusting it forever unexamined. 180 days by default.
+    capability_matrix_max_age_days: int = 180
+
+    # worker/preflight.py's staleness threshold for Pha 0.1's own
+    # ClusterCapabilityInventory snapshot (AI roadmap Pha 0.5 -- found
+    # while writing that phase's own "stale evidence" test: run_preflight
+    # originally only checked that the LATEST snapshot's status was
+    # SUPPORTED, never how OLD that snapshot was -- a cluster whose
+    # Watcher stopped scanning hours/days ago would keep passing preflight
+    # forever on a last-known-good snapshot that no longer reflects
+    # reality, e.g. an operator could downgrade/reinstall the cluster with
+    # Watcher offline and every subsequent AI proposal would still trust
+    # the old "supported" verdict). 1 hour by default -- generous relative
+    # to capability_inventory_scan_interval_seconds (300s) above, so a
+    # couple of missed ticks (a transient MON blip) never cause a false
+    # positive, but a genuinely stopped/unreachable-for-a-while Watcher
+    # does trip INSUFFICIENT_EVIDENCE (roadmap section 3.1) instead of
+    # silently trusting stale data.
+    capability_inventory_max_age_seconds: int = 3600
+
+    # worker/preflight.py's enforcement switch (AI roadmap Pha 0.3) --
+    # False by default DELIBERATELY: Pha 0.2's capability_matrix_entries
+    # table starts EMPTY on every existing deployment (see that table's own
+    # docstring on why it's operator-seeded, never auto-populated), and
+    # this validator's own fail-closed design (roadmap section 3.2) means
+    # an empty matrix blocks EVERY SAFE auto-remediation action, not just
+    # unsupported ones -- flipping this on by default the moment this code
+    # ships would silently turn off all live auto-remediation on every
+    # already-running deployment (verified against this box's own
+    # ceph-aiops-prod instance, which auto-executes SAFE actions today).
+    # The validator still RUNS and logs its verdict either way (see
+    # worker/preflight.py::run_preflight's call site in
+    # worker/llm/router_client.py) -- this flag only controls whether a
+    # would-block verdict actually stops Action creation. An operator
+    # flips this on once they've populated real, sourced entries in the
+    # Capability Matrix admin page (/capability-matrix) for the action_ids
+    # their deployment actually proposes.
+    ai_preflight_enforcement_enabled: bool = False
+
+    # worker/llm/router_client.py's Action.expires_at (AI roadmap Pha 0.4,
+    # section 3.3's "stale-evidence check") -- how long an Incident-
+    # diagnosis proposal stays approvable before dashboard/routes/
+    # actions.py::approve_action_core refuses to approve it and asks the
+    # operator to let Worker re-diagnose instead. 24h by default: long
+    # enough to survive a normal overnight gap before an operator reviews
+    # the Dashboard, short enough that approving a RISKY/DESTRUCTIVE action
+    # days later — against evidence that may no longer reflect the
+    # cluster's real state — requires a fresh proposal instead of blindly
+    # trusting a stale one.
+    action_approval_expiry_hours: int = 24
+
+    # --- Log Intelligence & AI RCA, bước L0 (Plan/log-intelligence-rca-plan.md) --
+    #
+    # watcher/log_intel.py's own scan: pulls a WINDOW of mon/mgr/osd/rgw log
+    # from every configured node, fingerprints each line into a normalized
+    # template, and counts those templates per hour. Deliberately OFF by
+    # default -- unlike every other Watcher scan block, this one reads a
+    # much larger slice of each node's log per tick (see
+    # log_intel_max_lines_per_daemon below), so an operator opts in once
+    # they actually want the RCA evidence base being built.
+    log_intel_enabled: bool = False
+    # "ssh" (no new infrastructure -- reuses the same SSH access
+    # watcher/ceph_log.py already has) or "loki" (the log store chosen for
+    # this feature, see the plan's section 11.1). The analysis layer
+    # (fingerprint/triage/AI) is identical either way -- only this adapter
+    # changes, which is the whole point of watcher/log_source/'s Protocol.
+    log_intel_source: str = "ssh"
+    # 15 minutes: far slower than osd_latency/crush's 60s scans (a fresh
+    # SSH round trip PER daemon type PER node is the heaviest collection in
+    # this codebase), fast enough that one window still lands inside the
+    # log-retention of a busy node.
+    log_intel_scan_interval_seconds: int = 900
+    # How far back each scan looks. Deliberately LARGER than the scan
+    # interval above so a late/slow tick overlaps rather than leaving a
+    # hole -- fingerprint counting is idempotent per (pattern, hour bucket)
+    # only for the CURRENT bucket, so a small overlap is the safe direction
+    # to err (see log_intel.py::_upsert_observation).
+    log_intel_window_minutes: int = 60
+    # Hard ceiling on lines pulled per (node, daemon type) per scan -- the
+    # cost bound for the SSH path. 5000 lines x 4 daemon types x N nodes is
+    # the worst case per tick.
+    log_intel_max_lines_per_daemon: int = 5000
+    # Retention. Findings/patterns are small and worth keeping; the
+    # per-hour observation counts are the only table here that can really
+    # grow (patterns x hours x hosts), so it gets a much shorter window --
+    # see the plan's constraint R1 and watcher/database_capacity_monitor.py
+    # for why this codebase treats its OWN database size as a real limit.
+    log_intel_pattern_retention_days: int = 180
+    log_intel_observation_retention_days: int = 30
+    # Findings đã RESOLVED giữ lại bao lâu. Finding còn OPEN/ACKNOWLEDGED
+    # KHÔNG BAO GIỜ bị xoá vì già -- nó vẫn là việc chưa xong của người
+    # trực (xem watcher/log_intel.py::prune_old_rows).
+    log_intel_finding_retention_days: int = 90
+    # --- Triage L1 (watcher/log_triage.py) ---
+    #
+    # Đây là tầng quyết định "cái gì đáng nhìn", chạy hoàn toàn tất định
+    # (không AI, không tốn token) và là chốt chặn chi phí cho L2: chỉ mẫu
+    # được gắn cờ ở đây mới bao giờ được đưa lên model.
+    #
+    # Số ngày lịch sử dùng làm baseline khi so sánh đột biến. So sánh theo
+    # CÙNG KHUNG GIỜ TRONG NGÀY (xem log_triage.py::_baseline_for) nên 7
+    # ngày = 7 mẫu cho mỗi khung giờ -- đủ để phân biệt "3h sáng lúc nào
+    # cũng nhiều log scrub" với "3h sáng nay đột nhiên nhiều gấp 5 lần".
+    log_intel_baseline_days: int = 7
+    # Một mẫu mới xuất hiện phải đạt tối thiểu ngần này lần trong cửa sổ
+    # mới bị coi là đáng chú ý -- một dòng log lạ xuất hiện đúng 1 lần
+    # thường là nhiễu, không phải tín hiệu.
+    log_intel_novelty_min_count: int = 3
+    # Gấp bao nhiêu lần baseline thì tính là đột biến.
+    log_intel_burst_ratio: float = 5.0
+    # Số mẫu lịch sử tối thiểu trước khi phép so sánh đột biến được coi là
+    # có ý nghĩa. Dưới ngưỡng này thì KHÔNG gắn cờ -- cùng nguyên tắc
+    # "không đủ mẫu thì không kết luận" mà roadmap mục 1.2/3.1 đã đặt ra,
+    # và là thứ giữ cho tuần đầu chạy (baseline còn rỗng) không biến thành
+    # một trận mưa cảnh báo giả.
+    log_intel_burst_min_baseline_samples: int = 3
+    # --- Phân tích AI L2 (watcher/log_analysis.py) ---
+    #
+    # TÁCH RIÊNG khỏi log_intel_enabled một cách có chủ ý: bật thu thập
+    # không đồng nghĩa với bật chi tiêu token. Operator nên chạy L0+L1 vài
+    # ngày trước, xem `log_ingest_runs.patterns_flagged` mỗi tick là bao
+    # nhiêu, gắn BENIGN cho nhiễu, rồi mới bật cái này -- vì chi phí AI tỉ
+    # lệ thuận với đúng con số mà tầng triage thả qua.
+    log_intel_ai_enabled: bool = False
+    # Trần kích thước phần evidence ghép vào prompt. Vượt trần thì bị cắt và
+    # model được báo rõ là đã cắt (để nó trả INSUFFICIENT_EVIDENCE thay vì
+    # kết luận trên dữ liệu thiếu).
+    log_intel_max_evidence_chars: int = 20000
+    # Loki adapter (used only when log_intel_source == "loki"). Base URL of
+    # the Loki HTTP API, e.g. "http://loki.observability:3100" -- no
+    # trailing /loki/api/v1 (the adapter appends its own path). Empty means
+    # unconfigured, which fails the scan loudly rather than silently
+    # collecting nothing.
+    log_intel_loki_url: str = ""
+    # Optional multi-tenancy header (X-Scope-OrgID). Empty = single-tenant.
+    log_intel_loki_tenant: str = ""
+    log_intel_loki_timeout_seconds: int = 30
+
+
 settings = Settings()

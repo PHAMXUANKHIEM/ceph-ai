@@ -14,6 +14,7 @@ from dashboard.routes.chat import CHAT_REQUEST_CEPH_CODE
 from dashboard.routes.delete_cluster import CLUSTER_DELETE_CEPH_CODE
 from dashboard.routes.deploy_cluster import CLUSTER_DEPLOY_CEPH_CODE
 from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgrade_pending_or_approved
+from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
 from shared import db, heartbeat
@@ -135,6 +136,15 @@ def compute_cluster_status(incidents: list[Incident], heartbeat_stale: bool) -> 
             CLUSTER_DEPLOY_CEPH_CODE,
             CLUSTER_DELETE_CEPH_CODE,
         )
+        # 2026-08-19 (Log Intelligence L4): LOG_ANOMALY: là GIẢ THUYẾT của
+        # AI đọc từ log, không phải một phép đo như OSD_LATENCY_HIGH:
+        # (`ceph osd perf`) hay NODE_RESOURCE_HIGH: (CPU/RAM thật) — những
+        # cái đó vẫn tính vào badge. Badge này hứa phản ánh "tình trạng CỦA
+        # CLUSTER (vd HEALTH_WARN/HEALTH_ERR thật)"; để một suy luận của
+        # model bôi đỏ nó sẽ làm mất đúng lời hứa đó và bào mòn niềm tin
+        # vào badge. Phát hiện vẫn hiện đầy đủ trong danh sách Incident và
+        # ở hàng chờ duyệt, chỉ không tự mình đổi màu badge.
+        and not (i.ceph_code or "").startswith(LOG_ANOMALY_PREFIX)
     ]
     open_incidents = [i for i in real_incidents if i.status in OPEN_STATUSES]
     if not open_incidents:

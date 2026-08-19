@@ -11,6 +11,7 @@ from sqlalchemy import or_
 from config.settings import settings
 from watcher import (
     bluestore_omap_monitor,
+    capability_inventory,
     ceph_client,
     collector,
     crush_distribution_monitor,
@@ -18,6 +19,7 @@ from watcher import (
     crush_structure_monitor,
     database_capacity_monitor,
     device_health_monitor,
+    log_intel,
     node_health_monitor,
     osd_latency_monitor,
     publisher,
@@ -445,6 +447,8 @@ def run(
     last_database_size_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
     last_incident_reminder_scan_at: Optional[datetime] = None
+    last_capability_scan_at: Optional[datetime] = None
+    last_log_intel_scan_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -662,6 +666,24 @@ def run(
                 logger.exception("run: crush structure/distribution/skew scan failed")
             last_crush_scan_at = now
 
+        # 2026-08-17 (AI roadmap Pha 0.1): Cluster capability inventory --
+        # own independent try/except (same isolation reasoning as every
+        # scan block above) and its OWN, much slower cadence
+        # (settings.capability_inventory_scan_interval_seconds, default
+        # 5 min) -- see watcher/capability_inventory.py's own module
+        # docstring for why version/deployment-mode data doesn't need
+        # osd_latency/crush's 60s cadence.
+        if (
+            last_capability_scan_at is None
+            or (now - last_capability_scan_at).total_seconds()
+            >= settings.capability_inventory_scan_interval_seconds
+        ):
+            try:
+                capability_inventory.scan_and_store(cluster_id)
+            except Exception:
+                logger.exception("run: capability inventory scan failed")
+            last_capability_scan_at = now
+
         # 2026-08-10: ceph-aiops's OWN database size — own independent
         # try/except (same isolation reasoning as every block above) and
         # its OWN, deliberately much slower cadence
@@ -680,6 +702,32 @@ def run(
             except Exception:
                 logger.exception("run: database size scan failed")
             last_database_size_scan_at = now
+
+        # 2026-08-18 (Log Intelligence L0, Plan/log-intelligence-rca-plan.md):
+        # log fingerprint scan — own independent try/except (same isolation
+        # reasoning as every block above) and its OWN cadence
+        # (settings.log_intel_scan_interval_seconds, default 15 min).
+        # Deliberately the SLOWEST Ceph-facing scan here: it is the only one
+        # that opens a fresh SSH round trip PER DAEMON TYPE PER NODE and
+        # pulls thousands of lines each time, so it must never share the 60s
+        # cadence of the cheap MON JSON-RPC queries above. Gated by
+        # settings.log_intel_enabled (default False) — an operator opts in
+        # before this starts reading whole log windows off every node.
+        # prune_old_rows() runs on the same tick rather than its own: it is a
+        # cheap bounded DELETE, and tying it here guarantees retention can
+        # never lag behind ingestion (see that function's own docstring for
+        # why the observations table specifically needs this).
+        if settings.log_intel_enabled and (
+            last_log_intel_scan_at is None
+            or (now - last_log_intel_scan_at).total_seconds()
+            >= settings.log_intel_scan_interval_seconds
+        ):
+            try:
+                log_intel.scan_and_store(cluster_id)
+                log_intel.prune_old_rows()
+            except Exception:
+                logger.exception("run: log intelligence scan failed")
+            last_log_intel_scan_at = now
 
         iterations += 1
         time.sleep(max(0, settings.watcher_poll_interval_seconds))
@@ -787,6 +835,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
     last_crush_scan_at: Optional[datetime] = None
+    last_capability_scan_at: Optional[datetime] = None
+    last_log_intel_scan_at: Optional[datetime] = None
     mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
@@ -844,6 +894,38 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                         "run_observed_cluster_loop(%r): CRUSH scan failed", cluster.name
                     )
                 last_crush_scan_at = now
+
+            if (
+                last_capability_scan_at is None
+                or (now - last_capability_scan_at).total_seconds()
+                >= settings.capability_inventory_scan_interval_seconds
+            ):
+                try:
+                    capability_inventory.scan_and_store(cluster.id, cluster=cluster)
+                except Exception:
+                    logger.exception(
+                        "run_observed_cluster_loop(%r): capability inventory scan failed", cluster.name
+                    )
+                last_capability_scan_at = now
+
+            # 2026-08-18 (Log Intelligence L0) — same cadence/gating as the
+            # default loop's own block. prune_old_rows() is deliberately NOT
+            # repeated here: it is cluster-agnostic (one global cutoff sweep
+            # over both tables), so running it once per tick in the default
+            # loop already covers every observed cluster's rows too — calling
+            # it per observed cluster would be N identical redundant DELETEs.
+            if settings.log_intel_enabled and (
+                last_log_intel_scan_at is None
+                or (now - last_log_intel_scan_at).total_seconds()
+                >= settings.log_intel_scan_interval_seconds
+            ):
+                try:
+                    log_intel.scan_and_store(cluster.id, cluster=cluster)
+                except Exception:
+                    logger.exception(
+                        "run_observed_cluster_loop(%r): log intelligence scan failed", cluster.name
+                    )
+                last_log_intel_scan_at = now
         except CephQueryError as exc:
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)
