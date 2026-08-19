@@ -379,6 +379,26 @@ CLUSTER_ENV_NAMES = env_config.CLUSTER_ENV_NAMES
 # explicit child_env override below, same reasoning as ROUTER_*_ENV_NAME —
 # a fresh Worker process must see these values immediately, not whatever
 # was exported in the Dashboard's own os.environ once).
+LOG_INTEL_ENV_NAMES = {
+    # Log Intelligence (Plan/log-intelligence-rca-plan.md). Hai công tắc
+    # TÁCH RIÊNG có chủ đích: bật thu thập không đồng nghĩa bật chi tiêu
+    # token -- xem docs/runbook-log-intelligence.md mục 2 cho quy trình bật
+    # 2 bước được khuyến nghị.
+    "log_intel_enabled": "LOG_INTEL_ENABLED",
+    "log_intel_ai_enabled": "LOG_INTEL_AI_ENABLED",
+    "log_intel_source": "LOG_INTEL_SOURCE",
+    "log_intel_scan_interval_seconds": "LOG_INTEL_SCAN_INTERVAL_SECONDS",
+    "log_intel_window_minutes": "LOG_INTEL_WINDOW_MINUTES",
+    "log_intel_max_lines_per_daemon": "LOG_INTEL_MAX_LINES_PER_DAEMON",
+    "log_intel_loki_url": "LOG_INTEL_LOKI_URL",
+    "log_intel_loki_tenant": "LOG_INTEL_LOKI_TENANT",
+    # Ngưỡng triage để riêng khỏi form này -- chúng chỉ cần chỉnh khi đã
+    # chạy thật và thấy nhiễu, không phải lúc cấu hình ban đầu; runbook mục
+    # 4 hướng dẫn ưu tiên gắn nhãn BENIGN trên trang /log-intelligence
+    # trước khi động tới ngưỡng.
+}
+
+
 PATCH_PIPELINE_ENV_NAMES = {
     "ceph_patch_build_node": "CEPH_PATCH_BUILD_NODE",
     "ceph_patch_source_dir": "CEPH_PATCH_SOURCE_DIR",
@@ -768,6 +788,10 @@ def _backup_target_form_values() -> dict:
     return values
 
 
+def _log_intel_form_values() -> dict:
+    return {field: getattr(settings, field) for field in LOG_INTEL_ENV_NAMES}
+
+
 def _patch_pipeline_form_values() -> dict:
     return {
         "ceph_patch_build_node": settings.ceph_patch_build_node,
@@ -810,6 +834,9 @@ def _settings_context(
     patch_pipeline_error: str | None = None,
     patch_pipeline_success: str | None = None,
     patch_pipeline_values: dict | None = None,
+    log_intel_error: str | None = None,
+    log_intel_success: str | None = None,
+    log_intel_values: dict | None = None,
     backup_target_error: str | None = None,
     backup_target_success: str | None = None,
     backup_target_values: dict | None = None,
@@ -884,6 +911,11 @@ def _settings_context(
         "current_database_display": _current_database_display(),
         "patch_pipeline_error": patch_pipeline_error,
         "patch_pipeline_success": patch_pipeline_success,
+        "log_intel_error": log_intel_error,
+        "log_intel_success": log_intel_success,
+        "log_intel_values": (
+            log_intel_values if log_intel_values is not None else _log_intel_form_values()
+        ),
         "backup_target_error": backup_target_error,
         "backup_target_success": backup_target_success,
         "openstack_error": openstack_error,
@@ -967,6 +999,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "cluster"
     if any(context.get(k) for k in ("cleanup_error", "cleanup_success")):
         return "cleanup"
+    if any(context.get(k) for k in ("log_intel_error", "log_intel_success")):
+        return "log-intel"
     if any(context.get(k) for k in ("patch_pipeline_error", "patch_pipeline_success")):
         return "patch-pipeline"
     if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
@@ -2315,3 +2349,142 @@ async def restart_watcher_submit(request: Request, user: str = Depends(require_l
             ),
         ),
     )
+
+
+@router.post("/settings/log-intel", response_class=HTMLResponse)
+async def log_intel_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    log_intel_enabled: str = Form(""),
+    log_intel_ai_enabled: str = Form(""),
+    log_intel_source: str = Form("ssh"),
+    log_intel_scan_interval_seconds: str = Form("900"),
+    log_intel_window_minutes: str = Form("60"),
+    log_intel_max_lines_per_daemon: str = Form("5000"),
+    log_intel_loki_url: str = Form(""),
+    log_intel_loki_tenant: str = Form(""),
+):
+    """Cấu hình Log Intelligence (Plan/log-intelligence-rca-plan.md).
+
+    Hai công tắc TÁCH RIÊNG có chủ đích -- "Thu thập" và "Phân tích AI" --
+    vì bật thu thập không đồng nghĩa với bật chi tiêu token. Runbook
+    (docs/runbook-log-intelligence.md mục 2) khuyến nghị chạy thu thập 3-7
+    ngày trước, xem cột "Gắn cờ" trên /log-intelligence, rồi mới bật AI:
+    chi phí token tỉ lệ thuận đúng con số mà tầng triage thả qua.
+
+    Chọn nguồn "loki" mà bỏ trống URL bị CHẶN NGAY tại đây thay vì để lưu
+    rồi mới hỏng lúc quét: một cấu hình thiếu mà im lặng trông y hệt một
+    cụm không phát sinh log nào -- đúng kiểu hỏng làm cả kho evidence âm
+    thầm vô giá trị.
+    """
+    _require_admin_privilege(user)
+
+    submitted = {
+        "log_intel_enabled": bool(log_intel_enabled),
+        "log_intel_ai_enabled": bool(log_intel_ai_enabled),
+        "log_intel_source": log_intel_source.strip() or "ssh",
+        "log_intel_scan_interval_seconds": log_intel_scan_interval_seconds.strip(),
+        "log_intel_window_minutes": log_intel_window_minutes.strip(),
+        "log_intel_max_lines_per_daemon": log_intel_max_lines_per_daemon.strip(),
+        "log_intel_loki_url": log_intel_loki_url.strip().rstrip("/"),
+        "log_intel_loki_tenant": log_intel_loki_tenant.strip(),
+    }
+
+    def _fail(message: str):
+        return templates.TemplateResponse(
+            request, "settings.html",
+            _settings_context(user, log_intel_error=message, log_intel_values=submitted),
+        )
+
+    if submitted["log_intel_source"] not in ("ssh", "loki"):
+        return _fail("Nguồn log chỉ nhận 'ssh' hoặc 'loki'.")
+    if submitted["log_intel_source"] == "loki" and not submitted["log_intel_loki_url"]:
+        return _fail("Chọn nguồn Loki thì bắt buộc phải điền Loki URL.")
+    if submitted["log_intel_loki_url"] and not submitted["log_intel_loki_url"].startswith(
+        ("http://", "https://")
+    ):
+        return _fail("Loki URL phải bắt đầu bằng http:// hoặc https://")
+
+    numeric = {}
+    for field, label, minimum in (
+        ("log_intel_scan_interval_seconds", "Chu kỳ quét", 60),
+        ("log_intel_window_minutes", "Cửa sổ thời gian", 1),
+        ("log_intel_max_lines_per_daemon", "Số dòng tối đa mỗi daemon", 100),
+    ):
+        try:
+            value = int(submitted[field])
+        except ValueError:
+            return _fail(f"{label} phải là số nguyên.")
+        if value < minimum:
+            return _fail(f"{label} phải >= {minimum}.")
+        numeric[field] = value
+    submitted.update(numeric)
+
+    # Cửa sổ phải LỚN HƠN chu kỳ quét, nếu không một tick chậm sẽ để lại lỗ
+    # hổng dữ liệu vĩnh viễn (xem log_intel_window_minutes trong settings.py).
+    if numeric["log_intel_window_minutes"] * 60 <= numeric["log_intel_scan_interval_seconds"]:
+        return _fail(
+            "Cửa sổ thời gian phải LỚN HƠN chu kỳ quét — nếu không, một lần quét chậm "
+            "sẽ để lại lỗ hổng dữ liệu không bao giờ lấy lại được."
+        )
+
+    try:
+        _update_env_file_batch({
+            env_name: str(submitted[field])
+            for field, env_name in LOG_INTEL_ENV_NAMES.items()
+        })
+        for field in LOG_INTEL_ENV_NAMES:
+            setattr(settings, field, submitted[field])
+    except Exception:
+        logger.exception("log_intel_settings_submit: failed to persist config to .env")
+        return _fail("Không ghi được file cấu hình — kiểm tra quyền ghi trên server")
+
+    # Watcher là tiến trình chạy vòng quét này, nên nó (không phải Worker)
+    # mới là cái cần khởi động lại để áp dụng ngay.
+    await asyncio.to_thread(restart_watcher)
+
+    note = ""
+    if submitted["log_intel_enabled"] and submitted["log_intel_ai_enabled"]:
+        note = (
+            " Lưu ý: bạn đã bật CẢ phân tích AI — nên xem cột \"Gắn cờ\" trên trang "
+            "Log Intelligence vài ngày trước khi tin vào chi phí token."
+        )
+    return templates.TemplateResponse(
+        request, "settings.html",
+        _settings_context(
+            user,
+            log_intel_success=f"Đã lưu cấu hình — Watcher đã khởi động lại để áp dụng ngay.{note}",
+        ),
+    )
+
+
+@router.post("/settings/log-intel/test-loki")
+async def log_intel_test_loki(
+    user: str = Depends(require_login),
+    log_intel_loki_url: str = Form(""),
+    log_intel_loki_tenant: str = Form(""),
+):
+    """Thử gọi `/ready` của Loki trước khi lưu — cùng posture "test kết nối"
+    mà form Database/Cụm Ceph đã có. Không lưu gì, chỉ trả kết quả."""
+    _require_admin_privilege(user)
+
+    url = log_intel_loki_url.strip().rstrip("/")
+    if not url:
+        return {"ok": False, "message": "Chưa điền Loki URL."}
+
+    def _probe() -> tuple[bool, str]:
+        import httpx
+
+        headers = {}
+        if log_intel_loki_tenant.strip():
+            headers["X-Scope-OrgID"] = log_intel_loki_tenant.strip()
+        try:
+            response = httpx.get(f"{url}/ready", headers=headers, timeout=10)
+        except Exception as exc:
+            return False, f"Không kết nối được: {type(exc).__name__}: {exc}"
+        if response.status_code == 200:
+            return True, "Loki phản hồi OK (/ready)."
+        return False, f"Loki trả HTTP {response.status_code} tại {url}/ready"
+
+    ok, message = await asyncio.to_thread(_probe)
+    return {"ok": ok, "message": message}

@@ -25,11 +25,13 @@ Kết quả đi tới 3 nơi: **Telegram** (kênh Cụm Ceph), trang
 
 Hai công tắc **tách riêng**, bật theo đúng thứ tự này:
 
+> **Cấu hình ở đâu:** trang **Cài đặt → Log Intelligence** (`/settings`, mục
+> "Log Intelligence"). Lưu xong Watcher tự khởi động lại. Các khoá `.env`
+> tương ứng vẫn dùng được nếu bạn thích sửa file, nhưng phải tự restart Watcher.
+
 ### Bước 1 — bật thu thập (không tốn tiền AI)
 
-```
-log_intel_enabled=true
-```
+Tick **"Bật thu thập log"** trên form (tương đương `log_intel_enabled=true`).
 
 Chạy **ít nhất 3–7 ngày** trước khi sang bước 2. Lý do:
 
@@ -50,9 +52,7 @@ AI vội — sang mục 4 chỉnh trước.
 
 ### Bước 2 — bật phân tích AI
 
-```
-log_intel_ai_enabled=true
-```
+Tick thêm **"Bật phân tích AI"** (tương đương `log_intel_ai_enabled=true`).
 
 Cần `router_api_key` / `router_base_url` / `router_model` đã cấu hình sẵn
 (cùng router mà Chat-with-AI và chẩn đoán sự cố đang dùng).
@@ -155,12 +155,11 @@ thường.
 
 ### Tắt mềm (khuyến nghị)
 
-```
-log_intel_ai_enabled=false     # chỉ tắt AI, vẫn thu thập
-log_intel_enabled=false        # tắt hẳn cả thu thập
-```
+Bỏ tick trên form **Cài đặt → Log Intelligence**:
+- Bỏ **"Bật phân tích AI"** → chỉ tắt AI, vẫn thu thập.
+- Bỏ cả **"Bật thu thập log"** → tắt hẳn.
 
-Khởi động lại Watcher. **Dữ liệu đã có được giữ nguyên**, trang
+Watcher tự khởi động lại khi Lưu. **Dữ liệu đã có được giữ nguyên**, trang
 `/log-intelligence` vẫn xem được.
 
 Tắt `log_intel_enabled` sẽ dừng luôn cả bước đóng vòng đời — các phát hiện
@@ -243,11 +242,12 @@ mật** (`tests/test_log_analysis.py`, `tests/test_log_intelligence_e2e.py`).
 
 ## 9. Khi Loki lên (L5, chưa làm)
 
-```
-log_intel_source=loki
-log_intel_loki_url=http://loki.observability:3100
-log_intel_loki_tenant=          # nếu Loki chạy multi-tenant
-```
+Trên form **Cài đặt → Log Intelligence**: đổi *Nguồn log* sang `loki`, điền
+*Loki URL* (và *tenant* nếu Loki chạy multi-tenant), bấm **Kiểm tra kết nối
+Loki** để xác nhận trước, rồi Lưu.
+
+Form chặn sẵn hai lỗi hay gặp: chọn `loki` mà bỏ trống URL, và đặt *cửa sổ
+thời gian* nhỏ hơn *chu kỳ quét* (sẽ để lại lỗ hổng dữ liệu vĩnh viễn).
 
 Bên ship log phải gắn nhãn khớp:
 `{cluster="<tên cụm>", host="<ip>", daemon_type="mon|mgr|osd|rgw"}`.

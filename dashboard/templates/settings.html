@@ -63,6 +63,7 @@
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'backup-targets'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Log Intelligence</button>
           <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Storage Configuration</button>
         </div>
       </section>
@@ -253,6 +254,84 @@
           </div>
           <p class="hint">Đang chờ Dashboard/Worker/Watcher khởi động lại — trang này sẽ tự chuyển tiếp khi xong.</p>
         </div>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="log-intel" {% if active_section != 'log-intel' %}hidden{% endif %}>
+      <div class="card-header"><h2>Log Intelligence &amp; AI RCA</h2></div>
+      <div class="card-body">
+        {% if log_intel_error %}<p class="error">{{ log_intel_error }}</p>{% endif %}
+        {% if log_intel_success %}<p class="success">{{ log_intel_success }}</p>{% endif %}
+        <p class="hint">
+          Đọc log mon/mgr/osd/rgw theo chu kỳ, gom thành mẫu, phát hiện bất thường và (tuỳ chọn)
+          nhờ AI đoán nguyên nhân gốc. Kết quả xem ở trang
+          <a href="/log-intelligence">Log Intelligence</a>.
+          <strong>Không có gì tự chạy ra cụm</strong> — mọi đề xuất đều phải Duyệt thủ công.
+        </p>
+        <p class="hint">
+          <strong>Thứ tự bật được khuyến nghị:</strong> bật "Thu thập" trước, chạy 3–7 ngày, xem cột
+          <em>Gắn cờ</em> trên trang Log Intelligence (khoẻ mạnh là 0–5 mẫu mỗi lần quét). Chỉnh
+          nhiễu xong mới bật "Phân tích AI" — chi phí token tỉ lệ thuận đúng con số đó.
+          Chi tiết: <code>docs/runbook-log-intelligence.md</code>.
+        </p>
+
+        <form class="login-box" method="post" action="/settings/log-intel">
+          <label class="settings-checkbox">
+            <input type="checkbox" name="log_intel_enabled" value="1"
+                   {% if log_intel_values.log_intel_enabled %}checked{% endif %}>
+            Bật thu thập log (không tốn token)
+          </label>
+          <label class="settings-checkbox">
+            <input type="checkbox" name="log_intel_ai_enabled" value="1"
+                   {% if log_intel_values.log_intel_ai_enabled %}checked{% endif %}>
+            Bật phân tích AI (tốn token — bật sau khi đã chỉnh nhiễu)
+          </label>
+
+          <label>Nguồn log
+            <select name="log_intel_source">
+              <option value="ssh" {% if log_intel_values.log_intel_source == 'ssh' %}selected{% endif %}>
+                ssh — đọc trực tiếp trên node, không cần hạ tầng thêm
+              </option>
+              <option value="loki" {% if log_intel_values.log_intel_source == 'loki' %}selected{% endif %}>
+                loki — đọc từ kho log tập trung
+              </option>
+            </select>
+          </label>
+
+          <label>Loki URL (chỉ dùng khi chọn nguồn loki)
+            <input type="text" name="log_intel_loki_url" id="log-intel-loki-url"
+                   value="{{ log_intel_values.log_intel_loki_url }}"
+                   placeholder="http://loki.observability:3100">
+          </label>
+          <label>Loki tenant (để trống nếu Loki chạy single-tenant)
+            <input type="text" name="log_intel_loki_tenant" id="log-intel-loki-tenant"
+                   value="{{ log_intel_values.log_intel_loki_tenant }}">
+          </label>
+          <p class="hint">
+            Bên ship log phải gắn nhãn <code>{cluster, host, daemon_type}</code>.
+            <strong>Đừng lưu chunk Loki lên chính cụm Ceph đang giám sát</strong> — Ceph sập thì
+            mất luôn log cần để chẩn đoán tại sao Ceph sập.
+          </p>
+          <p>
+            <button type="button" class="btn btn-ghost btn-sm" id="log-intel-test-loki">Kiểm tra kết nối Loki</button>
+            <span id="log-intel-test-loki-result" class="muted"></span>
+          </p>
+
+          <label>Chu kỳ quét (giây)
+            <input type="number" name="log_intel_scan_interval_seconds" min="60"
+                   value="{{ log_intel_values.log_intel_scan_interval_seconds }}">
+          </label>
+          <label>Cửa sổ thời gian mỗi lần quét (phút) — phải LỚN HƠN chu kỳ quét
+            <input type="number" name="log_intel_window_minutes" min="1"
+                   value="{{ log_intel_values.log_intel_window_minutes }}">
+          </label>
+          <label>Số dòng tối đa mỗi daemon mỗi lần quét
+            <input type="number" name="log_intel_max_lines_per_daemon" min="100"
+                   value="{{ log_intel_values.log_intel_max_lines_per_daemon }}">
+          </label>
+
+          <button type="submit" class="btn btn-primary btn-sm">Lưu &amp; khởi động lại Watcher</button>
+        </form>
       </div>
     </section>
 

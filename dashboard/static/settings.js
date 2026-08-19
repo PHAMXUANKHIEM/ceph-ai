@@ -827,3 +827,58 @@
     });
   }
 })();
+
+// --- Log Intelligence: kiểm tra kết nối Loki trước khi lưu ----------------
+// Cùng khuôn "test kết nối" mà form Database/OpenStack đã dùng: gọi thẳng
+// endpoint test, không lưu gì.
+(function () {
+  var testBtn = document.getElementById("log-intel-test-loki");
+  if (!testBtn) return;
+  var urlInput = document.getElementById("log-intel-loki-url");
+  var tenantInput = document.getElementById("log-intel-loki-tenant");
+  var result = document.getElementById("log-intel-test-loki-result");
+
+  function show(ok, msg) {
+    result.textContent = (ok ? "✅ " : "❌ ") + msg;
+    result.className = ok ? "success" : "error";
+  }
+
+  testBtn.addEventListener("click", function () {
+    if (!urlInput.value.trim()) {
+      show(false, "Chưa điền Loki URL.");
+      return;
+    }
+    testBtn.disabled = true;
+    result.textContent = "Đang kiểm tra…";
+    result.className = "muted";
+
+    var body = new URLSearchParams();
+    body.set("log_intel_loki_url", urlInput.value.trim());
+    body.set("log_intel_loki_tenant", tenantInput ? tenantInput.value.trim() : "");
+
+    fetch("/settings/log-intel/test-loki", {
+      method: "POST",
+      credentials: "same-origin",
+      body: body,
+    })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (data) {
+            throw new Error(data.detail || "HTTP " + response.status);
+          });
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        show(!!data.ok, data.message || (data.ok ? "Kết nối thành công" : "Kết nối thất bại"));
+      })
+      .catch(function (err) {
+        if (err.message === "unauthenticated") return;
+        show(false, err.message);
+      })
+      .finally(function () {
+        testBtn.disabled = false;
+      });
+  });
+})();
