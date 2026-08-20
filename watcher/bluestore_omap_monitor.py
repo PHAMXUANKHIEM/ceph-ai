@@ -39,9 +39,13 @@ import re
 from datetime import datetime
 
 from shared import audit, db
-from shared.cluster_nodes import configured_nodes
+from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from watcher import ceph_client
+# 2026-08-20: bản tra osd_id -> host duy nhất của codebase, tách ra
+# watcher/osd_hosts.py để watcher/collector.py dùng chung — trước đó nó
+# chỉ nằm ở đây nên collector phải đoán host (xem docstring module ấy).
+from watcher.osd_hosts import resolve_osd_hosts
 from worker.policy import gate
 
 BLUESTORE_OMAP_PREFIX = "BLUESTORE_NO_PER_POOL_OMAP:"
@@ -59,13 +63,6 @@ _RECOVERABLE_STATUSES = {
     IncidentStatus.EXECUTING.value,
     IncidentStatus.FAILED.value,
 }
-
-# Matches BOTH real unit-naming styles this app's own restart code already
-# handles (worker/executor/commands.py::_bluestore_omap_quick_fix_command):
-# "ceph-osd@5.service" (ceph_exec_mode=none, traditional/package install)
-# and "...@osd.5.service" (cephadm). `\b` after the digits stops "osd@1"
-# from swallowing into a later "osd@15" on the same line.
-_OSD_UNIT_ID_RE = re.compile(r"osd[@.](\d+)\b")
 
 # Ceph's own BLUESTORE_NO_PER_POOL_OMAP detail text names each affected OSD
 # directly, e.g. "osd.5 legacy (not per-pool) BlueStore omap detected,
@@ -96,45 +93,6 @@ def check_legacy_omap_osds(health: dict) -> dict[str, dict]:
     return {
         ceph_code_for(osd_id): {"osd_id": osd_id, "raw_messages": messages} for osd_id in osd_ids
     }
-
-
-def _discover_local_osd_ids(host: str) -> set[int]:
-    """Best-effort, per-host -- a single unreachable configured OSD node
-    must not block resolving every OTHER osd_id (same "an unrelated SSH
-    hiccup must never be the reason a real proposal is skipped" posture
-    dashboard/routes/upgrade.py::_check_os_upgrade_needed already
-    documents for itself)."""
-    try:
-        output = ceph_client.run_command_on_node(
-            host, "systemctl list-units --all 2>/dev/null | grep -i osd || true"
-        )
-    except Exception:
-        return set()
-    return {int(m) for m in _OSD_UNIT_ID_RE.findall(output)}
-
-
-def resolve_osd_hosts(osd_ids: set[int]) -> dict[int, str]:
-    """Deterministically maps each osd_id to whichever of THIS APP's own
-    configured OSD-role hosts (shared.cluster_nodes.configured_nodes(), the
-    SAME SSH-reachable node list every other feature in this app already
-    uses) actually has that osd_id's systemd unit loaded. An osd_id that
-    matches no configured host at all (e.g. it runs somewhere outside this
-    app's configured node list) is simply absent from the returned dict --
-    create_or_resolve_bluestore_incidents() below skips proposing anything
-    for it rather than guessing a host.
-    """
-    remaining = set(osd_ids)
-    result: dict[int, str] = {}
-    for node in configured_nodes():
-        if not remaining:
-            break
-        if "OSD" not in node["roles"]:
-            continue
-        local_ids = _discover_local_osd_ids(node["host"])
-        for osd_id in local_ids & remaining:
-            result[osd_id] = node["host"]
-        remaining -= local_ids
-    return result
 
 
 def _rationale_for(detail: dict, host: str) -> str:
@@ -168,6 +126,7 @@ def create_or_resolve_bluestore_incidents(current: dict[str, dict]) -> None:
         for incident in open_incidents:
             if incident.ceph_code not in current:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
         new_codes = {code: detail for code, detail in current.items() if code not in open_codes}
         if new_codes:

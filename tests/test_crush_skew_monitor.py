@@ -376,3 +376,84 @@ def test_create_or_resolve_host_entity_uses_host_label(isolated_db, monkeypatch)
     with db_module.SessionLocal() as session:
         incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:hostA").one()
         assert "host hostA" in incident.log_excerpt
+
+
+# --- Hồi quy: restart Watcher không được đóng nhầm rồi tạo lại Incident ------
+# Lỗi có thật, đo được trên DB production 2026-08-20: riêng CRUSH_SKEW_PG:1 có
+# 17 Incident cho cùng một vấn đề (16 RESOLVED + 1 mở), sinh ra theo đúng một
+# khuôn lặp lại mỗi lần Watcher khởi động lại.
+
+
+def test_still_over_threshold_keeps_incident_open_while_streak_rebuilds(isolated_db):
+    """Sau restart, streak về 0 nên entity chưa vào `current` — nhưng nó vẫn
+    đang lệch, nên Incident đang mở PHẢI được giữ nguyên."""
+    csk.create_or_resolve_crush_skew_incidents({"CRUSH_SKEW_USE:3": _detail()})
+
+    # Lần quét đầu sau restart: `current` rỗng (streak 1/3), nhưng entity vẫn
+    # vượt ngưỡng.
+    csk.create_or_resolve_crush_skew_incidents({}, {"CRUSH_SKEW_USE:3"})
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+
+
+def test_restart_cycle_does_not_create_a_duplicate_incident(isolated_db):
+    """Toàn bộ chu trình restart: mở -> 3 lần quét streak chưa đủ -> streak đủ.
+    Kết quả phải là ĐÚNG MỘT Incident, không phải hai."""
+    csk.create_or_resolve_crush_skew_incidents({"CRUSH_SKEW_USE:3": _detail()})
+
+    for _ in range(3):
+        csk.create_or_resolve_crush_skew_incidents({}, {"CRUSH_SKEW_USE:3"})
+    csk.create_or_resolve_crush_skew_incidents(
+        {"CRUSH_SKEW_USE:3": _detail()}, {"CRUSH_SKEW_USE:3"}
+    )
+
+    with db_module.SessionLocal() as session:
+        incidents = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").all()
+        assert len(incidents) == 1
+        assert incidents[0].status == IncidentStatus.PENDING_APPROVAL.value
+
+
+def test_genuinely_recovered_entity_still_resolves(isolated_db):
+    """Bản vá không được làm mất khả năng đóng Incident thật: hết lệch (hoặc
+    entity biến mất khỏi cụm) thì không có mặt trong `still_over_threshold`."""
+    csk.create_or_resolve_crush_skew_incidents({"CRUSH_SKEW_USE:3": _detail()})
+
+    csk.create_or_resolve_crush_skew_incidents({}, set())
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        assert incident.status == IncidentStatus.RESOLVED.value
+
+
+def test_resolving_an_incident_cancels_its_pending_action(isolated_db):
+    """Incident đóng thì hàng chờ duyệt dưới nó phải sạch theo — nếu không,
+    Action zombie tích luỹ mãi (141/153 trên DB production)."""
+    csk.create_or_resolve_crush_skew_incidents({"CRUSH_SKEW_USE:3": _detail()})
+
+    csk.create_or_resolve_crush_skew_incidents({})
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="CRUSH_SKEW_USE:3").one()
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert action.status == ActionStatus.REJECTED.value
+
+        events = {
+            entry.event_type
+            for entry in session.query(AuditEntry).filter_by(incident_id=incident.id).all()
+        }
+        assert "risky_action_auto_cancelled_incident_resolved" in events
+
+
+def test_check_crush_skew_fills_still_over_threshold_before_streak_is_met(isolated_db):
+    """`check_crush_skew` phải báo "đang lệch ngay bây giờ" ngay từ lần quét
+    đầu, dù `flagged` còn rỗng vì chưa đủ CONSECUTIVE_USE_SCANS_REQUIRED."""
+    with db_module.SessionLocal() as session:
+        _seed(session, _SKEWED_DISTRIBUTION)
+
+    still_over: set[str] = set()
+    flagged = csk.check_crush_skew(None, still_over)
+
+    assert flagged == {}  # streak mới 1/3
+    assert "CRUSH_SKEW_USE:0" in still_over

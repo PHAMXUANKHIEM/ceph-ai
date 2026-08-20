@@ -40,6 +40,7 @@ from collections import deque
 from datetime import datetime
 
 from shared import audit, db
+from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, VolumeMetric
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
@@ -295,6 +296,7 @@ def create_or_resolve_volume_incidents(
         for incident in open_volume_incidents:
             if incident.ceph_code not in current_saturated:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
         for ceph_code, detail in current_saturated.items():
             if ceph_code in open_codes:

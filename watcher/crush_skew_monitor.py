@@ -52,6 +52,7 @@ from shared.models import (
     Incident,
     IncidentStatus,
 )
+from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_crush_skew_alert
 from worker.policy import gate
 
@@ -243,7 +244,10 @@ def _host_actual_and_weight(
     return total, node.get("weight")
 
 
-def check_crush_skew(cluster_id: str | None = None) -> dict[str, dict]:
+def check_crush_skew(
+    cluster_id: str | None = None,
+    still_over_threshold: set[str] | None = None,
+) -> dict[str, dict]:
     """Reads the single most-recent `CrushStructureSnapshot` and the full
     current `CrushOsdDistribution` table, computes both Skew signals for
     every OSD/Host entity found, and returns `{ceph_code: detail}` for
@@ -252,7 +256,15 @@ def check_crush_skew(cluster_id: str | None = None) -> dict[str, dict]:
     expected, is just as worth flagging as a large positive one) for
     `CONSECUTIVE_USE_SCANS_REQUIRED`/`CONSECUTIVE_PG_SCANS_REQUIRED` scans
     in a row. No-op (returns `{}`) if no Snapshot exists yet -- never
-    raises, same best-effort posture as every other Watcher scan module."""
+    raises, same best-effort posture as every other Watcher scan module.
+
+    `still_over_threshold` (2026-08-20, out-param): nếu truyền vào một set,
+    hàm điền vào đó ceph_code của MỌI entity đang vượt ngưỡng ở lần quét
+    này, BẤT KỂ streak đã đủ hay chưa. Giá trị trả về (`flagged`) vẫn giữ
+    nguyên hợp đồng cũ -- chỉ chứa entity đã đủ streak. Hai tập này khác
+    nhau đúng ở khoảng thời gian đầu sau khi Watcher khởi động lại, và
+    `create_or_resolve_crush_skew_incidents` cần biết sự khác biệt đó để
+    không đóng nhầm Incident (xem docstring của hàm ấy)."""
     with db.SessionLocal() as session:
         snapshot_query = session.query(CrushStructureSnapshot)
         distribution_query = session.query(CrushOsdDistribution)
@@ -333,6 +345,9 @@ def check_crush_skew(cluster_id: str | None = None) -> dict[str, dict]:
                     else:
                         streaks[key] = 0
 
+                    if is_over and still_over_threshold is not None:
+                        still_over_threshold.add(ceph_code_for(prefix, entity_label))
+
                     if streaks[key] >= required:
                         ceph_code = ceph_code_for(prefix, entity_label)
                         flagged[ceph_code] = {
@@ -383,7 +398,10 @@ def _entity_label_for_alert(detail: dict) -> str:
     return f"host {detail['entity_id']}"
 
 
-def create_or_resolve_crush_skew_incidents(current: dict[str, dict]) -> None:
+def create_or_resolve_crush_skew_incidents(
+    current: dict[str, dict],
+    still_over_threshold: set[str] | None = None,
+) -> None:
     """Same shape as watcher/osd_latency_monitor.py::
     create_or_resolve_osd_latency_incidents -- creates a PENDING_APPROVAL
     Incident+Action(investigate_manually) for every newly-flagged ceph_code
@@ -393,7 +411,31 @@ def create_or_resolve_crush_skew_incidents(current: dict[str, dict]) -> None:
     the exact same way -- an entity gone from the cluster never appears in
     `current` in the first place, AD-30, no separate code path needed).
     Sends a Telegram alert (shared/telegram_alerts.py::send_crush_skew_alert,
-    the Phần cứng channel, AD-31) for each NEWLY created Incident only."""
+    the Phần cứng channel, AD-31) for each NEWLY created Incident only.
+
+    `still_over_threshold` (2026-08-20 -- BẢN VÁ CHO LỖI CÓ THẬT, đo được
+    trên DB production: 17 Incident trùng nhau cho riêng CRUSH_SKEW_PG:1,
+    16 cái RESOLVED + 1 cái mở, sinh ra theo đúng một khuôn lặp lại mỗi lần
+    Watcher khởi động lại): `_consecutive_pg_skew_scans`/
+    `_consecutive_use_skew_scans` chỉ sống trong RAM của tiến trình, nên sau
+    mỗi lần restart chúng rỗng. Trong `CONSECUTIVE_*_SCANS_REQUIRED` lần
+    quét đầu, entity vẫn lệch y như cũ nhưng CHƯA đủ streak nên không có
+    mặt trong `current` -- vòng resolve bên dưới đọc đó là "đã hết lệch" và
+    ĐÓNG NHẦM Incident đang mở. Vài lần quét sau streak đủ, code xuất hiện
+    lại, không còn Incident mở nào -> tạo Incident + Action + Telegram MỚI
+    cho đúng vấn đề cũ. Operator thấy một cơn mưa thông báo sau mỗi lần
+    restart, còn Action con của Incident vừa bị đóng nhầm thì nằm lại
+    PENDING_APPROVAL vĩnh viễn.
+
+    Truyền set này vào để phân biệt ba trạng thái mà chỉ riêng `current`
+    không phân biệt nổi:
+
+      * vắng mặt VÀ không vượt ngưỡng  -> thật sự đã hết  -> đóng
+      * vắng mặt vì entity biến mất khỏi cụm -> cũng không vượt ngưỡng ->
+        đóng (giữ đúng ý AD-30 trong docstring trên)
+      * vắng mặt CHỈ vì streak chưa đủ -> vẫn đang vượt ngưỡng -> GIỮ MỞ
+
+    Mặc định None giữ nguyên hành vi cũ cho mọi caller chưa cập nhật."""
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -406,9 +448,11 @@ def create_or_resolve_crush_skew_incidents(current: dict[str, dict]) -> None:
         )
         open_codes = {incident.ceph_code for incident in open_incidents}
 
+        still_over = still_over_threshold or set()
         for incident in open_incidents:
-            if incident.ceph_code not in current:
+            if incident.ceph_code not in current and incident.ceph_code not in still_over:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
         for ceph_code, detail in current.items():
             if ceph_code in open_codes:

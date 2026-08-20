@@ -61,9 +61,9 @@ def _fast_node_health_monitor_default(monkeypatch):
     the real shared.cluster_nodes.configured_nodes()/SSH path, adding real
     wall-clock time to every test in this file whether or not it cares
     about node-health monitoring."""
-    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", lambda: {})
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", lambda *_a: {})
     monkeypatch.setattr(
-        watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda _c: None
+        watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda *_a: None
     )
 
 
@@ -123,9 +123,9 @@ def _fast_osd_latency_monitor_default(monkeypatch):
     the real ceph_client.run_ceph_json_command/list_osds path, adding real
     wall-clock time to every test in this file whether or not it cares
     about OSD latency monitoring."""
-    monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", lambda: {})
+    monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", lambda *_a: {})
     monkeypatch.setattr(
-        watcher_main.osd_latency_monitor, "create_or_resolve_osd_latency_incidents", lambda _c: None
+        watcher_main.osd_latency_monitor, "create_or_resolve_osd_latency_incidents", lambda *_a: None
     )
 
 
@@ -314,7 +314,7 @@ def test_run_calls_device_health_monitor_once_within_default_scan_interval(monke
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check():
+    def fake_check(*_a):
         check_calls["n"] += 1
         return {"DEVICE_HEALTH_EVACUATE:7": {"osd_id": 7}}
 
@@ -338,7 +338,7 @@ def test_run_calls_device_health_monitor_every_iteration_when_interval_is_zero(m
 
     check_calls = {"n": 0}
 
-    def fake_check():
+    def fake_check(*_a):
         check_calls["n"] += 1
         return {}
 
@@ -356,7 +356,7 @@ def test_run_survives_device_health_monitor_raising(monkeypatch):
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
 
-    def broken_check():
+    def broken_check(*_a):
         raise RuntimeError("bug in device_health_monitor")
 
     monkeypatch.setattr(watcher_main.device_health_monitor, "check_predicted_failing_osds", broken_check)
@@ -379,7 +379,7 @@ def test_run_calls_node_health_monitor_once_within_default_scan_interval(monkeyp
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check():
+    def fake_check(*_a):
         check_calls["n"] += 1
         return {"NODE_RESOURCE_HIGH:10.0.0.5": {"host": "10.0.0.5"}}
 
@@ -387,7 +387,7 @@ def test_run_calls_node_health_monitor_once_within_default_scan_interval(monkeyp
     monkeypatch.setattr(
         watcher_main.node_health_monitor,
         "create_or_resolve_node_health_incidents",
-        resolve_calls.append,
+        lambda current, *_a: resolve_calls.append(current),
     )
 
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
@@ -403,13 +403,13 @@ def test_run_calls_node_health_monitor_every_iteration_when_interval_is_zero(mon
 
     check_calls = {"n": 0}
 
-    def fake_check():
+    def fake_check(*_a):
         check_calls["n"] += 1
         return {}
 
     monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", fake_check)
     monkeypatch.setattr(
-        watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda _c: None
+        watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda *_a: None
     )
 
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
@@ -421,7 +421,7 @@ def test_run_survives_node_health_monitor_raising(monkeypatch):
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
 
-    def broken_check():
+    def broken_check(*_a):
         raise RuntimeError("bug in node_health_monitor")
 
     monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_resources", broken_check)
@@ -444,7 +444,7 @@ def test_run_calls_osd_latency_monitor_once_within_default_scan_interval(monkeyp
     check_calls = {"n": 0}
     resolve_calls = []
 
-    def fake_check():
+    def fake_check(*_a):
         check_calls["n"] += 1
         return {"OSD_LATENCY_HIGH:3": {"osd_id": 3}}
 
@@ -452,7 +452,7 @@ def test_run_calls_osd_latency_monitor_once_within_default_scan_interval(monkeyp
     monkeypatch.setattr(
         watcher_main.osd_latency_monitor,
         "create_or_resolve_osd_latency_incidents",
-        resolve_calls.append,
+        lambda current, *_a: resolve_calls.append(current),
     )
 
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
@@ -468,13 +468,13 @@ def test_run_calls_osd_latency_monitor_every_iteration_when_interval_is_zero(mon
 
     check_calls = {"n": 0}
 
-    def fake_check():
+    def fake_check(*_a):
         check_calls["n"] += 1
         return {}
 
     monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", fake_check)
     monkeypatch.setattr(
-        watcher_main.osd_latency_monitor, "create_or_resolve_osd_latency_incidents", lambda _c: None
+        watcher_main.osd_latency_monitor, "create_or_resolve_osd_latency_incidents", lambda *_a: None
     )
 
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
@@ -486,7 +486,7 @@ def test_run_survives_osd_latency_monitor_raising(monkeypatch):
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
 
-    def broken_check():
+    def broken_check(*_a):
         raise RuntimeError("bug in osd_latency_monitor")
 
     monkeypatch.setattr(watcher_main.osd_latency_monitor, "check_osd_latency_outliers", broken_check)

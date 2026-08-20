@@ -35,6 +35,7 @@ from datetime import datetime
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_node_alert
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics
 from worker.policy import gate
@@ -85,7 +86,9 @@ def ceph_code_for(host: str) -> str:
     return f"{NODE_RESOURCE_HIGH_PREFIX}{host}"
 
 
-def check_node_resources() -> dict[str, dict]:
+def check_node_resources(
+    still_over_threshold: set[str] | None = None,
+) -> dict[str, dict]:
     """Scans every configured cluster node's current CPU%/RAM% and returns
     {ceph_code: detail} for every host whose CPU OR RAM has stayed at/above
     threshold for CONSECUTIVE_SCANS_REQUIRED scans in a row. A single
@@ -108,6 +111,12 @@ def check_node_resources() -> dict[str, dict]:
         mem = metrics["mem_percent"]
         over_threshold = cpu >= CPU_ALERT_THRESHOLD_PERCENT or mem >= MEM_ALERT_THRESHOLD_PERCENT
         _consecutive_high_scans[host] = (_consecutive_high_scans.get(host, 0) + 1) if over_threshold else 0
+
+        # 2026-08-20: độc lập với streak — xem
+        # create_or_resolve_node_health_incidents để biết vì sao "đang quá
+        # tải ngay bây giờ" phải tách khỏi "đã quá tải đủ lâu".
+        if over_threshold and still_over_threshold is not None:
+            still_over_threshold.add(ceph_code_for(host))
 
         if _consecutive_high_scans[host] >= CONSECUTIVE_SCANS_REQUIRED:
             flagged[ceph_code_for(host)] = {
@@ -134,7 +143,10 @@ def _rationale_for(detail: dict) -> str:
     )
 
 
-def create_or_resolve_node_health_incidents(current: dict[str, dict]) -> None:
+def create_or_resolve_node_health_incidents(
+    current: dict[str, dict],
+    still_over_threshold: set[str] | None = None,
+) -> None:
     """Same shape/reasoning as watcher/volume_monitor.py::
     create_or_resolve_volume_incidents — creates a PENDING_APPROVAL
     Incident plus an approval-gated Action for every newly-flagged host not
@@ -145,7 +157,16 @@ def create_or_resolve_node_health_incidents(current: dict[str, dict]) -> None:
     each NEWLY created Incident only — not resent on every scan a host
     stays flagged, same "one notification per genuinely new problem"
     posture as every other alert
-    path in this codebase."""
+    path in this codebase.
+
+    `still_over_threshold` (2026-08-20): `_consecutive_high_scans` chỉ sống
+    trong RAM, nên sau mỗi lần Watcher restart nó rỗng và node vẫn quá tải
+    y như cũ lại vắng mặt khỏi `current` trong `CONSECUTIVE_SCANS_REQUIRED`
+    lần quét đầu — vòng resolve bên dưới sẽ đọc đó là "tải đã về bình
+    thường" và đóng nhầm Incident, để rồi tạo lại Incident + Action +
+    Telegram mới ngay sau đó. Cùng một lỗi, cùng một cách vá như
+    watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó, kèm số
+    liệu đo được). Mặc định None giữ nguyên hành vi cũ."""
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -155,9 +176,11 @@ def create_or_resolve_node_health_incidents(current: dict[str, dict]) -> None:
         )
         open_codes = {incident.ceph_code for incident in open_incidents}
 
+        still_over = still_over_threshold or set()
         for incident in open_incidents:
-            if incident.ceph_code not in current:
+            if incident.ceph_code not in current and incident.ceph_code not in still_over:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
         for ceph_code, detail in current.items():
             if ceph_code in open_codes:

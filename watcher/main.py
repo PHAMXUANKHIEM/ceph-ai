@@ -36,6 +36,7 @@ from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat, telegram_alerts
+from shared.incident_actions import cancel_pending_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Action, Cluster, Incident, IncidentStatus
 
@@ -271,6 +272,7 @@ def _resolve_recovered_incidents(
                 continue
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
         session.commit()
 
 
@@ -312,8 +314,33 @@ def build_and_publish_incident(
     if current_status not in PROBLEM_STATUSES:
         return
 
+    # 2026-08-20: `run()` chỉ gọi hàm này khi status/checks ĐỔI so với
+    # `last_status`/`last_checks` -- hai biến chỉ sống trong RAM, nên lần
+    # poll đầu tiên sau MỖI lần Watcher restart luôn thoả điều kiện "đổi"
+    # và chạy vào đây với toàn bộ trạng thái sức khoẻ hiện tại. Trước bản
+    # vá này vòng lặp dưới tạo Incident VÔ ĐIỀU KIỆN, không hề nhìn xem đã
+    # có Incident nào đang mở cho cùng `ceph_code` chưa -- nên mỗi lần
+    # restart là một loạt Incident + Telegram trùng lặp cho đúng những vấn
+    # đề đang mở sẵn. Lọc ra trước, một truy vấn cho cả lượt.
+    with db.SessionLocal() as session:
+        query = session.query(Incident.ceph_code).filter(
+            Incident.status.in_(_RECOVERABLE_STATUSES)
+        )
+        query = (
+            query.filter(Incident.cluster_id == cluster_id)
+            if cluster_id is not None
+            else query.filter(Incident.cluster_id.is_(None))
+        )
+        already_open_codes = {row.ceph_code for row in query.all()}
+
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
+        if ceph_code in already_open_codes:
+            # Vấn đề này đã có Incident đang mở -- operator đã được báo và
+            # có thể đang xử lý dở. Một Incident thứ hai cho cùng
+            # `ceph_code` không thêm thông tin gì, chỉ nhân đôi thông báo
+            # và nhân đôi hàng chờ duyệt.
+            continue
         if ceph_code == "BLUESTORE_NO_PER_POOL_OMAP":
             # 2026-08-06: watcher/bluestore_omap_monitor.py owns this real
             # ceph_code end-to-end now (its own PENDING_APPROVAL Incident+
@@ -326,7 +353,12 @@ def build_and_publish_incident(
             # into Chat-with-AI/diagnosis in the first place).
             continue
         detected_at = datetime.utcnow()
-        nodes, log_excerpt = collector.collect_relevant_logs(ceph_code, check_detail)
+        # 2026-08-20: dict rỗng truyền xuống làm out-param — collector điền
+        # {osd_id: host} đã tra thật cho những OSD check này nêu đích danh.
+        osd_host_map: dict[int, str] = {}
+        nodes, log_excerpt = collector.collect_relevant_logs(
+            ceph_code, check_detail, osd_host_map=osd_host_map
+        )
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -365,6 +397,7 @@ def build_and_publish_incident(
                 ssh_key_path=settings.ssh_key_path,
                 ceph_exec_mode=settings.ceph_exec_mode,
                 ceph_container_name=settings.ceph_container_name,
+                osd_hosts=osd_host_map,
             )
         )
 
@@ -582,8 +615,11 @@ def run(
             >= settings.node_health_scan_interval_seconds
         ):
             try:
-                current_node_resources = node_health_monitor.check_node_resources()
-                node_health_monitor.create_or_resolve_node_health_incidents(current_node_resources)
+                node_still_over: set[str] = set()
+                current_node_resources = node_health_monitor.check_node_resources(node_still_over)
+                node_health_monitor.create_or_resolve_node_health_incidents(
+                    current_node_resources, node_still_over
+                )
             except Exception:
                 logger.exception("run: node health scan failed")
             last_node_health_scan_at = now
@@ -626,8 +662,11 @@ def run(
             >= settings.osd_latency_scan_interval_seconds
         ):
             try:
-                current_osd_latency = osd_latency_monitor.check_osd_latency_outliers()
-                osd_latency_monitor.create_or_resolve_osd_latency_incidents(current_osd_latency)
+                latency_still_over: set[str] = set()
+                current_osd_latency = osd_latency_monitor.check_osd_latency_outliers(latency_still_over)
+                osd_latency_monitor.create_or_resolve_osd_latency_incidents(
+                    current_osd_latency, latency_still_over
+                )
             except Exception:
                 logger.exception("run: osd latency scan failed")
             last_osd_latency_scan_at = now
@@ -660,8 +699,11 @@ def run(
                 # block) so one shared failure-isolation boundary covers
                 # this whole tick, same as every other scan block in this
                 # function.
-                current_crush_skew = crush_skew_monitor.check_crush_skew(cluster_id)
-                crush_skew_monitor.create_or_resolve_crush_skew_incidents(current_crush_skew)
+                skew_still_over: set[str] = set()
+                current_crush_skew = crush_skew_monitor.check_crush_skew(cluster_id, skew_still_over)
+                crush_skew_monitor.create_or_resolve_crush_skew_incidents(
+                    current_crush_skew, skew_still_over
+                )
             except Exception:
                 logger.exception("run: crush structure/distribution/skew scan failed")
             last_crush_scan_at = now
@@ -697,8 +739,11 @@ def run(
             >= settings.database_size_scan_interval_seconds
         ):
             try:
-                current_database_size = database_capacity_monitor.check_database_size()
-                database_capacity_monitor.create_or_resolve_database_size_incident(current_database_size)
+                db_size_still_over: set[str] = set()
+                current_database_size = database_capacity_monitor.check_database_size(db_size_still_over)
+                database_capacity_monitor.create_or_resolve_database_size_incident(
+                    current_database_size, db_size_still_over
+                )
             except Exception:
                 logger.exception("run: database size scan failed")
             last_database_size_scan_at = now

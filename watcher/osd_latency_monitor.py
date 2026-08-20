@@ -42,6 +42,7 @@ from datetime import datetime
 
 from shared import audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_osd_latency_alert
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
@@ -98,7 +99,9 @@ def ceph_code_for(osd_id: int) -> str:
     return f"{OSD_LATENCY_HIGH_PREFIX}{osd_id}"
 
 
-def check_osd_latency_outliers() -> dict[str, dict]:
+def check_osd_latency_outliers(
+    still_over_threshold: set[str] | None = None,
+) -> dict[str, dict]:
     """Scans every currently-`up` OSD's commit latency via `ceph osd perf`
     and returns {ceph_code: detail} for every OSD whose latency has stayed
     at/above OUTLIER_LATENCY_RATIO times the cluster's own current median
@@ -162,6 +165,11 @@ def check_osd_latency_outliers() -> dict[str, dict]:
     for osd_id in commit_latency_by_id:
         if osd_id in currently_high:
             _consecutive_high_scans[osd_id] = _consecutive_high_scans.get(osd_id, 0) + 1
+            # 2026-08-20: độc lập với streak — xem
+            # create_or_resolve_osd_latency_incidents để biết vì sao
+            # "đang cao ngay bây giờ" phải tách khỏi "đã cao đủ lâu".
+            if still_over_threshold is not None:
+                still_over_threshold.add(ceph_code_for(osd_id))
         else:
             _consecutive_high_scans[osd_id] = 0
 
@@ -192,7 +200,10 @@ def _rationale_for(detail: dict) -> str:
     return text
 
 
-def create_or_resolve_osd_latency_incidents(current: dict[str, dict]) -> None:
+def create_or_resolve_osd_latency_incidents(
+    current: dict[str, dict],
+    still_over_threshold: set[str] | None = None,
+) -> None:
     """Same shape/reasoning as watcher/device_health_monitor.py::
     create_or_resolve_device_health_incidents — creates a PENDING_APPROVAL
     Incident+Action(investigate_manually) for every newly-flagged osd_id
@@ -202,7 +213,17 @@ def create_or_resolve_osd_latency_incidents(current: dict[str, dict]) -> None:
     Sends a Telegram alert (shared/telegram_alerts.py::send_osd_latency_alert,
     the Phần cứng channel) for each NEWLY created Incident only — not
     resent every scan an osd_id stays flagged, same "one notification per
-    genuinely new problem" posture as every other alert path here."""
+    genuinely new problem" posture as every other alert path here.
+
+    `still_over_threshold` (2026-08-20): `_consecutive_high_scans` chỉ sống
+    trong RAM, nên sau mỗi lần Watcher restart nó rỗng và OSD vẫn chậm y
+    như cũ lại vắng mặt khỏi `current` trong `CONSECUTIVE_SCANS_REQUIRED`
+    lần quét đầu — vòng resolve bên dưới sẽ đọc đó là "độ trễ đã về bình
+    thường" và đóng nhầm Incident, để rồi tạo lại Incident + Action +
+    Telegram mới ngay sau đó. Đây là đúng lỗi đã đo được trên
+    watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó); cùng
+    một khuôn streak-trong-RAM nên cùng một cách vá. Mặc định None giữ
+    nguyên hành vi cũ."""
     with db.SessionLocal() as session:
         open_incidents = (
             session.query(Incident)
@@ -212,9 +233,11 @@ def create_or_resolve_osd_latency_incidents(current: dict[str, dict]) -> None:
         )
         open_codes = {incident.ceph_code for incident in open_incidents}
 
+        still_over = still_over_threshold or set()
         for incident in open_incidents:
-            if incident.ceph_code not in current:
+            if incident.ceph_code not in current and incident.ceph_code not in still_over:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
         for ceph_code, detail in current.items():
             if ceph_code in open_codes:

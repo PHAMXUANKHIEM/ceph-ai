@@ -51,6 +51,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from config.settings import settings
 from shared import audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
+from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_database_size_alert
 from worker.policy import gate
 
@@ -131,7 +132,9 @@ def get_database_size_bytes() -> int | None:
     return int(size) if isinstance(size, (int, float)) else None
 
 
-def check_database_size() -> dict[str, dict]:
+def check_database_size(
+    still_over_threshold: set[str] | None = None,
+) -> dict[str, dict]:
     """Returns `{ceph_code: detail}` (at most one entry — there is only
     one database) if the size has stayed at/above
     `DATABASE_SIZE_THRESHOLD_BYTES` for `CONSECUTIVE_SCANS_REQUIRED` scans
@@ -146,6 +149,11 @@ def check_database_size() -> dict[str, dict]:
 
     if size_bytes >= DATABASE_SIZE_THRESHOLD_BYTES:
         _consecutive_high_scans += 1
+        # 2026-08-20: độc lập với streak — xem
+        # create_or_resolve_database_size_incident để biết vì sao "đang
+        # vượt ngưỡng ngay bây giờ" phải tách khỏi "đã vượt đủ lâu".
+        if still_over_threshold is not None:
+            still_over_threshold.add(DATABASE_SIZE_HIGH_PREFIX)
     else:
         _consecutive_high_scans = 0
 
@@ -172,7 +180,10 @@ def _rationale_for(detail: dict) -> str:
     )
 
 
-def create_or_resolve_database_size_incident(current: dict[str, dict]) -> None:
+def create_or_resolve_database_size_incident(
+    current: dict[str, dict],
+    still_over_threshold: set[str] | None = None,
+) -> None:
     """Same shape as watcher/osd_latency_monitor.py::
     create_or_resolve_osd_latency_incidents, simplified for a singleton
     entity (there is only ever one `DATABASE_SIZE_HIGH` ceph_code, never a
@@ -182,7 +193,15 @@ def create_or_resolve_database_size_incident(current: dict[str, dict]) -> None:
     measurement gap counts as "we don't know it's still high", same
     posture as every other family's "no data this scan" handling) drops
     it out of `current`. Sends a Telegram alert only for a NEWLY created
-    Incident."""
+    Incident.
+
+    `still_over_threshold` (2026-08-20): `_consecutive_high_scans` là biến
+    module, chỉ sống trong RAM, nên sau mỗi lần Watcher restart nó về 0 và
+    database vẫn to y như cũ lại vắng mặt khỏi `current` trong
+    `CONSECUTIVE_SCANS_REQUIRED` lần quét đầu — đóng nhầm Incident rồi tạo
+    lại cái mới ngay sau đó. Cùng một lỗi, cùng một cách vá như
+    watcher/crush_skew_monitor.py (xem docstring hàm tương ứng ở đó, kèm số
+    liệu đo được). Mặc định None giữ nguyên hành vi cũ."""
     with db.SessionLocal() as session:
         open_incident = (
             session.query(Incident)
@@ -191,8 +210,14 @@ def create_or_resolve_database_size_incident(current: dict[str, dict]) -> None:
             .first()
         )
 
-        if open_incident is not None and DATABASE_SIZE_HIGH_PREFIX not in current:
+        still_over = still_over_threshold or set()
+        if (
+            open_incident is not None
+            and DATABASE_SIZE_HIGH_PREFIX not in current
+            and DATABASE_SIZE_HIGH_PREFIX not in still_over
+        ):
             open_incident.status = IncidentStatus.RESOLVED.value
+            cancel_pending_actions(session, open_incident.id)
 
         if DATABASE_SIZE_HIGH_PREFIX in current and open_incident is None:
             detail = current[DATABASE_SIZE_HIGH_PREFIX]

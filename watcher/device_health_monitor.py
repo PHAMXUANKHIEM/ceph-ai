@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import audit, db
+from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.telegram_alerts import send_node_alert
 from watcher import ceph_client
@@ -197,6 +198,7 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
         for incident in open_incidents:
             if incident.ceph_code not in current:
                 incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
 
         for ceph_code, detail in current.items():
             if ceph_code in open_codes:

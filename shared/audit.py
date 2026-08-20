@@ -99,3 +99,17 @@ def record(
             actor=actor,
         )
     )
+
+# 2026-08-20: fired when a monitor auto-resolves an Incident (the underlying
+# problem went away on its own) and, in the SAME transaction, closes out
+# every Action still sitting in PENDING_APPROVAL underneath it —
+# see shared/incident_actions.py::cancel_pending_actions for why leaving
+# them open was never harmless. Distinct from EVENT_RISKY_ACTION_REJECTED
+# (a human said no) and from
+# EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS (proposal
+# suppressed during an upgrade window): here nobody rejected anything and
+# nothing was suppressed — the request simply stopped being about a problem
+# that still exists.
+EVENT_RISKY_ACTION_AUTO_CANCELLED_INCIDENT_RESOLVED = (
+    "risky_action_auto_cancelled_incident_resolved"
+)

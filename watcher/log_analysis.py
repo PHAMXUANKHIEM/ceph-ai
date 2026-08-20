@@ -41,6 +41,7 @@ import httpx
 
 from config.settings import settings
 from shared import db
+from shared.incident_actions import cancel_pending_actions
 from shared.cluster_nodes import configured_nodes
 from shared import audit
 from shared.models import (
@@ -856,3 +857,4 @@ def _resolve_incident_for(session, dedupe_key: str) -> None:
         .all()
     ):
         incident.status = IncidentStatus.RESOLVED.value
+        cancel_pending_actions(session, incident.id)
