@@ -838,6 +838,18 @@
   var tenantInput = document.getElementById("log-intel-loki-tenant");
   var result = document.getElementById("log-intel-test-loki-result");
 
+  // Bản sao cục bộ: `handleAuthRedirect` gốc nằm trong IIFE phía trên và
+  // không với tới được từ đây. Tham chiếu xuyên scope làm chuỗi promise ném
+  // ReferenceError ngay lúc dựng — trước cả khi .catch()/.finally() kịp gắn
+  // vào — nên nút kẹt disabled và chữ "Đang kiểm tra…" đứng mãi.
+  function handleAuthRedirect(response) {
+    if (response.redirected && response.url.indexOf("/login") !== -1) {
+      window.location.reload();
+      throw new Error("unauthenticated");
+    }
+    return response;
+  }
+
   function show(ok, msg) {
     result.textContent = (ok ? "✅ " : "❌ ") + msg;
     result.className = ok ? "success" : "error";
