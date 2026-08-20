@@ -24,6 +24,9 @@ from shared.models import (
 )
 from shared.ceph_releases import RELEASES, codename_for_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+# ceph_code do monitor tự đặt không có mặt trong `ceph health detail` nên
+# không thể xác minh bằng cách đối chiếu ở đó — xem module ấy.
+from watcher.ceph_code_families import is_monitor_owned
 from shared.router_client import build_router_client
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
@@ -283,9 +286,33 @@ def _osd_placement_line(payload: dict) -> str:
     )
 
 
+def _previous_attempts_block(payload: dict) -> str:
+    """Liệt kê những lệnh đã chạy cho chính Incident này mà kiểm chứng cho
+    thấy KHÔNG ăn thua (watcher/verify.py điền vào envelope ở vòng chẩn
+    đoán thứ hai trở đi).
+
+    2026-08-20 — thiếu khối này, vòng chẩn đoán lại gần như chắc chắn đề
+    xuất đúng cái lệnh vừa thất bại: model không có cách nào biết nó đã
+    được thử, vì log excerpt và ceph_code thì vẫn y hệt lần đầu.
+    """
+    attempts = payload.get("previous_attempts") or []
+    if not attempts:
+        return ""
+    lines = ["Các lệnh ĐÃ THỬ cho sự cố này và ĐÃ KIỂM CHỨNG LÀ KHÔNG HẾT LỖI:"]
+    for item in attempts:
+        command = item.get("command") or "(không có lệnh tự động)"
+        lines.append(f"  - {item.get('action_id')}: {command} (chạy lúc {item.get('executed_at')})")
+    lines.append(
+        "Đừng đề xuất lại đúng những lệnh trên. Hãy tìm nguyên nhân khác, "
+        "hoặc nói rõ là cần vận hành viên can thiệp thủ công."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _build_user_content(payload: dict) -> str:
     nodes = payload.get("nodes") or []
     return (
+        f"{_previous_attempts_block(payload)}"
         f"Ceph error code: {payload.get('ceph_code')}\n"
         f"Detected at: {payload.get('detected_at')}\n"
         f"Affected nodes: {', '.join(nodes)}\n"
@@ -2167,9 +2194,23 @@ def _record_approved_execution_result(
                 incident_id,
             )
         else:
-            incident.status = (
-                IncidentStatus.RESOLVED.value if succeeded else IncidentStatus.FAILED.value
-            )
+            if not succeeded:
+                incident.status = IncidentStatus.FAILED.value
+            elif is_monitor_owned(incident.ceph_code):
+                # ceph_code do monitor tự đặt không bao giờ xuất hiện trong
+                # `ceph health detail`, nên không có gì để đối chiếu — chính
+                # module monitor sở hữu nó mới biết vấn đề còn hay hết. Giữ
+                # nguyên hành vi cũ cho nhóm này.
+                incident.status = IncidentStatus.RESOLVED.value
+            else:
+                # 2026-08-20: lệnh chạy xong exit 0 KHÔNG phải bằng chứng
+                # lỗi đã hết — nó chỉ chứng minh lệnh chạy được. Chuyển sang
+                # VERIFYING và để watcher/verify.py hỏi lại cụm sau
+                # `settings.incident_verify_delay_seconds` rồi mới kết luận.
+                incident.status = IncidentStatus.VERIFYING.value
+                incident.verify_after = datetime.utcnow() + timedelta(
+                    seconds=max(0, settings.incident_verify_delay_seconds)
+                )
             audit.record(
                 session,
                 incident_id=incident_id,

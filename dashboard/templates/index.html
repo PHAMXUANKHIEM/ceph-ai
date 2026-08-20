@@ -209,7 +209,8 @@
           <tbody>
             {% for incident in incidents %}
             <tr>
-              <td>{{ incident.ceph_code }} <span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span></td>
+              <td>{{ incident.ceph_code }} <span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span>
+                {%- if incident.status == "VERIFYING" %} <span class="hint">· ⏳ đã chạy lệnh, đang chờ kiểm chứng trên cụm</span>{% endif %}</td>
               <td>{% if incident.diagnosis_text %}{{ incident.diagnosis_text }}{% elif incident.status == "DIAGNOSING" %}Đang chẩn đoán...{% else %}Chưa có chẩn đoán.{% endif %}</td>
             </tr>
             {% else %}

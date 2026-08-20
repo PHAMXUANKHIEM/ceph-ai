@@ -54,6 +54,11 @@ OPEN_STATUSES = {
     IncidentStatus.PENDING_APPROVAL.value,
     IncidentStatus.APPROVED.value,
     IncidentStatus.EXECUTING.value,
+    # 2026-08-20: lệnh khắc phục đã chạy nhưng chưa xác minh là hết lỗi.
+    # Chưa được coi là đóng — cả mục đích hiển thị lẫn mục đích tính trạng
+    # thái tổng của cụm: nói "OK" trong khi còn đang chờ kiểm chứng chính
+    # là kiểu lạc quan sai mà cả tính năng này sinh ra để chấm dứt.
+    IncidentStatus.VERIFYING.value,
     IncidentStatus.FAILED.value,
 }
 

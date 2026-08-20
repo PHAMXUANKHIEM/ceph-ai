@@ -20,6 +20,7 @@ def build_envelope(
     ceph_exec_mode: str = "",
     ceph_container_name: str = "",
     osd_hosts: dict[int, str] | None = None,
+    previous_attempts: list[dict] | None = None,
 ) -> dict:
     """Build the Incident message envelope (matches Story 1.4 AC #2 exactly).
 
@@ -44,7 +45,14 @@ def build_envelope(
     prompt để model không phải suy ra osd nào nằm ở máy nào từ một danh
     sách node phẳng (nó từng suy sai, xem watcher/osd_hosts.py). Rỗng/None
     nghĩa là "chưa xác định được", KHÔNG phải "không có OSD nào liên
-    quan" — prompt phải nói đúng sự khác biệt đó."""
+    quan" — prompt phải nói đúng sự khác biệt đó.
+
+    `previous_attempts` (2026-08-20, xác minh sau khắc phục): những lệnh ĐÃ
+    chạy cho chính Incident này mà kiểm chứng cho thấy không ăn thua. Chỉ
+    watcher/verify.py điền, khi đẩy lại một Incident cho AI chẩn đoán vòng
+    hai; rỗng ở lần chẩn đoán đầu. Thiếu nó, model rất dễ đề xuất lại đúng
+    cái lệnh vừa thất bại — log excerpt và ceph_code thì vẫn y hệt lần
+    đầu."""
     return {
         "schema_version": SCHEMA_VERSION,
         "incident_id": incident_id,
@@ -54,6 +62,7 @@ def build_envelope(
         # Khoá JSON phải là chuỗi — dict[int, str] đi qua json.dumps sẽ tự
         # đổi khoá thành chuỗi, làm ở đây cho envelope nhất quán hai đầu.
         "osd_hosts": {str(k): v for k, v in (osd_hosts or {}).items()},
+        "previous_attempts": previous_attempts or [],
         "log_excerpt": log_excerpt,
         "cluster_snapshot": cluster_snapshot,
         "cluster_id": cluster_id,

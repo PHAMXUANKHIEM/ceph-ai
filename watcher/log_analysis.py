@@ -737,6 +737,8 @@ _RESOLVABLE_INCIDENT_STATUSES = (
     IncidentStatus.PENDING_APPROVAL.value,
     IncidentStatus.APPROVED.value,
     IncidentStatus.EXECUTING.value,
+    # 2026-08-20: lệnh đã chạy nhưng chưa xác minh là hết lỗi — vẫn đang mở.
+    IncidentStatus.VERIFYING.value,
     IncidentStatus.FAILED.value,
 )
 

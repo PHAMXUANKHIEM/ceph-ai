@@ -35,6 +35,9 @@ def test_build_envelope_has_exact_ac2_fields():
         # 2026-08-20: ánh xạ {osd_id: host} đã tra thật, để LLM không phải
         # đoán osd nào nằm ở máy nào (watcher/osd_hosts.py).
         "osd_hosts",
+        # 2026-08-20: những lệnh đã thử mà kiểm chứng cho thấy không hết lỗi
+        # — chỉ watcher/verify.py điền, ở vòng chẩn đoán thứ hai trở đi.
+        "previous_attempts",
         "log_excerpt",
         "cluster_snapshot",
         "cluster_id",

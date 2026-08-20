@@ -113,3 +113,13 @@ def record(
 EVENT_RISKY_ACTION_AUTO_CANCELLED_INCIDENT_RESOLVED = (
     "risky_action_auto_cancelled_incident_resolved"
 )
+
+
+# 2026-08-20 (watcher/verify.py — xác minh sau khắc phục). Ba kết cục của
+# một vòng kiểm chứng, tách riêng khỏi EVENT_RISKY_ACTION_EXECUTED: sự kiện
+# kia chỉ nói "lệnh chạy xong exit 0", ba sự kiện này mới nói về việc VẤN ĐỀ
+# còn hay hết — đúng thứ mà trước đây không ai ghi lại, và cũng là thứ
+# operator thật sự muốn biết khi lật lại lịch sử một Incident.
+EVENT_INCIDENT_FIX_VERIFIED = "incident_fix_verified"
+EVENT_INCIDENT_FIX_NOT_EFFECTIVE = "incident_fix_not_effective"
+EVENT_INCIDENT_FIX_GAVE_UP = "incident_fix_gave_up"

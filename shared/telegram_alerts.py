@@ -431,3 +431,66 @@ def send_log_finding_resolved_alert(title: str, *, cluster_name: str | None = No
         f"Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
         cluster_name,
     )
+
+
+def send_incident_verified_alert(
+    ceph_code: str,
+    attempted_command: str | None = None,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> None:
+    """"✅ ĐÃ KHẮC PHỤC" — gửi khi watcher/verify.py đã HỎI LẠI CỤM và xác
+    nhận ceph_code không còn trong `ceph health detail` nữa.
+
+    2026-08-20 — trước đây không có thông báo nào cho việc này. Operator
+    nhận được đề xuất, bấm Duyệt, rồi im lặng: muốn biết lệnh có ăn thua
+    không thì phải tự mở Dashboard hoặc tự SSH vào cụm mà xem. Tệ hơn,
+    Incident được đánh RESOLVED chỉ vì lệnh SSH trả về exit 0, nên kể cả
+    Dashboard cũng đang nói "đã xong" cho những ca chưa xong.
+
+    Đi qua ĐÚNG kênh "Lỗi cụm" mà `send_incident_alert` đã dùng để báo sự
+    cố này lúc đầu — đóng lại đúng chỗ đã mở ra, để một cuộc hội thoại nằm
+    gọn trong một chat thay vì rải ra các kênh khác nhau.
+    """
+    text = f"✅ ĐÃ KHẮC PHỤC · {ceph_code}"
+    text += "\nĐã kiểm chứng lại trên cụm: lỗi không còn xuất hiện trong `ceph health detail`."
+    if attempted_command:
+        text += f"\n💻 Lệnh đã chạy: {_compact(attempted_command, _MAX_FOLLOWUP_FIELD_CHARS)}"
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+
+
+def send_incident_verify_exhausted_alert(
+    ceph_code: str,
+    attempts: int,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> None:
+    """"⚠️ CHƯA KHẮC PHỤC ĐƯỢC" — đã dùng hết
+    `settings.incident_verify_max_attempts` vòng chẩn đoán lại mà lỗi vẫn
+    còn. Đây là điểm hệ thống chủ động BỎ CUỘC và giao lại cho người, chứ
+    không im lặng thử mãi: có những lỗi không lệnh tự động nào chữa được
+    (CRUSH skew cần người cân lại weight, đĩa hỏng cần thay), và mỗi vòng
+    thêm chỉ tốn một lần gọi router cùng một loạt thông báo.
+    """
+    text = f"⚠️ CHƯA KHẮC PHỤC ĐƯỢC · {ceph_code}"
+    text += (
+        f"\nĐã thử {attempts} vòng khắc phục + chẩn đoán lại, kiểm chứng trên cụm vẫn thấy lỗi."
+        "\nDừng tự động xử lý — cần vận hành viên vào xem trực tiếp."
+    )
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )

@@ -61,6 +61,11 @@ _RECOVERABLE_STATUSES = {
     IncidentStatus.PENDING_APPROVAL.value,
     IncidentStatus.APPROVED.value,
     IncidentStatus.EXECUTING.value,
+    # 2026-08-20: lệnh đã chạy nhưng CHƯA xác minh là hết lỗi —
+    # vẫn là một sự cố đang mở. Thiếu dòng này, mọi chỗ dùng tập
+    # trạng thái này để chống trùng sẽ tưởng Incident đã đóng và
+    # tạo thêm một Incident nữa cho cùng vấn đề.
+    IncidentStatus.VERIFYING.value,
     IncidentStatus.FAILED.value,
 }
 

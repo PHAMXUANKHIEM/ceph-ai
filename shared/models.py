@@ -151,6 +151,15 @@ class IncidentStatus(str, enum.Enum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
     EXECUTING = "EXECUTING"
+    # 2026-08-20: lệnh khắc phục đã chạy xong exit 0, NHƯNG chưa ai hỏi lại
+    # cụm xem lỗi đã thật sự hết chưa. Trước trạng thái này, "SSH trả về 0"
+    # bị coi thẳng là RESOLVED (worker/llm/router_client.py::
+    # _record_approved_execution_result) — một lệnh chạy trót lọt mà không
+    # sửa được gì vẫn khép Incident lại, và không có gì báo cho operator
+    # biết sự khác nhau. VERIFYING là khoảng giữa: watcher/verify.py đối
+    # chiếu ceph_code với `ceph health detail` sau một khoảng chờ rồi mới
+    # quyết RESOLVED (kèm Telegram báo OK) hay quay lại chẩn đoán.
+    VERIFYING = "VERIFYING"
     RESOLVED = "RESOLVED"
     REJECTED = "REJECTED"
     FAILED = "FAILED"
@@ -185,6 +194,17 @@ class Incident(Base):
     # Last hourly Telegram reminder. NULL means no reminder has been sent;
     # created_at remains the baseline for the first reminder.
     telegram_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 2026-08-20 (xác minh sau khắc phục): thời điểm SỚM NHẤT được phép kiểm
+    # chứng. Không kiểm ngay sau khi lệnh chạy xong vì rất nhiều lỗi cần
+    # thời gian mới hết (PG backfill xong, OSD vào lại quorum, mon clock
+    # skew hội tụ) — kiểm ngay sẽ luôn ra "chưa hết" một cách giả tạo.
+    # NULL nghĩa là Incident này không nằm trong luồng xác minh.
+    verify_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Số vòng đã kiểm chứng-rồi-chẩn đoán lại. Chặn ở
+    # settings.incident_verify_max_attempts để một lỗi không bao giờ tự hết
+    # (ví dụ CRUSH skew cần người cân lại weight) không thành vòng lặp vô
+    # tận gọi router tốn phí và spam Telegram.
+    verify_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

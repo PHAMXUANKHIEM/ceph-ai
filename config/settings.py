@@ -53,6 +53,21 @@ class Settings(BaseSettings):
     # Repeat Telegram notifications while an Incident remains unresolved.
     telegram_incident_reminder_interval_seconds: int = 3600
 
+    # --- Xác minh sau khắc phục (2026-08-20, watcher/verify.py) ----------
+    # Chờ bao lâu sau khi lệnh khắc phục chạy xong rồi mới hỏi lại cụm.
+    # KHÔNG kiểm ngay: rất nhiều lỗi cần thời gian mới hết (PG backfill
+    # xong, OSD vào lại quorum, mon clock skew hội tụ) nên kiểm tức thì sẽ
+    # luôn ra "chưa hết" một cách giả tạo, rồi kéo theo một vòng chẩn đoán
+    # lại hoàn toàn vô ích. 5 phút là mức thận trọng cho một cụm lab; cụm
+    # lớn nên nới thêm.
+    incident_verify_delay_seconds: int = 300
+    # Trần số vòng "kiểm chứng -> chưa hết -> nhờ AI chẩn đoán lại". Chạm
+    # trần thì Incident chuyển FAILED và Telegram báo cần người vào, thay vì
+    # lặp mãi. Có những lỗi không bao giờ tự hết bằng một lệnh (CRUSH skew
+    # cần người cân lại weight) — với chúng, mỗi vòng thêm chỉ tốn một lần
+    # gọi router và một loạt thông báo.
+    incident_verify_max_attempts: int = 2
+
     # OSD/data node access — used by watcher/collector.py to fetch OSD daemon
     # logs (Story 1.4). Same cluster as ceph_mon_nodes above; also blank by
     # default (OSD log collection is optional — see Settings page AC #1).

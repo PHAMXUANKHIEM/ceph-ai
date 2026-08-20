@@ -939,7 +939,10 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert action.executed_at is not None
         assert action.proposed_command == "systemctl restart ceph-fsid@osd.3.service"
         incident = session.get(Incident, "incident-7a")
-        assert incident.status == IncidentStatus.RESOLVED.value
+        # 2026-08-20: lệnh chạy xong exit 0 KHÔNG còn tự động là RESOLVED —
+        # Incident dừng ở VERIFYING cho tới khi watcher/verify.py hỏi lại cụm
+        # và xác nhận ceph_code đã biến mất khỏi `ceph health detail`.
+        assert incident.status == IncidentStatus.VERIFYING.value
         entries = session.query(AuditEntry).filter_by(incident_id="incident-7a").all()
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
 
@@ -1232,7 +1235,10 @@ def test_execute_approved_action_restart_osd_daemon_discovers_via_systemctl_and_
         assert action.status == ActionStatus.EXECUTED.value
         assert action.proposed_command == "systemctl restart ceph-fsid@osd.1.service"
         incident = session.get(Incident, "incident-7z")
-        assert incident.status == IncidentStatus.RESOLVED.value
+        # 2026-08-20: lệnh chạy xong exit 0 KHÔNG còn tự động là RESOLVED —
+        # Incident dừng ở VERIFYING cho tới khi watcher/verify.py hỏi lại cụm
+        # và xác nhận ceph_code đã biến mất khỏi `ceph health detail`.
+        assert incident.status == IncidentStatus.VERIFYING.value
 
 
 def test_execute_approved_action_persists_execution_progress_per_host(
@@ -2269,7 +2275,10 @@ def test_execute_approved_action_delegates_to_cluster_deploy_for_deploy_action_i
         assert action.status == ActionStatus.EXECUTED.value
         assert action.executed_at is not None
         incident = session.get(Incident, "incident-8a")
-        assert incident.status == IncidentStatus.RESOLVED.value
+        # 2026-08-20: lệnh chạy xong exit 0 KHÔNG còn tự động là RESOLVED —
+        # Incident dừng ở VERIFYING cho tới khi watcher/verify.py hỏi lại cụm
+        # và xác nhận ceph_code đã biến mất khỏi `ceph health detail`.
+        assert incident.status == IncidentStatus.VERIFYING.value
         entries = session.query(AuditEntry).filter_by(incident_id="incident-8a").all()
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
 
@@ -2363,7 +2372,10 @@ def test_execute_approved_action_delegates_to_volume_perf_for_volume_perf_sweep(
         action = session.get(Action, action_pk)
         assert action.status == ActionStatus.EXECUTED.value
         incident = session.get(Incident, "incident-9a")
-        assert incident.status == IncidentStatus.RESOLVED.value
+        # 2026-08-20: lệnh chạy xong exit 0 KHÔNG còn tự động là RESOLVED —
+        # Incident dừng ở VERIFYING cho tới khi watcher/verify.py hỏi lại cụm
+        # và xác nhận ceph_code đã biến mất khỏi `ceph health detail`.
+        assert incident.status == IncidentStatus.VERIFYING.value
 
 
 def test_execute_approved_action_volume_perf_failure_marks_failed(isolated_db, monkeypatch):

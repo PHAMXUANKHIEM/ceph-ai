@@ -73,6 +73,10 @@ def test_incident_has_required_columns():
         "log_excerpt",
         "diagnosis_text",
         "telegram_reminded_at",
+        # 2026-08-20 (xác minh sau khắc phục, watcher/verify.py): mốc sớm
+        # nhất được phép hỏi lại cụm, và số vòng chẩn đoán lại đã dùng.
+        "verify_after",
+        "verify_attempts",
         "detected_at",
         "created_at",
         "updated_at",

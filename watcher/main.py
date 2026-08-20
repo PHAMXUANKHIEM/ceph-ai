@@ -24,6 +24,7 @@ from watcher import (
     osd_latency_monitor,
     publisher,
     trash_capacity_monitor,
+    verify,
     volume_monitor,
     vitastor_monitor,
 )
@@ -59,6 +60,11 @@ _RECOVERABLE_STATUSES = {
     IncidentStatus.PENDING_APPROVAL.value,
     IncidentStatus.APPROVED.value,
     IncidentStatus.EXECUTING.value,
+    # 2026-08-20: lệnh đã chạy nhưng CHƯA xác minh là hết lỗi —
+    # vẫn là một sự cố đang mở. Thiếu dòng này, mọi chỗ dùng tập
+    # trạng thái này để chống trùng sẽ tưởng Incident đã đóng và
+    # tạo thêm một Incident nữa cho cùng vấn đề.
+    IncidentStatus.VERIFYING.value,
     IncidentStatus.FAILED.value,
 }
 
@@ -506,6 +512,17 @@ def run(
             # gating this behind "only on transition" can permanently miss
             # Incidents Worker resolves/fails on its own, later.
             _resolve_recovered_incidents(set(current_checks), cluster_id=cluster_id)
+            # 2026-08-20 (xác minh sau khắc phục): CHỈ gọi trong nhánh
+            # thành công này, không bao giờ ở nhánh except bên dưới —
+            # `current_checks` rỗng vì MON không trả lời trông y hệt "cụm
+            # hoàn toàn khoẻ", và sẽ báo "đã khắc phục" cho mọi Incident
+            # đang chờ xác minh trong khi thực tế là ta đang mù.
+            try:
+                verify.verify_pending_incidents(
+                    set(current_checks), health=health, cluster_id=cluster_id
+                )
+            except Exception:
+                logger.exception("run: vòng xác minh sau khắc phục thất bại")
             if current_status != last_status or current_checks != last_checks:
                 on_transition(last_status, health)
                 last_status = current_status
