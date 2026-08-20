@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from config.settings import settings
 from watcher import ceph_client
 from watcher.ceph_client import run_command_on_node, run_command_on_node_with
+from watcher.osd_hosts import osd_ids_in_detail, resolve_osd_hosts
 
 if TYPE_CHECKING:
     from shared.models import Cluster
@@ -52,7 +53,12 @@ def _get_mgr_nodes(cluster: "Cluster | None" = None) -> list[str]:
     return [h.strip() for h in raw.split(",") if h.strip()]
 
 
-def identify_relevant_nodes(ceph_code: str, check_detail: dict, cluster: "Cluster | None" = None) -> list[str]:
+def identify_relevant_nodes(
+    ceph_code: str,
+    check_detail: dict,
+    cluster: "Cluster | None" = None,
+    osd_host_map: dict[int, str] | None = None,
+) -> list[str]:
     """Return the SSH-able IP(s) of the node(s) relevant to this check.
 
     `ceph_code` prefix decides daemon type FIRST and deterministically
@@ -64,11 +70,37 @@ def identify_relevant_nodes(ceph_code: str, check_detail: dict, cluster: "Cluste
     resolves every node list from THAT cluster's own fields instead of the
     global `settings` singleton — same opt-in posture as
     `shared/cluster_nodes.py::configured_nodes()`.
+
+    `osd_host_map` (2026-08-20, out-param): khi truyền vào một dict, hàm
+    điền {osd_id: host} cho đúng những OSD mà check này nêu đích danh —
+    `build_and_publish_incident` chuyển tiếp nó vào envelope để LLM không
+    còn phải đoán osd nào nằm ở máy nào (xem `watcher/osd_hosts.py`).
     """
     if ceph_code.startswith("OSD_") or ceph_code.startswith("PG_"):
-        # No cheap osd-id -> host mapping available in v1 (would need an
-        # extra `ceph osd tree`/`ceph osd find` query) — collect from all
-        # OSD nodes instead of the whole cluster. See Dev Notes.
+        # 2026-08-20 — SỬA LỖI CÓ THẬT: trước đây hàm này trả về TOÀN BỘ
+        # danh sách node OSD kèm comment "No cheap osd-id -> host mapping
+        # available in v1". Cái gap đó không còn: watcher/osd_hosts.py tra
+        # đúng host bằng cách hỏi systemd của từng node OSD đã cấu hình.
+        # Hậu quả của bản cũ không chỉ là thu log thừa — danh sách phẳng ấy
+        # vào thẳng prompt LLM ("Affected nodes: ip1, ip2, ip3") nên model
+        # buộc phải đoán và sinh ra chẩn đoán gán osd vào SAI node, rồi
+        # cùng danh sách ấy được ghi vào Action.target_nodes nên lệnh khắc
+        # phục cũng nhắm sai máy.
+        osd_ids = osd_ids_in_detail(check_detail)
+        if osd_ids:
+            resolved = resolve_osd_hosts(osd_ids, cluster)
+            if osd_host_map is not None:
+                osd_host_map.update(resolved)
+            if resolved:
+                # Giữ thứ tự cấu hình thay vì thứ tự osd_id, để excerpt đọc
+                # ổn định giữa các lần chạy.
+                targeted = [h for h in _get_osd_nodes(cluster) if h in set(resolved.values())]
+                if targeted:
+                    return targeted
+        # Không nêu osd nào, hoặc không osd nào khớp host đã cấu hình: quay
+        # về gom cả cụm OSD. Đây là "chưa xác định được", KHÔNG phải "đã xác
+        # định là tất cả" — `osd_host_map` để trống chính là tín hiệu ấy cho
+        # phía dựng prompt.
         return _get_osd_nodes(cluster)
 
     if ceph_code.startswith("MGR_"):
@@ -341,7 +373,10 @@ def _collect_device_health_excerpt(cluster: "Cluster | None" = None) -> tuple[li
 
 
 def collect_relevant_logs(
-    ceph_code: str, check_detail: dict, cluster: "Cluster | None" = None
+    ceph_code: str,
+    check_detail: dict,
+    cluster: "Cluster | None" = None,
+    osd_host_map: dict[int, str] | None = None,
 ) -> tuple[list[str], str]:
     """Collect the daemon log from the node(s) relevant to this check, using
     whatever command shape matches this cluster's exec mode.
@@ -356,13 +391,16 @@ def collect_relevant_logs(
     module. `watcher/main.py::_build_and_publish_incident_for_observed_
     cluster` passes its own `Cluster` row here; the DEFAULT cluster's own
     `build_and_publish_incident` still omits it, unchanged behavior.
+
+    `osd_host_map` (2026-08-20, out-param): chuyển thẳng xuống
+    `identify_relevant_nodes` — xem docstring hàm ấy.
     """
     if ceph_code == RECENT_CRASH_CEPH_CODE:
         return _collect_recent_crash_excerpt(cluster)
     if ceph_code.startswith(DEVICE_HEALTH_CEPH_CODE_PREFIX):
         return _collect_device_health_excerpt(cluster)
 
-    nodes = identify_relevant_nodes(ceph_code, check_detail, cluster)
+    nodes = identify_relevant_nodes(ceph_code, check_detail, cluster, osd_host_map)
     exec_mode = cluster.ceph_exec_mode if cluster is not None else settings.ceph_exec_mode
     excerpt_parts = []
     for host in nodes:

@@ -6,6 +6,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import watcher.bluestore_omap_monitor as bom
+# 2026-08-20: resolve_osd_hosts đã dọn sang watcher/osd_hosts.py để
+# watcher/collector.py dùng chung — patch đúng nơi hàm thật sự sống.
+import watcher.osd_hosts as osd_hosts
 from shared import db as db_module
 from shared.db import Base
 from shared.models import Action, ActionClassification, ActionStatus, AuditEntry, Incident, IncidentStatus
@@ -92,7 +95,7 @@ def _node(host, roles):
 
 def test_resolve_osd_hosts_maps_id_to_the_host_that_actually_has_the_unit(monkeypatch):
     monkeypatch.setattr(
-        bom, "configured_nodes", lambda: [_node("10.20.1.112", ["MON", "OSD"]), _node("10.20.1.95", ["OSD"])]
+        osd_hosts, "configured_nodes", lambda *_a: [_node("10.20.1.112", ["MON", "OSD"]), _node("10.20.1.95", ["OSD"])]
     )
 
     def fake_run(host, command):
@@ -102,7 +105,7 @@ def test_resolve_osd_hosts_maps_id_to_the_host_that_actually_has_the_unit(monkey
             return "ceph-osd@1.service                    loaded active running\n"
         raise AssertionError(f"unexpected host: {host}")
 
-    monkeypatch.setattr(bom.ceph_client, "run_command_on_node", fake_run)
+    monkeypatch.setattr(osd_hosts.ceph_client, "run_command_on_node", fake_run)
 
     result = bom.resolve_osd_hosts({0, 1})
 
@@ -110,9 +113,9 @@ def test_resolve_osd_hosts_maps_id_to_the_host_that_actually_has_the_unit(monkey
 
 
 def test_resolve_osd_hosts_matches_cephadm_style_unit_names(monkeypatch):
-    monkeypatch.setattr(bom, "configured_nodes", lambda: [_node("10.20.1.112", ["OSD"])])
+    monkeypatch.setattr(osd_hosts, "configured_nodes", lambda *_a: [_node("10.20.1.112", ["OSD"])])
     monkeypatch.setattr(
-        bom.ceph_client,
+        osd_hosts.ceph_client,
         "run_command_on_node",
         lambda host, cmd: "ceph-48a9efa2@osd.3.service          loaded active running\n",
     )
@@ -121,10 +124,10 @@ def test_resolve_osd_hosts_matches_cephadm_style_unit_names(monkeypatch):
 
 
 def test_resolve_osd_hosts_skips_non_osd_role_nodes(monkeypatch):
-    monkeypatch.setattr(bom, "configured_nodes", lambda: [_node("10.20.1.150", ["MON"])])
+    monkeypatch.setattr(osd_hosts, "configured_nodes", lambda *_a: [_node("10.20.1.150", ["MON"])])
     calls = []
     monkeypatch.setattr(
-        bom.ceph_client, "run_command_on_node", lambda host, cmd: calls.append(host) or ""
+        osd_hosts.ceph_client, "run_command_on_node", lambda host, cmd: calls.append(host) or ""
     )
 
     assert bom.resolve_osd_hosts({0}) == {}
@@ -132,19 +135,19 @@ def test_resolve_osd_hosts_skips_non_osd_role_nodes(monkeypatch):
 
 
 def test_resolve_osd_hosts_survives_unreachable_host(monkeypatch):
-    monkeypatch.setattr(bom, "configured_nodes", lambda: [_node("10.20.1.112", ["OSD"])])
+    monkeypatch.setattr(osd_hosts, "configured_nodes", lambda *_a: [_node("10.20.1.112", ["OSD"])])
 
     def raising(host, cmd):
         raise Exception("connection refused")
 
-    monkeypatch.setattr(bom.ceph_client, "run_command_on_node", raising)
+    monkeypatch.setattr(osd_hosts.ceph_client, "run_command_on_node", raising)
 
     assert bom.resolve_osd_hosts({0}) == {}  # must not raise
 
 
 def test_resolve_osd_hosts_stops_early_once_every_id_resolved(monkeypatch):
     monkeypatch.setattr(
-        bom, "configured_nodes", lambda: [_node("10.20.1.112", ["OSD"]), _node("10.20.1.95", ["OSD"])]
+        osd_hosts, "configured_nodes", lambda *_a: [_node("10.20.1.112", ["OSD"]), _node("10.20.1.95", ["OSD"])]
     )
     calls = []
 
@@ -152,7 +155,7 @@ def test_resolve_osd_hosts_stops_early_once_every_id_resolved(monkeypatch):
         calls.append(host)
         return "ceph-osd@0.service loaded active running\n"
 
-    monkeypatch.setattr(bom.ceph_client, "run_command_on_node", fake_run)
+    monkeypatch.setattr(osd_hosts.ceph_client, "run_command_on_node", fake_run)
 
     result = bom.resolve_osd_hosts({0})
 

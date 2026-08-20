@@ -359,8 +359,16 @@ def _hosts_by_daemon_type(cluster: Cluster | None) -> dict[str, set[str]]:
     mapping: dict[str, set[str]] = {}
     for node in configured_nodes(cluster):
         for role in node.get("roles") or []:
-            if role in DAEMON_TYPES:
-                mapping.setdefault(node["host"], set()).add(role)
+            # 2026-08-20 — LỖI CÓ THẬT: `configured_nodes()` trả role VIẾT
+            # HOA ("MON"/"MGR"/"OSD"/"RGW", xem shared/cluster_nodes.py),
+            # còn DAEMON_TYPES là chữ thường. So sánh thẳng thì KHÔNG BAO
+            # GIỜ khớp, hàm này luôn trả về {} và toàn bộ Log Intelligence
+            # không thu nổi một dòng log nào — mà vẫn báo "quét xong" chứ
+            # không lỗi. Chuẩn hoá về chữ thường, vì DAEMON_TYPES cũng là
+            # giá trị đi vào nhãn `daemon_type` của Loki (chữ thường).
+            daemon_type = role.lower()
+            if daemon_type in DAEMON_TYPES:
+                mapping.setdefault(node["host"], set()).add(daemon_type)
     return mapping
 
 

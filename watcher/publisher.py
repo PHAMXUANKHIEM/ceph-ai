@@ -19,6 +19,7 @@ def build_envelope(
     ssh_key_path: str = "",
     ceph_exec_mode: str = "",
     ceph_container_name: str = "",
+    osd_hosts: dict[int, str] | None = None,
 ) -> dict:
     """Build the Incident message envelope (matches Story 1.4 AC #2 exactly).
 
@@ -36,13 +37,23 @@ def build_envelope(
     cluster's Incident. Every caller must pass real values (there is no
     sensible "unset" default that's still safe to execute against — an
     empty string here would surface as a clear, loud SSH/paramiko failure
-    rather than silently falling back to the default cluster's creds)."""
+    rather than silently falling back to the default cluster's creds).
+
+    `osd_hosts` (2026-08-20): {osd_id: host} đã TRA THẬT cho những OSD mà
+    check này nêu đích danh — worker/llm/router_client.py đưa thẳng vào
+    prompt để model không phải suy ra osd nào nằm ở máy nào từ một danh
+    sách node phẳng (nó từng suy sai, xem watcher/osd_hosts.py). Rỗng/None
+    nghĩa là "chưa xác định được", KHÔNG phải "không có OSD nào liên
+    quan" — prompt phải nói đúng sự khác biệt đó."""
     return {
         "schema_version": SCHEMA_VERSION,
         "incident_id": incident_id,
         "ceph_code": ceph_code,
         "detected_at": detected_at,
         "nodes": nodes,
+        # Khoá JSON phải là chuỗi — dict[int, str] đi qua json.dumps sẽ tự
+        # đổi khoá thành chuỗi, làm ở đây cho envelope nhất quán hai đầu.
+        "osd_hosts": {str(k): v for k, v in (osd_hosts or {}).items()},
         "log_excerpt": log_excerpt,
         "cluster_snapshot": cluster_snapshot,
         "cluster_id": cluster_id,

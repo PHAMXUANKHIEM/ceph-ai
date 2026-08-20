@@ -251,12 +251,45 @@ def _tool_schema() -> dict:
     }
 
 
+def _osd_placement_line(payload: dict) -> str:
+    """Dòng nói cho model biết osd nào nằm ở máy nào -- hoặc nói thẳng là
+    KHÔNG BIẾT.
+
+    2026-08-20 -- sửa lỗi có thật: trước đây prompt chỉ có
+    `Affected nodes: ip1, ip2, ip3`, một danh sách phẳng không kèm ánh xạ
+    nào. Model không có cách nào biết osd.2 nằm ở máy nào nên nó đoán, và
+    sinh ra những câu chẩn đoán gán cả cụm OSD vào một địa chỉ sai
+    ("osd.2, osd.4 và osd.5 trên node <ip sai>"). watcher/osd_hosts.py giờ
+    tra đúng host qua systemd của từng node đã cấu hình.
+
+    Khi không tra được, KHÔNG im lặng bỏ qua dòng này: im lặng đưa model
+    trở lại đúng tình huống cũ (một danh sách phẳng, tự do suy diễn). Nói
+    thẳng "chưa xác định được" và cấm suy đoán.
+    """
+    osd_hosts = payload.get("osd_hosts") or {}
+    if osd_hosts:
+        placement = ", ".join(
+            f"osd.{osd_id} -> {host}" for osd_id, host in sorted(osd_hosts.items(), key=lambda kv: int(kv[0]))
+        )
+        return (
+            f"OSD placement (đã tra trực tiếp trên node, chính xác): {placement}\n"
+            "Chỉ được dùng đúng ánh xạ này khi nói osd nào nằm ở node nào.\n"
+        )
+    return (
+        "OSD placement: CHƯA XÁC ĐỊNH ĐƯỢC.\n"
+        "Danh sách node ở trên là toàn bộ node OSD của cụm, KHÔNG phải kết luận "
+        "về vị trí của osd nào. Tuyệt đối không gán một osd_id cụ thể cho một "
+        "node cụ thể trong phần chẩn đoán.\n"
+    )
+
+
 def _build_user_content(payload: dict) -> str:
     nodes = payload.get("nodes") or []
     return (
         f"Ceph error code: {payload.get('ceph_code')}\n"
         f"Detected at: {payload.get('detected_at')}\n"
         f"Affected nodes: {', '.join(nodes)}\n"
+        f"{_osd_placement_line(payload)}"
         f"Cluster snapshot: {json.dumps(payload.get('cluster_snapshot', {}))}\n\n"
         f"Relevant daemon log excerpt:\n{payload.get('log_excerpt', '')}"
     )

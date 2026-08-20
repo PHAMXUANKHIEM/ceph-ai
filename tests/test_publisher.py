@@ -32,6 +32,9 @@ def test_build_envelope_has_exact_ac2_fields():
         "ceph_code",
         "detected_at",
         "nodes",
+        # 2026-08-20: ánh xạ {osd_id: host} đã tra thật, để LLM không phải
+        # đoán osd nào nằm ở máy nào (watcher/osd_hosts.py).
+        "osd_hosts",
         "log_excerpt",
         "cluster_snapshot",
         "cluster_id",

@@ -84,6 +84,16 @@ def fake_ssh(monkeypatch):
     yield FakeSSHClient
 
 
+# 2026-08-20: với ceph_code OSD_/PG_, collector hỏi systemd của từng node OSD
+# xem osd nào chạy ở đó trước khi lấy log (watcher/osd_hosts.py — trước đây nó
+# đoán host). Các assert dưới nói về LỆNH LẤY LOG, nên lệnh thăm dò vị trí phải
+# được loại ra thay vì làm chúng sai.
+_PLACEMENT_PROBE = "systemctl list-units --all 2>/dev/null | grep -i osd || true"
+
+
+def _log_calls(fake_ssh):
+    return [(h, c) for h, c in fake_ssh.calls if c != _PLACEMENT_PROBE]
+
 def test_identify_relevant_nodes_for_osd_code_returns_only_osd_nodes(monkeypatch):
     from config.settings import settings
 
@@ -117,7 +127,7 @@ def test_collect_relevant_logs_for_osd_code_never_touches_mon_nodes(fake_ssh):
     mon_nodes = set(settings.ceph_mon_nodes.split(","))
     contacted_hosts = {host for host, _cmd in fake_ssh.calls}
     assert not (contacted_hosts & mon_nodes)
-    for host, command in fake_ssh.calls:
+    for host, command in _log_calls(fake_ssh):
         assert command == f"docker logs {settings.ceph_osd_container_name} --tail 50 2>&1"
     assert "osd log from" in log_excerpt
 
@@ -205,7 +215,7 @@ def test_collect_relevant_logs_uses_podman_logs_in_podman_mode(fake_ssh, monkeyp
 
     collect_relevant_logs("OSD_DOWN", OSD_CODE_DETAIL)
 
-    for _host, command in fake_ssh.calls:
+    for _host, command in _log_calls(fake_ssh):
         assert command == f"podman logs {settings.ceph_osd_container_name} --tail 50 2>&1"
 
 
@@ -221,7 +231,7 @@ def test_collect_relevant_logs_uses_journalctl_glob_in_none_mode_for_osd(fake_ss
     nodes, log_excerpt = collect_relevant_logs("OSD_DOWN", OSD_CODE_DETAIL)
 
     assert len(nodes) > 0
-    for _host, command in fake_ssh.calls:
+    for _host, command in _log_calls(fake_ssh):
         assert command == "journalctl -u 'ceph-osd@*' -n 50 --no-pager 2>&1"
     assert "(ceph-osd@*)" in log_excerpt
     assert "osd unit log" in log_excerpt
@@ -507,3 +517,62 @@ def test_collect_relevant_logs_cephadm_mode_survives_malformed_ls_output(monkeyp
     nodes, log_excerpt = collect_relevant_logs("OSD_DOWN", OSD_CODE_DETAIL)
 
     assert "no osd.* daemon found" in log_excerpt
+
+
+# --- osd_id -> host: tra thật, không đoán (2026-08-20) ----------------------
+# Hồi quy cho lỗi: identify_relevant_nodes trả về TOÀN BỘ node OSD cho mọi
+# ceph_code OSD_/PG_, danh sách phẳng ấy vào prompt LLM nên model đoán và gán
+# osd vào sai node ("osd.2, osd.4 và osd.5 trên node <ip sai>").
+
+
+def test_osd_code_targets_only_the_host_that_actually_runs_that_osd(fake_ssh, monkeypatch):
+    from config.settings import settings
+
+    osd_nodes = [h.strip() for h in settings.ceph_osd_nodes.split(",")]
+    assert len(osd_nodes) > 1, "test cần ít nhất 2 node OSD mới có gì để phân biệt"
+    owner = osd_nodes[1]
+
+    # Chỉ `owner` báo có unit của osd.3; các node khác không có.
+    fake_ssh.log_text_by_host = {
+        h: ("ceph-osd@3.service loaded active running" if h == owner else "ceph-osd@9.service")
+        for h in osd_nodes
+    }
+
+    osd_host_map: dict[int, str] = {}
+    nodes = identify_relevant_nodes("OSD_DOWN", OSD_CODE_DETAIL, None, osd_host_map)
+
+    assert nodes == [owner]
+    assert osd_host_map == {3: owner}
+
+
+def test_osd_code_falls_back_to_all_osd_nodes_when_nothing_resolves(fake_ssh):
+    """Không node nào nạp unit của osd.3 -> không tra được. Phải quay về gom
+    cả cụm VÀ để `osd_host_map` rỗng — chính chỗ rỗng đó là tín hiệu cho
+    prompt biết là "chưa xác định được", thay vì một host đoán bừa."""
+    from config.settings import settings
+
+    osd_nodes = [h.strip() for h in settings.ceph_osd_nodes.split(",")]
+    fake_ssh.log_text_by_host = {h: "ceph-osd@9.service" for h in osd_nodes}
+
+    osd_host_map: dict[int, str] = {}
+    nodes = identify_relevant_nodes("OSD_DOWN", OSD_CODE_DETAIL, None, osd_host_map)
+
+    assert set(nodes) == set(osd_nodes)
+    assert osd_host_map == {}
+
+
+def test_osd_code_with_no_osd_id_in_detail_keeps_the_broad_fallback(fake_ssh):
+    """Check không nêu đích danh osd nào (ví dụ PG_DEGRADED chung chung) —
+    không có gì để tra, giữ nguyên hành vi gom cả cụm."""
+    from config.settings import settings
+
+    detail_without_osd_id = {"severity": "HEALTH_WARN", "detail": [{"message": "Degraded data redundancy"}]}
+    osd_nodes = [h.strip() for h in settings.ceph_osd_nodes.split(",")]
+
+    osd_host_map: dict[int, str] = {}
+    nodes = identify_relevant_nodes("PG_DEGRADED", detail_without_osd_id, None, osd_host_map)
+
+    assert set(nodes) == set(osd_nodes)
+    assert osd_host_map == {}
+    # Không nêu osd nào thì cũng không được SSH đi thăm dò vô ích.
+    assert fake_ssh.calls == []

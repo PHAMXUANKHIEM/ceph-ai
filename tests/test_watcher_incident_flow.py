@@ -59,7 +59,7 @@ def test_no_incident_created_on_recovery_to_health_ok(isolated_db, monkeypatch):
     published = []
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async(published))
     monkeypatch.setattr(
-        watcher_main.collector, "collect_relevant_logs", lambda code, detail: (["x"], "log")
+        watcher_main.collector, "collect_relevant_logs", lambda code, detail, **_kw: (["x"], "log")
     )
 
     watcher_main.build_and_publish_incident("HEALTH_WARN", HEALTH_OK_PAYLOAD)
@@ -262,7 +262,7 @@ def test_incident_created_and_published_on_transition_to_warn(isolated_db, monke
     monkeypatch.setattr(
         watcher_main.collector,
         "collect_relevant_logs",
-        lambda code, detail: (["10.20.1.249"], "mon2 log excerpt"),
+        lambda code, detail, **_kw: (["10.20.1.249"], "mon2 log excerpt"),
     )
 
     watcher_main.build_and_publish_incident(None, HEALTH_WARN_PAYLOAD)
@@ -289,7 +289,7 @@ def test_incident_creation_sends_telegram_before_ai_diagnosis(isolated_db, monke
     monkeypatch.setattr(
         watcher_main.collector,
         "collect_relevant_logs",
-        lambda code, detail: ([], "mon2 log excerpt"),
+        lambda code, detail, **_kw: ([], "mon2 log excerpt"),
     )
     calls = []
     monkeypatch.setattr(
@@ -374,7 +374,7 @@ def test_multiple_simultaneous_checks_create_one_incident_each_and_publish_all(
     published = []
     collected_codes = []
 
-    def fake_collect(code, detail):
+    def fake_collect(code, detail, **_kw):
         collected_codes.append(code)
         return ([f"node-for-{code}"], f"log for {code}")
 
