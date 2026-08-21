@@ -332,6 +332,43 @@ def test_diagnose_incident_keeps_restart_osd_daemon_risky(isolated_db, monkeypat
         assert action.status == ActionStatus.PENDING_APPROVAL.value
 
 
+def test_verified_bluestore_slow_osd_restart_is_contextually_safe(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_risky)
+    monkeypatch.setattr(
+        router_client.commands, "_discover_ceph_units", lambda _host: {
+            "osd": ["ceph-fsid@osd.4.service"],
+            "mon": [], "mgr": [], "mds": [], "rgw": [],
+        },
+    )
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda host, command, **kwargs: calls.append((host, command)) or "ok",
+    )
+    _create_incident("incident-blue-safe")
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "incident-blue-safe").ceph_code = "BLUESTORE_SLOW_OP_ALERT"
+        session.commit()
+    envelope = dict(
+        ENVELOPE,
+        incident_id="incident-blue-safe",
+        ceph_code="BLUESTORE_SLOW_OP_ALERT",
+        nodes=["10.20.1.83"],
+        osd_hosts={"4": "10.20.1.83"},
+    )
+
+    asyncio.run(router_client.diagnose_incident("incident-blue-safe", envelope))
+
+    assert calls == [("10.20.1.83", "systemctl restart ceph-fsid@osd.4.service")]
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-blue-safe").one()
+        assert action.classification == ActionClassification.SAFE.value
+        assert action.status == ActionStatus.AUTO_EXECUTED.value
+        assert json.loads(action.action_params) == {
+            "osd_ids_by_host": {"10.20.1.83": [4]}
+        }
+
+
 def test_osd_upgrade_finished_always_proposes_release_command(isolated_db, monkeypatch):
     async def fake_call_router(user_content):
         return {

@@ -50,6 +50,7 @@ COMMANDS: dict[str, str] = {
 # (traditional/bare-metal package install) — both end in ".service" and
 # have no leading whitespace once matched.
 _SYSTEMCTL_UNIT_RE = re.compile(r"^\s*(\S+\.service)\b")
+_OSD_UNIT_ID_RE = re.compile(r"osd[.@](\d+)\b", re.IGNORECASE)
 
 # Substring match, not a strict positional parse — deliberately, because
 # where the daemon type sits in the unit name differs by deployment style
@@ -117,13 +118,27 @@ def _discover_ceph_units(
     return units
 
 
-def _restart_osd_daemon_command(host: str | None) -> str:
+def _restart_osd_daemon_command(host: str | None, params: dict | None = None) -> str:
     if host is None:
         raise ExecutorError(
             "restart_osd_daemon needs a specific host to discover its OSD systemd unit(s) via "
             "`systemctl` — no host given"
         )
     osd_units = _discover_ceph_units(host)["osd"]
+    ids_by_host = (params or {}).get("osd_ids_by_host") or {}
+    requested = ids_by_host.get(host) if isinstance(ids_by_host, dict) else None
+    if requested is not None:
+        requested_ids = {int(value) for value in requested}
+        osd_units = [
+            unit for unit in osd_units
+            if any(int(value) in requested_ids for value in _OSD_UNIT_ID_RE.findall(unit))
+        ]
+        found_ids = {
+            int(value) for unit in osd_units for value in _OSD_UNIT_ID_RE.findall(unit)
+        }
+        if found_ids != requested_ids:
+            missing = sorted(requested_ids - found_ids)
+            raise ExecutorError(f"{host}: verified OSD unit(s) not found for ids {missing}")
     if not osd_units:
         raise ExecutorError(f"{host}: no ceph osd systemd unit found via `systemctl | grep ceph`")
     return " && ".join(f"systemctl restart {shlex.quote(name)}" for name in osd_units)
@@ -1378,7 +1393,7 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
     restart_osd_daemon, never a guess.
     """
     if action_id == "restart_osd_daemon":
-        return _restart_osd_daemon_command(host)
+        return _restart_osd_daemon_command(host, params)
     if action_id in _MANAGEMENT_COMMAND_BUILDERS:
         return _MANAGEMENT_COMMAND_BUILDERS[action_id](params or {})
     if action_id in _INCIDENT_PARAMETER_COMMAND_BUILDERS:

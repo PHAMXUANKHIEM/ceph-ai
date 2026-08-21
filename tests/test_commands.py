@@ -1188,6 +1188,20 @@ def test_has_command_true_for_evacuate_predicted_failing_osd():
     assert commands_module.has_command("evacuate_predicted_failing_osd") is True
 
 
+def test_restart_osd_targets_only_verified_id_on_cephadm_host(monkeypatch):
+    monkeypatch.setattr(commands_module, "_discover_ceph_units", lambda _host: {
+        "osd": ["ceph-fsid@osd.3.service", "ceph-fsid@osd.4.service"],
+        "mon": [], "mgr": [], "mds": [], "rgw": [],
+    })
+
+    command = get_command(
+        "restart_osd_daemon", "10.20.1.83",
+        {"osd_ids_by_host": {"10.20.1.83": [4]}},
+    )
+
+    assert command == "systemctl restart ceph-fsid@osd.4.service"
+
+
 # --- bluestore_omap_quick_fix ------------------------------------------------
 
 

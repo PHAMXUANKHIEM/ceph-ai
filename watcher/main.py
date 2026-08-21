@@ -859,7 +859,10 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
         if ceph_code in already_open_codes:
             continue
         detected_at = datetime.utcnow()
-        nodes, log_excerpt = collector.collect_relevant_logs(ceph_code, check_detail, cluster=cluster)
+        osd_host_map: dict[int, str] = {}
+        nodes, log_excerpt = collector.collect_relevant_logs(
+            ceph_code, check_detail, cluster=cluster, osd_host_map=osd_host_map
+        )
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -898,6 +901,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 ssh_key_path=cluster.ssh_key_path,
                 ceph_exec_mode=cluster.ceph_exec_mode,
                 ceph_container_name=cluster.ceph_container_name,
+                osd_hosts=osd_host_map,
             )
         )
 

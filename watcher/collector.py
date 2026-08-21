@@ -76,7 +76,11 @@ def identify_relevant_nodes(
     `build_and_publish_incident` chuyển tiếp nó vào envelope để LLM không
     còn phải đoán osd nào nằm ở máy nào (xem `watcher/osd_hosts.py`).
     """
-    if ceph_code.startswith("OSD_") or ceph_code.startswith("PG_"):
+    if (
+        ceph_code.startswith("OSD_")
+        or ceph_code.startswith("PG_")
+        or ceph_code.startswith("BLUESTORE_")
+    ):
         # 2026-08-20 — SỬA LỖI CÓ THẬT: trước đây hàm này trả về TOÀN BỘ
         # danh sách node OSD kèm comment "No cheap osd-id -> host mapping
         # available in v1". Cái gap đó không còn: watcher/osd_hosts.py tra

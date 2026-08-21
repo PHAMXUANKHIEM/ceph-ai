@@ -509,6 +509,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         )
     logger.info("diagnose_incident: incident %s rationale: %s", incident_id, rationale)
 
+    action_params: dict | None = None
     with db.SessionLocal() as session:
         incident = session.get(Incident, incident_id)
         if incident is None:
@@ -552,6 +553,10 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_pk = existing_action.id
                 classification = ActionClassification(existing_action.classification)
                 resolved_action_id = existing_action.action_id
+                try:
+                    action_params = json.loads(existing_action.action_params or "null")
+                except (TypeError, ValueError):
+                    action_params = None
                 session.commit()
             else:
                 # Already resolved by a prior attempt — restore
@@ -602,6 +607,21 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 )
 
             classification = gate.classify_action(action_id)
+            # BLUESTORE_SLOW_OP_ALERT is safe to self-heal only after the
+            # watcher has extracted concrete osd.N values from health detail
+            # and independently mapped every one to an SSH-able host.  This
+            # contextual exception does not make generic OSD restarts SAFE.
+            bluestore_osd_hosts = envelope.get("osd_hosts") or {}
+            verified_bluestore_restart = (
+                incident.ceph_code == "BLUESTORE_SLOW_OP_ALERT"
+                and action_id == "restart_osd_daemon"
+                and isinstance(bluestore_osd_hosts, dict)
+                and bool(bluestore_osd_hosts)
+                and all(str(osd_id).isdigit() and isinstance(host, str) and host
+                        for osd_id, host in bluestore_osd_hosts.items())
+            )
+            if verified_bluestore_restart:
+                classification = ActionClassification.SAFE
             pool_choice_required = (
                 incident.ceph_code == _POOL_APP_CODE and action_id == "enable_pool_application"
             )
@@ -626,6 +646,12 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_params = {"adjustments": pool_pg_adjustments}
             elif pool_name:
                 action_params = {"pool_name": pool_name}
+            elif verified_bluestore_restart:
+                by_host: dict[str, list[int]] = {}
+                for osd_id, host in bluestore_osd_hosts.items():
+                    by_host.setdefault(host, []).append(int(osd_id))
+                nodes = list(by_host)
+                action_params = {"osd_ids_by_host": by_host}
             action = Action(
                 incident_id=incident_id,
                 action_id=action_id,
@@ -684,7 +710,9 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
 
     if classification == ActionClassification.SAFE:
         try:
-            _maybe_execute_safe_action(incident_id, action_pk, resolved_action_id, envelope)
+            _maybe_execute_safe_action(
+                incident_id, action_pk, resolved_action_id, envelope, action_params
+            )
         except Exception:
             # Belt-and-suspenders: _maybe_execute_safe_action is designed to
             # never raise, but if it somehow does (a bug, an unrelated DB
@@ -741,7 +769,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
 
 
 def _maybe_execute_safe_action(
-    incident_id: str, action_pk: str, action_id: str, envelope: dict
+    incident_id: str, action_pk: str, action_id: str, envelope: dict,
+    action_params: dict | None = None,
 ) -> None:
     """Run a SAFE action on every target node.
 
@@ -803,7 +832,7 @@ def _maybe_execute_safe_action(
 
     for host in nodes:
         try:
-            command = commands.get_command(action_id, host)
+            command = commands.get_command(action_id, host, action_params)
         except ExecutorError:
             logger.exception(
                 "diagnose_incident: no Command for action_id=%s on host=%s (incident %s) "
