@@ -211,15 +211,6 @@ def send_ai_unavailable_alert(
         text,
         cluster_name,
     )
-    _send(
-        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
-        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
-        enabled if enabled is not None else settings.telegram_incident_enabled,
-        text,
-        cluster_name,
-    )
-
-
 def send_node_alert(host: str, message: str) -> None:
     """Called once per NEWLY-flagged node resource problem
     (watcher/node_health_monitor.py::create_or_resolve_node_health_incidents
@@ -385,6 +376,9 @@ def send_log_finding_alert(
     *,
     operator_commands: list[str] | None = None,
     cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
 ) -> None:
     """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
     (`watcher/log_analysis.py` chỉ gọi khi `dedupe_key` chưa có bản ghi nào
@@ -415,22 +409,25 @@ def send_log_finding_alert(
     if validation_notes:
         lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
     _send(
-        settings.telegram_incident_bot_token,
-        settings.telegram_incident_chat_id,
-        settings.telegram_incident_enabled,
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
         "\n".join(lines),
         cluster_name,
     )
 
 
-def send_log_finding_resolved_alert(title: str, *, cluster_name: str | None = None) -> None:
+def send_log_finding_resolved_alert(
+    title: str, *, cluster_name: str | None = None, bot_token: str | None = None,
+    chat_id: str | None = None, enabled: bool | None = None,
+) -> None:
     """Gửi khi các mẫu log của một phát hiện đã ngừng xuất hiện — đóng vòng
     đời OPEN -> RESOLVED, để người trực biết vấn đề đã hết mà không phải tự
     vào Dashboard kiểm tra."""
     _send(
-        settings.telegram_incident_bot_token,
-        settings.telegram_incident_chat_id,
-        settings.telegram_incident_enabled,
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
         f"\U0001f7e2 Đã hết: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}\n"
         f"Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
         cluster_name,

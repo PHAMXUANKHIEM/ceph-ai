@@ -713,6 +713,9 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
     if payload["severity"] not in _ALERTABLE_SEVERITIES:
         return
     try:
+        has_cluster_channel = bool(
+            cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
+        )
         telegram_alerts.send_log_finding_alert(
             payload["title"],
             payload["severity"],
@@ -724,6 +727,9 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             payload["validation_notes"],
             operator_commands=_operator_commands_for(payload, evidence_templates),
             cluster_name=cluster.name if cluster is not None else None,
+            bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+            chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+            enabled=cluster.telegram_enabled if has_cluster_channel else None,
         )
     except Exception:
         logger.exception("log_analysis: gửi cảnh báo Telegram thất bại")
@@ -780,8 +786,15 @@ def resolve_stale_findings(
 
     for title in resolved_titles:
         try:
+            has_cluster_channel = bool(
+                cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
+            )
             telegram_alerts.send_log_finding_resolved_alert(
-                title, cluster_name=cluster.name if cluster is not None else None
+                title,
+                cluster_name=cluster.name if cluster is not None else None,
+                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+                enabled=cluster.telegram_enabled if has_cluster_channel else None,
             )
         except Exception:
             logger.exception("log_analysis: gửi thông báo đã-hết thất bại")
