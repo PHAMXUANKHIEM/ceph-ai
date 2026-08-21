@@ -35,7 +35,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -96,6 +96,7 @@ ROUTER_TIMEOUT_SECONDS = 90.0
 # Số mẫu tối đa đưa lên model trong một lần. Triage đã sắp xếp theo mức
 # đáng chú ý giảm dần, nên cắt top-N là cắt đúng phần đuôi ít giá trị nhất.
 MAX_PATTERNS_PER_ANALYSIS = 40
+ACTIVE_EVIDENCE_MAX_AGE = timedelta(minutes=15)
 
 # Hàng rào dữ liệu không tin cậy. Model được dặn rõ: mọi thứ giữa hai mốc
 # này là DỮ LIỆU CẦN PHÂN TÍCH, không phải mệnh lệnh.
@@ -605,6 +606,30 @@ def analyze_window(
         return None
 
     validated = _validate(raw, known_pattern_ids, known_hosts, ingest_status)
+
+    # A one-hour Loki window often still contains recovery churn from a
+    # daemon restart long after the cluster has settled.  Do not turn an AI
+    # story about old peering/heartbeat lines into a current alert/action:
+    # at least one cited evidence pattern must still be present within the
+    # latest scan cadence. Persistent Ceph health faults remain covered by
+    # the deterministic health watcher even when their daemon logs go quiet.
+    if validated["verdict"] == LogFindingVerdict.FINDING.value:
+        with db.SessionLocal() as session:
+            latest_row = (
+                session.query(LogPattern.last_seen_at)
+                .filter(LogPattern.id.in_(validated["evidence_pattern_ids"]))
+                .order_by(LogPattern.last_seen_at.desc())
+                .first()
+            )
+        latest_evidence_at = latest_row[0] if latest_row else None
+        if latest_evidence_at is not None and (
+            latest_evidence_at < window_end - ACTIVE_EVIDENCE_MAX_AGE
+        ):
+            logger.info(
+                "log_analysis: bỏ finding stale; evidence cuối=%s, cửa sổ kết thúc=%s",
+                latest_evidence_at, window_end,
+            )
+            return None
 
     if validated["verdict"] == LogFindingVerdict.NO_FINDING.value:
         # Không lưu hàng cho "không có gì" -- log_ingest_runs đã ghi lại
