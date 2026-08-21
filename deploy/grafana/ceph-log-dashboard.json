@@ -1,0 +1,104 @@
+{
+  "annotations": {"list": []},
+  "description": "Giám sát tập trung log Ceph từ Alloy -> Loki, dùng chung với Ceph-AI Log Intelligence.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "description": "Tổng số dòng log trong khoảng thời gian đang chọn.",
+      "fieldConfig": {"defaults": {"color": {"mode": "fixedColor", "fixedColor": "blue"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "center", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "sum(count_over_time({cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"}[$__range]))", "queryType": "instant", "refId": "A"}],
+      "title": "Tổng log", "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "description": "Số dòng có từ khóa lỗi/chậm/timeout trong khoảng thời gian chọn.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 50}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "center", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "sum(count_over_time({cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"} |~ `(?i)(error|failed|failure|timeout|slow|degraded|down)` [$__range]))", "queryType": "instant", "refId": "A"}],
+      "title": "Dòng cảnh báo/lỗi", "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "description": "Số node có stream log trong khoảng thời gian chọn.",
+      "fieldConfig": {"defaults": {"color": {"mode": "fixedColor", "fixedColor": "green"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "count(sum by (host) (count_over_time({cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"}[$__range])))", "queryType": "instant", "refId": "A"}],
+      "title": "Node đang gửi log", "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "description": "Số daemon_type có dữ liệu trong khoảng thời gian chọn.",
+      "fieldConfig": {"defaults": {"color": {"mode": "fixedColor", "fixedColor": "purple"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "count(sum by (daemon_type) (count_over_time({cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"}[$__range])))", "queryType": "instant", "refId": "A"}],
+      "title": "Loại daemon", "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "dòng/giây", "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 18, "gradientMode": "opacity", "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 4, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 5},
+      "id": 5,
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "sum by (host) (rate({cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"}[$__auto]))", "legendFormat": "{{host}}", "queryType": "range", "refId": "A"}],
+      "title": "Lưu lượng log theo node", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "dòng/giây", "axisPlacement": "auto", "drawStyle": "bars", "fillOpacity": 45, "gradientMode": "opacity", "lineWidth": 1, "pointSize": 3, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 5},
+      "id": 6,
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "sum by (daemon_type) (rate({cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"}[$__auto]))", "legendFormat": "{{daemon_type}}", "queryType": "range", "refId": "A"}],
+      "title": "Lưu lượng theo daemon", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "description": "Chỉ hiển thị các dòng có dấu hiệu lỗi/chậm để trực ca ưu tiên xem trước.",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 14},
+      "id": 7,
+      "options": {"dedupStrategy": "signature", "enableInfiniteScrolling": true, "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": true, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "{cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"} |~ `(?i)(error|failed|failure|timeout|slow|degraded|down)`", "queryType": "range", "refId": "A"}],
+      "title": "Cảnh báo và lỗi gần nhất", "type": "logs"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"},
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 24},
+      "id": 8,
+      "options": {"dedupStrategy": "none", "enableInfiniteScrolling": true, "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": true, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "targets": [{"datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "editorMode": "code", "expr": "{cluster=~\"$cluster\", host=~\"$host\", daemon_type=~\"$daemon\"}", "queryType": "range", "refId": "A"}],
+      "title": "Ceph log realtime", "type": "logs"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 42,
+  "tags": ["ceph", "loki", "alloy", "ai-rca"],
+  "templating": {
+    "list": [
+      {"allValue": ".*", "current": {"text": "CS-LAB", "value": "CS-LAB"}, "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "definition": "label_values(cluster)", "includeAll": true, "label": "Cụm", "name": "cluster", "options": [], "query": "label_values(cluster)", "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"allValue": ".*", "current": {"text": "Tất cả", "value": "$__all"}, "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "definition": "label_values({cluster=~\"$cluster\"}, host)", "includeAll": true, "label": "Node", "multi": true, "name": "host", "options": [], "query": "label_values({cluster=~\"$cluster\"}, host)", "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"allValue": ".*", "current": {"text": "Tất cả", "value": "$__all"}, "datasource": {"type": "loki", "uid": "afvpjdk7sddz4e"}, "definition": "label_values({cluster=~\"$cluster\", host=~\"$host\"}, daemon_type)", "includeAll": true, "label": "Daemon", "multi": true, "name": "daemon", "options": [], "query": "label_values({cluster=~\"$cluster\", host=~\"$host\"}, daemon_type)", "refresh": 1, "regex": "", "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["10s", "30s", "1m", "5m", "15m"]},
+  "timezone": "browser",
+  "title": "Ceph Logs — CS-LAB",
+  "uid": "ceph-logs-cs-lab",
+  "version": 1,
+  "weekStart": "monday"
+}
