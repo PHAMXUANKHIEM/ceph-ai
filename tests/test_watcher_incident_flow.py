@@ -113,6 +113,28 @@ def test_partial_recovery_only_resolves_the_code_that_disappeared(isolated_db):
         assert session.get(Incident, still_active_id).status == IncidentStatus.FAILED.value
 
 
+def test_generic_recovery_notifies_once_but_leaves_verifying_to_verifier(
+    isolated_db, monkeypatch
+):
+    notifications = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_verified_alert",
+        lambda code, **kwargs: notifications.append(code),
+    )
+    first = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+    second = _seed_incident("OSD_DOWN", IncidentStatus.PENDING_APPROVAL.value)
+    verifying = _seed_incident("BLUESTORE_SLOW_OP_ALERT", IncidentStatus.VERIFYING.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, first).status == IncidentStatus.RESOLVED.value
+        assert session.get(Incident, second).status == IncidentStatus.RESOLVED.value
+        assert session.get(Incident, verifying).status == IncidentStatus.VERIFYING.value
+    assert notifications == ["OSD_DOWN"]
+
+
 def test_chat_request_incident_is_never_auto_resolved_by_recovery(isolated_db):
     # 2026-07-23 regression: a chat-confirmed action's synthetic Incident
     # (ceph_code="CHAT_REQUEST") never matches any real `ceph health

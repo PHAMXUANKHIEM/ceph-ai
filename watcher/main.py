@@ -206,6 +206,7 @@ def _resolve_recovered_incidents(
     (non-default) clusters never have such legacy rows, so their loop calls
     this with `include_legacy_null=False` — a real UUID match only.
     """
+    recovered: dict[tuple[str | None, str], Cluster | None] = {}
     with db.SessionLocal() as session:
         cluster_filter = (
             or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
@@ -214,7 +215,13 @@ def _resolve_recovered_incidents(
         )
         open_incidents = (
             session.query(Incident)
-            .filter(Incident.status.in_(_RECOVERABLE_STATUSES), cluster_filter)
+            # VERIFYING is exclusively owned by watcher/verify.py.  If this
+            # generic recovery pass closes it first, the verifier cannot
+            # emit the final "ĐÃ KHẮC PHỤC" notification or audit event.
+            .filter(
+                Incident.status.in_(_RECOVERABLE_STATUSES - {IncidentStatus.VERIFYING.value}),
+                cluster_filter,
+            )
             .all()
         )
         for incident in open_incidents:
@@ -300,7 +307,19 @@ def _resolve_recovered_incidents(
             if incident.ceph_code not in current_codes:
                 incident.status = IncidentStatus.RESOLVED.value
                 cancel_pending_actions(session, incident.id)
+                key = (incident.cluster_id, incident.ceph_code)
+                if key not in recovered:
+                    recovered[key] = (
+                        session.get(Cluster, incident.cluster_id)
+                        if incident.cluster_id is not None else None
+                    )
         session.commit()
+
+    for (_cluster_id, ceph_code), cluster in recovered.items():
+        telegram_alerts.send_incident_verified_alert(
+            ceph_code,
+            **verify._cluster_channel_kwargs(cluster),
+        )
 
 
 def build_and_publish_incident(
