@@ -315,7 +315,7 @@ def send_auto_remediation_alert(
     Action's own Incident's cluster's channel here when that cluster has
     configured one of its own; `None` (default) keeps reading the 3
     global settings.telegram_incident_* fields exactly as before."""
-    prefix = "\u2705 Đã tự động xử lý" if succeeded else "\u274c Tự động xử lý thất bại"
+    prefix = "⏳ Đã chạy tự động, đang xác minh" if succeeded else "\u274c Tự động xử lý thất bại"
     lines = [f"{prefix}: {ceph_code}"]
     if diagnosis_text:
         lines.append(f"⚠️ Chẩn đoán: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}")

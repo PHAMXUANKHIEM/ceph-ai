@@ -940,8 +940,12 @@ def _record_execution_result(
             )
         else:
             incident.status = (
-                IncidentStatus.AUTO_FIXED.value if succeeded else IncidentStatus.FAILED.value
+                IncidentStatus.VERIFYING.value if succeeded else IncidentStatus.FAILED.value
             )
+            if succeeded:
+                incident.verify_after = datetime.utcnow() + timedelta(
+                    seconds=settings.incident_verify_delay_seconds
+                )
             audit.record(
                 session,
                 incident_id=incident_id,

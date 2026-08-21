@@ -133,8 +133,12 @@ def verify_pending_incidents(
             .filter(Incident.status == IncidentStatus.VERIFYING.value)
             .filter(Incident.verify_after.isnot(None))
             .filter(Incident.verify_after <= now)
-            .all()
         )
+        if cluster_id is None:
+            pending = pending.filter(Incident.cluster_id.is_(None))
+        else:
+            pending = pending.filter(Incident.cluster_id == cluster_id)
+        pending = pending.all()
         for incident in pending:
             if is_monitor_owned(incident.ceph_code):
                 # Không bao giờ nên rơi vào đây (router_client đã lọc), nhưng

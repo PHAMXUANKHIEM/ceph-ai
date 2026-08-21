@@ -752,7 +752,8 @@ def test_diagnose_incident_executes_safe_action_and_marks_auto_fixed(isolated_db
     assert [host for host, _cmd in execute_calls] == ["10.20.1.249", "10.20.1.253"]
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-5a")
-        assert incident.status == IncidentStatus.AUTO_FIXED.value
+        assert incident.status == IncidentStatus.VERIFYING.value
+        assert incident.verify_after is not None
         action = session.query(Action).filter_by(incident_id="incident-5a").one()
         assert action.status == ActionStatus.AUTO_EXECUTED.value
         assert action.executed_at is not None
@@ -832,7 +833,8 @@ def test_record_execution_result_missing_action_row_does_not_crash_and_still_upd
 
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-missing-action")
-        assert incident.status == IncidentStatus.AUTO_FIXED.value
+        assert incident.status == IncidentStatus.VERIFYING.value
+        assert incident.verify_after is not None
         entry = session.query(AuditEntry).filter_by(incident_id="incident-missing-action").one()
         assert entry.action_id is None
         assert entry.event_type == audit.EVENT_SAFE_ACTION_EXECUTED
@@ -883,7 +885,8 @@ def test_diagnose_incident_recovers_pending_action_left_by_a_crashed_prior_attem
         assert len(actions) == 1  # no duplicate row created
         assert actions[0].status == ActionStatus.AUTO_EXECUTED.value
         incident = session.get(Incident, "incident-5g")
-        assert incident.status == IncidentStatus.AUTO_FIXED.value
+        assert incident.status == IncidentStatus.VERIFYING.value
+        assert incident.verify_after is not None
 
 
 # --- Story 4.2: RISKY -> PENDING_APPROVAL ----------------------------------

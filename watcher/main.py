@@ -969,6 +969,15 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
             _resolve_recovered_incidents(
                 set(current_checks), cluster_id=cluster.id, include_legacy_null=False
             )
+            try:
+                verify.verify_pending_incidents(
+                    set(current_checks), health=health, cluster=cluster, cluster_id=cluster.id
+                )
+            except Exception:
+                logger.exception(
+                    "run_observed_cluster_loop: xác minh sau khắc phục thất bại cho %r",
+                    cluster.name,
+                )
             if current_status != last_status or current_checks != last_checks:
                 _build_and_publish_incident_for_observed_cluster(cluster, health)
                 last_status = current_status
