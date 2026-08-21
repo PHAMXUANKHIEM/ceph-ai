@@ -31,6 +31,8 @@ commit gần nhất. Không đánh dấu hoàn thành nếu tiêu chí nghiệm 
   - [x] Lifecycle `OPEN/RESOLVED`, persistence, Telegram transition và Dashboard API/UI.
   - [x] Retention dùng chung chính sách metric Vitastor.
 - [ ] **3. Dự báo đầy dung lượng** và thời gian tới các mốc 80/90/95%.
+  - [ ] Hồi quy robust (Theil–Sen) trên time-series 30 ngày đã có; cảnh báo theo pool
+        và theo OSD lệch nhất, không chỉ theo tổng dung lượng cụm.
 - [~] **4. Vòng lặp khắc phục đóng (closed-loop remediation)** — nền tảng cho bảo trì OSD.
   - [x] Model `VitastorRemediationAction` + `VitastorAuditEntry`, migration riêng, cô lập khỏi Ceph.
   - [x] Policy SAFE/RISKY bảo thủ mặc định (AD-5) + `action_id` đóng, không có shell tự do.
@@ -38,16 +40,78 @@ commit gần nhất. Không đánh dấu hoàn thành nếu tiêu chí nghiệm 
   - [x] Proposer tất định từ telemetry: OSD `up:false` → đề xuất `restart_osd_service` (chờ duyệt).
   - [x] Watcher tự sinh đề xuất (dedup), auto-run SAFE, cảnh báo Telegram khi có RISKY chờ duyệt.
   - [x] Dashboard: thẻ Khắc phục (Duyệt/Từ chối) + Nhật ký hành động; API approve/reject/audit gated theo Vitastor admin.
-  - [ ] Mở rộng sau: dry-run/reweight, theo dõi rebalance, phê duyệt qua nút Telegram, tự huỷ đề xuất khi tín hiệu đã hết.
+  - [ ] **4.1 Xác minh sau khắc phục** — sau khi chạy lệnh, poll lại telemetry và chỉ đóng
+        action khi tín hiệu đã hết (OSD `up:true` trở lại); ngược lại `FAILED` + báo Telegram.
+        Tương đương `watcher/verify.py` của Ceph.
+  - [ ] **4.2 Tự huỷ đề xuất khi tín hiệu đã hết** — action `PENDING_APPROVAL` chuyển
+        `OBSOLETE` khi OSD tự up lại, không bắt operator từ chối thủ công.
+  - [ ] **4.3 Duyệt bằng nút bấm trên Telegram** — mở rộng `dashboard/telegram_approval_bot.py`
+        quét thêm bảng `vitastor_remediation_actions`.
+  - [ ] **4.4 Sinh đề xuất từ Diagnosis và Anomaly** — thêm `source=DIAGNOSIS` / `source=ANOMALY`
+        bên cạnh proposer tất định từ `status`, để mục 1–2 thực sự nối được vào vòng lặp khắc phục.
+  - [ ] **4.5 Policy dạng file thay vì hard-code** — chuyển `SAFE_ACTION_IDS` sang YAML kiểu
+        `worker/policy/action_policy.yaml`; đổi SAFE/RISKY là quyết định vận hành, không phải sửa code.
+  - [ ] **4.6 dry-run / reweight OSD** và theo dõi tiến độ rebalance.
   - Xem thiết kế chi tiết: `docs/vitastor-remediation.md`.
 - [ ] **5. Trợ lý tối ưu pool và PG** với mô phỏng tác động trước thay đổi.
+  - [ ] Mô phỏng trước khi đổi `pg_size`/`pg_count`/`failure_domain`: bao nhiêu dữ liệu phải
+        di chuyển, ước lượng thời gian, ảnh hưởng tới client I/O.
+  - [ ] Dùng `create-pool` / `modify-pool` của `vitastor-cli`, luôn qua preview + phê duyệt.
 - [ ] **6. Quản lý scrub thông minh** theo tải và phát hiện inconsistent/corrupted object.
+  - [ ] Điều khiển `auto_scrub`, `scrub_interval`, `scrub_queue_depth` ở cấp pool/OSD.
+  - [ ] Chọn cửa sổ tải thấp từ baseline theo khung giờ đã có ở mục 2.
 - [ ] **7. Phân tích object lỗi** bằng `describe`; `fix` luôn là thao tác rủi ro cao.
+  - [ ] `describe --inconsistent` làm evidence cho AI; `fix` bắt buộc hai bước xác nhận, không bao giờ auto.
 - [ ] **8. AI quản lý volume/snapshot**: stale volume, retention, flatten/merge dependency.
+  - [ ] Phát hiện image không có client chạm trong N ngày, chuỗi snapshot quá dài cần `flatten`/`merge`,
+        image mồ côi sau khi VM bị xoá.
 - [ ] **9. Prometheus và biểu đồ lịch sử nâng cao**: percentile, correlation và export.
+  - [ ] Scrape trực tiếp endpoint metrics của `vitastor-mon` thay vì chỉ parse `vitastor-cli --json`
+        theo chu kỳ — cho percentile latency và độ phân giải tốt hơn nhiều.
 - [ ] **10. Incident timeline và AI postmortem** có audit đầy đủ.
+  - [ ] Gom `VitastorAnomalyEvent` + `VitastorDiagnosticRun` + `VitastorRemediationAction` +
+        `VitastorAuditEntry` (hiện là bốn bảng rời) vào một `VitastorIncident` duy nhất.
+  - [ ] Dòng thời gian "phát hiện → chẩn đoán → đề xuất → duyệt → thực thi → xác minh",
+        AI viết postmortem từ chính timeline đó.
 - [ ] **11. AI capacity planner** từ mục tiêu VM/workload/failure domain.
 - [ ] **12. Safe Autopilot** với ba cấp tự động, một lần duyệt và hai bước xác nhận.
+  - Chỉ triển khai **sau khi** 4.1 (xác minh) và 10 (timeline) hoàn thành — không có bằng chứng
+    thực thi và đường lùi thì tự động hoá là rủi ro thuần.
+- [ ] **13. Log Intelligence / RCA cho Vitastor** — khoảng cách lớn nhất so với bản Ceph.
+  - [ ] Hiện `vitastor/client.py::query_logs` mới chỉ `journalctl` qua SSH, không phân tích.
+  - [ ] Tái dùng `watcher/log_source/{loki,ssh_tail}.py`, `watcher/log_analysis.py`, `watcher/log_intel.py`.
+  - [ ] Viết `vitastor/log_families.py` thay cho `watcher/ceph_code_families.py`: `slow op`,
+        journal/metadata đầy, etcd lease lost, PG peering stuck, disk I/O error.
+- [ ] **14. Vòng đời ổ đĩa và OSD qua `vitastor-disk`** — thao tác vận hành thiếu đáng giá nhất hiện nay.
+  - [ ] `prepare` / `start` / `purge` / `resize` / `raw-resize` / `trim` / `upgrade-simple`.
+  - [ ] Kịch bản có hướng dẫn từng bước: thêm OSD mới, thay ổ hỏng, rút OSD an toàn
+        (drain → `rm-osd`), mở rộng dung lượng. Mỗi bước có preview + phê duyệt như `operations.py`.
+- [ ] **15. Phát hiện config drift và version skew** — nguyên nhân "chậm bí ẩn" đặc thù Vitastor.
+  - [ ] So sánh chéo toàn cụm: `immediate_commit` lệch giữa các OSD, journal/metadata không nằm
+        trên NVMe ở một số node, `/etc/vitastor/vitastor.conf` khác nhau, version OSD/mon/etcd không đồng nhất.
+- [ ] **16. Kiểm tra an toàn cấu hình EC pool**
+  - [ ] Cảnh báo `pg_minsize` đặt sai, `failure_domain` khiến mất một node là mất dữ liệu,
+        số OSD không đủ cho `pg_size`.
+- [ ] **17. Etcd operations** — hiện mới *giám sát* latency/quorum/db size, chưa có hành động.
+  - [ ] Backup snapshot etcd định kỳ; compaction/defrag khi db phình; restore từ snapshot (RISKY).
+- [ ] **18. Bản đồ client đang dùng image** — QEMU/VDUSE/NBD/ublk/CSI/NFS.
+  - [ ] Chặn `rm` image đang được mount; map PVC ↔ image cho cụm K8s dùng CSI.
+- [ ] **19. Benchmark tích hợp** — theo `docs/usage/fio.en.md` của upstream.
+  - [ ] Chạy fio chuẩn hoá trên image test, lưu kết quả làm baseline hiệu năng, so sánh sau mỗi
+        lần upgrade hoặc đổi config. Đối chiếu `docs/vm-performance-measurement.md` và
+        `docs/volume-max-performance.md` của bản Ceph.
+- [ ] **20. Restore và diễn tập khôi phục** — `vitastor/operations.py` mới có `backup`.
+  - [ ] Bổ sung `restore`, scheduler, retention và restore-drill tương đương `worker/backup/`.
+
+## Thứ tự ưu tiên đề xuất
+
+| Hạng mục | Lý do |
+|---|---|
+| 4.1 Xác minh sau khắc phục | Không có nó thì vòng lặp khắc phục ở mục 4 chưa dùng thật được. |
+| 4.2 Tự huỷ đề xuất | Rẻ, loại bỏ rác PENDING tích tụ trong vận hành hằng ngày. |
+| 13. Log Intelligence | Tận dụng trọn vẹn hạ tầng Loki/RCA vừa hoàn thành ở bản Ceph. |
+| 14. Vòng đời ổ đĩa/OSD | Thao tác vận hành viên cần hằng ngày, hiện phải làm tay hoàn toàn. |
+| 3. Dự báo đầy dung lượng | Mục roadmap dễ nhất còn bỏ trống — dữ liệu 30 ngày đã có sẵn. |
 
 ## Mục 1 — Thiết kế triển khai
 
