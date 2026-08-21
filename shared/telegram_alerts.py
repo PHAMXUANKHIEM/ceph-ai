@@ -140,6 +140,23 @@ def send_incident_alert(
     )
 
 
+def send_periodic_health_status(
+    status: str, check_codes: list[str], *, cluster_name: str | None = None,
+    bot_token: str | None = None, chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> None:
+    """Periodic 10-minute cluster-health heartbeat for operators."""
+    icon = {"HEALTH_OK": "🟢", "HEALTH_WARN": "🟡", "HEALTH_ERR": "🔴"}.get(status, "⚪")
+    details = ", ".join(sorted(check_codes)) if check_codes else "không có health check lỗi"
+    _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        f"📊 Trạng thái định kỳ: {icon} {status}\nHealth checks: {details}",
+        cluster_name,
+    )
+
+
 def send_vitastor_alert(cluster_name: str, health: str, detail: str) -> None:
     """Send a Vitastor health transition through the cluster-alert channel."""
     prefix = {

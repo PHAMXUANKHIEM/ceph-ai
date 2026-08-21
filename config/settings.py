@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     watcher_poll_interval_seconds: int = 15
     # Repeat Telegram notifications while an Incident remains unresolved.
     telegram_incident_reminder_interval_seconds: int = 3600
+    telegram_health_status_interval_seconds: int = 600
 
     # --- Xác minh sau khắc phục (2026-08-20, watcher/verify.py) ----------
     # Chờ bao lâu sau khi lệnh khắc phục chạy xong rồi mới hỏi lại cụm.

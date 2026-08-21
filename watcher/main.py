@@ -535,6 +535,7 @@ def run(
     last_incident_reminder_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
+    last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
@@ -554,6 +555,29 @@ def run(
             heartbeat_recorded = True
             current_status = health.get("status")
             current_checks = frozenset(health.get("checks", {}).keys())
+            status_now = datetime.utcnow()
+            if (
+                last_health_status_sent_at is None
+                or (status_now - last_health_status_sent_at).total_seconds()
+                >= settings.telegram_health_status_interval_seconds
+            ):
+                cluster = None
+                if cluster_id is not None:
+                    with db.SessionLocal() as session:
+                        cluster = session.get(Cluster, cluster_id)
+                        if cluster is not None:
+                            session.expunge(cluster)
+                has_cluster_channel = bool(
+                    cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
+                )
+                telegram_alerts.send_periodic_health_status(
+                    current_status or "UNKNOWN", list(current_checks),
+                    cluster_name=cluster.name if cluster else settings.cluster_name,
+                    bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+                    chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+                    enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                )
+                last_health_status_sent_at = status_now
             # Every poll, regardless of whether the fingerprint below
             # changed — see _resolve_recovered_incidents' docstring for why
             # gating this behind "only on transition" can permanently miss
@@ -967,6 +991,7 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_crush_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
+    last_health_status_sent_at: Optional[datetime] = None
     mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
@@ -992,6 +1017,23 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
             _record_heartbeat_safe(True, None, None, cluster_id=cluster.id)
             current_status = health.get("status")
             current_checks = frozenset(health.get("checks", {}).keys())
+            status_now = datetime.utcnow()
+            if (
+                last_health_status_sent_at is None
+                or (status_now - last_health_status_sent_at).total_seconds()
+                >= settings.telegram_health_status_interval_seconds
+            ):
+                has_cluster_channel = bool(
+                    cluster.telegram_bot_token and cluster.telegram_chat_id
+                )
+                telegram_alerts.send_periodic_health_status(
+                    current_status or "UNKNOWN", list(current_checks),
+                    cluster_name=cluster.name,
+                    bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+                    chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+                    enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                )
+                last_health_status_sent_at = status_now
             _resolve_recovered_incidents(
                 set(current_checks), cluster_id=cluster.id, include_legacy_null=False
             )
