@@ -243,6 +243,19 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
     if not settings.log_intel_enabled:
         return None
 
+    # The default-cluster loop historically passed only cluster_id.  That
+    # was enough for DB scoping, but not for source adapters: Loki then saw
+    # cluster=None and queried the literal label cluster="default" instead
+    # of the real Cluster.name (for example "CS-LAB").  HTTP 200 + an empty
+    # result made this fail silently forever.  Resolve the row once here so
+    # source selection, node inventory and AI host validation all share the
+    # same real cluster context.
+    if cluster is None and cluster_id is not None:
+        with db.SessionLocal() as session:
+            cluster = session.get(Cluster, cluster_id)
+            if cluster is not None:
+                session.expunge(cluster)
+
     window_end = datetime.utcnow()
     window_start = window_end - timedelta(minutes=max(1, settings.log_intel_window_minutes))
 
@@ -286,6 +299,16 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
         status = LogIngestStatus.PARTIAL
     else:
         status = LogIngestStatus.OK
+
+    # A reachable Loki returning zero lines is not proof that collection is
+    # healthy.  In production this masked both a wrong label selector and a
+    # stopped shipper for more than 100 scans.  Keep the run (useful
+    # provenance), but mark it incomplete and explain what to verify.
+    if settings.log_intel_source == "loki" and not records and status is LogIngestStatus.OK:
+        status = LogIngestStatus.PARTIAL
+        errors.append(
+            "Loki trả 0 dòng log; kiểm tra label cluster/host/daemon_type và trạng thái log shipper"
+        )
 
     cluster_id, seen, new = _persist_patterns(records, cluster_id, window_end)
 

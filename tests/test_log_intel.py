@@ -259,6 +259,49 @@ def test_every_host_failing_is_failed_status(isolated_db, enabled, monkeypatch):
         assert session.query(LogIngestRun).one().status == LogIngestStatus.FAILED.value
 
 
+def test_empty_loki_result_is_partial_not_false_ok(isolated_db, enabled, monkeypatch):
+    monkeypatch.setattr(settings, "log_intel_source", "loki")
+    _one_node(monkeypatch)
+    _fake_source(monkeypatch, {})
+
+    log_intel.scan_and_store()
+
+    with db_module.SessionLocal() as session:
+        run = session.query(LogIngestRun).one()
+        assert run.status == LogIngestStatus.PARTIAL.value
+        assert run.lines_scanned == 0
+        assert "Loki trả 0 dòng" in run.error_message
+
+
+def test_cluster_id_resolves_real_cluster_for_source_selector(isolated_db, enabled, monkeypatch):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="CS-LAB", ceph_mon_nodes="10.0.0.1",
+            ssh_user="root", ssh_key_path="/tmp/test-key",
+        )
+        session.add(cluster)
+        session.commit()
+        cluster_id = cluster.id
+
+    seen = []
+
+    class FakeSource:
+        @staticmethod
+        def fetch(host, daemon_type, window_start, window_end, cluster=None):
+            seen.append(cluster.name if cluster else None)
+            return LogSourceResult(records=[])
+
+    monkeypatch.setattr(log_intel, "get_log_source", lambda _name: FakeSource)
+    monkeypatch.setattr(
+        log_intel, "configured_nodes",
+        lambda cluster=None: [{"host": "10.0.0.1", "roles": ["mon"]}],
+    )
+
+    log_intel.scan_and_store(cluster_id)
+
+    assert seen == ["CS-LAB"]
+
+
 def test_repeat_scan_accumulates_instead_of_duplicating(isolated_db, enabled, monkeypatch):
     """Cửa sổ quét cố ý lớn hơn chu kỳ quét, nên hai tick liên tiếp chồng
     lấn nhau — phải cộng dồn vào cùng một pattern/ô giờ, không tạo bản sao."""

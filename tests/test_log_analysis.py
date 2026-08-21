@@ -8,6 +8,7 @@ liệu. Plan mục 9 và roadmap mục 6.5 đều bắt buộc nhóm này.
 """
 
 import json
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -131,6 +132,21 @@ def _analyze(isolated_db, results=None):
 def _stored(cluster_id=None):
     with db_module.SessionLocal() as session:
         return session.query(LogFinding).one()
+
+
+def test_call_router_uses_configured_claude_backend(monkeypatch):
+    monkeypatch.setattr(settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(settings, "claude_chat_enabled", True)
+    expected = _good_response()
+
+    async def fake_claude(prompt, *, timeout):
+        assert '"verdict"' in prompt
+        assert "UNTRUSTED_LOG_DATA" in prompt
+        return json.dumps(expected)
+
+    monkeypatch.setattr(log_analysis, "run_claude_prompt", fake_claude)
+    result = asyncio.run(log_analysis._call_router("<<<UNTRUSTED_LOG_DATA>>>", ["resync_ntp"]))
+    assert result == expected
 
 
 # =========================================================================

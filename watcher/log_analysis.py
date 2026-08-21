@@ -59,6 +59,8 @@ from shared.models import (
     LogPattern,
 )
 from shared import telegram_alerts
+from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.router_client import build_router_client
 from watcher.capability_inventory import latest_snapshot
 from watcher.log_triage import TriageResult
@@ -320,12 +322,56 @@ def _cluster_context(cluster_id: str) -> str:
 
 
 async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict:
+    schema = _tool_schema(allowed_action_ids)
+
+    # Match the backend selection already used by Incident diagnosis.  Log
+    # Intelligence previously ignored the configured Claude/Codex backend
+    # and always required ROUTER_*, so enabling AI on a Claude deployment
+    # could never analyze even one finding.
+    if settings.codex_chat_enabled:
+        captured: dict = {}
+
+        async def capture(tool_name: str, arguments: dict) -> tuple[str, bool]:
+            if tool_name != TOOL_NAME:
+                return f"Tool không được phép: {tool_name}", False
+            captured.update(arguments)
+            return "Đã ghi nhận phân tích log.", True
+
+        prompt = (
+            SYSTEM_PROMPT
+            + f"\n\nBạn BẮT BUỘC gọi tool {TOOL_NAME} đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
+            + user_content
+        )
+        try:
+            await codex_app_server.run_turn(
+                prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS
+            )
+        except CodexAppServerError as exc:
+            raise LogAnalysisError(f"Codex call failed: {exc}") from exc
+        return captured
+
+    if settings.claude_chat_enabled:
+        expected = schema["function"]["parameters"]
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nChỉ trả về một JSON object hợp lệ, không markdown, tuân thủ schema sau:\n"
+            + json.dumps(expected, ensure_ascii=False)
+            + "\n\n"
+            + user_content
+        )
+        try:
+            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+            return json.loads(clean)
+        except (ClaudeCLIError, json.JSONDecodeError) as exc:
+            raise LogAnalysisError(f"Claude call failed: {exc}") from exc
+
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
-            tools=[_tool_schema(allowed_action_ids)],
+            tools=[schema],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
