@@ -26,7 +26,7 @@ EVENT_RISKY_ACTION_AUTO_CANCELLED_INCIDENT_RESOLVED, actor `system:watcher`.
 from __future__ import annotations
 
 from shared import audit
-from shared.models import Action, ActionStatus
+from shared.models import Action, ActionStatus, Incident, IncidentStatus
 
 # Chỉ những trạng thái CHƯA chốt mới bị huỷ theo. Một Action đã APPROVED
 # là đã có người bấm duyệt và có thể đang chạy dở trên cụm -- huỷ nó ở đây
@@ -37,6 +37,12 @@ _CANCELLABLE_STATUSES = (
 )
 
 SYSTEM_ACTOR = "system:watcher"
+
+_TERMINAL_INCIDENT_STATUSES = (
+    IncidentStatus.AUTO_FIXED.value,
+    IncidentStatus.RESOLVED.value,
+    IncidentStatus.REJECTED.value,
+)
 
 
 def cancel_pending_actions(session, incident_id: str, actor: str = SYSTEM_ACTOR) -> int:
@@ -62,3 +68,26 @@ def cancel_pending_actions(session, incident_id: str, actor: str = SYSTEM_ACTOR)
             actor=actor,
         )
     return len(actions)
+
+
+def reconcile_terminal_incident_actions(session, actor: str = SYSTEM_ACTOR) -> int:
+    """Huỷ action mồ côi còn chờ dù Incident cha đã kết thúc.
+
+    Đây là hàng rào tự sửa dữ liệu lịch sử và các luồng đóng Incident không
+    gọi trực tiếp ``cancel_pending_actions``. Không commit; caller giữ ranh
+    giới transaction. Action APPROVED/EXECUTED/FAILED không bị thay đổi.
+    """
+    incident_ids = (
+        session.query(Action.incident_id)
+        .join(Incident, Incident.id == Action.incident_id)
+        .filter(
+            Incident.status.in_(_TERMINAL_INCIDENT_STATUSES),
+            Action.status.in_(_CANCELLABLE_STATUSES),
+        )
+        .distinct()
+        .all()
+    )
+    return sum(
+        cancel_pending_actions(session, incident_id, actor=actor)
+        for (incident_id,) in incident_ids
+    )

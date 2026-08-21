@@ -694,6 +694,13 @@ def test_warn_if_missing_api_key_silent_when_set(caplog):
     assert "ROUTER_API_KEY is not configured" not in caplog.text
 
 
+@pytest.mark.parametrize("provider", ["codex_enabled", "claude_enabled"])
+def test_warn_if_missing_api_key_silent_when_cli_provider_enabled(caplog, provider):
+    with caplog.at_level("WARNING"):
+        router_client._warn_if_missing_api_key("", **{provider: True})
+    assert "ROUTER_API_KEY is not configured" not in caplog.text
+
+
 def test_valid_action_ids_loaded_from_policy_yaml_non_empty():
     assert len(router_client.VALID_ACTION_IDS) > 0
     assert "resync_ntp" in router_client.VALID_ACTION_IDS

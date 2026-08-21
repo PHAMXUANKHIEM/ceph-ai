@@ -151,8 +151,10 @@ def _osd_upgrade_finished_release(envelope: dict) -> str | None:
     return None
 
 
-def _warn_if_missing_api_key(api_key: str) -> None:
-    if not api_key:
+def _warn_if_missing_api_key(
+    api_key: str, *, codex_enabled: bool = False, claude_enabled: bool = False
+) -> None:
+    if not api_key and not codex_enabled and not claude_enabled:
         logger.warning(
             "ROUTER_API_KEY is not configured — every diagnose_incident() call "
             "will fail authentication and exhaust its retry budget until this is set"
@@ -168,7 +170,11 @@ def _warn_if_missing_worker_ssh_key(key_path: str) -> None:
         )
 
 
-_warn_if_missing_api_key(settings.router_api_key)
+_warn_if_missing_api_key(
+    settings.router_api_key,
+    codex_enabled=settings.codex_chat_enabled,
+    claude_enabled=settings.claude_chat_enabled,
+)
 _warn_if_missing_worker_ssh_key(settings.ssh_key_path)
 
 SYSTEM_PROMPT = (

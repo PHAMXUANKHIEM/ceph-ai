@@ -37,7 +37,7 @@ from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat, telegram_alerts
-from shared.incident_actions import cancel_pending_actions
+from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Action, Cluster, Incident, IncidentStatus
 
@@ -329,6 +329,16 @@ def _resolve_recovered_incidents(
         )
 
 
+def _reconcile_terminal_actions() -> int:
+    """Dọn action chờ duyệt có Incident cha đã ở trạng thái kết thúc."""
+    with db.SessionLocal() as session:
+        count = reconcile_terminal_incident_actions(session)
+        session.commit()
+    if count:
+        logger.warning("Đã tự huỷ %d action mồ côi của Incident đã kết thúc", count)
+    return count
+
+
 def build_and_publish_incident(
     previous_status: Optional[str], health: dict, cluster_id: str | None = None
 ) -> None:
@@ -583,6 +593,7 @@ def run(
             # gating this behind "only on transition" can permanently miss
             # Incidents Worker resolves/fails on its own, later.
             _resolve_recovered_incidents(set(current_checks), cluster_id=cluster_id)
+            _reconcile_terminal_actions()
             # 2026-08-20 (xác minh sau khắc phục): CHỈ gọi trong nhánh
             # thành công này, không bao giờ ở nhánh except bên dưới —
             # `current_checks` rỗng vì MON không trả lời trông y hệt "cụm

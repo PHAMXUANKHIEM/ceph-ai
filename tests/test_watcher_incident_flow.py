@@ -113,6 +113,40 @@ def test_partial_recovery_only_resolves_the_code_that_disappeared(isolated_db):
         assert session.get(Incident, still_active_id).status == IncidentStatus.FAILED.value
 
 
+def test_reconcile_rejects_only_pending_actions_of_terminal_incidents(isolated_db):
+    terminal_id = _seed_incident("OLD_WARNING", IncidentStatus.RESOLVED.value)
+    open_id = _seed_incident("ACTIVE_WARNING", IncidentStatus.PENDING_APPROVAL.value)
+    with db_module.SessionLocal() as session:
+        stale = Action(
+            incident_id=terminal_id,
+            action_id="investigate_manually",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+        )
+        completed = Action(
+            incident_id=terminal_id,
+            action_id="restart_osd_daemon",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.EXECUTED.value,
+        )
+        active = Action(
+            incident_id=open_id,
+            action_id="investigate_manually",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+        )
+        session.add_all([stale, completed, active])
+        session.commit()
+        ids = stale.id, completed.id, active.id
+
+    assert watcher_main._reconcile_terminal_actions() == 1
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, ids[0]).status == ActionStatus.REJECTED.value
+        assert session.get(Action, ids[1]).status == ActionStatus.EXECUTED.value
+        assert session.get(Action, ids[2]).status == ActionStatus.PENDING_APPROVAL.value
+
+
 def test_generic_recovery_notifies_once_but_leaves_verifying_to_verifier(
     isolated_db, monkeypatch
 ):
