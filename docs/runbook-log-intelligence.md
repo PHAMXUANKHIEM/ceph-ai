@@ -4,7 +4,8 @@ Tài liệu vận hành cho tính năng ở `Plan/log-intelligence-rca-plan.md` 
 của `Plan/ai-missing-features-roadmap.md`). Dành cho người bật/tắt/chỉnh và
 người trực nhận cảnh báo.
 
-Cập nhật: 2026-08-19. Trạng thái code: L0–L4 xong, L5 (Loki thật) chưa.
+Cập nhật: 2026-08-21. Trạng thái code: L0–L5 đã hoàn thành; production đã
+chạy nguồn Loki. Xem trạng thái bàn giao tổng thể tại `docs/CEPH_AI_HANDOFF.md`.
 
 ---
 
