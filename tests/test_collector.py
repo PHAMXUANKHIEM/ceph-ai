@@ -576,3 +576,9 @@ def test_osd_code_with_no_osd_id_in_detail_keeps_the_broad_fallback(fake_ssh):
     assert osd_host_map == {}
     # Không nêu osd nào thì cũng không được SSH đi thăm dò vô ích.
     assert fake_ssh.calls == []
+
+
+def test_bluestore_health_code_targets_cephadm_osds():
+    from watcher.collector import _cephadm_daemon_prefix_for_code
+
+    assert _cephadm_daemon_prefix_for_code("BLUESTORE_SLOW_OP_ALERT") == "osd."

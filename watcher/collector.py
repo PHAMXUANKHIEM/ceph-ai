@@ -174,7 +174,15 @@ def _log_command_for_host(host: str, cluster: "Cluster | None" = None) -> tuple[
 
 
 def _cephadm_daemon_prefix_for_code(ceph_code: str) -> str:
-    if ceph_code.startswith("OSD_") or ceph_code.startswith("PG_"):
+    # BlueStore health checks are emitted by OSDs even though their Ceph
+    # health-code prefix is BLUESTORE_, not OSD_.  Treating them as the
+    # generic MON fallback collected an unrelated monitor log and left the
+    # diagnosis without the affected OSD evidence.
+    if (
+        ceph_code.startswith("OSD_")
+        or ceph_code.startswith("PG_")
+        or ceph_code.startswith("BLUESTORE_")
+    ):
         return "osd."
     if ceph_code.startswith("MGR_"):
         return "mgr."
