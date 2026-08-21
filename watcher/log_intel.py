@@ -283,12 +283,24 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
 
     for host, daemon_types in sorted(hosts.items()):
         host_had_error = False
+        host_record_count = 0
         for daemon_type in sorted(daemon_types):
             result = source.fetch(host, daemon_type, window_start, window_end, cluster)
             records.extend(result.records)
+            host_record_count += len(result.records)
             if result.error:
                 errors.append(result.error)
                 host_had_error = True
+        # Loki returning no stream for every configured daemon on one host
+        # usually means that host has no shipper or its `host` label differs
+        # from Ceph AIOps configuration.  Treat that host as missing evidence
+        # even when another node supplied enough lines to make the aggregate
+        # non-empty.
+        if settings.log_intel_source == "loki" and host_record_count == 0 and not host_had_error:
+            errors.append(
+                f"{host}: Loki trả 0 dòng cho mọi daemon; kiểm tra shipper và label host"
+            )
+            host_had_error = True
         hosts_scanned += 1
         if host_had_error:
             hosts_failed += 1
@@ -304,8 +316,7 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
     # healthy.  In production this masked both a wrong label selector and a
     # stopped shipper for more than 100 scans.  Keep the run (useful
     # provenance), but mark it incomplete and explain what to verify.
-    if settings.log_intel_source == "loki" and not records and status is LogIngestStatus.OK:
-        status = LogIngestStatus.PARTIAL
+    if settings.log_intel_source == "loki" and not records:
         errors.append(
             "Loki trả 0 dòng log; kiểm tra label cluster/host/daemon_type và trạng thái log shipper"
         )

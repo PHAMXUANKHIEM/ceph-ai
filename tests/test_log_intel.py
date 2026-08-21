@@ -268,9 +268,29 @@ def test_empty_loki_result_is_partial_not_false_ok(isolated_db, enabled, monkeyp
 
     with db_module.SessionLocal() as session:
         run = session.query(LogIngestRun).one()
-        assert run.status == LogIngestStatus.PARTIAL.value
+        assert run.status == LogIngestStatus.FAILED.value
         assert run.lines_scanned == 0
         assert "Loki trả 0 dòng" in run.error_message
+
+
+def test_loki_host_with_no_stream_makes_mixed_scan_partial(isolated_db, enabled, monkeypatch):
+    monkeypatch.setattr(settings, "log_intel_source", "loki")
+    monkeypatch.setattr(log_intel, "configured_nodes", lambda cluster=None: [
+        {"host": "10.0.0.1", "roles": ["osd"]},
+        {"host": "10.0.0.2", "roles": ["osd"]},
+    ])
+    _fake_source(monkeypatch, {
+        ("10.0.0.1", "osd"): [_record("10.0.0.1", "osd.1 slow request")],
+    })
+
+    log_intel.scan_and_store()
+
+    with db_module.SessionLocal() as session:
+        run = session.query(LogIngestRun).one()
+        assert run.status == LogIngestStatus.PARTIAL.value
+        assert run.hosts_scanned == 2
+        assert run.hosts_failed == 1
+        assert "10.0.0.2" in run.error_message
 
 
 def test_cluster_id_resolves_real_cluster_for_source_selector(isolated_db, enabled, monkeypatch):
