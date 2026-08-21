@@ -214,6 +214,19 @@ def test_error_priority_is_flagged_severe(isolated_db):
 
 
 @pytest.mark.parametrize("template", [
+    'rocksdb: EVENT_LOG_v1 {"event": "flush_started", "job": <N>}',
+    'rocksdb: EVENT_LOG_v1 {"event": "compaction_finished", "job": <N>}',
+    "rgw user sync thread: user is idle, not doing a full sync (user=admin)",
+])
+def test_known_operational_events_are_not_severe(isolated_db, template):
+    pattern_id = _add_pattern(
+        isolated_db, template=template, severity=-1, fingerprint=template[:38]
+    )
+    _observe(pattern_id, WINDOW_START, 1)
+    assert _triage(isolated_db) == []
+
+
+@pytest.mark.parametrize("template", [
     "osd.<ID> heartbeat_check: no reply from <ADDR>",
     "<N> slow requests are blocked",
     "log_channel cluster scrub error on pg <PG>",

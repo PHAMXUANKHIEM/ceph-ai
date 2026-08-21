@@ -66,6 +66,17 @@ def test_same_event_different_variables_collapses_to_one_template():
     assert log_intel.fingerprint_of(a, "osd") == log_intel.fingerprint_of(b, "osd")
 
 
+def test_epoch_and_long_hash_do_not_create_new_fingerprints():
+    a = log_intel.normalize(
+        "mon.a osd e1858 x-amz-content-sha256:" + "a" * 64
+    )
+    b = log_intel.normalize(
+        "mon.a osd e1859 x-amz-content-sha256:" + "b" * 64
+    )
+    assert a == b
+    assert "e<N>" in a and "<HASH>" in a
+
+
 def test_genuinely_different_events_stay_separate():
     a = log_intel.normalize("osd.5 heartbeat_check: no reply from 10.0.0.7:6802")
     b = log_intel.normalize("osd.5 slow request osd_op(client.4136 ...) initiated")

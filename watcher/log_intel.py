@@ -110,8 +110,15 @@ _NORMALIZATIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     # PG id: "2.1f4" / "2.1f4s0".
     (re.compile(r"\b\d+\.[0-9a-f]{1,5}(?:s\d+)?\b"), "<PG>"),
     # Thread id dạng hex dài của Ceph ("7f8b1c2d3700").
+    # Hash nội dung/SHA (RGW x-amz-content-sha256, object digest...) phải
+    # chạy trước TID; nếu không mỗi hash tạo một fingerprint "mới".
+    (re.compile(r"\b[0-9a-fA-F]{32,128}\b"), "<HASH>"),
     (re.compile(r"\b[0-9a-f]{12,16}\b"), "<TID>"),
     (re.compile(r"\b0x[0-9a-fA-F]+\b"), "<HEX>"),
+    # Ceph map/epoch viết liền chữ và số (e1859) nên regex số tổng quát có
+    # word-boundary không bắt được; thiếu dòng này làm mỗi epoch thành một
+    # LogPattern riêng.
+    (re.compile(r"\be\d+\b"), "e<N>"),
     (re.compile(r"/(?:[\w.\-]+/)+[\w.\-]*"), "<PATH>"),
     # Số cuối cùng, sau khi mọi thứ chứa số đã được thay.
     (re.compile(r"\b\d+(?:\.\d+)?\b"), "<N>"),

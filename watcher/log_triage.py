@@ -68,6 +68,17 @@ _SEVERE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+# Một số subsystem ghi event vận hành ở priority âm dù nội dung không phải
+# lỗi. Danh sách cố ý hẹp, chỉ khớp mẫu đã xác minh trên production; không
+# dùng từ chung như "started"/"idle" để tránh che lỗi thật.
+_KNOWN_BENIGN_SEVERE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(expr, re.IGNORECASE)
+    for expr in (
+        r"^rocksdb: EVENT_LOG_v1 .*\"event\": \"(?:flush|compaction)_(?:started|finished)\"",
+        r"^rgw user sync thread: user is idle, not doing a full sync",
+    )
+)
+
 
 class TriageReason(str, enum.Enum):
     NOTABLE = "NOTABLE"
@@ -212,6 +223,8 @@ def _evaluate(
 
 
 def _is_severe(pattern: LogPattern) -> bool:
+    if any(expr.search(pattern.template) for expr in _KNOWN_BENIGN_SEVERE_PATTERNS):
+        return False
     if pattern.severity is not None and pattern.severity <= SEVERE_PRIORITY_MAX:
         return True
     return any(expr.search(pattern.template) for expr in _SEVERE_PATTERNS)
