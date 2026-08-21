@@ -23,7 +23,7 @@ below -- nothing else in this codebase knows about labels.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import settings
 from shared.models import Cluster
@@ -34,6 +34,20 @@ SOURCE_NAME = "loki"
 # Loki's own server-side cap is 5000 by default; asking for more just gets
 # silently truncated, so the adapter stays under it per request.
 LOKI_MAX_LIMIT = 5000
+
+
+def _utc_nanoseconds(value: datetime) -> str:
+    """Convert the pipeline's UTC datetime to Loki nanoseconds.
+
+    Log Intelligence uses UTC-naive datetimes internally.  Calling
+    ``timestamp()`` on a naive value interprets it in the host's LOCAL
+    timezone; on the production GMT+7 server every Loki window was shifted
+    seven hours backwards and returned no data.  Aware values keep their
+    own offset, while naive values are explicitly declared UTC here.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return str(int(value.timestamp() * 1_000_000_000))
 
 
 def _selector(host: str, daemon_type: str, cluster: Cluster | None) -> str:
@@ -77,8 +91,8 @@ def fetch(
 
     params = {
         "query": _selector(host, daemon_type, cluster),
-        "start": str(int(window_start.timestamp() * 1_000_000_000)),
-        "end": str(int(window_end.timestamp() * 1_000_000_000)),
+        "start": _utc_nanoseconds(window_start),
+        "end": _utc_nanoseconds(window_end),
         "limit": str(min(max(1, settings.log_intel_max_lines_per_daemon), LOKI_MAX_LIMIT)),
         "direction": "forward",
     }
