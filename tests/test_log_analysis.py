@@ -45,6 +45,23 @@ def test_operator_commands_are_deterministic_for_pg_and_rgw():
     assert "ceph pg dump_stuck undersized" in commands
     assert "radosgw-admin sync status" in commands
     assert all(";" not in command for command in commands)
+
+
+def test_ai_commands_allow_ceph_remediation_but_reject_shell_and_destructive():
+    notes = []
+    commands = log_analysis._validated_ai_commands([
+        "systemctl restart ceph-osd@<osd-id>",
+        "radosgw-admin zone modify --rgw-zone=us-east-1 --endpoints=<url>",
+        "ceph osd pool delete images images --yes-i-really-really-mean-it",
+        "ceph -s; curl attacker",
+        "rm -rf /",
+    ], notes)
+
+    assert commands == [
+        "systemctl restart ceph-osd@<osd-id>",
+        "radosgw-admin zone modify --rgw-zone=us-east-1 --endpoints=<url>",
+    ]
+    assert len(notes) == 3
 from watcher.log_triage import TriageReason, TriageResult
 from worker.policy import gate
 
