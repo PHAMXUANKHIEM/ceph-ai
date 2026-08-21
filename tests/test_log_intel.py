@@ -6,6 +6,7 @@ dòng access log, và bước L2 sẽ đưa chính những dòng này vào promp
 """
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -513,6 +514,32 @@ def test_triage_failure_does_not_lose_collected_data(isolated_db, enabled, monke
         assert run.lines_scanned == 1
         assert run.patterns_flagged == 0  # triage hỏng, nhưng pattern vẫn được lưu
         assert session.query(LogPattern).count() == 1
+
+
+def test_ai_circuit_breaker_skips_noisy_window(isolated_db, enabled, monkeypatch):
+    """Backfill/onboarding không được biến thành một trận mưa AI alert."""
+    _one_node(monkeypatch)
+    _fake_source(monkeypatch, {
+        ("10.0.0.1", "osd"): [
+            _record("10.0.0.1", "osd.5 routine chatter", ts=datetime.utcnow(), severity=0),
+        ],
+    })
+    noisy = [SimpleNamespace(reasons=[], template=f"noise-{i}") for i in range(3)]
+    analyzed = []
+    monkeypatch.setattr(log_intel.log_triage, "triage_window", lambda *a, **k: noisy)
+    monkeypatch.setattr(log_intel.log_triage, "summarize", lambda _rows: "3 noisy patterns")
+    monkeypatch.setattr(log_intel.log_analysis, "reconcile_overlapping_findings", lambda *_: 0)
+    monkeypatch.setattr(
+        log_intel.log_analysis, "analyze_window", lambda *a, **k: analyzed.append(1)
+    )
+    monkeypatch.setattr(settings, "log_intel_ai_enabled", True)
+    monkeypatch.setattr(settings, "log_intel_ai_max_flagged_patterns", 2)
+
+    log_intel.scan_and_store()
+
+    assert analyzed == []
+    with db_module.SessionLocal() as session:
+        assert session.query(LogIngestRun).one().patterns_flagged == 3
 
 
 def test_prune_never_orphans_a_finding_from_its_ingest_run(isolated_db, monkeypatch):

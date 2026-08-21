@@ -152,7 +152,7 @@ def triage_window(
         results = []
         for pattern in candidates:
             result = _evaluate(
-                pattern, by_pattern.get(pattern.id, []), bucket_start, window_end
+                pattern, by_pattern.get(pattern.id, []), bucket_start, window_start, window_end
             )
             if result.is_flagged:
                 results.append(result)
@@ -168,6 +168,7 @@ def _evaluate(
     pattern: LogPattern,
     observations: list[LogPatternObservation],
     bucket_start: datetime,
+    window_start: datetime,
     window_end: datetime,
 ) -> TriageResult:
     in_window = [o for o in observations if bucket_start <= o.bucket_hour <= window_end]
@@ -189,7 +190,11 @@ def _evaluate(
         result.reasons.append(TriageReason.NOTABLE)
 
     if (
-        pattern.first_seen_at >= bucket_start
+        # Dùng đúng đầu cửa sổ, không dùng đầu giờ của observation bucket.
+        # Nếu scan chạy 10:55 với cửa sổ từ 09:55, một pattern xuất hiện
+        # 09:05 không còn là NOVEL. So với bucket_start=09:00 trước đây làm
+        # nó bị báo lặp gần hai giờ, đặc biệt tệ sau khi onboarding Loki.
+        pattern.first_seen_at >= window_start
         and window_count >= max(1, settings.log_intel_novelty_min_count)
     ):
         result.reasons.append(TriageReason.NOVEL)

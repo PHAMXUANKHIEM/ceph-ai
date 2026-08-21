@@ -536,6 +536,11 @@ class Settings(BaseSettings):
     # và là thứ giữ cho tuần đầu chạy (baseline còn rỗng) không biến thành
     # một trận mưa cảnh báo giả.
     log_intel_burst_min_baseline_samples: int = 3
+    # Circuit breaker trước L2: hàng trăm pattern cùng bị gắn cờ thường là
+    # onboarding/backfill hoặc lỗi collector, không phải hàng trăm sự cố
+    # độc lập. Vẫn lưu toàn bộ L0/L1, nhưng không gửi một prompt khổng lồ
+    # và không tạo Telegram finding cho cửa sổ vượt trần này.
+    log_intel_ai_max_flagged_patterns: int = 20
     # --- Phân tích AI L2 (watcher/log_analysis.py) ---
     #
     # TÁCH RIÊNG khỏi log_intel_enabled một cách có chủ ý: bật thu thập

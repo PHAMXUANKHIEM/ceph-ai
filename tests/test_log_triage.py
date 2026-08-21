@@ -185,6 +185,25 @@ def test_novel_pattern_below_min_count_is_ignored(isolated_db):
     assert _triage(isolated_db) == []
 
 
+def test_novel_uses_exact_window_start_not_hour_bucket(isolated_db):
+    """Pattern cũ hơn đầu cửa sổ không được báo NOVEL chỉ vì cùng ô giờ."""
+    pattern_id = _add_pattern(
+        isolated_db, first_seen=WINDOW_START + timedelta(minutes=5)
+    )
+    with db_module.SessionLocal() as session:
+        session.get(LogPattern, pattern_id).last_seen_at = WINDOW_START + timedelta(minutes=35)
+        session.commit()
+    _observe(pattern_id, WINDOW_START, 5)
+
+    results = log_triage.triage_window(
+        isolated_db,
+        WINDOW_START + timedelta(minutes=30),
+        WINDOW_END,
+    )
+
+    assert results == []
+
+
 def test_error_priority_is_flagged_severe(isolated_db):
     pattern_id = _add_pattern(isolated_db, severity=-1)
     _observe(pattern_id, WINDOW_START, 1)

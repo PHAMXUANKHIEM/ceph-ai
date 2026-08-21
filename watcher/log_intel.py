@@ -365,9 +365,17 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
     # Watcher. Tự no-op khi settings.log_intel_ai_enabled tắt (mặc định).
     try:
         log_analysis.reconcile_overlapping_findings(cluster_id)
-        log_analysis.analyze_window(
-            cluster_id, run_id, window_start, window_end, flagged, status.value, cluster,
-        )
+        max_flagged = max(1, settings.log_intel_ai_max_flagged_patterns)
+        if len(flagged) > max_flagged:
+            logger.error(
+                "log_intel: bỏ gọi AI vì %d pattern vượt circuit breaker %d; "
+                "vẫn giữ dữ liệu L0/L1 để điều tra collector/baseline",
+                len(flagged), max_flagged,
+            )
+        else:
+            log_analysis.analyze_window(
+                cluster_id, run_id, window_start, window_end, flagged, status.value, cluster,
+            )
     except Exception:
         logger.exception("log_intel: phân tích AI thất bại (dữ liệu thu thập vẫn được giữ)")
 
