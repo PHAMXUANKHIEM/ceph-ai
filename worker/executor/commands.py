@@ -124,6 +124,10 @@ def _restart_osd_daemon_command(host: str | None, params: dict | None = None) ->
             "restart_osd_daemon needs a specific host to discover its OSD systemd unit(s) via "
             "`systemctl` — no host given"
         )
+    cephadm_ids = (params or {}).get("cephadm_osd_ids")
+    if cephadm_ids:
+        ids = sorted({int(value) for value in cephadm_ids})
+        return " && ".join(f"ceph orch daemon restart osd.{osd_id}" for osd_id in ids)
     osd_units = _discover_ceph_units(host)["osd"]
     ids_by_host = (params or {}).get("osd_ids_by_host") or {}
     requested = ids_by_host.get(host) if isinstance(ids_by_host, dict) else None

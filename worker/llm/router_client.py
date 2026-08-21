@@ -612,13 +612,31 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             # and independently mapped every one to an SSH-able host.  This
             # contextual exception does not make generic OSD restarts SAFE.
             bluestore_osd_hosts = envelope.get("osd_hosts") or {}
+            bluestore_details = (
+                envelope.get("cluster_snapshot", {}).get("checks", {})
+                .get("BLUESTORE_SLOW_OP_ALERT", {}).get("detail", [])
+            )
+            bluestore_osd_ids = sorted({
+                int(value)
+                for item in bluestore_details if isinstance(item, dict)
+                for value in re.findall(r"osd\.(\d+)", str(item.get("message", "")))
+            })
+            cephadm_verified = (
+                envelope.get("ceph_exec_mode") == "cephadm"
+                and bool(bluestore_osd_ids)
+            )
             verified_bluestore_restart = (
                 incident.ceph_code == "BLUESTORE_SLOW_OP_ALERT"
                 and action_id == "restart_osd_daemon"
-                and isinstance(bluestore_osd_hosts, dict)
-                and bool(bluestore_osd_hosts)
-                and all(str(osd_id).isdigit() and isinstance(host, str) and host
-                        for osd_id, host in bluestore_osd_hosts.items())
+                and (
+                    cephadm_verified
+                    or (
+                        isinstance(bluestore_osd_hosts, dict)
+                        and bool(bluestore_osd_hosts)
+                        and all(str(osd_id).isdigit() and isinstance(host, str) and host
+                                for osd_id, host in bluestore_osd_hosts.items())
+                    )
+                )
             )
             if verified_bluestore_restart:
                 classification = ActionClassification.SAFE
@@ -647,11 +665,18 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             elif pool_name:
                 action_params = {"pool_name": pool_name}
             elif verified_bluestore_restart:
-                by_host: dict[str, list[int]] = {}
-                for osd_id, host in bluestore_osd_hosts.items():
-                    by_host.setdefault(host, []).append(int(osd_id))
-                nodes = list(by_host)
-                action_params = {"osd_ids_by_host": by_host}
+                if cephadm_verified:
+                    # ceph orch runs through one reachable MON and asks the
+                    # orchestrator to restart the exact remote daemon.  It
+                    # does not require direct SSH access to the OSD host.
+                    nodes = nodes[:1]
+                    action_params = {"cephadm_osd_ids": bluestore_osd_ids}
+                else:
+                    by_host: dict[str, list[int]] = {}
+                    for osd_id, host in bluestore_osd_hosts.items():
+                        by_host.setdefault(host, []).append(int(osd_id))
+                    nodes = list(by_host)
+                    action_params = {"osd_ids_by_host": by_host}
             action = Action(
                 incident_id=incident_id,
                 action_id=action_id,

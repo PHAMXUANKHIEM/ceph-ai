@@ -1202,6 +1202,12 @@ def test_restart_osd_targets_only_verified_id_on_cephadm_host(monkeypatch):
     assert command == "systemctl restart ceph-fsid@osd.4.service"
 
 
+def test_restart_verified_cephadm_osd_uses_orchestrator():
+    assert get_command(
+        "restart_osd_daemon", "10.20.1.83", {"cephadm_osd_ids": [4]}
+    ) == "ceph orch daemon restart osd.4"
+
+
 # --- bluestore_omap_quick_fix ------------------------------------------------
 
 
