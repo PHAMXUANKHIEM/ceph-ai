@@ -383,6 +383,7 @@ def send_log_finding_alert(
     recommended_action_id: str | None = None,
     validation_notes: str | None = None,
     *,
+    operator_commands: list[str] | None = None,
     cluster_name: str | None = None,
 ) -> None:
     """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
@@ -408,6 +409,9 @@ def send_log_finding_alert(
         lines.append(f"📄 Log: {_compact(template, _MAX_EXCERPT_CHARS)}")
     if recommended_action_id:
         lines.append(f"🔧 Đề xuất: {recommended_action_id} (cần Duyệt thủ công)")
+    if operator_commands:
+        lines.append("🖥 Lệnh kiểm tra (chỉ đọc):")
+        lines.extend(f"`{_compact(command, _MAX_EXCERPT_CHARS)}`" for command in operator_commands)
     if validation_notes:
         lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
     _send(

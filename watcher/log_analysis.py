@@ -639,6 +639,7 @@ def analyze_window(
             "summary": finding.summary,
             "root_cause": finding.root_cause_hypothesis,
             "recommended_action_id": finding.recommended_action_id,
+            "recommended_manual_steps": validated["recommended_manual_steps"],
             "validation_notes": finding.validation_notes,
         }
 
@@ -680,6 +681,7 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             evidence_templates,
             payload["recommended_action_id"],
             payload["validation_notes"],
+            operator_commands=_operator_commands_for(payload, evidence_templates),
             cluster_name=cluster.name if cluster is not None else None,
         )
     except Exception:
@@ -808,11 +810,49 @@ def _rationale_for(payload: dict, evidence_templates: list[str]) -> str:
         lines.append(payload["summary"])
     if payload.get("root_cause"):
         lines.append(f"Nguyên nhân nghi ngờ: {payload['root_cause']}")
+    for step in payload.get("recommended_manual_steps") or []:
+        lines.append(f"Bước kiểm tra: {step}")
+    commands = _operator_commands_for(payload, evidence_templates)
+    if commands:
+        lines.append("Lệnh kiểm tra đề xuất (chỉ đọc):")
+        lines.extend(f"  {command}" for command in commands)
     for template in (evidence_templates or [])[:3]:
         lines.append(f"Bằng chứng (mẫu log): {template}")
     if payload.get("validation_notes"):
         lines.append(f"Hệ thống đã chỉnh câu trả lời của AI: {payload['validation_notes']}")
     return "\n".join(lines)
+
+
+def _operator_commands_for(payload: dict, evidence_templates: list[str]) -> list[str]:
+    """Return deterministic, read-only commands for an operator.
+
+    Log text is untrusted, therefore commands must never be copied from the
+    model or interpolated with model-provided host/pool/daemon values.  This
+    small fixed catalogue makes an ``investigate_manually`` proposal useful
+    without turning prompt injection into shell execution guidance.
+    """
+    text = " ".join(
+        str(value or "")
+        for value in (
+            payload.get("title"), payload.get("summary"), payload.get("root_cause"),
+            " ".join(evidence_templates or []),
+        )
+    ).lower()
+    commands = ["ceph -s", "ceph health detail"]
+    if any(token in text for token in ("pg ", "pg_", "undersized", "degraded", "stuck")):
+        commands.extend([
+            "ceph pg dump_stuck undersized",
+            "ceph pg dump_stuck degraded",
+            "ceph osd tree",
+            "ceph osd df tree",
+        ])
+    if any(token in text for token in ("rgw", "multisite", "bilog", "datalog", "mdlog", "trim")):
+        commands.extend([
+            "radosgw-admin sync status",
+            "radosgw-admin period get",
+            "radosgw-admin zone get",
+        ])
+    return list(dict.fromkeys(commands))
 
 
 def _maybe_propose_action(

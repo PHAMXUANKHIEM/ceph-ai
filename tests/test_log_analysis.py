@@ -29,6 +29,22 @@ from shared.models import (
     LogIngestStatus,
 )
 from watcher import log_analysis
+
+
+def test_operator_commands_are_deterministic_for_pg_and_rgw():
+    commands = log_analysis._operator_commands_for(
+        {
+            "title": "PG undersized và RGW multisite không trim được log",
+            "summary": "degraded kéo dài",
+            "root_cause": "thiếu endpoint",
+        },
+        [],
+    )
+
+    assert "ceph health detail" in commands
+    assert "ceph pg dump_stuck undersized" in commands
+    assert "radosgw-admin sync status" in commands
+    assert all(";" not in command for command in commands)
 from watcher.log_triage import TriageReason, TriageResult
 from worker.policy import gate
 
