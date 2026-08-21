@@ -136,6 +136,13 @@ def send_due_incident_reminders(now: datetime | None = None) -> int:
         }
         for incident in incidents:
             cluster = clusters.get(incident.cluster_id)
+            # An inactive cluster is deliberately no longer polled, so its
+            # old Incident rows cannot be compared with current health.
+            # Re-sending them forever presents stale history as a live
+            # fault. Keep the rows for audit, but silence reminders until
+            # the cluster is activated and observed again.
+            if cluster is not None and not cluster.is_active:
+                continue
             action = actions.get(incident.id)
             has_cluster_channel = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
             telegram_alerts.send_incident_alert(

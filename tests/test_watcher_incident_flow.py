@@ -452,6 +452,34 @@ def test_reminders_exclude_upgrade_and_collapse_duplicate_cluster_health_rows(
     )
 
 
+def test_reminders_skip_stale_incidents_from_inactive_cluster(isolated_db, monkeypatch):
+    now = datetime(2026, 8, 21, 12, 0, 0)
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="disabled-backup", ceph_mon_nodes="10.0.0.1",
+            ssh_user="root", ssh_key_path="/tmp/test-key",
+            is_default=False, is_active=False,
+        )
+        session.add(cluster)
+        session.flush()
+        session.add(Incident(
+            cluster_id=cluster.id,
+            ceph_code="POOL_APP_NOT_ENABLED",
+            status=IncidentStatus.FAILED.value,
+            detected_at=now - timedelta(days=10),
+            created_at=now - timedelta(days=10),
+        ))
+        session.commit()
+    calls = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts, "send_incident_alert",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert watcher_main.send_due_incident_reminders(now) == 0
+    assert calls == []
+
+
 def test_observed_cluster_does_not_create_duplicate_open_incident(isolated_db, monkeypatch):
     with db_module.SessionLocal() as session:
         cluster = Cluster(
