@@ -330,10 +330,27 @@ def _resolve_recovered_incidents(
 
 
 def _reconcile_terminal_actions() -> int:
-    """Dọn action chờ duyệt có Incident cha đã ở trạng thái kết thúc."""
+    """Dọn action mồ côi và đóng sự cố của cluster đã bị vô hiệu hóa."""
     with db.SessionLocal() as session:
-        count = reconcile_terminal_incident_actions(session)
+        inactive_incidents = (
+            session.query(Incident)
+            .join(Cluster, Cluster.id == Incident.cluster_id)
+            .filter(
+                Cluster.is_active.is_(False),
+                Incident.status.in_(_RECOVERABLE_STATUSES),
+            )
+            .all()
+        )
+        count = 0
+        for incident in inactive_incidents:
+            incident.status = IncidentStatus.RESOLVED.value
+            count += cancel_pending_actions(session, incident.id)
+        count += reconcile_terminal_incident_actions(session)
         session.commit()
+    if inactive_incidents:
+        logger.warning(
+            "Đã đóng %d Incident của cluster không hoạt động", len(inactive_incidents)
+        )
     if count:
         logger.warning("Đã tự huỷ %d action mồ côi của Incident đã kết thúc", count)
     return count

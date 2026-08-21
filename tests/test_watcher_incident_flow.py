@@ -147,6 +147,35 @@ def test_reconcile_rejects_only_pending_actions_of_terminal_incidents(isolated_d
         assert session.get(Action, ids[2]).status == ActionStatus.PENDING_APPROVAL.value
 
 
+def test_reconcile_closes_incidents_and_actions_of_inactive_cluster(isolated_db):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="disabled", ceph_mon_nodes="10.0.0.2", ssh_user="root",
+            ssh_key_path="/tmp/key", is_active=False,
+        )
+        session.add(cluster)
+        session.flush()
+        incident = Incident(
+            cluster_id=cluster.id, ceph_code="POOL_APP_NOT_ENABLED",
+            status=IncidentStatus.PENDING_APPROVAL.value, detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="investigate_manually",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+        )
+        session.add(action)
+        session.commit()
+        incident_id, action_id = incident.id, action.id
+
+    assert watcher_main._reconcile_terminal_actions() == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, incident_id).status == IncidentStatus.RESOLVED.value
+        assert session.get(Action, action_id).status == ActionStatus.REJECTED.value
+
+
 def test_generic_recovery_notifies_once_but_leaves_verifying_to_verifier(
     isolated_db, monkeypatch
 ):
