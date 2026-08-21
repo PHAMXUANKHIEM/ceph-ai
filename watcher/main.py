@@ -86,6 +86,15 @@ _CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
 # operator exactly the way the CHAT_REQUEST bug did before that fix.
 _CLUSTER_UPGRADE_CEPH_CODE = "CLUSTER_UPGRADE"
 
+# Synthetic workflow rows are operator proposals, not cluster-health
+# findings.  Their own approval/execution flows already send the relevant
+# notifications; repeating them through the generic incident reminder makes
+# a pending operation look like a fresh Ceph fault every hour.
+_REMINDER_EXCLUDED_CODES = {
+    _CHAT_REQUEST_CEPH_CODE,
+    _CLUSTER_UPGRADE_CEPH_CODE,
+}
+
 
 def send_due_incident_reminders(now: datetime | None = None) -> int:
     """Re-send every still-open Incident to Telegram once per configured interval."""
@@ -94,17 +103,29 @@ def send_due_incident_reminders(now: datetime | None = None) -> int:
     cutoff = now - timedelta(seconds=interval)
     sent = 0
     with db.SessionLocal() as session:
-        incidents = (
+        open_incidents = (
             session.query(Incident)
             .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
-            .filter(
-                or_(
-                    Incident.telegram_reminded_at <= cutoff,
-                    (Incident.telegram_reminded_at.is_(None) & (Incident.created_at <= cutoff)),
-                )
-            )
+            .filter(Incident.ceph_code.notin_(_REMINDER_EXCLUDED_CODES))
+            .order_by(Incident.created_at.desc())
             .all()
         )
+
+        # Historical bugs (and the observed-cluster path fixed below) could
+        # leave several open rows for the same real health check.  Reminding
+        # all of them produces a burst of identical Telegram messages.  Keep
+        # only the newest row per cluster/code, and decide whether THAT row is
+        # due; an older due row must not bypass a newer row's reminder clock.
+        incidents = []
+        seen: set[tuple[str | None, str]] = set()
+        for incident in open_incidents:
+            key = (incident.cluster_id, incident.ceph_code)
+            if key in seen:
+                continue
+            seen.add(key)
+            reminder_baseline = incident.telegram_reminded_at or incident.created_at
+            if reminder_baseline <= cutoff:
+                incidents.append(incident)
         clusters = {
             cluster.id: cluster
             for cluster in session.query(Cluster).filter(Cluster.id.in_({i.cluster_id for i in incidents if i.cluster_id})).all()
@@ -818,8 +839,25 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
     if current_status not in PROBLEM_STATUSES:
         return
 
+    # Same restart/deduplication guard as build_and_publish_incident() for
+    # the default cluster.  The observed-cluster path used to omit it, so
+    # every Watcher restart could create another open row and the hourly
+    # reminder then sent every duplicate in one burst.
+    with db.SessionLocal() as session:
+        already_open_codes = {
+            row.ceph_code
+            for row in session.query(Incident.ceph_code)
+            .filter(
+                Incident.cluster_id == cluster.id,
+                Incident.status.in_(_RECOVERABLE_STATUSES),
+            )
+            .all()
+        }
+
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
+        if ceph_code in already_open_codes:
+            continue
         detected_at = datetime.utcnow()
         nodes, log_excerpt = collector.collect_relevant_logs(ceph_code, check_detail, cluster=cluster)
 

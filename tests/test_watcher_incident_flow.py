@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 import watcher.main as watcher_main
 from shared import db as db_module
 from shared.db import Base
-from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
+from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 
 HEALTH_WARN_PAYLOAD = {
     "status": "HEALTH_WARN",
@@ -366,6 +366,119 @@ def test_open_incident_is_reminded_hourly_until_resolved(isolated_db, monkeypatc
 
     with db_module.SessionLocal() as session:
         assert session.get(Incident, due_id).telegram_reminded_at == now + timedelta(hours=1)
+
+
+def test_reminders_exclude_upgrade_and_collapse_duplicate_cluster_health_rows(
+    isolated_db, monkeypatch
+):
+    now = datetime(2026, 8, 21, 12, 0, 0)
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="backup",
+            ceph_mon_nodes="10.0.0.1",
+            ssh_user="root",
+            ssh_key_path="/tmp/test-key",
+            is_default=False,
+        )
+        session.add(cluster)
+        session.flush()
+        session.add_all(
+            [
+                Incident(
+                    cluster_id=cluster.id,
+                    ceph_code="POOL_APP_NOT_ENABLED",
+                    status=IncidentStatus.FAILED.value,
+                    log_excerpt="old duplicate",
+                    detected_at=now - timedelta(hours=3),
+                    created_at=now - timedelta(hours=3),
+                ),
+                Incident(
+                    cluster_id=cluster.id,
+                    ceph_code="POOL_APP_NOT_ENABLED",
+                    status=IncidentStatus.FAILED.value,
+                    log_excerpt="newest evidence",
+                    detected_at=now - timedelta(hours=2),
+                    created_at=now - timedelta(hours=2),
+                ),
+                Incident(
+                    cluster_id=cluster.id,
+                    ceph_code="CLUSTER_UPGRADE",
+                    status=IncidentStatus.PENDING_APPROVAL.value,
+                    log_excerpt="upgrade proposal",
+                    detected_at=now - timedelta(hours=2),
+                    created_at=now - timedelta(hours=2),
+                ),
+            ]
+        )
+        session.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_alert",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        watcher_main.settings, "telegram_incident_reminder_interval_seconds", 3600
+    )
+
+    assert watcher_main.send_due_incident_reminders(now) == 1
+    assert calls[0][0][:3] == (
+        "POOL_APP_NOT_ENABLED",
+        None,
+        "newest evidence",
+    )
+
+
+def test_observed_cluster_does_not_create_duplicate_open_incident(isolated_db, monkeypatch):
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="backup",
+            ceph_mon_nodes="10.0.0.1",
+            ssh_user="root",
+            ssh_key_path="/tmp/test-key",
+            is_default=False,
+        )
+        session.add(cluster)
+        session.flush()
+        session.add(
+            Incident(
+                cluster_id=cluster.id,
+                ceph_code="POOL_APP_NOT_ENABLED",
+                status=IncidentStatus.FAILED.value,
+                detected_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+        cluster_id = cluster.id
+
+    with db_module.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        monkeypatch.setattr(
+            watcher_main.collector,
+            "collect_relevant_logs",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not recollect")),
+        )
+        watcher_main._build_and_publish_incident_for_observed_cluster(
+            cluster,
+            {
+                "status": "HEALTH_WARN",
+                "checks": {
+                    "POOL_APP_NOT_ENABLED": {
+                        "severity": "HEALTH_WARN",
+                        "detail": [],
+                    }
+                },
+            },
+        )
+
+    with db_module.SessionLocal() as session:
+        assert (
+            session.query(Incident)
+            .filter_by(cluster_id=cluster_id, ceph_code="POOL_APP_NOT_ENABLED")
+            .count()
+            == 1
+        )
 
 
 def test_multiple_simultaneous_checks_create_one_incident_each_and_publish_all(
