@@ -564,6 +564,59 @@ def _dedupe_key(cluster_id: str, evidence_ids: list[str], verdict: str) -> str:
     return hashlib.sha1(material.encode()).hexdigest()
 
 
+def _evidence_ids(finding: LogFinding) -> set[str]:
+    try:
+        values = json.loads(finding.evidence_pattern_ids_json or "[]")
+    except (TypeError, ValueError):
+        return set()
+    return {value for value in values if isinstance(value, str) and value}
+
+
+def _same_log_problem(left: LogFinding, right: LogFinding) -> bool:
+    """Nhận diện cùng hiện tượng khi cửa sổ kế tiếp đổi nhẹ bộ evidence."""
+    if left.verdict != right.verdict:
+        return False
+    return _evidence_sets_overlap(_evidence_ids(left), _evidence_ids(right))
+
+
+def _evidence_sets_overlap(left_ids: set[str], right_ids: set[str]) -> bool:
+    if not left_ids or not right_ids:
+        return False
+    common = len(left_ids & right_ids)
+    # Cần cả số lượng tuyệt đối lẫn tỷ lệ để không nhập hai lỗi chỉ vô
+    # tình chung một mẫu log phổ biến.
+    return common >= 3 and common / min(len(left_ids), len(right_ids)) >= 0.60
+
+
+def reconcile_overlapping_findings(cluster_id: str) -> int:
+    """Đóng finding trùng nghĩa do bộ evidence thay đổi giữa các cửa sổ.
+
+    Giữ bản ghi cũ nhất làm canonical và đóng Incident/Action của các bản
+    sao. Không gửi thông báo "đã hết": vấn đề gốc vẫn mở ở bản canonical.
+    """
+    with db.SessionLocal() as session:
+        findings = (
+            session.query(LogFinding)
+            .filter(LogFinding.cluster_id == cluster_id)
+            .filter(LogFinding.status != LogFindingStatus.RESOLVED.value)
+            .order_by(LogFinding.created_at.asc(), LogFinding.id.asc())
+            .all()
+        )
+        canonical: list[LogFinding] = []
+        resolved = 0
+        for finding in findings:
+            if any(_same_log_problem(finding, existing) for existing in canonical):
+                finding.status = LogFindingStatus.RESOLVED.value
+                _resolve_incident_for(session, finding.dedupe_key)
+                resolved += 1
+            else:
+                canonical.append(finding)
+        session.commit()
+    if resolved:
+        logger.warning("log_analysis: đã gộp %d finding trùng evidence", resolved)
+    return resolved
+
+
 def analyze_window(
     cluster_id: str,
     ingest_run_id: str,
@@ -656,12 +709,23 @@ def analyze_window(
         # và bảng findings phình lên đúng thứ ràng buộc R1 muốn tránh.
         # Cùng nếp "một thông báo cho một vấn đề thật sự mới" mà mọi monitor
         # khác trong Watcher đã theo.
-        existing = (
+        open_findings = (
             session.query(LogFinding)
             .filter(LogFinding.cluster_id == cluster_id)
-            .filter(LogFinding.dedupe_key == dedupe_key)
             .filter(LogFinding.status != LogFindingStatus.RESOLVED.value)
-            .first()
+            .all()
+        )
+        evidence_ids = set(validated["evidence_pattern_ids"])
+        existing = next(
+            (
+                row for row in open_findings
+                if row.dedupe_key == dedupe_key
+                or (
+                    row.verdict == validated["verdict"]
+                    and _evidence_sets_overlap(_evidence_ids(row), evidence_ids)
+                )
+            ),
+            None,
         )
         if existing is not None:
             logger.info(

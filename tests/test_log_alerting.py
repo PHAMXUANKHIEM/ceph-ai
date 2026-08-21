@@ -332,6 +332,37 @@ def test_finding_without_evidence_never_auto_resolves(isolated_db, sent):
     assert log_analysis.resolve_stale_findings(cluster_id, later) == 0
 
 
+def test_reconcile_merges_findings_when_evidence_set_drifted(isolated_db):
+    cluster_id, run_id = isolated_db
+    canonical_id = _make_open_finding(
+        cluster_id, run_id, pattern_ids=("p1", "p2", "p3", "p4", "p5"), title="first"
+    )
+    duplicate_id = _make_open_finding(
+        cluster_id, run_id, pattern_ids=("p1", "p2", "p3", "p4", "p6", "p7"), title="second"
+    )
+
+    assert log_analysis.reconcile_overlapping_findings(cluster_id) == 1
+
+    with db_module.SessionLocal() as session:
+        assert session.get(LogFinding, canonical_id).status == LogFindingStatus.OPEN.value
+        assert session.get(LogFinding, duplicate_id).status == LogFindingStatus.RESOLVED.value
+
+
+def test_reconcile_does_not_merge_findings_with_only_generic_overlap(isolated_db):
+    cluster_id, run_id = isolated_db
+    first_id = _make_open_finding(
+        cluster_id, run_id, pattern_ids=("generic", "a", "b"), title="first"
+    )
+    second_id = _make_open_finding(
+        cluster_id, run_id, pattern_ids=("generic", "x", "y"), title="second"
+    )
+
+    assert log_analysis.reconcile_overlapping_findings(cluster_id) == 0
+    with db_module.SessionLocal() as session:
+        assert session.get(LogFinding, first_id).status == LogFindingStatus.OPEN.value
+        assert session.get(LogFinding, second_id).status == LogFindingStatus.OPEN.value
+
+
 def test_already_resolved_finding_is_not_re_alerted(isolated_db, sent):
     cluster_id, run_id = isolated_db
     _make_open_finding(cluster_id, run_id)

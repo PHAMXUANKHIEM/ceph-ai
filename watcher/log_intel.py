@@ -364,6 +364,7 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
     # đây để kể cả một lỗi ngoài dự tính cũng không thoát ra vòng lặp
     # Watcher. Tự no-op khi settings.log_intel_ai_enabled tắt (mặc định).
     try:
+        log_analysis.reconcile_overlapping_findings(cluster_id)
         log_analysis.analyze_window(
             cluster_id, run_id, window_start, window_end, flagged, status.value, cluster,
         )
