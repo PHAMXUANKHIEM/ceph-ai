@@ -71,8 +71,9 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
 
 ## CPU/RAM forecast từ Loki
 
-- Watcher ghi mỗi mẫu node health vào Loki với `job="ceph-ai-node-metrics"`,
-  labels `cluster`, `host`, `metric_type="node_resource"`.
+- Alloy ghi mẫu node health vào Loki với `job="ceph-ai-node-metrics"`, labels
+  `cluster`, `host`, `metric_type="node_resource"`. Watcher đọc CPU/RAM hiện
+  tại và lịch sử từ stream này, không SSH vào node để lấy `/proc`.
 - Dự báo không đọc cache/DB cục bộ: luôn query lại lịch sử Loki, mặc định 30
   ngày, tối thiểu 24 mẫu và dự báo cửa sổ 168 giờ.
 - Chỉ ghi cảnh báo xu hướng khi mốc 90% nằm trong cửa sổ và hệ số phù hợp
@@ -87,6 +88,73 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
   tự được chọn; trước đó dùng cửa sổ dài nhất có đủ dữ liệu.
 - Việc học chỉ đổi lựa chọn mô hình forecast. Nó không được thay policy,
   allowlist, ngưỡng hành động hoặc tự thực thi remediation.
+
+## Block Storage/RBD — hiện trạng và lộ trình AI
+
+### Đã có
+
+- Watcher thu thập lịch sử theo từng `pool/image`: IOPS, read/write latency,
+  observed peak, baseline và streak bão hòa; dữ liệu được lưu trong
+  `volume_metrics` để Dashboard, Incident và correlation cùng dùng evidence.
+- Rule hiện tại chỉ kết luận volume bão hòa khi cửa sổ đã warm-up, IOPS gần
+  đỉnh quan sát, latency tăng rõ so với median và tình trạng kéo dài nhiều lần
+  quét. Khi đủ điều kiện, hệ thống tạo Incident `VOLUME_SATURATED:*` thay vì
+  tự thay đổi volume.
+- Load sweep chủ động chạy `fio` trên scratch RBD image, không chạy trên dữ
+  liệu production. Kết quả lưu trong `volume_perf_sweeps`, gồm toàn bộ đường
+  cong iodepth/IOPS/latency, điểm knee, QoS notes và bottleneck evidence.
+- Nút **Phân tích bằng AI** đọc kết quả sweep đã hoàn tất để giải thích trần
+  IOPS khả dụng, confidence và caveat bằng tiếng Việt. Đây là phân tích
+  read-only; hiện chưa tự động gọi AI sau mỗi sweep.
+- Luồng quản trị đã có preflight, policy, phê duyệt và post-check cho tạo,
+  resize, rename, trash/restore/purge RBD; attach/detach và snapshot Cinder;
+  backup/restore RBD. Hành động RISKY/DESTRUCTIVE không được AI tự chạy.
+- Xác minh production ngày 2026-08-22: lịch sử `volume_metrics` đã có dữ liệu
+  thực và đã có các lần performance sweep. Backup RBD vẫn chưa hoạt động vì
+  chưa cấu hình storage target và tracked image.
+
+### Giới hạn hiện tại
+
+- Phát hiện bão hòa vẫn là rule cố định: rolling window 12 mẫu, IOPS ít nhất
+  90% peak, latency ít nhất 2 lần median và 3 poll liên tiếp. Đây chưa phải
+  mô hình tự học theo đặc tính riêng của từng volume.
+- Rolling state ngắn hạn nằm trong tiến trình Watcher nên phải warm-up lại sau
+  restart; lịch sử dài hạn trong PostgreSQL không mất.
+- IOPS/latency hiện lấy qua lệnh `rbd perf image iostat` trên đường quản trị
+  Ceph/SSH, chưa lấy từ Loki. AI chỉ phân tích dữ liệu đã thu thập; chưa tự
+  chỉnh QoS, tự resize, tự migrate hoặc tự restore.
+
+### Thứ tự triển khai tiếp theo
+
+- [ ] **1. Baseline tự học theo volume**
+  - Học IOPS và read/write latency bình thường theo `cluster/pool/image`, giờ
+    trong ngày và ngày trong tuần từ lịch sử `volume_metrics`.
+  - Chạy nhiều cửa sổ candidate, lưu forecast/outcome, tính MAE và tự chọn cửa
+    sổ tốt nhất giống cơ chế CPU/RAM; restart Watcher không làm mất trạng thái học.
+  - Giữ hard safety gate: học chỉ thay mô hình/baseline, không thay policy hoặc
+    tự cấp quyền thực thi.
+- [ ] **2. Dự báo và cảnh báo sớm**
+  - Dự báo IOPS/latency cho 1h, 6h và 24h; cảnh báo khi có khả năng chạm knee
+    hoặc latency SLO trước khi workload thực sự suy giảm.
+  - Mỗi cảnh báo phải kèm timestamp, số mẫu, training window, confidence và
+    forecast/model version; dữ liệu stale hoặc thiếu phải fail closed.
+- [ ] **3. Correlation nguyên nhân**
+  - Ghép anomaly volume với log Ceph từ Loki, pool/PG/OSD latency, CPU/RAM node,
+    network và QoS để phân biệt bottleneck tại image, pool, OSD hay host.
+  - Không kết luận nguyên nhân khi chỉ có tương quan thời gian; phải chỉ rõ
+    evidence ủng hộ và evidence còn thiếu.
+- [ ] **4. Khuyến nghị có kiểm soát**
+  - Gợi ý QoS, resize, đổi pool/tier, lịch backup hoặc chạy lại load sweep dựa
+    trên evidence và lịch sử outcome.
+  - Chỉ tạo proposal có preview/preflight. Resize, migration, restore, purge và
+    mọi thao tác có nguy cơ ảnh hưởng dữ liệu vẫn cần operator phê duyệt.
+- [ ] **5. Chuẩn hóa nguồn telemetry**
+  - Đưa IOPS/latency RBD vào observability pipeline có lịch sử tập trung;
+    ưu tiên metric backend phù hợp, hoặc structured Loki stream nếu hạ tầng chỉ
+    dùng Loki. Sau khi đối chiếu đủ coverage mới bỏ đường poll SSH hiện tại.
+- [ ] **6. Bảo vệ dữ liệu**
+  - Cấu hình storage target, tracked images, retention và RestoreDrill; chỉ coi
+    backup sẵn sàng khi có bản full/incremental verified và drill thành công.
 
 ## Tiêu chí hoàn thành mục 1
 
