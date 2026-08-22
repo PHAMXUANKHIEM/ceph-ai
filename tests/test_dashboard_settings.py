@@ -1672,6 +1672,8 @@ def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
     assert "Lý do thay đổi" not in response.text
     assert "Nếu chọn SAFE" not in response.text
     assert "action-policy-change-form" in response.text
+    assert "DESTRUCTIVE · bị khóa" not in response.text
+    assert "Note: policy mặc định là DESTRUCTIVE." in response.text
 
 
 def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
@@ -2608,6 +2610,27 @@ def test_action_policy_requires_exact_ok_confirmation(dashboard_client, monkeypa
     assert "Cần nhập chính xác OK" in response.text
     with db_module.SessionLocal() as session:
         assert session.get(ActionPolicyOverride, "restart_osd_daemon") is None
+
+
+def test_admin_can_override_destructive_action_with_audit(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route, "restart_worker",
+        lambda: {"restarted": True, "new_pid": 791, "error": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/autopilot/action-policy", data={
+        "action_id": "pg_repair_force", "classification": "SAFE", "confirmation": "OK",
+    })
+
+    assert response.status_code == 200
+    assert "pg_repair_force thành SAFE" in response.text
+    with db_module.SessionLocal() as session:
+        override = session.get(ActionPolicyOverride, "pg_repair_force")
+        assert override.classification == "SAFE"
+        assert settings_route.action_gate.classify_action(
+            "pg_repair_force", session=session,
+        ).value == "SAFE"
 
 
 def test_disabling_autopilot_stops_old_worker_when_restart_fails(

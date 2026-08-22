@@ -544,7 +544,7 @@ class AutopilotClusterConfigAudit(Base):
 
 
 class ActionPolicyOverride(Base):
-    """Admin-selected SAFE/RISKY classification used by the live Worker."""
+    """Admin-selected SAFE/RISKY/DESTRUCTIVE classification used by the Worker."""
     __tablename__ = "action_policy_overrides"
 
     action_id: Mapped[str] = mapped_column(String(64), primary_key=True)

@@ -142,17 +142,20 @@ def classify_action(action_id: str, session=None) -> ActionClassification:
        every list, or newly added to `action_ids:` without an explicit
        classification, is never silently auto-run).
     """
-    if action_id in DESTRUCTIVE_ACTION_IDS:
-        return ActionClassification.DESTRUCTIVE
     if session is not None:
-        # Runtime override is deliberately limited to SAFE/RISKY.  A
-        # DESTRUCTIVE policy can never be downgraded through the UI.
+        # An authenticated admin may explicitly override every runtime tier.
+        # The append-only audit row and exact OK confirmation are enforced by
+        # the Dashboard route that writes this record.
         from shared.models import ActionPolicyOverride
         override = session.get(ActionPolicyOverride, action_id)
         if override is not None and override.classification in {
-            ActionClassification.SAFE.value, ActionClassification.RISKY.value,
+            ActionClassification.SAFE.value,
+            ActionClassification.RISKY.value,
+            ActionClassification.DESTRUCTIVE.value,
         }:
             return ActionClassification(override.classification)
+    if action_id in DESTRUCTIVE_ACTION_IDS:
+        return ActionClassification.DESTRUCTIVE
     if action_id in RISKY_ACTION_IDS:
         return ActionClassification.RISKY
     if action_id in SAFE_ACTION_IDS:

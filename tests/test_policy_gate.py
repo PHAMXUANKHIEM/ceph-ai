@@ -23,13 +23,13 @@ def test_db_override_can_mark_risky_action_safe(db_session):
     assert classify_action("restart_osd_daemon", session=db_session) == ActionClassification.SAFE
 
 
-def test_db_override_cannot_downgrade_destructive(db_session):
+def test_db_override_can_downgrade_destructive_when_admin_saved_it(db_session):
     db_session.add(ActionPolicyOverride(
         action_id="pg_repair_force", classification="SAFE",
-        updated_by="admin", reason="must still be ignored",
+        updated_by="admin", reason="explicit admin override",
     ))
     db_session.commit()
-    assert classify_action("pg_repair_force", session=db_session) == ActionClassification.DESTRUCTIVE
+    assert classify_action("pg_repair_force", session=db_session) == ActionClassification.SAFE
 
 
 def test_classify_pg_repair_force_returns_destructive():
