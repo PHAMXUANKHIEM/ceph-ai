@@ -78,6 +78,27 @@ def test_volume_correlation_requires_matching_pool_and_image():
     assert json.loads(finding.correlation_evidence_json)["iops"] == 950
 
 
+def test_node_resource_correlation_requires_matching_host():
+    session = _session()
+    now, finding, matching = _seed(
+        session, incident_code="NODE_RESOURCE_HIGH:node-a",
+        incident_excerpt="node-a CPU high",
+    )
+    finding.fault_family = "node_resource"
+    finding.semantic_entities_json = json.dumps(["host:node-a"])
+    matching.signal_evidence_json = json.dumps({"source": "node_proc_metrics", "cpu_percent": 96})
+    session.add(Incident(
+        cluster_id=matching.cluster_id, ceph_code="NODE_RESOURCE_HIGH:node-b",
+        status=IncidentStatus.NEW.value, detected_at=now - timedelta(minutes=5),
+        log_excerpt="node-b CPU high",
+    ))
+    session.flush()
+
+    assert correlate_finding(session, finding, now=now) is matching
+    assert "host=node-a" in finding.correlation_reason
+    assert json.loads(finding.correlation_evidence_json)["cpu_percent"] == 96
+
+
 def test_correlates_same_family_and_osd():
     session = _session()
     now, finding, incident = _seed(session)

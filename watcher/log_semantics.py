@@ -29,6 +29,10 @@ _FAMILY_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"\b(?:rbd|volume|image)\b.*\b(?:latency|iops|saturat\w*|throttl\w*|slow)\b|"
         r"\b(?:latency|iops|saturat\w*|throttl\w*|slow)\b.*\b(?:rbd|volume|image)\b", re.I
     )),
+    ("node_resource", re.compile(
+        r"\b(?:cpu|memory|ram)\b.*\b(?:high|pressure|exhaust\w*|saturat\w*|overload\w*|oom)\b|"
+        r"\b(?:high|pressure|exhaust\w*|saturat\w*|overload\w*|oom)\b.*\b(?:cpu|memory|ram)\b", re.I
+    )),
     ("daemon_crash", re.compile(r"\b(?:segfault|assertion failed|aborted|core dump|crash)\b", re.I)),
     ("clock_skew", re.compile(r"\b(?:clock skew|time drift|clock.*out of sync)\b", re.I)),
     ("authentication", re.compile(r"\b(?:authentication failed|permission denied|bad authorizer|unable to find keyring)\b", re.I)),

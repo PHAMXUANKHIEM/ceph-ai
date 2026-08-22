@@ -27,6 +27,14 @@ def test_derive_identity_extracts_separate_pool_and_image_fields():
     assert "volume:vms/database-2" in identity.entities
 
 
+def test_derive_identity_marks_node_resource_pressure_with_server_host():
+    identity = derive_identity(
+        ["CPU pressure remains high and node is overloaded"], ["NODE-A"], []
+    )
+    assert identity.fault_family == "node_resource"
+    assert identity.entities == ("host:node-a",)
+
+
 def test_unknown_family_fails_closed():
     identity = derive_identity(["an unfamiliar message"], ["node-a"], ["osd.5"])
     assert identity.fault_family is None

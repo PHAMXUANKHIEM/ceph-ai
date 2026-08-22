@@ -214,11 +214,26 @@ def create_or_resolve_node_health_incidents(
                 continue  # already has an open Incident — don't duplicate
 
             rationale = _rationale_for(detail)
+            detected_at = datetime.utcnow()
+            signal_evidence = {
+                "source": "node_proc_metrics",
+                "captured_at": detected_at.isoformat(),
+                "host": detail["host"],
+                "cpu_percent": detail["cpu_percent"],
+                "mem_percent": detail["mem_percent"],
+                "consecutive_scans": detail["consecutive_scans"],
+                "thresholds": {
+                    "cpu_percent": CPU_ALERT_THRESHOLD_PERCENT,
+                    "mem_percent": MEM_ALERT_THRESHOLD_PERCENT,
+                    "consecutive_scans_required": CONSECUTIVE_SCANS_REQUIRED,
+                },
+            }
             incident = Incident(
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=detected_at,
                 log_excerpt=rationale,
+                signal_evidence_json=json.dumps(signal_evidence, ensure_ascii=False, sort_keys=True),
             )
             session.add(incident)
             session.flush()  # assigns incident.id, needed by the Action FK below

@@ -24,6 +24,7 @@ _FAMILY_CODES: dict[str, tuple[str, ...]] = {
         "POOL_NEARFULL", "POOL_NEAR_FULL", "POOL_FULL", "BACKFILL_FULL",
     ),
     "volume_saturation": ("VOLUME_SATURATED:",),
+    "node_resource": ("NODE_RESOURCE_HIGH:",),
     "daemon_crash": ("RECENT_CRASH", "DAEMON_CRASH"),
     "clock_skew": ("MON_CLOCK_SKEW", "CLOCK_SKEW"),
     "authentication": ("AUTH_",),
@@ -37,6 +38,7 @@ _TERMINAL_STATUSES = {
 }
 _OSD_RE = re.compile(r"\bosd[.\s_-]?(\d+)\b", re.IGNORECASE)
 _VOLUME_CODE_RE = re.compile(r"^VOLUME_SATURATED:([^/]+)/(.+)$", re.IGNORECASE)
+_NODE_RESOURCE_CODE_RE = re.compile(r"^NODE_RESOURCE_HIGH:(.+)$", re.IGNORECASE)
 
 
 def family_matches_code(fault_family: str | None, ceph_code: str) -> bool:
@@ -82,6 +84,23 @@ def _incident_volumes(incident: Incident) -> set[str]:
     return {f"{match.group(1).lower()}/{match.group(2).lower()}"} if match else set()
 
 
+def _finding_hosts(finding: LogFinding) -> set[str]:
+    try:
+        entities = json.loads(finding.semantic_entities_json or "[]")
+    except (TypeError, ValueError):
+        return set()
+    return {
+        entity.removeprefix("host:").lower()
+        for entity in entities
+        if isinstance(entity, str) and entity.startswith("host:")
+    }
+
+
+def _incident_hosts(incident: Incident) -> set[str]:
+    match = _NODE_RESOURCE_CODE_RE.match(incident.ceph_code)
+    return {match.group(1).lower()} if match else set()
+
+
 def _same_cluster_filter(cluster_id: str, is_default: bool):
     if is_default:
         return or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
@@ -106,6 +125,7 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
     )
     finding_osds = _finding_osds(finding)
     finding_volumes = _finding_volumes(finding)
+    finding_hosts = _finding_hosts(finding)
     for incident in candidates:
         if not family_matches_code(finding.fault_family, incident.ceph_code):
             continue
@@ -116,11 +136,16 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
         if finding_volumes and incident_volumes and finding_volumes.isdisjoint(incident_volumes):
             continue
         matched_volumes = finding_volumes & incident_volumes
+        incident_hosts = _incident_hosts(incident)
+        if finding_hosts and incident_hosts and finding_hosts.isdisjoint(incident_hosts):
+            continue
+        matched_hosts = finding_hosts & incident_hosts
         finding.correlated_incident_id = incident.id
         finding.correlation_reason = (
             f"server:{finding.fault_family}:ceph_code={incident.ceph_code}"
             + (f":osd={','.join(sorted(finding_osds & incident_osds))}" if finding_osds & incident_osds else "")
             + (f":volume={','.join(sorted(matched_volumes))}" if matched_volumes else "")
+            + (f":host={','.join(sorted(matched_hosts))}" if matched_hosts else "")
         )
         finding.correlated_at = now
         finding.correlation_evidence_json = incident.signal_evidence_json

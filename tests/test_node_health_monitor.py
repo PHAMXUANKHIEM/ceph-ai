@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 import pytest
@@ -132,6 +133,13 @@ def test_create_or_resolve_creates_incident_and_investigate_manually_action(isol
         incident = session.query(Incident).filter_by(ceph_code="NODE_RESOURCE_HIGH:10.0.0.5").one()
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert "10.0.0.5" in incident.log_excerpt
+        evidence = json.loads(incident.signal_evidence_json)
+        assert evidence["source"] == "node_proc_metrics"
+        assert evidence["host"] == "10.0.0.5"
+        assert evidence["cpu_percent"] == 95.0
+        assert evidence["mem_percent"] == 40.0
+        assert evidence["consecutive_scans"] == 2
+        assert evidence["thresholds"]["cpu_percent"] == nhm.CPU_ALERT_THRESHOLD_PERCENT
 
         action = session.query(Action).filter_by(incident_id=incident.id).one()
         assert action.action_id == "investigate_manually"
