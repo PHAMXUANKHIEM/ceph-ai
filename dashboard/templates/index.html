@@ -84,6 +84,35 @@
   <div class="app-body">
   <main class="page">
     <div id="ceph-dashboard-root"></div>
+    <section class="dashboard-copilot-field" aria-labelledby="dashboard-copilot-title">
+      <header class="dashboard-copilot-header">
+        <div>
+          <span class="copilot-kicker">EVIDENCE-CITED OPERATIONS</span>
+          <h2 id="dashboard-copilot-title">AI Operations Copilot</h2>
+          <p>Hỏi trực tiếp từ Dashboard. Câu trả lời vận hành dùng incident, timeline và telemetry đã lưu, kèm nguồn kiểm chứng.</p>
+        </div>
+        <div class="dashboard-copilot-actions">
+          <span class="copilot-readonly-badge">READ-ONLY · KHÔNG TỰ THỰC THI</span>
+          <a class="btn btn-ghost btn-sm" href="/ai-copilot">Mở toàn màn hình</a>
+        </div>
+      </header>
+      <div class="dashboard-copilot-body">
+        <form class="copilot-query-form" id="copilot-query-form">
+          <label for="copilot-query">Yêu cầu phân tích</label>
+          <textarea id="copilot-query" required placeholder="Ví dụ: Trong 24 giờ qua cụm có sự cố gì, nguyên nhân nào đáng chú ý và evidence nào hỗ trợ kết luận?"></textarea>
+          <div class="copilot-prompts">
+            <button type="button" data-prompt="Trong 24 giờ qua cụm Ceph có sự cố gì? Hãy dùng dữ liệu đã lưu.">Sự cố 24 giờ qua</button>
+            <button type="button" data-prompt="Dự báo dung lượng cluster, pool và OSD hiện thế nào?">Dự báo dung lượng</button>
+            <button type="button" data-prompt="Phân tích timeline của sự cố gần nhất và so sánh trước/sau.">Timeline gần nhất</button>
+          </div>
+          <button class="btn btn-primary" id="copilot-submit">Phân tích bằng AI</button>
+        </form>
+        <div class="dashboard-copilot-output">
+          <span class="copilot-output-label">KẾT QUẢ PHÂN TÍCH</span>
+          <div class="copilot-result" id="copilot-result"><span class="hint">Kết quả, thời điểm thu thập, confidence và nguồn đã kiểm chứng sẽ hiển thị tại đây.</span></div>
+        </div>
+      </div>
+    </section>
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}
@@ -340,6 +369,7 @@
   </div>
 
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/copilot.js?v={{ static_version }}"></script>
   <script src="/static/chat_widget.js?v={{ static_version }}"></script>
   <script type="module" src="/static/ceph-health/app.js?v={{ static_version }}"></script>
 </body>

@@ -8,6 +8,11 @@ def test_dashboard_exposes_operations_copilot_entry_and_suggestions():
     template = (ROOT / "dashboard/templates/index.html").read_text()
     copilot = (ROOT / "dashboard/templates/copilot.html").read_text()
     assert 'href="/ai-copilot"' in template
+    assert 'class="dashboard-copilot-field"' in template
+    assert 'id="copilot-query-form"' in template
+    assert 'id="copilot-result"' in template
+    assert "READ-ONLY · KHÔNG TỰ THỰC THI" in template
+    assert '/static/copilot.js' in template
     assert "AI Operations Copilot" in copilot
     assert copilot.count("data-prompt=") == 3
     assert "INCIDENT ĐANG MỞ" in copilot

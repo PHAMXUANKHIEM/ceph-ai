@@ -1348,7 +1348,21 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .copilot-prompts { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
 .copilot-prompts button { padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg-surface-2); color: var(--text-muted); cursor: pointer; }
 .copilot-result { min-height: 120px; margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 9px; white-space: pre-wrap; color: var(--text); }
+.dashboard-copilot-field { min-height: 360px; margin-top: 16px; overflow: hidden; border: 1px solid rgba(85,167,255,.32); border-radius: 14px; background: linear-gradient(145deg,#151e2b,#101722); box-shadow: 0 18px 45px rgba(0,0,0,.22); }
+.dashboard-copilot-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px; border-bottom: 1px solid rgba(85,167,255,.2); background: rgba(85,167,255,.055); }
+.dashboard-copilot-header h2 { margin: 5px 0 6px; color: #eef5ff; font-size: 22px; }
+.dashboard-copilot-header p { max-width: 760px; margin: 0; color: var(--text-muted); font-size: 13px; }
+.dashboard-copilot-actions { display: flex; align-items: center; gap: 10px; }
+.copilot-readonly-badge { padding: 6px 8px; border: 1px solid rgba(62,207,110,.3); border-radius: 999px; background: rgba(62,207,110,.08); color: #75df99; font-size: 9px; font-weight: 750; letter-spacing: .07em; white-space: nowrap; }
+.dashboard-copilot-body { display: grid; grid-template-columns: minmax(340px,.8fr) minmax(0,1.2fr); gap: 18px; padding: 20px 22px 22px; }
+.dashboard-copilot-body .copilot-query-form { display: flex; flex-direction: column; }
+.dashboard-copilot-body .copilot-query-form label,.copilot-output-label { margin-bottom: 8px; color: #8fa6c0; font-size: 10px; font-weight: 750; letter-spacing: .09em; }
+.dashboard-copilot-body .copilot-query-form textarea { min-height: 130px; padding: 13px; border-color: #34445d; background: #0b111b; color: #e5edf8; }
+.dashboard-copilot-body .copilot-query-form > .btn { align-self: flex-start; min-width: 150px; }
+.dashboard-copilot-output { min-width: 0; }
+.dashboard-copilot-output .copilot-result { min-height: 226px; margin-top: 0; overflow-y: auto; background: #0b111b; }
 @media (max-width: 980px) { .copilot-grid,.copilot-workspace { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .dashboard-copilot-header,.dashboard-copilot-actions { flex-direction: column; }.dashboard-copilot-body { grid-template-columns: 1fr; } }
 
 .chat-msg { display: flex; flex-direction: column; }
 .chat-msg-user { align-self: flex-end; align-items: flex-end; max-width: 80%; }
