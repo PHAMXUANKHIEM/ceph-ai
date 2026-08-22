@@ -56,6 +56,7 @@ from watcher.ceph_client import (
     query_cluster_health_with,
     read_public_key,
     ssh_key_path_error,
+    validate_ceph_keyring_with,
 )
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.executor.vm_perf import _vm_ssh_command
@@ -759,6 +760,7 @@ def _cluster_form_values() -> dict:
         "ceph_rgw_nodes": settings.ceph_rgw_nodes,
         "ceph_rgw_container_name": settings.ceph_rgw_container_name,
         "ceph_exec_mode": settings.ceph_exec_mode,
+        "ceph_keyring_path": settings.ceph_keyring_path,
         "ssh_user": settings.ssh_user,
     }
 
@@ -1616,6 +1618,7 @@ async def cluster_settings_submit(
     ceph_rgw_nodes: str = Form(""),
     ceph_rgw_container_name: str = Form(""),
     ceph_exec_mode: str = Form("docker"),
+    ceph_keyring_path: str = Form(""),
     ssh_user: str = Form(""),
 ):
     submitted = {
@@ -1628,6 +1631,7 @@ async def cluster_settings_submit(
         "ceph_rgw_nodes": ceph_rgw_nodes.strip(),
         "ceph_rgw_container_name": ceph_rgw_container_name.strip(),
         "ceph_exec_mode": ceph_exec_mode.strip() or "docker",
+        "ceph_keyring_path": ceph_keyring_path.strip(),
         "ssh_user": ssh_user.strip(),
     }
     mon_nodes_list = _parse_node_list(submitted["ceph_mon_nodes"])
@@ -1658,11 +1662,12 @@ async def cluster_settings_submit(
         not mon_nodes_list
         or (container_required and not submitted["ceph_container_name"])
         or not submitted["ssh_user"]
+        or not submitted["ceph_keyring_path"]
     ):
         message = (
-            "Vui lòng điền đủ MON nodes, MON container, SSH user."
+            "Vui lòng điền đủ MON nodes, MON container, SSH user và Ceph keyring path."
             if container_required
-            else "Vui lòng điền đủ MON nodes, SSH user."
+            else "Vui lòng điền đủ MON nodes, SSH user và Ceph keyring path."
         )
         return templates.TemplateResponse(
             request,
@@ -1703,6 +1708,11 @@ async def cluster_settings_submit(
     # ssh_key_path itself isn't "submitted" (see above) — always the current
     # server-configured one.
     try:
+        await asyncio.to_thread(
+            validate_ceph_keyring_with,
+            mon_nodes_list, submitted["ceph_container_name"], submitted["ssh_user"],
+            settings.ssh_key_path, submitted["ceph_exec_mode"], submitted["ceph_keyring_path"],
+        )
         await asyncio.to_thread(
             query_cluster_health_with,
             mon_nodes_list,

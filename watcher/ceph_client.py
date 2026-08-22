@@ -53,24 +53,30 @@ MCP_COMMAND_TIMEOUT_SECONDS = 10
 # remote-side deadline around it: a Paramiko channel timeout only closes the
 # SSH channel and can leave the remote `rbd` child re-parented to PID 1.
 RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS = 8
+CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
 
 
-def _rbd_iostat_base_command(pool: str) -> str:
+def _rbd_iostat_base_command(pool: str, keyring_path: str) -> str:
     return (
         "timeout --signal=TERM --kill-after=2s "
-        f"{RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS}s rbd perf image iostat "
+        f"{RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS}s rbd --keyring {shlex.quote(keyring_path)} "
+        "perf image iostat "
         f"{shlex.quote(pool)} --iterations 1 --format json"
     )
 
 
-def _rbd_iostat_command(pool: str, exec_mode: str) -> str:
-    base = _rbd_iostat_base_command(pool)
+def _rbd_iostat_command(pool: str, exec_mode: str, keyring_path: str) -> str:
+    base = _rbd_iostat_base_command(pool, keyring_path)
     if exec_mode != "none":
         return base
     # Some imported clusters are configured as package/ceph-deploy (none)
     # while individual MON hosts only carry cephadm.  Keep the normal host
     # binary as first choice, then use cephadm shell only when rbd is absent.
-    cephadm_base = base.replace(" rbd perf ", " cephadm shell -- rbd perf ", 1)
+    cephadm_inner = _rbd_iostat_base_command(pool, CEPHADM_KEYRING_TARGET)
+    cephadm_base = (
+        f"cephadm shell --mount {shlex.quote(keyring_path)}:{CEPHADM_KEYRING_TARGET} -- "
+        f"{cephadm_inner}"
+    )
     return (
         f"if command -v rbd >/dev/null 2>&1; then {base}; "
         f"elif command -v cephadm >/dev/null 2>&1; then {cephadm_base}; "
@@ -480,7 +486,9 @@ def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
     degrades to "no data this poll" rather than crashing the Watcher loop.
     """
     _, payload = run_ceph_json_command(
-        _rbd_iostat_command(pool, settings.ceph_exec_mode), append_json_format=False
+        _rbd_iostat_command(pool, settings.ceph_exec_mode, settings.ceph_keyring_path),
+        append_json_format=False,
+        cephadm_mount_path=settings.ceph_keyring_path,
     )
     return _normalize_rbd_iostat(pool, payload)
 
@@ -488,11 +496,13 @@ def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
 def query_rbd_iostat_with(
     pool: str, mon_nodes: list[str], container_name: str, ssh_user: str,
     ssh_key_path: str, exec_mode: str,
+    ceph_keyring_path: str = "/etc/ceph/ceph.client.admin.keyring",
 ) -> list[VolumeIoSample]:
     """Cluster-scoped counterpart to :func:`query_rbd_iostat`."""
     _, payload = run_ceph_json_command_with(
         mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
-        _rbd_iostat_command(pool, exec_mode), append_json_format=False,
+        _rbd_iostat_command(pool, exec_mode, ceph_keyring_path), append_json_format=False,
+        cephadm_mount_path=ceph_keyring_path,
     )
     return _normalize_rbd_iostat(pool, payload)
 
@@ -752,6 +762,37 @@ def ssh_key_path_error(ssh_key_path: str) -> str | None:
     return None
 
 
+def validate_ceph_keyring_with(
+    mon_nodes: list[str],
+    container_name: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    exec_mode: str,
+    ceph_keyring_path: str,
+) -> None:
+    """Require the configured Ceph keyring to be readable on every MON.
+
+    Only the path is stored.  For docker/podman it is checked inside the
+    configured MON container; package installs and cephadm use the host path
+    (cephadm commands mount that path into their ephemeral shell container).
+    """
+    path = ceph_keyring_path.strip()
+    if not path or not path.startswith("/") or "\x00" in path or "\n" in path or "\r" in path:
+        raise CephQueryError("Ceph keyring path phải là đường dẫn tuyệt đối hợp lệ")
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured for this cluster")
+    inner = f"test -r {shlex.quote(path)}"
+    command = build_exec_command(exec_mode, container_name, inner) if exec_mode in ("docker", "podman") else inner
+    errors: list[str] = []
+    for host in mon_nodes:
+        try:
+            _run_remote_command_with(host, command, ssh_user, ssh_key_path)
+        except Exception as exc:
+            errors.append(f"{host}: {str(exc) or type(exc).__name__}")
+    if errors:
+        raise CephQueryError(f"Keyring không đọc được trên MON: {'; '.join(errors)}")
+
+
 def forget_host_key(host: str) -> bool:
     """Removes `host`'s pinned SSH host key from KNOWN_HOSTS_PATH (trust-on-
     first-use pinning shared by this module and worker/executor/
@@ -899,7 +940,8 @@ def run_diagnostic_command(host: str, command_id: str) -> str:
 
 
 def run_ceph_json_command(
-    inner_command: str, *, append_json_format: bool = True
+    inner_command: str, *, append_json_format: bool = True,
+    cephadm_mount_path: str | None = None,
 ) -> tuple[str, dict | list]:
     """Runs `inner_command` (a `ceph ...` subcommand WITHOUT `--format json`
     — this appends it) against each configured MON node in turn until one
@@ -930,6 +972,7 @@ def run_ceph_json_command(
     return run_ceph_json_command_with(
         nodes, settings.ceph_container_name, settings.ssh_user, settings.ssh_key_path,
         settings.ceph_exec_mode, inner_command, append_json_format=append_json_format,
+        cephadm_mount_path=cephadm_mount_path,
     )
 
 
@@ -975,6 +1018,7 @@ def run_ceph_json_command_with(
     inner_command: str,
     *,
     append_json_format: bool = True,
+    cephadm_mount_path: str | None = None,
 ) -> tuple[str, dict | list]:
     """Same as `run_ceph_json_command()` but takes every connection
     parameter explicitly instead of reading `settings` (2026-08-10,
@@ -985,7 +1029,13 @@ def run_ceph_json_command_with(
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured for this cluster")
     formatted_command = f"{inner_command} --format json" if append_json_format else inner_command
-    command = build_exec_command(exec_mode, container_name, formatted_command)
+    if exec_mode == "cephadm" and cephadm_mount_path:
+        command = (
+            f"cephadm shell --mount {shlex.quote(cephadm_mount_path)}:{CEPHADM_KEYRING_TARGET} -- "
+            f"{formatted_command}"
+        )
+    else:
+        command = build_exec_command(exec_mode, container_name, formatted_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
     errors = []
     for host in mon_nodes:

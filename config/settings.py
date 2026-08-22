@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     ceph_mon_nodes: str = ""
     ceph_mon_hostnames: str = ""
     ceph_container_name: str = ""
+    ceph_keyring_path: str = "/etc/ceph/ceph.client.admin.keyring"
     # How `ceph`/log commands are invoked on a node — clusters aren't all
     # deployed the same way:
     #   "docker"  — `docker exec {container} <cmd>` (a plain `docker run` cluster)

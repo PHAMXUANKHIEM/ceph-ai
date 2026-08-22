@@ -13,7 +13,10 @@ from shared import db
 from shared.clusters import ensure_default_cluster
 from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, WatcherHeartbeat
 from watcher import capability_inventory
-from watcher.ceph_client import VALID_EXEC_MODES, CephQueryError, query_cluster_health_with
+from watcher.ceph_client import (
+    VALID_EXEC_MODES, CephQueryError, query_cluster_health_with,
+    validate_ceph_keyring_with,
+)
 
 VALID_BACKUP_TRANSPORTS = ("ssh", "s3", "")
 
@@ -141,6 +144,7 @@ async def create_cluster(
     ssh_user: str = Form(""),
     ssh_key_path: str = Form(""),
     ceph_exec_mode: str = Form("docker"),
+    ceph_keyring_path: str = Form(""),
     telegram_bot_token: str = Form(""),
     telegram_chat_id: str = Form(""),
     telegram_enabled: str = Form(""),
@@ -203,6 +207,7 @@ async def create_cluster(
         "ssh_user": ssh_user.strip(),
         "ssh_key_path": ssh_key_path.strip(),
         "ceph_exec_mode": ceph_exec_mode.strip() or "docker",
+        "ceph_keyring_path": ceph_keyring_path.strip(),
         "telegram_bot_token": telegram_bot_token.strip(),
         "telegram_chat_id": telegram_chat_id.strip(),
         "telegram_enabled": telegram_enabled.strip().lower() in ("true", "on", "1"),
@@ -242,11 +247,12 @@ async def create_cluster(
         or (container_required and not submitted["ceph_container_name"])
         or not submitted["ssh_user"]
         or not submitted["ssh_key_path"]
+        or not submitted["ceph_keyring_path"]
     ):
         message = (
-            "Vui lòng điền đủ Tên cụm, MON nodes, MON container, SSH user, SSH key path."
+            "Vui lòng điền đủ Tên cụm, MON nodes, MON container, SSH user, SSH key path và Ceph keyring path."
             if container_required
-            else "Vui lòng điền đủ Tên cụm, MON nodes, SSH user, SSH key path."
+            else "Vui lòng điền đủ Tên cụm, MON nodes, SSH user, SSH key path và Ceph keyring path."
         )
         return templates.TemplateResponse(
             request,
@@ -276,6 +282,11 @@ async def create_cluster(
         )
 
     try:
+        await asyncio.to_thread(
+            validate_ceph_keyring_with,
+            mon_nodes_list, submitted["ceph_container_name"], submitted["ssh_user"],
+            submitted["ssh_key_path"], submitted["ceph_exec_mode"], submitted["ceph_keyring_path"],
+        )
         # update_sticky_fallback=False — this is an ADDITIONAL (non-default)
         # cluster's candidate config; a successful test here must never
         # overwrite the sticky MON node the DEFAULT cluster's log collection
@@ -315,6 +326,7 @@ async def create_cluster(
                 ssh_user=submitted["ssh_user"],
                 ssh_key_path=submitted["ssh_key_path"],
                 ceph_exec_mode=submitted["ceph_exec_mode"],
+                ceph_keyring_path=submitted["ceph_keyring_path"],
                 telegram_bot_token=submitted["telegram_bot_token"],
                 telegram_chat_id=submitted["telegram_chat_id"],
                 telegram_enabled=submitted["telegram_enabled"],
@@ -454,6 +466,7 @@ async def update_cluster_connection(
     ceph_container_name: str = Form(""), ceph_osd_container_name: str = Form(""),
     ceph_rgw_container_name: str = Form(""), ssh_user: str = Form(""),
     ssh_key_path: str = Form(""), ceph_exec_mode: str = Form("docker"),
+    ceph_keyring_path: str = Form(""),
 ):
     """Test then update an additional cluster's connection atomically."""
     _require_admin_privilege(user)
@@ -466,11 +479,13 @@ async def update_cluster_connection(
         "ceph_rgw_container_name": ceph_rgw_container_name,
         "ssh_user": ssh_user, "ssh_key_path": ssh_key_path,
         "ceph_exec_mode": ceph_exec_mode,
+        "ceph_keyring_path": ceph_keyring_path,
     }.items()}
     nodes = _parse_node_list(values["ceph_mon_nodes"])
     container_required = values["ceph_exec_mode"] not in ("none", "cephadm")
     if values["ceph_exec_mode"] not in VALID_EXEC_MODES or not values["name"] or not nodes \
             or not values["ssh_user"] or not values["ssh_key_path"] \
+            or not values["ceph_keyring_path"] \
             or (container_required and not values["ceph_container_name"]):
         return templates.TemplateResponse(request, "clusters.html", _clusters_context(
             user, cluster_toggle_error="Thông tin kết nối cluster chưa đầy đủ hoặc exec mode không hợp lệ."
@@ -482,6 +497,11 @@ async def update_cluster_connection(
                 user, cluster_toggle_error="Không tìm thấy cluster phụ cần sửa."
             ))
     try:
+        await asyncio.to_thread(
+            validate_ceph_keyring_with, nodes, values["ceph_container_name"],
+            values["ssh_user"], values["ssh_key_path"], values["ceph_exec_mode"],
+            values["ceph_keyring_path"],
+        )
         await asyncio.to_thread(
             query_cluster_health_with, nodes, values["ceph_container_name"],
             values["ssh_user"], values["ssh_key_path"], values["ceph_exec_mode"],

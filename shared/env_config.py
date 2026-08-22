@@ -29,6 +29,7 @@ CLUSTER_ENV_NAMES: dict[str, str] = {
     "ceph_mon_nodes": "CEPH_MON_NODES",
     "ceph_mon_hostnames": "CEPH_MON_HOSTNAMES",
     "ceph_container_name": "CEPH_CONTAINER_NAME",
+    "ceph_keyring_path": "CEPH_KEYRING_PATH",
     "ceph_osd_nodes": "CEPH_OSD_NODES",
     "ceph_osd_container_name": "CEPH_OSD_CONTAINER_NAME",
     "ceph_mgr_nodes": "CEPH_MGR_NODES",

@@ -70,6 +70,9 @@ class Cluster(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     ceph_mon_nodes: Mapped[str] = mapped_column(Text, nullable=False)
     ceph_container_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    ceph_keyring_path: Mapped[str] = mapped_column(
+        Text, nullable=False, default="/etc/ceph/ceph.client.admin.keyring"
+    )
     # 2026-08-10 (multi-tenant remediation Phase 1) -- same optional-CSV
     # posture as config/settings.py's equivalent fields: blank means "no
     # nodes with this role for this cluster", not an error.

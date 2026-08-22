@@ -1020,9 +1020,15 @@ def _cluster_form_data(**overrides):
         "ceph_osd_container_name": "ceph-osd-B",
         "ssh_user": "root",
         "ssh_key_path": "/root/.ssh/some_key",
+        "ceph_keyring_path": "/etc/ceph/ceph.client.admin.keyring",
     }
     data.update(overrides)
     return data
+
+
+@pytest.fixture(autouse=True)
+def _stub_ceph_keyring_validation(monkeypatch):
+    monkeypatch.setattr(settings_route, "validate_ceph_keyring_with", lambda *a, **kw: None)
 
 
 def test_get_settings_shows_cluster_form_with_current_values(dashboard_client):

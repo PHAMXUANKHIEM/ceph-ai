@@ -2299,6 +2299,7 @@ def _clear_cluster_config() -> None:
         env_config.CLUSTER_ENV_NAMES["ceph_osd_nodes"]: "",
         env_config.CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: "",
         env_config.CLUSTER_ENV_NAMES["ceph_exec_mode"]: "none",
+        env_config.CLUSTER_ENV_NAMES["ceph_keyring_path"]: _REMOTE_ADMIN_KEYRING_PATH,
     }
     env_config.update_env_file_batch(fields)
 
@@ -3717,6 +3718,10 @@ def _write_cluster_config(action_params: dict, action_id: str) -> None:
         # list, never a stale one from an earlier deploy/convert).
         env_config.CLUSTER_ENV_NAMES["ceph_rgw_nodes"]: ",".join(_node_ips_with_role(nodes, "rgw")),
         env_config.CLUSTER_ENV_NAMES["ceph_exec_mode"]: exec_mode,
+        # Every deploy method writes the admin keyring at this canonical
+        # location; prefill Settings so the freshly deployed cluster can be
+        # connected without making the operator retype it.
+        env_config.CLUSTER_ENV_NAMES["ceph_keyring_path"]: _REMOTE_ADMIN_KEYRING_PATH,
     }
     env_config.update_env_file_batch(fields)
 

@@ -1,5 +1,6 @@
 from datetime import datetime
 import bcrypt
+import pytest
 
 import dashboard.routes.clusters as clusters_route
 from shared import db as db_module
@@ -18,9 +19,15 @@ def _cluster_form_data(**overrides):
         "ssh_user": "root",
         "ssh_key_path": "/root/.ssh/ceph_aiops_watcher",
         "ceph_exec_mode": "docker",
+        "ceph_keyring_path": "/etc/ceph/ceph.client.admin.keyring",
     }
     data.update(overrides)
     return data
+
+
+@pytest.fixture(autouse=True)
+def _stub_keyring_validation(monkeypatch):
+    monkeypatch.setattr(clusters_route, "validate_ceph_keyring_with", lambda *a, **kw: None)
 
 
 def _stub_restart_watcher(monkeypatch):
@@ -158,8 +165,9 @@ def test_update_cluster_connection_tests_before_saving(dashboard_client, monkeyp
         "ceph_mon_hostnames": "mon-new", "ceph_mgr_nodes": "10.40.1.11",
         "ceph_osd_nodes": "10.40.1.12", "ceph_rgw_nodes": "",
         "ceph_container_name": "mon-new", "ceph_osd_container_name": "osd-new",
-        "ceph_rgw_container_name": "", "ssh_user": "cephadmin",
-        "ssh_key_path": "/keys/new", "ceph_exec_mode": "docker",
+            "ceph_rgw_container_name": "", "ssh_user": "cephadmin",
+            "ssh_key_path": "/keys/new", "ceph_exec_mode": "docker",
+            "ceph_keyring_path": "/etc/ceph/ceph.client.admin.keyring",
     })
     assert response.status_code == 200
     assert "Đã test và cập nhật" in response.text

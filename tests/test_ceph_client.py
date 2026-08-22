@@ -1053,7 +1053,7 @@ def test_query_rbd_iostat_is_finite_and_has_remote_kill_deadline(monkeypatch):
     captured = {}
     monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "none")
 
-    def fake_run(command, *, append_json_format=True):
+    def fake_run(command, *, append_json_format=True, cephadm_mount_path=None):
         captured["command"] = command
         captured["append_json_format"] = append_json_format
         return "10.20.1.150", []
@@ -1062,7 +1062,8 @@ def test_query_rbd_iostat_is_finite_and_has_remote_kill_deadline(monkeypatch):
 
     assert query_rbd_iostat("pool with spaces") == []
     assert "command -v rbd" in captured["command"]
-    assert "cephadm shell -- rbd perf image iostat 'pool with spaces'" in captured["command"]
+    assert "cephadm shell --mount" in captured["command"]
+    assert "rbd --keyring /etc/ceph/ceph.client.admin.keyring perf image iostat 'pool with spaces'" in captured["command"]
     assert "--iterations 1 --format json" in captured["command"]
     assert captured["append_json_format"] is False
 
@@ -1070,7 +1071,7 @@ def test_query_rbd_iostat_is_finite_and_has_remote_kill_deadline(monkeypatch):
 def test_query_rbd_iostat_with_is_finite_and_has_remote_kill_deadline(monkeypatch):
     captured = {}
 
-    def fake_run(nodes, container, user, key, mode, command, *, append_json_format=True):
+    def fake_run(nodes, container, user, key, mode, command, *, append_json_format=True, cephadm_mount_path=None):
         captured["command"] = command
         captured["append_json_format"] = append_json_format
         return nodes[0], []
@@ -1083,15 +1084,16 @@ def test_query_rbd_iostat_with_is_finite_and_has_remote_kill_deadline(monkeypatc
 
     assert samples == []
     assert "command -v rbd" in captured["command"]
-    assert "cephadm shell -- rbd perf image iostat vms" in captured["command"]
+    assert "cephadm shell --mount" in captured["command"]
+    assert "rbd --keyring /etc/ceph/ceph.client.admin.keyring perf image iostat vms" in captured["command"]
     assert captured["append_json_format"] is False
 
 
 def test_query_rbd_iostat_cephadm_mode_does_not_add_host_fallback(monkeypatch):
     captured = {}
 
-    def fake_run(nodes, container, user, key, mode, command, *, append_json_format=True):
-        captured.update(command=command, append_json_format=append_json_format)
+    def fake_run(nodes, container, user, key, mode, command, *, append_json_format=True, cephadm_mount_path=None):
+        captured.update(command=command, append_json_format=append_json_format, mount=cephadm_mount_path)
         return nodes[0], []
 
     monkeypatch.setattr(ceph_client, "run_ceph_json_command_with", fake_run)
@@ -1100,9 +1102,34 @@ def test_query_rbd_iostat_cephadm_mode_does_not_add_host_fallback(monkeypatch):
     )
     assert captured["command"] == (
         "timeout --signal=TERM --kill-after=2s 8s "
-        "rbd perf image iostat vms --iterations 1 --format json"
+        "rbd --keyring /etc/ceph/ceph.client.admin.keyring perf image iostat vms --iterations 1 --format json"
     )
     assert captured["append_json_format"] is False
+    assert captured["mount"] == "/etc/ceph/ceph.client.admin.keyring"
+
+
+def test_validate_ceph_keyring_requires_absolute_path_without_ssh(monkeypatch):
+    called = []
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", lambda *a, **k: called.append(1))
+    with pytest.raises(CephQueryError, match="đường dẫn tuyệt đối"):
+        ceph_client.validate_ceph_keyring_with(
+            ["10.20.1.150"], "ceph-mon", "root", "/ssh-key", "docker", "relative.keyring"
+        )
+    assert called == []
+
+
+def test_validate_ceph_keyring_checks_each_mon_inside_container(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ceph_client, "_run_remote_command_with",
+        lambda host, command, user, key, *a: calls.append((host, command, user, key)),
+    )
+    ceph_client.validate_ceph_keyring_with(
+        ["10.20.1.150", "10.20.1.151"], "ceph-mon", "root", "/ssh-key", "docker",
+        "/etc/ceph/client keyring",
+    )
+    assert [call[0] for call in calls] == ["10.20.1.150", "10.20.1.151"]
+    assert calls[0][1] == "docker exec ceph-mon test -r '/etc/ceph/client keyring'"
 
 
 def test_query_rbd_iostat_parses_dict_with_images_key(fake_ssh, monkeypatch):

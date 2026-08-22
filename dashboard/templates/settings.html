@@ -855,6 +855,9 @@
           <label>SSH user
             <input type="text" name="ssh_user" value="{{ ssh_user }}" placeholder="root" required>
           </label>
+          <label>Ceph keyring path (bắt buộc, trên node/container Ceph)
+            <input type="text" name="ceph_keyring_path" value="{{ ceph_keyring_path }}" placeholder="/etc/ceph/ceph.client.admin.keyring" required>
+          </label>
           <!-- SSH key path is not part of this form — it's a one-time
                server-side setting (SSH_KEY_PATH in .env), not something
                that changes per Ceph cluster the way MON/OSD nodes do. -->

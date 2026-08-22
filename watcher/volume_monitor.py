@@ -164,7 +164,7 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
             else:
                 samples = ceph_client.query_rbd_iostat_with(
                     pool, mon_nodes, cluster.ceph_container_name, cluster.ssh_user,
-                    cluster.ssh_key_path, cluster.ceph_exec_mode,
+                    cluster.ssh_key_path, cluster.ceph_exec_mode, cluster.ceph_keyring_path,
                 )
         except CephQueryError as exc:
             logger.warning(

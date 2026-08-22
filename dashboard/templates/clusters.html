@@ -159,6 +159,7 @@
                       <label>RGW container<input name="ceph_rgw_container_name" value="{{ c.ceph_rgw_container_name or '' }}"></label>
                       <label>SSH user<input name="ssh_user" value="{{ c.ssh_user }}" required></label>
                       <label>SSH key path<input name="ssh_key_path" value="{{ c.ssh_key_path }}" required></label>
+                      <label>Ceph keyring path<input name="ceph_keyring_path" value="{{ c.ceph_keyring_path }}" required></label>
                       <button type="submit" class="btn btn-primary btn-sm">Test kết nối &amp; lưu</button>
                     </form>
                   </details>
@@ -273,6 +274,9 @@
           </label>
           <label>SSH key path (trên server chạy Watcher)
             <input type="text" name="ssh_key_path" placeholder="/root/.ssh/ceph_aiops_watcher" value="{{ cluster_form_values.ssh_key_path or '' }}">
+          </label>
+          <label>Ceph keyring path (bắt buộc, trên node/container Ceph)
+            <input type="text" name="ceph_keyring_path" placeholder="/etc/ceph/ceph.client.admin.keyring" value="{{ cluster_form_values.ceph_keyring_path or '' }}" required>
           </label>
           <label>Telegram Bot Token (tuỳ chọn — bỏ trống thì cảnh báo/phê duyệt của cụm này dùng chung 3 kênh mặc định)
             <input type="password" name="telegram_bot_token" autocomplete="off" value="{{ cluster_form_values.telegram_bot_token or '' }}">

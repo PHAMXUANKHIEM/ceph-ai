@@ -435,7 +435,7 @@ async def volume_iostat_api(request: Request, pool: str, user: str = Depends(req
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
         samples = ceph_client.query_rbd_iostat(pool) if cluster.is_default else ceph_client.query_rbd_iostat_with(
-            pool, *cluster_connection(cluster)
+            pool, *cluster_connection(cluster), cluster.ceph_keyring_path
         )
     except CephQueryError as exc:
         logger.warning("volume_iostat_api: %s", exc)
@@ -497,7 +497,7 @@ async def volume_known_images_api(request: Request, pool: str, user: str = Depen
 
     try:
         samples = ceph_client.query_rbd_iostat(pool) if cluster.is_default else ceph_client.query_rbd_iostat_with(
-            pool, *cluster_connection(cluster)
+            pool, *cluster_connection(cluster), cluster.ceph_keyring_path
         )
     except CephQueryError as exc:
         logger.warning("volume_known_images_api: live iostat failed, using history only: %s", exc)
