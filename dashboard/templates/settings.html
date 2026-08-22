@@ -180,9 +180,25 @@
           <span class="action-policy-filter-result" id="action-policy-filter-result" aria-live="polite"></span>
         </div>
         <p class="empty-state action-policy-filter-empty" id="action-policy-filter-empty" hidden>Không có hành động nào khớp bộ lọc.</p>
-        <div class="table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
+        <div class="table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>AI tự học</th><th>Đổi policy</th></tr></thead><tbody>
         {% for row in action_policy_rows %}<tr data-action-id="{{ row.action_id }}" data-classification="{{ row.effective }}" data-policy-source="{{ 'override' if row.override else 'default' }}">
           <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }}</span>{% endif %}</td>
+          <td class="action-policy-learning">
+            {% if row.trust_scopes %}
+              {% for stat in row.trust_scopes %}<div class="action-policy-learning-scope">
+                <strong>{{ stat.maturity_level }}</strong> · trust {{ "%.3f"|format(stat.trust_score) }} · {{ stat.verified_count }} verified
+                <br><span class="hint">{{ stat.scope_key }}</span>
+                {% if stat.auto_disabled_reason %}<br><span class="error">Disabled: {{ stat.auto_disabled_reason }}</span>{% endif %}
+                {% if stat.promotion_candidate_at %}
+                  <br><span class="success">Đủ điều kiện nâng L3</span>
+                  <form method="post" action="/settings/autopilot/promote-playbook" class="promotion-approval-form">
+                    <input type="hidden" name="stat_id" value="{{ stat.id }}"><input type="hidden" name="confirmation" value="">
+                    <button class="btn btn-primary btn-sm" type="submit">Duyệt lên L3</button>
+                  </form>
+                {% elif stat.maturity_level != "L3" %}<br><span class="hint">{{ stat.promotion_blocked_reason or "Đang thu thập thêm evidence" }}</span>{% endif %}
+              </div>{% endfor %}
+            {% else %}<span class="hint">Chưa có dữ liệu verify</span>{% endif %}
+          </td>
           <td>
             {% if row.immutable %}<span class="hint">Note: policy mặc định là DESTRUCTIVE.</span>{% endif %}
             <form method="post" action="/settings/autopilot/action-policy" class="login-box action-policy-change-form">

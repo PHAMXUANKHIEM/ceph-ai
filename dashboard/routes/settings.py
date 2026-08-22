@@ -984,9 +984,17 @@ def _settings_context(
     }
     with db.SessionLocal() as session:
         context["shadow_report"] = trust_engine.shadow_evaluation_report(session)
-        context["playbook_stats"] = session.query(PlaybookStat).order_by(
+        playbook_stats = session.query(PlaybookStat).order_by(
             PlaybookStat.playbook_id, PlaybookStat.scope_key,
         ).all()
+        context["playbook_stats"] = playbook_stats
+        stats_by_action: dict[str, list[PlaybookStat]] = {}
+        for stat in playbook_stats:
+            # Old zeroed scopes remain in the DB for provenance but add no
+            # useful operator signal next to the live policy row.
+            if stat.proposed_count == 0 and stat.verified_count == 0:
+                continue
+            stats_by_action.setdefault(stat.playbook_id, []).append(stat)
         context["autopilot_clusters"] = session.query(Cluster).filter_by(is_active=True).order_by(
             Cluster.is_default.desc(), Cluster.name,
         ).all()
@@ -1001,6 +1009,7 @@ def _settings_context(
                 "effective": action_gate.classify_action(action_id, session=session).value,
                 "override": overrides.get(action_id),
                 "immutable": action_id in action_gate.DESTRUCTIVE_ACTION_IDS,
+                "trust_scopes": stats_by_action.get(action_id, []),
             }
             for action_id in sorted(
                 action_gate.SAFE_ACTION_IDS | action_gate.RISKY_ACTION_IDS
@@ -1288,7 +1297,7 @@ async def settings_promote_playbook_submit(
         raise HTTPException(status_code=403, detail="Chỉ admin được duyệt promotion")
     if confirmation.strip() != "OK":
         return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Cần nhập chính xác OK để duyệt promotion."
+            user, action_policy_error="Cần nhập chính xác OK để duyệt promotion."
         ))
     with db.SessionLocal() as session:
         stat = session.get(PlaybookStat, stat_id.strip())
@@ -1302,7 +1311,7 @@ async def settings_promote_playbook_submit(
         playbook_id = stat.playbook_id
         session.commit()
     return templates.TemplateResponse(request, "settings.html", _settings_context(
-        user, autopilot_success=f"Đã duyệt {playbook_id} lên L3."
+        user, action_policy_success=f"Đã duyệt {playbook_id} lên L3."
     ))
 
 

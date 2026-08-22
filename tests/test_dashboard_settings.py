@@ -2636,13 +2636,18 @@ def test_admin_can_approve_eligible_playbook_promotion(dashboard_client):
         stat = PlaybookStat(
             playbook_id="restart_osd_daemon", playbook_version="1",
             scope_key="cluster=test|ceph_major=18|deployment=cephadm",
-            maturity_level="L2", verified_count=20, trust_score=0.95,
+            maturity_level="L2", proposed_count=20, verified_count=20, trust_score=0.95,
             promotion_candidate_at=datetime.utcnow(), promotion_blocked_reason=None,
         )
         session.add(stat)
         session.commit()
         stat_id = stat.id
     _login(dashboard_client)
+
+    page = dashboard_client.get("/settings")
+    assert "AI tự học" in page.text
+    assert "Đủ điều kiện nâng L3" in page.text
+    assert 'action="/settings/autopilot/promote-playbook"' in page.text
 
     response = dashboard_client.post("/settings/autopilot/promote-playbook", data={
         "stat_id": stat_id, "confirmation": "OK",
