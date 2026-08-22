@@ -116,7 +116,9 @@ def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, m
 
     asyncio.run(router_client.diagnose_incident("incident-1", envelope))
 
-    assert redact_calls == [envelope]  # AC #1: redaction called exactly once, before the call
+    assert len(redact_calls) == 1  # AC #1: exactly one redaction pass, after retrieval enrichment
+    assert {key: value for key, value in redact_calls[0].items() if key != "verified_case_references"} == envelope
+    assert redact_calls[0]["verified_case_references"] == []
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-1")
         assert incident.diagnosis_text == "MON clock is skewed beyond threshold; likely NTP drift."

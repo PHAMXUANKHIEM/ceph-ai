@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import audit, db, incident_events, remediation_cases, trust_engine
+from shared.case_retrieval import find_verified_cases
 from shared.models import (
     Action,
     ActionClassification,
@@ -321,10 +322,26 @@ def _previous_attempts_block(payload: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _verified_cases_block(payload: dict) -> str:
+    cases = payload.get("verified_case_references") or []
+    if not cases:
+        return ""
+    lines = [
+        "Các Case tham khảo đã verify cùng fault/scope/entity (chỉ tham khảo; không cấp quyền thực thi):"
+    ]
+    for case in cases:
+        lines.append(
+            f"  - case={case.get('case_id')} playbook={case.get('playbook_id')}@"
+            f"{case.get('playbook_version')}: {case.get('diagnosis')}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _build_user_content(payload: dict) -> str:
     nodes = payload.get("nodes") or []
     return (
         f"{_previous_attempts_block(payload)}"
+        f"{_verified_cases_block(payload)}"
         f"Ceph error code: {payload.get('ceph_code')}\n"
         f"Detected at: {payload.get('detected_at')}\n"
         f"Affected nodes: {', '.join(nodes)}\n"
@@ -469,7 +486,23 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     retry/DLX logic (Story 2.1) is what handles this, unchanged. Anything
     from execution onward never raises (see _maybe_execute_safe_action).
     """
-    payload = default_redactor.redact(envelope)
+    enriched_envelope = dict(envelope)
+    snapshot = envelope.get("cluster_snapshot")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    ceph_version = snapshot.get("ceph_version") or snapshot.get("version")
+    with db.SessionLocal() as retrieval_session:
+        incident_for_retrieval = retrieval_session.get(Incident, incident_id)
+        enriched_envelope["verified_case_references"] = find_verified_cases(
+            retrieval_session,
+            incident_id=incident_id,
+            cluster_id=incident_for_retrieval.cluster_id if incident_for_retrieval else envelope.get("cluster_id"),
+            fault_family=str(envelope.get("ceph_code") or ""),
+            nodes=envelope.get("nodes") if isinstance(envelope.get("nodes"), list) else None,
+            ceph_version=ceph_version if isinstance(ceph_version, str) else None,
+            deployment_mode=envelope.get("ceph_exec_mode"),
+            limit=3,
+        )
+    payload = default_redactor.redact(enriched_envelope)
     user_content = _build_user_content(payload)
 
     result = await _call_router(user_content)

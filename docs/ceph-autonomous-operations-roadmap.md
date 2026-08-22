@@ -682,6 +682,10 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Regression hoặc operator verdict FALSE_POSITIVE/UNSAFE/INEFFECTIVE được tính
   bảo thủ thành failure. Evaluator chỉ ghi maturity tối đa L2 và không tự tạo
   promotion candidate hay nâng quyền Autopilot.
+- Diagnosis retrieval tìm tối đa 3 Case `VERIFIED_SUCCESS` cùng cluster, fault,
+  entity, Ceph major và deployment mode. Case legacy/unverified/regressed hoặc
+  verdict xấu bị loại; model chỉ nhận summary đã redaction và không được dùng
+  Case match để vượt policy/autonomy gate.
 
 - Tính statistics và Wilson lower bound.
 - Tìm case tương tự.
