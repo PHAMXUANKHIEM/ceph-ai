@@ -27,7 +27,7 @@ from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db, env_config
+from shared import db, env_config, trust_engine
 from shared.codex_app_server import (
     CodexAppServerError,
     codex_app_server,
@@ -935,6 +935,7 @@ def _settings_context(
         ),
     }
     with db.SessionLocal() as session:
+        context["shadow_report"] = trust_engine.shadow_evaluation_report(session)
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
         default_cluster = next((row for row in openstack_clusters if row.is_default), None)
         openstack_cluster = next((row for row in openstack_clusters if row.id == openstack_cluster_id), None) or default_cluster

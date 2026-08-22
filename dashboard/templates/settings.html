@@ -138,6 +138,20 @@
         </div>
       </article>
       <article class="card" style="margin-top:1rem">
+        <div class="card-header"><h2>Shadow Autopilot Evaluation</h2><span class="hint">Cửa sổ {{ shadow_report.window_days }} ngày</span></div>
+        <div class="card-body">
+          <p><strong>{{ "READY FOR HUMAN REVIEW" if shadow_report.ready_for_review else "COLLECTING EVIDENCE" }}</strong></p>
+          <p class="hint">Chỉ là báo cáo commissioning; không tự mở khoá hoặc bật Autopilot.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Scope</th><th>Evaluated / pending</th><th>Would execute</th><th>Success / unsafe</th><th>Hold đúng / bỏ lỡ</th><th>Precision</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Tổng · {{ shadow_report.observed_days }} ngày quan sát</strong></td><td>{{ shadow_report.evaluated }} / {{ shadow_report.pending }}</td><td>{{ shadow_report.would_execute }}</td><td>{{ shadow_report.match_success }} / {{ shadow_report.unsafe_miss }}</td><td>{{ shadow_report.correct_hold }} / {{ shadow_report.missed_opportunity }}</td><td>{{ "%.1f%%"|format(shadow_report.precision * 100) if shadow_report.precision is not none else "Chưa đủ dữ liệu" }}</td></tr>
+              {% for row in shadow_report.playbooks %}<tr><td><code>{{ row.playbook_id }}</code></td><td>{{ row.evaluated }} / {{ row.pending }}</td><td>{{ row.would_execute }}</td><td>{{ row.match_success }} / {{ row.unsafe_miss }}</td><td>{{ row.correct_hold }} / {{ row.missed_opportunity }}</td><td>{{ "%.1f%%"|format(row.precision * 100) if row.precision is not none else "—" }}</td></tr>{% endfor %}
+            </tbody>
+          </table></div>
+        </div>
+      </article>
+      <article class="card" style="margin-top:1rem">
         <div class="card-header"><h2>Playbook Registry</h2></div>
         <div class="card-body">
           <p class="hint">Eligibility ở đây chỉ phản ánh contract tĩnh. Khi thực thi, kill switch, evidence freshness, target, operational gate, rate limit và lease vẫn có quyền chặn.</p>

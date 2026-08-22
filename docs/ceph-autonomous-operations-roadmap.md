@@ -690,6 +690,10 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   trust score và sample count tại thời điểm đề xuất. Shadow chỉ quan sát, không
   gọi executor hay promotion; Incident Timeline đối chiếu decision với outcome,
   regression và operator verdict để lộ unsafe miss hoặc missed opportunity.
+- Settings tổng hợp cửa sổ Shadow 28 ngày theo toàn hệ thống và từng playbook:
+  evaluated/pending, precision, unsafe miss, correct hold và missed opportunity.
+  Trạng thái review chỉ xuất hiện sau tối thiểu 14 ngày, 20 outcome, precision
+  95% và không có unsafe miss; báo cáo không tự mở khoá Autopilot.
 
 - Tính statistics và Wilson lower bound.
 - Tìm case tương tự.

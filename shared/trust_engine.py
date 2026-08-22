@@ -5,7 +5,7 @@ import json
 import math
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from shared.models import Action, PlaybookStat, RemediationCase
 
@@ -84,6 +84,65 @@ def shadow_comparison(case: RemediationCase) -> str:
     if case.shadow_decision == "WOULD_EXECUTE":
         return "MATCH_SUCCESS" if successful else "UNSAFE_MISS"
     return "MISSED_OPPORTUNITY" if successful else "CORRECT_HOLD"
+
+
+def shadow_evaluation_report(
+    session, *, now: datetime | None = None, window_days: int = 28,
+) -> dict:
+    """Deterministic read-only commissioning evidence for the Shadow window."""
+    now = now or datetime.utcnow()
+    since = now - timedelta(days=max(1, window_days))
+    rows = (
+        session.query(RemediationCase, Action)
+        .join(Action, Action.id == RemediationCase.action_id)
+        .filter(RemediationCase.shadow_recorded_at.isnot(None))
+        .filter(RemediationCase.shadow_recorded_at >= since)
+        .order_by(RemediationCase.shadow_recorded_at, RemediationCase.id)
+        .all()
+    )
+
+    def summarize(items: list[tuple[RemediationCase, Action]]) -> dict:
+        comparisons = [shadow_comparison(case) for case, _action in items]
+        evaluated = sum(value != "PENDING_OUTCOME" for value in comparisons)
+        would_execute_evaluated = sum(
+            case.shadow_decision == "WOULD_EXECUTE" and comparison != "PENDING_OUTCOME"
+            for (case, _action), comparison in zip(items, comparisons)
+        )
+        match_success = comparisons.count("MATCH_SUCCESS")
+        unsafe_miss = comparisons.count("UNSAFE_MISS")
+        precision = (
+            match_success / would_execute_evaluated if would_execute_evaluated else None
+        )
+        return {
+            "total": len(items), "evaluated": evaluated,
+            "pending": comparisons.count("PENDING_OUTCOME"),
+            "would_execute": sum(case.shadow_decision == "WOULD_EXECUTE" for case, _ in items),
+            "match_success": match_success, "unsafe_miss": unsafe_miss,
+            "correct_hold": comparisons.count("CORRECT_HOLD"),
+            "missed_opportunity": comparisons.count("MISSED_OPPORTUNITY"),
+            "precision": precision,
+        }
+
+    overall = summarize(rows)
+    first_at = rows[0][0].shadow_recorded_at if rows else None
+    observed_days = min(window_days, max(0, (now - first_at).days)) if first_at else 0
+    # Reporting only: readiness never unlocks or enables Autopilot.
+    overall.update({
+        "window_days": window_days, "observed_days": observed_days,
+        "ready_for_review": bool(
+            observed_days >= 14 and overall["evaluated"] >= 20
+            and overall["unsafe_miss"] == 0
+            and overall["precision"] is not None and overall["precision"] >= 0.95
+        ),
+    })
+    grouped: dict[str, list[tuple[RemediationCase, Action]]] = defaultdict(list)
+    for row in rows:
+        grouped[row[1].action_id].append(row)
+    overall["playbooks"] = [
+        {"playbook_id": playbook_id, **summarize(items)}
+        for playbook_id, items in sorted(grouped.items())
+    ]
+    return overall
 
 
 def _trust_eligible(case: RemediationCase) -> bool:

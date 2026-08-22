@@ -48,6 +48,8 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert response.status_code == 200
     assert "API Key" in response.text
     assert "Đăng nhập bằng Codex" in response.text
+    assert "Shadow Autopilot Evaluation" in response.text
+    assert "COLLECTING EVIDENCE" in response.text
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):

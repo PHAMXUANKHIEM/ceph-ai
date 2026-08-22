@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -9,7 +9,7 @@ from shared.models import Action, Incident, PlaybookStat
 from shared.remediation_cases import create_for_action
 from shared.trust_engine import (
     record_shadow_decision, recompute_playbook_stats, shadow_comparison,
-    wilson_lower_bound,
+    shadow_evaluation_report, wilson_lower_bound,
 )
 
 
@@ -159,3 +159,42 @@ def test_shadow_comparison_uses_verified_outcome_regression_and_operator_truth()
     assert shadow_comparison(successful) == "CORRECT_HOLD"
     successful.regressed_1h = False
     assert shadow_comparison(successful) == "MISSED_OPPORTUNITY"
+
+
+def test_shadow_report_requires_time_samples_precision_and_zero_unsafe_miss():
+    session = _session()
+    now = datetime.utcnow()
+    for _ in range(20):
+        case = _case(session)
+        case.shadow_decision = "WOULD_EXECUTE"
+        case.shadow_recorded_at = now - timedelta(days=15)
+    session.commit()
+
+    report = shadow_evaluation_report(session, now=now)
+    assert report["ready_for_review"] is True
+    assert report["evaluated"] == report["match_success"] == 20
+    assert report["unsafe_miss"] == 0
+    assert report["precision"] == 1.0
+    assert report["playbooks"][0]["playbook_id"] == "resync_ntp"
+
+    case.operator_verdict = "UNSAFE"
+    session.commit()
+    report = shadow_evaluation_report(session, now=now)
+    assert report["unsafe_miss"] == 1
+    assert report["precision"] == 0.95
+    assert report["ready_for_review"] is False
+
+
+def test_shadow_report_excludes_old_and_pending_cases_from_precision():
+    session = _session()
+    now = datetime.utcnow()
+    old = _case(session); old.shadow_decision = "WOULD_EXECUTE"
+    old.shadow_recorded_at = now - timedelta(days=29)
+    pending = _case(session, outcome="PROPOSED"); pending.shadow_decision = "WOULD_EXECUTE"
+    pending.shadow_recorded_at = now - timedelta(days=2)
+    session.commit()
+
+    report = shadow_evaluation_report(session, now=now)
+    assert report["total"] == 1
+    assert report["evaluated"] == 0 and report["pending"] == 1
+    assert report["precision"] is None
