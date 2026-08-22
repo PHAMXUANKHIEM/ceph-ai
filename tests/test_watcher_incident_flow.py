@@ -387,6 +387,40 @@ def test_capacity_incident_freezes_structured_metric_evidence(isolated_db, monke
         assert incident.signal_evidence_json == snapshot
 
 
+def test_failed_incident_does_not_permanently_block_a_fresh_remediation_attempt(
+    isolated_db, monkeypatch
+):
+    _seed_incident("BLUESTORE_SLOW_OP_ALERT", IncidentStatus.FAILED.value)
+    published = []
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async(published))
+    monkeypatch.setattr(
+        watcher_main.collector,
+        "collect_relevant_logs",
+        lambda *a, **k: (["10.20.1.83"], "osd.4 slow"),
+    )
+    monkeypatch.setattr(
+        watcher_main.capacity_evidence, "collect_capacity_evidence", lambda *a, **k: None
+    )
+
+    watcher_main.build_and_publish_incident(None, {
+        "status": "HEALTH_WARN",
+        "checks": {
+            "BLUESTORE_SLOW_OP_ALERT": {
+                "severity": "HEALTH_WARN",
+                "detail": [{"message": "osd.4 observed slow operations in BlueStore"}],
+            }
+        },
+    })
+
+    assert len(published) == 1
+    with db_module.SessionLocal() as session:
+        rows = session.query(Incident).filter_by(ceph_code="BLUESTORE_SLOW_OP_ALERT").all()
+        assert len(rows) == 2
+        assert sorted(row.status for row in rows) == [
+            IncidentStatus.FAILED.value, IncidentStatus.NEW.value,
+        ]
+
+
 def test_incident_creation_sends_telegram_before_ai_diagnosis(isolated_db, monkeypatch):
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
     monkeypatch.setattr(

@@ -70,6 +70,12 @@ _RECOVERABLE_STATUSES = {
     IncidentStatus.FAILED.value,
 }
 
+# FAILED remains visible/open until Ceph confirms recovery, but it is not an
+# in-flight remediation.  Let a fresh Watcher transition create a new attempt
+# for a warning that still exists; otherwise one historical router/preflight
+# failure permanently suppresses Autopilot for that ceph_code.
+_IN_FLIGHT_DEDUPE_STATUSES = _RECOVERABLE_STATUSES - {IncidentStatus.FAILED.value}
+
 # Mirrors dashboard/routes/chat.py::CHAT_REQUEST_CEPH_CODE (kept as its own
 # copy rather than a cross-import — Watcher and Dashboard are independent
 # processes/services, same posture as _RECOVERABLE_STATUSES above). A
@@ -406,7 +412,7 @@ def build_and_publish_incident(
     # đề đang mở sẵn. Lọc ra trước, một truy vấn cho cả lượt.
     with db.SessionLocal() as session:
         query = session.query(Incident.ceph_code).filter(
-            Incident.status.in_(_RECOVERABLE_STATUSES)
+            Incident.status.in_(_IN_FLIGHT_DEDUPE_STATUSES)
         )
         query = (
             query.filter(Incident.cluster_id == cluster_id)
