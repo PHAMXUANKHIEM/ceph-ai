@@ -7,7 +7,7 @@ from watcher.capacity_failure_simulation import simulate
 
 
 def _tree():
-    return {"roots": [{"type": "root", "name": "default", "children": [{
+    physical = {"type": "root", "name": "default", "children": [{
         "type": "rack", "name": "rack-a", "children": [
             {"type": "host", "name": "host-a", "children": [
                 {"type": "osd", "name": "osd.0", "id": 0},
@@ -17,7 +17,14 @@ def _tree():
                 {"type": "osd", "name": "osd.2", "id": 2},
             ]},
         ],
-    }]}]}
+    }]}
+    shadow = {"type": "root", "name": "default~hdd", "children": [{
+        "type": "host", "name": "host-a~hdd", "children": [
+            {"type": "osd", "name": "osd.0", "id": 0},
+            {"type": "osd", "name": "osd.1", "id": 1},
+        ],
+    }]}
+    return {"roots": [physical, shadow]}
 
 
 def test_simulates_osd_host_and_catastrophic_rack_loss(dashboard_client, default_cluster_id):

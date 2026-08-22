@@ -27,9 +27,15 @@ def _failure_domains(tree: dict) -> list[tuple[str, str, set[int]]]:
 
     def walk(node: dict) -> None:
         kind = str(node.get("type") or "")
+        name = str(node.get("name") or "")
+        # `ceph osd tree` exposes device-class shadow hierarchies such as
+        # `default~hdd`/`host~ssd`. They mirror the physical tree and are
+        # not additional failure domains; skip the entire shadow subtree.
+        if "~" in name:
+            return
         osds = _descendant_osds(node)
         if kind in {"osd", "host", "rack"} and osds:
-            name = str(node.get("name") or (f"osd.{next(iter(osds))}" if kind == "osd" else "unknown"))
+            name = name or (f"osd.{next(iter(osds))}" if kind == "osd" else "unknown")
             domains.append((kind, name, osds))
         for child in node.get("children") or []:
             walk(child)
