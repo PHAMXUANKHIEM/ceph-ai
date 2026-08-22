@@ -19,7 +19,10 @@ _FAMILY_CODES: dict[str, tuple[str, ...]] = {
     ),
     "network_heartbeat": ("OSD_DOWN", "MON_DOWN", "MGR_DOWN", "OSD_HOST_DOWN"),
     "pg_peering": ("PG_", "OBJECT_"),
-    "capacity_pressure": ("OSD_NEARFULL", "OSD_FULL", "POOL_NEARFULL", "POOL_FULL", "BACKFILL_FULL"),
+    "capacity_pressure": (
+        "OSD_NEARFULL", "OSD_BACKFILLFULL", "OSD_FULL",
+        "POOL_NEARFULL", "POOL_NEAR_FULL", "POOL_FULL", "BACKFILL_FULL",
+    ),
     "daemon_crash": ("RECENT_CRASH", "DAEMON_CRASH"),
     "clock_skew": ("MON_CLOCK_SKEW", "CLOCK_SKEW"),
     "authentication": ("AUTH_",),

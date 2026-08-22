@@ -369,6 +369,24 @@ def test_incident_created_and_published_on_transition_to_warn(isolated_db, monke
     assert envelope["log_excerpt"] == "mon2 log excerpt"
 
 
+def test_capacity_incident_freezes_structured_metric_evidence(isolated_db, monkeypatch):
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
+    monkeypatch.setattr(
+        watcher_main.collector, "collect_relevant_logs", lambda *a, **k: ([], "nearfull")
+    )
+    snapshot = '{"source":"ceph_capacity_snapshot","cluster":{"used_percent":91.2}}'
+    monkeypatch.setattr(
+        watcher_main.capacity_evidence, "collect_capacity_evidence", lambda *a, **k: snapshot
+    )
+    watcher_main.build_and_publish_incident(None, {
+        "status": "HEALTH_WARN",
+        "checks": {"OSD_NEARFULL": {"severity": "HEALTH_WARN"}},
+    })
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="OSD_NEARFULL").one()
+        assert incident.signal_evidence_json == snapshot
+
+
 def test_incident_creation_sends_telegram_before_ai_diagnosis(isolated_db, monkeypatch):
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
     monkeypatch.setattr(

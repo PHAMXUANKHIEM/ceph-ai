@@ -22,7 +22,10 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
     tổng chỉ chặn cửa sổ cực đoan trên 100 pattern.
   - [x] Lưu structured evidence từ OSD latency/device-health vào Incident và
     đóng băng snapshot đó trong LogFinding khi correlation; không parse văn bản/đoán lại.
-  - [ ] Mở rộng thêm các nguồn metric khác (volume, node resource, capacity).
+  - [~] Mở rộng thêm các nguồn metric khác:
+    - [x] Capacity cluster/pool/OSD từ `ceph df detail` và `ceph osd df`, đóng
+      băng trong Incident rồi truyền nguyên snapshot sang LogFinding tương quan.
+    - [ ] Volume và node resource.
 - [ ] **2. Incident timeline thống nhất và AI postmortem**
   - Dòng thời gian: phát hiện → evidence → chẩn đoán → đề xuất → duyệt → thực thi → xác minh.
   - Postmortem chỉ được viết từ timeline/audit đã lưu, gồm root cause, ảnh hưởng,

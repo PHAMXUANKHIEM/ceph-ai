@@ -12,6 +12,7 @@ from config.settings import settings
 from watcher import (
     bluestore_omap_monitor,
     capability_inventory,
+    capacity_evidence,
     ceph_client,
     collector,
     crush_distribution_monitor,
@@ -439,6 +440,9 @@ def build_and_publish_incident(
         nodes, log_excerpt = collector.collect_relevant_logs(
             ceph_code, check_detail, osd_host_map=osd_host_map
         )
+        signal_evidence_json = capacity_evidence.collect_capacity_evidence(
+            ceph_code, check_detail
+        )
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -452,6 +456,7 @@ def build_and_publish_incident(
                 # with Incident.status, this codebase's own lifecycle state.
                 severity=check_detail.get("severity"),
                 cluster_id=cluster_id,
+                signal_evidence_json=signal_evidence_json,
             )
             session.add(incident)
             session.commit()
@@ -941,6 +946,9 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
         nodes, log_excerpt = collector.collect_relevant_logs(
             ceph_code, check_detail, cluster=cluster, osd_host_map=osd_host_map
         )
+        signal_evidence_json = capacity_evidence.collect_capacity_evidence(
+            ceph_code, check_detail, cluster=cluster
+        )
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -950,6 +958,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 log_excerpt=log_excerpt,
                 severity=check_detail.get("severity"),
                 cluster_id=cluster.id,
+                signal_evidence_json=signal_evidence_json,
             )
             session.add(incident)
             session.commit()

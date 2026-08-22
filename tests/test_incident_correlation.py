@@ -52,6 +52,11 @@ def test_family_catalogue_rejects_log_intel_synthetic_incident():
     assert not family_matches_code("network_heartbeat", "LOG_INTEL_abc")
 
 
+def test_capacity_family_accepts_real_ceph_code_variants():
+    assert family_matches_code("capacity_pressure", "OSD_BACKFILLFULL")
+    assert family_matches_code("capacity_pressure", "POOL_NEAR_FULL")
+
+
 def test_correlates_same_family_and_osd():
     session = _session()
     now, finding, incident = _seed(session)
