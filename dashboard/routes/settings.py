@@ -48,7 +48,7 @@ from shared.claude_cli import (
 from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
-from shared.models import AutopilotConfigAudit, Cluster
+from shared.models import AutopilotConfigAudit, Cluster, PlaybookStat
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -936,6 +936,9 @@ def _settings_context(
     }
     with db.SessionLocal() as session:
         context["shadow_report"] = trust_engine.shadow_evaluation_report(session)
+        context["playbook_stats"] = session.query(PlaybookStat).order_by(
+            PlaybookStat.playbook_id, PlaybookStat.scope_key,
+        ).all()
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
         default_cluster = next((row for row in openstack_clusters if row.is_default), None)
         openstack_cluster = next((row for row in openstack_clusters if row.id == openstack_cluster_id), None) or default_cluster

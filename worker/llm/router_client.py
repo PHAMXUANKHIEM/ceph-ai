@@ -2043,6 +2043,7 @@ def _process_approved_actions_once() -> None:
         )
         scrubbed = remediation_cases.scrub_existing_case_memory(session)
         trust_updated = trust_engine.recompute_playbook_stats(session, now=datetime.utcnow())
+        promotion_updated = trust_engine.evaluate_promotion_candidates(session, now=datetime.utcnow())
     if recovered:
         logger.warning(
             "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
@@ -2056,6 +2057,8 @@ def _process_approved_actions_once() -> None:
         logger.warning("redacted sensitive JSON values from %d remediation case(s)", scrubbed)
     if trust_updated:
         logger.info("recomputed %d Playbook Trust aggregate(s)", trust_updated)
+    if promotion_updated:
+        logger.info("updated %d playbook promotion candidate evaluation(s)", promotion_updated)
     _reconcile_stuck_rbd_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [

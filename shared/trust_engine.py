@@ -220,9 +220,6 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
                 (case.verified_at for case, result in zip(cases, results) if result == "failure" and case.verified_at),
                 default=None,
             ),
-            # Trust Engine reports evidence only. Promotion remains an admin
-            # workflow introduced later in Pha 3.
-            "promotion_candidate_at": None,
             "auto_disabled_reason": None,
         }
         if any(getattr(stat, key) != value for key, value in values.items()):
@@ -238,6 +235,7 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
             "success_count": 0, "failure_count": 0, "inconclusive_count": 0,
             "trust_score": 0.0, "maturity_level": "L0", "last_failure_at": None,
             "promotion_candidate_at": None,
+            "promotion_blocked_reason": "no eligible verified Case Memory in this scope",
             "auto_disabled_reason": "no eligible verified Case Memory in this scope",
         }
         if any(getattr(stat, key) != value for key, value in empty_values.items()):
@@ -246,3 +244,75 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
             changed += 1
     session.commit()
     return changed
+
+
+def evaluate_promotion_candidates(session, *, now: datetime | None = None) -> int:
+    """Propose L2→L3 review only; never changes maturity or execution policy."""
+    now = now or datetime.utcnow()
+    since = now - timedelta(days=30)
+    actions = {row.id: row for row in session.query(Action).all()}
+    changed = 0
+    for stat in session.query(PlaybookStat).all():
+        cases = [
+            case for case in session.query(RemediationCase).filter(
+                RemediationCase.playbook_version == stat.playbook_version,
+                RemediationCase.verified_at >= since,
+            ).all()
+            if actions.get(case.action_id)
+            and actions[case.action_id].action_id == stat.playbook_id
+            and scope_key(case) == stat.scope_key
+            and _trust_eligible(case)
+            and _verified_result(case) is not None
+        ]
+        cases.sort(key=lambda case: (case.verified_at, case.id))
+        successes = sum(_verified_result(case) == "success" for case in cases)
+        false_positives = sum(case.operator_verdict == "FALSE_POSITIVE" for case in cases)
+        rollbacks = sum(bool(case.rollback_state_json) for case in cases)
+        consecutive = 0
+        for case in reversed(cases):
+            if _verified_result(case) != "success":
+                break
+            consecutive += 1
+        confidence_errors = [
+            abs(float(case.diagnosis_confidence) - (1.0 if _verified_result(case) == "success" else 0.0))
+            for case in cases if case.diagnosis_confidence is not None
+        ]
+        calibration = sum(confidence_errors) / len(confidence_errors) if confidence_errors else None
+        contract = _load_contract(cases[-1]) if cases else {}
+        reasons = []
+        if len(cases) < 10: reasons.append(f"verified cases {len(cases)}/10")
+        if not cases or successes / len(cases) < 0.98: reasons.append("30d success rate below 98%")
+        if cases and false_positives / len(cases) > 0.01: reasons.append("false-positive rate above 1%")
+        if cases and rollbacks / len(cases) > 0.02: reasons.append("rollback rate above 2%")
+        if consecutive < 5: reasons.append(f"consecutive successes {consecutive}/5")
+        if calibration is None: reasons.append("confidence calibration unavailable")
+        elif calibration > 0.10: reasons.append("confidence calibration error above 0.10")
+        if contract.get("target_schema") in {None, "manual"} or not contract.get("max_targets"):
+            reasons.append("target is not deterministic")
+        if not contract.get("preflight"): reasons.append("preflight unavailable")
+        if not contract.get("postcheck"): reasons.append("post-check unavailable")
+        if contract.get("max_autonomy") not in {"L3", "L4", "L5"}:
+            reasons.append("playbook autonomy ceiling below L3")
+        if any(case.operator_verdict == "UNSAFE" for case in cases):
+            reasons.append("recent severe/unsafe verdict exists")
+        blocked = "; ".join(reasons) or None
+        candidate_at = stat.promotion_candidate_at
+        if not reasons and candidate_at is None:
+            candidate_at = now
+        if reasons:
+            candidate_at = None
+        if stat.promotion_candidate_at != candidate_at or stat.promotion_blocked_reason != blocked:
+            stat.promotion_candidate_at = candidate_at
+            stat.promotion_blocked_reason = blocked
+            changed += 1
+    session.commit()
+    return changed
+
+
+def _load_contract(case: RemediationCase) -> dict:
+    try:
+        snapshot = json.loads(case.preflight_snapshot_json or "null")
+    except (TypeError, ValueError):
+        return {}
+    registry = snapshot.get("registry") if isinstance(snapshot, dict) else None
+    return registry if isinstance(registry, dict) else {}

@@ -488,6 +488,7 @@ class PlaybookStat(Base):
     last_failure_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_disabled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     promotion_candidate_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    promotion_blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow

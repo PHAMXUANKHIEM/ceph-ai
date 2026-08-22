@@ -8,7 +8,7 @@ from shared.db import Base
 from shared.models import Action, Incident, PlaybookStat
 from shared.remediation_cases import create_for_action
 from shared.trust_engine import (
-    record_shadow_decision, recompute_playbook_stats, shadow_comparison,
+    evaluate_promotion_candidates, record_shadow_decision, recompute_playbook_stats, shadow_comparison,
     shadow_evaluation_report, wilson_lower_bound,
 )
 
@@ -198,3 +198,37 @@ def test_shadow_report_excludes_old_and_pending_cases_from_precision():
     assert report["total"] == 1
     assert report["evaluated"] == 0 and report["pending"] == 1
     assert report["precision"] is None
+
+
+def test_promotion_evaluator_creates_candidate_without_changing_maturity():
+    session = _session()
+    now = datetime.utcnow()
+    for _ in range(10):
+        case = _case(session)
+        case.diagnosis_confidence = 0.99
+        case.verified_at = now - timedelta(days=1)
+    session.commit()
+    recompute_playbook_stats(session, now=now)
+
+    assert evaluate_promotion_candidates(session, now=now) == 1
+    stat = session.query(PlaybookStat).one()
+    assert stat.promotion_candidate_at == now
+    assert stat.promotion_blocked_reason is None
+    assert stat.maturity_level == "L2"
+    assert evaluate_promotion_candidates(session, now=now) == 0
+
+
+def test_promotion_evaluator_fails_closed_with_explicit_reasons():
+    session = _session()
+    now = datetime.utcnow()
+    case = _case(session)
+    case.operator_verdict = "UNSAFE"
+    session.commit()
+    recompute_playbook_stats(session, now=now)
+
+    evaluate_promotion_candidates(session, now=now)
+    stat = session.query(PlaybookStat).one()
+    assert stat.promotion_candidate_at is None
+    assert "verified cases 1/10" in stat.promotion_blocked_reason
+    assert "confidence calibration unavailable" in stat.promotion_blocked_reason
+    assert "recent severe/unsafe verdict exists" in stat.promotion_blocked_reason

@@ -694,6 +694,9 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   evaluated/pending, precision, unsafe miss, correct hold và missed opportunity.
   Trạng thái review chỉ xuất hiện sau tối thiểu 14 ngày, 20 outcome, precision
   95% và không có unsafe miss; báo cáo không tự mở khoá Autopilot.
+- Promotion evaluator kiểm tra fail-closed từng playbook/version/scope theo gate
+  mục 5.2 và ghi `PROMOTION_CANDIDATE` hoặc lý do bị chặn. Candidate vẫn giữ
+  maturity L2, chỉ chờ admin review và không tác động execution policy.
 
 - Tính statistics và Wilson lower bound.
 - Tìm case tương tự.
