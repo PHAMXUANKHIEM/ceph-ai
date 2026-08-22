@@ -1077,19 +1077,11 @@ async def settings_form(request: Request, user: str = Depends(require_login)):
 @router.post("/settings/autopilot", response_class=HTMLResponse)
 async def settings_autopilot_submit(
     request: Request, user: str = Depends(require_login), enabled: str = Form("0"),
-    reason: str = Form(""), confirmation: str = Form(""),
 ):
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi Autopilot")
-    desired, reason = enabled == "1", reason.strip()
-    if len(reason) < 8:
-        return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Lý do thay đổi phải có ít nhất 8 ký tự."
-        ))
-    if desired and confirmation.strip() != "ENABLE AUTOPILOT":
-        return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Chuỗi xác nhận bật Autopilot không chính xác."
-        ))
+    desired = enabled == "1"
+    reason = "Bật Autopilot từ Settings" if desired else "Tắt Autopilot từ Settings"
     previous = bool(settings.autopilot_enabled)
     if desired == previous:
         return templates.TemplateResponse(request, "settings.html", _settings_context(

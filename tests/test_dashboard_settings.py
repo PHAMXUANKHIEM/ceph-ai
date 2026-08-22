@@ -54,7 +54,8 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "Shadow Autopilot Evaluation" in response.text
     assert "COLLECTING EVIDENCE" in response.text
     assert "L2 → L3 Promotion Candidates" in response.text
-    assert "Autopilot theo cluster" in response.text
+    assert "BẬT AUTOPILOT" in response.text or "TẮT AUTOPILOT" in response.text
+    assert "Autopilot theo cluster" not in response.text
     assert "Phân loại hành động AI" in response.text
 
 
@@ -2466,7 +2467,7 @@ def test_verify_router_connection_reports_model_count_on_success(monkeypatch):
     assert models == ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
 
 
-def test_admin_can_enable_autopilot_with_strong_confirmation_and_audit(
+def test_admin_can_enable_autopilot_with_one_button_and_audit(
     dashboard_client, monkeypatch, tmp_path
 ):
     tmp_env = tmp_path / ".env"
@@ -2479,9 +2480,7 @@ def test_admin_can_enable_autopilot_with_strong_confirmation_and_audit(
         lambda: {"restarted": True, "new_pid": 123, "error": None},
     )
     _login(dashboard_client)
-    response = dashboard_client.post("/settings/autopilot", data={
-        "enabled": "1", "reason": "Lab shadow evaluation", "confirmation": "ENABLE AUTOPILOT",
-    })
+    response = dashboard_client.post("/settings/autopilot", data={"enabled": "1"})
     assert response.status_code == 200
     assert "Đã bật Global + toàn bộ cluster Autopilot" in response.text
     assert "AUTOPILOT_ENABLED=true" in tmp_env.read_text()
@@ -2556,19 +2555,6 @@ def test_admin_can_classify_restart_osd_safe_with_audit(dashboard_client, monkey
         assert session.get(ActionPolicyOverride, "restart_osd_daemon").classification == "SAFE"
         audit = session.query(ActionPolicyOverrideAudit).one()
         assert audit.previous_classification == "RISKY" and audit.new_classification == "SAFE"
-
-
-def test_autopilot_enable_rejects_missing_confirmation(dashboard_client, monkeypatch, tmp_path):
-    tmp_env = tmp_path / ".env"; tmp_env.write_text("")
-    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
-    monkeypatch.setattr(settings, "autopilot_enabled", False)
-    _login(dashboard_client)
-    response = dashboard_client.post("/settings/autopilot", data={
-        "enabled": "1", "reason": "Lab shadow evaluation", "confirmation": "yes",
-    })
-    assert response.status_code == 200
-    assert "không chính xác" in response.text
-    assert "AUTOPILOT_ENABLED" not in tmp_env.read_text()
 
 
 def test_disabling_autopilot_stops_old_worker_when_restart_fails(

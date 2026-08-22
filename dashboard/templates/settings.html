@@ -118,35 +118,19 @@
         </article>
       </div>
       <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Global Autopilot Kill Switch</h2></div>
+        <div class="card-header"><h2>Autopilot</h2></div>
         <div class="card-body">
           {% if autopilot_error %}<p class="error">{{ autopilot_error }}</p>{% endif %}
           {% if autopilot_success %}<p class="success">{{ autopilot_success }}</p>{% endif %}
-          <p>Trạng thái: <strong>{{ "ENABLED" if autopilot_enabled else "DISABLED" }}</strong></p>
-          <p class="hint">Nút này đồng bộ trạng thái cho toàn bộ cluster đang hoạt động. Khi tắt, SAFE action chuyển sang chờ duyệt và không tự chạy SSH.</p>
-          <form method="post" action="/settings/autopilot" class="login-box"
-                onsubmit="return confirm('Xác nhận thay đổi Global Autopilot Kill Switch?');">
+          <p>Trạng thái: <strong>{{ "ĐANG BẬT" if autopilot_enabled else "ĐANG TẮT" }}</strong></p>
+          <p class="hint">Áp dụng cho toàn bộ cluster đang hoạt động.</p>
+          <form method="post" action="/settings/autopilot">
             <input type="hidden" name="enabled" value="{{ '0' if autopilot_enabled else '1' }}">
-            <label>Lý do thay đổi<input name="reason" required minlength="8" maxlength="500"></label>
-            {% if not autopilot_enabled %}<label>Nhập chính xác <code>ENABLE AUTOPILOT</code>
-              <input name="confirmation" autocomplete="off" required></label>{% endif %}
             <button class="btn {{ 'btn-danger' if autopilot_enabled else 'btn-primary' }}" type="submit">
-              {{ "TẮT AUTOPILOT NGAY" if autopilot_enabled else "Bật Autopilot" }}
+              {{ "TẮT AUTOPILOT" if autopilot_enabled else "BẬT AUTOPILOT" }}
             </button>
           </form>
         </div>
-      </article>
-      <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Autopilot theo cluster</h2></div>
-        <div class="card-body"><p class="hint">Bật riêng từng cluster. Production yêu cầu chuỗi xác nhận mạnh và vẫn chịu Global Kill Switch, preflight, grace period, rate limit và lease.</p>
-        {% for cluster in autopilot_clusters %}<form method="post" action="/settings/autopilot/clusters/{{ cluster.id }}" class="login-box" style="margin-bottom:1rem">
-          <p><strong>{{ cluster.name }}</strong> · {{ "mặc định" if cluster.is_default else "cluster phụ" }} · <code>{{ cluster.autonomy_environment }}</code> / <code>{{ "ENABLED" if cluster.autopilot_enabled else "DISABLED" }}</code></p>
-          <label>Environment<select name="environment"><option value="production" {{ "selected" if cluster.autonomy_environment == "production" else "" }}>production</option><option value="lab" {{ "selected" if cluster.autonomy_environment == "lab" else "" }}>lab</option></select></label>
-          <label>Cluster kill switch<select name="enabled"><option value="0">DISABLED</option><option value="1" {{ "selected" if cluster.autopilot_enabled else "" }}>ENABLED</option></select></label>
-          <label>Lý do<input name="reason" minlength="8" maxlength="500" required></label>
-          <label>Xác nhận khi bật<input name="confirmation" placeholder="ENABLE LAB AUTOPILOT hoặc ENABLE PRODUCTION AUTOPILOT"></label>
-          <button class="btn btn-primary" type="submit">Lưu cluster gate</button>
-        </form>{% endfor %}</div>
       </article>
       <article class="card" style="margin-top:1rem">
         <div class="card-header"><h2>Phân loại hành động AI</h2></div>
