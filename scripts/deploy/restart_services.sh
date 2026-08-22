@@ -46,7 +46,7 @@ git reset --hard origin/main
 echo "==> Installing dependencies"
 source .venv/bin/activate
 pip install -e . --quiet
-if command -v npm >/dev/null 2>&1; then
+if npm --version >/dev/null 2>&1; then
   npm --prefix ceph-health-dashboard install --silent
   npm --prefix ceph-health-dashboard run build --silent
 else
