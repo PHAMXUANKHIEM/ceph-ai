@@ -5,7 +5,7 @@ import hashlib
 import json
 from datetime import datetime
 
-from shared.models import Action, Incident, RemediationCase
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
 
 
 def _json(value) -> str | None:
@@ -18,6 +18,14 @@ def _ceph_version(snapshot: dict) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _safe_load(raw: str | None, fallback):
+    try:
+        value = json.loads(raw or "null")
+    except (TypeError, ValueError):
+        return fallback
+    return fallback if value is None else value
 
 
 def create_for_action(
@@ -91,3 +99,63 @@ def record_inconclusive(session, *, action_id: str, at: datetime, reason: str) -
     row.outcome = "INCONCLUSIVE"
     row.verified_at = at
     row.side_effects_json = _json({"reason": reason, "auto_retry": False})
+
+
+def _legacy_outcome(action: Action, incident: Incident) -> str:
+    if action.status == ActionStatus.INCONCLUSIVE.value:
+        return "INCONCLUSIVE"
+    if action.status == ActionStatus.FAILED.value:
+        return "EXECUTION_FAILED"
+    if action.status == ActionStatus.REJECTED.value:
+        return "REJECTED"
+    if action.status == ActionStatus.EXECUTING.value:
+        return "EXECUTING"
+    if action.status in {ActionStatus.AUTO_EXECUTED.value, ActionStatus.EXECUTED.value}:
+        if incident.status == IncidentStatus.VERIFYING.value:
+            return "EXECUTED_PENDING_VERIFY"
+        if incident.status == IncidentStatus.RESOLVED.value:
+            # Old RESOLVED rows may only mean SSH exit 0. Never feed these
+            # into trust as verified successes without fresh telemetry.
+            return "LEGACY_RESOLVED_UNVERIFIED"
+        return "EXECUTED_UNVERIFIED"
+    return "PROPOSED"
+
+
+def backfill_missing_cases(session, *, limit: int = 200) -> int:
+    """Cover legacy/non-AI Actions conservatively in bounded batches."""
+    missing = (
+        session.query(Action)
+        .filter(~session.query(RemediationCase).filter(RemediationCase.action_id == Action.id).exists())
+        .order_by(Action.created_at, Action.id)
+        .limit(max(1, limit))
+        .all()
+    )
+    created = 0
+    for action in missing:
+        incident = session.get(Incident, action.incident_id)
+        if incident is None:
+            continue
+        cluster = session.get(Cluster, incident.cluster_id) if incident.cluster_id else None
+        evidence = _safe_load(incident.signal_evidence_json, {})
+        evidence = evidence if isinstance(evidence, dict) else {"signal": evidence}
+        envelope = {
+            "nodes": _safe_load(action.target_nodes, []),
+            "ceph_exec_mode": cluster.ceph_exec_mode if cluster else None,
+            "cluster_snapshot": evidence,
+        }
+        row = create_for_action(
+            session, incident=incident, action=action, redacted_envelope=envelope,
+            diagnosis=incident.diagnosis_text, model_provider=None,
+        )
+        row.prompt_version = "legacy-backfill-v1"
+        row.outcome = _legacy_outcome(action, incident)
+        row.executed_at = action.executed_at
+        row.started_at = action.executed_at
+        row.side_effects_json = _json({
+            "backfilled": True,
+            "trust_eligible": False,
+            "reason": "historical telemetry provenance is incomplete",
+        })
+        created += 1
+    session.commit()
+    return created

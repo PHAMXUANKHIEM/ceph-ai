@@ -1970,11 +1970,14 @@ def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -
 def _process_approved_actions_once() -> None:
     with db.SessionLocal() as session:
         recovered = reconcile_expired_executions(session, now=datetime.utcnow())
+        backfilled = remediation_cases.backfill_missing_cases(session, limit=200)
     if recovered:
         logger.warning(
             "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
             recovered,
         )
+    if backfilled:
+        logger.info("created %d missing Remediation Case Memory row(s)", backfilled)
     _reconcile_stuck_rbd_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [

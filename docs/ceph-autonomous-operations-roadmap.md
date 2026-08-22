@@ -618,8 +618,10 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Execution thành công chỉ ghi `EXECUTED_PENDING_VERIFY`. Telemetry mới mới
   được phép kết luận `VERIFIED_SUCCESS`/`VERIFIED_FAILED`; recovery không
   xác định ghi `INCONCLUSIVE` và không retry.
-- Chưa hoàn tất: backfill/action từ các pipeline ngoài AI, evaluator các cửa
-  sổ 1h/24h/7d và UI operator verdict.
+- Đã có reconciler theo lô cho Action lịch sử và các pipeline ngoài AI. Case
+  `RESOLVED` cũ chỉ được gắn `LEGACY_RESOLVED_UNVERIFIED`, không đủ điều kiện
+  học trust vì lịch sử đó có thể chỉ dựa vào SSH exit code.
+- Chưa hoàn tất: evaluator các cửa sổ 1h/24h/7d và UI operator verdict.
 
 - Thêm migration và model `remediation_cases`, `playbook_stats`.
 - Đóng băng evidence/pre-state/post-state.

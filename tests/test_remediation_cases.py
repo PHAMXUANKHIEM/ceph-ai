@@ -8,7 +8,8 @@ from sqlalchemy.pool import StaticPool
 from shared.db import Base
 from shared.models import Action, Incident, RemediationCase
 from shared.remediation_cases import (
-    create_for_action, record_execution, record_inconclusive, record_verified,
+    backfill_missing_cases, create_for_action, record_execution, record_inconclusive,
+    record_verified,
 )
 
 
@@ -92,3 +93,36 @@ def test_inconclusive_case_records_no_retry_evidence():
     record_inconclusive(session, action_id=action.id, at=now, reason="lease expired")
     assert case.outcome == "INCONCLUSIVE"
     assert json.loads(case.side_effects_json) == {"auto_retry": False, "reason": "lease expired"}
+
+
+def test_backfill_covers_non_ai_actions_without_trusting_legacy_resolved_rows():
+    session = _session()
+    incident, action = _seed(session)
+    incident.status = "RESOLVED"
+    incident.signal_evidence_json = '{"status":"HEALTH_WARN"}'
+    action.status = "EXECUTED"
+    action.executed_at = datetime.utcnow()
+    session.commit()
+
+    assert backfill_missing_cases(session, limit=200) == 1
+    case = session.query(RemediationCase).filter_by(action_id=action.id).one()
+    assert case.outcome == "LEGACY_RESOLVED_UNVERIFIED"
+    assert case.prompt_version == "legacy-backfill-v1"
+    assert json.loads(case.side_effects_json)["trust_eligible"] is False
+    assert backfill_missing_cases(session, limit=200) == 0
+
+
+def test_backfill_is_bounded_and_preserves_pending_verify_state():
+    session = _session()
+    for index in range(3):
+        incident, action = _seed(session)
+        incident.ceph_code = f"OSD_DOWN_{index}"
+        incident.status = "VERIFYING"
+        action.status = "EXECUTED"
+        action.executed_at = datetime.utcnow()
+    session.commit()
+
+    assert backfill_missing_cases(session, limit=2) == 2
+    assert session.query(RemediationCase).count() == 2
+    assert backfill_missing_cases(session, limit=2) == 1
+    assert {row.outcome for row in session.query(RemediationCase)} == {"EXECUTED_PENDING_VERIFY"}
