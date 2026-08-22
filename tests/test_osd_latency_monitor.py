@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 import pytest
@@ -182,6 +183,10 @@ def test_create_or_resolve_creates_incident_and_investigate_manually_action(isol
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert "osd.3" in incident.log_excerpt
         assert "node2" in incident.log_excerpt
+        evidence = json.loads(incident.signal_evidence_json)
+        assert evidence["source"] == "ceph_osd_perf"
+        assert evidence["osd_id"] == 3
+        assert evidence["commit_latency_ms"] == 50.0
 
         action = session.query(Action).filter_by(incident_id=incident.id).one()
         assert action.action_id == "investigate_manually"

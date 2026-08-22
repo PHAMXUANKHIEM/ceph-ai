@@ -33,6 +33,7 @@ def _seed(session, *, incident_code="OSD_DOWN", incident_excerpt="osd.5 down", f
     incident = Incident(
         cluster_id=cluster.id, ceph_code=incident_code, status=IncidentStatus.NEW.value,
         log_excerpt=incident_excerpt, detected_at=now - timedelta(minutes=10),
+        signal_evidence_json=json.dumps({"source": "ceph_osd_perf", "osd_id": 5, "commit_latency_ms": 42}),
     )
     session.add_all([run, incident])
     session.flush()
@@ -57,6 +58,7 @@ def test_correlates_same_family_and_osd():
     assert correlate_finding(session, finding, now=now) is incident
     assert finding.correlated_incident_id == incident.id
     assert "osd=5" in finding.correlation_reason
+    assert json.loads(finding.correlation_evidence_json)["commit_latency_ms"] == 42
 
 
 def test_does_not_correlate_conflicting_osd_entity():

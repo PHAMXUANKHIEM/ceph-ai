@@ -20,7 +20,9 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
     fault-family, entity OSD và cửa sổ thời gian; lưu provenance để audit/UI.
   - [x] Chia evidence đã triage thành batch 10 pattern/lượt AI; circuit breaker
     tổng chỉ chặn cửa sổ cực đoan trên 100 pattern.
-  - [ ] Mở rộng correlation sang metric và disk signal.
+  - [x] Lưu structured evidence từ OSD latency/device-health vào Incident và
+    đóng băng snapshot đó trong LogFinding khi correlation; không parse văn bản/đoán lại.
+  - [ ] Mở rộng thêm các nguồn metric khác (volume, node resource, capacity).
 - [ ] **2. Incident timeline thống nhất và AI postmortem**
   - Dòng thời gian: phát hiện → evidence → chẩn đoán → đề xuất → duyệt → thực thi → xác minh.
   - Postmortem chỉ được viết từ timeline/audit đã lưu, gồm root cause, ảnh hưởng,

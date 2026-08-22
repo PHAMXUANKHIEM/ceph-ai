@@ -254,6 +254,7 @@ def create_or_resolve_osd_latency_incidents(
                 status=IncidentStatus.PENDING_APPROVAL.value,
                 detected_at=datetime.utcnow(),
                 log_excerpt=rationale,
+                signal_evidence_json=json.dumps({"source": "ceph_osd_perf", **detail}),
             )
             session.add(incident)
             session.flush()  # assigns incident.id, needed by the Action FK below

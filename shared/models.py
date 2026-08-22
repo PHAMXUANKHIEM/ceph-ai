@@ -190,6 +190,9 @@ class Incident(Base):
     # column existed have no value to backfill.
     severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
     log_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Snapshot JSON của detector (latency/device health/metric...), không
+    # chứa credential; dùng làm provenance cho correlation/postmortem.
+    signal_evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     diagnosis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Last hourly Telegram reminder. NULL means no reminder has been sent;
     # created_at remains the baseline for the first reminder.
@@ -1851,6 +1854,7 @@ class LogFinding(Base):
     )
     correlation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     correlated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    correlation_evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Chỉ được đặt khi vượt qua allowlist VÀ không thuộc nhóm DESTRUCTIVE.
     recommended_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # JSON list[str] -- các bước thủ công, dạng văn bản thuần, không bao giờ

@@ -215,6 +215,14 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
                 status=IncidentStatus.PENDING_APPROVAL.value,
                 detected_at=datetime.utcnow(),
                 log_excerpt=rationale,
+                signal_evidence_json=json.dumps({
+                    "source": "ceph_devicehealth",
+                    "osd_id": detail["osd_id"],
+                    "device_id": detail["devid"],
+                    "host": detail.get("host"),
+                    "life_expectancy_min": detail["life_expectancy_min"],
+                    "life_expectancy_max": detail["life_expectancy_max"],
+                }),
             )
             session.add(incident)
             session.flush()  # assigns incident.id, needed by the Action FK below

@@ -14,7 +14,9 @@ CORRELATION_LOOKBACK = timedelta(hours=6)
 
 _FAMILY_CODES: dict[str, tuple[str, ...]] = {
     "disk_io": ("DEVICE_HEALTH_", "BLUESTORE_DISK_", "OSD_UNREACHABLE"),
-    "bluestore_slow_ops": ("BLUESTORE_SLOW_OP_ALERT", "SLOW_OPS", "OSD_SLOW_PING_TIME"),
+    "bluestore_slow_ops": (
+        "BLUESTORE_SLOW_OP_ALERT", "SLOW_OPS", "OSD_SLOW_PING_TIME", "OSD_LATENCY_HIGH:"
+    ),
     "network_heartbeat": ("OSD_DOWN", "MON_DOWN", "MGR_DOWN", "OSD_HOST_DOWN"),
     "pg_peering": ("PG_", "OBJECT_"),
     "capacity_pressure": ("OSD_NEARFULL", "OSD_FULL", "POOL_NEARFULL", "POOL_FULL", "BACKFILL_FULL"),
@@ -93,6 +95,6 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
             + (f":osd={','.join(sorted(finding_osds & incident_osds))}" if finding_osds & incident_osds else "")
         )
         finding.correlated_at = now
+        finding.correlation_evidence_json = incident.signal_evidence_json
         return incident
     return None
-

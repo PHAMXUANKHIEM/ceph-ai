@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 
 import pytest
@@ -197,6 +198,10 @@ def test_create_or_resolve_creates_incident_and_evacuate_action(isolated_db, mon
         incident = session.query(Incident).filter_by(ceph_code="DEVICE_HEALTH_EVACUATE:7").one()
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert "osd.7" in incident.log_excerpt
+        evidence = json.loads(incident.signal_evidence_json)
+        assert evidence["source"] == "ceph_devicehealth"
+        assert evidence["osd_id"] == 7
+        assert evidence["device_id"] == "SEAGATE_ABC"
 
         action = session.query(Action).filter_by(incident_id=incident.id).one()
         assert action.action_id == "evacuate_predicted_failing_osd"
