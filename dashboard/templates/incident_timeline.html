@@ -27,6 +27,34 @@
         </tbody></table></div>
       </div>
     </section>
+    <section class="card">
+      <div class="card-header"><div><h2>Remediation Case Memory</h2><p class="hint">Đánh giá của operator được lưu cùng Case và Audit, không tự thay đổi autonomy.</p></div></div>
+      <div class="card-body">
+      {% if remediation_cases %}
+        {% for case in remediation_cases %}
+        <div class="card" style="margin-bottom: 1rem">
+          <div class="card-body">
+            <p><strong>{{ case.fault_family }}</strong> · <code>{{ case.outcome }}</code> · {{ case.classification }}</p>
+            <p class="hint">Case <code>{{ case.id }}</code> · Action <code>{{ case.action_id }}</code></p>
+            <p class="hint">Regression: 1h={{ case.regressed_1h if case.regressed_1h is not none else "đang chờ" }}, 24h={{ case.regressed_24h if case.regressed_24h is not none else "đang chờ" }}, 7d={{ case.regressed_7d if case.regressed_7d is not none else "đang chờ" }}</p>
+            <form method="post" action="/incidents/{{ incident.id }}/cases/{{ case.id }}/verdict">
+              <label>Operator verdict
+                <select name="verdict" required>
+                  <option value="" disabled {{ "" if case.operator_verdict else "selected" }}>Chọn đánh giá</option>
+                  {% for value, label in case_verdicts.items() %}<option value="{{ value }}" {{ "selected" if case.operator_verdict == value else "" }}>{{ label }}</option>{% endfor %}
+                </select>
+              </label>
+              <label>Ghi chú
+                <textarea name="note" maxlength="2000" rows="3" placeholder="Bằng chứng hoặc nhận xét của operator">{{ case.operator_note or "" }}</textarea>
+              </label>
+              <button class="btn btn-primary" type="submit">Lưu đánh giá</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}<p class="empty-state">Incident này chưa có Remediation Case.</p>{% endif %}
+      </div>
+    </section>
     {% if postmortem %}<section class="card"><div class="card-header"><h2>AI Postmortem</h2><span class="hint">{{ postmortem_generated_at|vntime }}</span></div><div class="card-body">
       <h3>Root cause</h3><p>{{ postmortem.root_cause }}</p>
       <h3>Ảnh hưởng</h3><p>{{ postmortem.impact }}</p>

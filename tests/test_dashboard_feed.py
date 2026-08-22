@@ -4,7 +4,7 @@ from sqlalchemy.exc import OperationalError
 import dashboard.routes.incidents as incidents_route
 
 from shared import db as db_module
-from shared.models import AuditEntry, Incident, WatcherHeartbeat
+from shared.models import Action, AuditEntry, Incident, RemediationCase, WatcherHeartbeat
 
 
 def _login(client):
@@ -46,6 +46,74 @@ def test_incident_timeline_page_and_postmortem_generation(dashboard_client, monk
     response = dashboard_client.post("/incidents/timeline-inc/postmortem", follow_redirects=False)
     assert response.status_code == 303
     assert called == ["timeline-inc"]
+
+
+def test_operator_can_set_case_verdict_from_incident_timeline(dashboard_client):
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            id="verdict-inc", ceph_code="OSD_DOWN", status="RESOLVED",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident); session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="restart_osd_daemon",
+            classification="RISKY", status="EXECUTED",
+        )
+        session.add(action); session.flush()
+        case = RemediationCase(
+            incident_id=incident.id, action_id=action.id, fault_family="OSD_DOWN",
+            evidence_fingerprint="a" * 64, prompt_version="v1", classification="RISKY",
+            autonomy_decision="PENDING_APPROVAL", playbook_version="v1", outcome="VERIFIED_SUCCESS",
+        )
+        session.add(case); session.commit(); case_id = case.id
+
+    _login(dashboard_client)
+    page = dashboard_client.get("/incidents/verdict-inc/timeline")
+    assert page.status_code == 200
+    assert "Remediation Case Memory" in page.text
+    assert "Chẩn đoán/xử lý đúng" in page.text
+
+    response = dashboard_client.post(
+        f"/incidents/verdict-inc/cases/{case_id}/verdict",
+        data={"verdict": "CORRECT", "note": "OSD ổn định sau kiểm chứng."},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        case = session.get(RemediationCase, case_id)
+        assert case.operator_verdict == "CORRECT"
+        assert case.operator_note == "OSD ổn định sau kiểm chứng."
+        entry = session.query(AuditEntry).filter_by(action_id=case.action_id).one()
+        assert entry.event_type == "remediation_case_verdict_updated"
+        assert entry.actor == "admin"
+
+
+def test_case_verdict_rejects_invalid_value(dashboard_client):
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            id="bad-verdict-inc", ceph_code="OSD_DOWN", status="RESOLVED",
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident); session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="restart_osd_daemon",
+            classification="RISKY", status="EXECUTED",
+        )
+        session.add(action); session.flush()
+        case = RemediationCase(
+            incident_id=incident.id, action_id=action.id, fault_family="OSD_DOWN",
+            evidence_fingerprint="b" * 64, prompt_version="v1", classification="RISKY",
+            autonomy_decision="PENDING_APPROVAL", playbook_version="v1", outcome="VERIFIED_SUCCESS",
+        )
+        session.add(case); session.commit(); case_id = case.id
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/incidents/bad-verdict-inc/cases/{case_id}/verdict",
+        data={"verdict": "MAKE_AUTONOMOUS", "note": "no"},
+    )
+    assert response.status_code == 400
+    with db_module.SessionLocal() as session:
+        assert session.get(RemediationCase, case_id).operator_verdict is None
 
 
 def test_index_shows_diagnosis_text_as_the_error_reason(dashboard_client):

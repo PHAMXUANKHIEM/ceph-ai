@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,11 +18,14 @@ from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgra
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
-from shared import db, heartbeat
+from shared import audit, db, heartbeat
 from shared import incident_postmortem
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
+from shared.models import (
+    Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus,
+    RemediationCase, WatcherHeartbeat,
+)
 from shared.object_storage_cache import get_or_load
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 
@@ -35,6 +38,13 @@ templates = make_templates()
 # interval rather than a fixed number of seconds, so it scales with
 # whatever watcher_poll_interval_seconds is configured to.
 HEARTBEAT_STALE_MULTIPLIER = 3
+CASE_VERDICTS = {
+    "CORRECT": "Chẩn đoán/xử lý đúng",
+    "FALSE_POSITIVE": "Cảnh báo sai",
+    "UNSAFE": "Hành động không an toàn",
+    "INEFFECTIVE": "Không khắc phục được",
+    "INCONCLUSIVE": "Chưa đủ bằng chứng",
+}
 
 
 def _incident_in_selected_cluster(session, incident_id: str, selected_cluster: Cluster) -> Incident | None:
@@ -58,12 +68,54 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         timeline = incident_postmortem.build_timeline(session, incident_id)
         postmortem = json.loads(incident.postmortem_json) if incident.postmortem_json else None
         generated_at = incident.postmortem_generated_at
+        remediation_cases = (
+            session.query(RemediationCase)
+            .filter_by(incident_id=incident_id)
+            .order_by(RemediationCase.created_at, RemediationCase.id)
+            .all()
+        )
     return templates.TemplateResponse(request, "incident_timeline.html", {
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": selected_cluster, "incident": incident, "timeline": timeline,
         "postmortem": postmortem, "postmortem_generated_at": generated_at,
         "postmortem_error": request.query_params.get("error", ""),
+        "remediation_cases": remediation_cases, "case_verdicts": CASE_VERDICTS,
     })
+
+
+@router.post("/incidents/{incident_id}/cases/{case_id}/verdict")
+async def update_remediation_case_verdict(
+    request: Request,
+    incident_id: str,
+    case_id: str,
+    verdict: str = Form(...),
+    note: str = Form(""),
+    user: str = Depends(require_login),
+):
+    verdict = verdict.strip().upper()
+    note = note.strip()
+    if verdict not in CASE_VERDICTS:
+        raise HTTPException(status_code=400, detail="Operator verdict không hợp lệ")
+    if len(note) > 2000:
+        raise HTTPException(status_code=400, detail="Ghi chú tối đa 2000 ký tự")
+    _clusters, selected_cluster = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        incident = _incident_in_selected_cluster(session, incident_id, selected_cluster)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+        case = session.query(RemediationCase).filter_by(id=case_id, incident_id=incident_id).one_or_none()
+        if case is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Remediation Case")
+        case.operator_verdict = verdict
+        case.operator_note = note or None
+        audit.record(
+            session, incident_id=incident_id, action_id=case.action_id,
+            event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=user,
+        )
+        session.commit()
+    return RedirectResponse(f"/incidents/{incident_id}/timeline", status_code=303)
 
 
 @router.post("/incidents/{incident_id}/postmortem")

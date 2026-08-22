@@ -627,7 +627,9 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Case JSON được scrub đệ quy theo tên trường nhạy cảm trước khi persist;
   Worker đồng thời làm sạch dữ liệu legacy và tính lại fingerprint từ bản
   đã redaction.
-- Chưa hoàn tất: UI operator verdict.
+- Đã có UI operator verdict ngay trong Incident Timeline, validate enum/note,
+  lưu atomically vào Case và ghi Audit theo đúng tài khoản thao tác. Verdict
+  chỉ là evidence cho evaluator, không tự nâng autonomy.
 
 - Thêm migration và model `remediation_cases`, `playbook_stats`.
 - Đóng băng evidence/pre-state/post-state.
