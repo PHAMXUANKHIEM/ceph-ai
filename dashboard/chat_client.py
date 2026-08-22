@@ -165,7 +165,8 @@ def system_prompt(
     prompt_rules = (
     "- Trả lời bằng tiếng Việt, ngắn gọn và chính xác\n"
     "- Khi hỏi lịch sử sự cố, nguyên nhân, trước/sau hoặc xu hướng dung lượng: dùng tool evidence tương ứng. "
-    "Ứng dụng tự gắn mục Nguồn đã kiểm chứng; không được bịa source ID hay thời điểm.\n"
+    "Ứng dụng tự gắn mục Nguồn đã kiểm chứng; không được bịa source ID/thời điểm và không tự viết "
+    "một mục Nguồn riêng trong nội dung trả lời để tránh hiển thị trùng.\n"
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
     "- Với admin cần chẩn đoán log dịch vụ trên một node → dùng get_node_journal; "
     "tool này đọc journalctl trực tiếp, read-only và không restart dịch vụ\n"

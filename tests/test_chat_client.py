@@ -385,6 +385,12 @@ def test_copilot_evidence_tools_are_exposed_to_all_authenticated_users():
     } <= names
 
 
+def test_copilot_prompt_reserves_verified_source_footer_for_server():
+    prompt = chat_client.system_prompt()
+    assert "Ứng dụng tự gắn mục Nguồn đã kiểm chứng" in prompt
+    assert "không tự viết một mục Nguồn riêng" in prompt
+
+
 def test_copilot_server_appends_verified_citations(monkeypatch):
     from types import SimpleNamespace
 
