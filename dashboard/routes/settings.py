@@ -1102,6 +1102,21 @@ async def settings_autopilot_submit(
             session.add(AutopilotConfigAudit(
                 actor=user, previous_enabled=previous, new_enabled=desired, reason=reason,
             ))
+            # The global button is the operator's primary control: keep all
+            # active cluster gates in sync so "Global ENABLED" cannot look
+            # active while every SAFE action is silently blocked below it.
+            for cluster in session.query(Cluster).filter_by(is_active=True).all():
+                cluster_previous = bool(cluster.autopilot_enabled)
+                if cluster_previous == desired:
+                    continue
+                cluster.autopilot_enabled = desired
+                session.add(AutopilotClusterConfigAudit(
+                    cluster_id=cluster.id, actor=user,
+                    previous_environment=cluster.autonomy_environment,
+                    new_environment=cluster.autonomy_environment,
+                    previous_enabled=cluster_previous, new_enabled=desired,
+                    reason=f"Đồng bộ theo Global Autopilot: {reason}",
+                ))
             session.commit()
     except Exception:
         logger.exception("settings_autopilot_submit: persist/audit failed")
@@ -1125,7 +1140,7 @@ async def settings_autopilot_submit(
         ))
     return templates.TemplateResponse(request, "settings.html", _settings_context(
         user, autopilot_success=(
-            f"Đã {'bật' if desired else 'tắt'} Autopilot và khởi động lại Worker "
+            f"Đã {'bật' if desired else 'tắt'} Global + toàn bộ cluster Autopilot và khởi động lại Worker "
             f"(PID {restart_result['new_pid']})."
         ),
     ))

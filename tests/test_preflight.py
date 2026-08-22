@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from shared import capability_matrix as cm
 from shared import db as db_module
 from shared.db import Base
-from shared.models import CapabilityStatus, Cluster
+from shared.models import ActionPolicyOverride, CapabilityStatus, Cluster
 from watcher import capability_inventory as ci
 from watcher.ceph_client import CephQueryError
 from worker import preflight
@@ -75,6 +75,29 @@ def test_blocked_when_no_matrix_entry_for_action(isolated_db, monkeypatch):
     assert "resync_ntp" in result.reason
 
 
+def test_admin_safe_override_allows_unknown_matrix_only(isolated_db, monkeypatch):
+    cluster_id = _default_cluster_id()
+    monkeypatch.setattr(
+        ci.ceph_client, "summarize_cluster_versions",
+        lambda: ci.ceph_client.summarize_versions_payload(
+            {"daemon0": {"ceph version 18.2.2 (abc) reef (stable)": 1}}
+        ),
+    )
+    ci.scan_and_store(cluster_id)
+    with db_module.SessionLocal() as session:
+        session.add(ActionPolicyOverride(
+            action_id="restart_osd_daemon", classification="SAFE",
+            updated_by="admin", reason="Bounded automatic OSD recovery",
+        ))
+        session.commit()
+        result = preflight.run_preflight(
+            session, cluster_id=cluster_id, action_id="restart_osd_daemon"
+        )
+    assert result.allowed is True
+    assert result.capability_status == CapabilityStatus.UNKNOWN.value
+    assert "admin SAFE override" in result.reason
+
+
 def test_blocked_when_matrix_entry_doesnt_cover_version(isolated_db, monkeypatch):
     cluster_id = _default_cluster_id()
     monkeypatch.setattr(
@@ -92,6 +115,32 @@ def test_blocked_when_matrix_entry_doesnt_cover_version(isolated_db, monkeypatch
 
     with db_module.SessionLocal() as session:
         result = preflight.run_preflight(session, cluster_id=cluster_id, action_id="resync_ntp")
+    assert result.allowed is False
+    assert result.capability_status == CapabilityStatus.UNSUPPORTED_VERSION.value
+
+
+def test_admin_safe_override_does_not_bypass_unsupported_version(isolated_db, monkeypatch):
+    cluster_id = _default_cluster_id()
+    monkeypatch.setattr(
+        ci.ceph_client, "summarize_cluster_versions",
+        lambda: ci.ceph_client.summarize_versions_payload(
+            {"daemon0": {"ceph version 18.2.2 (abc) reef (stable)": 1}}
+        ),
+    )
+    ci.scan_and_store(cluster_id)
+    cm.create_entry(
+        command_id="restart_osd_daemon", inner_command="systemctl restart ceph-osd@N",
+        doc_url="https://docs.ceph.com/en/latest/", verified_by="admin", min_major=1, max_major=17,
+    )
+    with db_module.SessionLocal() as session:
+        session.add(ActionPolicyOverride(
+            action_id="restart_osd_daemon", classification="SAFE",
+            updated_by="admin", reason="Bounded automatic OSD recovery",
+        ))
+        session.commit()
+        result = preflight.run_preflight(
+            session, cluster_id=cluster_id, action_id="restart_osd_daemon"
+        )
     assert result.allowed is False
     assert result.capability_status == CapabilityStatus.UNSUPPORTED_VERSION.value
 

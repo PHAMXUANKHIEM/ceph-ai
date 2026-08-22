@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import capability_matrix
-from shared.models import CapabilityStatus, Cluster
+from shared.models import ActionClassification, ActionPolicyOverride, CapabilityStatus, Cluster
 from watcher import capability_inventory
 
 
@@ -117,6 +117,24 @@ def run_preflight(session, *, cluster_id: str | None, action_id: str) -> Preflig
 
     cap_result = capability_matrix.check_capability(action_id, snapshot.current_major, session=session)
     if cap_result.status != CapabilityStatus.SUPPORTED:
+        override = session.get(ActionPolicyOverride, action_id)
+        # An explicit, audited admin SAFE decision may close an UNKNOWN
+        # documentation gap for that exact action. It never overrides a
+        # known UNSUPPORTED_VERSION verdict, inactive cluster, missing/
+        # stale inventory, or any later runtime safety gate.
+        if (
+            cap_result.status == CapabilityStatus.UNKNOWN
+            and override is not None
+            and override.classification == ActionClassification.SAFE.value
+        ):
+            return PreflightResult(
+                True,
+                reason=(
+                    f"Capability Matrix UNKNOWN được thay thế bởi admin SAFE override "
+                    f"cho action_id={action_id!r} ({override.updated_by}: {override.reason})."
+                ),
+                capability_status=CapabilityStatus.UNKNOWN.value,
+            )
         return PreflightResult(
             False,
             reason=(

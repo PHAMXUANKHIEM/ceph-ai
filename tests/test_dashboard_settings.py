@@ -2483,11 +2483,15 @@ def test_admin_can_enable_autopilot_with_strong_confirmation_and_audit(
         "enabled": "1", "reason": "Lab shadow evaluation", "confirmation": "ENABLE AUTOPILOT",
     })
     assert response.status_code == 200
-    assert "Đã bật Autopilot" in response.text
+    assert "Đã bật Global + toàn bộ cluster Autopilot" in response.text
     assert "AUTOPILOT_ENABLED=true" in tmp_env.read_text()
     with db_module.SessionLocal() as session:
         row = session.query(AutopilotConfigAudit).one()
         assert row.actor == "admin" and row.previous_enabled is False and row.new_enabled is True
+        cluster = session.query(Cluster).filter_by(is_active=True).one()
+        assert cluster.autopilot_enabled is True
+        cluster_audit = session.query(AutopilotClusterConfigAudit).one()
+        assert cluster_audit.previous_enabled is False and cluster_audit.new_enabled is True
 
 
 def test_admin_can_enable_per_cluster_autopilot_for_lab_with_audit(

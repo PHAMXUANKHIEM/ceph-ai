@@ -123,7 +123,7 @@
           {% if autopilot_error %}<p class="error">{{ autopilot_error }}</p>{% endif %}
           {% if autopilot_success %}<p class="success">{{ autopilot_success }}</p>{% endif %}
           <p>Trạng thái: <strong>{{ "ENABLED" if autopilot_enabled else "DISABLED" }}</strong></p>
-          <p class="hint">Mặc định tắt. Khi tắt, SAFE action chuyển sang chờ duyệt và không tự chạy SSH.</p>
+          <p class="hint">Nút này đồng bộ trạng thái cho toàn bộ cluster đang hoạt động. Khi tắt, SAFE action chuyển sang chờ duyệt và không tự chạy SSH.</p>
           <form method="post" action="/settings/autopilot" class="login-box"
                 onsubmit="return confirm('Xác nhận thay đổi Global Autopilot Kill Switch?');">
             <input type="hidden" name="enabled" value="{{ '0' if autopilot_enabled else '1' }}">
@@ -151,7 +151,7 @@
       <article class="card" style="margin-top:1rem">
         <div class="card-header"><h2>Phân loại hành động AI</h2></div>
         <div class="card-body">
-          <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép; <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa và không thể hạ cấp tại đây.</p>
+          <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép và được dùng thay cho Capability Matrix <strong>UNKNOWN</strong> của đúng action đó; một phiên bản đã biết là không hỗ trợ vẫn bị chặn. <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa.</p>
           <div class="table-wrap"><table><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
           {% for row in action_policy_rows %}<tr>
             <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }} · {{ row.override.reason }}</span>{% endif %}</td>
