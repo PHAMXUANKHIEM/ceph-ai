@@ -120,6 +120,40 @@ def test_call_router_extracts_args_from_matching_tool_call(monkeypatch):
     assert result["severity"] == "critical"
 
 
+def test_call_router_uses_claude_without_router_config(monkeypatch):
+    monkeypatch.setattr(ai_analysis.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(ai_analysis.settings, "claude_chat_enabled", True)
+    monkeypatch.setattr(ai_analysis.settings, "router_api_key", "")
+    monkeypatch.setattr(ai_analysis.settings, "router_base_url", "")
+
+    async def fake_prompt(prompt, timeout):
+        assert "root_cause_summary_vi" in prompt
+        return json.dumps({
+            "root_cause_summary_vi": "Đích backup đầy",
+            "severity": "critical",
+            "suggested_action_vi": "Mở rộng dung lượng đích",
+        })
+
+    monkeypatch.setattr(ai_analysis, "run_claude_prompt", fake_prompt)
+    result = asyncio.run(ai_analysis._call_router("backup failed"))
+    assert result["severity"] == "critical"
+
+
+def test_digest_uses_claude_without_router_config(monkeypatch):
+    monkeypatch.setattr(ai_analysis.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(ai_analysis.settings, "claude_chat_enabled", True)
+    monkeypatch.setattr(ai_analysis.settings, "router_api_key", "")
+    monkeypatch.setattr(ai_analysis.settings, "router_base_url", "")
+
+    async def fake_prompt(prompt, timeout):
+        assert ai_analysis.DIGEST_SYSTEM_PROMPT in prompt
+        return "Backup ổn định, không có bất thường mới."
+
+    monkeypatch.setattr(ai_analysis, "run_claude_prompt", fake_prompt)
+    result = asyncio.run(ai_analysis._call_digest_router("2 job thành công"))
+    assert result.startswith("Backup ổn định")
+
+
 def test_call_router_raises_on_truncated_response(monkeypatch):
     completion = _tool_completion(ai_analysis.TOOL_NAME, {}, finish_reason="length")
     _install_fake_client(monkeypatch, completion)

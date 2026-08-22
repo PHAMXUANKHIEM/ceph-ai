@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 import httpx
 
 from config.settings import settings
 from shared import db
 from shared.models import BackupAnomaly, BackupJob
+from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.router_client import build_router_client
 from worker.backup import alerting
 from worker.redaction import default_redactor
@@ -102,12 +105,48 @@ async def _call_router(user_content: str) -> dict:
     structured-output pattern `worker/llm/router_client.py::_call_router`
     already uses (forced `tool_choice`, `strict` schema — verified there
     against a real running router that otherwise answers in plain text)."""
+    schema = _tool_schema()
+    if settings.codex_chat_enabled:
+        captured: dict = {}
+
+        async def capture(tool_name: str, arguments: dict) -> tuple[str, bool]:
+            if tool_name != TOOL_NAME:
+                return f"Tool không được phép: {tool_name}", False
+            captured.update(arguments)
+            return "Đã ghi nhận phân tích backup.", True
+
+        prompt = (
+            SYSTEM_PROMPT
+            + f"\n\nBạn BẮT BUỘC gọi tool {TOOL_NAME} đúng một lần; không trả kết quả chỉ bằng văn bản.\n\n"
+            + user_content
+        )
+        try:
+            await codex_app_server.run_turn(prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS)
+        except CodexAppServerError as exc:
+            raise AIAnalysisError(f"Codex call failed: {exc}") from exc
+        return captured
+
+    if settings.claude_chat_enabled:
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nChỉ trả về một JSON object hợp lệ, không markdown, tuân thủ schema sau:\n"
+            + json.dumps(schema["function"]["parameters"], ensure_ascii=False)
+            + "\n\n"
+            + user_content
+        )
+        try:
+            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+            return json.loads(clean)
+        except (ClaudeCLIError, json.JSONDecodeError) as exc:
+            raise AIAnalysisError(f"Claude call failed: {exc}") from exc
+
     client = _get_client()
     try:
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
-            tools=[_tool_schema()],
+            tools=[schema],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -161,6 +200,31 @@ async def _call_digest_router(user_content: str) -> str:
     `create()` call, matching `worker/llm/router_client.py::_call_router`'s
     own verified workaround for this project's router always responding
     via SSE regardless of whether streaming was requested."""
+    prompt = DIGEST_SYSTEM_PROMPT + "\n\n" + user_content
+    if settings.codex_chat_enabled:
+        async def reject_tools(tool_name: str, arguments: dict) -> tuple[str, bool]:
+            return f"Digest không cho phép tool: {tool_name}", False
+
+        try:
+            result = await codex_app_server.run_turn(
+                prompt, [], reject_tools, timeout=ROUTER_TIMEOUT_SECONDS
+            )
+        except CodexAppServerError as exc:
+            raise AIAnalysisError(f"Digest Codex call failed: {exc}") from exc
+        content = str(result.get("reply_text") or "").strip()
+        if not content:
+            raise AIAnalysisError("Digest Codex response had no content")
+        return content
+
+    if settings.claude_chat_enabled:
+        try:
+            content = (await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)).strip()
+        except ClaudeCLIError as exc:
+            raise AIAnalysisError(f"Digest Claude call failed: {exc}") from exc
+        if not content:
+            raise AIAnalysisError("Digest Claude response had no content")
+        return content
+
     client = _get_client()
     try:
         async with client.chat.completions.stream(
