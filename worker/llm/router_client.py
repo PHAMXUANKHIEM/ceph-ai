@@ -1250,8 +1250,12 @@ def _record_execution_result(
                 IncidentStatus.VERIFYING.value if succeeded else IncidentStatus.FAILED.value
             )
             if succeeded:
+                verify_delay = (
+                    30 if incident.ceph_code == "OSD_DOWN"
+                    else settings.incident_verify_delay_seconds
+                )
                 incident.verify_after = datetime.utcnow() + timedelta(
-                    seconds=settings.incident_verify_delay_seconds
+                    seconds=verify_delay
                 )
             audit.record(
                 session,

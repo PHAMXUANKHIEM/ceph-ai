@@ -421,6 +421,41 @@ def test_failed_incident_does_not_permanently_block_a_fresh_remediation_attempt(
         ]
 
 
+def test_recurrent_osd_down_retries_after_executed_action_verification_window(
+    isolated_db, monkeypatch
+):
+    incident_id = _seed_incident("OSD_DOWN", IncidentStatus.VERIFYING.value)
+    with db_module.SessionLocal() as session:
+        session.add(Action(
+            incident_id=incident_id, action_id="restart_osd_daemon",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.AUTO_EXECUTED.value,
+            executed_at=datetime.utcnow() - timedelta(seconds=31),
+        ))
+        session.commit()
+    published = []
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async(published))
+    monkeypatch.setattr(
+        watcher_main.collector, "collect_relevant_logs",
+        lambda *a, **k: (["10.20.1.83"], "osd.0 down"),
+    )
+    monkeypatch.setattr(
+        watcher_main.capacity_evidence, "collect_capacity_evidence", lambda *a, **k: None,
+    )
+
+    watcher_main.build_and_publish_incident(None, {
+        "status": "HEALTH_WARN",
+        "checks": {"OSD_DOWN": {
+            "severity": "HEALTH_WARN",
+            "detail": [{"message": "osd.0 is down"}],
+        }},
+    })
+
+    assert len(published) == 1
+    with db_module.SessionLocal() as session:
+        assert session.query(Incident).filter_by(ceph_code="OSD_DOWN").count() == 2
+
+
 def test_incident_creation_sends_telegram_before_ai_diagnosis(isolated_db, monkeypatch):
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async([]))
     monkeypatch.setattr(

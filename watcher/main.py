@@ -41,7 +41,7 @@ from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
-from shared.models import Action, Cluster, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ _RECOVERABLE_STATUSES = {
 # for a warning that still exists; otherwise one historical router/preflight
 # failure permanently suppresses Autopilot for that ceph_code.
 _IN_FLIGHT_DEDUPE_STATUSES = _RECOVERABLE_STATUSES - {IncidentStatus.FAILED.value}
+_OSD_RESTART_RETRY_AFTER_SECONDS = 30
 
 # Mirrors dashboard/routes/chat.py::CHAT_REQUEST_CEPH_CODE (kept as its own
 # copy rather than a cross-import — Watcher and Dashboard are independent
@@ -420,6 +421,42 @@ def build_and_publish_incident(
             else query.filter(Incident.cluster_id.is_(None))
         )
         already_open_codes = {row.ceph_code for row in query.all()}
+
+        # OSD_DOWN can recur immediately after a successful systemd restart
+        # (or the daemon can die again while the previous Incident is still
+        # waiting for the generic verification window).  Once the exact OSD
+        # restart has been AUTO_EXECUTED for 30 seconds, a fresh Ceph
+        # OSD_DOWN is new actionable evidence and must not be suppressed by
+        # the old VERIFYING row.  Any other open OSD_DOWN state still blocks
+        # duplicates normally.
+        if "OSD_DOWN" in already_open_codes:
+            osd_query = session.query(Incident).filter(
+                Incident.ceph_code == "OSD_DOWN",
+                Incident.status.in_(_IN_FLIGHT_DEDUPE_STATUSES),
+            )
+            osd_query = (
+                osd_query.filter(Incident.cluster_id == cluster_id)
+                if cluster_id is not None else osd_query.filter(Incident.cluster_id.is_(None))
+            )
+            cutoff = datetime.utcnow() - timedelta(seconds=_OSD_RESTART_RETRY_AFTER_SECONDS)
+            open_osd_rows = osd_query.all()
+            retryable = bool(open_osd_rows)
+            for open_incident in open_osd_rows:
+                if open_incident.status != IncidentStatus.VERIFYING.value:
+                    retryable = False
+                    break
+                executed = session.query(Action).filter(
+                    Action.incident_id == open_incident.id,
+                    Action.action_id == "restart_osd_daemon",
+                    Action.status == ActionStatus.AUTO_EXECUTED.value,
+                    Action.executed_at.isnot(None),
+                    Action.executed_at <= cutoff,
+                ).first()
+                if executed is None:
+                    retryable = False
+                    break
+            if retryable:
+                already_open_codes.discard("OSD_DOWN")
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
