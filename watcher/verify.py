@@ -54,9 +54,10 @@ from datetime import datetime
 
 from config.settings import settings
 from shared import audit, db, remediation_cases, telegram_alerts
-from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
 from watcher import publisher
 from watcher.ceph_code_families import is_monitor_owned
+from worker.policy.playbook_registry import PostcheckResult, resolve_case_postcheck, run_postcheck
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,43 @@ def _previous_attempts(session, incident_id: str) -> list[dict]:
     return attempts
 
 
+def _evaluate_latest_postcheck(
+    session, incident: Incident, *, current_codes: set[str], health: dict | None,
+) -> tuple[PostcheckResult, Action | None]:
+    action = (
+        session.query(Action)
+        .filter(Action.incident_id == incident.id)
+        .filter(Action.status.in_([
+            ActionStatus.EXECUTED.value, ActionStatus.AUTO_EXECUTED.value,
+        ]))
+        .order_by(Action.executed_at.desc())
+        .first()
+    )
+    if action is None:
+        return PostcheckResult("INCONCLUSIVE", "no executed action exists for verification"), None
+    case = session.query(RemediationCase).filter_by(action_id=action.id).one_or_none()
+    if case is None or case.preflight_snapshot_json is None:
+        # Compatibility for pre-Case-Memory rows. New actions always create a
+        # Case with a contract snapshot; historical rows (including Pha-1
+        # Cases created before Playbook Registry) retain the verified behavior
+        # they had before Pha 2 and remain excluded from Trust Engine learning.
+        outcome = "FAILED" if incident.ceph_code in current_codes else "PASSED"
+        return PostcheckResult(outcome, "legacy action verified by fault absence"), action
+    try:
+        snapshot = json.loads(case.preflight_snapshot_json or "null")
+    except (TypeError, ValueError):
+        snapshot = None
+    hook_id, error = resolve_case_postcheck(
+        action_id=action.action_id, playbook_version=case.playbook_version,
+        contract_snapshot=snapshot,
+    )
+    if error:
+        return PostcheckResult("INCONCLUSIVE", error), action
+    return run_postcheck(
+        hook_id, fault_present=incident.ceph_code in current_codes, health=health,
+    ), action
+
+
 def verify_pending_incidents(
     current_codes: set[str],
     health: dict | None = None,
@@ -146,7 +184,26 @@ def verify_pending_incidents(
                 # để nguyên cho monitor sở hữu nó tự quyết.
                 continue
 
-            if incident.ceph_code not in current_codes:
+            postcheck, verified_action = _evaluate_latest_postcheck(
+                session, incident, current_codes=current_codes, health=health,
+            )
+            if postcheck.outcome == "INCONCLUSIVE":
+                incident.status = IncidentStatus.FAILED.value
+                incident.verify_after = None
+                if verified_action is not None:
+                    remediation_cases.record_inconclusive(
+                        session, action_id=verified_action.id, at=now, reason=postcheck.reason,
+                    )
+                audit.record(
+                    session, incident_id=incident.id,
+                    action_id=verified_action.id if verified_action else None,
+                    event_type=audit.EVENT_PLAYBOOK_POSTCHECK_INCONCLUSIVE,
+                    actor=audit.ACTOR_SYSTEM,
+                )
+                counts["exhausted"] += 1
+                continue
+
+            if postcheck.outcome == "PASSED":
                 incident.status = IncidentStatus.RESOLVED.value
                 incident.verify_after = None
                 command = _last_attempted_command(session, incident.id)

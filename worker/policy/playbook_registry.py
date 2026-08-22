@@ -75,6 +75,13 @@ class ContractDecision:
         }
 
 
+@dataclass(frozen=True)
+class PostcheckResult:
+    outcome: str
+    reason: str
+    hook_id: str | None = None
+
+
 def _contract(action_id: str, *, version: str = "1", target_schema: str,
               max_autonomy: str, conflict_scope: str, max_targets: int = 1,
               cooldown_seconds: int = 1800, command_builder: str | None = "closed_command_builder",
@@ -172,6 +179,44 @@ def validate_contract(contract: PlaybookContract) -> tuple[str, ...]:
 def registry_coverage(required_action_ids) -> tuple[str, ...]:
     """Return missing IDs deterministically; callers/tests decide whether to abort."""
     return tuple(sorted(set(required_action_ids) - set(PLAYBOOKS)))
+
+
+def resolve_case_postcheck(
+    *, action_id: str, playbook_version: str, contract_snapshot: dict | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the immutable Case contract, never silently use current defaults."""
+    if not isinstance(contract_snapshot, dict):
+        return None, "case contract snapshot is missing or malformed"
+    registry = contract_snapshot.get("registry")
+    if not isinstance(registry, dict):
+        return None, "case has no registered playbook contract"
+    if registry.get("action_id") != action_id:
+        return None, "case contract action_id does not match executed action"
+    if str(registry.get("version")) != str(playbook_version):
+        return None, "case contract version does not match frozen playbook_version"
+    hook_id = registry.get("postcheck")
+    if hook_id not in POSTCHECK_HOOKS:
+        return None, f"case postcheck hook {hook_id!r} is not registered"
+    return hook_id, None
+
+
+def _fault_absence_postcheck(*, fault_present: bool, health: dict | None) -> PostcheckResult:
+    # ``health`` is retained in the strategy signature so specialized hooks
+    # can add daemon/pool predicates without changing Watcher's dispatch API.
+    if fault_present:
+        return PostcheckResult("FAILED", "fault family is still present in fresh telemetry")
+    return PostcheckResult("PASSED", "fault family is absent from fresh telemetry")
+
+
+_POSTCHECK_STRATEGIES = {hook_id: _fault_absence_postcheck for hook_id in POSTCHECK_HOOKS}
+
+
+def run_postcheck(hook_id: str, *, fault_present: bool, health: dict | None) -> PostcheckResult:
+    strategy = _POSTCHECK_STRATEGIES.get(hook_id)
+    if strategy is None:
+        return PostcheckResult("INCONCLUSIVE", f"postcheck hook {hook_id!r} cannot be resolved")
+    result = strategy(fault_present=fault_present, health=health)
+    return PostcheckResult(result.outcome, result.reason, hook_id=hook_id)
 
 
 def describe_contract(contract: PlaybookContract, *, command_builder_available: bool) -> dict:

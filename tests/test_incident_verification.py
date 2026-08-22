@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import watcher.verify as verify
-from shared import db as db_module
+from shared import db as db_module, remediation_cases
 from shared.db import Base
 from shared.models import (
     Action,
@@ -23,6 +23,7 @@ from shared.models import (
     AuditEntry,
     Incident,
     IncidentStatus,
+    RemediationCase,
 )
 
 
@@ -97,6 +98,26 @@ def _seed(ceph_code="OSD_DOWN", *, verify_after_minutes_ago=10, attempts=0, comm
         return incident.id
 
 
+def _attach_case(
+    incident_id: str, *, malformed_snapshot: bool = False, legacy_without_snapshot: bool = False,
+):
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        action = session.query(Action).filter_by(incident_id=incident_id).one()
+        case = remediation_cases.create_for_action(
+            session, incident=incident, action=action,
+            redacted_envelope={"nodes": ["10.20.1.50"], "cluster_snapshot": {}},
+            diagnosis="test", model_provider="test",
+        )
+        case.outcome = "EXECUTED_PENDING_VERIFY"
+        if malformed_snapshot:
+            case.preflight_snapshot_json = '{"registry":{"action_id":"different_action"}}'
+        elif legacy_without_snapshot:
+            case.preflight_snapshot_json = None
+        session.commit()
+        return case.id
+
+
 # --- lỗi đã hết thật ---------------------------------------------------------
 
 
@@ -124,6 +145,46 @@ def test_verified_resolution_is_written_to_the_audit_trail(isolated_db):
     with db_module.SessionLocal() as session:
         events = [e.event_type for e in session.query(AuditEntry).filter_by(incident_id=incident_id)]
     assert "incident_fix_verified" in events
+
+
+def test_case_postcheck_strategy_resolves_from_frozen_contract(isolated_db):
+    incident_id = _seed()
+    case_id = _attach_case(incident_id)
+
+    counts = verify.verify_pending_incidents(set(), health={"checks": {}})
+
+    assert counts["verified"] == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, incident_id).status == IncidentStatus.RESOLVED.value
+        assert session.get(RemediationCase, case_id).outcome == "VERIFIED_SUCCESS"
+
+
+def test_corrupt_case_contract_makes_postcheck_inconclusive_without_retry(isolated_db):
+    incident_id = _seed()
+    case_id = _attach_case(incident_id, malformed_snapshot=True)
+
+    counts = verify.verify_pending_incidents(set(), health={"checks": {}})
+
+    assert counts["exhausted"] == 1
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        case = session.get(RemediationCase, case_id)
+        events = [e.event_type for e in session.query(AuditEntry).filter_by(incident_id=incident_id)]
+        assert incident.status == IncidentStatus.FAILED.value
+        assert case.outcome == "INCONCLUSIVE"
+        assert "playbook_postcheck_inconclusive" in events
+
+
+def test_legacy_case_without_contract_snapshot_keeps_compatibility_verification(isolated_db):
+    incident_id = _seed()
+    case_id = _attach_case(incident_id, legacy_without_snapshot=True)
+
+    counts = verify.verify_pending_incidents(set(), health={"checks": {}})
+
+    assert counts["verified"] == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, incident_id).status == IncidentStatus.RESOLVED.value
+        assert session.get(RemediationCase, case_id).outcome == "VERIFIED_SUCCESS"
 
 
 # --- lỗi vẫn còn -------------------------------------------------------------

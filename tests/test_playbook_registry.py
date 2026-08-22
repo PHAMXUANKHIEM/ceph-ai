@@ -3,7 +3,7 @@ from dataclasses import replace
 from worker.policy.playbook_registry import (
     PLAYBOOKS, POSTCHECK_HOOKS, PREFLIGHT_HOOKS, describe_contract,
     evaluate_auto_execution, get_contract, registry_coverage,
-    registry_status_rows, validate_contract,
+    registry_status_rows, resolve_case_postcheck, run_postcheck, validate_contract,
 )
 
 
@@ -151,3 +151,18 @@ def test_registry_coverage_reports_missing_actions_sorted():
     assert registry_coverage({"resync_ntp", "missing_z", "missing_a"}) == (
         "missing_a", "missing_z",
     )
+
+
+def test_case_postcheck_resolution_uses_frozen_contract_and_fails_closed():
+    snapshot = {"registry": get_contract("resync_ntp").snapshot(), "registered": True}
+    hook_id, error = resolve_case_postcheck(
+        action_id="resync_ntp", playbook_version="1", contract_snapshot=snapshot,
+    )
+    assert error is None and hook_id == "fresh_health_telemetry"
+    assert run_postcheck(hook_id, fault_present=False, health={}).outcome == "PASSED"
+    assert run_postcheck(hook_id, fault_present=True, health={}).outcome == "FAILED"
+
+    hook_id, error = resolve_case_postcheck(
+        action_id="resync_ntp", playbook_version="2", contract_snapshot=snapshot,
+    )
+    assert hook_id is None and "version" in error

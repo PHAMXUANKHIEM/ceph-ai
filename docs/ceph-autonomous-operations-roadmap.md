@@ -660,6 +660,9 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Preflight/post-check dùng catalogue hook đóng phía server. Contract tham
   chiếu tên hook không tồn tại sẽ fail validation và bị hạ về L2; coverage
   checker phát hiện action catalogue chưa có playbook tương ứng.
+- Watcher resolve post-check từ contract snapshot bất biến của Case thay vì
+  chọn generic check ngầm. Snapshot hỏng, version/action lệch hoặc hook không
+  còn đăng ký sẽ kết luận inconclusive, audit và dừng vòng tự động.
 
 - Chuẩn hóa contract cho action hiện có.
 - Khai báo preflight, post-check, conflict scope và blast radius.
