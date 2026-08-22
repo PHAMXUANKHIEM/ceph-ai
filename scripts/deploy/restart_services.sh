@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Redeploys this exact checkout: pulls latest main, installs any new
 # dependencies, applies pending DB migrations, and restarts the four
-# long-running services (watcher, worker, dashboard)
+# long-running services (watcher, AI remediation watcher, worker, dashboard)
 # the same way they've always been run here — plain `nohup ... & disown`
 # background processes, no systemd unit exists on this host.
 #
@@ -67,6 +67,7 @@ alembic upgrade heads
 
 echo "==> Stopping existing services (if running)"
 pkill -f "$VENV_PYTHON -m watcher.main" || true
+pkill -f "$VENV_PYTHON -m watcher.remediation_main" || true
 pkill -f "$VENV_PYTHON -m worker.main" || true
 pkill -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
 sleep 2
@@ -87,6 +88,8 @@ DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 
 nohup "$VENV_PYTHON" -m watcher.main >> "/var/log/${LOG_TAG}-watcher.log" 2>&1 &
+disown
+nohup "$VENV_PYTHON" -m watcher.remediation_main >> "/var/log/${LOG_TAG}-remediation-watcher.log" 2>&1 &
 disown
 nohup "$VENV_PYTHON" -m worker.main >> "/var/log/${LOG_TAG}-worker.log" 2>&1 &
 disown
@@ -128,4 +131,4 @@ fi
 echo "==> Deploy complete: $(date -u +%FT%TZ)"
 echo "==> Dashboard route check: /pgs HTTP $DASHBOARD_ROUTE_STATUS"
 echo "==> Running processes:"
-pgrep -fa "$VENV_PYTHON -m (watcher|worker)\.main|$VENV_PYTHON -m uvicorn dashboard.app" || echo "WARNING: no matching processes found after restart"
+pgrep -fa "$VENV_PYTHON -m watcher\.(main|remediation_main)|$VENV_PYTHON -m worker\.main|$VENV_PYTHON -m uvicorn dashboard.app" || echo "WARNING: no matching processes found after restart"

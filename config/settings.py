@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # cần người cân lại weight) — với chúng, mỗi vòng thêm chỉ tốn một lần
     # gọi router và một loạt thông báo.
     incident_verify_max_attempts: int = 2
+    # Dedicated safety-critical watcher; intentionally independent from the
+    # heavier inventory/RBD/Log Intelligence loop in watcher.main.
+    ai_remediation_poll_interval_seconds: int = 10
 
     # OSD/data node access — used by watcher/collector.py to fetch OSD daemon
     # logs (Story 1.4). Same cluster as ceph_mon_nodes above; also blank by

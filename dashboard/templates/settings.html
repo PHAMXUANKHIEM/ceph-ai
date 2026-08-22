@@ -101,6 +101,8 @@
       {% if manual_worker_restart_error %}<div class="settings-toast is-error">{{ manual_worker_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
       {% if manual_watcher_restart_success %}<div class="settings-toast is-success">{{ manual_watcher_restart_success }}</div>{% endif %}
       {% if manual_watcher_restart_error %}<div class="settings-toast is-error">{{ manual_watcher_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
+      {% if manual_remediation_watcher_restart_success %}<div class="settings-toast is-success">{{ manual_remediation_watcher_restart_success }}</div>{% endif %}
+      {% if manual_remediation_watcher_restart_error %}<div class="settings-toast is-error">{{ manual_remediation_watcher_restart_error }} <a href="#server-log">View logs</a></div>{% endif %}
       <div class="service-grid">
         <article class="service-card">
           <div class="service-card-top"><span class="service-icon">▦</span><span class="service-status is-running"><i></i>Running</span></div>
@@ -116,6 +118,11 @@
           <div class="service-card-top"><span class="service-icon">◎</span><span class="service-status is-running"><i></i>Running</span></div>
           <div><h2>Watcher</h2><p>Monitors cluster state and configuration changes.</p></div>
           <div class="service-card-footer"><span class="service-meta">Cluster monitor</span><button type="button" class="service-restart-button" data-restart-service="Watcher" data-restart-action="/settings/restart-watcher" data-restart-warning="Cluster monitoring will pause briefly while the watcher restarts."><span>↻</span> Restart</button></div>
+        </article>
+        <article class="service-card">
+          <div class="service-card-top"><span class="service-icon">⚕</span><span class="service-status is-running"><i></i>Running</span></div>
+          <div><h2>AI Remediation Watcher</h2><p>Polls Ceph health on a fast path and triggers autonomous recovery.</p></div>
+          <div class="service-card-footer"><span class="service-meta">AI remediation · 10s</span><button type="button" class="service-restart-button" data-restart-service="Remediation-Watcher" data-restart-action="/settings/restart-remediation-watcher" data-restart-warning="Automatic remediation detection will pause briefly while this watcher restarts."><span>↻</span> Restart</button></div>
         </article>
       </div>
       <article class="card" style="margin-top:1rem">
@@ -188,6 +195,7 @@
         <form method="post" action="/settings/restart-dashboard" id="restart-form-dashboard"></form>
         <form method="post" action="/settings/restart-worker" id="restart-form-worker"></form>
         <form method="post" action="/settings/restart-watcher" id="restart-form-watcher"></form>
+        <form method="post" action="/settings/restart-remediation-watcher" id="restart-form-remediation-watcher"></form>
       </div>
     </section>
     {% endif %}

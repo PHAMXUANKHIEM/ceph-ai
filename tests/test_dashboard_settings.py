@@ -1657,6 +1657,8 @@ def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
     assert "Tiến trình hệ thống" in response.text
     assert 'action="/settings/restart-worker"' in response.text
     assert 'action="/settings/restart-watcher"' in response.text
+    assert 'action="/settings/restart-remediation-watcher"' in response.text
+    assert "AI Remediation Watcher" in response.text
     assert 'action="/settings/restart-dashboard"' in response.text
     assert "Playbook Registry" in response.text
     assert "resync_ntp" in response.text
@@ -1695,6 +1697,15 @@ def test_restart_watcher_route_rejects_non_admin(dashboard_client):
     _login_as(dashboard_client, "regular", "s3cret-pw")
 
     response = dashboard_client.post("/settings/restart-watcher")
+
+    assert response.status_code == 403
+
+
+def test_restart_remediation_watcher_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post("/settings/restart-remediation-watcher")
 
     assert response.status_code == 403
 
@@ -2164,6 +2175,20 @@ def test_restart_watcher_route_shows_success_message(dashboard_client, monkeypat
 
     assert response.status_code == 200
     assert "Đã khởi động lại Watcher (PID 4343)" in response.text
+
+
+def test_restart_remediation_watcher_route_shows_success_message(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route,
+        "restart_remediation_watcher",
+        lambda: {"restarted": True, "new_pid": 4444, "error": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/restart-remediation-watcher")
+
+    assert response.status_code == 200
+    assert "Đã khởi động lại AI Remediation Watcher (PID 4444)" in response.text
 
 
 def test_unauthenticated_restart_worker_redirects_to_login(dashboard_client):

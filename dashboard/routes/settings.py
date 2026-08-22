@@ -166,6 +166,9 @@ PGREP_TIMEOUT_SECONDS = 5.0
 WATCHER_MODULE = "watcher.main"
 WATCHER_PGREP_PATTERN = r"(^|[[:space:]])-m[[:space:]]+watcher\.main([[:space:]]|$)"
 WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-watcher.log")
+REMEDIATION_WATCHER_MODULE = "watcher.remediation_main"
+REMEDIATION_WATCHER_PGREP_PATTERN = r"(^|[[:space:]])-m[[:space:]]+watcher\.remediation_main([[:space:]]|$)"
+REMEDIATION_WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-remediation-watcher.log")
 
 # Restarting the Dashboard itself — unlike Worker/Watcher, this is the very
 # process handling the HTTP request that triggers it, so it can't just spawn
@@ -266,6 +269,10 @@ def _find_worker_pids() -> list[int]:
 
 def _find_watcher_pids() -> list[int]:
     return _find_pids(WATCHER_PGREP_PATTERN)
+
+
+def _find_remediation_watcher_pids() -> list[int]:
+    return _find_pids(REMEDIATION_WATCHER_PGREP_PATTERN)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -435,6 +442,17 @@ def _start_watcher() -> int:
         **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},
     }
     return _start_process(WATCHER_MODULE, WATCHER_LOG_PATH, child_env)
+
+
+def _start_remediation_watcher() -> int:
+    _sync_cluster_settings_from_env()
+    child_env = {
+        **os.environ,
+        **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},
+    }
+    return _start_process(
+        REMEDIATION_WATCHER_MODULE, REMEDIATION_WATCHER_LOG_PATH, child_env,
+    )
 
 
 # --- Database connection (Settings page's "Kết nối Database" section) ---
@@ -659,6 +677,24 @@ def restart_watcher() -> dict:
         }
 
 
+def restart_remediation_watcher() -> dict:
+    try:
+        old_pids = _find_remediation_watcher_pids()
+        new_pid = _start_remediation_watcher()
+        time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
+        if not _pid_alive(new_pid):
+            return {
+                "restarted": False, "new_pid": None,
+                "error": "AI Remediation Watcher exited immediately — check its log",
+            }
+        if old_pids:
+            _stop_worker(old_pids)
+        return {"restarted": True, "new_pid": new_pid, "error": None}
+    except Exception:
+        logger.exception("restart_remediation_watcher: failed")
+        return {"restarted": False, "new_pid": None, "error": "internal error — see server log"}
+
+
 def _dashboard_restart_script(pid: int, host: str, port: int) -> str:
     poll_iterations = int(DASHBOARD_RESTART_WAIT_SECONDS / 0.2)
     return (
@@ -832,6 +868,8 @@ def _settings_context(
     manual_worker_restart_error: str | None = None,
     manual_watcher_restart_success: str | None = None,
     manual_watcher_restart_error: str | None = None,
+    manual_remediation_watcher_restart_success: str | None = None,
+    manual_remediation_watcher_restart_error: str | None = None,
     database_error: str | None = None,
     database_success: str | None = None,
     database_values: dict | None = None,
@@ -914,6 +952,8 @@ def _settings_context(
         "manual_worker_restart_error": manual_worker_restart_error,
         "manual_watcher_restart_success": manual_watcher_restart_success,
         "manual_watcher_restart_error": manual_watcher_restart_error,
+        "manual_remediation_watcher_restart_success": manual_remediation_watcher_restart_success,
+        "manual_remediation_watcher_restart_error": manual_remediation_watcher_restart_error,
         "database_error": database_error,
         "database_success": database_success,
         "database_reset_error": database_reset_error,
@@ -1012,6 +1052,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
             "manual_worker_restart_error",
             "manual_watcher_restart_success",
             "manual_watcher_restart_error",
+            "manual_remediation_watcher_restart_success",
+            "manual_remediation_watcher_restart_error",
         )
     ):
         return "restart-controls"
@@ -1960,6 +2002,7 @@ async def cluster_settings_submit(
         )
 
     restart_result = await asyncio.to_thread(restart_watcher)
+    remediation_restart_result = await asyncio.to_thread(restart_remediation_watcher)
     if restart_result["restarted"]:
         cluster_success = (
             f"Kết nối thành công. Đã khởi động lại Watcher (PID {restart_result['new_pid']})."
@@ -1971,6 +2014,10 @@ async def cluster_settings_submit(
             "Không thể tự khởi động lại Watcher — vui lòng khởi động lại thủ công "
             "(xem log server để biết chi tiết)."
         )
+    if not remediation_restart_result["restarted"]:
+        watcher_restart_error = (
+            (watcher_restart_error + " ") if watcher_restart_error else ""
+        ) + "Không thể tự khởi động lại AI Remediation Watcher."
 
     # 2026-07-24 fix: Worker also reads ceph_exec_mode/ceph_mon_nodes/etc
     # directly (worker/executor/commands.py's package-based upgrade AND
@@ -2143,6 +2190,7 @@ async def settings_save_database(
 
     await asyncio.to_thread(restart_worker)
     await asyncio.to_thread(restart_watcher)
+    await asyncio.to_thread(restart_remediation_watcher)
 
     dashboard_host = request.url.hostname or "127.0.0.1"
     dashboard_port = request.url.port or 80
@@ -2558,6 +2606,37 @@ async def restart_watcher_submit(request: Request, user: str = Depends(require_l
             user,
             manual_watcher_restart_error=(
                 result["error"] or "Không khởi động lại được Watcher — xem log server để biết chi tiết."
+            ),
+        ),
+    )
+
+
+@router.post("/settings/restart-remediation-watcher", response_class=HTMLResponse)
+async def restart_remediation_watcher_submit(
+    request: Request, user: str = Depends(require_login),
+):
+    """Restart the low-latency watcher dedicated to autonomous remediation."""
+    _require_admin_privilege(user)
+    result = await asyncio.to_thread(restart_remediation_watcher)
+    if result["restarted"]:
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                manual_remediation_watcher_restart_success=(
+                    f"Đã khởi động lại AI Remediation Watcher (PID {result['new_pid']})."
+                ),
+            ),
+        )
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            manual_remediation_watcher_restart_error=(
+                result["error"]
+                or "Không khởi động lại được AI Remediation Watcher — xem log server."
             ),
         ),
     )

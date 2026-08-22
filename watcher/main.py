@@ -1300,7 +1300,10 @@ def run_all_clusters() -> None:
         logger.info("run_all_clusters: started observed-cluster loop for %r (id=%s)", cluster.name, cluster.id)
 
     run(
-        on_transition=functools.partial(build_and_publish_incident, cluster_id=default_cluster_id),
+        # Default-cluster AI incident creation is owned exclusively by
+        # watcher.remediation_main.  Keeping it here too leaves a race where
+        # both processes pass the DB dedupe query before either inserts.
+        on_transition=default_on_transition,
         cluster_id=default_cluster_id,
     )
 
