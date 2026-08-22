@@ -25,7 +25,9 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
   - [~] Mở rộng thêm các nguồn metric khác:
     - [x] Capacity cluster/pool/OSD từ `ceph df detail` và `ceph osd df`, đóng
       băng trong Incident rồi truyền nguyên snapshot sang LogFinding tương quan.
-    - [ ] Volume và node resource.
+    - [x] Volume RBD: snapshot pool/image, IOPS, read/write latency, baseline,
+      observed peak và streak; correlation bắt buộc khớp `volume:pool/image` khi có entity.
+    - [ ] Node resource.
 - [ ] **2. Incident timeline thống nhất và AI postmortem**
   - Dòng thời gian: phát hiện → evidence → chẩn đoán → đề xuất → duyệt → thực thi → xác minh.
   - Postmortem chỉ được viết từ timeline/audit đã lưu, gồm root cause, ảnh hưởng,

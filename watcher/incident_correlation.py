@@ -23,6 +23,7 @@ _FAMILY_CODES: dict[str, tuple[str, ...]] = {
         "OSD_NEARFULL", "OSD_BACKFILLFULL", "OSD_FULL",
         "POOL_NEARFULL", "POOL_NEAR_FULL", "POOL_FULL", "BACKFILL_FULL",
     ),
+    "volume_saturation": ("VOLUME_SATURATED:",),
     "daemon_crash": ("RECENT_CRASH", "DAEMON_CRASH"),
     "clock_skew": ("MON_CLOCK_SKEW", "CLOCK_SKEW"),
     "authentication": ("AUTH_",),
@@ -35,6 +36,7 @@ _TERMINAL_STATUSES = {
     IncidentStatus.AUTO_FIXED.value,
 }
 _OSD_RE = re.compile(r"\bosd[.\s_-]?(\d+)\b", re.IGNORECASE)
+_VOLUME_CODE_RE = re.compile(r"^VOLUME_SATURATED:([^/]+)/(.+)$", re.IGNORECASE)
 
 
 def family_matches_code(fault_family: str | None, ceph_code: str) -> bool:
@@ -63,6 +65,23 @@ def _incident_osds(incident: Incident) -> set[str]:
     return set(_OSD_RE.findall(text))
 
 
+def _finding_volumes(finding: LogFinding) -> set[str]:
+    try:
+        entities = json.loads(finding.semantic_entities_json or "[]")
+    except (TypeError, ValueError):
+        return set()
+    return {
+        entity.removeprefix("volume:").lower()
+        for entity in entities
+        if isinstance(entity, str) and entity.startswith("volume:")
+    }
+
+
+def _incident_volumes(incident: Incident) -> set[str]:
+    match = _VOLUME_CODE_RE.match(incident.ceph_code)
+    return {f"{match.group(1).lower()}/{match.group(2).lower()}"} if match else set()
+
+
 def _same_cluster_filter(cluster_id: str, is_default: bool):
     if is_default:
         return or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
@@ -86,16 +105,22 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
         .all()
     )
     finding_osds = _finding_osds(finding)
+    finding_volumes = _finding_volumes(finding)
     for incident in candidates:
         if not family_matches_code(finding.fault_family, incident.ceph_code):
             continue
         incident_osds = _incident_osds(incident)
         if finding_osds and incident_osds and finding_osds.isdisjoint(incident_osds):
             continue
+        incident_volumes = _incident_volumes(incident)
+        if finding_volumes and incident_volumes and finding_volumes.isdisjoint(incident_volumes):
+            continue
+        matched_volumes = finding_volumes & incident_volumes
         finding.correlated_incident_id = incident.id
         finding.correlation_reason = (
             f"server:{finding.fault_family}:ceph_code={incident.ceph_code}"
             + (f":osd={','.join(sorted(finding_osds & incident_osds))}" if finding_osds & incident_osds else "")
+            + (f":volume={','.join(sorted(matched_volumes))}" if matched_volumes else "")
         )
         finding.correlated_at = now
         finding.correlation_evidence_json = incident.signal_evidence_json

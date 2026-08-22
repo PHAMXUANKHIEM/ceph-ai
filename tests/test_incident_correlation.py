@@ -57,6 +57,27 @@ def test_capacity_family_accepts_real_ceph_code_variants():
     assert family_matches_code("capacity_pressure", "POOL_NEAR_FULL")
 
 
+def test_volume_correlation_requires_matching_pool_and_image():
+    session = _session()
+    now, finding, matching = _seed(
+        session, incident_code="VOLUME_SATURATED:vms/disk-1",
+        incident_excerpt="volume vms/disk-1 saturated",
+    )
+    finding.fault_family = "volume_saturation"
+    finding.semantic_entities_json = json.dumps(["volume:vms/disk-1"])
+    matching.signal_evidence_json = json.dumps({"source": "rbd_perf_image_iostat", "iops": 950})
+    session.add(Incident(
+        cluster_id=matching.cluster_id, ceph_code="VOLUME_SATURATED:vms/disk-2",
+        status=IncidentStatus.NEW.value, detected_at=now - timedelta(minutes=5),
+        log_excerpt="volume vms/disk-2 saturated",
+    ))
+    session.flush()
+
+    assert correlate_finding(session, finding, now=now) is matching
+    assert "volume=vms/disk-1" in finding.correlation_reason
+    assert json.loads(finding.correlation_evidence_json)["iops"] == 950
+
+
 def test_correlates_same_family_and_osd():
     session = _session()
     now, finding, incident = _seed(session)

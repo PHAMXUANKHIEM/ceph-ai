@@ -206,11 +206,16 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
             )
 
             if is_saturated_now:
+                sorted_latencies = sorted(state.latency_window)
                 saturated[ceph_code_for(sample["pool"], sample["image"])] = {
                     "pool": sample["pool"],
                     "image": sample["image"],
                     "iops": sample["iops"],
+                    "read_latency_ms": sample["read_latency_ms"],
+                    "write_latency_ms": sample["write_latency_ms"],
                     "latency_ms": latency_ms,
+                    "observed_peak_iops": max(state.iops_window),
+                    "baseline_latency_ms": sorted_latencies[len(sorted_latencies) // 2],
                     "consecutive_polls": state.consecutive_saturated_polls,
                 }
     return saturated
@@ -308,12 +313,32 @@ def create_or_resolve_volume_incidents(
                 continue  # already has an open Incident — don't duplicate
 
             rationale = _rationale_for(detail)
+            detected_at = datetime.utcnow()
+            signal_evidence = {
+                "source": "rbd_perf_image_iostat",
+                "captured_at": detected_at.isoformat(),
+                "pool": detail["pool"],
+                "image": detail["image"],
+                "iops": detail["iops"],
+                "read_latency_ms": detail.get("read_latency_ms"),
+                "write_latency_ms": detail.get("write_latency_ms"),
+                "effective_latency_ms": detail["latency_ms"],
+                "observed_peak_iops": detail.get("observed_peak_iops"),
+                "baseline_latency_ms": detail.get("baseline_latency_ms"),
+                "consecutive_polls": detail["consecutive_polls"],
+                "thresholds": {
+                    "near_peak_ratio": NEAR_PEAK_RATIO,
+                    "latency_spike_multiplier": LATENCY_SPIKE_MULTIPLIER,
+                    "consecutive_polls_required": CONSECUTIVE_POLLS_REQUIRED,
+                },
+            }
             incident = Incident(
                 cluster_id=cluster_id,
                 ceph_code=ceph_code,
                 status=IncidentStatus.PENDING_APPROVAL.value,
-                detected_at=datetime.utcnow(),
+                detected_at=detected_at,
                 log_excerpt=rationale,
+                signal_evidence_json=json.dumps(signal_evidence, ensure_ascii=False, sort_keys=True),
             )
             session.add(incident)
             session.flush()  # assigns incident.id, needed by the Action FK below

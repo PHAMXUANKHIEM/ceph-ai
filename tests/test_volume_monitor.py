@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 import pytest
@@ -113,6 +114,10 @@ def test_check_volumes_flags_after_consecutive_saturated_polls(monkeypatch):
     assert detail["pool"] == "vms"
     assert detail["image"] == "disk-1"
     assert detail["consecutive_polls"] == vm.CONSECUTIVE_POLLS_REQUIRED
+    assert detail["read_latency_ms"] == 10.0
+    assert detail["write_latency_ms"] == 10.0
+    assert detail["observed_peak_iops"] == 100.0
+    assert detail["baseline_latency_ms"] == 1.0
 
 
 def test_check_volumes_does_not_flag_high_iops_with_normal_latency(monkeypatch):
@@ -201,6 +206,13 @@ def test_create_or_resolve_creates_incident_and_investigate_manually_action(isol
         incident = session.query(Incident).filter_by(ceph_code="VOLUME_SATURATED:vms/disk-1").one()
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert "disk-1" in incident.log_excerpt
+        evidence = json.loads(incident.signal_evidence_json)
+        assert evidence["source"] == "rbd_perf_image_iostat"
+        assert evidence["pool"] == "vms"
+        assert evidence["image"] == "disk-1"
+        assert evidence["iops"] == 95.0
+        assert evidence["consecutive_polls"] == 3
+        assert evidence["thresholds"]["near_peak_ratio"] == vm.NEAR_PEAK_RATIO
 
         action = session.query(Action).filter_by(incident_id=incident.id).one()
         assert action.action_id == "investigate_manually"

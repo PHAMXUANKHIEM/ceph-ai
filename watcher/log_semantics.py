@@ -25,10 +25,22 @@ _FAMILY_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("network_heartbeat", re.compile(r"\b(?:heartbeat|no reply|connection reset|connection refused|broken pipe)\b", re.I)),
     ("pg_peering", re.compile(r"\b(?:peering|stale|inactive|undersized|degraded|backfill|recovery)\b.*\bpg\b|\bpg\b.*\b(?:peering|stale|inactive|undersized|degraded)\b", re.I)),
     ("capacity_pressure", re.compile(r"\b(?:nearfull|backfillfull|full ratio|no space left|enospc)\b", re.I)),
+    ("volume_saturation", re.compile(
+        r"\b(?:rbd|volume|image)\b.*\b(?:latency|iops|saturat\w*|throttl\w*|slow)\b|"
+        r"\b(?:latency|iops|saturat\w*|throttl\w*|slow)\b.*\b(?:rbd|volume|image)\b", re.I
+    )),
     ("daemon_crash", re.compile(r"\b(?:segfault|assertion failed|aborted|core dump|crash)\b", re.I)),
     ("clock_skew", re.compile(r"\b(?:clock skew|time drift|clock.*out of sync)\b", re.I)),
     ("authentication", re.compile(r"\b(?:authentication failed|permission denied|bad authorizer|unable to find keyring)\b", re.I)),
     ("rgw_request", re.compile(r"\b(?:radosgw|rgw|s3)\b.*\b(?:error|failed|timeout|slow)\b", re.I)),
+)
+
+_VOLUME_PATTERNS = (
+    re.compile(r"\b(?:rbd(?:\s+image)?|volume)\s+['\"]?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", re.I),
+    re.compile(
+        r"\bpool[\s=:]+['\"]?([A-Za-z0-9_.-]+)['\"]?.{0,80}?"
+        r"\bimage[\s=:]+['\"]?([A-Za-z0-9_.-]+)", re.I
+    ),
 )
 
 
@@ -41,6 +53,11 @@ def derive_identity(
         *(f"host:{value.strip().lower()}" for value in affected_hosts if isinstance(value, str) and value.strip()),
         *(f"daemon:{value.strip().lower()}" for value in affected_daemons if isinstance(value, str) and value.strip()),
     }
+    for pattern in _VOLUME_PATTERNS:
+        entities.update(
+            f"volume:{match.group(1).lower()}/{match.group(2).lower()}"
+            for match in pattern.finditer(text)
+        )
     return SemanticIdentity(family, tuple(sorted(entities)))
 
 
@@ -66,4 +83,3 @@ def same_semantic_problem(
         and right_entities
         and left_entities.intersection(right_entities)
     )
-
