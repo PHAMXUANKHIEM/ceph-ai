@@ -87,6 +87,7 @@ def test_build_scheduler_registers_one_job_per_tracked_image(isolated_db, monkey
         "schedule": {"cron": {"hour": 3, "minute": 30}},
     }
     monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: True)
 
     built = scheduler.build_scheduler()
 
@@ -133,6 +134,7 @@ def test_build_scheduler_registers_metadata_job_when_configured(isolated_db, mon
         "schedule": {"cron": {"hour": 2, "minute": 0}, "metadata_cron": {"hour": "*/6", "minute": 0}},
     }
     monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: True)
 
     built = scheduler.build_scheduler()
 
@@ -185,6 +187,7 @@ def test_build_scheduler_registers_restore_drill_job_when_configured(isolated_db
         },
     }
     monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: True)
 
     built = scheduler.build_scheduler()
 
@@ -218,6 +221,8 @@ def _make_additional_cluster(**overrides) -> str:
         backup_tracked_images="rbd/vm1,rbd/vm2",
         backup_transport="s3",
         backup_s3_endpoint="https://s3.example.test",
+        backup_s3_access_key="access",
+        backup_s3_secret_key="secret",
         backup_s3_bucket="cluster-b-backups",
     )
     defaults.update(overrides)
@@ -241,6 +246,7 @@ def test_build_scheduler_registers_jobs_for_backup_enabled_additional_cluster(is
         "schedule": {"cron": {"hour": 2, "minute": 0}, "metadata_cron": {"hour": "*/6", "minute": 0}},
     }
     monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: True)
     cluster_id = _make_additional_cluster()
 
     built = scheduler.build_scheduler()
@@ -269,6 +275,25 @@ def test_build_scheduler_skips_disabled_additional_cluster(isolated_db, monkeypa
 
     job_ids = {job.id for job in built.get_jobs()}
     assert not any(cluster_id in job_id for job_id in job_ids)
+
+
+def test_build_scheduler_skips_backup_jobs_when_default_target_is_unconfigured(isolated_db, monkeypatch):
+    policy = {
+        "backup_targets": [{"slot": "a", "immutable": False}],
+        "tracked_images": [{"pool": "vms", "image": "web01"}],
+        "schedule": {"metadata_cron": {"hour": "*/6", "minute": 0}},
+        "restore_drill": {
+            "pool": "vms", "image": "web01", "scratch_pool": "scratch", "scratch_image": "drill01"
+        },
+    }
+    monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: False)
+
+    job_ids = {job.id for job in scheduler.build_scheduler().get_jobs()}
+
+    assert "rbd_backup_vms_web01" not in job_ids
+    assert "backup_metadata_run" not in job_ids
+    assert "restore_drill_execute" not in job_ids
 
 
 def test_create_scheduled_action_stamps_cluster_id(isolated_db):

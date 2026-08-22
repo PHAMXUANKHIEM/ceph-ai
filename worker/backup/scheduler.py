@@ -26,6 +26,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from shared import db
+from config.settings import settings
 from shared.clusters import list_active_clusters
 from shared.models import Action, ActionClassification, ActionStatus, Cluster, Incident, IncidentStatus
 from worker.backup import alerting, digest
@@ -40,6 +41,33 @@ BACKUP_SCHEDULED_CEPH_CODE = "BACKUP_SCHEDULED"
 # for asyncio.gather; APScheduler's own thread/event-loop integration does
 # the actual waking-up-at-cron-time.
 IDLE_SLEEP_SECONDS = 3600
+
+
+def _target_fields_ready(source, prefix: str) -> bool:
+    """Return True only when a target has all fields needed to construct
+    and use its backend.  Scheduling against a blank/partial target creates
+    guaranteed failures every tick, so the scheduler deliberately fails
+    closed until configuration is complete."""
+    transport = getattr(source, f"{prefix}_transport", "")
+    if transport == "ssh":
+        fields = ("ssh_host", "ssh_user", "ssh_key_path", "ssh_landing_dir")
+    elif transport == "s3":
+        fields = ("s3_endpoint", "s3_access_key", "s3_secret_key", "s3_bucket")
+    else:
+        return False
+    return all(getattr(source, f"{prefix}_{field}", None) for field in fields)
+
+
+def _default_backup_target_ready(policy: dict) -> bool:
+    return any(
+        slot in ("a", "b") and _target_fields_ready(settings, f"backup_target_{slot}")
+        for target in (policy.get("backup_targets") or [])
+        if (slot := target.get("slot"))
+    )
+
+
+def _cluster_backup_target_ready(cluster: Cluster) -> bool:
+    return _target_fields_ready(cluster, "backup")
 
 
 def _first_mon_node(cluster: "Cluster | None" = None) -> str:
@@ -162,7 +190,10 @@ def _register_cluster_backup_jobs(scheduler: AsyncIOScheduler, cron: dict, metad
     plan). RestoreDrill/BackupDigest stay default-cluster-only, so neither
     is registered here."""
     with db.SessionLocal() as session:
-        clusters = [c for c in list_active_clusters(session) if not c.is_default and c.backup_enabled]
+        clusters = [
+            c for c in list_active_clusters(session)
+            if not c.is_default and c.backup_enabled and _cluster_backup_target_ready(c)
+        ]
         session.expunge_all()
 
     for cluster in clusters:
@@ -188,9 +219,10 @@ def build_scheduler() -> AsyncIOScheduler:
     scheduler.add_jobstore(SQLAlchemyJobStore(engine=db.engine), alias="default")
 
     policy = load_backup_policy()
+    default_target_ready = _default_backup_target_ready(policy)
     schedule = policy.get("schedule") or {}
     cron = schedule.get("cron") or {}
-    for tracked in policy.get("tracked_images") or []:
+    for tracked in (policy.get("tracked_images") or []) if default_target_ready else []:
         pool = tracked.get("pool")
         image = tracked.get("image")
         if not pool or not image:
@@ -204,7 +236,7 @@ def build_scheduler() -> AsyncIOScheduler:
         )
 
     metadata_cron = schedule.get("metadata_cron") or {}
-    if metadata_cron:
+    if metadata_cron and default_target_ready:
         scheduler.add_job(
             trigger_metadata_backup,
             trigger=CronTrigger(hour=metadata_cron.get("hour", "*/6"), minute=metadata_cron.get("minute", 0)),
@@ -222,7 +254,9 @@ def build_scheduler() -> AsyncIOScheduler:
     # configured (pool/image + scratch_pool/scratch_image) — same "blank
     # means not set up yet" posture as tracked_images being empty.
     drill_config = policy.get("restore_drill") or {}
-    if all(drill_config.get(k) for k in ("pool", "image", "scratch_pool", "scratch_image")):
+    if default_target_ready and all(
+        drill_config.get(k) for k in ("pool", "image", "scratch_pool", "scratch_image")
+    ):
         drill_cron = schedule.get("restore_drill_cron") or {}
         scheduler.add_job(
             trigger_restore_drill,

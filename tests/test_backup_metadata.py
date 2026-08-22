@@ -75,6 +75,10 @@ def fakes(monkeypatch):
         return FAKE_OUTPUTS[cmd]
 
     monkeypatch.setattr(metadata, "execute_command", fake_execute_command)
+    monkeypatch.setattr(
+        metadata, "execute_command_bytes",
+        lambda host, cmd, user=None, key_path=None: FAKE_OUTPUTS[cmd].encode(),
+    )
     yield backend
 
 
@@ -111,6 +115,10 @@ def test_command_failure_marks_job_failed(isolated_db, fakes, monkeypatch):
         return FAKE_OUTPUTS[cmd]
 
     monkeypatch.setattr(metadata, "execute_command", fake_execute_command)
+    monkeypatch.setattr(
+        metadata, "execute_command_bytes",
+        lambda host, cmd, user=None, key_path=None: FAKE_OUTPUTS[cmd].encode(),
+    )
 
     succeeded = metadata.run("action-1", {}, "incident-1", None, _write_progress, _allow_execution)
 

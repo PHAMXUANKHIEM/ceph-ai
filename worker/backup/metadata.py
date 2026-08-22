@@ -24,7 +24,7 @@ from shared.cluster_nodes import resolve_ssh_creds
 from shared.models import BackupJob
 from worker.backup import ai_analysis
 from worker.backup.cluster_scope import first_mon_node, get_cluster, resolve_targets
-from worker.executor.ssh_executor import execute_command
+from worker.executor.ssh_executor import execute_command, execute_command_bytes
 
 if TYPE_CHECKING:
     from shared.models import Cluster
@@ -34,11 +34,11 @@ logger = logging.getLogger(__name__)
 # (artifact name, shell command) — output written to
 # `metadata/{timestamp}/{artifact name}` on each configured BackupTarget.
 _ARTIFACTS = [
-    ("monmap.bin", "ceph mon getmap -o -"),
-    ("osdmap.bin", "ceph osd getmap -o -"),
-    ("crushmap.bin", "ceph osd getcrushmap -o -"),
-    ("auth_export.txt", "ceph auth export"),
-    ("config_dump.json", "ceph config dump"),
+    ("monmap.bin", "ceph mon getmap -o -", True),
+    ("osdmap.bin", "ceph osd getmap -o -", True),
+    ("crushmap.bin", "ceph osd getcrushmap -o -", True),
+    ("auth_export.txt", "ceph auth export", False),
+    ("config_dump.json", "ceph config dump", False),
 ]
 
 
@@ -94,19 +94,20 @@ def run(
 
     progress = [
         {"step": name, "status": "pending", "message": None, "started_at": None, "finished_at": None}
-        for name, _cmd in _ARTIFACTS
+        for name, _cmd, _binary in _ARTIFACTS
     ]
     write_progress(action_pk, progress)
 
     ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
 
     collected: dict[str, bytes] = {}
-    for index, (name, cmd) in enumerate(_ARTIFACTS):
+    for index, (name, cmd, binary) in enumerate(_ARTIFACTS):
         progress[index]["status"] = "running"
         progress[index]["started_at"] = datetime.utcnow().isoformat()
         write_progress(action_pk, progress)
         try:
-            output = execute_command(mon_ip, cmd, user=ssh_user, key_path=ssh_key_path)
+            runner = execute_command_bytes if binary else execute_command
+            output = runner(mon_ip, cmd, user=ssh_user, key_path=ssh_key_path)
         except Exception as exc:
             logger.exception("backup_metadata.run: command failed for %s (%s)", name, cmd)
             progress[index]["status"] = "failed"

@@ -21,8 +21,14 @@ class ExecutorError(Exception):
     """Raised for remediation-command connection or execution failures."""
 
 
-def execute_command(host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None) -> str:
-    """Run a command over SSH and return stdout, raising ExecutorError on failure."""
+def execute_command_bytes(
+    host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None
+) -> bytes:
+    """Run a command over SSH and return stdout without text decoding.
+
+    Ceph maps are binary.  Keeping this as a separate API prevents callers
+    from accidentally round-tripping arbitrary bytes through UTF-8.
+    """
     resolved_user = settings.ssh_user if user is None else user
     resolved_key_path = settings.ssh_key_path if key_path is None else key_path
     client = paramiko.SSHClient()
@@ -38,8 +44,8 @@ def execute_command(host: str, command: str, user: Optional[str] = None, key_pat
         )
         client.save_host_keys(KNOWN_HOSTS_PATH)
         _stdin, stdout, stderr = client.exec_command(command, timeout=COMMAND_TIMEOUT_SECONDS)
-        output = stdout.read().decode()
-        error_output = stderr.read().decode()
+        output = stdout.read()
+        error_output = stderr.read().decode(errors="replace")
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
             raise ExecutorError(f"{host}: command exited {exit_status}: {error_output}")
@@ -53,6 +59,17 @@ def execute_command(host: str, command: str, user: Optional[str] = None, key_pat
             client.close()
         except Exception:
             logger.warning("execute_command: error closing SSH connection to %s", host)
+
+
+def execute_command(host: str, command: str, user: Optional[str] = None, key_path: Optional[str] = None) -> str:
+    """Run a text command over SSH and return UTF-8 stdout."""
+    output = execute_command_bytes(host, command, user=user, key_path=key_path)
+    try:
+        return output.decode()
+    except UnicodeDecodeError as exc:
+        raise ExecutorError(
+            f"{host}: command returned binary/non-UTF-8 output; use execute_command_bytes()"
+        ) from exc
 
 
 def read_os_release(host: str) -> Dict[str, str]:

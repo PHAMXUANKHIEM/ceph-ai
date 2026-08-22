@@ -327,6 +327,7 @@ def _run_rbd_backup(
 
     job_ids: list[str] = []
     tmp_path = None
+    backup_succeeded = False
     try:
         client = paramiko.SSHClient()
         if os.path.exists(KNOWN_HOSTS_PATH):
@@ -406,6 +407,7 @@ def _run_rbd_backup(
                 anomaly_result = anomaly.check_anomaly(representative_job)
                 if anomaly_result is not None:
                     ai_analysis.analyze_backup_job(representative_job, anomaly_result)
+        backup_succeeded = True
 
     except Exception as exc:
         logger.exception("backup_engine._run_rbd_backup: export/upload failed for %s/%s", pool, image)
@@ -434,6 +436,18 @@ def _run_rbd_backup(
     finally:
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)
+        # Incremental snapshots are never used as a future diff base (all
+        # diffs anchor to the latest full), and a failed run's snapshot is
+        # unusable.  Remove both best-effort so repeated runs cannot fill
+        # the Ceph cluster with orphaned backup-* snapshots.
+        if job_type == "incremental" or not backup_succeeded:
+            _remove_snapshot_best_effort(mon_ip, pool, image, snap_name)
+
+    # A successful replacement full becomes the new incremental base.  Its
+    # predecessor can now be removed; cleanup failure must not invalidate a
+    # backup that has already uploaded and verified successfully.
+    if job_type == "full" and last_full is not None and last_full.status == "SUCCESS":
+        _remove_snapshot_best_effort(mon_ip, pool, image, _snap_name_of(last_full))
 
     _sweep_retention_after_success(pool, image, incident_id, action_pk, cluster_id)
     return True
@@ -444,6 +458,19 @@ def _snap_name_of(job: BackupJob) -> str:
     (`{job_type}/{pool}/{image}/{snap_name}.bin`) — no separate column
     needed just to recover it."""
     return job.remote_key.rsplit("/", 1)[-1].removesuffix(".bin")
+
+
+def _remove_snapshot_best_effort(mon_ip: str, pool: str, image: str, snap_name: str) -> None:
+    try:
+        execute_command(mon_ip, f"rbd snap rm {pool}/{image}@{snap_name}")
+    except Exception:
+        logger.warning(
+            "backup_engine: could not remove snapshot %s/%s@%s",
+            pool,
+            image,
+            snap_name,
+            exc_info=True,
+        )
 
 
 def _sweep_retention_after_success(

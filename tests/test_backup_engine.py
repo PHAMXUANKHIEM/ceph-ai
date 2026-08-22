@@ -371,6 +371,53 @@ def test_verify_failure_marks_job_failed(isolated_db, fake_backend_and_ssh):
     assert jobs[0].status == "FAILED"
 
 
+def test_incremental_snapshot_is_removed_after_verified_backup(isolated_db, monkeypatch):
+    commands = []
+
+    def record_command(host, cmd):
+        commands.append(cmd)
+        if "rbd info" in cmd:
+            return json.dumps({"size": len(FakeSSHClient.export_payload)})
+        return ""
+
+    monkeypatch.setattr(engine, "execute_command", record_command)
+    incident_id, action_pk = _make_incident_and_action()
+    assert engine.run(
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"},
+        incident_id, None, _write_progress, _allow_execution,
+    ) is True
+
+    commands.clear()
+    incident_id, action_pk = _make_incident_and_action()
+    assert engine.run(
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"},
+        incident_id, None, _write_progress, _allow_execution,
+    ) is True
+
+    assert any(cmd.startswith("rbd snap rm vms/web01@backup-") for cmd in commands)
+
+
+def test_failed_backup_snapshot_is_removed(isolated_db, fake_backend_and_ssh, monkeypatch):
+    commands = []
+
+    def record_command(host, cmd):
+        commands.append(cmd)
+        if "rbd info" in cmd:
+            return json.dumps({"size": len(FakeSSHClient.export_payload)})
+        return ""
+
+    monkeypatch.setattr(engine, "execute_command", record_command)
+    fake_backend_and_ssh.fail_verify = True
+    incident_id, action_pk = _make_incident_and_action()
+
+    assert engine.run(
+        action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"},
+        incident_id, None, _write_progress, _allow_execution,
+    ) is False
+
+    assert any(cmd.startswith("rbd snap rm vms/web01@backup-") for cmd in commands)
+
+
 def test_retention_never_deletes_full_still_depended_by_kept_incremental(isolated_db, fake_backend_and_ssh):
     """keep_full_count=2 in DEFAULT_POLICY — create 3 fulls (oldest would
     normally be pruned) but make the incremental chain depend on the
