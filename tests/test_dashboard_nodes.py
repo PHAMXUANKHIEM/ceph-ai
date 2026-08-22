@@ -178,16 +178,15 @@ def test_nodes_page_and_metrics_use_selected_additional_cluster(dashboard_client
     assert dashboard_client.get("/api/nodes/10.20.1.150/metrics").status_code == 404
 
 
-def test_selected_node_shows_ceph_log_panel_and_role_choices(dashboard_client, monkeypatch):
+def test_cluster_metrics_does_not_render_legacy_ceph_log_panel(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     _login(dashboard_client)
 
     response = dashboard_client.get("/nodes?host=10.20.1.150")
 
     assert response.status_code == 200
-    assert 'id="ceph-log-panel"' in response.text
-    assert '<option value="mon">MON</option>' in response.text
-    assert '<option value="osd">OSD</option>' in response.text
+    assert 'id="ceph-log-panel"' not in response.text
+    assert "nodes_ceph_log.js" not in response.text
 
 
 def test_ceph_log_api_is_limited_to_roles_on_configured_host(dashboard_client, monkeypatch):

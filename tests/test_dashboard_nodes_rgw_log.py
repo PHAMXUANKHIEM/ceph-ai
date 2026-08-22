@@ -20,14 +20,15 @@ def test_unauthenticated_rgw_log_api_redirects_to_login(dashboard_client):
     assert response.headers["location"] == "/login"
 
 
-def test_rgw_node_is_selectable_and_shows_role_badge(dashboard_client, monkeypatch):
+def test_rgw_node_is_selectable_without_legacy_log_panel(dashboard_client, monkeypatch):
     _configure_nodes(monkeypatch)
     _login(dashboard_client)
 
     page = dashboard_client.get("/nodes?host=10.20.1.90")
     assert page.status_code == 200
     assert 'role-badge-rgw">RGW' in page.text
-    assert 'id="rgw-log-panel"' in page.text
+    assert 'id="rgw-log-panel"' not in page.text
+    assert "nodes_rgw_log.js" not in page.text
 
 
 def test_rgw_log_panel_hidden_for_non_rgw_node(dashboard_client, monkeypatch):

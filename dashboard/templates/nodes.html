@@ -103,55 +103,6 @@
       </div>
     </section>
 
-    {% if selected_node %}
-    <section class="card" id="ceph-log-panel" data-host="{{ selected_host }}">
-      <div class="card-header">
-        <h2>Log Ceph</h2>
-        <div class="rgw-log-controls">
-          <span class="rgw-log-status" id="ceph-log-status"><span class="dot" aria-hidden="true"></span><span id="ceph-log-status-text">—</span></span>
-          <button type="button" class="btn btn-sm" id="ceph-log-live-toggle">Theo dõi trực tiếp</button>
-        </div>
-      </div>
-      <div class="card-body">
-        <div class="rgw-log-filter-bar">
-          <select id="ceph-log-service" aria-label="Chọn dịch vụ Ceph">
-            {% for role in selected_node.roles %}<option value="{{ role|lower }}">{{ role }}</option>{% endfor %}
-          </select>
-          <input type="text" id="ceph-log-filter" class="rgw-log-filter-input" placeholder="Lọc lỗi, daemon, request id..." autocomplete="off">
-          <button type="button" class="btn btn-ghost btn-sm" id="ceph-log-filter-clear">Xoá lọc</button>
-        </div>
-        <pre class="rgw-log-body" id="ceph-log-body"><span class="rgw-log-empty">Đang tải log...</span></pre>
-      </div>
-    </section>
-    {% endif %}
-
-    {% if selected_node and 'RGW' in selected_node.roles %}
-    <section class="card" id="rgw-log-panel" data-host="{{ selected_host }}">
-      <div class="card-header">
-        <h2>Log RGW</h2>
-        <div class="rgw-log-controls">
-          <span class="rgw-log-status" id="rgw-log-status">
-            <span class="dot" aria-hidden="true"></span>
-            <span id="rgw-log-status-text">—</span>
-          </span>
-          <button type="button" class="btn btn-sm" id="rgw-log-live-toggle">Theo dõi trực tiếp</button>
-        </div>
-      </div>
-      <div class="card-body">
-        <div class="rgw-log-filter-bar">
-          <input
-            type="text"
-            id="rgw-log-filter"
-            class="rgw-log-filter-input"
-            placeholder="Lọc theo từ khoá (VD: bucket name, mã lỗi, request id...)"
-            autocomplete="off"
-          >
-          <button type="button" class="btn btn-ghost btn-sm" id="rgw-log-filter-clear">Xoá lọc</button>
-        </div>
-        <pre class="rgw-log-body" id="rgw-log-body"><span class="rgw-log-empty">Đang tải log...</span></pre>
-      </div>
-    </section>
-    {% endif %}
     {% else %}
     <section class="empty-node-state">
       <span class="empty-node-icon" aria-hidden="true">&#128421;</span>
@@ -164,7 +115,5 @@
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script src="/static/nodes.js?v={{ static_version }}"></script>
-  <script src="/static/nodes_ceph_log.js?v={{ static_version }}"></script>
-  <script src="/static/nodes_rgw_log.js?v={{ static_version }}"></script>
 </body>
 </html>
