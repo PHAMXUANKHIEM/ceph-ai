@@ -9,7 +9,7 @@ from shared.db import Base
 from shared.models import Action, Incident, RemediationCase
 from shared.remediation_cases import (
     backfill_missing_cases, create_for_action, record_execution, record_inconclusive,
-    evaluate_regressions, record_verified,
+    evaluate_regressions, record_verified, scrub_existing_case_memory,
 )
 
 
@@ -56,6 +56,48 @@ def test_case_freezes_redacted_pre_state_and_has_stable_fingerprint():
     assert json.loads(first.pre_state_json)["ceph_version"] == "18.2.4"
     assert first.autonomy_decision == "PENDING_APPROVAL"
     assert first.outcome == "PROPOSED"
+
+
+def test_case_scrubs_sensitive_action_params_and_evidence_before_persisting():
+    session = _session()
+    incident, action = _seed(session)
+    action.action_params = json.dumps({
+        "ssh_key_path": "/must/not/persist", "nested": {"api_token": "secret"},
+    })
+    case = create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={
+            "nodes": ["node-a"],
+            "cluster_snapshot": {"keyring": "secret", "status": "HEALTH_WARN"},
+        },
+        diagnosis="safe", model_provider="9router",
+    )
+    session.commit()
+    entities = json.loads(case.entity_keys_json)
+    pre_state = json.loads(case.pre_state_json)
+    assert entities["action_params"]["ssh_key_path"] == "[REDACTED]"
+    assert entities["action_params"]["nested"]["api_token"] == "[REDACTED]"
+    assert pre_state["keyring"] == "[REDACTED]"
+    assert "/must/not/persist" not in case.entity_keys_json
+
+
+def test_scrubber_repairs_existing_rows_and_is_idempotent():
+    session = _session()
+    incident, action = _seed(session)
+    case = create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="safe", model_provider="9router",
+    )
+    session.commit()
+    old_fingerprint = case.evidence_fingerprint
+    case.entity_keys_json = '{"action_params":{"ssh_key_path":"/legacy/key"},"nodes":["node-a"]}'
+    session.commit()
+
+    assert scrub_existing_case_memory(session) == 1
+    assert json.loads(case.entity_keys_json)["action_params"]["ssh_key_path"] == "[REDACTED]"
+    assert case.evidence_fingerprint != old_fingerprint
+    assert scrub_existing_case_memory(session) == 0
 
 
 def test_case_outcome_requires_telemetry_verification():

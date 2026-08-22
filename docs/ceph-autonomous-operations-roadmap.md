@@ -624,6 +624,9 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Đã có Outcome Evaluator tất định cho recurrence 1h/24h/7d theo đúng
   cluster + fault family + entity. Regression được ghi `true` ngay khi có
   bằng chứng; `false` chỉ được ghi sau khi cửa sổ tương ứng đã đóng.
+- Case JSON được scrub đệ quy theo tên trường nhạy cảm trước khi persist;
+  Worker đồng thời làm sạch dữ liệu legacy và tính lại fingerprint từ bản
+  đã redaction.
 - Chưa hoàn tất: UI operator verdict.
 
 - Thêm migration và model `remediation_cases`, `playbook_stats`.

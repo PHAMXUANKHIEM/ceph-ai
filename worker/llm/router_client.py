@@ -1974,6 +1974,7 @@ def _process_approved_actions_once() -> None:
         evaluated = remediation_cases.evaluate_regressions(
             session, now=datetime.utcnow(), limit=200,
         )
+        scrubbed = remediation_cases.scrub_existing_case_memory(session)
     if recovered:
         logger.warning(
             "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
@@ -1983,6 +1984,8 @@ def _process_approved_actions_once() -> None:
         logger.info("created %d missing Remediation Case Memory row(s)", backfilled)
     if evaluated:
         logger.info("evaluated recurrence windows for %d remediation case(s)", evaluated)
+    if scrubbed:
+        logger.warning("redacted sensitive JSON values from %d remediation case(s)", scrubbed)
     _reconcile_stuck_rbd_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [

@@ -3,13 +3,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
 
 
+_SENSITIVE_KEY = re.compile(
+    r"password|secret|token|api.?key|keyring|credential|ssh_key", re.IGNORECASE,
+)
+_CASE_JSON_FIELDS = (
+    "entity_keys_json", "topology_snapshot_json", "preflight_snapshot_json",
+    "pre_state_json", "post_state_json", "rollback_state_json", "side_effects_json",
+)
+
+
+def _scrub(value):
+    if isinstance(value, dict):
+        return {
+            key: ("[REDACTED]" if _SENSITIVE_KEY.search(str(key)) else _scrub(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub(item) for item in value]
+    return value
+
+
 def _json(value) -> str | None:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True) if value is not None else None
+    return json.dumps(_scrub(value), ensure_ascii=False, sort_keys=True) if value is not None else None
 
 
 def _ceph_version(snapshot: dict) -> str | None:
@@ -28,6 +49,20 @@ def _safe_load(raw: str | None, fallback):
     return fallback if value is None else value
 
 
+def _fingerprint(*, fault_family: str, entities: dict, snapshot: dict,
+                 deployment_mode: str | None, ceph_version: str | None) -> str:
+    source = {
+        "fault_family": fault_family,
+        "entities": _scrub(entities),
+        "health_codes": sorted((snapshot.get("checks") or {}).keys()),
+        "deployment_mode": deployment_mode,
+        "ceph_version": ceph_version,
+    }
+    return hashlib.sha256(
+        json.dumps(source, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def create_for_action(
     session, *, incident: Incident, action: Action, redacted_envelope: dict,
     diagnosis: str | None, model_provider: str | None,
@@ -38,20 +73,16 @@ def create_for_action(
         return existing
     snapshot = redacted_envelope.get("cluster_snapshot")
     snapshot = snapshot if isinstance(snapshot, dict) else {}
-    entities = {
+    snapshot = _scrub(snapshot)
+    entities = _scrub({
         "nodes": redacted_envelope.get("nodes") if isinstance(redacted_envelope.get("nodes"), list) else [],
-        "action_params": json.loads(action.action_params) if action.action_params else None,
-    }
-    fingerprint_source = {
-        "fault_family": incident.ceph_code,
-        "entities": entities,
-        "health_codes": sorted((snapshot.get("checks") or {}).keys()),
-        "deployment_mode": redacted_envelope.get("ceph_exec_mode"),
-        "ceph_version": _ceph_version(snapshot),
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_source, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+        "action_params": _safe_load(action.action_params, None),
+    })
+    fingerprint = _fingerprint(
+        fault_family=incident.ceph_code, entities=entities, snapshot=snapshot,
+        deployment_mode=redacted_envelope.get("ceph_exec_mode"),
+        ceph_version=_ceph_version(snapshot),
+    )
     decision = "AUTO_EXECUTE" if action.classification in {"READ_ONLY", "SAFE"} else "PENDING_APPROVAL"
     row = RemediationCase(
         incident_id=incident.id, action_id=action.id, cluster_id=incident.cluster_id,
@@ -216,6 +247,39 @@ def evaluate_regressions(session, *, now: datetime, limit: int = 200) -> int:
                 setattr(case, field, False)
                 case_changed = True
         if case_changed:
+            changed += 1
+    session.commit()
+    return changed
+
+
+def scrub_existing_case_memory(session) -> int:
+    """Remove sensitive JSON values already persisted and repair fingerprints."""
+    changed = 0
+    for case in session.query(RemediationCase).all():
+        case_changed = False
+        decoded = {}
+        for field in _CASE_JSON_FIELDS:
+            raw = getattr(case, field)
+            if raw is None:
+                decoded[field] = None
+                continue
+            value = _safe_load(raw, None)
+            scrubbed = _scrub(value)
+            encoded = _json(scrubbed)
+            decoded[field] = scrubbed
+            if encoded != raw:
+                setattr(case, field, encoded)
+                case_changed = True
+        if case_changed:
+            entities = decoded.get("entity_keys_json")
+            snapshot = decoded.get("pre_state_json")
+            case.evidence_fingerprint = _fingerprint(
+                fault_family=case.fault_family,
+                entities=entities if isinstance(entities, dict) else {},
+                snapshot=snapshot if isinstance(snapshot, dict) else {},
+                deployment_mode=case.deployment_mode,
+                ceph_version=case.ceph_version,
+            )
             changed += 1
     session.commit()
     return changed
