@@ -19,6 +19,7 @@ PROMPT_VERSION = "v1"
 TOOL_NAME = "report_incident_postmortem"
 TIMEOUT_SECONDS = 90
 MAX_TOKENS = 4096
+TERMINAL_STATUSES = {"RESOLVED", "AUTO_FIXED", "REJECTED"}
 _SENSITIVE_KEY = re.compile(r"(?:password|secret|token|api.?key|keyring|credential)", re.I)
 
 
@@ -153,6 +154,8 @@ def validate_postmortem(result: dict, timeline: dict) -> dict:
 async def generate(incident_id: str) -> dict:
     with db.SessionLocal() as session:
         timeline = build_timeline(session, incident_id)
+    if timeline["status"] not in TERMINAL_STATUSES:
+        raise PostmortemError("Chỉ tạo postmortem sau khi Incident đã kết thúc")
     result = validate_postmortem(await _call_model(timeline), timeline)
     with db.SessionLocal() as session:
         incident = session.get(Incident, incident_id)

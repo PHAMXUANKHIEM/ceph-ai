@@ -14,7 +14,7 @@
   <main class="page-shell">
     <section class="card">
       <div class="card-header"><div><h1>Incident Timeline</h1><p class="hint"><code>{{ incident.ceph_code }}</code> · {{ incident.status }}</p></div>
-        <form method="post" action="/incidents/{{ incident.id }}/postmortem"><button class="btn btn-primary" type="submit">{{ "Tạo lại AI Postmortem" if postmortem else "Tạo AI Postmortem" }}</button></form>
+        {% if incident.status in ("RESOLVED", "AUTO_FIXED", "REJECTED") %}<form method="post" action="/incidents/{{ incident.id }}/postmortem"><button class="btn btn-primary" type="submit">{{ "Tạo lại AI Postmortem" if postmortem else "Tạo AI Postmortem" }}</button></form>{% else %}<span class="hint">Postmortem mở sau khi Incident kết thúc.</span>{% endif %}
       </div>
       {% if postmortem_error %}<p class="error-message">{{ postmortem_error }}</p>{% endif %}
       <div class="card-body">

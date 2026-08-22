@@ -81,5 +81,17 @@ def test_generate_persists_validated_postmortem_without_holding_session(factory,
         assert incident.postmortem_prompt_version == "v1"
 
 
+def test_generate_rejects_open_incident_before_ai_call(factory, monkeypatch):
+    _seed(factory)
+    with factory() as session:
+        session.get(Incident, "inc-1").status = "NEW"
+        session.commit()
+    called = []
+    monkeypatch.setattr("shared.incident_postmortem._call_model", lambda payload: called.append(1))
+    with pytest.raises(PostmortemError, match="đã kết thúc"):
+        asyncio.run(generate("inc-1"))
+    assert called == []
+
+
 async def _async_value(value):
     return value
