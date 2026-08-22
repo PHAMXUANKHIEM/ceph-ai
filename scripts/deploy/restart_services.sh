@@ -46,8 +46,12 @@ git reset --hard origin/main
 echo "==> Installing dependencies"
 source .venv/bin/activate
 pip install -e . --quiet
-npm --prefix ceph-health-dashboard install --silent
-npm --prefix ceph-health-dashboard run build --silent
+if command -v npm >/dev/null 2>&1; then
+  npm --prefix ceph-health-dashboard install --silent
+  npm --prefix ceph-health-dashboard run build --silent
+else
+  echo "WARNING: npm is unavailable; keeping the existing dashboard frontend build"
+fi
 
 echo "==> Applying DB migrations"
 # "heads" (plural), not "head" — 2026-08-07: this repo can legitimately have
@@ -71,6 +75,12 @@ pkill -f "$VENV_PYTHON -m watcher.remediation_main" || true
 pkill -f "$VENV_PYTHON -m worker.main" || true
 pkill -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
 sleep 2
+# Uvicorn can remain alive briefly while its Telegram listener winds down.
+# Never launch a second copy while an old process can still own the port.
+pkill -9 -f "$VENV_PYTHON -m watcher.main" || true
+pkill -9 -f "$VENV_PYTHON -m watcher.remediation_main" || true
+pkill -9 -f "$VENV_PYTHON -m worker.main" || true
+pkill -9 -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
 
 echo "==> Starting services"
 # Optional server-local override (gitignored, never committed — this repo
