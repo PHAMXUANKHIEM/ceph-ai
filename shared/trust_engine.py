@@ -15,6 +15,8 @@ _EXECUTED_OUTCOMES = {
     "EXECUTION_FAILED", "INCONCLUSIVE",
 }
 _BAD_OPERATOR_VERDICTS = {"FALSE_POSITIVE", "UNSAFE", "INEFFECTIVE"}
+SHADOW_MIN_VERIFIED_SAMPLES = 20
+SHADOW_MIN_TRUST_SCORE = 0.85
 
 
 def wilson_lower_bound(successes: int, total: int, *, z: float = 1.96) -> float:
@@ -38,6 +40,50 @@ def scope_key(case: RemediationCase) -> str:
         f"ceph_major={_ceph_major(case.ceph_version)}|"
         f"deployment={case.deployment_mode or 'unknown'}"
     )
+
+
+def record_shadow_decision(
+    session, *, case: RemediationCase, action: Action, now: datetime | None = None,
+) -> str:
+    """Freeze a hypothetical decision; this function cannot execute or promote."""
+    now = now or datetime.utcnow()
+    stat = session.query(PlaybookStat).filter_by(
+        playbook_id=action.action_id,
+        playbook_version=case.playbook_version,
+        scope_key=scope_key(case),
+    ).one_or_none()
+    samples = stat.verified_count if stat else 0
+    score = stat.trust_score if stat else 0.0
+    if action.classification not in {"READ_ONLY", "SAFE"}:
+        decision, reason = "HOLD", "classification is not SAFE/READ_ONLY"
+    elif samples < SHADOW_MIN_VERIFIED_SAMPLES:
+        decision, reason = "HOLD", f"verified samples {samples}/{SHADOW_MIN_VERIFIED_SAMPLES}"
+    elif score < SHADOW_MIN_TRUST_SCORE:
+        decision, reason = "HOLD", f"Wilson trust {score:.3f} below {SHADOW_MIN_TRUST_SCORE:.2f}"
+    elif stat and stat.auto_disabled_reason:
+        decision, reason = "HOLD", f"trust scope disabled: {stat.auto_disabled_reason}"
+    else:
+        decision, reason = "WOULD_EXECUTE", "shadow trust and classification gates passed"
+    case.shadow_decision = decision
+    case.shadow_reason = reason
+    case.shadow_trust_score = score
+    case.shadow_sample_count = samples
+    case.shadow_recorded_at = now
+    return decision
+
+
+def shadow_comparison(case: RemediationCase) -> str:
+    """Compare frozen shadow intent with later verified/operator truth."""
+    bad = case.operator_verdict in _BAD_OPERATOR_VERDICTS
+    failed = case.outcome == "VERIFIED_FAILED" or bad or any(
+        value is True for value in (case.regressed_1h, case.regressed_24h, case.regressed_7d)
+    )
+    successful = case.outcome == "VERIFIED_SUCCESS" and not failed
+    if not successful and not failed:
+        return "PENDING_OUTCOME"
+    if case.shadow_decision == "WOULD_EXECUTE":
+        return "MATCH_SUCCESS" if successful else "UNSAFE_MISS"
+    return "MISSED_OPPORTUNITY" if successful else "CORRECT_HOLD"
 
 
 def _trust_eligible(case: RemediationCase) -> bool:

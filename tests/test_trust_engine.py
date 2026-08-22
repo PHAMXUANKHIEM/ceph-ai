@@ -7,7 +7,10 @@ from sqlalchemy.pool import StaticPool
 from shared.db import Base
 from shared.models import Action, Incident, PlaybookStat
 from shared.remediation_cases import create_for_action
-from shared.trust_engine import recompute_playbook_stats, wilson_lower_bound
+from shared.trust_engine import (
+    record_shadow_decision, recompute_playbook_stats, shadow_comparison,
+    wilson_lower_bound,
+)
 
 
 def _session():
@@ -115,3 +118,44 @@ def test_scope_is_zeroed_if_its_cases_later_become_ineligible():
     assert stat.trust_score == 0
     assert stat.maturity_level == "L0"
     assert "no eligible" in stat.auto_disabled_reason
+
+
+def test_shadow_holds_without_enough_verified_evidence_and_never_changes_action():
+    session = _session()
+    case = _case(session, outcome="PROPOSED")
+    action = session.get(Action, case.action_id)
+    original_status = action.status
+
+    assert record_shadow_decision(session, case=case, action=action) == "HOLD"
+    assert case.shadow_sample_count == 0
+    assert "0/20" in case.shadow_reason
+    assert action.status == original_status
+
+
+def test_shadow_would_execute_only_with_frozen_high_trust_scope():
+    session = _session()
+    case = _case(session, outcome="PROPOSED")
+    action = session.get(Action, case.action_id)
+    session.add(PlaybookStat(
+        playbook_id=action.action_id, playbook_version=case.playbook_version,
+        scope_key="ceph_major=18|deployment=cephadm", verified_count=25,
+        success_count=25, proposed_count=25, executed_count=25,
+        trust_score=0.90, maturity_level="L2",
+    ))
+    session.flush()
+
+    assert record_shadow_decision(session, case=case, action=action) == "WOULD_EXECUTE"
+    assert case.shadow_trust_score == 0.90
+    assert case.shadow_sample_count == 25
+
+
+def test_shadow_comparison_uses_verified_outcome_regression_and_operator_truth():
+    session = _session()
+    successful = _case(session); successful.shadow_decision = "WOULD_EXECUTE"
+    assert shadow_comparison(successful) == "MATCH_SUCCESS"
+    successful.regressed_1h = True
+    assert shadow_comparison(successful) == "UNSAFE_MISS"
+    successful.shadow_decision = "HOLD"
+    assert shadow_comparison(successful) == "CORRECT_HOLD"
+    successful.regressed_1h = False
+    assert shadow_comparison(successful) == "MISSED_OPPORTUNITY"

@@ -19,7 +19,7 @@ from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
 from shared import audit, db, heartbeat
-from shared import incident_postmortem
+from shared import incident_postmortem, trust_engine
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import (
@@ -80,6 +80,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         "postmortem": postmortem, "postmortem_generated_at": generated_at,
         "postmortem_error": request.query_params.get("error", ""),
         "remediation_cases": remediation_cases, "case_verdicts": CASE_VERDICTS,
+        "shadow_comparison": trust_engine.shadow_comparison,
     })
 
 

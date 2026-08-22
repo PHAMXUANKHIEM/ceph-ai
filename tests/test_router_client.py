@@ -128,6 +128,9 @@ def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, m
         assert actions[0].classification == ActionClassification.SAFE.value
         assert actions[0].status == ActionStatus.AUTO_EXECUTED.value  # auto-executed, Story 3.2
         case = session.query(RemediationCase).filter_by(action_id=actions[0].id).one()
+        assert case.shadow_decision == "HOLD"
+        assert case.shadow_sample_count == 0
+        assert case.shadow_recorded_at is not None
         assert case.outcome == "EXECUTED_PENDING_VERIFY"
         assert case.incident_id == "incident-1"
 

@@ -64,6 +64,8 @@ def test_operator_can_set_case_verdict_from_incident_timeline(dashboard_client):
             incident_id=incident.id, action_id=action.id, fault_family="OSD_DOWN",
             evidence_fingerprint="a" * 64, prompt_version="v1", classification="RISKY",
             autonomy_decision="PENDING_APPROVAL", playbook_version="v1", outcome="VERIFIED_SUCCESS",
+            shadow_decision="HOLD", shadow_reason="verified samples 0/20",
+            shadow_trust_score=0.0, shadow_sample_count=0,
         )
         session.add(case); session.commit(); case_id = case.id
 
@@ -72,6 +74,8 @@ def test_operator_can_set_case_verdict_from_incident_timeline(dashboard_client):
     assert page.status_code == 200
     assert "Remediation Case Memory" in page.text
     assert "Chẩn đoán/xử lý đúng" in page.text
+    assert "Shadow Autopilot" in page.text
+    assert "MISSED_OPPORTUNITY" in page.text
 
     response = dashboard_client.post(
         f"/incidents/verdict-inc/cases/{case_id}/verdict",

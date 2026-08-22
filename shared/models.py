@@ -452,6 +452,14 @@ class RemediationCase(Base):
     regressed_7d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     operator_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
     operator_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Pha 3 shadow evaluation is evidence only.  These fields never feed the
+    # execution gate; they preserve what Autopilot *would* have done at the
+    # instant this Case was proposed so it can later be compared with truth.
+    shadow_decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shadow_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shadow_trust_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    shadow_sample_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shadow_recorded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow

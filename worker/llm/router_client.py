@@ -747,13 +747,16 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             session.add(action)
             try:
                 session.flush()
-                remediation_cases.create_for_action(
+                remediation_case = remediation_cases.create_for_action(
                     session, incident=incident, action=action, redacted_envelope=payload,
                     diagnosis=diagnosis_text,
                     model_provider=(
                         "codex" if settings.codex_chat_enabled else
                         "claude" if settings.claude_chat_enabled else settings.router_provider
                     ),
+                )
+                trust_engine.record_shadow_decision(
+                    session, case=remediation_case, action=action,
                 )
                 session.commit()
             except IntegrityError:

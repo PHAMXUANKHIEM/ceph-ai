@@ -686,6 +686,10 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   entity, Ceph major và deployment mode. Case legacy/unverified/regressed hoặc
   verdict xấu bị loại; model chỉ nhận summary đã redaction và không được dùng
   Case match để vượt policy/autonomy gate.
+- Mỗi Case mới đóng băng Shadow Autopilot decision (`HOLD`/`WOULD_EXECUTE`),
+  trust score và sample count tại thời điểm đề xuất. Shadow chỉ quan sát, không
+  gọi executor hay promotion; Incident Timeline đối chiếu decision với outcome,
+  regression và operator verdict để lộ unsafe miss hoặc missed opportunity.
 
 - Tính statistics và Wilson lower bound.
 - Tìm case tương tự.
