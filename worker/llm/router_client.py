@@ -698,6 +698,25 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
             if verified_bluestore_restart:
                 classification = ActionClassification.SAFE
+            verified_osd_down_restart = (
+                incident.ceph_code == "OSD_DOWN"
+                and action_id == "restart_osd_daemon"
+                and isinstance(bluestore_osd_hosts, dict)
+                and bool(bluestore_osd_hosts)
+                and all(
+                    str(osd_id).isdigit() and isinstance(host, str) and host
+                    for osd_id, host in bluestore_osd_hosts.items()
+                )
+            )
+            if verified_osd_down_restart:
+                classification = ActionClassification.SAFE
+            elif action_id == "restart_osd_daemon" and not verified_bluestore_restart:
+                # A global SAFE override must never turn a vague secondary
+                # symptom (for example PG_DEGRADED with every OSD host in
+                # target_nodes) into a cluster-wide daemon restart. Only an
+                # OSD_DOWN carrying an independently resolved osd.N->host
+                # mapping is bounded enough for autonomous execution.
+                classification = ActionClassification.RISKY
             pool_choice_required = (
                 incident.ceph_code == _POOL_APP_CODE and action_id == "enable_pool_application"
             )
@@ -722,7 +741,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_params = {"adjustments": pool_pg_adjustments}
             elif pool_name:
                 action_params = {"pool_name": pool_name}
-            elif verified_bluestore_restart:
+            elif verified_bluestore_restart or verified_osd_down_restart:
                 if cephadm_verified:
                     # ceph orch runs through one reachable MON and asks the
                     # orchestrator to restart the exact remote daemon.  It

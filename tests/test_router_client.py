@@ -18,6 +18,7 @@ from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
+    ActionPolicyOverride,
     AuditEntry,
     AutopilotLease,
     ChatMessage,
@@ -362,6 +363,65 @@ def test_diagnose_incident_keeps_restart_osd_daemon_risky(isolated_db, monkeypat
 
     with db_module.SessionLocal() as session:
         action = session.query(Action).filter_by(incident_id="incident-auto-2").one()
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_safe_override_only_restarts_exact_osd_for_verified_osd_down(isolated_db, monkeypatch):
+    async def fake_call_router(_user_content):
+        return {"diagnosis_text": "osd.0 down", "action_id": "restart_osd_daemon", "rationale": "restart exact daemon"}
+
+    calls = []
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client.commands, "_discover_ceph_units", lambda _host: {
+        "osd": ["ceph-fsid@osd.0.service", "ceph-fsid@osd.1.service"],
+        "mon": [], "mgr": [], "mds": [], "rgw": [],
+    })
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda host, command, **_kwargs: calls.append((host, command)) or "ok",
+    )
+    _create_incident("incident-exact-osd")
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "incident-exact-osd").ceph_code = "OSD_DOWN"
+        session.add(ActionPolicyOverride(
+            action_id="restart_osd_daemon", classification="SAFE",
+            updated_by="admin", reason="Exact OSD self healing",
+        ))
+        session.commit()
+    envelope = dict(
+        ENVELOPE, incident_id="incident-exact-osd", ceph_code="OSD_DOWN",
+        nodes=["10.20.1.83"], osd_hosts={"0": "10.20.1.83"},
+    )
+    asyncio.run(router_client.diagnose_incident("incident-exact-osd", envelope))
+
+    assert calls == [("10.20.1.83", "systemctl restart ceph-fsid@osd.0.service")]
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-exact-osd").one()
+        assert action.status == ActionStatus.AUTO_EXECUTED.value
+        assert json.loads(action.action_params) == {"osd_ids_by_host": {"10.20.1.83": [0]}}
+
+
+def test_safe_override_keeps_vague_pg_restart_risky(isolated_db, monkeypatch):
+    async def fake_call_router(_user_content):
+        return {"diagnosis_text": "PG degraded", "action_id": "restart_osd_daemon", "rationale": "vague restart"}
+
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("incident-vague-pg")
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "incident-vague-pg").ceph_code = "PG_DEGRADED"
+        session.add(ActionPolicyOverride(
+            action_id="restart_osd_daemon", classification="SAFE",
+            updated_by="admin", reason="Exact OSD self healing",
+        ))
+        session.commit()
+    envelope = dict(
+        ENVELOPE, incident_id="incident-vague-pg", ceph_code="PG_DEGRADED",
+        nodes=["10.20.1.83", "10.20.1.84"], osd_hosts={},
+    )
+    asyncio.run(router_client.diagnose_incident("incident-vague-pg", envelope))
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-vague-pg").one()
         assert action.classification == ActionClassification.RISKY.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
 

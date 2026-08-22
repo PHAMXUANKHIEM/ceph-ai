@@ -491,7 +491,7 @@ class Settings(BaseSettings):
     autopilot_max_actions_per_day: int = 5
     autopilot_target_cooldown_seconds: int = 1800
     autopilot_lease_ttl_seconds: int = 900
-    autopilot_grace_period_seconds: int = 300
+    autopilot_grace_period_seconds: int = 0
 
     # worker/llm/router_client.py's Action.expires_at (AI roadmap Pha 0.4,
     # section 3.3's "stale-evidence check") -- how long an Incident-
