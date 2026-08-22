@@ -8,11 +8,11 @@ def test_dashboard_exposes_operations_copilot_entry_and_suggestions():
     template = (ROOT / "dashboard/templates/index.html").read_text()
     copilot = (ROOT / "dashboard/templates/copilot.html").read_text()
     assert 'href="/ai-copilot"' in template
-    assert 'class="dashboard-copilot-field"' in template
-    assert 'id="copilot-query-form"' in template
-    assert 'id="copilot-result"' in template
-    assert "READ-ONLY · KHÔNG TỰ THỰC THI" in template
-    assert '/static/copilot.js' in template
+    assert 'class="dashboard-copilot-card"' in template
+    assert "INCIDENT ĐANG MỞ" in template
+    assert "CAPACITY FORECAST" in template
+    assert "Mở Copilot" in template
+    assert '/static/copilot.js' not in template
     assert "AI Operations Copilot" in copilot
     assert copilot.count("data-prompt=") == 3
     assert "INCIDENT ĐANG MỞ" in copilot
@@ -39,3 +39,9 @@ def test_dedicated_copilot_route_renders_operational_evidence(dashboard_client):
     assert "AI Operations Copilot" in response.text
     assert "TIMELINE EVENTS ĐÃ LƯU" in response.text
     assert "Copilot chỉ trả lời hoặc lập kế hoạch" in response.text
+
+    dashboard = dashboard_client.get("/")
+    assert dashboard.status_code == 200
+    assert dashboard.text.count('class="dashboard-copilot-card"') == 1
+    assert "INCIDENT ĐANG MỞ" in dashboard.text
+    assert "CAPACITY FORECAST" in dashboard.text
