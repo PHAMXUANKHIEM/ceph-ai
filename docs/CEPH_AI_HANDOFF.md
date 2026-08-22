@@ -58,8 +58,8 @@ roadmap Vitastor giữ riêng và tiếp tục sau.
 ### Ceph
 
 - Semantic grouping LogFinding đã có lõi `fault_family` + entity ổn định do
-  server sinh (2026-08-22); bước kế tiếp là correlation chéo health incident,
-  log, metric và disk signal.
+  server sinh; correlation với health Incident đã hoàn thành (2026-08-22).
+  Bước kế tiếp là correlation chéo metric và disk signal.
 - Hoàn thiện preflight enforcement và rollout production sau khi có đủ
   telemetry về tỷ lệ false-block.
 - Incident timeline thống nhất và AI postmortem dựa trên audit/evidence thật.

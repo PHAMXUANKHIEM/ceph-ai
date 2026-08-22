@@ -120,6 +120,28 @@ def test_page_states_findings_are_hypotheses_not_measurements(dashboard_client, 
     assert "giả thuyết" in response.text.lower()
 
 
+def test_page_shows_server_correlated_health_incident(dashboard_client, seeded):
+    with db.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=seeded["cluster_id"], ceph_code="OSD_DOWN",
+            status=IncidentStatus.NEW.value, detected_at=NOW,
+        )
+        session.add(incident)
+        session.flush()
+        finding = session.get(LogFinding, seeded["finding_id"])
+        finding.fault_family = "network_heartbeat"
+        finding.correlated_incident_id = incident.id
+        finding.correlation_reason = "server:network_heartbeat:ceph_code=OSD_DOWN"
+        finding.correlated_at = NOW
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/log-intelligence")
+    assert "Incident tương quan" in response.text
+    assert "OSD_DOWN" in response.text
+    assert "do server đối chiếu" in response.text
+
+
 def test_validation_notes_are_surfaced(dashboard_client, seeded):
     """Nếu server đã phải sửa câu trả lời của model, người đọc phải thấy."""
     with db.SessionLocal() as session:

@@ -129,6 +129,16 @@
               </tr>
               {% if f.summary %}<tr><th>Tóm tắt</th><td>{{ f.summary }}</td></tr>{% endif %}
               {% if f.root_cause_hypothesis %}<tr><th>Nguyên nhân nghi ngờ</th><td>{{ f.root_cause_hypothesis }}</td></tr>{% endif %}
+              {% if item.correlated_incident %}
+              <tr>
+                <th>Incident tương quan</th>
+                <td>
+                  <a href="/?incident_id={{ item.correlated_incident.id }}"><code>{{ item.correlated_incident.ceph_code }}</code></a>
+                  <span class="badge">{{ item.correlated_incident.status }}</span>
+                  <span class="muted">· {{ f.fault_family }} · do server đối chiếu</span>
+                </td>
+              </tr>
+              {% endif %}
               <tr>
                 <th>Bằng chứng (mẫu log thật)</th>
                 <td>

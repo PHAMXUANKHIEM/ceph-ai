@@ -27,6 +27,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db
 from shared.models import (
+    Incident,
     LogFinding,
     LogFindingStatus,
     LogIngestRun,
@@ -74,6 +75,11 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
             .limit(MAX_PATTERNS)
             .all()
         )
+        correlated_ids = {finding.correlated_incident_id for finding in findings if finding.correlated_incident_id}
+        correlated_incidents = {
+            incident.id: incident
+            for incident in session.query(Incident).filter(Incident.id.in_(correlated_ids)).all()
+        } if correlated_ids else {}
 
         finding_rows = []
         for finding in findings:
@@ -83,6 +89,7 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
                 # đánh giá được, không phải tin lời model.
                 "evidence": resolve_pattern_templates(finding),
                 "ceph_code": ceph_code_for(finding.dedupe_key),
+                "correlated_incident": correlated_incidents.get(finding.correlated_incident_id),
             })
 
         # Tách các đối tượng ra khỏi session trước khi nó đóng: template

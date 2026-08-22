@@ -1846,6 +1846,11 @@ class LogFinding(Base):
     # Identity do catalogue phía server sinh; không lấy trực tiếp từ AI.
     fault_family: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     semantic_entities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correlated_incident_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("incidents.id"), nullable=True, index=True
+    )
+    correlation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    correlated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Chỉ được đặt khi vượt qua allowlist VÀ không thuộc nhóm DESTRUCTIVE.
     recommended_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # JSON list[str] -- các bước thủ công, dạng văn bản thuần, không bao giờ

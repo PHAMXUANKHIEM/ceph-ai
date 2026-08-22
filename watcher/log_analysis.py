@@ -65,6 +65,7 @@ from shared.router_client import build_router_client
 from watcher.capability_inventory import latest_snapshot
 from watcher.log_triage import TriageResult
 from watcher.log_semantics import derive_identity, entities_from_json, same_semantic_problem
+from watcher.incident_correlation import correlate_finding
 from worker.policy import gate
 from worker.policy.gate import _POLICY_PATH
 
@@ -788,6 +789,8 @@ def analyze_window(
             validation_notes=validated["validation_notes"],
         )
         session.add(finding)
+        session.flush()
+        correlate_finding(session, finding, now=window_end)
         session.commit()
         finding_id = finding.id
         evidence_templates = resolve_pattern_templates(finding)

@@ -16,7 +16,9 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
   - Sinh `fault_family` ổn định từ catalogue phía server.
   - Sinh entity ổn định từ host/daemon/evidence đã xác thực.
   - Dedupe theo semantic identity, vẫn giữ overlap evidence làm fallback bảo thủ.
-  - Sau đó mở rộng correlation giữa health incident, log, metric và disk signal.
+  - [x] Correlation tất định giữa health Incident và LogFinding theo cluster,
+    fault-family, entity OSD và cửa sổ thời gian; lưu provenance để audit/UI.
+  - [ ] Mở rộng correlation sang metric và disk signal.
 - [ ] **2. Incident timeline thống nhất và AI postmortem**
   - Dòng thời gian: phát hiện → evidence → chẩn đoán → đề xuất → duyệt → thực thi → xác minh.
   - Postmortem chỉ được viết từ timeline/audit đã lưu, gồm root cause, ảnh hưởng,
@@ -48,4 +50,3 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
 3. `fault_family` và entity do server sinh, không tin trực tiếp output của model.
 4. Bản ghi cũ không có semantic identity vẫn hoạt động bằng cơ chế overlap hiện tại.
 5. Có migration, kiểm thử dedupe lúc ghi mới và reconciliation dữ liệu đang mở.
-
