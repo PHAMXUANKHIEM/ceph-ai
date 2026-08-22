@@ -37,6 +37,8 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
     diagnosis thiếu timestamp chỉ là context, không giả làm event.
   - [x] AI postmortem dùng payload đóng, bắt buộc citation event ID hợp lệ và
     lưu prompt version; khóa nhạy cảm trong structured evidence được che trước khi gửi.
+  - [x] Event ledger append-only ghi timestamp thật cho AI diagnosis và tự
+    mirror toàn bộ audit lifecycle trong cùng transaction; dữ liệu cũ tiếp tục dùng fallback.
 - [ ] **3. Dự báo dung lượng**
   - Dự báo mốc 80/90/95% theo cluster, pool và OSD từ tối thiểu 30 ngày dữ liệu.
   - Hiển thị ngày dự kiến đầy, tốc độ tăng, confidence và nhu cầu thêm disk/node.

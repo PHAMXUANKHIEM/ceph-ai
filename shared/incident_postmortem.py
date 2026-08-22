@@ -12,7 +12,7 @@ from config.settings import settings
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared import db
-from shared.models import Action, AuditEntry, Incident
+from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent
 from shared.router_client import build_router_client
 
 PROMPT_VERSION = "v1"
@@ -51,6 +51,9 @@ def build_timeline(session, incident_id: str) -> dict:
     audits = session.query(AuditEntry).filter_by(incident_id=incident_id).order_by(
         AuditEntry.created_at, AuditEntry.id
     ).all()
+    lifecycle_events = session.query(IncidentTimelineEvent).filter_by(incident_id=incident_id).order_by(
+        IncidentTimelineEvent.created_at, IncidentTimelineEvent.id
+    ).all()
     events = [{
         "id": f"incident:{incident.id}:detected", "at": incident.detected_at.isoformat(),
         "kind": "detected", "actor": "watcher", "summary": f"Detected {incident.ceph_code}",
@@ -63,11 +66,21 @@ def build_timeline(session, incident_id: str) -> dict:
             "summary": action.rationale or action.action_id,
             "current_action_status": action.status, "classification": action.classification,
         })
+    mirrored_audits = {event.source_id for event in lifecycle_events if event.source_type == "audit"}
     for entry in audits:
+        if entry.id in mirrored_audits:
+            continue
         events.append({
             "id": f"audit:{entry.id}", "at": entry.created_at.isoformat(),
             "kind": entry.event_type, "actor": entry.actor,
             "action_ref": entry.action_id, "summary": entry.event_type,
+        })
+    for event in lifecycle_events:
+        events.append({
+            "id": f"event:{event.id}", "at": event.created_at.isoformat(),
+            "kind": event.event_type, "actor": event.actor,
+            "action_ref": event.action_id, "summary": event.event_type,
+            "evidence": _safe_json(event.evidence_json),
         })
     events.sort(key=lambda event: (event["at"], event["id"]))
     return {

@@ -413,6 +413,25 @@ class AuditEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class IncidentTimelineEvent(Base):
+    """Append-only lifecycle ledger with exact event timestamps."""
+
+    __tablename__ = "incident_timeline_events"
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_id", name="uq_incident_timeline_event_source"),
+        Index("ix_incident_timeline_event_order", "incident_id", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    incident_id: Mapped[str] = mapped_column(String(36), ForeignKey("incidents.id"), nullable=False)
+    action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ObjectStorageAuditEntry(Base):
     """Audit trail for direct RGW mutations that have no Incident parent."""
 

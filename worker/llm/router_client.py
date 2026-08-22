@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import audit, db
+from shared import audit, db, incident_events
 from shared.models import (
     Action,
     ActionClassification,
@@ -524,6 +524,10 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
             return
         incident.diagnosis_text = diagnosis_text
+        incident_events.record(
+            session, incident_id=incident_id, event_type="diagnosis_completed",
+            actor="ai", evidence={"prompt_version": "incident-diagnosis-v1"},
+        )
         alert_ceph_code = incident.ceph_code
         alert_severity = incident.severity
         alert_cluster_name = None

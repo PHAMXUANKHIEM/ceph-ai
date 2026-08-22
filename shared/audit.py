@@ -1,5 +1,8 @@
+import uuid
+
 from sqlalchemy.orm import Session
 
+from shared import incident_events
 from shared.models import AuditEntry
 
 ACTOR_SYSTEM = "system"
@@ -91,13 +94,19 @@ def record(
     commit — the caller controls the transaction boundary, so this write is
     always atomic with the Action/Incident status change it describes
     in the same transaction as the state change."""
+    entry_id = str(uuid.uuid4())
     session.add(
         AuditEntry(
+            id=entry_id,
             incident_id=incident_id,
             action_id=action_id,
             event_type=event_type,
             actor=actor,
         )
+    )
+    incident_events.record(
+        session, incident_id=incident_id, action_id=action_id,
+        event_type=event_type, actor=actor, source_type="audit", source_id=entry_id,
     )
 
 # 2026-08-20: fired when a monitor auto-resolves an Incident (the underlying

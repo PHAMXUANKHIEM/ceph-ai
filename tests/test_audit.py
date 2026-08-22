@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from shared import audit
-from shared.models import Action, ActionClassification, AuditEntry, Incident
+from shared.models import Action, ActionClassification, AuditEntry, Incident, IncidentTimelineEvent
 
 
 def _seed_incident_and_action(session):
@@ -34,6 +34,10 @@ def test_record_creates_audit_entry_with_all_fields(db_session):
     assert entry.event_type == audit.EVENT_SAFE_ACTION_EXECUTED
     assert entry.actor == audit.ACTOR_SYSTEM
     assert entry.created_at is not None
+    lifecycle = db_session.query(IncidentTimelineEvent).one()
+    assert lifecycle.event_type == entry.event_type
+    assert lifecycle.source_type == "audit"
+    assert lifecycle.source_id == entry.id
 
 
 def test_record_allows_action_id_none(db_session):
@@ -67,3 +71,4 @@ def test_record_does_not_commit_itself(db_session):
     db_session.rollback()
 
     assert db_session.query(AuditEntry).count() == 0
+    assert db_session.query(IncidentTimelineEvent).count() == 0
