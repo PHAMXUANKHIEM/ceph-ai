@@ -68,7 +68,7 @@ CHAT_ACTION_IDS = VALID_ACTION_IDS | CHAT_MANAGEMENT_ACTION_IDS | VALID_BLUESTOR
 # DIAGNOSTIC_OUTPUT_MAX_CHARS elsewhere in this codebase, just tuned
 # empirically against a real failure instead of being a round number.
 MAX_TOOL_RESULT_CHARS = 4000
-# Persisted Copilot evidence contains IDs twice (data + citation manifest), so
+# Persisted operations evidence contains IDs twice (data + citation manifest), so
 # 20 compact incidents can legitimately exceed the raw-command ceiling above.
 # It is structured and bounded by tool schemas, unlike arbitrary CLI output.
 MAX_EVIDENCE_RESULT_CHARS = 12000

@@ -378,20 +378,20 @@ def test_run_chat_turn_plain_text_answer(monkeypatch):
     }
 
 
-def test_copilot_evidence_tools_are_exposed_to_all_authenticated_users():
+def test_operations_evidence_tools_are_exposed_to_all_authenticated_users():
     names = {item["function"]["name"] for item in chat_client._tool_schemas(is_admin=False)}
     assert {
         "get_recent_incidents", "get_incident_timeline", "get_capacity_forecast"
     } <= names
 
 
-def test_copilot_prompt_reserves_verified_source_footer_for_server():
+def test_operations_prompt_reserves_verified_source_footer_for_server():
     prompt = chat_client.system_prompt()
     assert "Ứng dụng tự gắn mục Nguồn đã kiểm chứng" in prompt
     assert "không tự viết một mục Nguồn riêng" in prompt
 
 
-def test_copilot_server_appends_verified_citations(monkeypatch):
+def test_operations_chat_server_appends_verified_citations(monkeypatch):
     from types import SimpleNamespace
 
     _install_fake_client(monkeypatch, [
@@ -417,7 +417,7 @@ def test_copilot_server_appends_verified_citations(monkeypatch):
     assert result["tools_used"] == ["get_capacity_forecast"]
 
 
-def test_copilot_evidence_manifest_is_not_cut_at_raw_command_limit(monkeypatch):
+def test_operations_evidence_manifest_is_not_cut_at_raw_command_limit(monkeypatch):
     payload = json.dumps({
         "incidents": [{"summary": "x" * 300} for _ in range(15)],
         "_citations": [{"source_id": f"incident:{i}"} for i in range(15)],

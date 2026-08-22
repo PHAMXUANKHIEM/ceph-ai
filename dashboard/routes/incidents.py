@@ -25,7 +25,6 @@ from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
 from shared.object_storage_cache import get_or_load
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
-from watcher.capacity_forecast import forecasts as capacity_forecasts
 
 logger = logging.getLogger(__name__)
 
@@ -682,13 +681,6 @@ async def index(
         # alone wouldn't catch.
         stale = is_heartbeat_stale(latest_heartbeat)
         status = compute_cluster_status(incidents, stale)
-        copilot_open_count = sum(
-            incident.status in OPEN_STATUSES
-            and incident.ceph_code != CHAT_REQUEST_CEPH_CODE
-            and not (incident.ceph_code or "").startswith(LOG_ANOMALY_PREFIX)
-            for incident in incidents
-        )
-        copilot_capacity = capacity_forecasts(selected_cluster.id)
         # 2026-08-10 (multi-tenant remediation Phase 2): the "Chờ duyệt" card
         # used to hide the instant the 3 GLOBAL channels were configured —
         # now that a non-default cluster's own channel can NARROW coverage
@@ -730,8 +722,6 @@ async def index(
             "cluster_exec_mode": selected_cluster.ceph_exec_mode,
             "clusters": clusters,
             "selected_cluster": selected_cluster,
-            "copilot_open_count": copilot_open_count,
-            "copilot_capacity": copilot_capacity,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
             "filter_incident_id": incident_id,

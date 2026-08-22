@@ -54,7 +54,6 @@
             <a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a>
           </div>
         </div>
-        <a href="/ai-copilot" class="nav-link nav-link-copilot">AI Copilot</a>
         <a href="/settings" class="nav-link">Settings</a>
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
@@ -85,12 +84,6 @@
   <div class="app-body">
   <main class="page">
     <div id="ceph-dashboard-root"></div>
-    <section class="dashboard-copilot-card" aria-labelledby="dashboard-copilot-title">
-      <div class="dashboard-copilot-card-main"><span class="copilot-kicker">EVIDENCE-CITED OPERATIONS</span><h2 id="dashboard-copilot-title">AI Operations Copilot</h2><p>Điều tra incident, timeline và capacity từ evidence đã lưu.</p></div>
-      <div class="dashboard-copilot-stat"><span>INCIDENT ĐANG MỞ</span><strong>{{ copilot_open_count }}</strong></div>
-      <div class="dashboard-copilot-stat"><span>CAPACITY FORECAST</span><strong>{{ "Sẵn sàng" if copilot_capacity.status == "ready" else "Đang học" }}</strong><small>{{ copilot_capacity.series_seen }} chuỗi · cần {{ copilot_capacity.minimum_history_days }} ngày</small></div>
-      <div class="dashboard-copilot-card-actions"><span class="copilot-readonly-badge">READ-ONLY</span><a class="btn btn-primary btn-sm" href="/ai-copilot">Mở Copilot</a></div>
-    </section>
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">
       {% if heartbeat_stale %}

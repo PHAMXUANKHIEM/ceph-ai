@@ -196,7 +196,7 @@
     answer.textContent = content.slice(0, markerAt);
     bubble.appendChild(answer);
     var sources = document.createElement("section");
-    sources.className = "copilot-evidence-sources";
+    sources.className = "chat-evidence-sources";
     var title = document.createElement("strong");
     title.textContent = "✓ Nguồn đã kiểm chứng";
     sources.appendChild(title);
