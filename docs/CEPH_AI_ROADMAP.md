@@ -10,6 +10,11 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
 - Chạy lệnh thành công không đồng nghĩa đã khắc phục; phải xác minh bằng telemetry.
 - Rule phía server quyết định identity, policy và mức an toàn; model chỉ phân tích.
 
+Lộ trình closed-loop đầy đủ từ học có giám sát đến Autopilot L5, bao gồm case
+memory, trust engine, shadow mode, promotion/demotion và rollout production,
+được mô tả tại
+[`ceph-autonomous-operations-roadmap.md`](ceph-autonomous-operations-roadmap.md).
+
 ## Thứ tự ưu tiên Ceph
 
 - [~] **1. Semantic correlation cho Log Intelligence**
@@ -57,6 +62,12 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
   - Operator đánh dấu chẩn đoán đúng/sai, false positive và hiệu quả action.
   - Báo cáo precision/false-positive theo health code, fault family và AI provider.
   - Trước mắt dùng phản hồi để chỉnh rule/prompt; chưa tự fine-tune từ dữ liệu production.
+- [ ] **8. Autonomous Operations theo playbook maturity**
+  - Lưu Remediation Case và outcome đã verify để tái sử dụng cho lỗi quen thuộc.
+  - Chạy Shadow Autopilot trước khi mở quyền tự thực thi trên lab/production.
+  - Nâng/hạ autonomy riêng từng playbook dựa trên trust và hard safety gate.
+  - SAFE đủ maturity được tự chạy; RISKY/DESTRUCTIVE giữ trần quyền rõ ràng.
+  - Có rate limit, cooldown, distributed lock, rollback, circuit breaker và kill switch.
 
 ## CPU/RAM forecast từ Loki
 

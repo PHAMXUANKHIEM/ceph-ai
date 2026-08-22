@@ -19,6 +19,9 @@ Dashboard hiện cung cấp các nhóm chức năng chính:
 Trạng thái phần AI, guardrail production và danh sách việc để tiếp tục được
 ghi tại [`docs/CEPH_AI_HANDOFF.md`](docs/CEPH_AI_HANDOFF.md). Runbook vận hành
 Loki/RCA nằm tại [`docs/runbook-log-intelligence.md`](docs/runbook-log-intelligence.md).
+Lộ trình để AI học từ các remediation đã xác minh và tăng dần mức tự vận hành
+nằm tại
+[`docs/ceph-autonomous-operations-roadmap.md`](docs/ceph-autonomous-operations-roadmap.md).
 
 Tài liệu này hướng dẫn chạy toàn bộ hệ thống trên **một máy mới** (không
 phải máy đang chạy sẵn) — ví dụ khi chuyển sang server khác hoặc set up
