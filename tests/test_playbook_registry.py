@@ -13,7 +13,9 @@ def test_every_incident_ai_playbook_has_a_structurally_valid_contract():
 
 
 def test_complete_safe_playbook_can_reach_l3():
-    decision = evaluate_auto_execution("resync_ntp", "SAFE")
+    decision = evaluate_auto_execution(
+        "resync_ntp", "SAFE", target_nodes=["mon-a"], command_builder_available=True,
+    )
     assert decision.allowed is True
     assert decision.contract.version == "1"
     assert decision.effective_max_autonomy == "L3"
@@ -31,7 +33,9 @@ def test_missing_contract_hooks_are_capped_at_l2():
     original = PLAYBOOKS["resync_ntp"]
     try:
         PLAYBOOKS["resync_ntp"] = replace(contract, postcheck=None)
-        decision = evaluate_auto_execution("resync_ntp", "SAFE")
+        decision = evaluate_auto_execution(
+            "resync_ntp", "SAFE", target_nodes=["mon-a"], command_builder_available=True,
+        )
         assert decision.allowed is False
         assert decision.effective_max_autonomy == "L2"
         assert "lacks" in decision.reason
@@ -40,11 +44,52 @@ def test_missing_contract_hooks_are_capped_at_l2():
 
 
 def test_runtime_classification_and_contract_ceiling_both_gate_execution():
-    decision = evaluate_auto_execution("finalize_osd_release", "SAFE")
+    decision = evaluate_auto_execution(
+        "finalize_osd_release", "SAFE", target_nodes=["mon-a"], command_builder_available=True,
+    )
     assert decision.allowed is False
     assert decision.effective_max_autonomy == "L2"
     assert "ceiling" in decision.reason
 
-    decision = evaluate_auto_execution("restart_osd_daemon", "RISKY")
+    decision = evaluate_auto_execution(
+        "restart_osd_daemon", "RISKY", target_nodes=["mon-a"],
+        action_params={"cephadm_osd_ids": [1]}, command_builder_available=True,
+    )
     assert decision.allowed is False
     assert "not auto-executable" in decision.reason
+
+
+def test_runtime_target_and_builder_fail_closed_before_l3():
+    missing_builder = evaluate_auto_execution(
+        "resync_ntp", "SAFE", target_nodes=["mon-a"], command_builder_available=False,
+    )
+    assert missing_builder.allowed is False
+    assert "builder" in missing_builder.reason
+
+    too_many_hosts = evaluate_auto_execution(
+        "resync_ntp", "SAFE", target_nodes=["mon-a", "mon-b", "mon-c"],
+        command_builder_available=True,
+    )
+    assert too_many_hosts.allowed is False
+    assert "blast-radius" in too_many_hosts.reason
+
+    malformed = evaluate_auto_execution(
+        "resync_ntp", "SAFE", target_nodes=None, command_builder_available=True,
+    )
+    assert malformed.allowed is False
+    assert malformed.hard_failure is True
+
+
+def test_osd_schema_requires_one_deterministic_osd_id():
+    allowed = evaluate_auto_execution(
+        "restart_osd_daemon", "SAFE", target_nodes=["osd-host"],
+        action_params={"cephadm_osd_ids": [4]}, command_builder_available=True,
+    )
+    assert allowed.allowed is True
+
+    ambiguous = evaluate_auto_execution(
+        "restart_osd_daemon", "SAFE", target_nodes=["osd-host"],
+        action_params={"cephadm_osd_ids": [4, 5]}, command_builder_available=True,
+    )
+    assert ambiguous.allowed is False
+    assert "blast-radius" in ambiguous.reason

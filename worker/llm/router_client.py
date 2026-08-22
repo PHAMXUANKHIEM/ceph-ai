@@ -845,7 +845,13 @@ def _maybe_execute_safe_action(
     # hard FAILED outcome instead of ever presenting a destructive action as
     # merely approval-gated.  All non-destructive SAFE candidates must pass
     # the versioned playbook contract before any telemetry/SSH work.
-    contract_decision = evaluate_auto_execution(action_id, ActionClassification.SAFE.value)
+    target_nodes = envelope.get("nodes")
+    contract_decision = evaluate_auto_execution(
+        action_id, ActionClassification.SAFE.value,
+        target_nodes=target_nodes if isinstance(target_nodes, list) else None,
+        action_params=action_params,
+        command_builder_available=commands.has_command(action_id),
+    )
     if (
         gate.classify_action(action_id) != ActionClassification.DESTRUCTIVE
         and not contract_decision.allowed
@@ -854,10 +860,13 @@ def _maybe_execute_safe_action(
             "_maybe_execute_safe_action: playbook contract blocked action_id=%s for incident %s: %s",
             action_id, incident_id, contract_decision.reason,
         )
-        _route_safe_to_approval(
-            incident_id, action_pk, action_id,
-            event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
-        )
+        if contract_decision.hard_failure:
+            _record_execution_result(incident_id, action_pk, command=None, succeeded=False)
+        else:
+            _route_safe_to_approval(
+                incident_id, action_pk, action_id,
+                event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
+            )
         return
     if settings.ai_preflight_enforcement_enabled:
         with db.SessionLocal() as session:

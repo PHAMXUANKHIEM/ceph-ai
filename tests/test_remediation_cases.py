@@ -60,6 +60,8 @@ def test_case_freezes_redacted_pre_state_and_has_stable_fingerprint():
     assert contract_snapshot["registered"] is True
     assert contract_snapshot["registry"]["action_id"] == "restart_osd_daemon"
     assert contract_snapshot["registry"]["target_schema"] == "osd"
+    assert contract_snapshot["registry"]["command_builder_version"] == "1"
+    assert len(contract_snapshot["registry"]["contract_checksum"]) == 64
     assert first.outcome == "PROPOSED"
 
 

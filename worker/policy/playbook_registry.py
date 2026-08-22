@@ -7,6 +7,8 @@ operations roadmap.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 
 from shared.models import ActionClassification
@@ -26,12 +28,17 @@ class PlaybookContract:
     max_targets: int
     cooldown_seconds: int
     command_builder: str | None
+    command_builder_version: str | None
     preflight: str | None
     postcheck: str | None
     rollback: str | None = None
 
     def snapshot(self) -> dict:
-        return asdict(self)
+        payload = asdict(self)
+        payload["contract_checksum"] = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -40,12 +47,14 @@ class ContractDecision:
     reason: str
     contract: PlaybookContract | None
     effective_max_autonomy: str
+    hard_failure: bool = False
 
     def snapshot(self) -> dict:
         return {
             "allowed": self.allowed,
             "reason": self.reason,
             "effective_max_autonomy": self.effective_max_autonomy,
+            "hard_failure": self.hard_failure,
             "contract": self.contract.snapshot() if self.contract else None,
         }
 
@@ -53,6 +62,7 @@ class ContractDecision:
 def _contract(action_id: str, *, version: str = "1", target_schema: str,
               max_autonomy: str, conflict_scope: str, max_targets: int = 1,
               cooldown_seconds: int = 1800, command_builder: str | None = "closed_command_builder",
+              command_builder_version: str | None = "1",
               preflight: str | None = "capability_and_operational_preflight",
               postcheck: str | None = "fresh_health_telemetry", rollback: str | None = None,
               ) -> PlaybookContract:
@@ -60,7 +70,8 @@ def _contract(action_id: str, *, version: str = "1", target_schema: str,
         action_id=action_id, version=version, target_schema=target_schema,
         max_autonomy=max_autonomy, conflict_scope=conflict_scope,
         max_targets=max_targets, cooldown_seconds=cooldown_seconds,
-        command_builder=command_builder, preflight=preflight,
+        command_builder=command_builder, command_builder_version=command_builder_version,
+        preflight=preflight,
         postcheck=postcheck, rollback=rollback,
     )
 
@@ -71,7 +82,7 @@ def _contract(action_id: str, *, version: str = "1", target_schema: str,
 PLAYBOOKS: dict[str, PlaybookContract] = {
     "resync_ntp": _contract(
         "resync_ntp", target_schema="host", max_autonomy="L3",
-        conflict_scope="host", max_targets=1,
+        conflict_scope="host", max_targets=2,
     ),
     "crash_archive_all": _contract(
         "crash_archive_all", target_schema="cluster", max_autonomy="L3",
@@ -102,11 +113,13 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
     "pg_repair_force": _contract(
         "pg_repair_force", target_schema="pg", max_autonomy="L2",
         conflict_scope="pg", command_builder=None, preflight=None, postcheck=None,
+        command_builder_version=None,
     ),
     "investigate_manually": _contract(
         "investigate_manually", target_schema="manual", max_autonomy="L1",
         conflict_scope="none", max_targets=0, cooldown_seconds=0,
         command_builder=None, preflight=None, postcheck=None,
+        command_builder_version=None,
     ),
 }
 
@@ -131,10 +144,41 @@ def validate_contract(contract: PlaybookContract) -> tuple[str, ...]:
         errors.append("max_targets must be non-negative")
     if contract.cooldown_seconds < 0:
         errors.append("cooldown_seconds must be non-negative")
+    if contract.command_builder and not contract.command_builder_version:
+        errors.append("missing command_builder_version")
     return tuple(errors)
 
 
-def evaluate_auto_execution(action_id: str, classification: str) -> ContractDecision:
+def _validate_runtime_target(
+    contract: PlaybookContract, target_nodes: list[str] | None, action_params: dict | None,
+) -> str | None:
+    if not isinstance(target_nodes, list) or not target_nodes:
+        return "target_nodes is missing or malformed"
+    if not all(isinstance(node, str) and node.strip() for node in target_nodes):
+        return "target_nodes contains an invalid host"
+    if len(target_nodes) > contract.max_targets:
+        return f"target count {len(target_nodes)} exceeds blast-radius ceiling {contract.max_targets}"
+    if contract.target_schema == "osd":
+        params = action_params if isinstance(action_params, dict) else {}
+        cephadm_ids = params.get("cephadm_osd_ids")
+        by_host = params.get("osd_ids_by_host")
+        if isinstance(cephadm_ids, list):
+            osd_ids = cephadm_ids
+        elif isinstance(by_host, dict):
+            osd_ids = [osd_id for values in by_host.values() if isinstance(values, list) for osd_id in values]
+        else:
+            return "OSD target schema requires deterministic osd ids"
+        if not osd_ids or not all(str(osd_id).isdigit() for osd_id in osd_ids):
+            return "OSD target contains an invalid id"
+        if len(osd_ids) > contract.max_targets:
+            return f"OSD target count {len(osd_ids)} exceeds blast-radius ceiling {contract.max_targets}"
+    return None
+
+
+def evaluate_auto_execution(
+    action_id: str, classification: str, *, target_nodes: list[str] | None = None,
+    action_params: dict | None = None, command_builder_available: bool = False,
+) -> ContractDecision:
     """Return an L3 execution decision; every missing/invalid field fails closed."""
     contract = get_contract(action_id)
     if contract is None:
@@ -146,10 +190,16 @@ def evaluate_auto_execution(action_id: str, classification: str) -> ContractDeci
         return ContractDecision(
             False, "playbook lacks command_builder, preflight or postcheck", contract, "L2",
         )
+    if not command_builder_available:
+        return ContractDecision(False, "registered command builder is unavailable", contract, "L2")
     if classification not in {ActionClassification.READ_ONLY.value, ActionClassification.SAFE.value}:
         return ContractDecision(False, f"classification {classification} is not auto-executable", contract, "L2")
     if _LEVELS[contract.max_autonomy] < _LEVELS["L3"]:
         return ContractDecision(
             False, f"playbook ceiling is {contract.max_autonomy}", contract, contract.max_autonomy,
         )
+    target_error = _validate_runtime_target(contract, target_nodes, action_params)
+    if target_error:
+        malformed = target_error.startswith("target_nodes") or "invalid id" in target_error
+        return ContractDecision(False, target_error, contract, "L2", hard_failure=malformed)
     return ContractDecision(True, "versioned playbook contract permits L3", contract, contract.max_autonomy)
