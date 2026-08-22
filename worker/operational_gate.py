@@ -35,9 +35,13 @@ def evaluate(snapshot: dict, *, max_recovery_bytes_per_sec: float = 0,
             return OperationalGateResult(False, f"{count} PG(s) are {state}")
 
     recovery_bps = float(pgmap.get("recovering_bytes_per_sec") or 0)
-    if recovery_bps > max(0, max_recovery_bytes_per_sec):
+    # Zero is the documented/default "no ceiling configured" value.  Treat
+    # it as disabled; comparing against zero would otherwise block every
+    # SAFE repair precisely while Ceph is recovering from a failed OSD.
+    recovery_ceiling = max(0, max_recovery_bytes_per_sec)
+    if recovery_ceiling > 0 and recovery_bps > recovery_ceiling:
         return OperationalGateResult(
-            False, f"recovery rate {recovery_bps:.0f} B/s exceeds {max_recovery_bytes_per_sec:.0f} B/s"
+            False, f"recovery rate {recovery_bps:.0f} B/s exceeds {recovery_ceiling:.0f} B/s"
         )
     if active_latency_incidents:
         return OperationalGateResult(False, f"{active_latency_incidents} active OSD latency incident(s)")

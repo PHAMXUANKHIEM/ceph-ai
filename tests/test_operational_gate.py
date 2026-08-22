@@ -27,6 +27,11 @@ def test_recovery_uses_configured_ceiling():
     assert evaluate(snapshot, max_recovery_bytes_per_sec=101).allowed
 
 
+def test_zero_recovery_ceiling_disables_the_guard():
+    snapshot = _status(recovering_bytes_per_sec=38_756_004)
+    assert evaluate(snapshot, max_recovery_bytes_per_sec=0).allowed
+
+
 def test_active_latency_incident_blocks():
     result = evaluate(_status(), active_latency_incidents=1)
     assert not result.allowed and "latency" in result.reason
