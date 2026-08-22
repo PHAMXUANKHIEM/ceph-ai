@@ -53,6 +53,35 @@ def test_forecast_reads_loki_samples(monkeypatch):
     assert result["cpu"].samples == 30
 
 
+def test_latest_metrics_comes_from_newest_loki_sample(monkeypatch):
+    now = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        forecast, "fetch_samples",
+        lambda cluster, host, now=None: [(now - timedelta(seconds=10), 42.5, 61.2)],
+    )
+
+    result = forecast.fetch_latest_metrics("CS-LAB", "node-1", now=now)
+
+    assert result["cpu_percent"] == 42.5
+    assert result["mem_percent"] == 61.2
+    assert result["source"] == "loki"
+
+
+def test_latest_metrics_rejects_stale_loki_sample(monkeypatch):
+    now = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        forecast, "fetch_samples",
+        lambda cluster, host, now=None: [(now - timedelta(minutes=10), 42.5, 61.2)],
+    )
+
+    try:
+        forecast.fetch_latest_metrics("CS-LAB", "node-1", now=now, max_age_seconds=60)
+    except forecast.NodeResourceLokiError as exc:
+        assert "stale" in str(exc)
+    else:
+        raise AssertionError("stale Loki data must be rejected")
+
+
 def _learning_db(monkeypatch):
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)

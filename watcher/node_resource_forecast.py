@@ -1,9 +1,8 @@
-"""Loki-backed CPU/RAM history and deterministic resource forecasting.
+"""Loki-backed CPU/RAM monitoring and deterministic resource forecasting.
 
-Loki is the source of truth: the live SSH sample is first pushed to Loki;
-forecasting always queries the stored Loki stream back.  This keeps the
-prediction path auditable in Grafana and prevents an in-process cache from
-silently becoming a second metrics store.
+Loki is the source of truth. Alloy publishes the node-resource stream and
+both current threshold monitoring and forecasting read that same stream;
+the Watcher does not SSH to nodes to manufacture CPU/RAM observations.
 """
 
 from __future__ import annotations
@@ -37,6 +36,10 @@ class ResourceForecast:
     window_hours: float
     algorithm: str = "linear"
     training_window_hours: int | None = None
+
+
+class NodeResourceLokiError(Exception):
+    """The current CPU/RAM observation is absent, stale, or unreadable."""
 
 
 def _headers() -> dict[str, str]:
@@ -102,6 +105,37 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
             except (TypeError, ValueError, KeyError, json.JSONDecodeError):
                 continue
     return [rows[key] for key in sorted(rows)]
+
+
+def fetch_latest_metrics(
+    cluster: str, host: str, *, now: datetime | None = None, max_age_seconds: int | None = None
+) -> dict:
+    """Return the newest CPU/RAM sample shipped by Alloy to Loki.
+
+    Reject stale data so an interrupted Alloy/Loki path cannot keep an old
+    high value open forever or falsely report that a node is healthy.
+    """
+    samples = fetch_samples(cluster, host, now=now)
+    if not samples:
+        raise NodeResourceLokiError(f"{host}: Loki has no CPU/RAM samples")
+    observed_at, cpu, mem = samples[-1]
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    allowed_age = max_age_seconds or max(120, settings.node_health_scan_interval_seconds * 2)
+    age_seconds = (reference - observed_at).total_seconds()
+    if age_seconds > allowed_age:
+        raise NodeResourceLokiError(
+            f"{host}: latest Loki CPU/RAM sample is stale ({int(age_seconds)}s old)"
+        )
+    return {
+        "cpu_percent": cpu,
+        "mem_percent": mem,
+        "observed_at": observed_at.isoformat(),
+        "source": "loki",
+    }
 
 
 def _linear_forecast(

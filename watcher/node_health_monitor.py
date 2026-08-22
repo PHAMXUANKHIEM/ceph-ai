@@ -6,12 +6,8 @@ node once something ELSE running on top of it starts failing.
 
 Own SLOW cadence (watcher/main.py::run() calls this on its own
 settings.node_health_scan_interval_seconds timer, default 15 minutes — NOT
-every watcher_poll_interval_seconds tick), same reasoning as
-watcher/device_health_monitor.py's own scan cadence: collecting these
-metrics needs a fresh SSH round trip PER NODE (watcher/node_metrics.py
-samples /proc twice, ~1s apart, per host) — running that on every 15s
-health-check tick would be a meaningfully heavier SSH load than the single
-`ceph health detail` query the main loop already does.
+every watcher_poll_interval_seconds tick). Current CPU/RAM and forecast
+history both come from Alloy's structured Loki stream.
 
 Same "own in-memory rolling streak, no DB persistence of raw samples"
 posture as watcher/volume_monitor.py — a consecutive-scans-over-threshold
@@ -38,7 +34,6 @@ from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_node_alert
-from watcher.node_metrics import NodeMetricsError, collect_node_metrics
 from watcher import node_resource_forecast
 from worker.policy import gate
 
@@ -100,7 +95,7 @@ def check_node_resources(
     """Scans every configured cluster node's current CPU%/RAM% and returns
     {ceph_code: detail} for every host whose CPU OR RAM has stayed at/above
     threshold for CONSECUTIVE_SCANS_REQUIRED scans in a row. A single
-    host's SSH/parse failure only skips THAT host for this scan (logged,
+    host's Loki query/staleness failure only skips THAT host for this scan (logged,
     not raised, and its streak is left untouched rather than reset to 0 —
     a transient SSH hiccup must not erase real progress toward a genuine
     alert) — one unreachable node must never blank out every other node's
@@ -110,17 +105,15 @@ def check_node_resources(
     for node in configured_nodes():
         host = node["host"]
         try:
-            metrics = collect_node_metrics(host)
-        except NodeMetricsError:
-            logger.warning("check_node_resources: failed to collect metrics for %s", host, exc_info=True)
+            metrics = node_resource_forecast.fetch_latest_metrics(
+                cluster_name or settings.cluster_name, host
+            )
+        except node_resource_forecast.NodeResourceLokiError:
+            logger.warning("check_node_resources: failed to read Loki metrics for %s", host, exc_info=True)
             continue
 
         cpu = metrics["cpu_percent"]
         mem = metrics["mem_percent"]
-        # The forecast path must read its history from Loki.  Persist the
-        # fresh sample before any prediction is attempted; a Loki failure
-        # degrades forecasting only and never suppresses threshold alerts.
-        node_resource_forecast.push_sample(cluster_name or settings.cluster_name, host, metrics)
         if settings.node_resource_forecast_enabled:
             try:
                 forecasts = node_resource_forecast.adaptive_forecast(
@@ -216,7 +209,7 @@ def create_or_resolve_node_health_incidents(
             rationale = _rationale_for(detail)
             detected_at = datetime.utcnow()
             signal_evidence = {
-                "source": "node_proc_metrics",
+                "source": "loki_node_resource_metrics",
                 "captured_at": detected_at.isoformat(),
                 "host": detail["host"],
                 "cpu_percent": detail["cpu_percent"],
