@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import audit, db, incident_events
+from shared import audit, db, incident_events, remediation_cases
 from shared.models import (
     Action,
     ActionClassification,
@@ -712,6 +712,15 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
             session.add(action)
             try:
+                session.flush()
+                remediation_cases.create_for_action(
+                    session, incident=incident, action=action, redacted_envelope=payload,
+                    diagnosis=diagnosis_text,
+                    model_provider=(
+                        "codex" if settings.codex_chat_enabled else
+                        "claude" if settings.claude_chat_enabled else settings.router_provider
+                    ),
+                )
                 session.commit()
             except IntegrityError:
                 # Pha 0.4's uq_actions_idempotency_key_inflight partial
@@ -1092,6 +1101,10 @@ def _record_execution_result(
             if succeeded:
                 action.executed_at = datetime.utcnow()
             notify_rationale = action.rationale
+            remediation_cases.record_execution(
+                session, action_id=action.id, succeeded=succeeded,
+                executed_at=action.executed_at if succeeded else datetime.utcnow(),
+            )
         if incident is None:
             # AuditEntry.incident_id is a required FK — there is nothing
             # valid to attach an audit row to, so skip it too (see the same
@@ -2440,6 +2453,10 @@ def _record_approved_execution_result(
         action.status = ActionStatus.EXECUTED.value if succeeded else ActionStatus.FAILED.value
         if succeeded:
             action.executed_at = datetime.utcnow()
+        remediation_cases.record_execution(
+            session, action_id=action.id, succeeded=succeeded,
+            executed_at=action.executed_at if succeeded else datetime.utcnow(),
+        )
 
         incident = session.get(Incident, incident_id)
         if incident is None:
@@ -2457,6 +2474,10 @@ def _record_approved_execution_result(
                 # module monitor sở hữu nó mới biết vấn đề còn hay hết. Giữ
                 # nguyên hành vi cũ cho nhóm này.
                 incident.status = IncidentStatus.RESOLVED.value
+                remediation_cases.record_verified(
+                    session, incident_id=incident.id, succeeded=True,
+                    verified_at=datetime.utcnow(), post_state={"verified_by": "owning_monitor"},
+                )
             else:
                 # 2026-08-20: lệnh chạy xong exit 0 KHÔNG phải bằng chứng
                 # lỗi đã hết — nó chỉ chứng minh lệnh chạy được. Chuyển sang

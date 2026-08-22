@@ -53,7 +53,7 @@ import logging
 from datetime import datetime
 
 from config.settings import settings
-from shared import audit, db, telegram_alerts
+from shared import audit, db, remediation_cases, telegram_alerts
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from watcher import publisher
 from watcher.ceph_code_families import is_monitor_owned
@@ -157,6 +157,10 @@ def verify_pending_incidents(
                     event_type=audit.EVENT_INCIDENT_FIX_VERIFIED,
                     actor=audit.ACTOR_SYSTEM,
                 )
+                remediation_cases.record_verified(
+                    session, incident_id=incident.id, succeeded=True,
+                    verified_at=now, post_state=health,
+                )
                 telegram_alerts.send_incident_verified_alert(
                     incident.ceph_code,
                     attempted_command=command,
@@ -176,6 +180,10 @@ def verify_pending_incidents(
                     action_id=None,
                     event_type=audit.EVENT_INCIDENT_FIX_GAVE_UP,
                     actor=audit.ACTOR_SYSTEM,
+                )
+                remediation_cases.record_verified(
+                    session, incident_id=incident.id, succeeded=False,
+                    verified_at=now, post_state=health,
                 )
                 telegram_alerts.send_incident_verify_exhausted_alert(
                     incident.ceph_code,

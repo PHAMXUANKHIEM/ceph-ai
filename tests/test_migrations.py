@@ -1,11 +1,15 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 
 from config.settings import settings
-from shared.models import Action, Incident, ObjectStorageAuditEntry, PatchDocument, User
+from shared.models import (
+    Action, Incident, ObjectStorageAuditEntry, PatchDocument, PlaybookStat,
+    RemediationCase, User,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -72,6 +76,18 @@ def test_alembic_upgrade_head_creates_actions_table_matching_model(tmp_path, mon
 
     model_columns = {c.name for c in Action.__table__.columns}
     assert columns == model_columns
+
+
+@pytest.mark.parametrize("model", [RemediationCase, PlaybookStat])
+def test_alembic_upgrade_head_creates_case_memory_tables_matching_models(
+    tmp_path, monkeypatch, model,
+):
+    db_path = tmp_path / f"{model.__tablename__}.db"
+    _run_alembic_upgrade(db_path, monkeypatch)
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute(f"PRAGMA table_info({model.__tablename__})")}
+    con.close()
+    assert columns == {column.name for column in model.__table__.columns}
 
 
 def test_alembic_upgrade_head_enforces_status_check_constraint(tmp_path, monkeypatch):

@@ -608,6 +608,19 @@ Trạng thái triển khai (2026-08-22): **baseline đã hoàn thành**.
 
 ### Pha 1 — Remediation Case Memory
 
+Trạng thái triển khai (2026-08-22): **đang thực hiện**.
+
+- Đã thêm schema `remediation_cases` và `playbook_stats`, tách scope theo
+  playbook version để chuẩn bị cho Trust Engine.
+- Action do pipeline AI tạo case trong cùng transaction; case đóng băng
+  redacted pre-state, entity, deployment mode, Ceph version và evidence
+  fingerprint tất định.
+- Execution thành công chỉ ghi `EXECUTED_PENDING_VERIFY`. Telemetry mới mới
+  được phép kết luận `VERIFIED_SUCCESS`/`VERIFIED_FAILED`; recovery không
+  xác định ghi `INCONCLUSIVE` và không retry.
+- Chưa hoàn tất: backfill/action từ các pipeline ngoài AI, evaluator các cửa
+  sổ 1h/24h/7d và UI operator verdict.
+
 - Thêm migration và model `remediation_cases`, `playbook_stats`.
 - Đóng băng evidence/pre-state/post-state.
 - Outcome evaluator 1h/24h/7d.

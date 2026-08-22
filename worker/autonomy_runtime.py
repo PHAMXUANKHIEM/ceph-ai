@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
-from shared import audit, incident_events
+from shared import audit, incident_events, remediation_cases
 from shared.models import Action, ActionStatus, AutopilotLease, Incident, IncidentStatus
 
 
@@ -71,6 +71,9 @@ def reconcile_expired_executions(session, *, now: datetime) -> int:
         if lease is not None:
             session.delete(lease)
         action.status = ActionStatus.INCONCLUSIVE.value
+        remediation_cases.record_inconclusive(
+            session, action_id=action.id, at=now, reason=reason,
+        )
         incident = session.get(Incident, action.incident_id)
         if incident is not None:
             incident.status = IncidentStatus.FAILED.value

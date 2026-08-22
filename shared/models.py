@@ -415,6 +415,77 @@ class AuditEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class RemediationCase(Base):
+    """Immutable-at-source memory for one proposed remediation Action."""
+
+    __tablename__ = "remediation_cases"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    incident_id: Mapped[str] = mapped_column(String(36), ForeignKey("incidents.id"), nullable=False)
+    action_id: Mapped[str] = mapped_column(String(36), ForeignKey("actions.id"), nullable=False, unique=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
+    fault_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_keys_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ceph_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deployment_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    topology_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnosis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnosis_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    autonomy_decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    playbook_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    preflight_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    command_preview_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pre_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rollback_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="PROPOSED")
+    side_effects_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recovery_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    regressed_1h: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    regressed_24h: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    regressed_7d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    operator_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    operator_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class PlaybookStat(Base):
+    """Version/scope-separated aggregate; populated by the later evaluator."""
+
+    __tablename__ = "playbook_stats"
+    __table_args__ = (
+        UniqueConstraint("playbook_id", "playbook_version", "scope_key", name="uq_playbook_stats_scope"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    playbook_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    playbook_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    proposed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    executed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    verified_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    inconclusive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    trust_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    maturity_level: Mapped[str] = mapped_column(String(16), nullable=False, default="L0", server_default="L0")
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    auto_disabled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    promotion_candidate_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class AutopilotLease(Base):
     """Crash-expiring cluster-wide mutex for autonomous write execution."""
     __tablename__ = "autopilot_leases"
