@@ -67,7 +67,10 @@
     logoPlate.className = "bizfly-logo-plate";
     var logo = document.createElement("img");
     logo.className = "bizfly-brand-logo";
-    logo.src = "https://static.mediacdn.vn/web_images/bizzfly.jpg";
+    // The previous JPEG bakes a large white canvas into the image itself.
+    // Use Bizfly Cloud's official transparent wordmark so the shell controls
+    // the plate colour and the logo no longer appears as a white rectangle.
+    logo.src = "https://bizflycloud.vn/footer/logo.svg";
     logo.alt = "Bizfly Cloud";
     logo.decoding = "async";
     logo.referrerPolicy = "no-referrer";

@@ -2472,7 +2472,7 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   flex: 0 0 auto;
   border: 1px solid rgba(var(--brand-primary-rgb), .24);
   border-radius: 12px;
-  background: #fff;
+  background: #e8edfb;
   box-shadow: 0 7px 20px rgba(0, 0, 0, .22), 0 0 0 1px rgba(255, 255, 255, .03);
 }
 .bizfly-logo-plate::after {
