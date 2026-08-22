@@ -46,6 +46,17 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
   - Báo cáo precision/false-positive theo health code, fault family và AI provider.
   - Trước mắt dùng phản hồi để chỉnh rule/prompt; chưa tự fine-tune từ dữ liệu production.
 
+## CPU/RAM forecast từ Loki
+
+- Watcher ghi mỗi mẫu node health vào Loki với `job="ceph-ai-node-metrics"`,
+  labels `cluster`, `host`, `metric_type="node_resource"`.
+- Dự báo không đọc cache/DB cục bộ: luôn query lại lịch sử Loki, mặc định 30
+  ngày, tối thiểu 24 mẫu và dự báo cửa sổ 168 giờ.
+- Chỉ ghi cảnh báo xu hướng khi mốc 90% nằm trong cửa sổ và hệ số phù hợp
+  (`R²`) đạt ngưỡng. Dự báo chỉ là evidence/cảnh báo, không tự reboot node.
+- Bật bằng `NODE_RESOURCE_FORECAST_ENABLED=true`; dùng chung URL/tenant Loki
+  của Log Intelligence.
+
 ## Tiêu chí hoàn thành mục 1
 
 1. Hai cửa sổ có evidence ID khác nhau nhưng cùng fault family và cùng entity không tạo

@@ -32,12 +32,14 @@ import json
 import logging
 from datetime import datetime
 
+from config.settings import settings
 from shared import audit, db
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_node_alert
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics
+from watcher import node_resource_forecast
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,7 @@ def ceph_code_for(host: str) -> str:
 
 def check_node_resources(
     still_over_threshold: set[str] | None = None,
+    *, cluster_name: str | None = None,
 ) -> dict[str, dict]:
     """Scans every configured cluster node's current CPU%/RAM% and returns
     {ceph_code: detail} for every host whose CPU OR RAM has stayed at/above
@@ -114,6 +117,23 @@ def check_node_resources(
 
         cpu = metrics["cpu_percent"]
         mem = metrics["mem_percent"]
+        # The forecast path must read its history from Loki.  Persist the
+        # fresh sample before any prediction is attempted; a Loki failure
+        # degrades forecasting only and never suppresses threshold alerts.
+        node_resource_forecast.push_sample(cluster_name or settings.cluster_name, host, metrics)
+        if settings.node_resource_forecast_enabled:
+            try:
+                forecasts = node_resource_forecast.forecast(cluster_name or settings.cluster_name, host)
+                for prediction in node_resource_forecast.risky_forecasts(forecasts):
+                    logger.warning(
+                        "node forecast: %s %s may reach 90%% in %.1fh "
+                        "(slope=%.3f%%/h confidence=%.2f samples=%d)",
+                        host, prediction.metric.upper(), prediction.hours_to_90,
+                        prediction.slope_percent_per_hour, prediction.confidence,
+                        prediction.samples,
+                    )
+            except Exception:
+                logger.warning("node forecast: Loki query failed for %s", host, exc_info=True)
         over_threshold = cpu >= CPU_ALERT_THRESHOLD_PERCENT or mem >= MEM_ALERT_THRESHOLD_PERCENT
         _consecutive_high_scans[host] = (_consecutive_high_scans.get(host, 0) + 1) if over_threshold else 0
 

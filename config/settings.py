@@ -374,6 +374,17 @@ class Settings(BaseSettings):
     # query the main loop already does. 15 minutes by default.
     node_health_scan_interval_seconds: int = 900
 
+    # CPU/RAM forecasting is deliberately backed by Loki rather than the
+    # application database.  Watcher pushes each node-health sample as a
+    # structured Loki log and reads the history back before calculating a
+    # trend.  Disabled by default so an existing SSH-only deployment does
+    # not unexpectedly start writing to Loki.
+    node_resource_forecast_enabled: bool = False
+    node_resource_forecast_history_days: int = 30
+    node_resource_forecast_horizon_hours: int = 168
+    node_resource_forecast_min_samples: int = 24
+    node_resource_forecast_min_confidence: float = 0.5
+
     # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
     # device_health/node_health above because `ceph osd perf` is a single
     # cheap JSON-RPC query through a MON (no SSH round trip per node/OSD at
