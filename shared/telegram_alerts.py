@@ -302,6 +302,8 @@ def send_auto_remediation_alert(
     rationale: str | None,
     command: str | None,
     succeeded: bool,
+    action_id: str | None = None,
+    target_nodes: str | None = None,
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
@@ -323,8 +325,15 @@ def send_auto_remediation_alert(
     Action's own Incident's cluster's channel here when that cluster has
     configured one of its own; `None` (default) keeps reading the 3
     global settings.telegram_incident_* fields exactly as before."""
-    prefix = "⏳ Đã chạy tự động, đang xác minh" if succeeded else "\u274c Tự động xử lý thất bại"
+    if succeeded and action_id == "restart_osd_daemon":
+        prefix = "✅ Khởi động lại thành công, đang xác minh Ceph"
+    elif succeeded:
+        prefix = "✅ Thực hiện thành công, đang xác minh"
+    else:
+        prefix = "\u274c Xử lý thất bại"
     lines = [f"{prefix}: {ceph_code}"]
+    if target_nodes:
+        lines.append(f"🎯 Đối tượng: {_compact(target_nodes, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if diagnosis_text:
         lines.append(f"⚠️ Chẩn đoán: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if rationale:

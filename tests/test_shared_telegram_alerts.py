@@ -150,6 +150,23 @@ def test_reminder_includes_vietnamese_ai_summary_and_solution(monkeypatch):
     assert "🔧 Giải pháp: Khởi động lại daemon OSD.2 để phục hồi dịch vụ." in calls[0]
 
 
+def test_successful_restart_sends_explicit_ok_notification(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_auto_remediation_alert(
+        "OSD_DOWN", "osd.0 down", "Restart daemon", "systemctl restart ceph-osd@0",
+        True, action_id="restart_osd_daemon", target_nodes='["10.3.53.1"]',
+    )
+
+    assert "✅ Khởi động lại thành công" in calls[0]
+    assert "10.3.53.1" in calls[0]
+    assert "đang xác minh Ceph" in calls[0]
+
+
 def test_update_failure_alert_contains_error_ai_summary_and_rollback(monkeypatch):
     _configure_incident(monkeypatch)
     calls = []

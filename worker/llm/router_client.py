@@ -1206,6 +1206,8 @@ def _record_execution_result(
     notify_ceph_code: str | None = None
     notify_diagnosis: str | None = None
     notify_rationale: str | None = None
+    notify_action_id: str | None = None
+    notify_target_nodes: str | None = None
     # 2026-08-10 (multi-tenant remediation Phase 2): None/None/None means
     # "use the 3 global settings.telegram_incident_* fields" (unchanged
     # default-cluster behavior) — overridden below only when this Incident
@@ -1232,6 +1234,8 @@ def _record_execution_result(
             if succeeded:
                 action.executed_at = datetime.utcnow()
             notify_rationale = action.rationale
+            notify_action_id = action.action_id
+            notify_target_nodes = action.target_nodes
             remediation_cases.record_execution(
                 session, action_id=action.id, succeeded=succeeded,
                 executed_at=action.executed_at if succeeded else datetime.utcnow(),
@@ -1290,6 +1294,8 @@ def _record_execution_result(
             notify_rationale,
             command,
             succeeded,
+            action_id=notify_action_id,
+            target_nodes=notify_target_nodes,
             bot_token=notify_bot_token,
             chat_id=notify_chat_id,
             enabled=notify_enabled,
@@ -2634,6 +2640,7 @@ def _write_action_progress(action_pk: str, progress: list[dict]) -> None:
 def _record_approved_execution_result(
     action_pk: str, command: str | None, succeeded: bool
 ) -> None:
+    notify: dict | None = None
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         if action is None:
@@ -2694,6 +2701,25 @@ def _record_approved_execution_result(
                 ),
                 actor=audit.ACTOR_SYSTEM,
             )
+            bot_token = chat_id = enabled = None
+            if incident.cluster_id is not None:
+                cluster = session.get(Cluster, incident.cluster_id)
+                if cluster is not None and cluster.telegram_bot_token and cluster.telegram_chat_id:
+                    bot_token = cluster.telegram_bot_token
+                    chat_id = cluster.telegram_chat_id
+                    enabled = cluster.telegram_enabled
+            notify = {
+                "ceph_code": incident.ceph_code,
+                "diagnosis_text": incident.diagnosis_text,
+                "rationale": action.rationale,
+                "command": command,
+                "succeeded": succeeded,
+                "action_id": action.action_id,
+                "target_nodes": action.target_nodes,
+                "bot_token": bot_token,
+                "chat_id": chat_id,
+                "enabled": enabled,
+            }
         if action.action_id == "execute_node_command":
             source_message = (
                 session.query(ChatMessage)
@@ -2739,6 +2765,8 @@ def _record_approved_execution_result(
                     )
                 )
         session.commit()
+    if notify is not None:
+        send_auto_remediation_alert(**notify)
 
 
 async def poll_approved_actions(
