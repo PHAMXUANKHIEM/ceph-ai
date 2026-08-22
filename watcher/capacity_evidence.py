@@ -52,7 +52,7 @@ def _cluster_stats(payload) -> dict:
     }
 
 
-def _pool_stats(payload) -> list[dict]:
+def _pool_stats(payload, limit: int | None = 10) -> list[dict]:
     pools = payload.get("pools", []) if isinstance(payload, dict) else []
     result = []
     for row in pools:
@@ -68,10 +68,11 @@ def _pool_stats(payload) -> list[dict]:
             "used_bytes": int(used), "max_available_bytes": int(available),
             "used_percent": round(used_percent, 3),
         })
-    return sorted(result, key=lambda row: row["used_percent"], reverse=True)[:10]
+    ordered = sorted(result, key=lambda row: row["used_percent"], reverse=True)
+    return ordered[:limit] if limit is not None else ordered
 
 
-def _osd_stats(payload) -> list[dict]:
+def _osd_stats(payload, limit: int | None = 10) -> list[dict]:
     nodes = payload.get("nodes", []) if isinstance(payload, dict) else []
     result = []
     for row in nodes:
@@ -84,7 +85,8 @@ def _osd_stats(payload) -> list[dict]:
             "used_kb": int(_number(row.get("kb_used"))),
             "available_kb": int(_number(row.get("kb_avail"))),
         })
-    return sorted(result, key=lambda row: row["used_percent"], reverse=True)[:10]
+    ordered = sorted(result, key=lambda row: row["used_percent"], reverse=True)
+    return ordered[:limit] if limit is not None else ordered
 
 
 def collect_capacity_evidence(

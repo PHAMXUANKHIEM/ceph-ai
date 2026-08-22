@@ -1,0 +1,11 @@
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capacity Forecast — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head><body>
+<header class="topbar"><div class="topbar-inner"><a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+<nav class="main-nav"><a href="/" class="nav-link">Dashboard</a><a href="/nodes" class="nav-link">Cluster Metrics</a><a href="/capacity-forecast" class="nav-link active">Capacity Forecast</a><a href="/settings" class="nav-link">Settings</a></nav>
+<form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Logout</button></form></div></header>
+<main class="page"><section class="card"><div class="card-header"><h2>Dự báo dung lượng Ceph</h2></div><div class="card-body">
+<form method="get"><label>Cụm <select name="cluster_id" onchange="this.form.submit()">{% for c in clusters %}<option value="{{ c.id }}" {% if c.id == cluster.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></label></form>
+{% if status != 'ready' %}<p class="muted">Đang thu thập dữ liệu. Cần tối thiểu {{ minimum_history_days }} ngày và {{ minimum_samples }} mẫu cho từng cluster/pool/OSD; hiện thấy {{ series_seen }} chuỗi.</p>
+{% else %}<div class="table-wrap"><table><thead><tr><th>Đối tượng</th><th>Hiện tại</th><th>Tăng/ngày</th><th>80%</th><th>90%</th><th>95%</th><th>Confidence</th><th>Disk cần thêm ở 95%</th></tr></thead><tbody>
+{% for f in forecasts %}<tr><td>{{ f.entity_type }}: {{ f.entity_name }}</td><td>{{ f.current_percent }}%</td><td>{{ f.growth_percent_per_day }}%</td><td>{{ f.thresholds['80'] or '—' }}</td><td>{{ f.thresholds['90'] or '—' }}</td><td>{{ f.thresholds['95'] or '—' }}</td><td>{{ (f.confidence * 100)|round(1) }}%</td><td>{{ (f.additional_bytes_at_95 / 1073741824)|round(1) }} GiB</td></tr>{% endfor %}
+</tbody></table></div>{% endif %}</div></section></main></body></html>

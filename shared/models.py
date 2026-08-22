@@ -1412,6 +1412,24 @@ class CrushOsdDistribution(Base):
     )
 
 
+class CephCapacitySample(Base):
+    """Append-only cluster/pool/OSD capacity observation used for forecasting."""
+
+    __tablename__ = "ceph_capacity_samples"
+    __table_args__ = (
+        Index("ix_ceph_capacity_series", "cluster_id", "entity_type", "entity_name", "captured_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entity_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    used_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class TelegramChannelConfigChange(Base):
     """Append-only audit trail of Bot Token/Chat ID saves on the
     "Alert Telegram" page (`dashboard/routes/telegram_alerts.py::

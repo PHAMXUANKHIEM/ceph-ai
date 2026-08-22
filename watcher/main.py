@@ -12,6 +12,7 @@ from config.settings import settings
 from watcher import (
     bluestore_omap_monitor,
     capability_inventory,
+    capacity_forecast,
     capacity_evidence,
     ceph_client,
     collector,
@@ -562,6 +563,7 @@ def run(
     last_bluestore_omap_scan_at: Optional[datetime] = None
     last_osd_latency_scan_at: Optional[datetime] = None
     last_crush_scan_at: Optional[datetime] = None
+    last_capacity_forecast_scan_at: Optional[datetime] = None
     last_database_size_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
     last_incident_reminder_scan_at: Optional[datetime] = None
@@ -829,6 +831,17 @@ def run(
                 logger.exception("run: crush structure/distribution/skew scan failed")
             last_crush_scan_at = now
 
+        if settings.capacity_forecast_enabled and cluster_id and (
+            last_capacity_forecast_scan_at is None
+            or (now - last_capacity_forecast_scan_at).total_seconds()
+            >= settings.capacity_forecast_scan_interval_seconds
+        ):
+            try:
+                capacity_forecast.collect_and_store(cluster_id)
+            except Exception:
+                logger.exception("run: capacity forecast collection failed")
+            last_capacity_forecast_scan_at = now
+
         # 2026-08-17 (AI roadmap Pha 0.1): Cluster capability inventory --
         # own independent try/except (same isolation reasoning as every
         # scan block above) and its OWN, much slower cadence
@@ -1026,6 +1039,7 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
     last_crush_scan_at: Optional[datetime] = None
+    last_capacity_forecast_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
@@ -1112,6 +1126,19 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                         "run_observed_cluster_loop(%r): CRUSH scan failed", cluster.name
                     )
                 last_crush_scan_at = now
+
+            if settings.capacity_forecast_enabled and (
+                last_capacity_forecast_scan_at is None
+                or (now - last_capacity_forecast_scan_at).total_seconds()
+                >= settings.capacity_forecast_scan_interval_seconds
+            ):
+                try:
+                    capacity_forecast.collect_and_store(cluster.id, cluster=cluster)
+                except Exception:
+                    logger.exception(
+                        "run_observed_cluster_loop(%r): capacity forecast collection failed", cluster.name
+                    )
+                last_capacity_forecast_scan_at = now
 
             if (
                 last_capability_scan_at is None

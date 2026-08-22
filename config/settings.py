@@ -414,6 +414,16 @@ class Settings(BaseSettings):
     # osd_latency_scan_interval_seconds above.
     crush_scan_interval_seconds: int = 60
 
+    # Append-only Ceph capacity history. Forecasts fail closed until the
+    # configured minimum time span and sample count are both available.
+    capacity_forecast_enabled: bool = True
+    capacity_forecast_scan_interval_seconds: int = 3600
+    capacity_forecast_history_days: int = 90
+    capacity_forecast_min_history_days: int = 30
+    capacity_forecast_min_samples: int = 30
+    capacity_forecast_horizon_days: int = 365
+    capacity_forecast_min_confidence: float = 0.5
+
     # watcher/database_capacity_monitor.py's own cadence -- deliberately
     # much slower than every other scan above: this app's own DB size
     # grows on a scale of days/weeks, not seconds, and checking it every
