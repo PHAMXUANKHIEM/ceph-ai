@@ -115,11 +115,11 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         # The generic policy is RISKY, but router_client may derive SAFE
         # contextually only after deterministic BlueStore OSD/host checks.
         "restart_osd_daemon", target_schema="osd", max_autonomy="L3",
-        # A single Ceph health check can legitimately identify several slow
-        # BlueStore daemons.  Permit the bounded set reported by that check,
-        # while keeping four-or-more targets approval-gated as a blast-radius
-        # ceiling rather than turning this into a cluster-wide restart.
-        conflict_scope="osd", max_targets=3,
+        # A single Ceph health check can legitimately identify any number of
+        # slow BlueStore daemons.  Zero means no numeric ceiling for this
+        # contract; router_client still requires every osd.ID to be present
+        # in Ceph's detail and mapped deterministically to its real host.
+        conflict_scope="osd", max_targets=0,
         postcheck="osd_and_fault_health_telemetry",
     ),
     "finalize_osd_release": _contract(
@@ -245,7 +245,7 @@ def describe_contract(contract: PlaybookContract, *, command_builder_available: 
     elif policy_class in {ActionClassification.DESTRUCTIVE, ActionClassification.RISKY}:
         if contract.action_id == "restart_osd_daemon":
             status = "CONDITIONAL"
-            reason = "Policy mặc định RISKY; chỉ đạt L3 khi server xác minh tập BlueStore OSD/host nằm trong giới hạn blast-radius."
+            reason = "Policy mặc định RISKY; chỉ đạt L3 khi server xác minh đầy đủ từng BlueStore OSD và host tương ứng."
         else:
             status = "L2_ONLY"
             reason = f"Safety policy hiện phân loại {policy_class.value}."
@@ -275,7 +275,10 @@ def _validate_runtime_target(
         return "target_nodes is missing or malformed"
     if not all(isinstance(node, str) and node.strip() for node in target_nodes):
         return "target_nodes contains an invalid host"
-    if len(target_nodes) > contract.max_targets:
+    # max_targets=0 is the explicit unlimited sentinel.  It is safe for the
+    # OSD playbook because its schema below still rejects missing/ambiguous
+    # IDs; this only removes the numeric cap from a verified target set.
+    if contract.max_targets > 0 and len(target_nodes) > contract.max_targets:
         return f"target count {len(target_nodes)} exceeds blast-radius ceiling {contract.max_targets}"
     if contract.target_schema == "osd":
         params = action_params if isinstance(action_params, dict) else {}
@@ -289,7 +292,7 @@ def _validate_runtime_target(
             return "OSD target schema requires deterministic osd ids"
         if not osd_ids or not all(str(osd_id).isdigit() for osd_id in osd_ids):
             return "OSD target contains an invalid id"
-        if len(osd_ids) > contract.max_targets:
+        if contract.max_targets > 0 and len(osd_ids) > contract.max_targets:
             return f"OSD target count {len(osd_ids)} exceeds blast-radius ceiling {contract.max_targets}"
     return None
 

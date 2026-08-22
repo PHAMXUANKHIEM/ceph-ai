@@ -82,7 +82,7 @@ def test_runtime_target_and_builder_fail_closed_before_l3():
     assert malformed.hard_failure is True
 
 
-def test_osd_schema_allows_up_to_three_deterministic_osd_ids():
+def test_osd_schema_allows_any_number_of_deterministic_osd_ids():
     allowed = evaluate_auto_execution(
         "restart_osd_daemon", "SAFE", target_nodes=["osd-host"],
         action_params={"cephadm_osd_ids": [4]}, command_builder_available=True,
@@ -95,12 +95,11 @@ def test_osd_schema_allows_up_to_three_deterministic_osd_ids():
     )
     assert bounded.allowed is True
 
-    ambiguous = evaluate_auto_execution(
+    all_verified = evaluate_auto_execution(
         "restart_osd_daemon", "SAFE", target_nodes=["osd-host-a", "osd-host-b"],
         action_params={"cephadm_osd_ids": [4, 5, 6, 7]}, command_builder_available=True,
     )
-    assert ambiguous.allowed is False
-    assert "blast-radius" in ambiguous.reason
+    assert all_verified.allowed is True
 
 
 def test_admin_description_explains_static_eligibility_without_runtime_target():
