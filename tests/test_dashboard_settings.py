@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 import bcrypt
 import httpx
@@ -10,7 +11,7 @@ from config.settings import settings
 from shared import db as db_module
 from shared import env_config
 from shared.models import (
-    ActionPolicyOverride, ActionPolicyOverrideAudit,
+    ActionPolicyOverride, ActionPolicyOverrideAudit, PlaybookStat,
     AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, User,
 )
 from watcher.ceph_client import CephQueryError
@@ -2631,6 +2632,31 @@ def test_admin_can_override_destructive_action_with_audit(dashboard_client, monk
         assert settings_route.action_gate.classify_action(
             "pg_repair_force", session=session,
         ).value == "SAFE"
+
+
+def test_admin_can_approve_eligible_playbook_promotion(dashboard_client):
+    with db_module.SessionLocal() as session:
+        stat = PlaybookStat(
+            playbook_id="restart_osd_daemon", playbook_version="1",
+            scope_key="cluster=test|ceph_major=18|deployment=cephadm",
+            maturity_level="L2", verified_count=20, trust_score=0.95,
+            promotion_candidate_at=datetime.utcnow(), promotion_blocked_reason=None,
+        )
+        session.add(stat)
+        session.commit()
+        stat_id = stat.id
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/autopilot/promote-playbook", data={
+        "stat_id": stat_id, "confirmation": "OK",
+    })
+
+    assert response.status_code == 200
+    assert "Đã duyệt restart_osd_daemon lên L3" in response.text
+    with db_module.SessionLocal() as session:
+        stat = session.get(PlaybookStat, stat_id)
+        assert stat.maturity_level == "L3"
+        assert stat.promotion_candidate_at is None
 
 
 def test_disabling_autopilot_stops_old_worker_when_restart_fails(

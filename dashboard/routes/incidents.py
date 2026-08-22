@@ -100,6 +100,8 @@ async def update_remediation_case_verdict(
     note: str = Form(""),
     user: str = Depends(require_login),
 ):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được ghi verdict học máy")
     verdict = verdict.strip().upper()
     note = note.strip()
     if verdict not in CASE_VERDICTS:

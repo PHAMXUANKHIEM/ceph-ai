@@ -18,11 +18,13 @@ from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
+    ActionPolicyOverride,
     ChatMessage,
     Cluster,
     Incident,
     IncidentStatus,
     RemediationCase,
+    PlaybookStat,
 )
 from shared.ceph_releases import RELEASES, codename_for_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
@@ -260,8 +262,14 @@ def _tool_schema() -> dict:
                             "this action_id was chosen over the alternatives."
                         ),
                     },
+                    "diagnosis_confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "Calibrated confidence in the diagnosis from 0 to 1.",
+                    },
                 },
-                "required": ["diagnosis_text", "action_id", "rationale"],
+                "required": ["diagnosis_text", "action_id", "rationale", "diagnosis_confidence"],
                 "additionalProperties": False,
             },
         },
@@ -401,7 +409,8 @@ async def _call_router(user_content: str) -> dict:
         prompt = (
             SYSTEM_PROMPT
             + "\n\nChỉ trả về một JSON object hợp lệ, không markdown, với đúng các trường "
-            "diagnosis_text, action_id, rationale. action_id phải là một trong: "
+            "diagnosis_text, action_id, rationale, diagnosis_confidence. "
+            "diagnosis_confidence phải là số từ 0 đến 1; action_id phải là một trong: "
             + ", ".join(sorted(AI_EXECUTABLE_ACTION_IDS))
             + "\n\n"
             + user_content
@@ -511,6 +520,13 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     diagnosis_text = (result.get("diagnosis_text") or "").strip()
     action_id = (result.get("action_id") or "").strip()
     rationale = (result.get("rationale") or "").strip()
+    raw_confidence = result.get("diagnosis_confidence")
+    diagnosis_confidence = None
+    if raw_confidence is not None:
+        try:
+            diagnosis_confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            diagnosis_confidence = None
     deterministic_code = envelope.get("ceph_code") in {
         _OSD_UPGRADE_FINISHED_CODE,
         _POOL_TOO_FEW_PGS_CODE,
@@ -518,6 +534,9 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     if (
         not diagnosis_text
         or not rationale
+        or (raw_confidence is not None and (
+            diagnosis_confidence is None or not 0 <= diagnosis_confidence <= 1
+        ))
         or (not deterministic_code and action_id not in AI_EXECUTABLE_ACTION_IDS)
     ):
         raise RouterDiagnosisError(
@@ -782,6 +801,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                         "codex" if settings.codex_chat_enabled else
                         "claude" if settings.claude_chat_enabled else settings.router_provider
                     ),
+                    diagnosis_confidence=diagnosis_confidence,
                 )
                 trust_engine.record_shadow_decision(
                     session, case=remediation_case, action=action,
@@ -924,6 +944,38 @@ def _maybe_execute_safe_action(
         _route_safe_to_approval(
             incident_id, action_pk, action_id,
             event_type=audit.EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED,
+        )
+        return
+    # Existing installations can bootstrap their first verified cases, but
+    # once a trust scope exists it becomes an active runtime gate. An admin's
+    # explicit SAFE override remains the deliberate break-glass authority.
+    with db.SessionLocal() as session:
+        policy_override = session.get(ActionPolicyOverride, action_id)
+        remediation_case = session.query(RemediationCase).filter_by(action_id=action_pk).one_or_none()
+        stat = None
+        if remediation_case is not None:
+            stat = session.query(PlaybookStat).filter_by(
+                playbook_id=action_id,
+                playbook_version=remediation_case.playbook_version,
+                scope_key=trust_engine.scope_key(remediation_case),
+            ).one_or_none()
+        explicit_admin_safe = bool(
+            policy_override is not None and policy_override.classification == "SAFE"
+        )
+        trust_block_reason = None
+        if stat is not None and not explicit_admin_safe:
+            if stat.auto_disabled_reason:
+                trust_block_reason = f"trust scope disabled: {stat.auto_disabled_reason}"
+            elif stat.maturity_level != "L3":
+                trust_block_reason = f"playbook maturity {stat.maturity_level} has not been approved for L3"
+    if trust_block_reason:
+        logger.warning(
+            "_maybe_execute_safe_action: trust gate blocked action_id=%s: %s",
+            action_id, trust_block_reason,
+        )
+        _route_safe_to_approval(
+            incident_id, action_pk, action_id,
+            event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
         )
         return
     if settings.autopilot_grace_period_seconds > 0:

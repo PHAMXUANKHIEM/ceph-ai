@@ -67,6 +67,7 @@ def _fingerprint(*, fault_family: str, entities: dict, snapshot: dict,
 def create_for_action(
     session, *, incident: Incident, action: Action, redacted_envelope: dict,
     diagnosis: str | None, model_provider: str | None,
+    diagnosis_confidence: float | None = None,
 ) -> RemediationCase:
     """Create once in the Action transaction; caller owns commit."""
     existing = session.query(RemediationCase).filter_by(action_id=action.id).one_or_none()
@@ -96,7 +97,8 @@ def create_for_action(
         evidence_fingerprint=fingerprint, ceph_version=_ceph_version(snapshot),
         deployment_mode=redacted_envelope.get("ceph_exec_mode"),
         topology_snapshot_json=_json(snapshot.get("osdmap") or snapshot.get("monmap")),
-        diagnosis=diagnosis, prompt_version="incident-diagnosis-v1", model_provider=model_provider,
+        diagnosis=diagnosis, diagnosis_confidence=diagnosis_confidence,
+        prompt_version="incident-diagnosis-v1", model_provider=model_provider,
         classification=action.classification, autonomy_decision=decision,
         playbook_version=contract.version if contract else "unregistered",
         preflight_snapshot_json=_json(contract_snapshot),

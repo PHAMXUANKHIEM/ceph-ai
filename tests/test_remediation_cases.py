@@ -42,7 +42,7 @@ def test_case_freezes_redacted_pre_state_and_has_stable_fingerprint():
     }
     first = create_for_action(
         session, incident=incident, action=action, redacted_envelope=envelope,
-        diagnosis="osd stopped", model_provider="9router",
+        diagnosis="osd stopped", model_provider="9router", diagnosis_confidence=0.91,
     )
     second = create_for_action(
         session, incident=incident, action=action, redacted_envelope=envelope,
@@ -63,6 +63,7 @@ def test_case_freezes_redacted_pre_state_and_has_stable_fingerprint():
     assert contract_snapshot["registry"]["command_builder_version"] == "1"
     assert len(contract_snapshot["registry"]["contract_checksum"]) == 64
     assert first.outcome == "PROPOSED"
+    assert first.diagnosis_confidence == 0.91
 
 
 def test_case_scrubs_sensitive_action_params_and_evidence_before_persisting():

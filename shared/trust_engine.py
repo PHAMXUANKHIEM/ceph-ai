@@ -37,6 +37,7 @@ def _ceph_major(version: str | None) -> str:
 
 def scope_key(case: RemediationCase) -> str:
     return (
+        f"cluster={case.cluster_id or 'legacy'}|"
         f"ceph_major={_ceph_major(case.ceph_version)}|"
         f"deployment={case.deployment_mode or 'unknown'}"
     )
@@ -207,6 +208,17 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
         successes = sum(result == "success" for result in results)
         failures = sum(result == "failure" for result in results)
         verified = successes + failures
+        unsafe_verdict = any(case.operator_verdict == "UNSAFE" for case in cases)
+        poor_quality = verified >= 4 and successes / verified < 0.80
+        disabled_reason = (
+            "operator marked a case unsafe" if unsafe_verdict else
+            "verified success rate below 80%" if poor_quality else None
+        )
+        maturity = (
+            "L0" if not cases else "L1" if verified == 0 else
+            "L1" if disabled_reason else
+            "L3" if stat.maturity_level == "L3" else "L2"
+        )
         values = {
             "proposed_count": len(cases),
             "executed_count": sum(case.outcome in _EXECUTED_OUTCOMES for case in cases),
@@ -215,12 +227,12 @@ def recompute_playbook_stats(session, *, now: datetime | None = None) -> int:
             "failure_count": failures,
             "inconclusive_count": sum(case.outcome == "INCONCLUSIVE" for case in cases),
             "trust_score": wilson_lower_bound(successes, verified),
-            "maturity_level": "L0" if not cases else "L1" if verified == 0 else "L2",
+            "maturity_level": maturity,
             "last_failure_at": max(
                 (case.verified_at for case, result in zip(cases, results) if result == "failure" and case.verified_at),
                 default=None,
             ),
-            "auto_disabled_reason": None,
+            "auto_disabled_reason": disabled_reason,
         }
         if any(getattr(stat, key) != value for key, value in values.items()):
             for key, value in values.items():
@@ -253,6 +265,13 @@ def evaluate_promotion_candidates(session, *, now: datetime | None = None) -> in
     actions = {row.id: row for row in session.query(Action).all()}
     changed = 0
     for stat in session.query(PlaybookStat).all():
+        if stat.maturity_level == "L3":
+            blocked = "already promoted to L3"
+            if stat.promotion_candidate_at is not None or stat.promotion_blocked_reason != blocked:
+                stat.promotion_candidate_at = None
+                stat.promotion_blocked_reason = blocked
+                changed += 1
+            continue
         cases = [
             case for case in session.query(RemediationCase).filter(
                 RemediationCase.playbook_version == stat.playbook_version,

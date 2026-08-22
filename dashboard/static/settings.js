@@ -917,6 +917,19 @@
   });
 })();
 
+(function () {
+  var forms = document.querySelectorAll(".promotion-approval-form");
+  Array.prototype.forEach.call(forms, function (form) {
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var confirmation = window.prompt("Nhập OK để duyệt playbook lên L3");
+      if (confirmation !== "OK") return;
+      form.querySelector('input[name="confirmation"]').value = confirmation;
+      form.submit();
+    });
+  });
+})();
+
 // --- Log Intelligence: kiểm tra kết nối Loki trước khi lưu ----------------
 // Cùng khuôn "test kết nối" mà form Database/OpenStack đã dùng: gọi thẳng
 // endpoint test, không lưu gì.

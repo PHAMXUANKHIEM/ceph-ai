@@ -1279,6 +1279,33 @@ async def settings_action_policy_submit(
     ))
 
 
+@router.post("/settings/autopilot/promote-playbook", response_class=HTMLResponse)
+async def settings_promote_playbook_submit(
+    request: Request, user: str = Depends(require_login),
+    stat_id: str = Form(""), confirmation: str = Form(""),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được duyệt promotion")
+    if confirmation.strip() != "OK":
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Cần nhập chính xác OK để duyệt promotion."
+        ))
+    with db.SessionLocal() as session:
+        stat = session.get(PlaybookStat, stat_id.strip())
+        if stat is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Playbook Trust scope")
+        if stat.promotion_candidate_at is None or stat.promotion_blocked_reason:
+            raise HTTPException(status_code=409, detail="Playbook chưa đủ điều kiện promotion")
+        stat.maturity_level = "L3"
+        stat.promotion_candidate_at = None
+        stat.promotion_blocked_reason = "already promoted to L3"
+        playbook_id = stat.playbook_id
+        session.commit()
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user, autopilot_success=f"Đã duyệt {playbook_id} lên L3."
+    ))
+
+
 @router.post("/settings/openstack", response_class=HTMLResponse)
 async def openstack_settings_submit(
     request: Request,

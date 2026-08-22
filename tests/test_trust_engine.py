@@ -73,9 +73,9 @@ def test_scope_separates_ceph_major_and_deployment_mode():
     _case(session, version="18.2.4", mode="none")
     recompute_playbook_stats(session)
     assert {row.scope_key for row in session.query(PlaybookStat)} == {
-        "ceph_major=18|deployment=cephadm",
-        "ceph_major=17|deployment=cephadm",
-        "ceph_major=18|deployment=none",
+        "cluster=legacy|ceph_major=18|deployment=cephadm",
+        "cluster=legacy|ceph_major=17|deployment=cephadm",
+        "cluster=legacy|ceph_major=18|deployment=none",
     }
 
 
@@ -138,7 +138,7 @@ def test_shadow_would_execute_only_with_frozen_high_trust_scope():
     action = session.get(Action, case.action_id)
     session.add(PlaybookStat(
         playbook_id=action.action_id, playbook_version=case.playbook_version,
-        scope_key="ceph_major=18|deployment=cephadm", verified_count=25,
+        scope_key="cluster=legacy|ceph_major=18|deployment=cephadm", verified_count=25,
         success_count=25, proposed_count=25, executed_count=25,
         trust_score=0.90, maturity_level="L2",
     ))
@@ -232,3 +232,33 @@ def test_promotion_evaluator_fails_closed_with_explicit_reasons():
     assert "verified cases 1/10" in stat.promotion_blocked_reason
     assert "confidence calibration unavailable" in stat.promotion_blocked_reason
     assert "recent severe/unsafe verdict exists" in stat.promotion_blocked_reason
+
+
+def test_low_verified_success_rate_auto_demotes_and_disables_scope():
+    session = _session()
+    _case(session, outcome="VERIFIED_SUCCESS")
+    _case(session, outcome="VERIFIED_SUCCESS")
+    _case(session, outcome="VERIFIED_FAILED")
+    _case(session, outcome="VERIFIED_FAILED")
+    recompute_playbook_stats(session)
+
+    stat = session.query(PlaybookStat).one()
+    assert stat.maturity_level == "L1"
+    assert stat.auto_disabled_reason == "verified success rate below 80%"
+
+
+def test_approved_l3_is_preserved_until_quality_demotion():
+    session = _session()
+    for _ in range(10):
+        _case(session)
+    recompute_playbook_stats(session)
+    stat = session.query(PlaybookStat).one()
+    stat.maturity_level = "L3"
+    session.commit()
+
+    recompute_playbook_stats(session)
+    evaluate_promotion_candidates(session)
+
+    assert stat.maturity_level == "L3"
+    assert stat.promotion_candidate_at is None
+    assert stat.promotion_blocked_reason == "already promoted to L3"
