@@ -53,6 +53,7 @@
             <a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a>
           </div>
         </div>
+        <a href="/?copilot=1" class="nav-link nav-link-copilot">AI Copilot</a>
         <a href="/settings" class="nav-link">Settings</a>
         {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
         {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
@@ -271,7 +272,7 @@
     <header class="chat-panel-header">
       <div class="chat-panel-title">
         <span class="chat-panel-icon" aria-hidden="true">&#129302;</span>
-        <span>Chat với <span id="chat-panel-ai-name">AI</span></span>
+        <span>AI Operations Copilot · <span id="chat-panel-ai-name">AI</span></span>
       </div>
       <div class="chat-panel-controls">
         <button type="button" class="chat-panel-btn" id="chat-panel-history" aria-label="Lịch sử đoạn chat" title="Lịch sử đoạn chat">&#128337;</button>
@@ -312,8 +313,13 @@
       <div class="chat-messages" id="chat-messages">
         <div class="chat-empty-state" id="chat-empty-state">
           <span class="chat-empty-icon" aria-hidden="true">&#129302;</span>
-          <p class="chat-empty-text">Hỏi tôi về trạng thái cụm Ceph</p>
-          <p class="chat-empty-subtext">VD: cụm có bao nhiêu pool? OSD nào đang down?</p>
+          <p class="chat-empty-text">AI Operations Copilot</p>
+          <p class="chat-empty-subtext">Trả lời từ telemetry, incident và audit đã lưu; luôn kèm nguồn khi dùng evidence.</p>
+          <div class="copilot-suggestions" aria-label="Câu hỏi gợi ý">
+            <button type="button" data-copilot-prompt="Trong 24 giờ qua cụm Ceph có sự cố gì? Hãy dùng dữ liệu đã lưu.">Sự cố 24 giờ qua</button>
+            <button type="button" data-copilot-prompt="Dự báo dung lượng cluster, pool và OSD hiện thế nào?">Dự báo dung lượng</button>
+            <button type="button" data-copilot-prompt="So sánh tình trạng trước và sau sự cố gần nhất dựa trên timeline.">Timeline gần nhất</button>
+          </div>
         </div>
       </div>
 

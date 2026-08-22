@@ -183,6 +183,34 @@
     return p;
   }
 
+  function buildAssistantContent(content) {
+    var bubble = document.createElement("div");
+    bubble.className = "chat-msg-bubble";
+    var marker = "\n\nNguồn đã kiểm chứng:\n";
+    var markerAt = content.lastIndexOf(marker);
+    if (markerAt === -1) {
+      bubble.textContent = content;
+      return bubble;
+    }
+    var answer = document.createElement("div");
+    answer.textContent = content.slice(0, markerAt);
+    bubble.appendChild(answer);
+    var sources = document.createElement("section");
+    sources.className = "copilot-evidence-sources";
+    var title = document.createElement("strong");
+    title.textContent = "✓ Nguồn đã kiểm chứng";
+    sources.appendChild(title);
+    var list = document.createElement("ul");
+    content.slice(markerAt + marker.length).split("\n").filter(Boolean).forEach(function (line) {
+      var item = document.createElement("li");
+      item.textContent = line.replace(/^[- ]+/, "");
+      list.appendChild(item);
+    });
+    sources.appendChild(list);
+    bubble.appendChild(sources);
+    return bubble;
+  }
+
   // Click toggles a small tooltip listing the same tools again, in the
   // exact order they were called (tools_used is append-only, in call
   // order — see dashboard/chat_client.py::run_chat_turn) — the badge text
@@ -236,9 +264,11 @@
     if (!isUser && message.content.indexOf(MISSING_AI_CONFIG_MESSAGE) !== -1) {
       bubble = buildMissingAiConfigNotice();
     } else {
-      bubble = document.createElement("div");
-      bubble.className = "chat-msg-bubble";
-      bubble.textContent = message.content;
+      bubble = isUser ? document.createElement("div") : buildAssistantContent(message.content);
+      if (isUser) {
+        bubble.className = "chat-msg-bubble";
+        bubble.textContent = message.content;
+      }
     }
     container.appendChild(bubble);
 
@@ -697,7 +727,8 @@
   } catch (e) {
     startMinimized = false;
   }
-  setMinimized(startMinimized);
+  var copilotRequested = new URLSearchParams(window.location.search).get("copilot") === "1";
+  setMinimized(copilotRequested ? false : startMinimized);
 
   // --- textarea auto-resize + send-button enabled state -----------------------
 
@@ -715,6 +746,16 @@
     refreshSendEnabled();
   });
   refreshSendEnabled();
+
+  panelEl.querySelectorAll("[data-copilot-prompt]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      setMinimized(false);
+      inputEl.value = button.getAttribute("data-copilot-prompt") || "";
+      autoResizeTextarea();
+      refreshSendEnabled();
+      inputEl.focus();
+    });
+  });
 
   inputEl.addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {

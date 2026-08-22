@@ -1323,6 +1323,14 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .chat-empty-icon { display: block; font-size: 32px; margin-bottom: 8px; }
 .chat-empty-text { margin: 0; font-size: 14px; color: var(--text-muted); }
 .chat-empty-subtext { margin: 6px 0 0; font-size: 12px; color: var(--text-faint); }
+.nav-link-copilot { color: #b9d7ff !important; }
+.copilot-suggestions { display: grid; gap: 7px; margin-top: 16px; }
+.copilot-suggestions button { padding: 8px 10px; border: 1px solid rgba(85,167,255,.3); border-radius: 8px; background: rgba(85,167,255,.08); color: #cfe3ff; font: inherit; font-size: 11px; cursor: pointer; }
+.copilot-suggestions button:hover { border-color: rgba(85,167,255,.65); background: rgba(85,167,255,.16); }
+.copilot-evidence-sources { margin-top: 12px; padding: 10px; border: 1px solid rgba(62,207,110,.28); border-radius: 8px; background: rgba(62,207,110,.07); white-space: normal; }
+.copilot-evidence-sources strong { color: #75df99; font-size: 11px; }
+.copilot-evidence-sources ul { display: grid; gap: 5px; margin: 7px 0 0; padding-left: 16px; }
+.copilot-evidence-sources li { color: #9fb2c8; font: 10px/1.4 var(--font-mono); overflow-wrap: anywhere; }
 
 .chat-msg { display: flex; flex-direction: column; }
 .chat-msg-user { align-self: flex-end; align-items: flex-end; max-width: 80%; }
