@@ -853,6 +853,8 @@ def _settings_context(
     openstack_cluster_id: str | None = None,
     autopilot_error: str | None = None,
     autopilot_success: str | None = None,
+    action_policy_error: str | None = None,
+    action_policy_success: str | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -934,6 +936,8 @@ def _settings_context(
         "autopilot_activation_unlocked": settings.autopilot_activation_unlocked,
         "autopilot_error": autopilot_error,
         "autopilot_success": autopilot_success,
+        "action_policy_error": action_policy_error,
+        "action_policy_success": action_policy_success,
         "playbook_registry": registry_status_rows(
             command_available=executor_commands.has_command,
         ),
@@ -1013,6 +1017,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "restart-controls"
     if any(context.get(k) for k in ("autopilot_error", "autopilot_success")):
         return "restart-controls"
+    if any(context.get(k) for k in ("action_policy_error", "action_policy_success")):
+        return "action-policy"
     if any(
         context.get(k)
         for k in (
@@ -1202,11 +1208,11 @@ async def settings_action_policy_submit(
         raise HTTPException(status_code=400, detail="Không thể override DESTRUCTIVE action")
     if len(reason) < 8:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Lý do đổi phân loại phải có ít nhất 8 ký tự."
+            user, action_policy_error="Lý do đổi phân loại phải có ít nhất 8 ký tự."
         ))
     if classification == "SAFE" and confirmation.strip() != f"MARK {action_id} SAFE":
         return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error=f"Cần nhập chính xác MARK {action_id} SAFE."
+            user, action_policy_error=f"Cần nhập chính xác MARK {action_id} SAFE."
         ))
     with db.SessionLocal() as session:
         previous = action_gate.classify_action(action_id, session=session).value
@@ -1225,10 +1231,10 @@ async def settings_action_policy_submit(
     restart_result = await asyncio.to_thread(restart_worker)
     if not restart_result["restarted"]:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Đã lưu policy nhưng Worker không restart được."
+            user, action_policy_error="Đã lưu policy nhưng Worker không restart được."
         ))
     return templates.TemplateResponse(request, "settings.html", _settings_context(
-        user, autopilot_success=f"Đã đặt {action_id} thành {classification} và restart Worker."
+        user, action_policy_success=f"Đã đặt {action_id} thành {classification} và restart Worker."
     ))
 
 

@@ -48,11 +48,12 @@
     <nav class="settings-sidebar">
       {% if is_admin %}
       <section class="settings-nav-group" data-settings-group="system">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'database', 'server-log'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['restart-controls', 'action-policy', 'database', 'server-log'] else 'false' }}">
           <span>Hệ thống</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'database', 'server-log'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['restart-controls', 'action-policy', 'database', 'server-log'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'restart-controls' %}active{% endif %}" data-section="restart-controls">System Processes</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">AI Action Policy</button>
           <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
           <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
         </div>
@@ -133,26 +134,6 @@
         </div>
       </article>
       <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Phân loại hành động AI</h2></div>
-        <div class="card-body">
-          <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép và được dùng thay cho Capability Matrix <strong>UNKNOWN</strong> của đúng action đó; một phiên bản đã biết là không hỗ trợ vẫn bị chặn. <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa.</p>
-          <div class="table-wrap"><table><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
-          {% for row in action_policy_rows %}<tr>
-            <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }} · {{ row.override.reason }}</span>{% endif %}</td>
-            <td>{% if row.immutable %}<span class="error">DESTRUCTIVE · bị khóa</span>{% else %}
-              <form method="post" action="/settings/autopilot/action-policy" class="login-box">
-                <input type="hidden" name="action_id" value="{{ row.action_id }}">
-                <select name="classification"><option value="RISKY" {{ "selected" if row.effective == "RISKY" else "" }}>RISKY</option><option value="SAFE" {{ "selected" if row.effective == "SAFE" else "" }}>SAFE</option></select>
-                <input name="reason" minlength="8" maxlength="500" required placeholder="Lý do thay đổi">
-                <input name="confirmation" placeholder="Nếu chọn SAFE: MARK {{ row.action_id }} SAFE">
-                <button class="btn btn-primary" type="submit">Áp dụng</button>
-              </form>{% endif %}
-            </td>
-          </tr>{% endfor %}
-          </tbody></table></div>
-        </div>
-      </article>
-      <article class="card" style="margin-top:1rem">
         <div class="card-header"><h2>L2 → L3 Promotion Candidates</h2></div>
         <div class="card-body"><p class="hint">Evaluator chỉ đề cử để admin review; không đổi maturity và không cấp quyền execute.</p>
           {% if playbook_stats %}<div class="table-wrap"><table><thead><tr><th>Playbook / scope</th><th>Maturity</th><th>Trust / verified</th><th>Promotion</th></tr></thead><tbody>
@@ -207,6 +188,31 @@
         <form method="post" action="/settings/restart-dashboard" id="restart-form-dashboard"></form>
         <form method="post" action="/settings/restart-worker" id="restart-form-worker"></form>
         <form method="post" action="/settings/restart-watcher" id="restart-form-watcher"></form>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if is_admin %}
+    <section class="card settings-panel" data-panel="action-policy" {% if active_section != 'action-policy' %}hidden{% endif %}>
+      <div class="card-header"><div><span class="settings-breadcrumb">Settings / System / AI Action Policy</span><h2>Phân loại hành động AI</h2></div></div>
+      <div class="card-body">
+        {% if action_policy_error %}<p class="error">{{ action_policy_error }}</p>{% endif %}
+        {% if action_policy_success %}<p class="success">{{ action_policy_success }}</p>{% endif %}
+        <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép và thay cho Capability Matrix <strong>UNKNOWN</strong> của đúng action đó. <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa.</p>
+        <div class="table-wrap"><table><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
+        {% for row in action_policy_rows %}<tr>
+          <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }} · {{ row.override.reason }}</span>{% endif %}</td>
+          <td>{% if row.immutable %}<span class="error">DESTRUCTIVE · bị khóa</span>{% else %}
+            <form method="post" action="/settings/autopilot/action-policy" class="login-box">
+              <input type="hidden" name="action_id" value="{{ row.action_id }}">
+              <select name="classification"><option value="RISKY" {{ "selected" if row.effective == "RISKY" else "" }}>RISKY</option><option value="SAFE" {{ "selected" if row.effective == "SAFE" else "" }}>SAFE</option></select>
+              <input name="reason" minlength="8" maxlength="500" required placeholder="Lý do thay đổi">
+              <input name="confirmation" placeholder="Nếu chọn SAFE: MARK {{ row.action_id }} SAFE">
+              <button class="btn btn-primary" type="submit">Áp dụng</button>
+            </form>{% endif %}
+          </td>
+        </tr>{% endfor %}
+        </tbody></table></div>
       </div>
     </section>
     {% endif %}
