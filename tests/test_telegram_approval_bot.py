@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import dashboard.telegram_approval_bot as bot
 from shared import db as db_module
@@ -27,6 +27,24 @@ def _pending_action(
         )
         session.add(action)
         session.commit()
+        return action.id
+
+
+def _grace_action(incident_id: str) -> str:
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            id=incident_id, ceph_code="MON_CLOCK_SKEW",
+            status=IncidentStatus.GRACE_PENDING.value, detected_at=datetime.utcnow(),
+        )
+        session.add(incident); session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="resync_ntp",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.GRACE_PENDING.value,
+            grace_until=datetime.utcnow() + timedelta(minutes=5),
+            target_nodes='["mon-a"]',
+        )
+        session.add(action); session.commit()
         return action.id
 
 
@@ -200,6 +218,26 @@ def test_notify_does_not_resend_to_a_channel_already_notified(dashboard_client, 
     assert calls == []
 
 
+def test_grace_notification_has_countdown_and_cancel_only(dashboard_client, monkeypatch):
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="ti", chat_id="-3")
+    action_id = _grace_action("inc-grace-notify")
+    calls = []
+    monkeypatch.setattr(
+        bot, "send_telegram_message_with_keyboard",
+        lambda token, chat_id, text, buttons: calls.append((text, buttons)) or 901,
+    )
+
+    bot._notify_pending_actions()
+
+    assert len(calls) == 1
+    text, buttons = calls[0]
+    assert "Autopilot lab sẽ chạy" in text
+    assert buttons == [("🛑 Hủy Autopilot", f"cancelgrace:{action_id}")]
+    with db_module.SessionLocal() as session:
+        assert json.loads(session.get(Action, action_id).telegram_message_ids) == {"incident": 901}
+
+
 def test_notify_does_not_backfill_cluster_action_to_unrelated_channel(dashboard_client, monkeypatch):
     _clear_all_channels(monkeypatch)
     _configure_channel(monkeypatch, "incident", token="ti", chat_id="-3")
@@ -349,6 +387,33 @@ def test_handle_callback_rejects(dashboard_client, monkeypatch):
         action = session.get(Action, action_id)
         assert action.status == ActionStatus.REJECTED.value
     assert answer_calls == ["Đã từ chối"]
+
+
+def test_handle_callback_cancels_grace_and_records_telegram_actor(dashboard_client, monkeypatch):
+    from shared.models import AuditEntry
+
+    _clear_all_channels(monkeypatch)
+    _configure_channel(monkeypatch, "incident", token="123:ABC", chat_id="-100999")
+    action_id = _grace_action("inc-grace-callback")
+    edits, answers = [], []
+    monkeypatch.setattr(bot, "edit_telegram_message", lambda *args: edits.append(args))
+    monkeypatch.setattr(
+        bot, "answer_telegram_callback",
+        lambda token, callback_id, text=None: answers.append(text),
+    )
+
+    bot._handle_callback_query(
+        _callback_query(action_id, "cancelgrace", username="alice"), "123:ABC",
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.status == ActionStatus.REJECTED.value
+        assert action.cancelled_by == "telegram:alice"
+        entry = session.query(AuditEntry).filter_by(action_id=action_id).one()
+        assert entry.actor == "telegram:alice"
+    assert answers == ["Đã hủy Autopilot"]
+    assert "ĐÃ HỦY AUTOPILOT" in edits[0][3]
 
 
 def test_handle_callback_acknowledges_action_with_no_command(dashboard_client, monkeypatch):

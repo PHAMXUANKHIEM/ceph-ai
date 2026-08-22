@@ -98,6 +98,7 @@ from dashboard.routes.actions import (
     ActionNotFoundError,
     ApprovalOutcome,
     approve_action_core,
+    cancel_grace_action_core,
     _prepare_pool_application_choice,
     reject_action_core,
 )
@@ -117,6 +118,7 @@ logger = logging.getLogger(__name__)
 APPROVE_CALLBACK_PREFIX = "approve:"
 REJECT_CALLBACK_PREFIX = "reject:"
 POOL_APP_CALLBACK_PREFIX = "poolapp:"
+CANCEL_GRACE_CALLBACK_PREFIX = "cancelgrace:"
 # Telegram holds the getUpdates HTTP connection open for up to this long
 # waiting for a new update — this IS each listener thread's own pacing, no
 # separate sleep needed between iterations while updates keep arriving.
@@ -350,6 +352,9 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
     if action.proposed_command:
         lines.append(f"💻 Lệnh: {_compact_text(action.proposed_command, _MAX_COMMAND_CHARS)}")
     lines.append(f"🆔 {action.id[:8]}")
+    if action.status == ActionStatus.GRACE_PENDING.value and action.grace_until is not None:
+        remaining = max(0, int((action.grace_until - datetime.utcnow()).total_seconds()))
+        lines.append(f"⏳ Autopilot lab sẽ chạy sau khoảng {remaining} giây nếu không bị hủy.")
     return "\n".join(lines)
 
 
@@ -385,6 +390,8 @@ def _needs_pool_application_choice(action: Action, incident: Incident | None) ->
 
 
 def _approval_keyboard(action: Action, incident: Incident | None = None) -> list[tuple[str, str]]:
+    if action.status == ActionStatus.GRACE_PENDING.value:
+        return [("🛑 Hủy Autopilot", f"{CANCEL_GRACE_CALLBACK_PREFIX}{action.id}")]
     if _needs_pool_application_choice(action, incident):
         params = _pool_application_params(action, incident)
         if params.get("pool_name") and not params.get("app_name"):
@@ -433,13 +440,17 @@ def _notify_pending_actions() -> None:
     with db.SessionLocal() as session:
         candidate_ids = [
             row.id
-            for row in session.query(Action.id).filter(Action.status == ActionStatus.PENDING_APPROVAL.value).all()
+            for row in session.query(Action.id).filter(Action.status.in_([
+                ActionStatus.PENDING_APPROVAL.value, ActionStatus.GRACE_PENDING.value,
+            ])).all()
         ]
 
     for action_id in candidate_ids:
         with db.SessionLocal() as session:
             action = session.get(Action, action_id)
-            if action is None or action.status != ActionStatus.PENDING_APPROVAL.value:
+            if action is None or action.status not in {
+                ActionStatus.PENDING_APPROVAL.value, ActionStatus.GRACE_PENDING.value,
+            }:
                 continue
             incident = session.get(Incident, action.incident_id)
             # Action-aware routing prevents a storage benchmark approval
@@ -549,6 +560,9 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     elif data.startswith(REJECT_CALLBACK_PREFIX):
         action_id = data[len(REJECT_CALLBACK_PREFIX):]
         core_fn = reject_action_core
+    elif data.startswith(CANCEL_GRACE_CALLBACK_PREFIX):
+        action_id = data[len(CANCEL_GRACE_CALLBACK_PREFIX):]
+        core_fn = cancel_grace_action_core
     else:
         logger.warning("telegram_approval_bot: unrecognized callback_data=%r", data)
         return
@@ -615,6 +629,9 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
         result = core_fn(action_id, actor)
         edit_suffix = _OUTCOME_EDIT_SUFFIX[result.outcome]
         toast = _OUTCOME_TOAST[result.outcome]
+        if data.startswith(CANCEL_GRACE_CALLBACK_PREFIX) and result.outcome == ApprovalOutcome.REJECTED:
+            edit_suffix = "\n\n🛑 ĐÃ HỦY AUTOPILOT TRONG GRACE PERIOD."
+            toast = "Đã hủy Autopilot"
     except ActionNotFoundError:
         edit_suffix = "\n\n⚠️ Không tìm thấy đề xuất này (có thể đã bị xoá)."
         toast = "Không tìm thấy đề xuất này"

@@ -720,6 +720,9 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   giữ idempotency lock và chưa SSH; operator có thể cancel trên Incident
   Timeline. Khi hết hạn Worker dựng lại envelope từ Case đã redaction rồi chạy
   lại cluster gate, contract, preflight, telemetry, rate limit và lease.
+- Telegram đa kênh gửi countdown cho `GRACE_PENDING` với duy nhất nút
+  `Hủy Autopilot`; callback dùng chung cancel core/audit với Dashboard,
+  kiểm tra đúng channel của cluster và idempotent khi action đã được xử lý.
 
 - Chỉ mở 1–3 playbook SAFE blast radius thấp.
 - Grace period, Telegram cancel, rate limit và cooldown.
