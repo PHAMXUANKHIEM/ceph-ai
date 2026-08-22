@@ -3029,6 +3029,32 @@ def test_autopilot_runtime_rate_limit_and_cluster_lease(isolated_db):
         ).allowed
 
 
+def test_verified_osd_restart_is_not_suppressed_by_rate_limit_or_cooldown(isolated_db):
+    from worker.autonomy_runtime import check_limits
+
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        for index in range(6):
+            incident = Incident(
+                cluster_id="test-default-cluster", ceph_code=f"OLD-{index}",
+                status="RESOLVED", detected_at=now,
+            )
+            session.add(incident); session.flush()
+            session.add(Action(
+                incident_id=incident.id, action_id="restart_osd_daemon",
+                target_nodes='["n1"]', classification="SAFE",
+                status="AUTO_EXECUTED", executed_at=now - timedelta(minutes=5),
+            ))
+        session.commit()
+
+        result = check_limits(
+            session, cluster_id="test-default-cluster",
+            action_id="restart_osd_daemon", target_nodes='["n1"]', now=now,
+            max_hour=2, max_day=5, cooldown_seconds=1800,
+        )
+        assert result.allowed is True
+
+
 def test_expired_cluster_lease_is_recovered_after_worker_crash(isolated_db):
     from worker.autonomy_runtime import acquire_lease
 

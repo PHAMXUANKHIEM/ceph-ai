@@ -23,14 +23,23 @@ def check_limits(session, *, cluster_id: str, action_id: str, target_nodes: str 
         Action.status == ActionStatus.AUTO_EXECUTED.value,
         Action.executed_at.isnot(None),
     )
-    if base.filter(Action.executed_at >= now - timedelta(hours=1)).count() >= max_hour:
+    # A verified OSD restart is driven by fresh Ceph evidence and exact
+    # osd.ID->host mapping at every attempt.  Do not let unrelated earlier
+    # remediations, or a recurring crash of the same daemon, suppress it;
+    # the cluster-wide execution lease still serializes actual writes.
+    unlimited_verified_osd_restart = action_id == "restart_osd_daemon"
+    if (not unlimited_verified_osd_restart and max_hour > 0
+            and base.filter(Action.executed_at >= now - timedelta(hours=1)).count() >= max_hour):
         return RuntimeResult(False, f"cluster hourly auto-remediation limit ({max_hour}) reached")
-    if base.filter(Action.executed_at >= now - timedelta(days=1)).count() >= max_day:
+    if (not unlimited_verified_osd_restart and max_day > 0
+            and base.filter(Action.executed_at >= now - timedelta(days=1)).count() >= max_day):
         return RuntimeResult(False, f"cluster daily auto-remediation limit ({max_day}) reached")
-    repeated = base.filter(
-        Action.action_id == action_id, Action.target_nodes == target_nodes,
-        Action.executed_at >= now - timedelta(seconds=cooldown_seconds),
-    ).first()
+    repeated = None
+    if not unlimited_verified_osd_restart and cooldown_seconds > 0:
+        repeated = base.filter(
+            Action.action_id == action_id, Action.target_nodes == target_nodes,
+            Action.executed_at >= now - timedelta(seconds=cooldown_seconds),
+        ).first()
     if repeated is not None:
         return RuntimeResult(False, f"action+target cooldown ({cooldown_seconds}s) is active")
     return RuntimeResult(True)
