@@ -265,6 +265,13 @@ def evaluate_promotion_candidates(session, *, now: datetime | None = None) -> in
     actions = {row.id: row for row in session.query(Action).all()}
     changed = 0
     for stat in session.query(PlaybookStat).all():
+        if stat.proposed_count == 0 and stat.auto_disabled_reason == "no eligible verified Case Memory in this scope":
+            blocked = stat.auto_disabled_reason
+            if stat.promotion_candidate_at is not None or stat.promotion_blocked_reason != blocked:
+                stat.promotion_candidate_at = None
+                stat.promotion_blocked_reason = blocked
+                changed += 1
+            continue
         if stat.maturity_level == "L3":
             blocked = "already promoted to L3"
             if stat.promotion_candidate_at is not None or stat.promotion_blocked_reason != blocked:

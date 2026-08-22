@@ -118,6 +118,10 @@ def test_scope_is_zeroed_if_its_cases_later_become_ineligible():
     assert stat.trust_score == 0
     assert stat.maturity_level == "L0"
     assert "no eligible" in stat.auto_disabled_reason
+    assert evaluate_promotion_candidates(session) == 0
+    assert stat.promotion_blocked_reason == stat.auto_disabled_reason
+    assert recompute_playbook_stats(session) == 0
+    assert evaluate_promotion_candidates(session) == 0
 
 
 def test_shadow_holds_without_enough_verified_evidence_and_never_changes_action():
