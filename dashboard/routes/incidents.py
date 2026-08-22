@@ -26,6 +26,7 @@ from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, 
 from shared.object_storage_cache import get_or_load
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher.capacity_forecast import forecasts as capacity_forecasts
+from watcher.operations_briefing import build as operations_briefing
 
 logger = logging.getLogger(__name__)
 
@@ -689,6 +690,7 @@ async def index(
             for incident in incidents
         )
         copilot_capacity = capacity_forecasts(selected_cluster.id)
+        briefing = operations_briefing(selected_cluster.id, heartbeat_stale=stale)
         # 2026-08-10 (multi-tenant remediation Phase 2): the "Chờ duyệt" card
         # used to hide the instant the 3 GLOBAL channels were configured —
         # now that a non-default cluster's own channel can NARROW coverage
@@ -732,6 +734,7 @@ async def index(
             "selected_cluster": selected_cluster,
             "copilot_open_count": copilot_open_count,
             "copilot_capacity": copilot_capacity,
+            "operations_briefing": briefing,
             "pending_actions": pending_actions_with_incident,
             "audit_entries": audit_entries,
             "filter_incident_id": incident_id,

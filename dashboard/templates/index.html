@@ -85,11 +85,10 @@
   <div class="app-body">
   <main class="page">
     <div id="ceph-dashboard-root"></div>
-    <section class="dashboard-copilot-card" aria-labelledby="dashboard-copilot-title">
-      <div class="dashboard-copilot-card-main"><span class="copilot-kicker">EVIDENCE-CITED OPERATIONS</span><h2 id="dashboard-copilot-title">AI Operations Copilot</h2><p>Điều tra incident, timeline và capacity từ evidence đã lưu.</p></div>
-      <div class="dashboard-copilot-stat"><span>INCIDENT ĐANG MỞ</span><strong>{{ copilot_open_count }}</strong></div>
-      <div class="dashboard-copilot-stat"><span>CAPACITY FORECAST</span><strong>{{ "Sẵn sàng" if copilot_capacity.status == "ready" else "Đang học" }}</strong><small>{{ copilot_capacity.series_seen }} chuỗi · cần {{ copilot_capacity.minimum_history_days }} ngày</small></div>
-      <div class="dashboard-copilot-card-actions"><span class="copilot-readonly-badge">READ-ONLY</span><a class="btn btn-primary btn-sm" href="/ai-copilot">Mở Copilot</a></div>
+    <section class="operations-briefing" aria-labelledby="dashboard-copilot-title">
+      <header class="operations-briefing-header"><div><span class="copilot-kicker">AI OPERATIONS BRIEFING · EVIDENCE-CITED</span><h2 id="dashboard-copilot-title">Việc cần chú ý trên cụm</h2><p>Tự tổng hợp từ incident, capacity và disk evidence; không gọi AI khi tải trang.</p></div><div class="dashboard-copilot-card-actions"><span class="copilot-readonly-badge">READ-ONLY</span><a class="btn btn-ghost btn-sm" href="/ai-copilot">Hỏi sâu hơn</a></div></header>
+      <div class="operations-briefing-stats"><div><span>INCIDENT 24H</span><strong>{{ operations_briefing.incidents_24h }}</strong><small>{{ operations_briefing.incident_trend }}{% if operations_briefing.incident_delta %} {{ operations_briefing.incident_delta|abs }}{% endif %} so với 24h trước</small></div><div><span>ĐANG CẦN CHÚ Ý</span><strong>{{ operations_briefing.active_incident_count }}</strong></div><div><span>DISK COVERAGE</span><strong>{{ operations_briefing.disk_coverage }} OSD</strong><small>{{ "Có device-health evidence" if operations_briefing.smart_metrics_available else "Chưa có SMART thô" }}</small></div></div>
+      <div class="operations-priority-list">{% for item in operations_briefing.priorities %}<article class="operations-priority is-{{ item.severity|lower }}"><div class="operations-priority-rank">{{ loop.index }}</div><div><div class="operations-priority-title"><span>{{ item.severity }}</span><h3>{{ item.title }}</h3></div><p>{{ item.summary }}</p><small>{% for source in item.evidence[:2] %}<code>[{{ source.source_id }}]</code>{% endfor %}</small></div><a class="btn btn-ghost btn-sm" href="{{ item.href }}">Điều tra</a></article>{% endfor %}</div>
     </section>
     <div hidden>
     <section class="connection-status {% if heartbeat_stale %}connection-lost{% else %}connection-ok{% endif %}">

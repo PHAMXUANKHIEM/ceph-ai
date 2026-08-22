@@ -8,10 +8,11 @@ def test_dashboard_exposes_operations_copilot_entry_and_suggestions():
     template = (ROOT / "dashboard/templates/index.html").read_text()
     copilot = (ROOT / "dashboard/templates/copilot.html").read_text()
     assert 'href="/ai-copilot"' in template
-    assert 'class="dashboard-copilot-card"' in template
-    assert "INCIDENT ĐANG MỞ" in template
-    assert "CAPACITY FORECAST" in template
-    assert "Mở Copilot" in template
+    assert 'class="operations-briefing"' in template
+    assert "AI OPERATIONS BRIEFING" in template
+    assert "Việc cần chú ý trên cụm" in template
+    assert "DISK COVERAGE" in template
+    assert "Điều tra" in template
     assert '/static/copilot.js' not in template
     assert "AI Operations Copilot" in copilot
     assert copilot.count("data-prompt=") == 3
@@ -42,6 +43,6 @@ def test_dedicated_copilot_route_renders_operational_evidence(dashboard_client):
 
     dashboard = dashboard_client.get("/")
     assert dashboard.status_code == 200
-    assert dashboard.text.count('class="dashboard-copilot-card"') == 1
-    assert "INCIDENT ĐANG MỞ" in dashboard.text
-    assert "CAPACITY FORECAST" in dashboard.text
+    assert dashboard.text.count('class="operations-briefing"') == 1
+    assert "Việc cần chú ý trên cụm" in dashboard.text
+    assert "DISK COVERAGE" in dashboard.text
