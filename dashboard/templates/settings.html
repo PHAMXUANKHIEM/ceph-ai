@@ -151,7 +151,7 @@
                   <td>contract {{ playbook.version }}<br>builder {{ playbook.command_builder_version or "—" }}</td>
                   <td>{{ playbook.policy_classification }} / {{ playbook.max_autonomy }}</td>
                   <td>{{ playbook.target_schema }} · max {{ playbook.max_targets }}<br><span class="hint">scope {{ playbook.conflict_scope }}, cooldown {{ playbook.cooldown_seconds }}s</span></td>
-                  <td>Builder: {{ "OK" if playbook.command_builder_available else "MISSING" }}<br>Preflight: {{ "OK" if playbook.preflight else "MISSING" }} · Post-check: {{ "OK" if playbook.postcheck else "MISSING" }}</td>
+                  <td>Builder: {{ "OK" if playbook.command_builder_available else "MISSING" }}<br>Preflight: {{ "OK" if playbook.preflight_registered else "MISSING" }} · Post-check: {{ "OK" if playbook.postcheck_registered else "MISSING" }}</td>
                   <td><strong>{{ playbook.eligibility_status }}</strong><br><span class="hint">{{ playbook.eligibility_reason }}</span></td>
                 </tr>
               {% endfor %}

@@ -18,6 +18,21 @@ from worker.policy.gate import classify_action
 _LEVELS = {f"L{level}": level for level in range(6)}
 _TARGET_SCHEMAS = {"cluster", "host", "osd", "pg", "manual"}
 
+# Closed server-owned hook catalogues.  A contract cannot make an arbitrary
+# string executable by naming it here; adding/removing a hook is a reviewed
+# code change, while each contract still records the exact resolved hook ID.
+PREFLIGHT_HOOKS = frozenset({
+    "capability_and_operational_preflight",
+})
+POSTCHECK_HOOKS = frozenset({
+    "fresh_health_telemetry",
+    "node_and_cluster_health_telemetry",
+    "osd_and_fault_health_telemetry",
+    "osd_release_health_telemetry",
+    "pool_application_health_telemetry",
+    "pool_pg_health_telemetry",
+})
+
 
 @dataclass(frozen=True)
 class PlaybookContract:
@@ -147,7 +162,16 @@ def validate_contract(contract: PlaybookContract) -> tuple[str, ...]:
         errors.append("cooldown_seconds must be non-negative")
     if contract.command_builder and not contract.command_builder_version:
         errors.append("missing command_builder_version")
+    if contract.preflight and contract.preflight not in PREFLIGHT_HOOKS:
+        errors.append(f"unregistered preflight hook={contract.preflight!r}")
+    if contract.postcheck and contract.postcheck not in POSTCHECK_HOOKS:
+        errors.append(f"unregistered postcheck hook={contract.postcheck!r}")
     return tuple(errors)
+
+
+def registry_coverage(required_action_ids) -> tuple[str, ...]:
+    """Return missing IDs deterministically; callers/tests decide whether to abort."""
+    return tuple(sorted(set(required_action_ids) - set(PLAYBOOKS)))
 
 
 def describe_contract(contract: PlaybookContract, *, command_builder_available: bool) -> dict:
@@ -181,6 +205,8 @@ def describe_contract(contract: PlaybookContract, *, command_builder_available: 
         "eligibility_status": status,
         "eligibility_reason": reason,
         "command_builder_available": command_builder_available,
+        "preflight_registered": contract.preflight in PREFLIGHT_HOOKS,
+        "postcheck_registered": contract.postcheck in POSTCHECK_HOOKS,
     })
     return payload
 

@@ -1,7 +1,8 @@
 from dataclasses import replace
 
 from worker.policy.playbook_registry import (
-    PLAYBOOKS, describe_contract, evaluate_auto_execution, get_contract,
+    PLAYBOOKS, POSTCHECK_HOOKS, PREFLIGHT_HOOKS, describe_contract,
+    evaluate_auto_execution, get_contract, registry_coverage,
     registry_status_rows, validate_contract,
 )
 
@@ -117,3 +118,36 @@ def test_registry_status_rows_are_stable_and_sorted():
     rows = registry_status_rows(command_available=lambda action_id: action_id != "pg_repair_force")
     assert [row["action_id"] for row in rows] == sorted(PLAYBOOKS)
     assert all(len(row["contract_checksum"]) == 64 for row in rows)
+
+
+def test_hook_names_must_resolve_in_closed_server_catalogue():
+    original = get_contract("resync_ntp")
+    invalid_preflight = replace(original, preflight="model_invented_preflight")
+    invalid_postcheck = replace(original, postcheck="model_invented_postcheck")
+    assert "unregistered preflight" in " ".join(validate_contract(invalid_preflight))
+    assert "unregistered postcheck" in " ".join(validate_contract(invalid_postcheck))
+    assert original.preflight in PREFLIGHT_HOOKS
+    assert original.postcheck in POSTCHECK_HOOKS
+
+
+def test_unregistered_hook_fails_closed_to_l2():
+    original = PLAYBOOKS["resync_ntp"]
+    try:
+        PLAYBOOKS["resync_ntp"] = replace(original, postcheck="unknown_hook")
+        decision = evaluate_auto_execution(
+            "resync_ntp", "SAFE", target_nodes=["mon-a"], command_builder_available=True,
+        )
+        assert decision.allowed is False
+        assert decision.effective_max_autonomy == "L2"
+        assert "unregistered postcheck" in decision.reason
+    finally:
+        PLAYBOOKS["resync_ntp"] = original
+
+
+def test_registry_coverage_reports_missing_actions_sorted():
+    from worker.llm.router_client import AI_EXECUTABLE_ACTION_IDS
+
+    assert registry_coverage(AI_EXECUTABLE_ACTION_IDS) == ()
+    assert registry_coverage({"resync_ntp", "missing_z", "missing_a"}) == (
+        "missing_a", "missing_z",
+    )
