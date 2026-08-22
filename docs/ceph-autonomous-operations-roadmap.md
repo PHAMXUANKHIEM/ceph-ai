@@ -641,7 +641,7 @@ Action, Audit và telemetry.
 
 ### Pha 2 — Playbook Registry
 
-Trạng thái triển khai (2026-08-22): **đang thực hiện**.
+Trạng thái triển khai (2026-08-22): **hoàn thành**.
 
 - Đã thêm registry phía server cho toàn bộ action mà Incident AI hiện có thể
   sinh, với version, target schema, autonomy ceiling, conflict scope, blast
@@ -673,6 +673,15 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 không được auto-run.
 
 ### Pha 3 — Trust Engine và Shadow Autopilot
+
+Trạng thái triển khai (2026-08-22): **đang thực hiện**.
+
+- Đã có Trust Engine tổng hợp idempotent theo playbook version, Ceph major và
+  deployment mode. Trust dùng Wilson lower bound từ outcome đã verify; Case
+  legacy/unverified/corrupt không được tăng trust.
+- Regression hoặc operator verdict FALSE_POSITIVE/UNSAFE/INEFFECTIVE được tính
+  bảo thủ thành failure. Evaluator chỉ ghi maturity tối đa L2 và không tự tạo
+  promotion candidate hay nâng quyền Autopilot.
 
 - Tính statistics và Wilson lower bound.
 - Tìm case tương tự.
