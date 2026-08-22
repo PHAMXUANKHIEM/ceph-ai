@@ -1051,25 +1051,28 @@ def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):
 
 def test_query_rbd_iostat_is_finite_and_has_remote_kill_deadline(monkeypatch):
     captured = {}
+    monkeypatch.setattr(ceph_client.settings, "ceph_exec_mode", "none")
 
-    def fake_run(command):
+    def fake_run(command, *, append_json_format=True):
         captured["command"] = command
+        captured["append_json_format"] = append_json_format
         return "10.20.1.150", []
 
     monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_run)
 
     assert query_rbd_iostat("pool with spaces") == []
-    assert captured["command"] == (
-        "timeout --signal=TERM --kill-after=2s 8s "
-        "rbd perf image iostat 'pool with spaces' --iterations 1"
-    )
+    assert "command -v rbd" in captured["command"]
+    assert "cephadm shell -- rbd perf image iostat 'pool with spaces'" in captured["command"]
+    assert "--iterations 1 --format json" in captured["command"]
+    assert captured["append_json_format"] is False
 
 
 def test_query_rbd_iostat_with_is_finite_and_has_remote_kill_deadline(monkeypatch):
     captured = {}
 
-    def fake_run(nodes, container, user, key, mode, command):
+    def fake_run(nodes, container, user, key, mode, command, *, append_json_format=True):
         captured["command"] = command
+        captured["append_json_format"] = append_json_format
         return nodes[0], []
 
     monkeypatch.setattr(ceph_client, "run_ceph_json_command_with", fake_run)
@@ -1079,10 +1082,27 @@ def test_query_rbd_iostat_with_is_finite_and_has_remote_kill_deadline(monkeypatc
     )
 
     assert samples == []
+    assert "command -v rbd" in captured["command"]
+    assert "cephadm shell -- rbd perf image iostat vms" in captured["command"]
+    assert captured["append_json_format"] is False
+
+
+def test_query_rbd_iostat_cephadm_mode_does_not_add_host_fallback(monkeypatch):
+    captured = {}
+
+    def fake_run(nodes, container, user, key, mode, command, *, append_json_format=True):
+        captured.update(command=command, append_json_format=append_json_format)
+        return nodes[0], []
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command_with", fake_run)
+    ceph_client.query_rbd_iostat_with(
+        "vms", ["10.20.1.150"], "", "root", "/key", "cephadm"
+    )
     assert captured["command"] == (
         "timeout --signal=TERM --kill-after=2s 8s "
-        "rbd perf image iostat vms --iterations 1"
+        "rbd perf image iostat vms --iterations 1 --format json"
     )
+    assert captured["append_json_format"] is False
 
 
 def test_query_rbd_iostat_parses_dict_with_images_key(fake_ssh, monkeypatch):

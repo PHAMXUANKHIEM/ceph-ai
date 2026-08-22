@@ -55,11 +55,26 @@ MCP_COMMAND_TIMEOUT_SECONDS = 10
 RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS = 8
 
 
-def _rbd_iostat_command(pool: str) -> str:
+def _rbd_iostat_base_command(pool: str) -> str:
     return (
         "timeout --signal=TERM --kill-after=2s "
         f"{RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS}s rbd perf image iostat "
-        f"{shlex.quote(pool)} --iterations 1"
+        f"{shlex.quote(pool)} --iterations 1 --format json"
+    )
+
+
+def _rbd_iostat_command(pool: str, exec_mode: str) -> str:
+    base = _rbd_iostat_base_command(pool)
+    if exec_mode != "none":
+        return base
+    # Some imported clusters are configured as package/ceph-deploy (none)
+    # while individual MON hosts only carry cephadm.  Keep the normal host
+    # binary as first choice, then use cephadm shell only when rbd is absent.
+    cephadm_base = base.replace(" rbd perf ", " cephadm shell -- rbd perf ", 1)
+    return (
+        f"if command -v rbd >/dev/null 2>&1; then {base}; "
+        f"elif command -v cephadm >/dev/null 2>&1; then {cephadm_base}; "
+        "else echo 'rbd and cephadm are unavailable' >&2; exit 127; fi"
     )
 
 
@@ -464,7 +479,9 @@ def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
     doesn't look like the expected shape, so an unexpected-schema surprise
     degrades to "no data this poll" rather than crashing the Watcher loop.
     """
-    _, payload = run_ceph_json_command(_rbd_iostat_command(pool))
+    _, payload = run_ceph_json_command(
+        _rbd_iostat_command(pool, settings.ceph_exec_mode), append_json_format=False
+    )
     return _normalize_rbd_iostat(pool, payload)
 
 
@@ -475,7 +492,7 @@ def query_rbd_iostat_with(
     """Cluster-scoped counterpart to :func:`query_rbd_iostat`."""
     _, payload = run_ceph_json_command_with(
         mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
-        _rbd_iostat_command(pool),
+        _rbd_iostat_command(pool, exec_mode), append_json_format=False,
     )
     return _normalize_rbd_iostat(pool, payload)
 
@@ -881,7 +898,9 @@ def run_diagnostic_command(host: str, command_id: str) -> str:
     return output[:DIAGNOSTIC_OUTPUT_MAX_CHARS]
 
 
-def run_ceph_json_command(inner_command: str) -> tuple[str, dict | list]:
+def run_ceph_json_command(
+    inner_command: str, *, append_json_format: bool = True
+) -> tuple[str, dict | list]:
     """Runs `inner_command` (a `ceph ...` subcommand WITHOUT `--format json`
     — this appends it) against each configured MON node in turn until one
     succeeds, parsing the output as JSON. Same multi-MON fallback posture as
@@ -910,7 +929,7 @@ def run_ceph_json_command(inner_command: str) -> tuple[str, dict | list]:
         raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
     return run_ceph_json_command_with(
         nodes, settings.ceph_container_name, settings.ssh_user, settings.ssh_key_path,
-        settings.ceph_exec_mode, inner_command,
+        settings.ceph_exec_mode, inner_command, append_json_format=append_json_format,
     )
 
 
@@ -954,6 +973,8 @@ def run_ceph_json_command_with(
     ssh_key_path: str,
     exec_mode: str,
     inner_command: str,
+    *,
+    append_json_format: bool = True,
 ) -> tuple[str, dict | list]:
     """Same as `run_ceph_json_command()` but takes every connection
     parameter explicitly instead of reading `settings` (2026-08-10,
@@ -963,7 +984,8 @@ def run_ceph_json_command_with(
     this for a non-default cluster's Incident."""
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured for this cluster")
-    command = build_exec_command(exec_mode, container_name, f"{inner_command} --format json")
+    formatted_command = f"{inner_command} --format json" if append_json_format else inner_command
+    command = build_exec_command(exec_mode, container_name, formatted_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
     errors = []
     for host in mon_nodes:
