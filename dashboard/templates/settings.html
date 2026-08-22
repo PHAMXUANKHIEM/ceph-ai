@@ -137,6 +137,29 @@
           </form>
         </div>
       </article>
+      <article class="card" style="margin-top:1rem">
+        <div class="card-header"><h2>Playbook Registry</h2></div>
+        <div class="card-body">
+          <p class="hint">Eligibility ở đây chỉ phản ánh contract tĩnh. Khi thực thi, kill switch, evidence freshness, target, operational gate, rate limit và lease vẫn có quyền chặn.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Playbook</th><th>Version</th><th>Safety / ceiling</th><th>Target / blast radius</th><th>Hooks</th><th>Eligibility</th></tr></thead>
+              <tbody>
+              {% for playbook in playbook_registry %}
+                <tr>
+                  <td><code>{{ playbook.action_id }}</code><br><span class="hint">checksum {{ playbook.contract_checksum[:12] }}</span></td>
+                  <td>contract {{ playbook.version }}<br>builder {{ playbook.command_builder_version or "—" }}</td>
+                  <td>{{ playbook.policy_classification }} / {{ playbook.max_autonomy }}</td>
+                  <td>{{ playbook.target_schema }} · max {{ playbook.max_targets }}<br><span class="hint">scope {{ playbook.conflict_scope }}, cooldown {{ playbook.cooldown_seconds }}s</span></td>
+                  <td>Builder: {{ "OK" if playbook.command_builder_available else "MISSING" }}<br>Preflight: {{ "OK" if playbook.preflight else "MISSING" }} · Post-check: {{ "OK" if playbook.postcheck else "MISSING" }}</td>
+                  <td><strong>{{ playbook.eligibility_status }}</strong><br><span class="hint">{{ playbook.eligibility_reason }}</span></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </article>
       <dialog class="restart-dialog" id="restart-service-dialog">
         <form method="dialog" class="restart-dialog-card">
           <div class="restart-dialog-icon">!</div><div><h2 id="restart-dialog-title">Restart service?</h2><p id="restart-dialog-description"></p></div>

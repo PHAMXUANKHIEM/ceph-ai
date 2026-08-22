@@ -1646,6 +1646,12 @@ def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
     assert 'action="/settings/restart-worker"' in response.text
     assert 'action="/settings/restart-watcher"' in response.text
     assert 'action="/settings/restart-dashboard"' in response.text
+    assert "Playbook Registry" in response.text
+    assert "resync_ntp" in response.text
+    assert "L3_READY" in response.text
+    assert "restart_osd_daemon" in response.text
+    assert "CONDITIONAL" in response.text
+    assert "checksum" in response.text
 
 
 def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
@@ -1660,6 +1666,7 @@ def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
     assert 'href="/users"' not in response.text
     assert 'action="/settings/restart-worker"' not in response.text
     assert 'action="/settings/restart-dashboard"' not in response.text
+    assert "Playbook Registry" not in response.text
 
 
 def test_restart_worker_route_rejects_non_admin(dashboard_client):

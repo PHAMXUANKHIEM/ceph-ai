@@ -12,6 +12,7 @@ import json
 from dataclasses import asdict, dataclass
 
 from shared.models import ActionClassification
+from worker.policy.gate import classify_action
 
 
 _LEVELS = {f"L{level}": level for level in range(6)}
@@ -147,6 +148,48 @@ def validate_contract(contract: PlaybookContract) -> tuple[str, ...]:
     if contract.command_builder and not contract.command_builder_version:
         errors.append("missing command_builder_version")
     return tuple(errors)
+
+
+def describe_contract(contract: PlaybookContract, *, command_builder_available: bool) -> dict:
+    """Admin-facing static eligibility; runtime target/evidence are evaluated later."""
+    errors = validate_contract(contract)
+    policy_class = classify_action(contract.action_id)
+    status = "L3_READY"
+    reason = "Contract đầy đủ; vẫn phải qua kill switch, target, evidence và operational gate."
+    if errors:
+        status = "INVALID"
+        reason = "; ".join(errors)
+    elif not contract.command_builder or not contract.preflight or not contract.postcheck:
+        status = "L2_ONLY"
+        reason = "Thiếu command builder, preflight hoặc post-check."
+    elif not command_builder_available:
+        status = "L2_ONLY"
+        reason = "Command builder đã khai báo nhưng executor hiện không có implementation."
+    elif _LEVELS[contract.max_autonomy] < _LEVELS["L3"]:
+        status = "L2_ONLY"
+        reason = f"Autonomy ceiling của contract là {contract.max_autonomy}."
+    elif policy_class in {ActionClassification.DESTRUCTIVE, ActionClassification.RISKY}:
+        if contract.action_id == "restart_osd_daemon":
+            status = "CONDITIONAL"
+            reason = "Policy mặc định RISKY; chỉ đạt L3 khi server xác minh đúng một BlueStore OSD/host."
+        else:
+            status = "L2_ONLY"
+            reason = f"Safety policy hiện phân loại {policy_class.value}."
+    payload = contract.snapshot()
+    payload.update({
+        "policy_classification": policy_class.value,
+        "eligibility_status": status,
+        "eligibility_reason": reason,
+        "command_builder_available": command_builder_available,
+    })
+    return payload
+
+
+def registry_status_rows(*, command_available) -> list[dict]:
+    return [
+        describe_contract(contract, command_builder_available=bool(command_available(action_id)))
+        for action_id, contract in sorted(PLAYBOOKS.items())
+    ]
 
 
 def _validate_runtime_target(

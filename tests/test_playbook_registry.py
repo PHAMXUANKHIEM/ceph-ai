@@ -1,7 +1,8 @@
 from dataclasses import replace
 
 from worker.policy.playbook_registry import (
-    PLAYBOOKS, evaluate_auto_execution, get_contract, validate_contract,
+    PLAYBOOKS, describe_contract, evaluate_auto_execution, get_contract,
+    registry_status_rows, validate_contract,
 )
 
 
@@ -93,3 +94,26 @@ def test_osd_schema_requires_one_deterministic_osd_id():
     )
     assert ambiguous.allowed is False
     assert "blast-radius" in ambiguous.reason
+
+
+def test_admin_description_explains_static_eligibility_without_runtime_target():
+    ready = describe_contract(get_contract("resync_ntp"), command_builder_available=True)
+    assert ready["eligibility_status"] == "L3_READY"
+    assert ready["policy_classification"] == "SAFE"
+
+    conditional = describe_contract(
+        get_contract("restart_osd_daemon"), command_builder_available=True,
+    )
+    assert conditional["eligibility_status"] == "CONDITIONAL"
+    assert "BlueStore" in conditional["eligibility_reason"]
+
+    manual = describe_contract(
+        get_contract("investigate_manually"), command_builder_available=False,
+    )
+    assert manual["eligibility_status"] == "L2_ONLY"
+
+
+def test_registry_status_rows_are_stable_and_sorted():
+    rows = registry_status_rows(command_available=lambda action_id: action_id != "pg_repair_force")
+    assert [row["action_id"] for row in rows] == sorted(PLAYBOOKS)
+    assert all(len(row["contract_checksum"]) == 64 for row in rows)

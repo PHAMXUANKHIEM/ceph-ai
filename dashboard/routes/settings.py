@@ -59,7 +59,9 @@ from watcher.ceph_client import (
     validate_ceph_keyring_with,
 )
 from worker.executor.ssh_executor import ExecutorError, execute_command
+from worker.executor import commands as executor_commands
 from worker.executor.vm_perf import _vm_ssh_command
+from worker.policy.playbook_registry import registry_status_rows
 
 logger = logging.getLogger(__name__)
 
@@ -928,6 +930,9 @@ def _settings_context(
         "autopilot_activation_unlocked": settings.autopilot_activation_unlocked,
         "autopilot_error": autopilot_error,
         "autopilot_success": autopilot_success,
+        "playbook_registry": registry_status_rows(
+            command_available=executor_commands.has_command,
+        ),
     }
     with db.SessionLocal() as session:
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()

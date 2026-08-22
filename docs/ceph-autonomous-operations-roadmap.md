@@ -654,6 +654,9 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Contract có command-builder version và checksum tất định. Execution kiểm tra
   builder tồn tại, target đúng schema và số target/OSD không vượt blast-radius
   ceiling trước khi được phép vào L3.
+- Dashboard Settings hiển thị registry cho admin: contract/builder version,
+  checksum, safety/ceiling, target/blast radius, hook availability và lý do
+  playbook đang L3-ready, conditional hay chỉ được L2.
 
 - Chuẩn hóa contract cho action hiện có.
 - Khai báo preflight, post-check, conflict scope và blast radius.
