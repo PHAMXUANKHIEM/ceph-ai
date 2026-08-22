@@ -2755,6 +2755,7 @@ def test_phase0_defaults_are_fail_closed():
 
     assert Settings.model_fields["ai_preflight_enforcement_enabled"].default is True
     assert Settings.model_fields["autopilot_enabled"].default is False
+    assert Settings.model_fields["autopilot_activation_unlocked"].default is False
 
 
 def test_global_autopilot_kill_switch_parks_safe_action_for_approval(isolated_db, monkeypatch):
@@ -2892,6 +2893,32 @@ def test_autopilot_runtime_rate_limit_and_cluster_lease(isolated_db):
             session, cluster_id="test-default-cluster", action_id=actions[1].id,
             now=now, ttl_seconds=60,
         ).allowed
+
+
+def test_expired_cluster_lease_is_recovered_after_worker_crash(isolated_db):
+    from shared.models import AutopilotLease
+    from worker.autonomy_runtime import acquire_lease
+
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id="test-default-cluster", ceph_code="CRASH", status="NEW", detected_at=now,
+        )
+        session.add(incident); session.flush()
+        old_action = Action(incident_id=incident.id, action_id="old", classification="SAFE", status="EXECUTING")
+        new_action = Action(incident_id=incident.id, action_id="new", classification="SAFE", status="PENDING")
+        session.add_all([old_action, new_action]); session.flush()
+        session.add(AutopilotLease(
+            cluster_id="test-default-cluster", action_id=old_action.id,
+            acquired_at=now - timedelta(minutes=20), expires_at=now - timedelta(seconds=1),
+        ))
+        session.commit()
+        result = acquire_lease(
+            session, cluster_id="test-default-cluster", action_id=new_action.id,
+            now=now, ttl_seconds=60,
+        )
+        assert result.allowed
+        assert session.query(AutopilotLease).one().action_id == new_action.id
 
 
 # --- AI roadmap Pha 0.4: safety policy hardening ----------------------------

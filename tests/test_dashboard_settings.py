@@ -9,7 +9,7 @@ import dashboard.routes.settings as settings_route
 from config.settings import settings
 from shared import db as db_module
 from shared import env_config
-from shared.models import Cluster, User
+from shared.models import AutopilotConfigAudit, Cluster, User
 from watcher.ceph_client import CephQueryError
 
 
@@ -2449,6 +2449,66 @@ def test_verify_router_connection_reports_model_count_on_success(monkeypatch):
     assert is_valid is True
     assert reason == "Kết nối thành công — tìm thấy 2 model"
     assert models == ["gc/gemini-2.5-flash", "gc/gemini-2.5-pro"]
+
+
+def test_admin_can_enable_autopilot_with_strong_confirmation_and_audit(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("AUTOPILOT_ENABLED=false\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "autopilot_enabled", False)
+    monkeypatch.setattr(settings, "autopilot_activation_unlocked", True)
+    monkeypatch.setattr(
+        settings_route, "restart_worker",
+        lambda: {"restarted": True, "new_pid": 123, "error": None},
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/autopilot", data={
+        "enabled": "1", "reason": "Lab shadow evaluation", "confirmation": "ENABLE AUTOPILOT",
+    })
+    assert response.status_code == 200
+    assert "Đã bật Autopilot" in response.text
+    assert "AUTOPILOT_ENABLED=true" in tmp_env.read_text()
+    with db_module.SessionLocal() as session:
+        row = session.query(AutopilotConfigAudit).one()
+        assert row.actor == "admin" and row.previous_enabled is False and row.new_enabled is True
+
+
+def test_autopilot_enable_rejects_missing_confirmation(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"; tmp_env.write_text("")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "autopilot_enabled", False)
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/autopilot", data={
+        "enabled": "1", "reason": "Lab shadow evaluation", "confirmation": "yes",
+    })
+    assert response.status_code == 200
+    assert "không chính xác" in response.text
+    assert "AUTOPILOT_ENABLED" not in tmp_env.read_text()
+
+
+def test_disabling_autopilot_stops_old_worker_when_restart_fails(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"; tmp_env.write_text("AUTOPILOT_ENABLED=true\n")
+    stopped = []
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(
+        settings_route, "restart_worker",
+        lambda: {"restarted": False, "new_pid": None, "error": "boom"},
+    )
+    monkeypatch.setattr(settings_route, "_find_worker_pids", lambda: [77])
+    monkeypatch.setattr(settings_route, "_stop_worker", lambda pids: stopped.extend(pids))
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/autopilot", data={
+        "enabled": "0", "reason": "Emergency operator shutdown",
+    })
+    assert response.status_code == 200
+    assert "Worker cũ đã bị dừng" in response.text
+    assert "AUTOPILOT_ENABLED=false" in tmp_env.read_text()
+    assert stopped == [77]
 
 
 @pytest.mark.live

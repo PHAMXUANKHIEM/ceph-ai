@@ -586,8 +586,13 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   PG inactive/incomplete/stale, recovery threshold và OSD latency incident.
 - Đã thêm lease write action duy nhất theo cluster (có TTL), giới hạn 2 action/
   giờ, 5 action/ngày và cooldown action+target 30 phút.
-- Còn thiếu trước khi khép Pha 0: UI điều khiển kill switch, audit freshness
-  chi tiết và fault-injection cho crash giữa execution/lease release.
+- Đã có UI admin cho global kill switch với xác nhận mạnh khi bật, lý do bắt
+  buộc, audit append-only và fail-safe dừng Worker cũ nếu thao tác tắt không
+  thể khởi động Worker mới.
+- Đã có fault-injection chứng minh lease hết TTL sau Worker crash có thể được
+  thu hồi, trong khi lease chưa hết hạn vẫn loại trừ action thứ hai.
+- Còn thiếu trước khi khép Pha 0: audit freshness chi tiết và fault-injection
+  database commit lỗi sau khi lệnh đã chạy.
 
 - Chốt state machine hiện tại bằng test.
 - Đo success/failure của SAFE action đang chạy.

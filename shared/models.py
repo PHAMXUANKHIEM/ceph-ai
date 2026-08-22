@@ -424,6 +424,18 @@ class AutopilotLease(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class AutopilotConfigAudit(Base):
+    """Append-only audit for admin changes to the global kill switch."""
+    __tablename__ = "autopilot_config_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    new_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class IncidentTimelineEvent(Base):
     """Append-only lifecycle ledger with exact event timestamps."""
 

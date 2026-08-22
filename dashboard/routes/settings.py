@@ -48,7 +48,7 @@ from shared.claude_cli import (
 from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
-from shared.models import Cluster
+from shared.models import AutopilotConfigAudit, Cluster
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -845,6 +845,8 @@ def _settings_context(
     openstack_error: str | None = None,
     openstack_success: str | None = None,
     openstack_cluster_id: str | None = None,
+    autopilot_error: str | None = None,
+    autopilot_success: str | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -922,6 +924,10 @@ def _settings_context(
         "backup_target_success": backup_target_success,
         "openstack_error": openstack_error,
         "openstack_success": openstack_success,
+        "autopilot_enabled": settings.autopilot_enabled,
+        "autopilot_activation_unlocked": settings.autopilot_activation_unlocked,
+        "autopilot_error": autopilot_error,
+        "autopilot_success": autopilot_success,
     }
     with db.SessionLocal() as session:
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
@@ -974,6 +980,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
             "manual_watcher_restart_error",
         )
     ):
+        return "restart-controls"
+    if any(context.get(k) for k in ("autopilot_error", "autopilot_success")):
         return "restart-controls"
     if any(
         context.get(k)
@@ -1034,6 +1042,70 @@ async def settings_form(request: Request, user: str = Depends(require_login)):
         request, "settings.html",
         _settings_context(user, openstack_cluster_id=request.query_params.get("cluster")),
     )
+
+
+@router.post("/settings/autopilot", response_class=HTMLResponse)
+async def settings_autopilot_submit(
+    request: Request, user: str = Depends(require_login), enabled: str = Form("0"),
+    reason: str = Form(""), confirmation: str = Form(""),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi Autopilot")
+    desired, reason = enabled == "1", reason.strip()
+    if len(reason) < 8:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Lý do thay đổi phải có ít nhất 8 ký tự."
+        ))
+    if desired and confirmation.strip() != "ENABLE AUTOPILOT":
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Chuỗi xác nhận bật Autopilot không chính xác."
+        ))
+    if desired and not settings.autopilot_activation_unlocked:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error=(
+                "Chưa mở commissioning gate AUTOPILOT_ACTIVATION_UNLOCKED trên server; "
+                "hoàn thành shadow/lab prerequisites trước."
+            ),
+        ))
+    previous = bool(settings.autopilot_enabled)
+    if desired == previous:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_success="Autopilot đã ở đúng trạng thái yêu cầu."
+        ))
+    try:
+        _update_env_file("AUTOPILOT_ENABLED", "true" if desired else "false")
+        settings.autopilot_enabled = desired
+        with db.SessionLocal() as session:
+            session.add(AutopilotConfigAudit(
+                actor=user, previous_enabled=previous, new_enabled=desired, reason=reason,
+            ))
+            session.commit()
+    except Exception:
+        logger.exception("settings_autopilot_submit: persist/audit failed")
+        settings.autopilot_enabled = previous
+        try:
+            _update_env_file("AUTOPILOT_ENABLED", "true" if previous else "false")
+        except Exception:
+            logger.exception("settings_autopilot_submit: failed to restore env")
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Không lưu/audit được thay đổi; trạng thái cũ đã được giữ."
+        ))
+    restart_result = await asyncio.to_thread(restart_worker)
+    if not restart_result["restarted"]:
+        if not desired:
+            await asyncio.to_thread(_stop_worker, _find_worker_pids())
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error=(
+                "Đã lưu trạng thái nhưng Worker không khởi động lại được. "
+                + ("Worker cũ đã bị dừng để fail-safe." if not desired else "Autopilot chưa có hiệu lực trên Worker cũ.")
+            ),
+        ))
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user, autopilot_success=(
+            f"Đã {'bật' if desired else 'tắt'} Autopilot và khởi động lại Worker "
+            f"(PID {restart_result['new_pid']})."
+        ),
+    ))
 
 
 @router.post("/settings/openstack", response_class=HTMLResponse)

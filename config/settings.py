@@ -479,6 +479,10 @@ class Settings(BaseSettings):
     # Later phases may expose governed per-cluster/playbook overrides; an
     # LLM must never be able to change this setting.
     autopilot_enabled: bool = False
+    # Separate server-side commissioning gate. The Dashboard cannot lift it;
+    # lab rollout is explicitly unlocked in deployment config only after
+    # shadow/maturity prerequisites are met.
+    autopilot_activation_unlocked: bool = False
     # Zero means auto-execution is allowed only when no recovery traffic is
     # present. Operators may raise this after measuring a cluster-specific
     # safe ceiling; the runtime gate still blocks inactive/incomplete PGs.
