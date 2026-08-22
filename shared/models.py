@@ -543,6 +543,32 @@ class AutopilotClusterConfigAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class ActionPolicyOverride(Base):
+    """Admin-selected SAFE/RISKY classification used by the live Worker."""
+    __tablename__ = "action_policy_overrides"
+
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ActionPolicyOverrideAudit(Base):
+    """Append-only history for every action classification change."""
+    __tablename__ = "action_policy_override_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    new_classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class IncidentTimelineEvent(Base):
     """Append-only lifecycle ledger with exact event timestamps."""
 

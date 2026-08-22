@@ -2803,7 +2803,7 @@ def test_global_autopilot_kill_switch_parks_safe_action_for_approval(isolated_db
         ).count() == 1
 
 
-def test_per_cluster_gate_blocks_production_even_when_global_switch_is_on(isolated_db, monkeypatch):
+def test_per_cluster_kill_switch_blocks_even_when_global_switch_is_on(isolated_db, monkeypatch):
     monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
     monkeypatch.setattr(settings, "autopilot_enabled", True)
     monkeypatch.setattr(
@@ -2812,7 +2812,6 @@ def test_per_cluster_gate_blocks_production_even_when_global_switch_is_on(isolat
     )
     with db_module.SessionLocal() as session:
         cluster = session.get(Cluster, "test-default-cluster")
-        cluster.autonomy_environment = "production"
         cluster.autopilot_enabled = False
         session.commit()
     _create_incident("incident-cluster-gate")
@@ -2853,7 +2852,7 @@ def test_lab_action_enters_grace_without_ssh_and_due_tick_rechecks_cluster_gate(
         assert action.status == ActionStatus.GRACE_PENDING.value
         assert action.grace_until is not None
         cluster = session.get(Cluster, "test-default-cluster")
-        cluster.autonomy_environment = "production"
+        cluster.autopilot_enabled = False
         action.grace_until = datetime.utcnow() - timedelta(seconds=1)
         action_id = action.id
         session.commit()

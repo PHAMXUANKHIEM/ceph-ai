@@ -9,7 +9,10 @@ import dashboard.routes.settings as settings_route
 from config.settings import settings
 from shared import db as db_module
 from shared import env_config
-from shared.models import AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, User
+from shared.models import (
+    ActionPolicyOverride, ActionPolicyOverrideAudit,
+    AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, User,
+)
 from watcher.ceph_client import CephQueryError
 
 
@@ -51,7 +54,8 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "Shadow Autopilot Evaluation" in response.text
     assert "COLLECTING EVIDENCE" in response.text
     assert "L2 → L3 Promotion Candidates" in response.text
-    assert "Per-cluster Lab Gate" in response.text
+    assert "Autopilot theo cluster" in response.text
+    assert "Phân loại hành động AI" in response.text
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
@@ -2510,26 +2514,44 @@ def test_admin_can_enable_per_cluster_autopilot_for_lab_with_audit(
         assert row.actor == "admin" and row.new_environment == "lab" and row.new_enabled is True
 
 
-def test_per_cluster_autopilot_cannot_be_enabled_for_production(
+def test_admin_can_enable_per_cluster_autopilot_for_production(
     dashboard_client, monkeypatch, default_cluster_id,
 ):
     monkeypatch.setattr(
         settings_route, "restart_worker",
-        lambda: pytest.fail("invalid production enable must not restart Worker"),
+        lambda: {"restarted": True, "new_pid": 789, "error": None},
     )
     _login(dashboard_client)
     response = dashboard_client.post(
         f"/settings/autopilot/clusters/{default_cluster_id}",
         data={
-            "environment": "production", "enabled": "1", "reason": "Production request denied",
-            "confirmation": "ENABLE LAB AUTOPILOT",
+            "environment": "production", "enabled": "1", "reason": "Production recovery enabled",
+            "confirmation": "ENABLE PRODUCTION AUTOPILOT",
         },
     )
     assert response.status_code == 200
-    assert "chỉ được bật cho cluster lab" in response.text
+    assert "Đã cập nhật cluster gate" in response.text
     with db_module.SessionLocal() as session:
-        assert session.get(Cluster, default_cluster_id).autopilot_enabled is False
-        assert session.query(AutopilotClusterConfigAudit).count() == 0
+        assert session.get(Cluster, default_cluster_id).autopilot_enabled is True
+        assert session.query(AutopilotClusterConfigAudit).count() == 1
+
+
+def test_admin_can_classify_restart_osd_safe_with_audit(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route, "restart_worker",
+        lambda: {"restarted": True, "new_pid": 790, "error": None},
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post("/settings/autopilot/action-policy", data={
+        "action_id": "restart_osd_daemon", "classification": "SAFE",
+        "reason": "Exact OSD recovery approved", "confirmation": "MARK restart_osd_daemon SAFE",
+    })
+    assert response.status_code == 200
+    assert "restart_osd_daemon thành SAFE" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.get(ActionPolicyOverride, "restart_osd_daemon").classification == "SAFE"
+        audit = session.query(ActionPolicyOverrideAudit).one()
+        assert audit.previous_classification == "RISKY" and audit.new_classification == "SAFE"
 
 
 def test_autopilot_enable_rejects_missing_confirmation(dashboard_client, monkeypatch, tmp_path):

@@ -1,4 +1,4 @@
-from shared.models import ActionClassification
+from shared.models import ActionClassification, ActionPolicyOverride
 from worker.policy.gate import classify_action
 
 
@@ -12,6 +12,24 @@ def test_classify_crash_archive_all_returns_safe():
 
 def test_classify_risky_action_id_returns_risky():
     assert classify_action("restart_osd_daemon") == ActionClassification.RISKY
+
+
+def test_db_override_can_mark_risky_action_safe(db_session):
+    db_session.add(ActionPolicyOverride(
+        action_id="restart_osd_daemon", classification="SAFE",
+        updated_by="admin", reason="Operator accepted bounded recovery",
+    ))
+    db_session.commit()
+    assert classify_action("restart_osd_daemon", session=db_session) == ActionClassification.SAFE
+
+
+def test_db_override_cannot_downgrade_destructive(db_session):
+    db_session.add(ActionPolicyOverride(
+        action_id="pg_repair_force", classification="SAFE",
+        updated_by="admin", reason="must still be ignored",
+    ))
+    db_session.commit()
+    assert classify_action("pg_repair_force", session=db_session) == ActionClassification.DESTRUCTIVE
 
 
 def test_classify_pg_repair_force_returns_destructive():

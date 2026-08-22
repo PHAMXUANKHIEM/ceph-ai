@@ -124,30 +124,49 @@
           {% if autopilot_success %}<p class="success">{{ autopilot_success }}</p>{% endif %}
           <p>Trạng thái: <strong>{{ "ENABLED" if autopilot_enabled else "DISABLED" }}</strong></p>
           <p class="hint">Mặc định tắt. Khi tắt, SAFE action chuyển sang chờ duyệt và không tự chạy SSH.</p>
-          {% if not autopilot_activation_unlocked %}<p class="error">Commissioning gate đang khoá — Dashboard không thể bật Autopilot cho tới khi server được mở sau shadow/lab review.</p>{% endif %}
           <form method="post" action="/settings/autopilot" class="login-box"
                 onsubmit="return confirm('Xác nhận thay đổi Global Autopilot Kill Switch?');">
             <input type="hidden" name="enabled" value="{{ '0' if autopilot_enabled else '1' }}">
             <label>Lý do thay đổi<input name="reason" required minlength="8" maxlength="500"></label>
             {% if not autopilot_enabled %}<label>Nhập chính xác <code>ENABLE AUTOPILOT</code>
               <input name="confirmation" autocomplete="off" required></label>{% endif %}
-            <button class="btn {{ 'btn-danger' if autopilot_enabled else 'btn-primary' }}" type="submit" {% if not autopilot_enabled and not autopilot_activation_unlocked %}disabled{% endif %}>
+            <button class="btn {{ 'btn-danger' if autopilot_enabled else 'btn-primary' }}" type="submit">
               {{ "TẮT AUTOPILOT NGAY" if autopilot_enabled else "Bật Autopilot" }}
             </button>
           </form>
         </div>
       </article>
       <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Per-cluster Lab Gate</h2></div>
-        <div class="card-body"><p class="hint">Production luôn fail-closed. Muốn thử L3 phải đánh dấu đúng cluster là lab và bật kill switch riêng.</p>
+        <div class="card-header"><h2>Autopilot theo cluster</h2></div>
+        <div class="card-body"><p class="hint">Bật riêng từng cluster. Production yêu cầu chuỗi xác nhận mạnh và vẫn chịu Global Kill Switch, preflight, grace period, rate limit và lease.</p>
         {% for cluster in autopilot_clusters %}<form method="post" action="/settings/autopilot/clusters/{{ cluster.id }}" class="login-box" style="margin-bottom:1rem">
           <p><strong>{{ cluster.name }}</strong> · {{ "mặc định" if cluster.is_default else "cluster phụ" }} · <code>{{ cluster.autonomy_environment }}</code> / <code>{{ "ENABLED" if cluster.autopilot_enabled else "DISABLED" }}</code></p>
           <label>Environment<select name="environment"><option value="production" {{ "selected" if cluster.autonomy_environment == "production" else "" }}>production</option><option value="lab" {{ "selected" if cluster.autonomy_environment == "lab" else "" }}>lab</option></select></label>
-          <label>Cluster kill switch<select name="enabled"><option value="0">DISABLED</option><option value="1" {{ "selected" if cluster.autopilot_enabled else "" }}>ENABLED (lab only)</option></select></label>
+          <label>Cluster kill switch<select name="enabled"><option value="0">DISABLED</option><option value="1" {{ "selected" if cluster.autopilot_enabled else "" }}>ENABLED</option></select></label>
           <label>Lý do<input name="reason" minlength="8" maxlength="500" required></label>
-          <label>Xác nhận khi bật<input name="confirmation" placeholder="ENABLE LAB AUTOPILOT"></label>
+          <label>Xác nhận khi bật<input name="confirmation" placeholder="ENABLE LAB AUTOPILOT hoặc ENABLE PRODUCTION AUTOPILOT"></label>
           <button class="btn btn-primary" type="submit">Lưu cluster gate</button>
         </form>{% endfor %}</div>
+      </article>
+      <article class="card" style="margin-top:1rem">
+        <div class="card-header"><h2>Phân loại hành động AI</h2></div>
+        <div class="card-body">
+          <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép; <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa và không thể hạ cấp tại đây.</p>
+          <div class="table-wrap"><table><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
+          {% for row in action_policy_rows %}<tr>
+            <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }} · {{ row.override.reason }}</span>{% endif %}</td>
+            <td>{% if row.immutable %}<span class="error">DESTRUCTIVE · bị khóa</span>{% else %}
+              <form method="post" action="/settings/autopilot/action-policy" class="login-box">
+                <input type="hidden" name="action_id" value="{{ row.action_id }}">
+                <select name="classification"><option value="RISKY" {{ "selected" if row.effective == "RISKY" else "" }}>RISKY</option><option value="SAFE" {{ "selected" if row.effective == "SAFE" else "" }}>SAFE</option></select>
+                <input name="reason" minlength="8" maxlength="500" required placeholder="Lý do thay đổi">
+                <input name="confirmation" placeholder="Nếu chọn SAFE: MARK {{ row.action_id }} SAFE">
+                <button class="btn btn-primary" type="submit">Áp dụng</button>
+              </form>{% endif %}
+            </td>
+          </tr>{% endfor %}
+          </tbody></table></div>
+        </div>
       </article>
       <article class="card" style="margin-top:1rem">
         <div class="card-header"><h2>L2 → L3 Promotion Candidates</h2></div>

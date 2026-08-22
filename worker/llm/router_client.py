@@ -649,6 +649,14 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                         actor=audit.ACTOR_SYSTEM,
                     )
                     session.commit()
+                    # Preflight is an execution guard, never an alert
+                    # guard. Operators still need the AI diagnosis and the
+                    # exact reason Autopilot declined to act.
+                    send_ai_incident_alert(
+                        alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
+                        cluster_name=alert_cluster_name, bot_token=alert_bot_token,
+                        chat_id=alert_chat_id, enabled=alert_enabled,
+                    )
                     return
                 logger.warning(
                     "diagnose_incident: preflight WOULD block action_id=%s for incident %s "
@@ -656,7 +664,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     action_id, incident_id, preflight.reason,
                 )
 
-            classification = gate.classify_action(action_id)
+            classification = gate.classify_action(action_id, session=session)
             # BLUESTORE_SLOW_OP_ALERT is safe to self-heal only after the
             # watcher has extracted concrete osd.N values from health detail
             # and independently mapped every one to an SSH-able host.  This
@@ -887,7 +895,6 @@ def _maybe_execute_safe_action(
         )
         cluster_gate_allowed = bool(
             gate_cluster is not None
-            and gate_cluster.autonomy_environment == "lab"
             and gate_cluster.autopilot_enabled
         )
     if not cluster_gate_allowed:

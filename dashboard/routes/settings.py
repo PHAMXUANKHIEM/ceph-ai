@@ -48,7 +48,10 @@ from shared.claude_cli import (
 from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
-from shared.models import AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat
+from shared.models import (
+    ActionPolicyOverride, ActionPolicyOverrideAudit,
+    AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat,
+)
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -62,6 +65,7 @@ from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.executor import commands as executor_commands
 from worker.executor.vm_perf import _vm_ssh_command
 from worker.policy.playbook_registry import registry_status_rows
+from worker.policy import gate as action_gate
 
 logger = logging.getLogger(__name__)
 
@@ -942,6 +946,20 @@ def _settings_context(
         context["autopilot_clusters"] = session.query(Cluster).filter_by(is_active=True).order_by(
             Cluster.is_default.desc(), Cluster.name,
         ).all()
+        overrides = {row.action_id: row for row in session.query(ActionPolicyOverride).all()}
+        context["action_policy_rows"] = [
+            {
+                "action_id": action_id,
+                "default": action_gate.classify_action(action_id).value,
+                "effective": action_gate.classify_action(action_id, session=session).value,
+                "override": overrides.get(action_id),
+                "immutable": action_id in action_gate.DESTRUCTIVE_ACTION_IDS,
+            }
+            for action_id in sorted(
+                action_gate.SAFE_ACTION_IDS | action_gate.RISKY_ACTION_IDS
+                | action_gate.DESTRUCTIVE_ACTION_IDS
+            )
+        ]
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
         default_cluster = next((row for row in openstack_clusters if row.is_default), None)
         openstack_cluster = next((row for row in openstack_clusters if row.id == openstack_cluster_id), None) or default_cluster
@@ -1072,13 +1090,6 @@ async def settings_autopilot_submit(
         return templates.TemplateResponse(request, "settings.html", _settings_context(
             user, autopilot_error="Chuỗi xác nhận bật Autopilot không chính xác."
         ))
-    if desired and not settings.autopilot_activation_unlocked:
-        return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error=(
-                "Chưa mở commissioning gate AUTOPILOT_ACTIVATION_UNLOCKED trên server; "
-                "hoàn thành shadow/lab prerequisites trước."
-            ),
-        ))
     previous = bool(settings.autopilot_enabled)
     if desired == previous:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
@@ -1136,13 +1147,13 @@ async def settings_cluster_autopilot_submit(
         return templates.TemplateResponse(request, "settings.html", _settings_context(
             user, autopilot_error="Lý do thay đổi cluster gate phải có ít nhất 8 ký tự."
         ))
-    if desired and environment != "lab":
+    expected_confirmation = (
+        "ENABLE PRODUCTION AUTOPILOT" if environment == "production"
+        else "ENABLE LAB AUTOPILOT"
+    )
+    if desired and confirmation.strip() != expected_confirmation:
         return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Per-cluster Autopilot chỉ được bật cho cluster lab."
-        ))
-    if desired and confirmation.strip() != "ENABLE LAB AUTOPILOT":
-        return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, autopilot_error="Chuỗi xác nhận bật Lab Autopilot không chính xác."
+            user, autopilot_error=f"Chuỗi xác nhận không chính xác; cần nhập {expected_confirmation}."
         ))
     with db.SessionLocal() as session:
         cluster = session.get(Cluster, cluster_id)
@@ -1165,6 +1176,52 @@ async def settings_cluster_autopilot_submit(
         ))
     return templates.TemplateResponse(request, "settings.html", _settings_context(
         user, autopilot_success=f"Đã cập nhật cluster gate và restart Worker (PID {restart_result['new_pid']})."
+    ))
+
+
+@router.post("/settings/autopilot/action-policy", response_class=HTMLResponse)
+async def settings_action_policy_submit(
+    request: Request, user: str = Depends(require_login),
+    action_id: str = Form(""), classification: str = Form(""),
+    reason: str = Form(""), confirmation: str = Form(""),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được đổi Action Policy")
+    action_id, classification, reason = action_id.strip(), classification.strip(), reason.strip()
+    known = action_gate.SAFE_ACTION_IDS | action_gate.RISKY_ACTION_IDS | action_gate.DESTRUCTIVE_ACTION_IDS
+    if action_id not in known or classification not in {"SAFE", "RISKY"}:
+        raise HTTPException(status_code=400, detail="Action hoặc classification không hợp lệ")
+    if action_id in action_gate.DESTRUCTIVE_ACTION_IDS:
+        raise HTTPException(status_code=400, detail="Không thể override DESTRUCTIVE action")
+    if len(reason) < 8:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Lý do đổi phân loại phải có ít nhất 8 ký tự."
+        ))
+    if classification == "SAFE" and confirmation.strip() != f"MARK {action_id} SAFE":
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error=f"Cần nhập chính xác MARK {action_id} SAFE."
+        ))
+    with db.SessionLocal() as session:
+        previous = action_gate.classify_action(action_id, session=session).value
+        row = session.get(ActionPolicyOverride, action_id)
+        if row is None:
+            row = ActionPolicyOverride(action_id=action_id)
+            session.add(row)
+        row.classification = classification
+        row.updated_by = user
+        row.reason = reason
+        session.add(ActionPolicyOverrideAudit(
+            action_id=action_id, actor=user, previous_classification=previous,
+            new_classification=classification, reason=reason,
+        ))
+        session.commit()
+    restart_result = await asyncio.to_thread(restart_worker)
+    if not restart_result["restarted"]:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Đã lưu policy nhưng Worker không restart được."
+        ))
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user, autopilot_success=f"Đã đặt {action_id} thành {classification} và restart Worker."
     ))
 
 
