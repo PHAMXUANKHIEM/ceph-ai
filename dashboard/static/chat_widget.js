@@ -727,8 +727,7 @@
   } catch (e) {
     startMinimized = false;
   }
-  var copilotRequested = new URLSearchParams(window.location.search).get("copilot") === "1";
-  setMinimized(copilotRequested ? false : startMinimized);
+  setMinimized(startMinimized);
 
   // --- textarea auto-resize + send-button enabled state -----------------------
 
@@ -746,16 +745,6 @@
     refreshSendEnabled();
   });
   refreshSendEnabled();
-
-  panelEl.querySelectorAll("[data-copilot-prompt]").forEach(function (button) {
-    button.addEventListener("click", function () {
-      setMinimized(false);
-      inputEl.value = button.getAttribute("data-copilot-prompt") || "";
-      autoResizeTextarea();
-      refreshSendEnabled();
-      inputEl.focus();
-    });
-  });
 
   inputEl.addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {

@@ -23,6 +23,7 @@ from dashboard.routes import (
     object_storage_users,
     capability_matrix as capability_matrix_routes,
     capacity_forecast as capacity_forecast_routes,
+    copilot as copilot_routes,
     log_intelligence as log_intelligence_routes,
     chat,
     clusters as clusters_routes,
@@ -163,6 +164,7 @@ def create_app() -> FastAPI:
     application.include_router(crush_map.router)
     application.include_router(capability_matrix_routes.router)
     application.include_router(capacity_forecast_routes.router)
+    application.include_router(copilot_routes.router)
     application.include_router(log_intelligence_routes.router)
     application.include_router(clusters_routes.router)
     application.include_router(vitastor.router)
