@@ -41,7 +41,9 @@ from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.preflight import run_preflight
 from worker.operational_gate import evaluate as evaluate_operational_gate
-from worker.autonomy_runtime import acquire_lease, check_limits, release_lease
+from worker.autonomy_runtime import (
+    acquire_lease, check_limits, reconcile_expired_executions, release_lease,
+)
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from worker.redaction import default_redactor
 
@@ -1953,6 +1955,13 @@ def _route_risky_to_approval(incident_id: str, action_pk: str, action_id: str) -
 
 
 def _process_approved_actions_once() -> None:
+    with db.SessionLocal() as session:
+        recovered = reconcile_expired_executions(session, now=datetime.utcnow())
+    if recovered:
+        logger.warning(
+            "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
+            recovered,
+        )
     _reconcile_stuck_rbd_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [

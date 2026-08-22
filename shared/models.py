@@ -255,6 +255,7 @@ class ActionStatus(str, enum.Enum):
     PENDING_APPROVAL = "PENDING_APPROVAL"  # Risky action awaiting operator (Story 4.2)
     APPROVED = "APPROVED"  # operator approved (Story 4.3)
     EXECUTING = "EXECUTING"  # autonomous executor holds the cluster lease
+    INCONCLUSIVE = "INCONCLUSIVE"  # side effect may have happened; never auto-retry
     REJECTED = "REJECTED"  # operator rejected (Story 4.3)
     EXECUTED = "EXECUTED"  # approved Risky action executed (Story 4.3)
     FAILED = "FAILED"  # execution failed (Story 3.2 / 4.3)

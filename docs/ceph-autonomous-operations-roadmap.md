@@ -572,7 +572,7 @@ decision → execution → verify → outcome. Mỗi kết luận AI phải dẫ
 
 ### Pha 0 — Baseline và invariant
 
-Trạng thái triển khai (2026-08-22): **đang thực hiện**.
+Trạng thái triển khai (2026-08-22): **baseline đã hoàn thành**.
 
 - Đã thêm global kill switch `AUTOPILOT_ENABLED=false` mặc định. Khi tắt,
   action `SAFE` được giữ ở `PENDING_APPROVAL`, không chạy SSH.
@@ -591,8 +591,13 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   thể khởi động Worker mới.
 - Đã có fault-injection chứng minh lease hết TTL sau Worker crash có thể được
   thu hồi, trong khi lease chưa hết hạn vẫn loại trừ action thứ hai.
-- Còn thiếu trước khi khép Pha 0: audit freshness chi tiết và fault-injection
-  database commit lỗi sau khi lệnh đã chạy.
+- Đã xử lý trường hợp database commit lỗi/Worker chết sau khi SSH có thể đã
+  chạy: action `EXECUTING` quá TTL chuyển sang `INCONCLUSIVE`, ghi audit và
+  timeline evidence, giải phóng lease nhưng tuyệt đối không tự chạy lại.
+- Đã có fault-injection cho database commit lỗi sau SSH, Worker recovery và
+  RabbitMQ redelivery; test chứng minh lệnh chỉ được dispatch đúng một lần.
+- Freshness/capability evidence fail closed đã có trong preflight; audit chi
+  tiết từng evidence và post-check riêng từng playbook được tiếp tục ở Pha 2.
 
 - Chốt state machine hiện tại bằng test.
 - Đo success/failure của SAFE action đang chạy.

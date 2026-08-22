@@ -19,10 +19,12 @@ from shared.models import (
     ActionClassification,
     ActionStatus,
     AuditEntry,
+    AutopilotLease,
     ChatMessage,
     Cluster,
     Incident,
     IncidentStatus,
+    IncidentTimelineEvent,
 )
 
 ENVELOPE = {
@@ -2896,7 +2898,6 @@ def test_autopilot_runtime_rate_limit_and_cluster_lease(isolated_db):
 
 
 def test_expired_cluster_lease_is_recovered_after_worker_crash(isolated_db):
-    from shared.models import AutopilotLease
     from worker.autonomy_runtime import acquire_lease
 
     now = datetime.utcnow()
@@ -2919,6 +2920,81 @@ def test_expired_cluster_lease_is_recovered_after_worker_crash(isolated_db):
         )
         assert result.allowed
         assert session.query(AutopilotLease).one().action_id == new_action.id
+
+
+def test_reconciler_keeps_live_execution_lease_untouched(isolated_db):
+    from worker.autonomy_runtime import reconcile_expired_executions
+
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id="test-default-cluster", ceph_code="LIVE", status="EXECUTING", detected_at=now,
+        )
+        session.add(incident); session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="resync_ntp", classification="SAFE", status="EXECUTING",
+        )
+        session.add(action); session.flush()
+        session.add(AutopilotLease(
+            cluster_id="test-default-cluster", action_id=action.id,
+            acquired_at=now, expires_at=now + timedelta(seconds=60),
+        ))
+        session.commit()
+
+        assert reconcile_expired_executions(session, now=now) == 0
+        assert session.get(Action, action.id).status == ActionStatus.EXECUTING.value
+        assert session.query(AutopilotLease).filter_by(action_id=action.id).count() == 1
+        assert session.query(AuditEntry).count() == 0
+
+
+def test_db_commit_failure_after_ssh_becomes_inconclusive_without_retry(isolated_db, monkeypatch):
+    """A lost DB acknowledgement after SSH must never cause the SSH command to run twice."""
+    from worker.autonomy_runtime import reconcile_expired_executions
+
+    execute_calls = []
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda host, command, **kwargs: execute_calls.append((host, command)) or "ok",
+    )
+    # Both the normal outcome commit and diagnose_incident's best-effort
+    # fallback fail, modelling a DB outage that begins after SSH returns.
+    monkeypatch.setattr(
+        router_client, "_record_execution_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    _create_incident("incident-db-commit-loss")
+    envelope = dict(ENVELOPE, incident_id="incident-db-commit-loss")
+    asyncio.run(router_client.diagnose_incident("incident-db-commit-loss", envelope))
+
+    assert len(execute_calls) == 1
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).filter_by(incident_id="incident-db-commit-loss").one()
+        assert action.status == ActionStatus.EXECUTING.value
+        lease = session.query(AutopilotLease).filter_by(action_id=action.id).one()
+        lease.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        session.commit()
+
+        assert reconcile_expired_executions(session, now=datetime.utcnow()) == 1
+        assert session.get(Action, action.id).status == ActionStatus.INCONCLUSIVE.value
+        assert session.get(Incident, action.incident_id).status == IncidentStatus.FAILED.value
+        assert session.query(AutopilotLease).filter_by(action_id=action.id).count() == 0
+        audit_entry = session.query(AuditEntry).filter_by(action_id=action.id).one()
+        assert audit_entry.event_type == audit.EVENT_AUTOPILOT_EXECUTION_INCONCLUSIVE
+        timeline = session.query(IncidentTimelineEvent).filter_by(
+            action_id=action.id, event_type="autopilot_execution_recovery",
+        ).one()
+        assert json.loads(timeline.evidence_json) == {
+            "auto_retry": False,
+            "outcome": "INCONCLUSIVE",
+            "reason": "cluster execution lease expired",
+        }
+
+    # RabbitMQ redelivery sees a terminal Action and restores Incident state;
+    # it must not dispatch SSH again.
+    asyncio.run(router_client.diagnose_incident("incident-db-commit-loss", envelope))
+    assert len(execute_calls) == 1
 
 
 # --- AI roadmap Pha 0.4: safety policy hardening ----------------------------

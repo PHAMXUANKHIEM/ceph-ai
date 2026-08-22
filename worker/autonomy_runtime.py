@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
-from shared.models import Action, ActionStatus, AutopilotLease, Incident
+from shared import audit, incident_events
+from shared.models import Action, ActionStatus, AutopilotLease, Incident, IncidentStatus
 
 
 @dataclass(frozen=True)
@@ -53,3 +54,41 @@ def acquire_lease(session, *, cluster_id: str, action_id: str, now: datetime,
 def release_lease(session, *, action_id: str) -> None:
     session.query(AutopilotLease).filter(AutopilotLease.action_id == action_id).delete()
     session.commit()
+
+
+def reconcile_expired_executions(session, *, now: datetime) -> int:
+    """Mark orphaned autonomous executions inconclusive; never re-run them."""
+    rows = session.query(Action).filter(
+        Action.status == ActionStatus.EXECUTING.value,
+        Action.classification == "SAFE",
+    ).all()
+    changed = 0
+    for action in rows:
+        lease = session.query(AutopilotLease).filter_by(action_id=action.id).one_or_none()
+        if lease is not None and lease.expires_at > now:
+            continue
+        reason = "cluster execution lease expired" if lease is not None else "cluster execution lease is missing"
+        if lease is not None:
+            session.delete(lease)
+        action.status = ActionStatus.INCONCLUSIVE.value
+        incident = session.get(Incident, action.incident_id)
+        if incident is not None:
+            incident.status = IncidentStatus.FAILED.value
+            incident.diagnosis_text = (
+                f"{incident.diagnosis_text or ''}\n\n"
+                f"[Autopilot recovery] Kết quả không xác định: {reason}; không tự chạy lại."
+            ).strip()
+            audit.record(
+                session, incident_id=incident.id, action_id=action.id,
+                event_type=audit.EVENT_AUTOPILOT_EXECUTION_INCONCLUSIVE,
+                actor=audit.ACTOR_SYSTEM,
+            )
+            incident_events.record(
+                session, incident_id=incident.id, action_id=action.id,
+                event_type="autopilot_execution_recovery",
+                actor=audit.ACTOR_SYSTEM,
+                evidence={"outcome": "INCONCLUSIVE", "reason": reason, "auto_retry": False},
+            )
+        changed += 1
+    session.commit()
+    return changed
