@@ -71,7 +71,11 @@ def test_incident_has_required_columns():
         "status",
         "severity",
         "log_excerpt",
-        "diagnosis_text",
+            "diagnosis_text",
+            "signal_evidence_json",
+            "postmortem_json",
+            "postmortem_generated_at",
+            "postmortem_prompt_version",
         "telegram_reminded_at",
         # 2026-08-20 (xác minh sau khắc phục, watcher/verify.py): mốc sớm
         # nhất được phép hỏi lại cụm, và số vòng chẩn đoán lại đã dùng.

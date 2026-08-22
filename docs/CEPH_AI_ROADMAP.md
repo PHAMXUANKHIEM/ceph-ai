@@ -29,10 +29,14 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
       observed peak và streak; correlation bắt buộc khớp `volume:pool/image` khi có entity.
     - [x] Node resource: snapshot CPU/RAM, streak và threshold; correlation
       bắt buộc khớp `host:` khi LogFinding và Incident đều có định danh node.
-- [ ] **2. Incident timeline thống nhất và AI postmortem**
+- [~] **2. Incident timeline thống nhất và AI postmortem**
   - Dòng thời gian: phát hiện → evidence → chẩn đoán → đề xuất → duyệt → thực thi → xác minh.
   - Postmortem chỉ được viết từ timeline/audit đã lưu, gồm root cause, ảnh hưởng,
     hành động, evidence trước/sau và biện pháp phòng ngừa.
+  - [x] Timeline hợp nhất các mốc có timestamp thật từ Incident, Action và Audit;
+    diagnosis thiếu timestamp chỉ là context, không giả làm event.
+  - [x] AI postmortem dùng payload đóng, bắt buộc citation event ID hợp lệ và
+    lưu prompt version; khóa nhạy cảm trong structured evidence được che trước khi gửi.
 - [ ] **3. Dự báo dung lượng**
   - Dự báo mốc 80/90/95% theo cluster, pool và OSD từ tối thiểu 30 ngày dữ liệu.
   - Hiển thị ngày dự kiến đầy, tốc độ tăng, confidence và nhu cầu thêm disk/node.

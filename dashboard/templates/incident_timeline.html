@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Incident Timeline — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  <header class="topbar"><div class="topbar-inner">
+    <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+    <nav class="main-nav"><a href="/" class="nav-link">Dashboard</a><a href="/log-intelligence" class="nav-link">Log Intelligence</a></nav>
+  </div></header>
+  <main class="page-shell">
+    <section class="card">
+      <div class="card-header"><div><h1>Incident Timeline</h1><p class="hint"><code>{{ incident.ceph_code }}</code> · {{ incident.status }}</p></div>
+        <form method="post" action="/incidents/{{ incident.id }}/postmortem"><button class="btn btn-primary" type="submit">{{ "Tạo lại AI Postmortem" if postmortem else "Tạo AI Postmortem" }}</button></form>
+      </div>
+      {% if postmortem_error %}<p class="error-message">{{ postmortem_error }}</p>{% endif %}
+      <div class="card-body">
+        {% if timeline.diagnosis_context %}<p><strong>Diagnosis context:</strong> {{ timeline.diagnosis_context }}</p>{% endif %}
+        <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Mốc</th><th>Actor</th><th>Nội dung / nguồn</th></tr></thead><tbody>
+        {% for event in timeline.events %}<tr>
+          <td><code>{{ event.at }}</code></td><td>{{ event.kind }}</td><td>{{ event.actor }}</td>
+          <td>{{ event.summary }}<br><code>{{ event.id }}</code>{% if event.evidence %}<details><summary>Structured evidence</summary><pre>{{ event.evidence|tojson(indent=2) }}</pre></details>{% endif %}</td>
+        </tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+    </section>
+    {% if postmortem %}<section class="card"><div class="card-header"><h2>AI Postmortem</h2><span class="hint">{{ postmortem_generated_at|vntime }}</span></div><div class="card-body">
+      <h3>Root cause</h3><p>{{ postmortem.root_cause }}</p>
+      <h3>Ảnh hưởng</h3><p>{{ postmortem.impact }}</p>
+      <h3>Hành động</h3><p>{{ postmortem.actions_taken }}</p>
+      <h3>Xác minh</h3><p>{{ postmortem.verification }}</p>
+      <h3>Phòng ngừa</h3><p>{{ postmortem.prevention }}</p>
+      <h3>Giới hạn / chưa chắc chắn</h3><p>{{ postmortem.limitations }}</p>
+      <h3>Nguồn</h3><ul>{% for citation in postmortem.citations %}<li><code>{{ citation }}</code></li>{% endfor %}</ul>
+    </div></section>{% endif %}
+  </main>
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body></html>

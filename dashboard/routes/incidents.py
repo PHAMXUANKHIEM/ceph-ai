@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -18,6 +19,7 @@ from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
 from shared import db, heartbeat
+from shared import incident_postmortem
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus, WatcherHeartbeat
@@ -33,6 +35,57 @@ templates = make_templates()
 # interval rather than a fixed number of seconds, so it scales with
 # whatever watcher_poll_interval_seconds is configured to.
 HEARTBEAT_STALE_MULTIPLIER = 3
+
+
+def _incident_in_selected_cluster(session, incident_id: str, selected_cluster: Cluster) -> Incident | None:
+    query = session.query(Incident).filter(Incident.id == incident_id)
+    query = query.filter(
+        or_(Incident.cluster_id == selected_cluster.id, Incident.cluster_id.is_(None))
+        if selected_cluster.is_default else Incident.cluster_id == selected_cluster.id
+    )
+    return query.one_or_none()
+
+
+@router.get("/incidents/{incident_id}/timeline", response_class=HTMLResponse)
+async def incident_timeline_page(request: Request, incident_id: str, user: str = Depends(require_login)):
+    clusters, selected_cluster = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        incident = _incident_in_selected_cluster(session, incident_id, selected_cluster)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+        timeline = incident_postmortem.build_timeline(session, incident_id)
+        postmortem = json.loads(incident.postmortem_json) if incident.postmortem_json else None
+        generated_at = incident.postmortem_generated_at
+    return templates.TemplateResponse(request, "incident_timeline.html", {
+        "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
+        "selected_cluster": selected_cluster, "incident": incident, "timeline": timeline,
+        "postmortem": postmortem, "postmortem_generated_at": generated_at,
+        "postmortem_error": request.query_params.get("error", ""),
+    })
+
+
+@router.post("/incidents/{incident_id}/postmortem")
+async def generate_incident_postmortem(
+    request: Request, incident_id: str, user: str = Depends(require_login)
+):
+    _clusters, selected_cluster = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        if _incident_in_selected_cluster(session, incident_id, selected_cluster) is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+    try:
+        await incident_postmortem.generate(incident_id)
+    except Exception as exc:
+        logger.warning("generate_incident_postmortem: %s", exc)
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/incidents/{incident_id}/timeline?error={quote(str(exc) or type(exc).__name__)}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/incidents/{incident_id}/timeline", status_code=303)
 
 
 def _cached_monitor_command(cluster_id: str, mon_nodes, container_name: str, ssh_user: str,

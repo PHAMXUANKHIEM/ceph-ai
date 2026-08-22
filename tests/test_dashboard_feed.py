@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from sqlalchemy.exc import OperationalError
+import dashboard.routes.incidents as incidents_route
 
 from shared import db as db_module
 from shared.models import AuditEntry, Incident, WatcherHeartbeat
@@ -22,6 +23,29 @@ def test_index_shows_incident_from_db(dashboard_client):
 
     assert response.status_code == 200
     assert "OSD_DOWN" in response.text
+    assert "/timeline" in response.text
+
+
+def test_incident_timeline_page_and_postmortem_generation(dashboard_client, monkeypatch):
+    with db_module.SessionLocal() as session:
+        session.add(Incident(
+            id="timeline-inc", ceph_code="OSD_DOWN", status="RESOLVED",
+            detected_at=datetime.utcnow(), signal_evidence_json='{"osd_id": 3}',
+        ))
+        session.commit()
+    called = []
+    async def fake_generate(incident_id):
+        called.append(incident_id)
+        return {}
+    monkeypatch.setattr(incidents_route.incident_postmortem, "generate", fake_generate)
+    _login(dashboard_client)
+    page = dashboard_client.get("/incidents/timeline-inc/timeline")
+    assert page.status_code == 200
+    assert "Incident Timeline" in page.text
+    assert "incident:timeline-inc:detected" in page.text
+    response = dashboard_client.post("/incidents/timeline-inc/postmortem", follow_redirects=False)
+    assert response.status_code == 303
+    assert called == ["timeline-inc"]
 
 
 def test_index_shows_diagnosis_text_as_the_error_reason(dashboard_client):

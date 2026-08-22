@@ -197,6 +197,9 @@ class Incident(Base):
     # chứa credential; dùng làm provenance cho correlation/postmortem.
     signal_evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     diagnosis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    postmortem_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    postmortem_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    postmortem_prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Last hourly Telegram reminder. NULL means no reminder has been sent;
     # created_at remains the baseline for the first reminder.
     telegram_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
