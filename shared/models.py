@@ -254,6 +254,7 @@ class ActionStatus(str, enum.Enum):
     AUTO_EXECUTED = "AUTO_EXECUTED"  # Safe action executed (Story 3.2)
     PENDING_APPROVAL = "PENDING_APPROVAL"  # Risky action awaiting operator (Story 4.2)
     APPROVED = "APPROVED"  # operator approved (Story 4.3)
+    EXECUTING = "EXECUTING"  # autonomous executor holds the cluster lease
     REJECTED = "REJECTED"  # operator rejected (Story 4.3)
     EXECUTED = "EXECUTED"  # approved Risky action executed (Story 4.3)
     FAILED = "FAILED"  # execution failed (Story 3.2 / 4.3)
@@ -411,6 +412,16 @@ class AuditEntry(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     actor: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AutopilotLease(Base):
+    """Crash-expiring cluster-wide mutex for autonomous write execution."""
+    __tablename__ = "autopilot_leases"
+
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), primary_key=True)
+    action_id: Mapped[str] = mapped_column(String(36), ForeignKey("actions.id"), nullable=False, unique=True)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class IncidentTimelineEvent(Base):

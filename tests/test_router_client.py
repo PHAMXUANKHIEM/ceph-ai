@@ -51,11 +51,27 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=engine, autoflush=False, autocommit=False)
     )
+    with db_module.SessionLocal() as session:
+        session.add(Cluster(
+            id="test-default-cluster", name="test", is_default=True, is_active=True,
+            ceph_mon_nodes="mon-a", ceph_container_name="ceph-mon", ssh_user="root",
+            ssh_key_path="/tmp/test-key", ceph_exec_mode="none",
+        ))
+        session.commit()
     # Most tests in this legacy suite exercise the execution path itself.
     # Opt them into the pre-Pha-0 posture explicitly; dedicated tests below
     # cover the new fail-closed defaults and kill-switch behavior.
     monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
     monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(
+        router_client, "run_ceph_json_command_with",
+        lambda *_args, **_kwargs: ("mon-a", {
+            "health": {"status": "HEALTH_OK"}, "monmap": {"num_mons": 1},
+            "quorum_names": ["mon-a"], "pgmap": {
+                "pgs_by_state": [{"state_name": "active+clean", "count": 1}],
+            },
+        }),
+    )
     yield engine
 
 
@@ -2800,6 +2816,82 @@ def test_safe_execution_rechecks_preflight_immediately_before_ssh(isolated_db, m
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
         assert "cluster entered recovery" in incident.diagnosis_text
+
+
+def test_operational_gate_blocks_health_err_before_ssh(isolated_db, monkeypatch):
+    from worker.preflight import PreflightResult
+
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(
+        router_client, "run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(True, capability_status="SUPPORTED"),
+    )
+    monkeypatch.setattr(
+        router_client, "run_ceph_json_command_with",
+        lambda *_args, **_kwargs: ("mon-a", {"health": {"status": "HEALTH_ERR"}}),
+    )
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *_args, **_kwargs: pytest.fail("operational gate must block SSH"),
+    )
+    _create_incident("incident-health-err")
+
+    asyncio.run(router_client.diagnose_incident(
+        "incident-health-err", dict(ENVELOPE, incident_id="incident-health-err")
+    ))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-health-err")
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert "HEALTH_ERR" in incident.diagnosis_text
+        assert session.query(AuditEntry).filter_by(
+            incident_id=incident.id,
+            event_type=audit.EVENT_AUTOPILOT_OPERATIONAL_GATE_BLOCKED,
+        ).count() == 1
+
+
+def test_autopilot_runtime_rate_limit_and_cluster_lease(isolated_db):
+    from worker.autonomy_runtime import acquire_lease, check_limits, release_lease
+
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        old_incident = Incident(
+            cluster_id="test-default-cluster", ceph_code="OLD", status="RESOLVED", detected_at=now,
+        )
+        session.add(old_incident); session.flush()
+        session.add(Action(
+            incident_id=old_incident.id, action_id="resync_ntp", target_nodes='["n1"]',
+            classification="SAFE", status="AUTO_EXECUTED", executed_at=now - timedelta(minutes=5),
+        ))
+        lease_incident = Incident(
+            cluster_id="test-default-cluster", ceph_code="LEASE", status="NEW", detected_at=now,
+        )
+        session.add(lease_incident); session.flush()
+        actions = [Action(
+            incident_id=lease_incident.id, action_id=f"lease-{i}", classification="SAFE", status="PENDING",
+        ) for i in range(2)]
+        session.add_all(actions); session.commit()
+
+        limited = check_limits(
+            session, cluster_id="test-default-cluster", action_id="resync_ntp",
+            target_nodes='["n1"]', now=now, max_hour=2, max_day=5, cooldown_seconds=1800,
+        )
+        assert not limited.allowed and "cooldown" in limited.reason
+        assert acquire_lease(
+            session, cluster_id="test-default-cluster", action_id=actions[0].id,
+            now=now, ttl_seconds=60,
+        ).allowed
+        assert not acquire_lease(
+            session, cluster_id="test-default-cluster", action_id=actions[1].id,
+            now=now, ttl_seconds=60,
+        ).allowed
+        release_lease(session, action_id=actions[0].id)
+        assert acquire_lease(
+            session, cluster_id="test-default-cluster", action_id=actions[1].id,
+            now=now, ttl_seconds=60,
+        ).allowed
 
 
 # --- AI roadmap Pha 0.4: safety policy hardening ----------------------------

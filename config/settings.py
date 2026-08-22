@@ -479,6 +479,14 @@ class Settings(BaseSettings):
     # Later phases may expose governed per-cluster/playbook overrides; an
     # LLM must never be able to change this setting.
     autopilot_enabled: bool = False
+    # Zero means auto-execution is allowed only when no recovery traffic is
+    # present. Operators may raise this after measuring a cluster-specific
+    # safe ceiling; the runtime gate still blocks inactive/incomplete PGs.
+    autopilot_max_recovery_bytes_per_sec: float = 0
+    autopilot_max_actions_per_hour: int = 2
+    autopilot_max_actions_per_day: int = 5
+    autopilot_target_cooldown_seconds: int = 1800
+    autopilot_lease_ttl_seconds: int = 900
 
     # worker/llm/router_client.py's Action.expires_at (AI roadmap Pha 0.4,
     # section 3.3's "stale-evidence check") -- how long an Incident-

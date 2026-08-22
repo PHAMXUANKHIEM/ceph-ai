@@ -77,6 +77,8 @@ EVENT_BACKUP_MANUAL_REQUESTED = "backup_manual_requested"
 # not a real Action row to attach to).
 EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT = "proposal_blocked_by_preflight"
 EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED = "autopilot_kill_switch_blocked"
+EVENT_AUTOPILOT_OPERATIONAL_GATE_BLOCKED = "autopilot_operational_gate_blocked"
+EVENT_AUTOPILOT_RUNTIME_GUARD_BLOCKED = "autopilot_runtime_guard_blocked"
 
 # AI roadmap Pha 0.4 (dashboard/routes/actions.py::approve_action_core):
 # fired when an operator/Telegram button tries to approve an Action past

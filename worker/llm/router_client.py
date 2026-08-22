@@ -40,6 +40,9 @@ from worker.executor import cinder_reconciliation, cluster_deploy, commands, rbd
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
 from worker.preflight import run_preflight
+from worker.operational_gate import evaluate as evaluate_operational_gate
+from worker.autonomy_runtime import acquire_lease, check_limits, release_lease
+from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
@@ -856,6 +859,107 @@ def _maybe_execute_safe_action(
                     "for incident %s: %s", action_id, incident_id, result.reason,
                 )
                 return
+
+    # Read fresh telemetry directly from MON after every DB/capability check.
+    # The Incident envelope may be minutes old by now and is evidence for
+    # diagnosis, not authority to mutate the current cluster state.
+    try:
+        with db.SessionLocal() as session:
+            incident = session.get(Incident, incident_id)
+            cluster = session.get(Cluster, incident.cluster_id) if incident and incident.cluster_id else None
+            if cluster is None:
+                cluster = session.query(Cluster).filter(Cluster.is_default.is_(True)).first()
+            if cluster is None:
+                raise CephQueryError("cluster connection is unavailable")
+            runtime_cluster_id = cluster.id
+            active_latency_incidents = session.query(Incident).filter(
+                Incident.cluster_id == runtime_cluster_id,
+                Incident.ceph_code.like("OSD_LATENCY_HIGH:%"),
+                Incident.status.in_([
+                    IncidentStatus.NEW.value, IncidentStatus.DIAGNOSING.value,
+                    IncidentStatus.PENDING_APPROVAL.value, IncidentStatus.APPROVED.value,
+                    IncidentStatus.EXECUTING.value, IncidentStatus.VERIFYING.value,
+                    IncidentStatus.FAILED.value,
+                ]),
+            ).count()
+            connection = (
+                [value.strip() for value in cluster.ceph_mon_nodes.split(",") if value.strip()],
+                cluster.ceph_container_name, cluster.ssh_user, cluster.ssh_key_path,
+                cluster.ceph_exec_mode,
+            )
+        _host, fresh_status = run_ceph_json_command_with(*connection, "ceph status")
+        operational = evaluate_operational_gate(
+            fresh_status,
+            max_recovery_bytes_per_sec=settings.autopilot_max_recovery_bytes_per_sec,
+            active_latency_incidents=active_latency_incidents,
+        )
+    except Exception as exc:
+        operational = evaluate_operational_gate({})
+        logger.warning("operational gate telemetry query failed for incident %s: %s", incident_id, exc)
+    if not operational.allowed:
+        with db.SessionLocal() as session:
+            incident = session.get(Incident, incident_id)
+            action = session.get(Action, action_pk)
+            if action is not None:
+                action.status = ActionStatus.PENDING_APPROVAL.value
+            if incident is not None:
+                incident.status = IncidentStatus.PENDING_APPROVAL.value
+                incident.diagnosis_text = (
+                    f"{incident.diagnosis_text or ''}\n\n"
+                    f"[Operational gate] Bị chặn: {operational.reason}"
+                ).strip()
+                audit.record(
+                    session, incident_id=incident_id,
+                    action_id=action_pk if action is not None else None,
+                    event_type=audit.EVENT_AUTOPILOT_OPERATIONAL_GATE_BLOCKED,
+                    actor=audit.ACTOR_SYSTEM,
+                )
+            session.commit()
+        return
+    now = datetime.utcnow()
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        limits = check_limits(
+            session, cluster_id=runtime_cluster_id, action_id=action_id,
+            target_nodes=action.target_nodes if action is not None else None, now=now,
+            max_hour=settings.autopilot_max_actions_per_hour,
+            max_day=settings.autopilot_max_actions_per_day,
+            cooldown_seconds=settings.autopilot_target_cooldown_seconds,
+        )
+        lease = (
+            acquire_lease(
+                session, cluster_id=runtime_cluster_id, action_id=action_pk, now=now,
+                ttl_seconds=settings.autopilot_lease_ttl_seconds,
+            ) if limits.allowed else limits
+        )
+        runtime = lease if limits.allowed else limits
+    if not runtime.allowed:
+        with db.SessionLocal() as session:
+            incident = session.get(Incident, incident_id)
+            action = session.get(Action, action_pk)
+            if action is not None:
+                action.status = ActionStatus.PENDING_APPROVAL.value
+            if incident is not None:
+                incident.status = IncidentStatus.PENDING_APPROVAL.value
+                incident.diagnosis_text = (
+                    f"{incident.diagnosis_text or ''}\n\n[Runtime guard] Bị chặn: {runtime.reason}"
+                ).strip()
+                audit.record(
+                    session, incident_id=incident_id,
+                    action_id=action_pk if action is not None else None,
+                    event_type=audit.EVENT_AUTOPILOT_RUNTIME_GUARD_BLOCKED,
+                    actor=audit.ACTOR_SYSTEM,
+                )
+            session.commit()
+        return
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, incident_id)
+        if action is not None:
+            action.status = ActionStatus.EXECUTING.value
+        if incident is not None:
+            incident.status = IncidentStatus.EXECUTING.value
+        session.commit()
     # AI roadmap Pha 0.4 hard invariant (section 3.3: "RISKY/DESTRUCTIVE
     # phải phê duyệt riêng; không được tự chạy từ Chat hoặc nội dung AI"):
     # the ONLY caller of this function already gates on
@@ -874,6 +978,8 @@ def _maybe_execute_safe_action(
             action_id, incident_id,
         )
         _record_execution_result(incident_id, action_pk, command=None, succeeded=False)
+        with db.SessionLocal() as session:
+            release_lease(session, action_id=action_pk)
         return
     nodes = envelope.get("nodes")
     if not isinstance(nodes, list) or not nodes or not all(
@@ -943,6 +1049,8 @@ def _maybe_execute_safe_action(
     _record_execution_result(
         incident_id, action_pk, command=last_command, succeeded=all_succeeded and executed_any
     )
+    with db.SessionLocal() as session:
+        release_lease(session, action_id=action_pk)
 
 
 def _record_execution_result(

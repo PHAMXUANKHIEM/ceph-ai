@@ -582,8 +582,12 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   chặn SSH, unknown/stale capability fail closed.
 - Đã có post-execution `VERIFYING` bằng telemetry mới; vẫn cần chuẩn hóa
   post-check theo từng playbook ở Pha 2.
-- Còn thiếu trước khi khép Pha 0: operational gate đầy đủ (quorum, recovery,
-  latency), cluster write lock/rate limit và UI điều khiển kill switch.
+- Đã thêm operational gate từ `ceph status` mới: HEALTH_ERR, MON quorum,
+  PG inactive/incomplete/stale, recovery threshold và OSD latency incident.
+- Đã thêm lease write action duy nhất theo cluster (có TTL), giới hạn 2 action/
+  giờ, 5 action/ngày và cooldown action+target 30 phút.
+- Còn thiếu trước khi khép Pha 0: UI điều khiển kill switch, audit freshness
+  chi tiết và fault-injection cho crash giữa execution/lease release.
 
 - Chốt state machine hiện tại bằng test.
 - Đo success/failure của SAFE action đang chạy.
