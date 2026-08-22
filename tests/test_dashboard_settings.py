@@ -57,6 +57,9 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "BẬT AUTOPILOT" in response.text or "TẮT AUTOPILOT" in response.text
     assert "Autopilot theo cluster" not in response.text
     assert "Phân loại hành động AI" in response.text
+    assert 'id="action-policy-search"' in response.text
+    assert 'id="action-policy-classification-filter"' in response.text
+    assert 'id="action-policy-source-filter"' in response.text
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):

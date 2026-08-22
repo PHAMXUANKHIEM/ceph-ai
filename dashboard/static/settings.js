@@ -828,6 +828,51 @@
   }
 })();
 
+// AI Action Policy: search and filters run locally so looking up an action
+// never reloads the page or disturbs a partially completed policy form.
+(function () {
+  var table = document.getElementById("action-policy-table");
+  var tableWrap = document.getElementById("action-policy-table-wrap");
+  var search = document.getElementById("action-policy-search");
+  var classification = document.getElementById("action-policy-classification-filter");
+  var source = document.getElementById("action-policy-source-filter");
+  var reset = document.getElementById("action-policy-filter-reset");
+  var result = document.getElementById("action-policy-filter-result");
+  var empty = document.getElementById("action-policy-filter-empty");
+  if (!table || !search || !classification || !source || !reset || !result || !empty) return;
+
+  var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
+  function normalize(value) { return String(value || "").trim().toLowerCase(); }
+  function render() {
+    var query = normalize(search.value);
+    var wantedClassification = classification.value;
+    var wantedSource = source.value;
+    var visible = 0;
+    rows.forEach(function (row) {
+      var matches = (!query || normalize(row.getAttribute("data-action-id")).indexOf(query) !== -1) &&
+        (!wantedClassification || row.getAttribute("data-classification") === wantedClassification) &&
+        (!wantedSource || row.getAttribute("data-policy-source") === wantedSource);
+      row.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    result.textContent = visible + " / " + rows.length + " hành động";
+    empty.hidden = visible !== 0;
+    if (tableWrap) tableWrap.hidden = visible === 0;
+    reset.disabled = !query && !wantedClassification && !wantedSource;
+  }
+  search.addEventListener("input", render);
+  classification.addEventListener("change", render);
+  source.addEventListener("change", render);
+  reset.addEventListener("click", function () {
+    search.value = "";
+    classification.value = "";
+    source.value = "";
+    render();
+    search.focus();
+  });
+  render();
+})();
+
 // --- Log Intelligence: kiểm tra kết nối Loki trước khi lưu ----------------
 // Cùng khuôn "test kết nối" mà form Database/OpenStack đã dùng: gọi thẳng
 // endpoint test, không lưu gì.

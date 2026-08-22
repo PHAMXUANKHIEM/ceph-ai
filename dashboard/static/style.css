@@ -2281,6 +2281,16 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .empty-state { padding: 42px 20px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: rgba(0,0,0,.08); }
 
 /* Placement Groups search and filters */
+.action-policy-filter-panel { display: flex; align-items: flex-end; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
+.action-policy-filter-field { display: grid; gap: 6px; min-width: 170px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
+.action-policy-search-field { flex: 1 1 320px; }
+.action-policy-filter-field input, .action-policy-filter-field select { width: 100%; height: 38px; padding: 0 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; font-size: .78rem; }
+.action-policy-filter-field input:focus, .action-policy-filter-field select:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.action-policy-filter-field select { color-scheme: dark; }
+.action-policy-filter-result { margin-left: auto; padding-bottom: 10px; color: var(--text-muted); font: 600 .7rem/1 var(--font-mono); white-space: nowrap; }
+.action-policy-filter-empty { margin: 14px 0; }
+.action-policy-filter-panel .btn:disabled { cursor: not-allowed; opacity: .45; }
+
 .pg-filter-panel { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--border); }
 .pg-filter-field { display: grid; gap: 6px; min-width: 180px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
 .pg-search-field { flex: 1 1 280px; }
@@ -2298,6 +2308,9 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .pg-page-size { margin-left: auto; }
 
 @media (max-width: 680px) {
+  .action-policy-filter-field, .action-policy-search-field { width: 100%; min-width: 0; flex-basis: 100%; }
+  .action-policy-filter-panel .btn { width: 100%; }
+  .action-policy-filter-result { width: 100%; margin-left: 0; padding-bottom: 0; text-align: center; }
   .pg-filter-field, .pg-search-field { width: 100%; min-width: 0; flex-basis: 100%; }
   .pg-filter-panel .btn { width: 100%; }
   .pg-filter-result { width: 100%; margin-left: 0; padding-bottom: 0; text-align: center; }

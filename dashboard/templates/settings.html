@@ -199,8 +199,26 @@
         {% if action_policy_error %}<p class="error">{{ action_policy_error }}</p>{% endif %}
         {% if action_policy_success %}<p class="success">{{ action_policy_success }}</p>{% endif %}
         <p class="hint"><strong>SAFE</strong> được Autopilot tự chạy khi mọi gate đều cho phép và thay cho Capability Matrix <strong>UNKNOWN</strong> của đúng action đó. <strong>RISKY</strong> luôn chờ duyệt. DESTRUCTIVE bị khóa.</p>
-        <div class="table-wrap"><table><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
-        {% for row in action_policy_rows %}<tr>
+        <div class="action-policy-filter-panel" aria-label="Tìm kiếm và lọc hành động AI">
+          <label class="action-policy-filter-field action-policy-search-field">Tìm kiếm
+            <input type="search" id="action-policy-search" maxlength="120" placeholder="Nhập tên action, ví dụ restart_osd_daemon">
+          </label>
+          <label class="action-policy-filter-field">Phân loại
+            <select id="action-policy-classification-filter">
+              <option value="">Tất cả</option><option value="SAFE">SAFE</option><option value="RISKY">RISKY</option><option value="DESTRUCTIVE">DESTRUCTIVE</option>
+            </select>
+          </label>
+          <label class="action-policy-filter-field">Nguồn policy
+            <select id="action-policy-source-filter">
+              <option value="">Tất cả</option><option value="override">Đã tùy chỉnh</option><option value="default">Mặc định</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-secondary" id="action-policy-filter-reset">Đặt lại</button>
+          <span class="action-policy-filter-result" id="action-policy-filter-result" aria-live="polite"></span>
+        </div>
+        <p class="empty-state action-policy-filter-empty" id="action-policy-filter-empty" hidden>Không có hành động nào khớp bộ lọc.</p>
+        <div class="table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
+        {% for row in action_policy_rows %}<tr data-action-id="{{ row.action_id }}" data-classification="{{ row.effective }}" data-policy-source="{{ 'override' if row.override else 'default' }}">
           <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }} · {{ row.override.reason }}</span>{% endif %}</td>
           <td>{% if row.immutable %}<span class="error">DESTRUCTIVE · bị khóa</span>{% else %}
             <form method="post" action="/settings/autopilot/action-policy" class="login-box">
