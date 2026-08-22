@@ -66,6 +66,10 @@ CHAT_ACTION_IDS = VALID_ACTION_IDS | CHAT_MANAGEMENT_ACTION_IDS | VALID_BLUESTOR
 # DIAGNOSTIC_OUTPUT_MAX_CHARS elsewhere in this codebase, just tuned
 # empirically against a real failure instead of being a round number.
 MAX_TOOL_RESULT_CHARS = 4000
+# Persisted Copilot evidence contains IDs twice (data + citation manifest), so
+# 20 compact incidents can legitimately exceed the raw-command ceiling above.
+# It is structured and bounded by tool schemas, unlike arbitrary CLI output.
+MAX_EVIDENCE_RESULT_CHARS = 12000
 
 TOOL_LIST_NODES = "list_nodes"
 TOOL_GET_NODE_METRICS = "get_node_metrics"
@@ -753,7 +757,10 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
     except Exception:
         logger.exception("run_chat_turn: unexpected error running tool %s", name)
         return "internal error running this tool", True
-    return result_text[:MAX_TOOL_RESULT_CHARS], is_error
+    limit = MAX_EVIDENCE_RESULT_CHARS if name in {
+        TOOL_GET_RECENT_INCIDENTS, TOOL_GET_INCIDENT_TIMELINE, TOOL_GET_CAPACITY_FORECAST,
+    } else MAX_TOOL_RESULT_CHARS
+    return result_text[:limit], is_error
 
 
 async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster=None) -> dict:

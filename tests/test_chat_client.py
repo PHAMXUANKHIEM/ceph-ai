@@ -411,6 +411,22 @@ def test_copilot_server_appends_verified_citations(monkeypatch):
     assert result["tools_used"] == ["get_capacity_forecast"]
 
 
+def test_copilot_evidence_manifest_is_not_cut_at_raw_command_limit(monkeypatch):
+    payload = json.dumps({
+        "incidents": [{"summary": "x" * 300} for _ in range(15)],
+        "_citations": [{"source_id": f"incident:{i}"} for i in range(15)],
+    })
+    monkeypatch.setattr(chat_client, "_run_recent_incidents", lambda *args: payload)
+
+    result, is_error = chat_client._run_tool(
+        "get_recent_incidents", {"hours": 24, "limit": 15}, cluster=object()
+    )
+
+    assert is_error is False
+    assert len(result) > chat_client.MAX_TOOL_RESULT_CHARS
+    assert len(chat_client._citations_from_result(result)) == 15
+
+
 # --- run_chat_turn: local tools (list_nodes, get_node_metrics) --------------
 
 
