@@ -56,6 +56,14 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
   (`R²`) đạt ngưỡng. Dự báo chỉ là evidence/cảnh báo, không tự reboot node.
 - Bật bằng `NODE_RESOURCE_FORECAST_ENABLED=true`; dùng chung URL/tenant Loki
   của Log Intelligence.
+- Vòng tự học lưu mỗi dự báo candidate vào `node_resource_forecast_runs`.
+  Sau `NODE_RESOURCE_LEARNING_EVALUATION_HOURS`, mẫu thật mới nhất từ Loki
+  được dùng làm outcome và tính absolute error.
+- `node_resource_model_states` giữ running MAE theo cluster/host/metric và
+  cửa sổ 24/72/168/720 giờ. Sau tối thiểu 3 outcome, cửa sổ có MAE thấp nhất
+  tự được chọn; trước đó dùng cửa sổ dài nhất có đủ dữ liệu.
+- Việc học chỉ đổi lựa chọn mô hình forecast. Nó không được thay policy,
+  allowlist, ngưỡng hành động hoặc tự thực thi remediation.
 
 ## Tiêu chí hoàn thành mục 1
 

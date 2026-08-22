@@ -1880,3 +1880,57 @@ class LogFinding(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, index=True
     )
+
+
+class NodeResourceForecastRun(Base):
+    """Auditable forecast plus the later observed outcome from Loki."""
+
+    __tablename__ = "node_resource_forecast_runs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_node_resource_forecast_idempotency"),
+        Index("ix_node_resource_forecast_due", "status", "target_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="linear")
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    current_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    actual_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class NodeResourceModelState(Base):
+    """Online MAE state used to choose a forecast window per node/metric."""
+
+    __tablename__ = "node_resource_model_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_name", "host", "metric", "algorithm", "window_hours",
+            name="uq_node_resource_model_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="linear")
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

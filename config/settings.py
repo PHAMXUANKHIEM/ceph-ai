@@ -385,6 +385,12 @@ class Settings(BaseSettings):
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
     node_resource_forecast_min_confidence: float = 0.5
+    # Candidate history windows are evaluated against their later outcomes.
+    # The lowest-MAE candidate with enough evaluated runs is selected per
+    # cluster/host/metric; until then the longest available window wins.
+    node_resource_learning_evaluation_hours: int = 24
+    node_resource_learning_min_outcomes: int = 3
+    node_resource_learning_candidate_hours: str = "24,72,168,720"
 
     # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
     # device_health/node_health above because `ceph osd perf` is a single

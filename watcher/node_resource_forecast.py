@@ -15,7 +15,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import IntegrityError
+
 from config.settings import settings
+from shared import db
+from shared.models import NodeResourceForecastRun, NodeResourceModelState
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
@@ -31,6 +35,8 @@ class ResourceForecast:
     confidence: float
     samples: int
     window_hours: float
+    algorithm: str = "linear"
+    training_window_hours: int | None = None
 
 
 def _headers() -> dict[str, str]:
@@ -98,7 +104,10 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
     return [rows[key] for key in sorted(rows)]
 
 
-def _linear_forecast(points: list[tuple[datetime, float]], metric: str) -> ResourceForecast | None:
+def _linear_forecast(
+    points: list[tuple[datetime, float]], metric: str, *, horizon_hours: int | None = None,
+    training_window_hours: int | None = None,
+) -> ResourceForecast | None:
     minimum = max(3, settings.node_resource_forecast_min_samples)
     if len(points) < minimum:
         return None
@@ -118,7 +127,7 @@ def _linear_forecast(points: list[tuple[datetime, float]], metric: str) -> Resou
     ss_total = sum((y - y_mean) ** 2 for y in ys)
     ss_residual = sum((y - fit) ** 2 for y, fit in zip(ys, fitted))
     confidence = max(0.0, min(1.0, 1 - ss_residual / ss_total)) if ss_total > 0 else 0.0
-    horizon = max(1, settings.node_resource_forecast_horizon_hours)
+    horizon = max(1, horizon_hours or settings.node_resource_forecast_horizon_hours)
     predicted = max(0.0, min(100.0, intercept + slope * (xs[-1] + horizon)))
     hours_to_90 = None
     if slope > 0 and ys[-1] < 90:
@@ -126,7 +135,148 @@ def _linear_forecast(points: list[tuple[datetime, float]], metric: str) -> Resou
         if crossing >= xs[-1]:
             hours_to_90 = crossing - xs[-1]
     return ResourceForecast(metric, ys[-1], slope, predicted, hours_to_90,
-                            confidence, len(points), window)
+                            confidence, len(points), window,
+                            training_window_hours=training_window_hours)
+
+
+def _candidate_windows() -> list[int]:
+    values: set[int] = set()
+    for raw in settings.node_resource_learning_candidate_hours.split(","):
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            continue
+        if value >= 6:
+            values.add(value)
+    return sorted(values) or [24, 72, 168, 720]
+
+
+def _window_points(
+    points: list[tuple[datetime, float]], window_hours: int
+) -> list[tuple[datetime, float]]:
+    if not points:
+        return []
+    cutoff = points[-1][0] - timedelta(hours=window_hours)
+    return [point for point in points if point[0] >= cutoff]
+
+
+def _state_for(session, cluster: str, host: str, metric: str, window_hours: int):
+    state = session.query(NodeResourceModelState).filter_by(
+        cluster_name=cluster, host=host, metric=metric,
+        algorithm="linear", window_hours=window_hours,
+    ).one_or_none()
+    if state is None:
+        state = NodeResourceModelState(
+            cluster_name=cluster, host=host, metric=metric,
+            algorithm="linear", window_hours=window_hours,
+        )
+        session.add(state)
+        session.flush()
+    return state
+
+
+def _evaluate_due(session, cluster: str, host: str, metric: str,
+                  actual_percent: float, now_naive: datetime) -> None:
+    due = session.query(NodeResourceForecastRun).filter_by(
+        cluster_name=cluster, host=host, metric=metric, status="PENDING"
+    ).filter(NodeResourceForecastRun.target_at <= now_naive).all()
+    for run in due:
+        error = abs(run.predicted_percent - actual_percent)
+        run.actual_percent = actual_percent
+        run.absolute_error = error
+        run.status = "EVALUATED"
+        run.evaluated_at = now_naive
+        state = _state_for(session, cluster, host, metric, run.window_hours)
+        old_count = state.evaluated_count
+        old_mae = state.mean_absolute_error or 0.0
+        state.evaluated_count = old_count + 1
+        state.mean_absolute_error = (old_mae * old_count + error) / state.evaluated_count
+        state.last_absolute_error = error
+
+
+def _selected_window(session, cluster: str, host: str, metric: str,
+                     available: list[int]) -> int:
+    states = session.query(NodeResourceModelState).filter_by(
+        cluster_name=cluster, host=host, metric=metric, algorithm="linear"
+    ).all()
+    eligible = [state for state in states
+                if state.window_hours in available
+                and state.evaluated_count >= settings.node_resource_learning_min_outcomes
+                and state.mean_absolute_error is not None]
+    selected = min(eligible, key=lambda state: state.mean_absolute_error).window_hours if eligible else max(available)
+    for window in available:
+        state = _state_for(session, cluster, host, metric, window)
+        state.selected = window == selected
+    return selected
+
+
+def _record_candidates(session, cluster: str, host: str, metric: str,
+                       candidates: dict[int, ResourceForecast], now_naive: datetime) -> None:
+    horizon = max(1, settings.node_resource_learning_evaluation_hours)
+    bucket = now_naive.replace(minute=0, second=0, microsecond=0)
+    for window, prediction in candidates.items():
+        key = f"{cluster}|{host}|{metric}|linear|{window}|{bucket.isoformat()}"
+        exists = session.query(NodeResourceForecastRun.id).filter_by(idempotency_key=key).first()
+        if exists:
+            continue
+        session.add(NodeResourceForecastRun(
+            cluster_name=cluster, host=host, metric=metric, algorithm="linear",
+            window_hours=window, predicted_at=now_naive,
+            target_at=now_naive + timedelta(hours=horizon),
+            current_percent=prediction.current_percent,
+            predicted_percent=prediction.predicted_percent,
+            confidence=prediction.confidence, status="PENDING", idempotency_key=key,
+        ))
+
+
+def adaptive_forecast(
+    cluster: str, host: str, *, now: datetime | None = None
+) -> dict[str, ResourceForecast]:
+    """Evaluate old forecasts and select the lowest-MAE window per metric.
+
+    Raw observations always come from Loki. PostgreSQL stores only forecast
+    metadata/outcomes and the small online score state.
+    """
+    samples = fetch_samples(cluster, host, now=now)
+    if not samples:
+        return {}
+    observed_at = now or samples[-1][0]
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    now_naive = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+    result: dict[str, ResourceForecast] = {}
+    with db.SessionLocal() as session:
+        for index, metric in ((1, "cpu"), (2, "ram")):
+            points = [(row[0], row[index]) for row in samples]
+            _evaluate_due(session, cluster, host, metric, points[-1][1], now_naive)
+            candidates: dict[int, ResourceForecast] = {}
+            for window in _candidate_windows():
+                windowed = _window_points(points, window)
+                prediction = _linear_forecast(
+                    windowed, metric,
+                    horizon_hours=settings.node_resource_learning_evaluation_hours,
+                    training_window_hours=window,
+                )
+                if prediction is not None:
+                    candidates[window] = prediction
+            if not candidates:
+                continue
+            _record_candidates(session, cluster, host, metric, candidates, now_naive)
+            selected = _selected_window(session, cluster, host, metric, list(candidates))
+            operational = _linear_forecast(
+                _window_points(points, selected), metric,
+                horizon_hours=settings.node_resource_forecast_horizon_hours,
+                training_window_hours=selected,
+            )
+            if operational is not None:
+                result[metric] = operational
+        try:
+            session.commit()
+        except IntegrityError:
+            # Concurrent/duplicate hourly scans are idempotent. Replaying the
+            # next scan will evaluate the already-persisted row normally.
+            session.rollback()
+    return result
 
 
 def forecast(cluster: str, host: str, *, now: datetime | None = None) -> dict[str, ResourceForecast]:

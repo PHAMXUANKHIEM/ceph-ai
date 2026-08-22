@@ -1,5 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from shared.db import Base
+from shared.models import NodeResourceForecastRun, NodeResourceModelState
 from watcher import node_resource_forecast as forecast
 
 
@@ -45,3 +51,58 @@ def test_forecast_reads_loki_samples(monkeypatch):
     result = forecast.forecast("CS-LAB", "node-1")
     assert set(result) == {"cpu", "ram"}
     assert result["cpu"].samples == 30
+
+
+def _learning_db(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(forecast.db, "SessionLocal", factory)
+    return factory
+
+
+def test_adaptive_forecast_persists_candidates_and_selects_longest_during_warmup(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_candidate_hours", "24,72")
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_evaluation_hours", 24)
+    samples = [(ts, value, value / 2) for ts, value in _points(count=80, slope=.1)]
+    monkeypatch.setattr(forecast, "fetch_samples", lambda cluster, host, now=None: samples)
+
+    result = forecast.adaptive_forecast("CS-LAB", "node-1", now=samples[-1][0])
+
+    assert result["cpu"].training_window_hours == 72
+    with factory() as session:
+        assert session.query(NodeResourceForecastRun).count() == 4
+        selected = session.query(NodeResourceModelState).filter_by(selected=True).all()
+        assert {(row.metric, row.window_hours) for row in selected} == {("cpu", 72), ("ram", 72)}
+
+
+def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_candidate_hours", "24")
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_evaluation_hours", 1)
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_min_outcomes", 1)
+    samples = [(ts, value, value / 2) for ts, value in _points(count=30, slope=.1)]
+    now = samples[-1][0]
+    with factory() as session:
+        session.add(NodeResourceForecastRun(
+            cluster_name="CS-LAB", host="node-1", metric="cpu", algorithm="linear",
+            window_hours=24, predicted_at=(now - timedelta(hours=2)).replace(tzinfo=None),
+            target_at=(now - timedelta(hours=1)).replace(tzinfo=None), current_percent=20,
+            predicted_percent=30, confidence=.8, status="PENDING", idempotency_key="due",
+        ))
+        session.commit()
+    monkeypatch.setattr(forecast, "fetch_samples", lambda cluster, host, now=None: samples)
+
+    forecast.adaptive_forecast("CS-LAB", "node-1", now=now)
+
+    with factory() as session:
+        run = session.query(NodeResourceForecastRun).filter_by(idempotency_key="due").one()
+        state = session.query(NodeResourceModelState).filter_by(metric="cpu", window_hours=24).one()
+        assert run.status == "EVALUATED"
+        assert run.actual_percent == samples[-1][1]
+        assert state.evaluated_count == 1
+        assert state.mean_absolute_error == run.absolute_error

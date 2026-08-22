@@ -123,7 +123,9 @@ def check_node_resources(
         node_resource_forecast.push_sample(cluster_name or settings.cluster_name, host, metrics)
         if settings.node_resource_forecast_enabled:
             try:
-                forecasts = node_resource_forecast.forecast(cluster_name or settings.cluster_name, host)
+                forecasts = node_resource_forecast.adaptive_forecast(
+                    cluster_name or settings.cluster_name, host
+                )
                 for prediction in node_resource_forecast.risky_forecasts(forecasts):
                     logger.warning(
                         "node forecast: %s %s may reach 90%% in %.1fh "
