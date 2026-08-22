@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
@@ -10,7 +11,11 @@ from dashboard.routes import auth
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared import db
+from shared.incident_postmortem import build_timeline
+from shared.models import CephCapacitySample, Incident
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
+from watcher.capacity_forecast import forecasts as capacity_forecasts
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 from watcher.ceph_client import (
     CephQueryError,
@@ -68,6 +73,9 @@ TOOL_GET_NODE_JOURNAL = "get_node_journal"
 TOOL_PROPOSE_NODE_COMMAND = "propose_node_command"
 TOOL_PROPOSE_ACTION = "propose_action"
 TOOL_GET_RBD_TRASH = "get_rbd_trash"
+TOOL_GET_RECENT_INCIDENTS = "get_recent_incidents"
+TOOL_GET_INCIDENT_TIMELINE = "get_incident_timeline"
+TOOL_GET_CAPACITY_FORECAST = "get_capacity_forecast"
 _POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Shown as the assistant's message content (never raised as a generic error)
@@ -152,6 +160,8 @@ def system_prompt(
     )
     prompt_rules = (
     "- Trả lời bằng tiếng Việt, ngắn gọn và chính xác\n"
+    "- Khi hỏi lịch sử sự cố, nguyên nhân, trước/sau hoặc xu hướng dung lượng: dùng tool evidence tương ứng. "
+    "Ứng dụng tự gắn mục Nguồn đã kiểm chứng; không được bịa source ID hay thời điểm.\n"
     "- Khi được hỏi về thông tin cụm → GỌI TOOL, không tự đoán\n"
     "- Với admin cần chẩn đoán log dịch vụ trên một node → dùng get_node_journal; "
     "tool này đọc journalctl trực tiếp, read-only và không restart dịch vụ\n"
@@ -313,6 +323,21 @@ def _tool_schemas(*, is_admin: bool = False, cluster=None) -> list[dict]:
         )
     tools.extend([
         *fixed_query_tools,
+        _fn(
+            TOOL_GET_RECENT_INCIDENTS,
+            "Các incident gần đây đã lưu trong DB, kèm source ID và timestamp thật.",
+            {"type": "object", "properties": {
+                "hours": {"type": "integer", "minimum": 1, "maximum": 720},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            }, "required": ["hours", "limit"], "additionalProperties": False},
+        ),
+        _fn(
+            TOOL_GET_INCIDENT_TIMELINE,
+            "Timeline/audit đã lưu của một incident; dùng để giải thích nguyên nhân và trước/sau.",
+            {"type": "object", "properties": {"incident_id": {"type": "string"}},
+             "required": ["incident_id"], "additionalProperties": False},
+        ),
+        _fn(TOOL_GET_CAPACITY_FORECAST, "Dự báo dung lượng cluster/pool/OSD từ lịch sử đã lưu."),
         _fn(
             TOOL_GET_RBD_TRASH,
             "Liệt kê RBD images đang nằm trong trash của một pool. Đây là truy vấn read-only.",
@@ -492,6 +517,99 @@ def _run_get_rbd_trash(args: dict, cluster=None) -> str:
         raise ChatToolError(f"Không đọc được RBD trash của pool {pool}: {exc}") from exc
 
 
+def _cluster_id(cluster) -> str:
+    value = getattr(cluster, "id", None)
+    if not value:
+        raise ChatToolError("Không xác định được cluster đang chọn")
+    return value
+
+
+def _run_recent_incidents(args: dict, cluster=None) -> str:
+    hours, limit = args.get("hours"), args.get("limit")
+    if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 720:
+        raise ChatToolError("hours phải từ 1 đến 720")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+        raise ChatToolError("limit phải từ 1 đến 20")
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    with db.SessionLocal() as session:
+        rows = session.query(Incident).filter(
+            Incident.cluster_id == _cluster_id(cluster), Incident.detected_at >= cutoff,
+        ).order_by(Incident.detected_at.desc()).limit(limit).all()
+        payload = [{
+            "incident_id": row.id, "ceph_code": row.ceph_code,
+            "severity": row.severity.value if hasattr(row.severity, "value") else str(row.severity),
+            "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+            "detected_at": row.detected_at.replace(tzinfo=timezone.utc).isoformat(),
+        } for row in rows]
+    return json.dumps({"incidents": payload, "_citations": [{
+        "source_id": f"incident:{row['incident_id']}", "observed_at": row["detected_at"],
+        "confidence": 1.0, "source_type": "persisted_incident",
+    } for row in payload]}, ensure_ascii=False)
+
+
+def _run_incident_timeline(args: dict, cluster=None) -> str:
+    incident_id = str(args.get("incident_id") or "").strip()
+    if not incident_id:
+        raise ChatToolError("incident_id không được để trống")
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        if incident is None or incident.cluster_id != _cluster_id(cluster):
+            raise ChatToolError("Incident không thuộc cluster đang chọn")
+        timeline = build_timeline(session, incident_id)
+    timeline["status"] = getattr(timeline["status"], "value", timeline["status"])
+    timeline["severity"] = getattr(timeline["severity"], "value", timeline["severity"])
+    timeline["diagnosis_context"] = str(timeline.get("diagnosis_context") or "")[:500]
+    compact_events = []
+    for event in timeline["events"][-8:]:
+        compact = {key: value for key, value in event.items() if key != "evidence"}
+        if event.get("evidence") is not None:
+            compact["evidence"] = json.dumps(event["evidence"], ensure_ascii=False, default=str)[:400]
+        compact_events.append(compact)
+    timeline["events"] = compact_events
+    timeline["_citations"] = [{
+        "source_id": event["id"], "observed_at": event["at"],
+        "confidence": 1.0, "source_type": "incident_timeline_event",
+    } for event in timeline["events"]]
+    return json.dumps(timeline, ensure_ascii=False, default=str)
+
+
+def _run_capacity_forecast(cluster=None) -> str:
+    cluster_id = _cluster_id(cluster)
+    payload = capacity_forecasts(cluster_id)
+    with db.SessionLocal() as session:
+        latest = session.query(CephCapacitySample.captured_at).filter_by(cluster_id=cluster_id).order_by(
+            CephCapacitySample.captured_at.desc()).first()
+    observed_at = latest[0].replace(tzinfo=timezone.utc).isoformat() if latest else None
+    payload["_citations"] = [{
+        "source_id": f"capacity-series:{cluster_id}", "observed_at": observed_at,
+        "confidence": min((row["confidence"] for row in payload["forecasts"]), default=0.0),
+        "source_type": "capacity_history",
+    }]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _citations_from_result(result_text: str) -> list[dict]:
+    try:
+        value = json.loads(result_text)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    citations = value.get("_citations") if isinstance(value, dict) else None
+    return citations if isinstance(citations, list) else []
+
+
+def _append_citation_footer(reply: str, citations: list[dict]) -> str:
+    unique = {str(item.get("source_id")): item for item in citations if item.get("source_id")}
+    if not unique:
+        return reply
+    lines = ["Nguồn đã kiểm chứng:"]
+    for item in list(unique.values())[:12]:
+        confidence = float(item.get("confidence") or 0) * 100
+        lines.append(
+            f"- [{item['source_id']}] {item.get('observed_at') or 'chưa có mẫu'} · confidence {confidence:.0f}%"
+        )
+    return reply.rstrip() + "\n\n" + "\n".join(lines)
+
+
 def resolve_command_preview(
     action_id: str, target_nodes: list[str], params: dict | None = None
 ) -> str | None:
@@ -612,6 +730,12 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
             result_text, is_error = _run_get_node_journal(args, actor, cluster), False
         elif name == TOOL_GET_RBD_TRASH:
             result_text, is_error = _run_get_rbd_trash(args, cluster), False
+        elif name == TOOL_GET_RECENT_INCIDENTS:
+            result_text, is_error = _run_recent_incidents(args, cluster), False
+        elif name == TOOL_GET_INCIDENT_TIMELINE:
+            result_text, is_error = _run_incident_timeline(args, cluster), False
+        elif name == TOOL_GET_CAPACITY_FORECAST:
+            result_text, is_error = _run_capacity_forecast(cluster), False
         elif name in FIXED_TOOL_COMMANDS:
             result_text, is_error = json.dumps(
                 run_fixed_tool(name) if cluster is None else run_fixed_tool(name, cluster)
@@ -670,11 +794,17 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
 
     if settings.codex_chat_enabled:
         result = await _run_codex_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
-        result["reply_text"] = with_romantic_address(result["reply_text"], ai_name, female_address)
+        result["reply_text"] = with_romantic_address(
+            _append_citation_footer(result["reply_text"], result.pop("citations", [])),
+            ai_name, female_address,
+        )
         return result
     if settings.claude_chat_enabled:
         result = await _run_claude_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
-        result["reply_text"] = with_romantic_address(result["reply_text"], ai_name, female_address)
+        result["reply_text"] = with_romantic_address(
+            _append_citation_footer(result["reply_text"], result.pop("citations", [])),
+            ai_name, female_address,
+        )
         return result
 
     try:
@@ -692,6 +822,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
     reply_text_parts: list[str] = []
     proposal: dict | None = None
     tools_used: list[str] = []
+    citations: list[dict] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
@@ -778,6 +909,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
             result_text, is_error = _run_tool(call.function.name, args, actor, cluster)
             if not is_error:
                 tools_used.append(call.function.name)
+                citations.extend(_citations_from_result(result_text))
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": result_text}
             )
@@ -791,7 +923,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         reply_text = "Đã ghi nhận đề xuất hành động bên dưới." if proposal is not None else "(không có phản hồi)"
 
     return {
-        "reply_text": with_romantic_address(reply_text, ai_name, female_address),
+        "reply_text": with_romantic_address(
+            _append_citation_footer(reply_text, citations), ai_name, female_address
+        ),
         "proposal": proposal,
         "tools_used": tools_used,
     }
@@ -809,6 +943,7 @@ async def _run_codex_chat_turn(
     prompt += f"\n\nNgười dùng: {user_text}\nTrợ lý:"
     proposal: dict | None = None
     tools_used: list[str] = []
+    citations: list[dict] = []
 
     async def handle_tool(name: str, args: dict) -> tuple[str, bool]:
         nonlocal proposal
@@ -827,6 +962,7 @@ async def _run_codex_chat_turn(
         text, is_error = _run_tool(name, args, actor, cluster)
         if not is_error:
             tools_used.append(name)
+            citations.extend(_citations_from_result(text))
         return text, not is_error
 
     try:
@@ -835,7 +971,10 @@ async def _run_codex_chat_turn(
         )
     except CodexAppServerError as exc:
         raise ChatTurnError(f"Codex: {exc}") from exc
-    return {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
+    response = {"reply_text": result["reply_text"], "proposal": proposal, "tools_used": tools_used}
+    if citations:
+        response["citations"] = citations
+    return response
 
 
 def _parse_claude_tool_envelope(raw: str) -> dict | None:
@@ -871,6 +1010,7 @@ async def _run_claude_chat_turn(
     tool_contract = [item["function"] for item in schemas]
     exchange: list[str] = []
     tools_used: list[str] = []
+    citations: list[dict] = []
     proposal: dict | None = None
     base_prompt = (
         actor_system_prompt
@@ -893,17 +1033,23 @@ async def _run_claude_chat_turn(
             raise ChatTurnError(f"Claude: {exc}") from exc
         envelope = _parse_claude_tool_envelope(raw)
         if envelope is None:
-            return {
+            response = {
                 "reply_text": raw or "Claude không trả về nội dung",
                 "proposal": None,
                 "tools_used": tools_used,
             }
+            if citations:
+                response["citations"] = citations
+            return response
         if envelope.get("type") == "final":
-            return {
+            response = {
                 "reply_text": str(envelope.get("content") or "Claude không trả về nội dung"),
                 "proposal": proposal,
                 "tools_used": tools_used,
             }
+            if citations:
+                response["citations"] = citations
+            return response
         if envelope.get("type") != "tool":
             exchange.append(f"Phản hồi không hợp lệ: {json.dumps(envelope, ensure_ascii=False)}")
             continue
@@ -927,16 +1073,23 @@ async def _run_claude_chat_turn(
             except (ChatToolError, TypeError, ValueError) as exc:
                 exchange.append(f"Tool {name} lỗi: {exc}")
                 continue
-            return {"reply_text": reply, "proposal": proposal, "tools_used": tools_used}
+            response = {"reply_text": reply, "proposal": proposal, "tools_used": tools_used}
+            if citations:
+                response["citations"] = citations
+            return response
         result_text, is_error = _run_tool(name, args, actor, cluster)
         if not is_error:
             tools_used.append(name)
+            citations.extend(_citations_from_result(result_text))
         exchange.append(
             f"Tool {name} ({'lỗi' if is_error else 'thành công'}): {result_text}"
         )
 
-    return {
+    response = {
         "reply_text": "Đã dừng sau nhiều bước gọi tool liên tiếp; hãy yêu cầu lại cụ thể hơn.",
         "proposal": proposal,
         "tools_used": tools_used,
     }
+    if citations:
+        response["citations"] = citations
+    return response

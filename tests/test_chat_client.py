@@ -378,6 +378,39 @@ def test_run_chat_turn_plain_text_answer(monkeypatch):
     }
 
 
+def test_copilot_evidence_tools_are_exposed_to_all_authenticated_users():
+    names = {item["function"]["name"] for item in chat_client._tool_schemas(is_admin=False)}
+    assert {
+        "get_recent_incidents", "get_incident_timeline", "get_capacity_forecast"
+    } <= names
+
+
+def test_copilot_server_appends_verified_citations(monkeypatch):
+    from types import SimpleNamespace
+
+    _install_fake_client(monkeypatch, [
+        _tool_call_completion(("get_capacity_forecast", {})),
+        _text_completion("Dung lượng chưa đủ lịch sử để dự báo."),
+    ])
+    observed = "2026-08-22T03:00:00+00:00"
+    monkeypatch.setattr(chat_client, "configured_nodes", lambda cluster=None: [])
+    monkeypatch.setattr(chat_client, "_run_tool", lambda *args, **kwargs: (
+        json.dumps({"status": "insufficient_history", "_citations": [{
+            "source_id": "capacity-series:cluster-1", "observed_at": observed,
+            "confidence": 0.0,
+        }]}), False,
+    ))
+
+    result = asyncio.run(chat_client.run_chat_turn(
+        [], "dự báo dung lượng Ceph", "admin", SimpleNamespace(id="cluster-1", name="CS-LAB")
+    ))
+
+    assert "Nguồn đã kiểm chứng:" in result["reply_text"]
+    assert "[capacity-series:cluster-1]" in result["reply_text"]
+    assert observed in result["reply_text"]
+    assert result["tools_used"] == ["get_capacity_forecast"]
+
+
 # --- run_chat_turn: local tools (list_nodes, get_node_metrics) --------------
 
 
