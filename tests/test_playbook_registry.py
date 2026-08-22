@@ -82,16 +82,22 @@ def test_runtime_target_and_builder_fail_closed_before_l3():
     assert malformed.hard_failure is True
 
 
-def test_osd_schema_requires_one_deterministic_osd_id():
+def test_osd_schema_allows_up_to_three_deterministic_osd_ids():
     allowed = evaluate_auto_execution(
         "restart_osd_daemon", "SAFE", target_nodes=["osd-host"],
         action_params={"cephadm_osd_ids": [4]}, command_builder_available=True,
     )
     assert allowed.allowed is True
 
-    ambiguous = evaluate_auto_execution(
+    bounded = evaluate_auto_execution(
         "restart_osd_daemon", "SAFE", target_nodes=["osd-host"],
-        action_params={"cephadm_osd_ids": [4, 5]}, command_builder_available=True,
+        action_params={"cephadm_osd_ids": [4, 5, 6]}, command_builder_available=True,
+    )
+    assert bounded.allowed is True
+
+    ambiguous = evaluate_auto_execution(
+        "restart_osd_daemon", "SAFE", target_nodes=["osd-host-a", "osd-host-b"],
+        action_params={"cephadm_osd_ids": [4, 5, 6, 7]}, command_builder_available=True,
     )
     assert ambiguous.allowed is False
     assert "blast-radius" in ambiguous.reason

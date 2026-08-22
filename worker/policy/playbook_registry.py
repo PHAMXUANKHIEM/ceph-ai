@@ -115,7 +115,12 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         # The generic policy is RISKY, but router_client may derive SAFE
         # contextually only after deterministic BlueStore OSD/host checks.
         "restart_osd_daemon", target_schema="osd", max_autonomy="L3",
-        conflict_scope="osd", postcheck="osd_and_fault_health_telemetry",
+        # A single Ceph health check can legitimately identify several slow
+        # BlueStore daemons.  Permit the bounded set reported by that check,
+        # while keeping four-or-more targets approval-gated as a blast-radius
+        # ceiling rather than turning this into a cluster-wide restart.
+        conflict_scope="osd", max_targets=3,
+        postcheck="osd_and_fault_health_telemetry",
     ),
     "finalize_osd_release": _contract(
         "finalize_osd_release", target_schema="cluster", max_autonomy="L2",
@@ -240,7 +245,7 @@ def describe_contract(contract: PlaybookContract, *, command_builder_available: 
     elif policy_class in {ActionClassification.DESTRUCTIVE, ActionClassification.RISKY}:
         if contract.action_id == "restart_osd_daemon":
             status = "CONDITIONAL"
-            reason = "Policy mặc định RISKY; chỉ đạt L3 khi server xác minh đúng một BlueStore OSD/host."
+            reason = "Policy mặc định RISKY; chỉ đạt L3 khi server xác minh tập BlueStore OSD/host nằm trong giới hạn blast-radius."
         else:
             status = "L2_ONLY"
             reason = f"Safety policy hiện phân loại {policy_class.value}."
