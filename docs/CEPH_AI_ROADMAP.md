@@ -18,6 +18,8 @@ Cập nhật: **2026-08-22**. Ceph là phạm vi ưu tiên; các hạng mục Vi
   - Dedupe theo semantic identity, vẫn giữ overlap evidence làm fallback bảo thủ.
   - [x] Correlation tất định giữa health Incident và LogFinding theo cluster,
     fault-family, entity OSD và cửa sổ thời gian; lưu provenance để audit/UI.
+  - [x] Chia evidence đã triage thành batch 10 pattern/lượt AI; circuit breaker
+    tổng chỉ chặn cửa sổ cực đoan trên 100 pattern.
   - [ ] Mở rộng correlation sang metric và disk signal.
 - [ ] **2. Incident timeline thống nhất và AI postmortem**
   - Dòng thời gian: phát hiện → evidence → chẩn đoán → đề xuất → duyệt → thực thi → xác minh.

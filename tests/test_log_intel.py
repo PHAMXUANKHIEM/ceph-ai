@@ -527,30 +527,52 @@ def test_triage_failure_does_not_lose_collected_data(isolated_db, enabled, monke
         assert session.query(LogPattern).count() == 1
 
 
-def test_ai_circuit_breaker_skips_noisy_window(isolated_db, enabled, monkeypatch):
-    """Backfill/onboarding không được biến thành một trận mưa AI alert."""
+def test_ai_batches_flagged_patterns_ten_per_call(isolated_db, enabled, monkeypatch):
     _one_node(monkeypatch)
     _fake_source(monkeypatch, {
         ("10.0.0.1", "osd"): [
             _record("10.0.0.1", "osd.5 routine chatter", ts=datetime.utcnow(), severity=0),
         ],
     })
-    noisy = [SimpleNamespace(reasons=[], template=f"noise-{i}") for i in range(3)]
+    noisy = [SimpleNamespace(reasons=[], template=f"noise-{i}") for i in range(23)]
     analyzed = []
     monkeypatch.setattr(log_intel.log_triage, "triage_window", lambda *a, **k: noisy)
-    monkeypatch.setattr(log_intel.log_triage, "summarize", lambda _rows: "3 noisy patterns")
+    monkeypatch.setattr(log_intel.log_triage, "summarize", lambda _rows: "23 noisy patterns")
     monkeypatch.setattr(log_intel.log_analysis, "reconcile_overlapping_findings", lambda *_: 0)
     monkeypatch.setattr(
-        log_intel.log_analysis, "analyze_window", lambda *a, **k: analyzed.append(1)
+        log_intel.log_analysis, "analyze_window", lambda *a, **k: analyzed.append(a[4])
     )
     monkeypatch.setattr(settings, "log_intel_ai_enabled", True)
-    monkeypatch.setattr(settings, "log_intel_ai_max_flagged_patterns", 2)
+    monkeypatch.setattr(settings, "log_intel_ai_batch_size", 10)
+    monkeypatch.setattr(settings, "log_intel_ai_max_flagged_patterns", 100)
 
     log_intel.scan_and_store()
 
-    assert analyzed == []
+    assert [len(batch) for batch in analyzed] == [10, 10, 3]
+    assert [row.template for batch in analyzed for row in batch] == [row.template for row in noisy]
     with db_module.SessionLocal() as session:
-        assert session.query(LogIngestRun).one().patterns_flagged == 3
+        assert session.query(LogIngestRun).one().patterns_flagged == 23
+
+
+def test_ai_circuit_breaker_still_skips_extreme_window(isolated_db, enabled, monkeypatch):
+    _one_node(monkeypatch)
+    _fake_source(monkeypatch, {
+        ("10.0.0.1", "osd"): [
+            _record("10.0.0.1", "osd.5 routine chatter", ts=datetime.utcnow(), severity=0),
+        ],
+    })
+    noisy = [SimpleNamespace(reasons=[], template=f"noise-{i}") for i in range(21)]
+    analyzed = []
+    monkeypatch.setattr(log_intel.log_triage, "triage_window", lambda *a, **k: noisy)
+    monkeypatch.setattr(log_intel.log_triage, "summarize", lambda _rows: "21 noisy patterns")
+    monkeypatch.setattr(log_intel.log_analysis, "reconcile_overlapping_findings", lambda *_: 0)
+    monkeypatch.setattr(log_intel.log_analysis, "analyze_window", lambda *a, **k: analyzed.append(1))
+    monkeypatch.setattr(settings, "log_intel_ai_enabled", True)
+    monkeypatch.setattr(settings, "log_intel_ai_batch_size", 10)
+    monkeypatch.setattr(settings, "log_intel_ai_max_flagged_patterns", 20)
+
+    log_intel.scan_and_store()
+    assert analyzed == []
 
 
 def test_prune_never_orphans_a_finding_from_its_ingest_run(isolated_db, monkeypatch):

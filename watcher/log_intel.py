@@ -380,9 +380,19 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
                 len(flagged), max_flagged,
             )
         else:
-            log_analysis.analyze_window(
-                cluster_id, run_id, window_start, window_end, flagged, status.value, cluster,
-            )
+            batch_size = max(1, settings.log_intel_ai_batch_size)
+            batch_count = (len(flagged) + batch_size - 1) // batch_size
+            if batch_count > 1:
+                logger.warning(
+                    "log_intel: chia %d pattern thành %d lượt AI, tối đa %d pattern/lượt",
+                    len(flagged), batch_count, batch_size,
+                )
+            for offset in range(0, len(flagged), batch_size):
+                batch = flagged[offset:offset + batch_size]
+                log_analysis.analyze_window(
+                    cluster_id, run_id, window_start, window_end,
+                    batch, status.value, cluster,
+                )
     except Exception:
         logger.exception("log_intel: phân tích AI thất bại (dữ liệu thu thập vẫn được giữ)")
 
