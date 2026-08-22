@@ -873,6 +873,23 @@
   render();
 })();
 
+// Policy changes use one short, consistent confirmation for both SAFE and
+// RISKY. The server validates it again; this prompt is only the UI layer.
+(function () {
+  var forms = document.querySelectorAll(".action-policy-change-form");
+  Array.prototype.forEach.call(forms, function (form) {
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var confirmation = window.prompt("Nhập OK để áp dụng policy");
+      if (confirmation !== "OK") return;
+      var field = form.querySelector('input[name="confirmation"]');
+      if (!field) return;
+      field.value = confirmation;
+      form.submit();
+    });
+  });
+})();
+
 // --- Log Intelligence: kiểm tra kết nối Loki trước khi lưu ----------------
 // Cùng khuôn "test kết nối" mà form Database/OpenStack đã dùng: gọi thẳng
 // endpoint test, không lưu gì.

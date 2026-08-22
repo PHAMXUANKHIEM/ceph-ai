@@ -227,13 +227,12 @@
         <p class="empty-state action-policy-filter-empty" id="action-policy-filter-empty" hidden>Không có hành động nào khớp bộ lọc.</p>
         <div class="table-wrap" id="action-policy-table-wrap"><table id="action-policy-table"><thead><tr><th>Action</th><th>Mặc định</th><th>Đang áp dụng</th><th>Đổi policy</th></tr></thead><tbody>
         {% for row in action_policy_rows %}<tr data-action-id="{{ row.action_id }}" data-classification="{{ row.effective }}" data-policy-source="{{ 'override' if row.override else 'default' }}">
-          <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }} · {{ row.override.reason }}</span>{% endif %}</td>
+          <td><code>{{ row.action_id }}</code></td><td>{{ row.default }}</td><td><strong>{{ row.effective }}</strong>{% if row.override %}<br><span class="hint">{{ row.override.updated_by }}</span>{% endif %}</td>
           <td>{% if row.immutable %}<span class="error">DESTRUCTIVE · bị khóa</span>{% else %}
-            <form method="post" action="/settings/autopilot/action-policy" class="login-box">
+            <form method="post" action="/settings/autopilot/action-policy" class="login-box action-policy-change-form">
               <input type="hidden" name="action_id" value="{{ row.action_id }}">
               <select name="classification"><option value="RISKY" {{ "selected" if row.effective == "RISKY" else "" }}>RISKY</option><option value="SAFE" {{ "selected" if row.effective == "SAFE" else "" }}>SAFE</option></select>
-              <input name="reason" minlength="8" maxlength="500" required placeholder="Lý do thay đổi">
-              <input name="confirmation" placeholder="Nếu chọn SAFE: MARK {{ row.action_id }} SAFE">
+              <input type="hidden" name="confirmation" value="">
               <button class="btn btn-primary" type="submit">Áp dụng</button>
             </form>{% endif %}
           </td>

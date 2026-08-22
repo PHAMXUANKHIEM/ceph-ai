@@ -1238,24 +1238,21 @@ async def settings_cluster_autopilot_submit(
 async def settings_action_policy_submit(
     request: Request, user: str = Depends(require_login),
     action_id: str = Form(""), classification: str = Form(""),
-    reason: str = Form(""), confirmation: str = Form(""),
+    confirmation: str = Form(""),
 ):
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được đổi Action Policy")
-    action_id, classification, reason = action_id.strip(), classification.strip(), reason.strip()
+    action_id, classification = action_id.strip(), classification.strip()
     known = action_gate.SAFE_ACTION_IDS | action_gate.RISKY_ACTION_IDS | action_gate.DESTRUCTIVE_ACTION_IDS
     if action_id not in known or classification not in {"SAFE", "RISKY"}:
         raise HTTPException(status_code=400, detail="Action hoặc classification không hợp lệ")
     if action_id in action_gate.DESTRUCTIVE_ACTION_IDS:
         raise HTTPException(status_code=400, detail="Không thể override DESTRUCTIVE action")
-    if len(reason) < 8:
+    if confirmation.strip() != "OK":
         return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, action_policy_error="Lý do đổi phân loại phải có ít nhất 8 ký tự."
+            user, action_policy_error="Cần nhập chính xác OK để áp dụng policy."
         ))
-    if classification == "SAFE" and confirmation.strip() != f"MARK {action_id} SAFE":
-        return templates.TemplateResponse(request, "settings.html", _settings_context(
-            user, action_policy_error=f"Cần nhập chính xác MARK {action_id} SAFE."
-        ))
+    reason = "Confirmed with OK in System Administration"
     with db.SessionLocal() as session:
         previous = action_gate.classify_action(action_id, session=session).value
         row = session.get(ActionPolicyOverride, action_id)

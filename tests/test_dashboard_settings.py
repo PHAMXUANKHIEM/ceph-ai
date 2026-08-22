@@ -1666,6 +1666,9 @@ def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
     assert "restart_osd_daemon" in response.text
     assert "CONDITIONAL" in response.text
     assert "checksum" in response.text
+    assert "Lý do thay đổi" not in response.text
+    assert "Nếu chọn SAFE" not in response.text
+    assert "action-policy-change-form" in response.text
 
 
 def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
@@ -2575,7 +2578,7 @@ def test_admin_can_classify_restart_osd_safe_with_audit(dashboard_client, monkey
     _login(dashboard_client)
     response = dashboard_client.post("/settings/autopilot/action-policy", data={
         "action_id": "restart_osd_daemon", "classification": "SAFE",
-        "reason": "Exact OSD recovery approved", "confirmation": "MARK restart_osd_daemon SAFE",
+        "confirmation": "OK",
     })
     assert response.status_code == 200
     assert "restart_osd_daemon thành SAFE" in response.text
@@ -2583,6 +2586,23 @@ def test_admin_can_classify_restart_osd_safe_with_audit(dashboard_client, monkey
         assert session.get(ActionPolicyOverride, "restart_osd_daemon").classification == "SAFE"
         audit = session.query(ActionPolicyOverrideAudit).one()
         assert audit.previous_classification == "RISKY" and audit.new_classification == "SAFE"
+
+
+def test_action_policy_requires_exact_ok_confirmation(dashboard_client, monkeypatch):
+    monkeypatch.setattr(
+        settings_route, "restart_worker",
+        lambda: {"restarted": True, "new_pid": 790, "error": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/settings/autopilot/action-policy", data={
+        "action_id": "restart_osd_daemon", "classification": "SAFE", "confirmation": "ok",
+    })
+
+    assert response.status_code == 200
+    assert "Cần nhập chính xác OK" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.get(ActionPolicyOverride, "restart_osd_daemon") is None
 
 
 def test_disabling_autopilot_stops_old_worker_when_restart_fails(
