@@ -641,6 +641,17 @@ Action, Audit và telemetry.
 
 ### Pha 2 — Playbook Registry
 
+Trạng thái triển khai (2026-08-22): **đang thực hiện**.
+
+- Đã thêm registry phía server cho toàn bộ action mà Incident AI hiện có thể
+  sinh, với version, target schema, autonomy ceiling, conflict scope, blast
+  radius, cooldown, command builder, preflight và post-check.
+- Execution L3 fail closed nếu playbook chưa đăng ký, contract sai cấu trúc,
+  thiếu command builder/preflight/post-check, safety policy không phải SAFE/
+  READ_ONLY hoặc autonomy ceiling thấp hơn L3.
+- Case Memory đóng băng version và snapshot contract tại thời điểm tạo Action;
+  contract bị chặn được ghi Audit và chuyển về phê duyệt thủ công.
+
 - Chuẩn hóa contract cho action hiện có.
 - Khai báo preflight, post-check, conflict scope và blast radius.
 - Version playbook/command builder.

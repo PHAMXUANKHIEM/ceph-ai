@@ -3117,3 +3117,30 @@ def test_maybe_execute_safe_action_refuses_destructive_hard_guard(isolated_db, m
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_pk)
         assert action.status == ActionStatus.FAILED.value
+
+
+def test_playbook_contract_ceiling_routes_safe_candidate_to_approval_with_audit(isolated_db):
+    _create_incident("incident-contract-block")
+    with db_module.SessionLocal() as session:
+        action = Action(
+            incident_id="incident-contract-block",
+            action_id="finalize_osd_release",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.PENDING.value,
+        )
+        session.add(action)
+        session.commit()
+        action_pk = action.id
+
+    router_client._maybe_execute_safe_action(
+        "incident-contract-block", action_pk, "finalize_osd_release",
+        dict(ENVELOPE, incident_id="incident-contract-block"),
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, "incident-contract-block")
+        events = session.query(AuditEntry.event_type).filter_by(action_id=action_pk).all()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert events == [(audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,)]

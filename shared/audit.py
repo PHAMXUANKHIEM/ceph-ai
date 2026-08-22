@@ -79,6 +79,7 @@ EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT = "proposal_blocked_by_preflight"
 EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED = "autopilot_kill_switch_blocked"
 EVENT_AUTOPILOT_OPERATIONAL_GATE_BLOCKED = "autopilot_operational_gate_blocked"
 EVENT_AUTOPILOT_RUNTIME_GUARD_BLOCKED = "autopilot_runtime_guard_blocked"
+EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED = "autopilot_playbook_contract_blocked"
 EVENT_AUTOPILOT_EXECUTION_INCONCLUSIVE = "autopilot_execution_inconclusive"
 EVENT_REMEDIATION_CASE_VERDICT_UPDATED = "remediation_case_verdict_updated"
 

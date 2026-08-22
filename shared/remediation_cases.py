@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta
 
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
+from worker.policy.playbook_registry import get_contract
 
 
 _SENSITIVE_KEY = re.compile(
@@ -84,6 +85,11 @@ def create_for_action(
         ceph_version=_ceph_version(snapshot),
     )
     decision = "AUTO_EXECUTE" if action.classification in {"READ_ONLY", "SAFE"} else "PENDING_APPROVAL"
+    contract = get_contract(action.action_id)
+    contract_snapshot = {
+        "registry": contract.snapshot() if contract else None,
+        "registered": contract is not None,
+    }
     row = RemediationCase(
         incident_id=incident.id, action_id=action.id, cluster_id=incident.cluster_id,
         fault_family=incident.ceph_code, entity_keys_json=_json(entities),
@@ -92,7 +98,9 @@ def create_for_action(
         topology_snapshot_json=_json(snapshot.get("osdmap") or snapshot.get("monmap")),
         diagnosis=diagnosis, prompt_version="incident-diagnosis-v1", model_provider=model_provider,
         classification=action.classification, autonomy_decision=decision,
-        playbook_version="v1", pre_state_json=_json(snapshot), outcome="PROPOSED",
+        playbook_version=contract.version if contract else "unregistered",
+        preflight_snapshot_json=_json(contract_snapshot),
+        pre_state_json=_json(snapshot), outcome="PROPOSED",
     )
     session.add(row)
     return row

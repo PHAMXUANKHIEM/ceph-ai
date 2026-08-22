@@ -55,6 +55,11 @@ def test_case_freezes_redacted_pre_state_and_has_stable_fingerprint():
     assert len(first.evidence_fingerprint) == 64
     assert json.loads(first.pre_state_json)["ceph_version"] == "18.2.4"
     assert first.autonomy_decision == "PENDING_APPROVAL"
+    assert first.playbook_version == "1"
+    contract_snapshot = json.loads(first.preflight_snapshot_json)
+    assert contract_snapshot["registered"] is True
+    assert contract_snapshot["registry"]["action_id"] == "restart_osd_daemon"
+    assert contract_snapshot["registry"]["target_schema"] == "osd"
     assert first.outcome == "PROPOSED"
 
 

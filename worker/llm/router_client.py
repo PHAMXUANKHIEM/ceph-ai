@@ -39,6 +39,7 @@ from worker.backup import engine as backup_engine
 from worker.executor import cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
+from worker.policy.playbook_registry import evaluate_auto_execution
 from worker.preflight import run_preflight
 from worker.operational_gate import evaluate as evaluate_operational_gate
 from worker.autonomy_runtime import (
@@ -839,6 +840,24 @@ def _maybe_execute_safe_action(
             "for incident %s; routing to approval", action_id, incident_id,
         )
         _route_safe_to_approval(incident_id, action_pk, action_id)
+        return
+    # Preserve the older, stronger DESTRUCTIVE invariant below: it records a
+    # hard FAILED outcome instead of ever presenting a destructive action as
+    # merely approval-gated.  All non-destructive SAFE candidates must pass
+    # the versioned playbook contract before any telemetry/SSH work.
+    contract_decision = evaluate_auto_execution(action_id, ActionClassification.SAFE.value)
+    if (
+        gate.classify_action(action_id) != ActionClassification.DESTRUCTIVE
+        and not contract_decision.allowed
+    ):
+        logger.warning(
+            "_maybe_execute_safe_action: playbook contract blocked action_id=%s for incident %s: %s",
+            action_id, incident_id, contract_decision.reason,
+        )
+        _route_safe_to_approval(
+            incident_id, action_pk, action_id,
+            event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
+        )
         return
     if settings.ai_preflight_enforcement_enabled:
         with db.SessionLocal() as session:
@@ -1886,7 +1905,10 @@ def _auto_reject_risky_during_cluster_operation(
         session.commit()
 
 
-def _route_safe_to_approval(incident_id: str, action_pk: str, action_id: str) -> None:
+def _route_safe_to_approval(
+    incident_id: str, action_pk: str, action_id: str, *,
+    event_type: str = audit.EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED,
+) -> None:
     """Park a SAFE action when the global Autopilot kill switch is off."""
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
@@ -1907,7 +1929,7 @@ def _route_safe_to_approval(incident_id: str, action_pk: str, action_id: str) ->
             audit.record(
                 session, incident_id=incident_id,
                 action_id=action_pk if action is not None else None,
-                event_type=audit.EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED,
+                event_type=event_type,
                 actor=audit.ACTOR_SYSTEM,
             )
         session.commit()
