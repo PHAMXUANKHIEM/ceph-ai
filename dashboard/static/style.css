@@ -2467,22 +2467,16 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   align-items: center;
   width: 154px;
   height: 43px;
-  padding: 6px 10px;
+  padding: 0;
   overflow: hidden;
   flex: 0 0 auto;
-  border: 1px solid rgba(var(--brand-primary-rgb), .24);
-  border-radius: 12px;
-  background: #e8edfb;
-  box-shadow: 0 7px 20px rgba(0, 0, 0, .22), 0 0 0 1px rgba(255, 255, 255, .03);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .bizfly-logo-plate::after {
-  content: "";
-  position: absolute;
-  inset: auto 13px 0;
-  height: 2px;
-  border-radius: 2px 2px 0 0;
-  background: linear-gradient(90deg, var(--brand-navy), var(--brand-primary-hover));
-  opacity: .9;
+  content: none;
 }
 .bizfly-logo-plate.logo-unavailable::before {
   content: "Bizfly CLOUD";
