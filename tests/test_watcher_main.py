@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import pytest
+import threading
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -10,6 +11,26 @@ from shared import db as db_module
 from shared import heartbeat
 from shared.db import Base
 from shared.models import WatcherHeartbeat
+
+
+def test_auxiliary_scan_runs_in_background_and_prevents_overlap():
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = []
+
+    def slow_scan():
+        calls.append("run")
+        started.set()
+        release.wait(2)
+        finished.set()
+
+    watcher_main._run_auxiliary_scan("test-nonblocking", slow_scan, background=True)
+    assert started.wait(1)
+    watcher_main._run_auxiliary_scan("test-nonblocking", slow_scan, background=True)
+    assert calls == ["run"]
+    release.set()
+    assert finished.wait(1)
 
 
 @pytest.fixture(autouse=True)

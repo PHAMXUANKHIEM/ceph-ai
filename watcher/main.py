@@ -47,6 +47,35 @@ logger = logging.getLogger(__name__)
 
 OnTransition = Callable[[Optional[str], dict], None]
 
+_BACKGROUND_SCAN_LOCKS: dict[str, threading.Lock] = {}
+_BACKGROUND_SCAN_LOCKS_GUARD = threading.Lock()
+
+
+def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: bool) -> None:
+    """Keep slow auxiliary collectors from delaying the core health poll.
+
+    Production uses one daemon thread and a non-overlap lock per collector;
+    bounded test loops remain synchronous and deterministic.
+    """
+    if not background:
+        callback()
+        return
+    with _BACKGROUND_SCAN_LOCKS_GUARD:
+        lock = _BACKGROUND_SCAN_LOCKS.setdefault(name, threading.Lock())
+    if not lock.acquire(blocking=False):
+        logger.info("run: auxiliary scan %s is still running; skipping overlapping tick", name)
+        return
+
+    def run_and_release() -> None:
+        try:
+            callback()
+        finally:
+            lock.release()
+
+    threading.Thread(
+        target=run_and_release, name=f"watcher-aux-{name}", daemon=True,
+    ).start()
+
 # Only these statuses represent a problem worth an Incident — a transition
 # back to HEALTH_OK is a recovery, not a new incident (Story 1.4 AC #4).
 PROBLEM_STATUSES = {"HEALTH_WARN", "HEALTH_ERR"}
@@ -715,14 +744,19 @@ def run(
         # saw to shared.models.VolumeMetric (see that function's own
         # docstring) — deliberately called every poll regardless of
         # whether anything looked saturated this cycle.
-        try:
-            current_saturated = volume_monitor.check_volumes(cluster_id=cluster_id)
-            volume_monitor.persist_last_poll_metrics(cluster_id=cluster_id)
-            volume_monitor.create_or_resolve_volume_incidents(
-                current_saturated, cluster_id=cluster_id, include_legacy_null=True
-            )
-        except Exception:
-            logger.exception("run: volume saturation check failed")
+        def scan_volumes() -> None:
+            try:
+                current_saturated = volume_monitor.check_volumes(cluster_id=cluster_id)
+                volume_monitor.persist_last_poll_metrics(cluster_id=cluster_id)
+                volume_monitor.create_or_resolve_volume_incidents(
+                    current_saturated, cluster_id=cluster_id, include_legacy_null=True
+                )
+            except Exception:
+                logger.exception("run: volume saturation check failed")
+        _run_auxiliary_scan(
+            f"volume-{cluster_id or 'default'}", scan_volumes,
+            background=max_iterations is None,
+        )
 
         # Aggregate Trash needs one query per RBD pool plus `ceph df`, so
         # cap it at once per minute even when the main poll is faster.
@@ -731,10 +765,15 @@ def run(
             last_trash_capacity_scan_at is None
             or (trash_now - last_trash_capacity_scan_at).total_seconds() >= 60
         ):
-            try:
-                trash_capacity_monitor.check_and_alert()
-            except Exception:
-                logger.exception("run: trash capacity check failed")
+            def scan_trash() -> None:
+                try:
+                    trash_capacity_monitor.check_and_alert()
+                except Exception:
+                    logger.exception("run: trash capacity check failed")
+            _run_auxiliary_scan(
+                f"trash-{cluster_id or 'default'}", scan_trash,
+                background=max_iterations is None,
+            )
             last_trash_capacity_scan_at = trash_now
 
         # 2026-08-01 (Story C): DeviceHealth-driven evacuation-proposal scan
@@ -944,11 +983,16 @@ def run(
             or (now - last_log_intel_scan_at).total_seconds()
             >= settings.log_intel_scan_interval_seconds
         ):
-            try:
-                log_intel.scan_and_store(cluster_id)
-                log_intel.prune_old_rows()
-            except Exception:
-                logger.exception("run: log intelligence scan failed")
+            def scan_logs() -> None:
+                try:
+                    log_intel.scan_and_store(cluster_id)
+                    log_intel.prune_old_rows()
+                except Exception:
+                    logger.exception("run: log intelligence scan failed")
+            _run_auxiliary_scan(
+                f"log-intel-{cluster_id or 'default'}", scan_logs,
+                background=max_iterations is None,
+            )
             last_log_intel_scan_at = now
 
         iterations += 1
