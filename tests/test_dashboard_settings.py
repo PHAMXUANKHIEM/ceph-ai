@@ -52,9 +52,9 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert response.status_code == 200
     assert "API Key" in response.text
     assert "Đăng nhập bằng Codex" in response.text
-    assert "Shadow Autopilot Evaluation" in response.text
-    assert "COLLECTING EVIDENCE" in response.text
-    assert "L2 → L3 Promotion Candidates" in response.text
+    assert "Shadow Autopilot Evaluation" not in response.text
+    assert "L2 → L3 Promotion Candidates" not in response.text
+    assert "Playbook Registry" not in response.text
     assert "BẬT AUTOPILOT" in response.text or "TẮT AUTOPILOT" in response.text
     assert "Autopilot theo cluster" not in response.text
     assert "Phân loại hành động AI" in response.text
@@ -1664,12 +1664,9 @@ def test_get_settings_shows_restart_controls_for_admin(dashboard_client):
     assert 'action="/settings/restart-remediation-watcher"' in response.text
     assert "AI Remediation Watcher" in response.text
     assert 'action="/settings/restart-dashboard"' in response.text
-    assert "Playbook Registry" in response.text
-    assert "resync_ntp" in response.text
-    assert "L3_READY" in response.text
-    assert "restart_osd_daemon" in response.text
-    assert "CONDITIONAL" in response.text
-    assert "checksum" in response.text
+    assert "Playbook Registry" not in response.text
+    assert "Shadow Autopilot Evaluation" not in response.text
+    assert "L2 → L3 Promotion Candidates" not in response.text
     assert "Lý do thay đổi" not in response.text
     assert "Nếu chọn SAFE" not in response.text
     assert "action-policy-change-form" in response.text

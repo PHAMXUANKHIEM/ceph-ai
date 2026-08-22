@@ -140,51 +140,6 @@
           </form>
         </div>
       </article>
-      <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>L2 → L3 Promotion Candidates</h2></div>
-        <div class="card-body"><p class="hint">Evaluator chỉ đề cử để admin review; không đổi maturity và không cấp quyền execute.</p>
-          {% if playbook_stats %}<div class="table-wrap"><table><thead><tr><th>Playbook / scope</th><th>Maturity</th><th>Trust / verified</th><th>Promotion</th></tr></thead><tbody>
-          {% for stat in playbook_stats %}<tr><td><code>{{ stat.playbook_id }}@{{ stat.playbook_version }}</code><br><span class="hint">{{ stat.scope_key }}</span></td><td>{{ stat.maturity_level }}</td><td>{{ "%.3f"|format(stat.trust_score) }} / {{ stat.verified_count }}</td><td><strong>{{ "PROMOTION_CANDIDATE" if stat.promotion_candidate_at else "BLOCKED" }}</strong><br><span class="hint">{{ stat.promotion_blocked_reason or "Đủ điều kiện; chờ admin review" }}</span>{% if stat.promotion_candidate_at %}<form method="post" action="/settings/autopilot/promote-playbook" class="promotion-approval-form"><input type="hidden" name="stat_id" value="{{ stat.id }}"><input type="hidden" name="confirmation" value=""><button class="btn btn-primary btn-sm" type="submit">Duyệt lên L3</button></form>{% endif %}</td></tr>{% endfor %}
-          </tbody></table></div>{% else %}<p class="empty-state">Chưa có Playbook Trust scope đủ provenance để đánh giá.</p>{% endif %}
-        </div>
-      </article>
-      <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Shadow Autopilot Evaluation</h2><span class="hint">Cửa sổ {{ shadow_report.window_days }} ngày</span></div>
-        <div class="card-body">
-          <p><strong>{{ "READY FOR HUMAN REVIEW" if shadow_report.ready_for_review else "COLLECTING EVIDENCE" }}</strong></p>
-          <p class="hint">Chỉ là báo cáo commissioning; không tự mở khoá hoặc bật Autopilot.</p>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Scope</th><th>Evaluated / pending</th><th>Would execute</th><th>Success / unsafe</th><th>Hold đúng / bỏ lỡ</th><th>Precision</th></tr></thead>
-            <tbody>
-              <tr><td><strong>Tổng · {{ shadow_report.observed_days }} ngày quan sát</strong></td><td>{{ shadow_report.evaluated }} / {{ shadow_report.pending }}</td><td>{{ shadow_report.would_execute }}</td><td>{{ shadow_report.match_success }} / {{ shadow_report.unsafe_miss }}</td><td>{{ shadow_report.correct_hold }} / {{ shadow_report.missed_opportunity }}</td><td>{{ "%.1f%%"|format(shadow_report.precision * 100) if shadow_report.precision is not none else "Chưa đủ dữ liệu" }}</td></tr>
-              {% for row in shadow_report.playbooks %}<tr><td><code>{{ row.playbook_id }}</code></td><td>{{ row.evaluated }} / {{ row.pending }}</td><td>{{ row.would_execute }}</td><td>{{ row.match_success }} / {{ row.unsafe_miss }}</td><td>{{ row.correct_hold }} / {{ row.missed_opportunity }}</td><td>{{ "%.1f%%"|format(row.precision * 100) if row.precision is not none else "—" }}</td></tr>{% endfor %}
-            </tbody>
-          </table></div>
-        </div>
-      </article>
-      <article class="card" style="margin-top:1rem">
-        <div class="card-header"><h2>Playbook Registry</h2></div>
-        <div class="card-body">
-          <p class="hint">Eligibility ở đây chỉ phản ánh contract tĩnh. Khi thực thi, kill switch, evidence freshness, target, operational gate, rate limit và lease vẫn có quyền chặn.</p>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Playbook</th><th>Version</th><th>Safety / ceiling</th><th>Target / blast radius</th><th>Hooks</th><th>Eligibility</th></tr></thead>
-              <tbody>
-              {% for playbook in playbook_registry %}
-                <tr>
-                  <td><code>{{ playbook.action_id }}</code><br><span class="hint">checksum {{ playbook.contract_checksum[:12] }}</span></td>
-                  <td>contract {{ playbook.version }}<br>builder {{ playbook.command_builder_version or "—" }}</td>
-                  <td>{{ playbook.policy_classification }} / {{ playbook.max_autonomy }}</td>
-                  <td>{{ playbook.target_schema }} · max {{ playbook.max_targets }}<br><span class="hint">scope {{ playbook.conflict_scope }}, cooldown {{ playbook.cooldown_seconds }}s</span></td>
-                  <td>Builder: {{ "OK" if playbook.command_builder_available else "MISSING" }}<br>Preflight: {{ "OK" if playbook.preflight_registered else "MISSING" }} · Post-check: {{ "OK" if playbook.postcheck_registered else "MISSING" }}</td>
-                  <td><strong>{{ playbook.eligibility_status }}</strong><br><span class="hint">{{ playbook.eligibility_reason }}</span></td>
-                </tr>
-              {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </article>
       <dialog class="restart-dialog" id="restart-service-dialog">
         <form method="dialog" class="restart-dialog-card">
           <div class="restart-dialog-icon">!</div><div><h2 id="restart-dialog-title">Restart service?</h2><p id="restart-dialog-description"></p></div>
