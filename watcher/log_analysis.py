@@ -64,6 +64,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.router_client import build_router_client
 from watcher.capability_inventory import latest_snapshot
 from watcher.log_triage import TriageResult
+from watcher.log_semantics import derive_identity, entities_from_json, same_semantic_problem
 from worker.policy import gate
 from worker.policy.gate import _POLICY_PATH
 
@@ -576,6 +577,13 @@ def _same_log_problem(left: LogFinding, right: LogFinding) -> bool:
     """Nhận diện cùng hiện tượng khi cửa sổ kế tiếp đổi nhẹ bộ evidence."""
     if left.verdict != right.verdict:
         return False
+    if same_semantic_problem(
+        left.fault_family,
+        entities_from_json(left.semantic_entities_json),
+        right.fault_family,
+        entities_from_json(right.semantic_entities_json),
+    ):
+        return True
     return _evidence_sets_overlap(_evidence_ids(left), _evidence_ids(right))
 
 
@@ -702,6 +710,17 @@ def analyze_window(
     )
 
     with db.SessionLocal() as session:
+        pattern_templates = [
+            row[0]
+            for row in session.query(LogPattern.template)
+            .filter(LogPattern.id.in_(validated["evidence_pattern_ids"]))
+            .all()
+        ]
+        semantic = derive_identity(
+            pattern_templates,
+            validated["affected_hosts"],
+            validated["affected_daemons"],
+        )
         # Chống lặp (L3): cùng bộ mẫu evidence + cùng verdict mà đã có một
         # bản ghi đang mở thì KHÔNG tạo hàng mới và KHÔNG báo lại. Một vấn
         # đề kéo dài vài ngày sẽ được quét lại mỗi 15 phút -- nếu không có
@@ -720,6 +739,15 @@ def analyze_window(
             (
                 row for row in open_findings
                 if row.dedupe_key == dedupe_key
+                or (
+                    row.verdict == validated["verdict"]
+                    and same_semantic_problem(
+                        row.fault_family,
+                        entities_from_json(row.semantic_entities_json),
+                        semantic.fault_family,
+                        set(semantic.entities),
+                    )
+                )
                 or (
                     row.verdict == validated["verdict"]
                     and _evidence_sets_overlap(_evidence_ids(row), evidence_ids)
@@ -746,6 +774,8 @@ def analyze_window(
             evidence_pattern_ids_json=json.dumps(validated["evidence_pattern_ids"]),
             affected_hosts_json=json.dumps(validated["affected_hosts"]),
             affected_daemons_json=json.dumps(validated["affected_daemons"]),
+            fault_family=semantic.fault_family,
+            semantic_entities_json=json.dumps(semantic.entities),
             recommended_action_id=validated["recommended_action_id"],
             recommended_manual_steps_json=json.dumps(
                 validated["recommended_manual_steps"]

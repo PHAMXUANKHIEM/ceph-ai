@@ -1843,6 +1843,9 @@ class LogFinding(Base):
     # JSON list[str] -- host, đã đối chiếu với danh sách node đã cấu hình.
     affected_hosts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     affected_daemons_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Identity do catalogue phía server sinh; không lấy trực tiếp từ AI.
+    fault_family: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    semantic_entities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Chỉ được đặt khi vượt qua allowlist VÀ không thuộc nhóm DESTRUCTIVE.
     recommended_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # JSON list[str] -- các bước thủ công, dạng văn bản thuần, không bao giờ

@@ -60,7 +60,7 @@ def isolated_db(monkeypatch):
             id="pat-1", cluster_id=cluster.id, fingerprint="fp-1",
             template="osd.<ID> heartbeat_check: no reply from <ADDR>",
             daemon_type="osd", severity=-1,
-            first_seen_at=WINDOW_START, last_seen_at=WINDOW_START + timedelta(minutes=5),
+            first_seen_at=WINDOW_START, last_seen_at=WINDOW_END - timedelta(minutes=5),
             total_count=42,
         ))
         session.commit()
@@ -155,7 +155,8 @@ def test_different_problem_gets_its_own_alert(isolated_db, ai_on, sent, monkeypa
         session.add(LogPattern(
             id="pat-2", cluster_id=cluster_id, fingerprint="fp-2",
             template="mon.<ID> slow ops", daemon_type="mon", severity=-1,
-            first_seen_at=WINDOW_START, last_seen_at=WINDOW_START, total_count=5,
+                first_seen_at=WINDOW_START,
+                last_seen_at=WINDOW_END - timedelta(minutes=5), total_count=5,
         ))
         session.commit()
 
@@ -361,6 +362,38 @@ def test_reconcile_does_not_merge_findings_with_only_generic_overlap(isolated_db
     with db_module.SessionLocal() as session:
         assert session.get(LogFinding, first_id).status == LogFindingStatus.OPEN.value
         assert session.get(LogFinding, second_id).status == LogFindingStatus.OPEN.value
+
+
+def test_reconcile_merges_same_server_semantics_without_evidence_overlap(isolated_db):
+    cluster_id, run_id = isolated_db
+    first_id = _make_open_finding(cluster_id, run_id, pattern_ids=("old-heartbeat",), title="first")
+    second_id = _make_open_finding(cluster_id, run_id, pattern_ids=("new-heartbeat",), title="second")
+    with db_module.SessionLocal() as session:
+        for finding_id in (first_id, second_id):
+            finding = session.get(LogFinding, finding_id)
+            finding.fault_family = "network_heartbeat"
+            finding.semantic_entities_json = json.dumps(["host:10.0.0.1", "daemon:osd.5"])
+        session.commit()
+
+    assert log_analysis.reconcile_overlapping_findings(cluster_id) == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(LogFinding, first_id).status == LogFindingStatus.OPEN.value
+        assert session.get(LogFinding, second_id).status == LogFindingStatus.RESOLVED.value
+
+
+def test_semantic_reconcile_does_not_merge_different_entities(isolated_db):
+    cluster_id, run_id = isolated_db
+    first_id = _make_open_finding(cluster_id, run_id, pattern_ids=("p-a",), title="first")
+    second_id = _make_open_finding(cluster_id, run_id, pattern_ids=("p-b",), title="second")
+    with db_module.SessionLocal() as session:
+        first = session.get(LogFinding, first_id)
+        second = session.get(LogFinding, second_id)
+        first.fault_family = second.fault_family = "disk_io"
+        first.semantic_entities_json = json.dumps(["host:node-a", "daemon:osd.1"])
+        second.semantic_entities_json = json.dumps(["host:node-b", "daemon:osd.2"])
+        session.commit()
+
+    assert log_analysis.reconcile_overlapping_findings(cluster_id) == 0
 
 
 def test_already_resolved_finding_is_not_re_alerted(isolated_db, sent):

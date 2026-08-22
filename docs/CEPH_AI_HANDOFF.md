@@ -51,10 +51,15 @@ DB và kiểm tra health/log production lại, không mặc định các con s�
 
 ## Phần còn lại khi quay lại làm AI
 
+Roadmap Ceph theo thứ tự ưu tiên mới được theo dõi tại
+[`docs/CEPH_AI_ROADMAP.md`](CEPH_AI_ROADMAP.md). Ceph được triển khai trước;
+roadmap Vitastor giữ riêng và tiếp tục sau.
+
 ### Ceph
 
-- Chuẩn hóa semantic grouping LogFinding tốt hơn ngưỡng overlap pattern
-  hiện tại; bổ sung entity/fault-family ổn định do server sinh.
+- Semantic grouping LogFinding đã có lõi `fault_family` + entity ổn định do
+  server sinh (2026-08-22); bước kế tiếp là correlation chéo health incident,
+  log, metric và disk signal.
 - Hoàn thiện preflight enforcement và rollout production sau khi có đủ
   telemetry về tỷ lệ false-block.
 - Incident timeline thống nhất và AI postmortem dựa trên audit/evidence thật.

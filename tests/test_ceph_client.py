@@ -1049,6 +1049,42 @@ def test_query_rbd_iostat_parses_list_shaped_response(fake_ssh, monkeypatch):
     ]
 
 
+def test_query_rbd_iostat_is_finite_and_has_remote_kill_deadline(monkeypatch):
+    captured = {}
+
+    def fake_run(command):
+        captured["command"] = command
+        return "10.20.1.150", []
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", fake_run)
+
+    assert query_rbd_iostat("pool with spaces") == []
+    assert captured["command"] == (
+        "timeout --signal=TERM --kill-after=2s 8s "
+        "rbd perf image iostat 'pool with spaces' --iterations 1"
+    )
+
+
+def test_query_rbd_iostat_with_is_finite_and_has_remote_kill_deadline(monkeypatch):
+    captured = {}
+
+    def fake_run(nodes, container, user, key, mode, command):
+        captured["command"] = command
+        return nodes[0], []
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command_with", fake_run)
+
+    samples = ceph_client.query_rbd_iostat_with(
+        "vms", ["10.20.1.150"], "ceph-mon", "root", "/key", "none"
+    )
+
+    assert samples == []
+    assert captured["command"] == (
+        "timeout --signal=TERM --kill-after=2s 8s "
+        "rbd perf image iostat vms --iterations 1"
+    )
+
+
 def test_query_rbd_iostat_parses_dict_with_images_key(fake_ssh, monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
     fake_ssh.behavior = {

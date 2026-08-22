@@ -48,6 +48,20 @@ DIAGNOSTIC_OUTPUT_MAX_CHARS = 8000
 # poll loop, so a couple more seconds of headroom costs nothing real).
 MCP_COMMAND_TIMEOUT_SECONDS = 10
 
+# `rbd perf image iostat` is a streaming command unless an iteration count is
+# supplied.  Keep the collection finite at the Ceph CLI level and also put a
+# remote-side deadline around it: a Paramiko channel timeout only closes the
+# SSH channel and can leave the remote `rbd` child re-parented to PID 1.
+RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS = 8
+
+
+def _rbd_iostat_command(pool: str) -> str:
+    return (
+        "timeout --signal=TERM --kill-after=2s "
+        f"{RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS}s rbd perf image iostat "
+        f"{shlex.quote(pool)} --iterations 1"
+    )
+
 
 def build_exec_command(exec_mode: str, container: str, inner_command: str) -> str:
     """Wraps `inner_command` for how this cluster is actually deployed —
@@ -450,7 +464,7 @@ def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
     doesn't look like the expected shape, so an unexpected-schema surprise
     degrades to "no data this poll" rather than crashing the Watcher loop.
     """
-    _, payload = run_ceph_json_command(f"rbd perf image iostat {shlex.quote(pool)}")
+    _, payload = run_ceph_json_command(_rbd_iostat_command(pool))
     return _normalize_rbd_iostat(pool, payload)
 
 
@@ -461,7 +475,7 @@ def query_rbd_iostat_with(
     """Cluster-scoped counterpart to :func:`query_rbd_iostat`."""
     _, payload = run_ceph_json_command_with(
         mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
-        f"rbd perf image iostat {shlex.quote(pool)}",
+        _rbd_iostat_command(pool),
     )
     return _normalize_rbd_iostat(pool, payload)
 

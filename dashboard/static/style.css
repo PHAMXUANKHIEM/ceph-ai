@@ -2452,6 +2452,61 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   letter-spacing: .095em;
   text-transform: uppercase;
 }
+.app-shell .brand {
+  gap: 9px;
+  text-decoration: none;
+}
+.bizfly-logo-plate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 154px;
+  height: 43px;
+  padding: 6px 10px;
+  overflow: hidden;
+  flex: 0 0 auto;
+  border: 1px solid rgba(83, 203, 238, .22);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 7px 20px rgba(0, 0, 0, .22), 0 0 0 1px rgba(255, 255, 255, .03);
+}
+.bizfly-logo-plate::after {
+  content: "";
+  position: absolute;
+  inset: auto 13px 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(90deg, #321078, #39c9e8);
+  opacity: .75;
+}
+.bizfly-logo-plate.logo-unavailable::before {
+  content: "Bizfly CLOUD";
+  color: #321078;
+  font-size: .89rem;
+  font-weight: 850;
+  letter-spacing: -.025em;
+}
+.bizfly-brand-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.bizfly-module-label {
+  display: inline-flex;
+  align-items: center;
+  height: 23px;
+  padding: 0 8px;
+  border: 1px solid rgba(56, 200, 231, .18);
+  border-radius: 999px;
+  color: #8ca2b9;
+  background: rgba(56, 200, 231, .06);
+  font-size: .57rem;
+  font-weight: 750;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .shell-menu-toggle {
   display: none;
   width: 38px;
@@ -2560,7 +2615,9 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
     gap: 0;
     flex-wrap: nowrap;
   }
-  .app-shell .brand { min-height: 46px; padding: 0 9px 18px; border-bottom: 1px solid var(--border); }
+  .app-shell .brand { min-height: 59px; padding: 0 5px 16px; border-bottom: 1px solid var(--border); }
+  .app-shell .bizfly-logo-plate { width: 174px; height: 48px; }
+  .app-shell .bizfly-module-label { display: none; }
   .app-shell .brand-mark { width: 34px; height: 34px; border-radius: 11px; }
   .app-shell .main-nav { height: auto; flex: 0 0 auto; flex-direction: column; gap: 17px; padding: 18px 0; }
   .app-shell .nav-section-label { padding: 0; }
@@ -2624,6 +2681,8 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   .app-shell .topbar-inner { height: var(--shell-bar); max-width: none; padding: 0 16px; flex-wrap: nowrap; }
   .app-shell .brand { margin-right: auto; }
   .app-shell .brand-copy small { display: none; }
+  .app-shell .bizfly-logo-plate { width: 143px; height: 40px; border-radius: 10px; }
+  .app-shell .bizfly-module-label { display: none; }
   .app-shell .shell-menu-toggle { display: block; order: 3; flex: 0 0 auto; }
   .app-shell .main-nav {
     position: fixed;

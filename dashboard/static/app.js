@@ -56,15 +56,32 @@
   document.body.classList.add("app-shell");
 
   var brand = topbar.querySelector(".brand");
-  if (brand && !brand.querySelector(".brand-copy")) {
-    var brandText = Array.prototype.slice.call(brand.childNodes).filter(function (node) {
-      return node.nodeType === Node.TEXT_NODE && node.textContent.trim();
+  if (brand && !brand.querySelector(".bizfly-brand-logo")) {
+    // Use Bizfly Cloud as the product identity while retaining a small module
+    // label so operators can still distinguish this Ceph control plane from
+    // other Bizfly consoles.  Keep a text fallback for offline installations.
+    brand.replaceChildren();
+    brand.setAttribute("aria-label", "Bizfly Cloud — Ceph Operations");
+
+    var logoPlate = document.createElement("span");
+    logoPlate.className = "bizfly-logo-plate";
+    var logo = document.createElement("img");
+    logo.className = "bizfly-brand-logo";
+    logo.src = "https://static.mediacdn.vn/web_images/bizzfly.jpg";
+    logo.alt = "Bizfly Cloud";
+    logo.decoding = "async";
+    logo.referrerPolicy = "no-referrer";
+    logo.addEventListener("error", function () {
+      logoPlate.classList.add("logo-unavailable");
+      logo.remove();
     });
-    brandText.forEach(function (node) { node.remove(); });
-    var copy = document.createElement("span");
-    copy.className = "brand-copy";
-    copy.innerHTML = "<strong>Ceph AI</strong><small>Autonomous operations</small>";
-    brand.appendChild(copy);
+    logoPlate.appendChild(logo);
+
+    var moduleLabel = document.createElement("span");
+    moduleLabel.className = "bizfly-module-label";
+    moduleLabel.textContent = "Ceph operations";
+    brand.appendChild(logoPlate);
+    brand.appendChild(moduleLabel);
   }
 
   var menuButton = document.createElement("button");
