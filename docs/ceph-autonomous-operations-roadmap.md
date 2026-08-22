@@ -709,6 +709,14 @@ proposal trong cửa sổ đánh giá.
 
 ### Pha 4 — Autopilot L3 trên lab
 
+Trạng thái triển khai (2026-08-22): **đang thực hiện**.
+
+- Đã thêm commissioning environment và kill switch riêng từng cluster. Mặc
+  định mọi cluster là `production` + disabled; execution boundary chỉ cho L3
+  đi tiếp khi đồng thời global switch bật và cluster là `lab` + enabled.
+- Mọi thay đổi cluster gate cần admin, lý do, xác nhận mạnh khi bật và audit
+  append-only; production không thể bật per-cluster Autopilot.
+
 - Chỉ mở 1–3 playbook SAFE blast radius thấp.
 - Grace period, Telegram cancel, rate limit và cooldown.
 - Per-cluster kill switch.

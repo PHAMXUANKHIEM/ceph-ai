@@ -138,6 +138,18 @@
         </div>
       </article>
       <article class="card" style="margin-top:1rem">
+        <div class="card-header"><h2>Per-cluster Lab Gate</h2></div>
+        <div class="card-body"><p class="hint">Production luôn fail-closed. Muốn thử L3 phải đánh dấu đúng cluster là lab và bật kill switch riêng.</p>
+        {% for cluster in autopilot_clusters %}<form method="post" action="/settings/autopilot/clusters/{{ cluster.id }}" class="login-box" style="margin-bottom:1rem">
+          <p><strong>{{ cluster.name }}</strong> · {{ "mặc định" if cluster.is_default else "cluster phụ" }} · <code>{{ cluster.autonomy_environment }}</code> / <code>{{ "ENABLED" if cluster.autopilot_enabled else "DISABLED" }}</code></p>
+          <label>Environment<select name="environment"><option value="production" {{ "selected" if cluster.autonomy_environment == "production" else "" }}>production</option><option value="lab" {{ "selected" if cluster.autonomy_environment == "lab" else "" }}>lab</option></select></label>
+          <label>Cluster kill switch<select name="enabled"><option value="0">DISABLED</option><option value="1" {{ "selected" if cluster.autopilot_enabled else "" }}>ENABLED (lab only)</option></select></label>
+          <label>Lý do<input name="reason" minlength="8" maxlength="500" required></label>
+          <label>Xác nhận khi bật<input name="confirmation" placeholder="ENABLE LAB AUTOPILOT"></label>
+          <button class="btn btn-primary" type="submit">Lưu cluster gate</button>
+        </form>{% endfor %}</div>
+      </article>
+      <article class="card" style="margin-top:1rem">
         <div class="card-header"><h2>L2 → L3 Promotion Candidates</h2></div>
         <div class="card-body"><p class="hint">Evaluator chỉ đề cử để admin review; không đổi maturity và không cấp quyền execute.</p>
           {% if playbook_stats %}<div class="table-wrap"><table><thead><tr><th>Playbook / scope</th><th>Maturity</th><th>Trust / verified</th><th>Promotion</th></tr></thead><tbody>

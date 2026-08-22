@@ -59,6 +59,7 @@ def isolated_db(monkeypatch):
             id="test-default-cluster", name="test", is_default=True, is_active=True,
             ceph_mon_nodes="mon-a", ceph_container_name="ceph-mon", ssh_user="root",
             ssh_key_path="/tmp/test-key", ceph_exec_mode="none",
+            autonomy_environment="lab", autopilot_enabled=True,
         ))
         session.commit()
     # Most tests in this legacy suite exercise the execution path itself.
@@ -2798,6 +2799,35 @@ def test_global_autopilot_kill_switch_parks_safe_action_for_approval(isolated_db
         assert session.query(AuditEntry).filter_by(
             incident_id=incident.id,
             event_type=audit.EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED,
+        ).count() == 1
+
+
+def test_per_cluster_gate_blocks_production_even_when_global_switch_is_on(isolated_db, monkeypatch):
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *_args, **_kwargs: pytest.fail("production cluster gate must block SSH"),
+    )
+    with db_module.SessionLocal() as session:
+        cluster = session.get(Cluster, "test-default-cluster")
+        cluster.autonomy_environment = "production"
+        cluster.autopilot_enabled = False
+        session.commit()
+    _create_incident("incident-cluster-gate")
+
+    asyncio.run(router_client.diagnose_incident(
+        "incident-cluster-gate", dict(ENVELOPE, incident_id="incident-cluster-gate")
+    ))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-cluster-gate")
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert session.query(AuditEntry).filter_by(
+            incident_id=incident.id,
+            event_type=audit.EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED,
         ).count() == 1
 
 

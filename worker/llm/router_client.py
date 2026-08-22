@@ -877,6 +877,28 @@ def _maybe_execute_safe_action(
         )
         _route_safe_to_approval(incident_id, action_pk, action_id)
         return
+    with db.SessionLocal() as session:
+        gate_incident = session.get(Incident, incident_id)
+        gate_cluster = (
+            session.get(Cluster, gate_incident.cluster_id)
+            if gate_incident is not None and gate_incident.cluster_id else
+            session.query(Cluster).filter(Cluster.is_default.is_(True)).first()
+        )
+        cluster_gate_allowed = bool(
+            gate_cluster is not None
+            and gate_cluster.autonomy_environment == "lab"
+            and gate_cluster.autopilot_enabled
+        )
+    if not cluster_gate_allowed:
+        logger.warning(
+            "_maybe_execute_safe_action: per-cluster lab gate blocked action_id=%s for incident %s",
+            action_id, incident_id,
+        )
+        _route_safe_to_approval(
+            incident_id, action_pk, action_id,
+            event_type=audit.EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED,
+        )
+        return
     # Preserve the older, stronger DESTRUCTIVE invariant below: it records a
     # hard FAILED outcome instead of ever presenting a destructive action as
     # merely approval-gated.  All non-destructive SAFE candidates must pass

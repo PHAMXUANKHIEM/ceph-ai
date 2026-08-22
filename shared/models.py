@@ -144,6 +144,12 @@ class Cluster(Base):
     backup_immutable_lock_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    autonomy_environment: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="production", server_default="production",
+    )
+    autopilot_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -511,6 +517,21 @@ class AutopilotConfigAudit(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    new_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AutopilotClusterConfigAudit(Base):
+    """Append-only audit for the stricter per-cluster commissioning gate."""
+    __tablename__ = "autopilot_cluster_config_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    new_environment: Mapped[str] = mapped_column(String(16), nullable=False)
     previous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     new_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)

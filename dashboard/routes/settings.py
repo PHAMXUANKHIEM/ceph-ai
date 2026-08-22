@@ -48,7 +48,7 @@ from shared.claude_cli import (
 from shared.clusters import sync_default_cluster_from_settings
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.ai_limits import normalize_rate_limits
-from shared.models import AutopilotConfigAudit, Cluster, PlaybookStat
+from shared.models import AutopilotClusterConfigAudit, AutopilotConfigAudit, Cluster, PlaybookStat
 from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
@@ -939,6 +939,9 @@ def _settings_context(
         context["playbook_stats"] = session.query(PlaybookStat).order_by(
             PlaybookStat.playbook_id, PlaybookStat.scope_key,
         ).all()
+        context["autopilot_clusters"] = session.query(Cluster).filter_by(is_active=True).order_by(
+            Cluster.is_default.desc(), Cluster.name,
+        ).all()
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
         default_cluster = next((row for row in openstack_clusters if row.is_default), None)
         openstack_cluster = next((row for row in openstack_clusters if row.id == openstack_cluster_id), None) or default_cluster
@@ -1114,6 +1117,54 @@ async def settings_autopilot_submit(
             f"Đã {'bật' if desired else 'tắt'} Autopilot và khởi động lại Worker "
             f"(PID {restart_result['new_pid']})."
         ),
+    ))
+
+
+@router.post("/settings/autopilot/clusters/{cluster_id}", response_class=HTMLResponse)
+async def settings_cluster_autopilot_submit(
+    request: Request, cluster_id: str, user: str = Depends(require_login),
+    environment: str = Form("production"), enabled: str = Form("0"),
+    reason: str = Form(""), confirmation: str = Form(""),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được thay đổi Autopilot")
+    environment, reason = environment.strip().lower(), reason.strip()
+    desired = enabled == "1"
+    if environment not in {"production", "lab"}:
+        raise HTTPException(status_code=400, detail="Commissioning environment không hợp lệ")
+    if len(reason) < 8:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Lý do thay đổi cluster gate phải có ít nhất 8 ký tự."
+        ))
+    if desired and environment != "lab":
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Per-cluster Autopilot chỉ được bật cho cluster lab."
+        ))
+    if desired and confirmation.strip() != "ENABLE LAB AUTOPILOT":
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Chuỗi xác nhận bật Lab Autopilot không chính xác."
+        ))
+    with db.SessionLocal() as session:
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is None or not cluster.is_active:
+            raise HTTPException(status_code=404, detail="Không tìm thấy cluster đang hoạt động")
+        previous_environment, previous_enabled = cluster.autonomy_environment, cluster.autopilot_enabled
+        cluster.autonomy_environment, cluster.autopilot_enabled = environment, desired
+        session.add(AutopilotClusterConfigAudit(
+            cluster_id=cluster.id, actor=user,
+            previous_environment=previous_environment, new_environment=environment,
+            previous_enabled=previous_enabled, new_enabled=desired, reason=reason,
+        ))
+        session.commit()
+    restart_result = await asyncio.to_thread(restart_worker)
+    if not restart_result["restarted"]:
+        if not desired:
+            await asyncio.to_thread(_stop_worker, _find_worker_pids())
+        return templates.TemplateResponse(request, "settings.html", _settings_context(
+            user, autopilot_error="Đã lưu cluster gate nhưng Worker không restart được."
+        ))
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user, autopilot_success=f"Đã cập nhật cluster gate và restart Worker (PID {restart_result['new_pid']})."
     ))
 
 
