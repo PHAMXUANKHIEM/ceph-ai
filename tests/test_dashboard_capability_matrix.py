@@ -79,7 +79,7 @@ def test_page_shows_preflight_readiness_and_the_finite_gap(dashboard_client):
 
     assert response.status_code == 200
     assert "Mức sẵn sàng bật cổng an toàn" in response.text
-    assert "ĐANG TẮT" in response.text          # enforcement mặc định tắt
+    assert "ĐANG BẬT" in response.text          # Pha 0: fail-closed mặc định
     assert "sẽ bị chặn" in response.text        # hậu quả nếu bật ngay
     assert "restart_osd_daemon" in response.text
     # Và KHÔNG liệt kê họ management — chúng không đi qua cổng này.

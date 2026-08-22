@@ -51,6 +51,11 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(
         db_module, "SessionLocal", sessionmaker(bind=engine, autoflush=False, autocommit=False)
     )
+    # Most tests in this legacy suite exercise the execution path itself.
+    # Opt them into the pre-Pha-0 posture explicitly; dedicated tests below
+    # cover the new fail-closed defaults and kill-switch behavior.
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
     yield engine
 
 
@@ -2623,11 +2628,8 @@ def test_warn_if_missing_worker_ssh_key_silent_when_path_exists(caplog, tmp_path
 def test_diagnose_incident_creates_action_when_preflight_blocks_but_enforcement_disabled(
     isolated_db, monkeypatch
 ):
-    """settings.ai_preflight_enforcement_enabled defaults to False (see its
-    own docstring in config/settings.py) — a blocking preflight verdict must
-    still be computed/logged, but must NOT stop Action creation, so every
-    already-running deployment's live auto-remediation keeps working exactly
-    as before until an operator opts in."""
+    """The explicit compatibility escape hatch still works when an operator
+    temporarily disables enforcement during a controlled migration."""
     from worker.preflight import PreflightResult
 
     async def fake_call_router(user_content):
@@ -2644,7 +2646,7 @@ def test_diagnose_incident_creates_action_when_preflight_blocks_but_enforcement_
         "run_preflight",
         lambda session, *, cluster_id, action_id: PreflightResult(False, reason="no matrix entry"),
     )
-    assert settings.ai_preflight_enforcement_enabled is False  # the default this test relies on
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
 
     _create_incident("incident-preflight-disabled")
     envelope = dict(ENVELOPE, incident_id="incident-preflight-disabled")
@@ -2730,6 +2732,74 @@ def test_diagnose_incident_creates_action_when_preflight_passes_and_enforcement_
         incident = session.get(Incident, "incident-preflight-allowed")
         assert incident.status != IncidentStatus.FAILED.value
         assert session.query(Action).filter_by(incident_id="incident-preflight-allowed").count() == 1
+
+
+def test_phase0_defaults_are_fail_closed():
+    from config.settings import Settings
+
+    assert Settings.model_fields["ai_preflight_enforcement_enabled"].default is True
+    assert Settings.model_fields["autopilot_enabled"].default is False
+
+
+def test_global_autopilot_kill_switch_parks_safe_action_for_approval(isolated_db, monkeypatch):
+    from worker.preflight import PreflightResult
+
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(settings, "autopilot_enabled", False)
+    monkeypatch.setattr(
+        router_client, "run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(True, capability_status="SUPPORTED"),
+    )
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *_args, **_kwargs: pytest.fail("kill switch must block SSH execution"),
+    )
+    _create_incident("incident-autopilot-off")
+
+    asyncio.run(router_client.diagnose_incident(
+        "incident-autopilot-off", dict(ENVELOPE, incident_id="incident-autopilot-off")
+    ))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-autopilot-off")
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.classification == ActionClassification.SAFE.value
+        assert session.query(AuditEntry).filter_by(
+            incident_id=incident.id,
+            event_type=audit.EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED,
+        ).count() == 1
+
+
+def test_safe_execution_rechecks_preflight_immediately_before_ssh(isolated_db, monkeypatch):
+    from worker.preflight import PreflightResult
+
+    verdicts = iter([
+        PreflightResult(True, capability_status="SUPPORTED"),
+        PreflightResult(False, reason="cluster entered recovery", capability_status="SUPPORTED"),
+    ])
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", True)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(router_client, "run_preflight", lambda *_args, **_kwargs: next(verdicts))
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *_args, **_kwargs: pytest.fail("fresh preflight must block SSH"),
+    )
+    _create_incident("incident-preflight-race")
+
+    asyncio.run(router_client.diagnose_incident(
+        "incident-preflight-race", dict(ENVELOPE, incident_id="incident-preflight-race")
+    ))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-preflight-race")
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert "cluster entered recovery" in incident.diagnosis_text
 
 
 # --- AI roadmap Pha 0.4: safety policy hardening ----------------------------

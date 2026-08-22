@@ -588,8 +588,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             # AI roadmap Pha 0.3: fail-closed capability/version preflight,
             # run BEFORE classification/Action creation for every fresh
             # proposal — see worker/preflight.py's own module docstring for
-            # what the 3 checks cover and why enforcement is gated behind
-            # settings.ai_preflight_enforcement_enabled (default False).
+            # what the 3 checks cover. Enforcement defaults on: unknown or
+            # stale compatibility evidence must fail closed.
             preflight = run_preflight(session, cluster_id=incident.cluster_id, action_id=action_id)
             if not preflight.allowed:
                 if settings.ai_preflight_enforcement_enabled:
@@ -744,6 +744,9 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     )
 
     if classification == ActionClassification.SAFE:
+        if not settings.autopilot_enabled:
+            _route_safe_to_approval(incident_id, action_pk, resolved_action_id)
+            return
         try:
             _maybe_execute_safe_action(
                 incident_id, action_pk, resolved_action_id, envelope, action_params
@@ -813,6 +816,46 @@ def _maybe_execute_safe_action(
     status=FAILED, not a retry (AC #3: retry/DLX is for transient Router
     failures, not for a command that's unlikely to succeed on a bare retry).
     """
+    # Check again at the final execution boundary. This closes the race where
+    # the kill switch changes after diagnosis but before SSH dispatch, and
+    # protects future callers that forget the higher-level autonomy gate.
+    if not settings.autopilot_enabled:
+        logger.warning(
+            "_maybe_execute_safe_action: global Autopilot kill switch blocked action_id=%s "
+            "for incident %s; routing to approval", action_id, incident_id,
+        )
+        _route_safe_to_approval(incident_id, action_pk, action_id)
+        return
+    if settings.ai_preflight_enforcement_enabled:
+        with db.SessionLocal() as session:
+            incident = session.get(Incident, incident_id)
+            result = run_preflight(
+                session,
+                cluster_id=incident.cluster_id if incident is not None else None,
+                action_id=action_id,
+            )
+            if not result.allowed:
+                action = session.get(Action, action_pk)
+                if action is not None:
+                    action.status = ActionStatus.PENDING_APPROVAL.value
+                if incident is not None:
+                    incident.status = IncidentStatus.PENDING_APPROVAL.value
+                    incident.diagnosis_text = (
+                        f"{incident.diagnosis_text or ''}\n\n"
+                        f"[Execution preflight] Bị chặn: {result.reason}"
+                    ).strip()
+                    audit.record(
+                        session, incident_id=incident_id,
+                        action_id=action_pk if action is not None else None,
+                        event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT,
+                        actor=audit.ACTOR_SYSTEM,
+                    )
+                session.commit()
+                logger.warning(
+                    "_maybe_execute_safe_action: execution-time preflight blocked action_id=%s "
+                    "for incident %s: %s", action_id, incident_id, result.reason,
+                )
+                return
     # AI roadmap Pha 0.4 hard invariant (section 3.3: "RISKY/DESTRUCTIVE
     # phải phê duyệt riêng; không được tự chạy từ Chat hoặc nội dung AI"):
     # the ONLY caller of this function already gates on
@@ -1715,6 +1758,33 @@ def _auto_reject_risky_during_cluster_operation(
                 incident_id=incident_id,
                 action_id=action_pk if action is not None else None,
                 event_type=audit.EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS,
+                actor=audit.ACTOR_SYSTEM,
+            )
+        session.commit()
+
+
+def _route_safe_to_approval(incident_id: str, action_pk: str, action_id: str) -> None:
+    """Park a SAFE action when the global Autopilot kill switch is off."""
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, incident_id)
+        try:
+            params = json.loads(action.action_params) if action and action.action_params else None
+        except (TypeError, ValueError):
+            params = None
+        try:
+            command = commands.get_command(action_id, params=params)
+        except ExecutorError:
+            command = None
+        if action is not None:
+            action.status = ActionStatus.PENDING_APPROVAL.value
+            action.proposed_command = command
+        if incident is not None:
+            incident.status = IncidentStatus.PENDING_APPROVAL.value
+            audit.record(
+                session, incident_id=incident_id,
+                action_id=action_pk if action is not None else None,
+                event_type=audit.EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED,
                 actor=audit.ACTOR_SYSTEM,
             )
         session.commit()

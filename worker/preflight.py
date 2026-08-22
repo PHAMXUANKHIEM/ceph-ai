@@ -13,12 +13,10 @@ graph -- nothing in this codebase today models cross-action dependencies,
 and inventing one speculatively would be exactly the kind of premature
 abstraction this codebase avoids elsewhere.
 
-Enforcement is gated by `settings.ai_preflight_enforcement_enabled`
-(default False) -- see that setting's own docstring in config/settings.py
-for why turning this on by default would have silently disabled every
-already-running deployment's live auto-remediation the moment this code
-shipped, given Pha 0.2's capability matrix starts empty on every existing
-install.
+Enforcement is controlled by `settings.ai_preflight_enforcement_enabled`
+and defaults to True. Unknown or stale evidence therefore fails closed on
+new installations; the switch exists only as an explicit compatibility
+escape hatch during an operator-controlled migration.
 """
 
 from __future__ import annotations

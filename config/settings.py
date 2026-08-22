@@ -468,24 +468,17 @@ class Settings(BaseSettings):
     # silently trusting stale data.
     capability_inventory_max_age_seconds: int = 3600
 
-    # worker/preflight.py's enforcement switch (AI roadmap Pha 0.3) --
-    # False by default DELIBERATELY: Pha 0.2's capability_matrix_entries
-    # table starts EMPTY on every existing deployment (see that table's own
-    # docstring on why it's operator-seeded, never auto-populated), and
-    # this validator's own fail-closed design (roadmap section 3.2) means
-    # an empty matrix blocks EVERY SAFE auto-remediation action, not just
-    # unsupported ones -- flipping this on by default the moment this code
-    # ships would silently turn off all live auto-remediation on every
-    # already-running deployment (verified against this box's own
-    # ceph-aiops-prod instance, which auto-executes SAFE actions today).
-    # The validator still RUNS and logs its verdict either way (see
-    # worker/preflight.py::run_preflight's call site in
-    # worker/llm/router_client.py) -- this flag only controls whether a
-    # would-block verdict actually stops Action creation. An operator
-    # flips this on once they've populated real, sourced entries in the
-    # Capability Matrix admin page (/capability-matrix) for the action_ids
-    # their deployment actually proposes.
-    ai_preflight_enforcement_enabled: bool = False
+    # Autonomous Operations roadmap Pha 0: every proposal fails closed on
+    # stale/unknown capability evidence. Existing installations that have
+    # not populated the matrix safely stop proposing executable Actions.
+    ai_preflight_enforcement_enabled: bool = True
+
+    # Global Autopilot kill switch. False is the safe baseline: SAFE actions
+    # are still diagnosed and rendered from the closed command catalogue,
+    # but are parked at PENDING_APPROVAL rather than executed over SSH.
+    # Later phases may expose governed per-cluster/playbook overrides; an
+    # LLM must never be able to change this setting.
+    autopilot_enabled: bool = False
 
     # worker/llm/router_client.py's Action.expires_at (AI roadmap Pha 0.4,
     # section 3.3's "stale-evidence check") -- how long an Incident-
