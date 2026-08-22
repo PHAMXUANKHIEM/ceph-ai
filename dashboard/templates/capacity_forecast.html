@@ -8,4 +8,11 @@
 {% if status != 'ready' %}<p class="muted">Đang thu thập dữ liệu. Cần tối thiểu {{ minimum_history_days }} ngày và {{ minimum_samples }} mẫu cho từng cluster/pool/OSD; hiện thấy {{ series_seen }} chuỗi.</p>
 {% else %}<div class="table-wrap"><table><thead><tr><th>Đối tượng</th><th>Hiện tại</th><th>Tăng/ngày</th><th>80%</th><th>90%</th><th>95%</th><th>Confidence</th><th>Disk cần thêm ở 95%</th></tr></thead><tbody>
 {% for f in forecasts %}<tr><td>{{ f.entity_type }}: {{ f.entity_name }}</td><td>{{ f.current_percent }}%</td><td>{{ f.growth_percent_per_day }}%</td><td>{{ f.thresholds['80'] or '—' }}</td><td>{{ f.thresholds['90'] or '—' }}</td><td>{{ f.thresholds['95'] or '—' }}</td><td>{{ (f.confidence * 100)|round(1) }}%</td><td>{{ (f.additional_bytes_at_95 / 1073741824)|round(1) }} GiB</td></tr>{% endfor %}
-</tbody></table></div>{% endif %}</div></section></main></body></html>
+</tbody></table></div>{% endif %}</div></section>
+<section class="card"><div class="card-header"><h2>Mô phỏng mất OSD / failure domain</h2><span class="hint">Read-only · không thay đổi CRUSH</span></div><div class="card-body">
+{% if failure_simulation.status != 'ready' %}<p class="muted">Chưa đủ CRUSH topology hoặc OSD distribution để mô phỏng.</p>{% else %}
+<p class="muted">Giả định: replica raw trên phần bị mất được rebuild sang OSD còn sống theo free space. Đây là mô phỏng capacity, không khẳng định pool <code>size/min_size</code> hay PG acting set vẫn bảo đảm data availability.</p>
+<div class="table-wrap"><table><thead><tr><th>Kịch bản</th><th>OSD mất</th><th>Cụm sau lỗi</th><th>OSD cao nhất</th><th>Ngưỡng</th><th>Cần thêm để về 80%</th><th>Pool nguy cơ</th></tr></thead><tbody>
+{% for s in failure_simulation.scenarios %}<tr><td><strong>{{ s.domain_type }}: {{ s.domain_name }}</strong></td><td>{{ s.lost_osd_ids|join(', ') }}</td><td>{{ s.cluster_projected_percent }}%</td><td>{{ s.max_osd_projected_percent }}%</td><td>{{ (s.highest_threshold|string + '%') if s.highest_threshold else 'An toàn' }}</td><td>{{ (s.additional_bytes_for_80_percent / 1073741824)|round(1) }} GiB</td><td>{% if s.pools_at_risk %}{{ s.pools_at_risk|map(attribute='pool')|join(', ') }}{% else %}—{% endif %}</td></tr>{% endfor %}
+</tbody></table></div><p class="hint">Nguồn: {{ failure_simulation['_citations'][0].source_id }} · {{ failure_simulation.captured_at }}; {{ failure_simulation['_citations'][1].source_id }} · {{ failure_simulation.distribution_at }}</p>{% endif %}
+</div></section></main></body></html>

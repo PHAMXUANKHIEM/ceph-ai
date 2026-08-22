@@ -6,6 +6,7 @@ from dashboard.templating import make_templates
 from shared import db
 from shared.models import Cluster
 from watcher.capacity_forecast import forecasts
+from watcher.capacity_failure_simulation import simulate
 
 router = APIRouter()
 templates = make_templates()
@@ -24,7 +25,8 @@ def _cluster(cluster_id: str | None) -> Cluster:
 @router.get("/api/capacity-forecast")
 async def capacity_forecast_api(cluster_id: str | None = None, _user: str = Depends(require_login)):
     cluster = _cluster(cluster_id)
-    return {"cluster_id": cluster.id, "cluster_name": cluster.name, **forecasts(cluster.id)}
+    return {"cluster_id": cluster.id, "cluster_name": cluster.name,
+            **forecasts(cluster.id), "failure_simulation": simulate(cluster.id)}
 
 
 @router.get("/capacity-forecast", response_class=HTMLResponse)
@@ -34,5 +36,6 @@ async def capacity_forecast_page(request: Request, cluster_id: str | None = None
         clusters = session.query(Cluster).filter(Cluster.is_active.is_(True)).order_by(Cluster.name).all()
         data = forecasts(cluster.id)
         return templates.TemplateResponse(request, "capacity_forecast.html", {
-            "user": user, "cluster": cluster, "clusters": clusters, **data,
+            "user": user, "cluster": cluster, "clusters": clusters,
+            "failure_simulation": simulate(cluster.id), **data,
         })

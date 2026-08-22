@@ -16,6 +16,7 @@ from shared.incident_postmortem import build_timeline
 from shared.models import CephCapacitySample, Incident
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from watcher.capacity_forecast import forecasts as capacity_forecasts
+from watcher.capacity_failure_simulation import simulate as capacity_failure_simulation
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 from watcher.ceph_client import (
     CephQueryError,
@@ -80,6 +81,7 @@ TOOL_GET_RBD_TRASH = "get_rbd_trash"
 TOOL_GET_RECENT_INCIDENTS = "get_recent_incidents"
 TOOL_GET_INCIDENT_TIMELINE = "get_incident_timeline"
 TOOL_GET_CAPACITY_FORECAST = "get_capacity_forecast"
+TOOL_GET_CAPACITY_FAILURE_SIMULATION = "get_capacity_failure_simulation"
 _POOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Shown as the assistant's message content (never raised as a generic error)
@@ -343,6 +345,7 @@ def _tool_schemas(*, is_admin: bool = False, cluster=None) -> list[dict]:
              "required": ["incident_id"], "additionalProperties": False},
         ),
         _fn(TOOL_GET_CAPACITY_FORECAST, "Dự báo dung lượng cluster/pool/OSD từ lịch sử đã lưu."),
+        _fn(TOOL_GET_CAPACITY_FAILURE_SIMULATION, "Mô phỏng read-only mất OSD/host/rack từ CRUSH và capacity đã lưu."),
         _fn(
             TOOL_GET_RBD_TRASH,
             "Liệt kê RBD images đang nằm trong trash của một pool. Đây là truy vấn read-only.",
@@ -741,6 +744,10 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
             result_text, is_error = _run_incident_timeline(args, cluster), False
         elif name == TOOL_GET_CAPACITY_FORECAST:
             result_text, is_error = _run_capacity_forecast(cluster), False
+        elif name == TOOL_GET_CAPACITY_FAILURE_SIMULATION:
+            result_text, is_error = json.dumps(
+                capacity_failure_simulation(_cluster_id(cluster)), ensure_ascii=False
+            ), False
         elif name in FIXED_TOOL_COMMANDS:
             result_text, is_error = json.dumps(
                 run_fixed_tool(name) if cluster is None else run_fixed_tool(name, cluster)
@@ -760,6 +767,7 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
         return "internal error running this tool", True
     limit = MAX_EVIDENCE_RESULT_CHARS if name in {
         TOOL_GET_RECENT_INCIDENTS, TOOL_GET_INCIDENT_TIMELINE, TOOL_GET_CAPACITY_FORECAST,
+        TOOL_GET_CAPACITY_FAILURE_SIMULATION,
     } else MAX_TOOL_RESULT_CHARS
     return result_text[:limit], is_error
 
