@@ -22,6 +22,7 @@ from shared.models import (
     Cluster,
     Incident,
     IncidentStatus,
+    RemediationCase,
 )
 from shared.ceph_releases import RELEASES, codename_for_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
@@ -899,6 +900,24 @@ def _maybe_execute_safe_action(
             event_type=audit.EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED,
         )
         return
+    if settings.autopilot_grace_period_seconds > 0:
+        with db.SessionLocal() as session:
+            grace_action = session.get(Action, action_pk)
+            grace_incident = session.get(Incident, incident_id)
+            if grace_action is not None and grace_action.grace_until is None:
+                grace_action.grace_until = datetime.utcnow() + timedelta(
+                    seconds=settings.autopilot_grace_period_seconds,
+                )
+                grace_action.status = ActionStatus.GRACE_PENDING.value
+                if grace_incident is not None:
+                    grace_incident.status = IncidentStatus.GRACE_PENDING.value
+                    audit.record(
+                        session, incident_id=incident_id, action_id=action_pk,
+                        event_type=audit.EVENT_AUTOPILOT_GRACE_STARTED,
+                        actor=audit.ACTOR_SYSTEM,
+                    )
+                session.commit()
+                return
     # Preserve the older, stronger DESTRUCTIVE invariant below: it records a
     # hard FAILED outcome instead of ever presenting a destructive action as
     # merely approval-gated.  All non-destructive SAFE candidates must pass
@@ -2082,6 +2101,7 @@ def _process_approved_actions_once() -> None:
     if promotion_updated:
         logger.info("updated %d playbook promotion candidate evaluation(s)", promotion_updated)
     _reconcile_stuck_rbd_actions_once()
+    _process_due_grace_actions_once()
     with db.SessionLocal() as session:
         approved_pks = [
             row.id
@@ -2104,6 +2124,46 @@ def _process_approved_actions_once() -> None:
                     "for action %s after an unexpected execution error",
                     action_pk,
                 )
+
+
+def _process_due_grace_actions_once(*, now: datetime | None = None) -> int:
+    """Resume due lab actions from frozen Case evidence; all runtime gates rerun."""
+    now = now or datetime.utcnow()
+    with db.SessionLocal() as session:
+        due_ids = [row.id for row in session.query(Action).filter(
+            Action.status == ActionStatus.GRACE_PENDING.value,
+            Action.grace_until.isnot(None), Action.grace_until <= now,
+        ).all()]
+    processed = 0
+    for action_pk in due_ids:
+        with db.SessionLocal() as session:
+            action = session.get(Action, action_pk)
+            if action is None or action.status != ActionStatus.GRACE_PENDING.value:
+                continue
+            incident = session.get(Incident, action.incident_id)
+            case = session.query(RemediationCase).filter_by(action_id=action.id).one_or_none()
+            if incident is None or case is None:
+                continue
+            try:
+                nodes = json.loads(action.target_nodes or "[]")
+                params = json.loads(action.action_params) if action.action_params else None
+                snapshot = json.loads(case.pre_state_json or "{}")
+            except (TypeError, ValueError):
+                action.status = ActionStatus.PENDING_APPROVAL.value
+                incident.status = IncidentStatus.PENDING_APPROVAL.value
+                session.commit()
+                continue
+            envelope = {
+                "nodes": nodes, "ceph_exec_mode": case.deployment_mode,
+                "cluster_snapshot": snapshot,
+            }
+            action.status = ActionStatus.PENDING.value
+            incident.status = IncidentStatus.DIAGNOSING.value
+            incident_id, action_id = incident.id, action.action_id
+            session.commit()
+        _maybe_execute_safe_action(incident_id, action_pk, action_id, envelope, params)
+        processed += 1
+    return processed
 
 
 def _reconcile_stuck_rbd_actions_once(

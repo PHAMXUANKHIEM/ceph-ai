@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import dashboard.routes.patch as patch_route
 import dashboard.routes.actions as actions_route
 import dashboard.routes.upgrade as upgrade_route
 import dashboard.telegram_approval_bot as telegram_bot
-from shared import db as db_module
+from shared import audit, db as db_module
 from shared.models import (
     Action,
     ActionClassification,
@@ -254,6 +254,32 @@ def test_reject_action_sets_rejected(dashboard_client):
         assert action.status == ActionStatus.REJECTED.value
         incident = session.get(Incident, "inc-reject")
         assert incident.status == IncidentStatus.REJECTED.value
+
+
+def test_operator_can_cancel_action_during_autopilot_grace(dashboard_client):
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code="MON_CLOCK_SKEW", status=IncidentStatus.GRACE_PENDING.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident); session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="resync_ntp", classification="SAFE",
+            status=ActionStatus.GRACE_PENDING.value,
+            grace_until=datetime.utcnow() + timedelta(minutes=5),
+        )
+        session.add(action); session.commit(); action_id = action.id
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    response = dashboard_client.post(f"/actions/{action_id}/cancel-grace", follow_redirects=False)
+    assert response.status_code == 303
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.status == ActionStatus.REJECTED.value
+        assert action.cancelled_by == "admin" and action.cancelled_at is not None
+        assert session.get(Incident, action.incident_id).status == IncidentStatus.REJECTED.value
+        assert session.query(AuditEntry).filter_by(
+            action_id=action.id, event_type=audit.EVENT_AUTOPILOT_GRACE_CANCELLED,
+        ).count() == 1
 
 
 def test_approve_action_requires_login(dashboard_client):

@@ -272,6 +272,27 @@ def reject_action_core(action_id: str, actor: str) -> ApprovalResult:
         return ApprovalResult(ApprovalOutcome.REJECTED, action.id, action.incident_id)
 
 
+def cancel_grace_action_core(action_id: str, actor: str) -> ApprovalResult:
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        if action is None:
+            raise ActionNotFoundError(action_id)
+        if action.status != ActionStatus.GRACE_PENDING.value:
+            return ApprovalResult(ApprovalOutcome.ALREADY_HANDLED, action.id, action.incident_id)
+        action.status = ActionStatus.REJECTED.value
+        action.cancelled_at = datetime.utcnow()
+        action.cancelled_by = actor
+        incident = session.get(Incident, action.incident_id)
+        if incident is not None:
+            incident.status = IncidentStatus.REJECTED.value
+        audit.record(
+            session, incident_id=action.incident_id, action_id=action.id,
+            event_type=audit.EVENT_AUTOPILOT_GRACE_CANCELLED, actor=actor,
+        )
+        session.commit()
+        return ApprovalResult(ApprovalOutcome.REJECTED, action.id, action.incident_id)
+
+
 @router.post("/actions/{action_id}/approve")
 async def approve_action(
     action_id: str,
@@ -303,3 +324,12 @@ async def reject_action(action_id: str, request: Request, user: str = Depends(re
         incident = session.get(Incident, result.incident_id)
         cluster_id = incident.cluster_id if incident is not None else None
     return RedirectResponse(url=f"/?cluster={cluster_id}" if cluster_id else "/", status_code=303)
+
+
+@router.post("/actions/{action_id}/cancel-grace")
+async def cancel_grace_action(action_id: str, user: str = Depends(require_login)):
+    try:
+        result = await asyncio.to_thread(cancel_grace_action_core, action_id, user)
+    except ActionNotFoundError:
+        raise HTTPException(status_code=404, detail="Không tìm thấy Action")
+    return RedirectResponse(url=f"/incidents/{result.incident_id}/timeline", status_code=303)

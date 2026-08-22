@@ -160,6 +160,7 @@ class IncidentStatus(str, enum.Enum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
     EXECUTING = "EXECUTING"
+    GRACE_PENDING = "GRACE_PENDING"
     # 2026-08-20: lệnh khắc phục đã chạy xong exit 0, NHƯNG chưa ai hỏi lại
     # cụm xem lỗi đã thật sự hết chưa. Trước trạng thái này, "SSH trả về 0"
     # bị coi thẳng là RESOLVED (worker/llm/router_client.py::
@@ -261,6 +262,7 @@ class ActionStatus(str, enum.Enum):
     PENDING_APPROVAL = "PENDING_APPROVAL"  # Risky action awaiting operator (Story 4.2)
     APPROVED = "APPROVED"  # operator approved (Story 4.3)
     EXECUTING = "EXECUTING"  # autonomous executor holds the cluster lease
+    GRACE_PENDING = "GRACE_PENDING"  # lab L3 countdown; operator may cancel
     INCONCLUSIVE = "INCONCLUSIVE"  # side effect may have happened; never auto-retry
     REJECTED = "REJECTED"  # operator rejected (Story 4.3)
     EXECUTED = "EXECUTED"  # approved Risky action executed (Story 4.3)
@@ -300,10 +302,10 @@ class Action(Base):
             "idempotency_key",
             unique=True,
             sqlite_where=text(
-                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED')"
+                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED','GRACE_PENDING')"
             ),
             postgresql_where=text(
-                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED')"
+                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED','GRACE_PENDING')"
             ),
         ),
     )
@@ -378,6 +380,9 @@ class Action(Base):
     # expired" — an unset expiry must never accidentally block every
     # pre-existing action family that doesn't populate it.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    grace_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # AI roadmap Pha 0.4 -- deterministic hash of
     # (incident_id, action_id, action_params) at classification time, set
     # by the same router_client.py call site as expires_at above. A

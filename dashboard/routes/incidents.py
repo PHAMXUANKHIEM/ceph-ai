@@ -74,6 +74,12 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
             .order_by(RemediationCase.created_at, RemediationCase.id)
             .all()
         )
+        grace_action_ids = {
+            row.id for row in session.query(Action.id).filter(
+                Action.incident_id == incident_id,
+                Action.status == ActionStatus.GRACE_PENDING.value,
+            ).all()
+        }
     return templates.TemplateResponse(request, "incident_timeline.html", {
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": selected_cluster, "incident": incident, "timeline": timeline,
@@ -81,6 +87,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         "postmortem_error": request.query_params.get("error", ""),
         "remediation_cases": remediation_cases, "case_verdicts": CASE_VERDICTS,
         "shadow_comparison": trust_engine.shadow_comparison,
+        "grace_action_ids": grace_action_ids,
     })
 
 

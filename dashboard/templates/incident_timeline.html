@@ -36,6 +36,7 @@
           <div class="card-body">
             <p><strong>{{ case.fault_family }}</strong> · <code>{{ case.outcome }}</code> · {{ case.classification }}</p>
             <p class="hint">Case <code>{{ case.id }}</code> · Action <code>{{ case.action_id }}</code></p>
+            {% if case.action_id in grace_action_ids %}<form method="post" action="/actions/{{ case.action_id }}/cancel-grace" onsubmit="return confirm('Huỷ action đang trong grace period?');"><button class="btn btn-danger" type="submit">Huỷ Autopilot trước khi thực thi</button></form>{% endif %}
             <p class="hint">Regression: 1h={{ case.regressed_1h if case.regressed_1h is not none else "đang chờ" }}, 24h={{ case.regressed_24h if case.regressed_24h is not none else "đang chờ" }}, 7d={{ case.regressed_7d if case.regressed_7d is not none else "đang chờ" }}</p>
             {% if case.shadow_decision %}<p><strong>Shadow Autopilot:</strong> <code>{{ case.shadow_decision }}</code> · đối chiếu <code>{{ shadow_comparison(case) }}</code></p>
             <p class="hint">Trust tại thời điểm đề xuất: {{ "%.3f"|format(case.shadow_trust_score or 0) }} / {{ case.shadow_sample_count or 0 }} mẫu · {{ case.shadow_reason }}</p>{% endif %}

@@ -67,6 +67,7 @@ def isolated_db(monkeypatch):
     # cover the new fail-closed defaults and kill-switch behavior.
     monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
     monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(settings, "autopilot_grace_period_seconds", 0)
     monkeypatch.setattr(
         router_client, "run_ceph_json_command_with",
         lambda *_args, **_kwargs: ("mon-a", {
@@ -2829,6 +2830,39 @@ def test_per_cluster_gate_blocks_production_even_when_global_switch_is_on(isolat
             incident_id=incident.id,
             event_type=audit.EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED,
         ).count() == 1
+
+
+def test_lab_action_enters_grace_without_ssh_and_due_tick_rechecks_cluster_gate(
+    isolated_db, monkeypatch,
+):
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(settings, "autopilot_enabled", True)
+    monkeypatch.setattr(settings, "autopilot_grace_period_seconds", 300)
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda *_args, **_kwargs: pytest.fail("grace period must not dispatch SSH"),
+    )
+    _create_incident("incident-grace")
+    asyncio.run(router_client.diagnose_incident(
+        "incident-grace", dict(ENVELOPE, incident_id="incident-grace")
+    ))
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-grace")
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert incident.status == IncidentStatus.GRACE_PENDING.value
+        assert action.status == ActionStatus.GRACE_PENDING.value
+        assert action.grace_until is not None
+        cluster = session.get(Cluster, "test-default-cluster")
+        cluster.autonomy_environment = "production"
+        action.grace_until = datetime.utcnow() - timedelta(seconds=1)
+        action_id = action.id
+        session.commit()
+
+    assert router_client._process_due_grace_actions_once() == 1
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, action.incident_id).status == IncidentStatus.PENDING_APPROVAL.value
 
 
 def test_safe_execution_rechecks_preflight_immediately_before_ssh(isolated_db, monkeypatch):

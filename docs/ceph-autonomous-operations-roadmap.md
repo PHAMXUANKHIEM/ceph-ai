@@ -716,6 +716,10 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
   đi tiếp khi đồng thời global switch bật và cluster là `lab` + enabled.
 - Mọi thay đổi cluster gate cần admin, lý do, xác nhận mạnh khi bật và audit
   append-only; production không thể bật per-cluster Autopilot.
+- L3 lab có grace period mặc định 300 giây. Action chuyển `GRACE_PENDING`,
+  giữ idempotency lock và chưa SSH; operator có thể cancel trên Incident
+  Timeline. Khi hết hạn Worker dựng lại envelope từ Case đã redaction rồi chạy
+  lại cluster gate, contract, preflight, telemetry, rate limit và lease.
 
 - Chỉ mở 1–3 playbook SAFE blast radius thấp.
 - Grace period, Telegram cancel, rate limit và cooldown.
