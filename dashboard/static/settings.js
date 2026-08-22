@@ -839,35 +839,62 @@
   var reset = document.getElementById("action-policy-filter-reset");
   var result = document.getElementById("action-policy-filter-result");
   var empty = document.getElementById("action-policy-filter-empty");
-  if (!table || !search || !classification || !source || !reset || !result || !empty) return;
+  var pagination = document.getElementById("action-policy-pagination");
+  var previous = document.getElementById("action-policy-page-previous");
+  var next = document.getElementById("action-policy-page-next");
+  var pageStatus = document.getElementById("action-policy-page-status");
+  if (!table || !search || !classification || !source || !reset || !result || !empty ||
+      !pagination || !previous || !next || !pageStatus) return;
 
   var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
+  var pageSize = 10;
+  var currentPage = 1;
+  rows.sort(function (left, right) {
+    return String(left.getAttribute("data-action-id") || "").localeCompare(
+      String(right.getAttribute("data-action-id") || ""), undefined, { sensitivity: "base" }
+    );
+  });
+  rows.forEach(function (row) { table.tBodies[0].appendChild(row); });
   function normalize(value) { return String(value || "").trim().toLowerCase(); }
   function render() {
     var query = normalize(search.value);
     var wantedClassification = classification.value;
     var wantedSource = source.value;
-    var visible = 0;
-    rows.forEach(function (row) {
-      var matches = (!query || normalize(row.getAttribute("data-action-id")).indexOf(query) !== -1) &&
+    var filtered = rows.filter(function (row) {
+      return (!query || normalize(row.getAttribute("data-action-id")).indexOf(query) !== -1) &&
         (!wantedClassification || row.getAttribute("data-classification") === wantedClassification) &&
         (!wantedSource || row.getAttribute("data-policy-source") === wantedSource);
-      row.hidden = !matches;
-      if (matches) visible += 1;
     });
-    result.textContent = visible + " / " + rows.length + " hành động";
-    empty.hidden = visible !== 0;
-    if (tableWrap) tableWrap.hidden = visible === 0;
+    var pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+    currentPage = Math.min(currentPage, pageCount);
+    var first = (currentPage - 1) * pageSize;
+    var pageRows = filtered.slice(first, first + pageSize);
+    rows.forEach(function (row) { row.hidden = pageRows.indexOf(row) === -1; });
+    result.textContent = filtered.length + " / " + rows.length + " hành động";
+    empty.hidden = filtered.length !== 0;
+    if (tableWrap) tableWrap.hidden = filtered.length === 0;
+    pagination.hidden = filtered.length === 0;
+    pageStatus.textContent = "Trang " + currentPage + " / " + pageCount;
+    previous.disabled = currentPage <= 1;
+    next.disabled = currentPage >= pageCount;
     reset.disabled = !query && !wantedClassification && !wantedSource;
   }
-  search.addEventListener("input", render);
-  classification.addEventListener("change", render);
-  source.addEventListener("change", render);
+  function resetPageAndRender() { currentPage = 1; render(); }
+  search.addEventListener("input", resetPageAndRender);
+  classification.addEventListener("change", resetPageAndRender);
+  source.addEventListener("change", resetPageAndRender);
+  previous.addEventListener("click", function () {
+    if (currentPage > 1) { currentPage -= 1; render(); }
+  });
+  next.addEventListener("click", function () {
+    currentPage += 1;
+    render();
+  });
   reset.addEventListener("click", function () {
     search.value = "";
     classification.value = "";
     source.value = "";
-    render();
+    resetPageAndRender();
     search.focus();
   });
   render();

@@ -990,7 +990,10 @@ def _settings_context(
         context["autopilot_clusters"] = session.query(Cluster).filter_by(is_active=True).order_by(
             Cluster.is_default.desc(), Cluster.name,
         ).all()
-        overrides = {row.action_id: row for row in session.query(ActionPolicyOverride).all()}
+        overrides = (
+            {row.action_id: row for row in session.query(ActionPolicyOverride).all()}
+            if context["is_admin"] else {}
+        )
         context["action_policy_rows"] = [
             {
                 "action_id": action_id,
@@ -1001,9 +1004,10 @@ def _settings_context(
             }
             for action_id in sorted(
                 action_gate.SAFE_ACTION_IDS | action_gate.RISKY_ACTION_IDS
-                | action_gate.DESTRUCTIVE_ACTION_IDS
+                | action_gate.DESTRUCTIVE_ACTION_IDS,
+                key=str.casefold,
             )
-        ]
+        ] if context["is_admin"] else []
         openstack_clusters = session.query(Cluster).filter_by(is_active=True).order_by(Cluster.is_default.desc(), Cluster.name).all()
         default_cluster = next((row for row in openstack_clusters if row.is_default), None)
         openstack_cluster = next((row for row in openstack_clusters if row.id == openstack_cluster_id), None) or default_cluster

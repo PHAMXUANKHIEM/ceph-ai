@@ -60,6 +60,9 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert 'id="action-policy-search"' in response.text
     assert 'id="action-policy-classification-filter"' in response.text
     assert 'id="action-policy-source-filter"' in response.text
+    assert 'id="action-policy-pagination"' in response.text
+    assert 'id="action-policy-page-previous"' in response.text
+    assert 'id="action-policy-page-next"' in response.text
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
@@ -1684,6 +1687,8 @@ def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
     assert 'action="/settings/restart-worker"' not in response.text
     assert 'action="/settings/restart-dashboard"' not in response.text
     assert "Playbook Registry" not in response.text
+    assert "Phân loại hành động AI" not in response.text
+    assert 'action="/settings/autopilot/action-policy"' not in response.text
 
 
 def test_restart_worker_route_rejects_non_admin(dashboard_client):
