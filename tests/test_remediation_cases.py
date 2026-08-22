@@ -9,7 +9,7 @@ from shared.db import Base
 from shared.models import Action, Incident, RemediationCase
 from shared.remediation_cases import (
     backfill_missing_cases, create_for_action, record_execution, record_inconclusive,
-    record_verified,
+    evaluate_regressions, record_verified,
 )
 
 
@@ -126,3 +126,62 @@ def test_backfill_is_bounded_and_preserves_pending_verify_state():
     assert session.query(RemediationCase).count() == 2
     assert backfill_missing_cases(session, limit=2) == 1
     assert {row.outcome for row in session.query(RemediationCase)} == {"EXECUTED_PENDING_VERIFY"}
+
+
+def _verified_case(session, *, code="OSD_DOWN", nodes=None, verified_at=None):
+    incident = Incident(
+        ceph_code=code, status="RESOLVED",
+        detected_at=(verified_at or datetime.utcnow()) - timedelta(minutes=5),
+    )
+    session.add(incident); session.flush()
+    action = Action(
+        incident_id=incident.id, action_id="restart_osd_daemon",
+        classification="RISKY", status="EXECUTED",
+        target_nodes=json.dumps(nodes or ["node-a"]),
+    )
+    session.add(action); session.flush()
+    case = create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={"nodes": nodes or ["node-a"], "cluster_snapshot": {}},
+        diagnosis="verified", model_provider="9router",
+    )
+    case.outcome = "VERIFIED_SUCCESS"
+    case.verified_at = verified_at or datetime.utcnow()
+    session.commit()
+    return case
+
+
+def test_regression_evaluator_keeps_open_windows_unknown_then_closes_false():
+    session = _session()
+    verified_at = datetime.utcnow()
+    case = _verified_case(session, verified_at=verified_at)
+
+    assert evaluate_regressions(session, now=verified_at + timedelta(minutes=30)) == 0
+    assert (case.regressed_1h, case.regressed_24h, case.regressed_7d) == (None, None, None)
+
+    assert evaluate_regressions(session, now=verified_at + timedelta(days=8)) == 1
+    assert (case.regressed_1h, case.regressed_24h, case.regressed_7d) == (False, False, False)
+    assert evaluate_regressions(session, now=verified_at + timedelta(days=9)) == 0
+
+
+def test_regression_requires_same_fault_and_entity_and_sets_true_immediately():
+    session = _session()
+    verified_at = datetime.utcnow()
+    original = _verified_case(session, verified_at=verified_at, nodes=["node-a"])
+    _verified_case(
+        session, code="MON_DOWN", nodes=["node-a"],
+        verified_at=verified_at + timedelta(minutes=20),
+    )
+    _verified_case(
+        session, code="OSD_DOWN", nodes=["node-b"],
+        verified_at=verified_at + timedelta(minutes=20),
+    )
+    # Matching case's Incident.detected_at is five minutes before its own
+    # verified_at, therefore 25 minutes after the original verification.
+    _verified_case(
+        session, code="OSD_DOWN", nodes=["node-a"],
+        verified_at=verified_at + timedelta(minutes=30),
+    )
+
+    assert evaluate_regressions(session, now=verified_at + timedelta(minutes=31)) >= 1
+    assert (original.regressed_1h, original.regressed_24h, original.regressed_7d) == (True, True, True)

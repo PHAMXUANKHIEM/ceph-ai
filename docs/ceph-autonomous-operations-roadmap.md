@@ -621,7 +621,10 @@ Trạng thái triển khai (2026-08-22): **đang thực hiện**.
 - Đã có reconciler theo lô cho Action lịch sử và các pipeline ngoài AI. Case
   `RESOLVED` cũ chỉ được gắn `LEGACY_RESOLVED_UNVERIFIED`, không đủ điều kiện
   học trust vì lịch sử đó có thể chỉ dựa vào SSH exit code.
-- Chưa hoàn tất: evaluator các cửa sổ 1h/24h/7d và UI operator verdict.
+- Đã có Outcome Evaluator tất định cho recurrence 1h/24h/7d theo đúng
+  cluster + fault family + entity. Regression được ghi `true` ngay khi có
+  bằng chứng; `false` chỉ được ghi sau khi cửa sổ tương ứng đã đóng.
+- Chưa hoàn tất: UI operator verdict.
 
 - Thêm migration và model `remediation_cases`, `playbook_stats`.
 - Đóng băng evidence/pre-state/post-state.

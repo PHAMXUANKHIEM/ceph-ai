@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
 
@@ -159,3 +159,63 @@ def backfill_missing_cases(session, *, limit: int = 200) -> int:
         created += 1
     session.commit()
     return created
+
+
+_REGRESSION_WINDOWS = (
+    ("regressed_1h", timedelta(hours=1)),
+    ("regressed_24h", timedelta(hours=24)),
+    ("regressed_7d", timedelta(days=7)),
+)
+
+
+def evaluate_regressions(session, *, now: datetime, limit: int = 200) -> int:
+    """Evaluate recurrence without prematurely writing a negative result.
+
+    Identity is exact cluster + fault family + normalized entity JSON. A
+    recurrence may set True immediately; False is only final after the full
+    window closes. Historical/unverified cases are never candidates.
+    """
+    candidates = (
+        session.query(RemediationCase)
+        .filter(RemediationCase.outcome == "VERIFIED_SUCCESS")
+        .filter(RemediationCase.verified_at.isnot(None))
+        .filter(
+            (RemediationCase.regressed_1h.is_(None))
+            | (RemediationCase.regressed_24h.is_(None))
+            | (RemediationCase.regressed_7d.is_(None))
+        )
+        .order_by(RemediationCase.verified_at, RemediationCase.id)
+        .limit(max(1, limit))
+        .all()
+    )
+    changed = 0
+    for case in candidates:
+        case_changed = False
+        recurrence = (
+            session.query(Incident.detected_at)
+            .join(RemediationCase, RemediationCase.incident_id == Incident.id)
+            .filter(RemediationCase.id != case.id)
+            .filter(RemediationCase.fault_family == case.fault_family)
+            .filter(RemediationCase.entity_keys_json == case.entity_keys_json)
+            .filter(Incident.detected_at > case.verified_at)
+        )
+        if case.cluster_id is None:
+            recurrence = recurrence.filter(RemediationCase.cluster_id.is_(None))
+        else:
+            recurrence = recurrence.filter(RemediationCase.cluster_id == case.cluster_id)
+        recurrence_at = recurrence.order_by(Incident.detected_at).limit(1).scalar()
+
+        for field, window in _REGRESSION_WINDOWS:
+            if getattr(case, field) is not None:
+                continue
+            window_end = case.verified_at + window
+            if recurrence_at is not None and recurrence_at <= window_end:
+                setattr(case, field, True)
+                case_changed = True
+            elif now >= window_end:
+                setattr(case, field, False)
+                case_changed = True
+        if case_changed:
+            changed += 1
+    session.commit()
+    return changed
