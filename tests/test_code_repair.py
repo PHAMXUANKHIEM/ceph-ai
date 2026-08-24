@@ -37,6 +37,18 @@ def test_telegram_evidence_drops_paramiko_noise_and_keeps_actual_error():
     assert "Authentication" not in summary
 
 
+def test_clean_evidence_removes_transport_chatter_but_keeps_traceback():
+    evidence = (
+        "INFO:paramiko.transport:Connected (version 2.0, client OpenSSH_9.9)\n"
+        "ERROR watcher failed\nTraceback (most recent call last):\n"
+        "sqlalchemy.orm.exc.DetachedInstanceError: detached\n"
+        "INFO:paramiko.transport:Authentication (publickey) successful!"
+    )
+    cleaned = code_repair.clean_evidence(evidence)
+    assert "paramiko" not in cleaned
+    assert "DetachedInstanceError" in cleaned
+
+
 def test_telegram_evidence_is_short_and_redacted():
     evidence = "Source application log: worker.log\nERROR token=very-secret " + "x" * 1000
     summary = code_repair.summarize_evidence(evidence)

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config.settings import settings
-from worker.code_repair import ERROR_RE, SECRET_RE, RepairConfig, run_repair
+from worker.code_repair import ERROR_RE, SECRET_RE, RepairConfig, clean_evidence, run_repair
 from worker import ceph_capability_learning as ceph_learning
 from shared.telegram_alerts import send_code_repair_alert
 
@@ -67,7 +67,9 @@ def read_new_errors(paths: list[Path], cursors: dict[str, Cursor], *, initialize
         if matches:
             block = appended[max(0, matches[-1].start() - 1200):matches[-1].start() + 16_000]
             block = SECRET_RE.sub(lambda match: match.group(1) + "=<redacted>", block)
-            evidence.append(f"Source application log: {path.name}\n{block}")
+            block = clean_evidence(block)
+            if block:
+                evidence.append(f"Source application log: {path.name}\n{block}")
     return evidence
 
 

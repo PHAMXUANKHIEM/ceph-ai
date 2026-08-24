@@ -64,6 +64,12 @@ def summarize_evidence(evidence: str, *, max_chars: int = 360) -> str:
     return (prefix + selected)[:max_chars]
 
 
+def clean_evidence(evidence: str) -> str:
+    """Remove transport chatter without discarding the actual traceback."""
+    lines = [line for line in evidence.splitlines() if not _TELEGRAM_NOISE_RE.search(line)]
+    return "\n".join(lines).strip()
+
+
 @dataclass(frozen=True)
 class RepairConfig:
     repo: Path
@@ -252,7 +258,14 @@ def _validate_changes(worktree: Path) -> list[str]:
 
 
 def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> RepairResult:
-    fingerprint_input = evidence if config.task_kind == "application-repair" else f"{config.task_kind}\n{evidence}"
+    # Repeated polls of one traceback often contain different timestamps,
+    # Paramiko chatter and object addresses. Fingerprint the concise exception
+    # identity so the same application bug is attempted only once.
+    fingerprint_input = (
+        summarize_evidence(clean_evidence(evidence))
+        if config.task_kind == "application-repair"
+        else f"{config.task_kind}\n{evidence}"
+    )
     fp = fingerprint(fingerprint_input)
     state = _load_state(config.state_file)
     previous = state.setdefault("attempts", {}).get(fp)
