@@ -74,6 +74,9 @@ def test_rgw_finding_uses_dedicated_ai_alert_label(monkeypatch):
 
     telegram_alerts.send_log_finding_alert(
         "RGW trả nhiều HTTP 503", "CRITICAL", "HIGH", "Tỷ lệ lỗi tăng", None,
+        evidence_templates=["req <N> ERROR: failed"],
+        recommended_action_id="investigate_manually",
+        operator_commands=["ceph status", "radosgw-admin sync status"],
         daemon_types=["rgw"], enabled=True,
     )
 
@@ -81,6 +84,10 @@ def test_rgw_finding_uses_dedicated_ai_alert_label(monkeypatch):
     assert sent[0][:3] == ("rgw-token", "rgw-chat", True)
     assert "Cảnh báo RGW do AI phân tích" in sent[0][3]
     assert "RGW trả nhiều HTTP 503" in sent[0][3]
+    assert "📄 Log:" not in sent[0][3]
+    assert "investigate_manually" not in sent[0][3]
+    assert "Lệnh kiểm tra" not in sent[0][3]
+    assert "ceph status" not in sent[0][3]
 from watcher.log_triage import TriageReason, TriageResult
 from worker.policy import gate
 

@@ -420,7 +420,7 @@ def send_log_finding_alert(
     đang OPEN) — cùng nếp "một thông báo cho một vấn đề thật sự mới" mà
     send_node_alert/send_osd_latency_alert/send_crush_skew_alert đã theo.
 
-    Luôn kèm EVIDENCE GỐC (mẫu log thật) chứ không chỉ kết luận của AI:
+    Kênh generic luôn kèm EVIDENCE GỐC (mẫu log thật) chứ không chỉ kết luận của AI:
     người trực phải tự đánh giá được, không phải tin lời model. Cùng lý do
     `validation_notes` cũng được đưa vào — nếu server đã phải sửa/hạ cấp câu
     trả lời của model thì người đọc cần biết ngay trên điện thoại, chứ không
@@ -437,13 +437,18 @@ def send_log_finding_alert(
         lines.append(f"🧠 Tóm tắt: {_compact(summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if root_cause:
         lines.append(f"🔎 Nguyên nhân nghi ngờ: {_compact(root_cause, _MAX_FOLLOWUP_FIELD_CHARS)}")
-    for template in (evidence_templates or [])[:3]:
-        lines.append(f"📄 Log: {_compact(template, _MAX_EXCERPT_CHARS)}")
-    if recommended_action_id:
-        lines.append(f"🔧 Đề xuất: {recommended_action_id} (cần Duyệt thủ công)")
-    if operator_commands:
-        lines.append("🖥 Lệnh kiểm tra (chỉ đọc):")
-        lines.extend(f"`{_compact(command, _MAX_EXCERPT_CHARS)}`" for command in operator_commands)
+    # RGW has its own concise, notification-only chat. Raw fingerprints,
+    # the internal investigate_manually action id and the generic Ceph
+    # command catalogue stay available on the Dashboard finding, but are
+    # intentionally omitted from the phone notification.
+    if "rgw" not in daemon_set:
+        for template in (evidence_templates or [])[:3]:
+            lines.append(f"📄 Log: {_compact(template, _MAX_EXCERPT_CHARS)}")
+        if recommended_action_id:
+            lines.append(f"🔧 Đề xuất: {recommended_action_id} (cần Duyệt thủ công)")
+        if operator_commands:
+            lines.append("🖥 Lệnh kiểm tra (chỉ đọc):")
+            lines.extend(f"`{_compact(command, _MAX_EXCERPT_CHARS)}`" for command in operator_commands)
     if validation_notes:
         lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if "rgw" in daemon_set:
