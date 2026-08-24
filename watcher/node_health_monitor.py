@@ -34,7 +34,7 @@ from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_node_alert
-from watcher import node_resource_forecast
+from watcher import node_metrics, node_resource_forecast
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
@@ -109,8 +109,28 @@ def check_node_resources(
                 cluster_name or settings.cluster_name, host
             )
         except node_resource_forecast.NodeResourceLokiError:
-            logger.warning("check_node_resources: failed to read Loki metrics for %s", host, exc_info=True)
-            continue
+            # Loki/Alloy can be interrupted independently of the node. Keep
+            # threshold monitoring and online forecast evaluation alive by
+            # collecting the same CPU/RAM gauges directly, then repair the
+            # history stream by pushing this fresh sample back to Loki.
+            try:
+                metrics = node_metrics.collect_node_metrics(host)
+                metrics["source"] = "ssh_fallback"
+                scope = cluster_name or settings.cluster_name
+                node_resource_forecast.evaluate_due_outcomes(
+                    scope, host, metrics["cpu_percent"], metrics["mem_percent"]
+                )
+                node_resource_forecast.push_sample(scope, host, metrics)
+                logger.warning(
+                    "check_node_resources: Loki data stale for %s; collected and pushed SSH fallback",
+                    host,
+                )
+            except node_metrics.NodeMetricsError:
+                logger.warning(
+                    "check_node_resources: Loki and SSH fallback both failed for %s", host,
+                    exc_info=True,
+                )
+                continue
 
         cpu = metrics["cpu_percent"]
         mem = metrics["mem_percent"]
@@ -143,6 +163,7 @@ def check_node_resources(
                 "host": host,
                 "cpu_percent": cpu,
                 "mem_percent": mem,
+                "source": metrics.get("source", "loki"),
                 "consecutive_scans": _consecutive_high_scans[host],
             }
     return flagged

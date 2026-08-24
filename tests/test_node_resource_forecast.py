@@ -135,3 +135,24 @@ def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
         assert run.actual_percent == samples[-1][1]
         assert state.evaluated_count == 1
         assert state.mean_absolute_error == run.absolute_error
+
+
+def test_direct_observation_evaluates_due_cpu_and_ram(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
+    with factory() as session:
+        for metric, predicted in (("cpu", 30), ("ram", 40)):
+            session.add(NodeResourceForecastRun(
+                cluster_name="CS-LAB", host="node-1", metric=metric, algorithm="linear",
+                window_hours=24, predicted_at=(now - timedelta(hours=25)).replace(tzinfo=None),
+                target_at=(now - timedelta(hours=1)).replace(tzinfo=None), current_percent=20,
+                predicted_percent=predicted, confidence=.8, status="PENDING",
+                idempotency_key="due-" + metric,
+            ))
+        session.commit()
+    count = forecast.evaluate_due_outcomes("CS-LAB", "node-1", 32, 39, observed_at=now)
+    assert count == 2
+    with factory() as session:
+        rows = session.query(NodeResourceForecastRun).order_by(NodeResourceForecastRun.metric).all()
+        assert all(row.status == "EVALUATED" for row in rows)
+        assert {row.metric: row.absolute_error for row in rows} == {"cpu": 2, "ram": 1}

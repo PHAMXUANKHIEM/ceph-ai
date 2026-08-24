@@ -112,8 +112,35 @@ def test_check_node_resources_skips_a_host_that_fails_to_collect(monkeypatch):
         return _metrics(cpu=10.0, mem=10.0)
 
     monkeypatch.setattr(nhm.node_resource_forecast, "fetch_latest_metrics", lambda cluster, host: fake_collect(host))
+    monkeypatch.setattr(
+        nhm.node_metrics, "collect_node_metrics",
+        lambda host: (_ for _ in ()).throw(nhm.node_metrics.NodeMetricsError("ssh failed")),
+    )
 
     assert nhm.check_node_resources() == {}  # must not raise
+
+
+def test_stale_loki_uses_ssh_fallback_and_repairs_stream(monkeypatch):
+    monkeypatch.setattr(nhm, "configured_nodes", lambda: [{"host": "node-1", "roles": ["MON"]}])
+    monkeypatch.setattr(
+        nhm.node_resource_forecast, "fetch_latest_metrics",
+        lambda *_: (_ for _ in ()).throw(nhm.node_resource_forecast.NodeResourceLokiError("stale")),
+    )
+    monkeypatch.setattr(nhm.node_metrics, "collect_node_metrics", lambda host: _metrics(cpu=25, mem=35))
+    pushed = []
+    evaluated = []
+    monkeypatch.setattr(
+        nhm.node_resource_forecast, "evaluate_due_outcomes",
+        lambda cluster, host, cpu, mem: evaluated.append((cluster, host, cpu, mem)) or 1,
+    )
+    monkeypatch.setattr(
+        nhm.node_resource_forecast, "push_sample",
+        lambda cluster, host, metrics: pushed.append((cluster, host, metrics.copy())) or True,
+    )
+    assert nhm.check_node_resources(cluster_name="CS-LAB") == {}
+    assert pushed[0][0:2] == ("CS-LAB", "node-1")
+    assert pushed[0][2]["source"] == "ssh_fallback"
+    assert evaluated == [("CS-LAB", "node-1", 25, 35)]
 
 
 # --- create_or_resolve_node_health_incidents() ------------------------------

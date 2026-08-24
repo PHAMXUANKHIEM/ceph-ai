@@ -228,6 +228,29 @@ def _evaluate_due(session, cluster: str, host: str, metric: str,
         state.last_absolute_error = error
 
 
+def evaluate_due_outcomes(
+    cluster: str, host: str, cpu_percent: float, mem_percent: float,
+    *, observed_at: datetime | None = None,
+) -> int:
+    """Score overdue forecasts from a fresh trusted observation.
+
+    This does not require Loki query visibility, so an SSH fallback sample
+    can immediately unblock online learning while that same sample is being
+    pushed back into Loki for future history windows.
+    """
+    now = observed_at or datetime.now(timezone.utc)
+    if now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+    with db.SessionLocal() as session:
+        before = session.query(NodeResourceForecastRun).filter_by(
+            cluster_name=cluster, host=host, status="PENDING"
+        ).filter(NodeResourceForecastRun.target_at <= now).count()
+        _evaluate_due(session, cluster, host, "cpu", float(cpu_percent), now)
+        _evaluate_due(session, cluster, host, "ram", float(mem_percent), now)
+        session.commit()
+        return before
+
+
 def _selected_window(session, cluster: str, host: str, metric: str,
                      available: list[int]) -> int:
     states = session.query(NodeResourceModelState).filter_by(
