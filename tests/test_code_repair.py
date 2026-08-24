@@ -52,6 +52,11 @@ def test_validate_changes_ignores_supervisor_venv_symlink(monkeypatch, tmp_path)
     assert code_repair._validate_changes(tmp_path) == ["worker/example.py"]
 
 
+def test_diff_secret_guard_allows_setting_reference_but_blocks_literal():
+    assert not code_repair.DIFF_SECRET_RE.search("bot_token = settings.telegram_bot_token")
+    assert code_repair.DIFF_SECRET_RE.search('api_key = "abcdefghijklmnop123456"')
+
+
 def test_duplicate_error_is_not_sent_to_ai(monkeypatch, tmp_path):
     evidence = "ERROR stable failure"
     fp = code_repair.fingerprint(evidence)

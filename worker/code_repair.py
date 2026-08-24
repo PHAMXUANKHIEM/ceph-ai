@@ -26,6 +26,10 @@ ALLOWED_PREFIXES = ("config/", "dashboard/", "scripts/", "shared/", "tests/", "w
 FORBIDDEN_PREFIXES = (".env", ".git", ".github/", ".codex", "alembic/versions/", "scripts/deploy/")
 ERROR_RE = re.compile(r"(Traceback \(most recent call last\):|\b(?:CRITICAL|ERROR)\b)")
 SECRET_RE = re.compile(r"(?i)(api[_-]?key|secret|password|token)\s*[=:]\s*\S+")
+DIFF_SECRET_RE = re.compile(
+    r"(?i)(?:api[_-]?key|secret|password|token)\s*[=:]\s*"
+    r"[\"'][A-Za-z0-9_./+:-]{16,}[\"']"
+)
 
 
 class RepairError(RuntimeError):
@@ -144,7 +148,7 @@ def _validate_changes(worktree: Path) -> list[str]:
     if invalid:
         raise RepairError(f"AI changed paths outside the repair allowlist: {invalid}")
     diff = _run(["git", "diff", "--", *files], cwd=worktree).stdout
-    if SECRET_RE.search(diff):
+    if DIFF_SECRET_RE.search(diff):
         raise RepairError("candidate diff appears to contain a credential")
     return files
 
