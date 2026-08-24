@@ -110,6 +110,27 @@
           khi thêm bot — gửi thêm một tin nhắn rồi tải lại địa chỉ trên.
         </p>
 
+        <h3 id="code-repair-private-chat">Tách riêng Chat ID cho AI Code Repair</h3>
+        <p>
+          Nếu Hardware và Code Repair đều gửi tin nhắn riêng cho cùng một tài khoản Telegram thì hai bot
+          sẽ có <strong>cùng Chat ID</strong>. Bot Token khác nhau không tự tạo ra hai hộp thư riêng. Muốn
+          Code Repair xuất hiện ở một nơi riêng, làm như sau:
+        </p>
+        <ol>
+          <li>Tạo một group mới, ví dụ <code>Ceph AI Code Repair</code>. Không thêm bot Hardware vào group này.</li>
+          <li>Thêm đúng bot Code Repair vào group và gửi một tin nhắn bất kỳ trong group.</li>
+          <li>Mở <code>https://api.telegram.org/bot&lt;CODE_REPAIR_TOKEN&gt;/getUpdates</code>.</li>
+          <li>Tìm object có tên group vừa tạo, rồi copy giá trị <code>message.chat.id</code>. Chat ID group
+            là số âm, thường có dạng <code>-1001234567890</code>.</li>
+          <li>Quay lại card <strong>AI Code Repair — sửa hệ thống</strong>, điền Chat ID âm đó, bấm
+            <strong>Lưu</strong>, rồi bấm đúng nút <strong>Gửi thử — AI Code Repair — sửa hệ thống</strong>.</li>
+        </ol>
+        <p class="hint">
+          Nếu dùng Telegram channel thay vì group, thêm bot Code Repair làm quản trị viên có quyền đăng
+          tin. Chỉ dùng Bot Token của Code Repair khi gọi <code>getUpdates</code>; không dán token vào chat
+          hoặc gửi cho người khác.
+        </p>
+
         <h3>Bước 3 — Cấu hình trên ceph-aiops</h3>
         <ol>
           <li>Vào <a href="/telegram-alerts">Alert Telegram</a> (chỉ tài khoản admin thấy trang này).</li>

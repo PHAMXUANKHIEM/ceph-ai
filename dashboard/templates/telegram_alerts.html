@@ -128,10 +128,18 @@
           <label>Chat ID (ID cuộc trò chuyện/nhóm/kênh sẽ nhận cảnh báo)
             <input type="text" name="chat_id" value="{{ ch.chat_id }}" placeholder="vd: -1001234567890">
           </label>
+          {% if ch.key == 'code-repair' %}
+          <p class="hint">
+            <strong>Muốn tách khỏi chat Hardware?</strong> Chat ID nhắn riêng của cùng một tài khoản sẽ
+            giống nhau với mọi bot. Hãy tạo một group/channel Telegram riêng, thêm bot Code Repair vào đó,
+            lấy Chat ID âm (thường bắt đầu bằng <code>-100</code>) rồi điền tại đây.
+            <a href="/telegram-alerts/help#code-repair-private-chat" target="_blank" rel="noopener">Xem hướng dẫn chi tiết →</a>
+          </p>
+          {% endif %}
           <button type="submit" class="btn btn-primary">Lưu</button>
         </form>
         <form method="post" action="/telegram-alerts/{{ ch.key }}/test" style="margin-top: 0.75rem;">
-          <button type="submit" class="btn btn-ghost">Gửi thử</button>
+          <button type="submit" class="btn btn-ghost">Gửi thử — {{ ch.label }}</button>
         </form>
         <p class="hint" style="margin-top: 0.75rem;">
           {% if ch.approval_enabled %}

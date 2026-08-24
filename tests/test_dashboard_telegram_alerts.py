@@ -69,6 +69,9 @@ def test_get_telegram_alerts_shows_4_channel_cards_for_admin(dashboard_client):
     assert 'action="/telegram-alerts/node"' in response.text
     assert 'action="/telegram-alerts/code-repair"' in response.text
     assert "NOTIFICATION-ONLY" in response.text
+    assert "Muốn tách khỏi chat Hardware?" in response.text
+    assert 'href="/telegram-alerts/help#code-repair-private-chat"' in response.text
+    assert "Gửi thử — AI Code Repair — sửa hệ thống" in response.text
 
 
 def test_get_telegram_alerts_rejects_non_admin(dashboard_client):
@@ -110,6 +113,9 @@ def test_get_telegram_alerts_help_page_renders(dashboard_client):
     assert response.status_code == 200
     assert "BotFather" in response.text
     assert "getUpdates" in response.text
+    assert 'id="code-repair-private-chat"' in response.text
+    assert "Tách riêng Chat ID cho AI Code Repair" in response.text
+    assert "CODE_REPAIR_TOKEN" in response.text
 
 
 def test_get_telegram_alerts_help_rejects_non_admin(dashboard_client):
