@@ -359,6 +359,9 @@ class Settings(BaseSettings):
     code_repair_promote_main: bool = False
     code_repair_cursor_file: str = "/var/lib/ceph-ai/code-repair-cursors.json"
     code_repair_lock_file: str = "/var/lib/ceph-ai/code-repair.lock"
+    ceph_capability_learning_enabled: bool = False
+    ceph_capability_learning_include_existing: bool = False
+    ceph_capability_learning_state_file: str = "/var/lib/ceph-ai/ceph-capability-learning.json"
     # Dedicated notification-only channel for AI-analyzed RADOS Gateway
     # findings. Members receive RGW alerts but cannot approve Actions.
     telegram_rgw_bot_token: str = ""

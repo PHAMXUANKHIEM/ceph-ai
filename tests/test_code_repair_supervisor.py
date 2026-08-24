@@ -1,5 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
 
+from worker import code_repair_supervisor as supervisor
 from worker.code_repair_supervisor import Cursor, read_new_errors
 
 
@@ -26,3 +28,35 @@ def test_supervisor_ignores_its_own_log(tmp_path):
     log = tmp_path / "ceph-ai-code-repair-supervisor.log"
     log.write_text("ERROR recursive failure\n")
     assert read_new_errors([log], {}, initialize_at_end=False) == []
+
+
+def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
+    candidate = supervisor.ceph_learning.LearningCandidate("f1", "key1", "CEPH evidence")
+    captured = {}
+    monkeypatch.setattr(supervisor, "read_new_errors", lambda *a, **k: [])
+    monkeypatch.setattr(supervisor.ceph_learning, "load_state", lambda p: {"initialized": True, "findings": {}})
+    monkeypatch.setattr(supervisor.ceph_learning, "save_state", lambda *a: None)
+    monkeypatch.setattr(supervisor.ceph_learning, "next_candidate", lambda seen: candidate)
+    monkeypatch.setattr(supervisor.ceph_learning, "mark", lambda state, item, status: captured.setdefault("statuses", []).append(status))
+    monkeypatch.setattr(supervisor.settings, "code_repair_cursor_file", str(tmp_path / "cursor.json"))
+    monkeypatch.setattr(supervisor.settings, "ceph_capability_learning_state_file", str(tmp_path / "learning.json"))
+    monkeypatch.setattr(supervisor.settings, "ceph_capability_learning_enabled", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_auto_enabled", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
+
+    def fake_run(evidence, config):
+        captured["evidence"] = evidence
+        captured["config"] = config
+        return SimpleNamespace(status="PROMOTED", fingerprint="fp")
+
+    monkeypatch.setattr(supervisor, "run_repair", fake_run)
+    supervisor.run_forever(max_iterations=1)
+
+    assert captured["evidence"] == "CEPH evidence"
+    assert captured["config"].task_kind == "ceph-capability-learning"
+    assert captured["config"].push is True
+    assert captured["config"].deploy_staging is True
+    assert captured["config"].promote_main is True
+    assert captured["statuses"] == ["RUNNING", "PROMOTED"]

@@ -52,6 +52,8 @@ class RepairConfig:
     deploy_staging: bool = False
     promote_main: bool = False
     state_file: Path = Path("/var/lib/ceph-ai/code-repair-state.json")
+    task_kind: str = "application-repair"
+    task_instructions: str | None = None
 
 
 @dataclass
@@ -225,7 +227,8 @@ def _validate_changes(worktree: Path) -> list[str]:
 
 
 def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> RepairResult:
-    fp = fingerprint(evidence)
+    fingerprint_input = evidence if config.task_kind == "application-repair" else f"{config.task_kind}\n{evidence}"
+    fp = fingerprint(fingerprint_input)
     state = _load_state(config.state_file)
     previous = state.setdefault("attempts", {}).get(fp)
     if previous and not force:
@@ -246,17 +249,18 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
         _run(["git", "worktree", "add", "-b", branch, str(worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)
         # Reuse the tested environment without copying credentials into the worktree.
         os.symlink(config.repo / ".venv", worktree / ".venv", target_is_directory=True)
-        prompt = f"""You are repairing the Ceph AIOps application in an isolated Git worktree.
+        default_instructions = """You are repairing the Ceph AIOps application in an isolated Git worktree.
+
+Find the root cause and make the smallest production-quality code fix. Add or update a regression test.
+Do not edit .env, credentials, GitHub workflows, migrations, deployment scripts, or generated/static assets.
+Do not commit, push, deploy, or weaken/delete tests. You may inspect files and run focused tests.
+Finish only after the working tree contains the proposed source and test changes."""
+        prompt = f"""{config.task_instructions or default_instructions}
 
 Observed application failure (credentials already redacted):
 ---
 {evidence}
 ---
-
-Find the root cause and make the smallest production-quality code fix. Add or update a regression test.
-Do not edit .env, credentials, GitHub workflows, migrations, deployment scripts, or generated/static assets.
-Do not commit, push, deploy, or weaken/delete tests. You may inspect files and run focused tests.
-Finish only after the working tree contains the proposed source and test changes.
 """
         provider, command = _provider_command(
             config.provider, worktree, prompt, config.timeout_seconds,
