@@ -88,6 +88,23 @@ def test_rgw_finding_uses_dedicated_ai_alert_label(monkeypatch):
     assert "investigate_manually" not in sent[0][3]
     assert "Lệnh kiểm tra" not in sent[0][3]
     assert "ceph status" not in sent[0][3]
+
+
+def test_generic_finding_notification_is_concise_too(monkeypatch):
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: sent.append(args))
+    telegram_alerts.send_log_finding_alert(
+        "OSD chậm", "WARNING", "HIGH", "Latency tăng", "Disk nghẽn",
+        evidence_templates=["osd.<ID> slow request"],
+        recommended_action_id="investigate_manually",
+        operator_commands=["ceph status"], daemon_types=["osd"],
+    )
+    text = sent[0][3]
+    assert "OSD chậm" in text and "Latency tăng" in text and "Disk nghẽn" in text
+    assert "📄 Log:" not in text
+    assert "investigate_manually" not in text
+    assert "Lệnh kiểm tra" not in text
+    assert "ceph status" not in text
 from watcher.log_triage import TriageReason, TriageResult
 from worker.policy import gate
 
