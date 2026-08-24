@@ -170,13 +170,21 @@ def test_check_volumes_skips_a_pool_that_fails_to_query(monkeypatch):
     assert vm.check_volumes() == {}  # must not raise
 
 
-def test_check_volumes_stops_after_all_mon_nodes_time_out(monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        "All MON nodes failed: 10.20.1.39: TimeoutError",
+        "All MON nodes failed: 10.20.1.39: 10.20.1.39: command exited 124: "
+        "rbd: waiting for initial image stats",
+    ],
+)
+def test_check_volumes_stops_after_all_mon_nodes_time_out(monkeypatch, error):
     monkeypatch.setattr(vm.ceph_client, "configured_rbd_pools", lambda: ["slow", "not-queried"])
     queried = []
 
     def fake_iostat(pool):
         queried.append(pool)
-        raise CephQueryError("All MON nodes failed: 10.20.1.39: TimeoutError")
+        raise CephQueryError(error)
 
     monkeypatch.setattr(vm.ceph_client, "query_rbd_iostat", fake_iostat)
 

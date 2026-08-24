@@ -176,7 +176,7 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
             # every MON has timed out, retrying the same command for every
             # remaining pool multiplies one outage into a minutes-long poll
             # and makes the Watcher heartbeat appear dead.
-            if "TimeoutError" in str(exc):
+            if "TimeoutError" in str(exc) or "command exited 124" in str(exc):
                 break
             continue
 
