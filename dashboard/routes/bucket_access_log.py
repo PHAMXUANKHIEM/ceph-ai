@@ -19,7 +19,8 @@ these 2 fields, not the only one.
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -33,7 +34,9 @@ from dashboard.templating import make_templates
 from dashboard.vntime import to_utc_iso
 from shared.cluster_nodes import configured_nodes as _configured_nodes, resolve_ssh_creds
 from shared import db
-from shared.models import BucketLoggingConfig, Cluster, ObjectStorageAuditEntry
+from shared.models import (
+    BucketLoggingConfig, Cluster, ObjectStorageAuditEntry, RgwAccessAuditEvent,
+)
 from shared.ceph_releases import codename_for_version
 from shared.env_config import CLUSTER_ENV_NAMES, update_env_file_batch
 from watcher.rgw_access_log import (
@@ -48,6 +51,7 @@ from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 
 logger = logging.getLogger(__name__)
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 router = APIRouter()
 templates = make_templates()
@@ -360,6 +364,54 @@ async def bucket_access_log_api(request: Request, host: str, bucket: str = "", u
             for r in records
         ],
     }
+
+
+@router.get("/api/bucket-access-history")
+async def bucket_access_history_api(
+    request: Request,
+    ip: str = Query("", max_length=255),
+    requester: str = Query("", max_length=255),
+    bucket: str = Query("", max_length=255),
+    method: str = Query("", max_length=16),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    user: str = Depends(require_login),
+):
+    """Persistent RGW audit history, unlike the bounded live daemon tail."""
+    cluster = selected_cluster(request)
+    method = method.strip().upper()
+    if method and method not in {"GET", "PUT", "POST", "DELETE", "HEAD", "PATCH", "OPTIONS"}:
+        raise HTTPException(status_code=400, detail="HTTP method không hợp lệ")
+    with db.SessionLocal() as session:
+        query = session.query(RgwAccessAuditEvent).filter_by(cluster_id=cluster.id)
+        if ip.strip():
+            query = query.filter(RgwAccessAuditEvent.remote_addr == ip.strip())
+        if requester.strip():
+            query = query.filter(RgwAccessAuditEvent.requester.ilike(f"%{requester.strip()}%"))
+        if bucket.strip():
+            query = query.filter(RgwAccessAuditEvent.bucket.ilike(f"%{bucket.strip()}%"))
+        if method:
+            query = query.filter(RgwAccessAuditEvent.method == method)
+        if date_from:
+            source = date_from if date_from.tzinfo else date_from.replace(tzinfo=_VN_TZ)
+            query = query.filter(RgwAccessAuditEvent.event_at >= source.astimezone(timezone.utc).replace(tzinfo=None))
+        if date_to:
+            source = date_to if date_to.tzinfo else date_to.replace(tzinfo=_VN_TZ)
+            query = query.filter(RgwAccessAuditEvent.event_at <= source.astimezone(timezone.utc).replace(tzinfo=None))
+        total = query.count()
+        rows = query.order_by(RgwAccessAuditEvent.event_at.desc()).offset(
+            (page - 1) * page_size
+        ).limit(page_size).all()
+        items = [{
+            "id": row.id, "timestamp": to_utc_iso(row.event_at), "ip": row.remote_addr,
+            "requester": row.requester, "method": row.method, "action": row.action,
+            "bucket": row.bucket, "object": row.object_key, "status": row.http_status,
+            "size": row.bytes_sent, "encryption": row.encryption, "rgw_host": row.rgw_host,
+        } for row in rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "pages": max(1, (total + page_size - 1) // page_size)}
 
 
 @router.post("/api/bucket-logging/preview")

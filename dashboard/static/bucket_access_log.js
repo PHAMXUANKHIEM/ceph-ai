@@ -160,6 +160,38 @@
     loadLog();
   });
 
+  var historyForm = document.getElementById("bucket-access-history-form");
+  if (historyForm) {
+    var historyPage = 1, historyPages = 1;
+    function loadHistory() {
+      var params = new URLSearchParams({cluster: historyForm.dataset.cluster, page: String(historyPage), page_size: "50"});
+      [["ip","bah-ip"],["requester","bah-user"],["bucket","bah-bucket"],["method","bah-method"],["date_from","bah-from"],["date_to","bah-to"]].forEach(function (pair) {
+        var value = document.getElementById(pair[1]).value.trim();
+        if (value) params.set(pair[0], value);
+      });
+      document.getElementById("bah-status").textContent = "Đang tải…";
+      fetch("/api/bucket-access-history?" + params.toString()).then(handleAuthRedirect).then(function (response) {
+        if (!response.ok) return response.json().then(function (body) { throw new Error(body.detail || "Không lấy được lịch sử"); });
+        return response.json();
+      }).then(function (data) {
+        var body = document.getElementById("bah-body"); while (body.firstChild) body.removeChild(body.firstChild);
+        data.items.forEach(function (r) {
+          var tr = document.createElement("tr");
+          [formatVnDateTime(r.timestamp), r.ip || "—", r.requester || "—", r.method + " / " + r.action,
+           r.bucket || "—", r.object || "—", String(r.status), r.encryption || "—", r.rgw_host].forEach(function (v) { tr.appendChild(cell(v)); });
+          body.appendChild(tr);
+        });
+        historyPages = data.pages; document.getElementById("bah-status").textContent = data.total + " sự kiện — trang " + data.page + "/" + data.pages;
+        document.getElementById("bah-prev").disabled = historyPage <= 1;
+        document.getElementById("bah-next").disabled = historyPage >= historyPages;
+      }).catch(function (err) { document.getElementById("bah-status").textContent = "Lỗi: " + err.message; });
+    }
+    historyForm.addEventListener("submit", function (event) { event.preventDefault(); historyPage = 1; loadHistory(); });
+    document.getElementById("bah-prev").addEventListener("click", function () { if (historyPage > 1) { historyPage -= 1; loadHistory(); } });
+    document.getElementById("bah-next").addEventListener("click", function () { if (historyPage < historyPages) { historyPage += 1; loadHistory(); } });
+    loadHistory();
+  }
+
   var configForm = document.getElementById("bucket-logging-config-form");
   if (configForm) {
     var previewData = null;

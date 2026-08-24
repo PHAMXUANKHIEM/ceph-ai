@@ -140,6 +140,25 @@
         {% endif %}
       </div>
     </section>
+
+    <section class="card">
+      <div class="card-header"><div><h2>Lịch sử IP thao tác Bucket/Object</h2><p class="hint">Dữ liệu audit lưu bền, cập nhật gần thời gian thực (tối đa khoảng 15 giây).</p></div></div>
+      <div class="card-body">
+        <form class="audit-filters" id="bucket-access-history-form" data-cluster="{{ selected_cluster.id }}">
+          <label>IP client<input id="bah-ip" maxlength="255" placeholder="vd: 10.20.1.5"></label>
+          <label>User<input id="bah-user" maxlength="255" placeholder="vd: admin"></label>
+          <label>Bucket<input id="bah-bucket" maxlength="255"></label>
+          <label>Hành động<select id="bah-method"><option value="">Tất cả</option><option>PUT</option><option>POST</option><option>DELETE</option><option>GET</option><option>HEAD</option></select></label>
+          <label>Từ ngày<input id="bah-from" type="datetime-local"></label>
+          <label>Đến ngày<input id="bah-to" type="datetime-local"></label>
+          <button class="btn btn-primary btn-sm" type="submit">Lọc lịch sử</button>
+        </form>
+        <p class="hint">Nếu RGW đi qua HAProxy/Nginx mà chưa truyền IP client, cột IP có thể là IP proxy.</p>
+        <p class="hint" id="bah-status"></p>
+        <div class="table-wrap"><table><thead><tr><th>Giờ VN</th><th>IP thực hiện</th><th>User</th><th>Hành động</th><th>Bucket</th><th>Object</th><th>HTTP</th><th>Mã hóa</th><th>RGW host</th></tr></thead><tbody id="bah-body"></tbody></table></div>
+        <div><button class="btn btn-ghost btn-sm" id="bah-prev" type="button">Trang trước</button> <button class="btn btn-ghost btn-sm" id="bah-next" type="button">Trang sau</button></div>
+      </div>
+    </section>
   </main>
 
   <script src="/static/app.js?v={{ static_version }}"></script>

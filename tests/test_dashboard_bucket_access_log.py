@@ -1,8 +1,10 @@
+from datetime import datetime
+
 import dashboard.routes.bucket_access_log as bal_route
 from config.settings import settings
 from shared import env_config
 from shared import db
-from shared.models import BucketLoggingConfig, Cluster, ObjectStorageAuditEntry
+from shared.models import BucketLoggingConfig, Cluster, ObjectStorageAuditEntry, RgwAccessAuditEvent
 from watcher.rgw_access_log import RgwLogError, parse_beast_access_log
 
 _RESTARTED_OK = {"restarted": True, "new_pid": 12345, "error": None}
@@ -44,6 +46,29 @@ def test_unauthenticated_api_redirects_to_login(dashboard_client):
     )
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+def test_persistent_history_filters_by_client_ip_and_method(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        session.add_all([
+            RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="1" * 64,
+                method="PUT", action="Tải lên", bucket="photos", object_key="a.jpg",
+                requester="admin", remote_addr="10.0.0.8", http_status=200,
+                encryption="SSE-S3 (AES256)", event_at=datetime(2026, 8, 24, 1, 2, 3)),
+            RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="2" * 64,
+                method="GET", action="Tải xuống", bucket="photos", object_key="a.jpg",
+                requester="bob", remote_addr="10.0.0.9", http_status=200,
+                event_at=datetime(2026, 8, 24, 1, 3, 3)),
+        ])
+        session.commit()
+    response = dashboard_client.get("/api/bucket-access-history?ip=10.0.0.8&method=PUT")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["ip"] == "10.0.0.8"
+    assert body["items"][0]["encryption"] == "SSE-S3 (AES256)"
 
 
 def test_page_lists_configured_rgw_hosts(dashboard_client, monkeypatch):

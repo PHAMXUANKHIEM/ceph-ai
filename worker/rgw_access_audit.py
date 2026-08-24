@@ -93,6 +93,7 @@ def _message(event: RgwAccessAuditEvent, cluster_name: str) -> str:
         f"⚖️ Size: {_human_size(event.bytes_sent)}",
         f"🛡️ Mã hóa: {encryption_text}",
         f"👤 User: {event.requester or '-'}",
+        f"🌐 IP thực hiện: {event.remote_addr or '-'}",
         *status_line,
         f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
         "━━━━━━━━━━━━━━━━━━",
