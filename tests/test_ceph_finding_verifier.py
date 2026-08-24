@@ -1,6 +1,14 @@
 from types import SimpleNamespace
 
+import pytest
+
 from watcher import ceph_finding_verifier as verifier
+
+
+@pytest.fixture(autouse=True)
+def _stub_runtime_discovery(monkeypatch):
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([], "not configured"))
+    monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([], "not available"))
 
 
 def _finding(**overrides):
@@ -68,3 +76,39 @@ def test_unsafe_token_path_is_never_sent_to_ssh(monkeypatch):
     monkeypatch.setattr(verifier, "_stat_token", lambda *args: (_ for _ in ()).throw(AssertionError("must not SSH")))
     result = verifier.verify(_finding(), [_pattern("Vault token file '/tmp/x;id' not found")], _cluster())
     assert result.code == "VAULT_TOKEN_PATH_UNKNOWN"
+
+
+def test_discovers_token_path_from_ceph_config_dump(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc",
+        "name": "rgw_crypt_sse_s3_vault_token_file",
+        "value": "/etc/ceph/vault_token",
+    }], None))
+    monkeypatch.setattr(
+        verifier, "_stat_token",
+        lambda host, path, cluster, container_id=None: "PRESENT mode=600 owner=ceph:ceph size=29",
+    )
+    result = verifier.verify(_finding(), [_pattern("failed to retrieve actual key")], _cluster())
+    assert result.code == "VAULT_AUTH_OR_KEY_LOOKUP_FAILURE"
+    assert "ceph_config[client.rgw.sse.host.abc].rgw_crypt_sse_s3_vault_token_file=/etc/ceph/vault_token" in result.live_facts
+
+
+def test_cephadm_stats_token_inside_orchestrated_rgw_container(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
+        "value": "/opt/vault/vault_token",
+    }], None))
+    monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([{
+        "container_id": "3a14dd52cc9e", "daemon_name": "rgw.sse.host.abc",
+    }], None))
+    calls = []
+    def fake_stat(host, path, cluster, container_id=None):
+        calls.append((host, path, container_id))
+        return "PRESENT mode=600 owner=ceph:ceph size=29"
+    monkeypatch.setattr(verifier, "_stat_token", fake_stat)
+    result = verifier.verify(_finding(), [_pattern("failed to retrieve actual key")], _cluster())
+    assert result.code == "VAULT_AUTH_OR_KEY_LOOKUP_FAILURE"
+    assert calls == [("rgw1", "/opt/vault/vault_token", "3a14dd52cc9e")]
+    assert "rgw_deployment=cephadm containers=1" in result.live_facts
