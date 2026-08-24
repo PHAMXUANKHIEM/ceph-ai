@@ -85,13 +85,15 @@ def run_forever(*, max_iterations: int | None = None) -> None:
         ceph_learning.save_state(learning_state_file, learning_state)
     iterations = 0
     while settings.code_repair_auto_enabled:
-        paths = sorted(Path("/var/log").glob("ceph-ai-*.log"))
-        errors = read_new_errors(paths, cursors, initialize_at_end=first_scan)
-        first_scan = False
-        _save_cursors(cursor_file, cursors)
-        if errors:
+        candidate = None
+        if settings.ceph_capability_learning_enabled:
+            seen = set(learning_state.setdefault("findings", {}))
+            candidate = ceph_learning.next_candidate(seen)
+        if candidate is not None:
+            ceph_learning.mark(learning_state, candidate, "RUNNING")
+            ceph_learning.save_state(learning_state_file, learning_state)
             result = run_repair(
-                max(errors, key=len),
+                candidate.evidence,
                 RepairConfig(
                     repo=repo,
                     provider=settings.code_repair_provider,
@@ -100,17 +102,24 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                     push=settings.code_repair_push,
                     deploy_staging=settings.code_repair_deploy_staging,
                     promote_main=settings.code_repair_promote_main,
+                    task_kind="ceph-capability-learning",
+                    task_instructions=ceph_learning.LEARNING_INSTRUCTIONS,
                 ),
             )
-            logger.info("automatic Code Repair completed: %s (%s)", result.status, result.fingerprint)
-        elif settings.ceph_capability_learning_enabled:
-            seen = set(learning_state.setdefault("findings", {}))
-            candidate = ceph_learning.next_candidate(seen)
-            if candidate is not None:
-                ceph_learning.mark(learning_state, candidate, "RUNNING")
-                ceph_learning.save_state(learning_state_file, learning_state)
+            ceph_learning.mark(learning_state, candidate, result.status)
+            ceph_learning.save_state(learning_state_file, learning_state)
+            logger.info(
+                "Ceph capability learning completed: %s finding=%s fingerprint=%s",
+                result.status, candidate.finding_id, result.fingerprint,
+            )
+        else:
+            paths = sorted(Path("/var/log").glob("ceph-ai-*.log"))
+            errors = read_new_errors(paths, cursors, initialize_at_end=first_scan)
+            first_scan = False
+            _save_cursors(cursor_file, cursors)
+            if errors:
                 result = run_repair(
-                    candidate.evidence,
+                    max(errors, key=len),
                     RepairConfig(
                         repo=repo,
                         provider=settings.code_repair_provider,
@@ -119,16 +128,9 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                         push=settings.code_repair_push,
                         deploy_staging=settings.code_repair_deploy_staging,
                         promote_main=settings.code_repair_promote_main,
-                        task_kind="ceph-capability-learning",
-                        task_instructions=ceph_learning.LEARNING_INSTRUCTIONS,
                     ),
                 )
-                ceph_learning.mark(learning_state, candidate, result.status)
-                ceph_learning.save_state(learning_state_file, learning_state)
-                logger.info(
-                    "Ceph capability learning completed: %s finding=%s fingerprint=%s",
-                    result.status, candidate.finding_id, result.fingerprint,
-                )
+                logger.info("automatic Code Repair completed: %s (%s)", result.status, result.fingerprint)
         iterations += 1
         if max_iterations is not None and iterations >= max_iterations:
             return

@@ -304,6 +304,7 @@ Observed application failure (credentials already redacted):
                  cwd=worktree, timeout=120)
             result.status = "PROMOTED"
     except Exception as exc:
+        result.status = "FAILED"
         result.error = str(exc)
     finally:
         if worktree.exists():
