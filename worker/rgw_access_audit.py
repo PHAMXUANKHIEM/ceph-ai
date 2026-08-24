@@ -14,9 +14,12 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from shared import db
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.models import Cluster, RgwAccessAuditEvent
+from shared.models import Cluster, RgwAccessAuditEvent, RgwErrorNotification
 from shared.telegram_client import TelegramSendError, send_telegram_message
-from watcher.rgw_access_log import fetch_rgw_audit_log, fetch_rgw_audit_log_with
+from watcher.rgw_access_log import (
+    fetch_rgw_audit_log, fetch_rgw_audit_log_with,
+    fetch_rgw_error_log, fetch_rgw_error_log_with,
+)
 
 logger = logging.getLogger(__name__)
 _MAX_OBJECT_CHARS = 500
@@ -103,6 +106,32 @@ def _fetch(cluster: Cluster, host: str) -> list[dict]:
     return fetch_rgw_audit_log_with(host, ssh_user, ssh_key)
 
 
+def _fetch_errors(cluster: Cluster, host: str) -> list[dict]:
+    if cluster.is_default:
+        return fetch_rgw_error_log(host)
+    ssh_user, ssh_key, _mode, _container = resolve_ssh_creds(cluster)
+    return fetch_rgw_error_log_with(host, ssh_user, ssh_key)
+
+
+def _ingest_errors(session, cluster: Cluster, host: str) -> None:
+    rows = _fetch_errors(cluster, host)
+    initialized = session.query(RgwErrorNotification.id).filter_by(
+        cluster_id=cluster.id, rgw_host=host
+    ).first() is not None
+    for row in rows:
+        fingerprint = hashlib.sha256(
+            f"{cluster.id}|{host}|{row['timestamp_raw']}|{row['raw']}".encode()
+        ).hexdigest()
+        if session.query(RgwErrorNotification.id).filter_by(fingerprint=fingerprint).first():
+            continue
+        session.add(RgwErrorNotification(
+            cluster_id=cluster.id, rgw_host=host, fingerprint=fingerprint,
+            message=str(row["message"])[:2000], event_at=_naive_utc(row.get("timestamp")),
+            telegram_sent=not initialized,
+        ))
+    session.commit()
+
+
 def _ingest_host(session, cluster: Cluster, host: str) -> None:
     rows = _fetch(cluster, host)
     initialized = session.query(RgwAccessAuditEvent.id).filter_by(
@@ -165,6 +194,32 @@ def _deliver_pending(session) -> None:
         event.telegram_error = None
         session.commit()
 
+    errors = session.query(RgwErrorNotification).filter_by(telegram_sent=False).order_by(
+        RgwErrorNotification.event_at
+    ).limit(200).all()
+    for event in errors:
+        event.telegram_attempts += 1
+        local_time = event.event_at.replace(tzinfo=timezone.utc).astimezone(_VIETNAM_TZ)
+        text = "\n".join((
+            "🚨 LỖI CEPH RGW",
+            "━━━━━━━━━━━━━━━━━━",
+            f"📍 Host: {event.rgw_host}",
+            f"❌ Lỗi: {event.message}",
+            "🧠 AI: Đã chuyển vào Log Intelligence để phân tích nguyên nhân và đề xuất xử lý.",
+            f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
+            "━━━━━━━━━━━━━━━━━━",
+        ))
+        try:
+            send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
+        except TelegramSendError as exc:
+            event.telegram_error = str(exc)[:_MAX_ERROR_CHARS]
+            session.commit()
+            break
+        event.telegram_sent = True
+        event.telegram_sent_at = datetime.utcnow()
+        event.telegram_error = None
+        session.commit()
+
 
 def collect_once() -> None:
     if not settings.rgw_access_audit_enabled:
@@ -178,6 +233,7 @@ def collect_once() -> None:
                     continue
                 try:
                     _ingest_host(session, cluster, str(node["host"]))
+                    _ingest_errors(session, cluster, str(node["host"]))
                 except Exception:
                     session.rollback()
                     logger.exception("RGW access audit collection failed for %s/%s", cluster.name, node["host"])

@@ -638,6 +638,27 @@ class RgwAccessAuditEvent(Base):
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class RgwErrorNotification(Base):
+    """Durable immediate Telegram delivery for real RGW daemon errors."""
+
+    __tablename__ = "rgw_error_notifications"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_rgw_error_notification_fingerprint"),
+        Index("ix_rgw_error_notification_pending", "telegram_sent", "event_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    rgw_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    event_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    telegram_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    telegram_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class BucketLoggingConfig(Base):
     """Version-selected native or compatibility bucket logging config."""
 

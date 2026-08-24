@@ -32,6 +32,16 @@ def test_parse_native_ops_log_detects_sse_variants_and_plaintext():
     assert ssec["encryption"] == "SSE-C (AES256)"
     assert plain["encryption"] == "Plaintext"
 
+
+def test_parse_rgw_errors_keeps_real_error_and_drops_end_stream_noise():
+    raw = "\n".join((
+        "2026-08-24T06:02:36.588+0000 7f30 0 req 1 ERROR: Vault token file '/etc/ceph/vault_token' not found",
+        "2026-08-24T06:02:36.598+0000 7f30 20 failed to read header: end of stream",
+    ))
+    rows = ral.parse_rgw_error_log(raw)
+    assert len(rows) == 1
+    assert "Vault token file" in rows[0]["message"]
+
 # Real example line verified against ceph/ceph#33083 (the PR that added
 # Beast's access log) — see watcher/rgw_access_log.py's own docstring.
 HEAD_LINE = (

@@ -96,6 +96,15 @@ _OPS_LOG_COMMAND = (
     "find /var/log/ceph -type f -name 'ops-log-*.log' -print0 2>/dev/null "
     "| xargs -0 -r tail -n 3000"
 )
+_DAEMON_LOG_COMMAND = (
+    "find /var/log/ceph -type f -name 'ceph-client.rgw*.log' -print0 2>/dev/null "
+    "| xargs -0 -r tail -n 3000"
+)
+_RGW_ERROR_RE = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T\S+)\s+.*?\bERROR:\s*(?P<message>.+)$",
+    re.IGNORECASE,
+)
+_RGW_ERROR_NOISE = (re.compile(r"^failed to read header: end of stream$", re.IGNORECASE),)
 
 
 def _action_label(method: str, has_object: bool) -> str:
@@ -262,6 +271,37 @@ def fetch_rgw_audit_log_with(host: str, ssh_user: str, ssh_key_path: str) -> lis
     except Exception:
         return []
     return parse_rgw_ops_log(raw)
+
+
+def parse_rgw_error_log(raw_text: str) -> list[dict]:
+    """Extract literal RGW ERROR lines; known transport chatter is excluded."""
+    rows = []
+    for line in raw_text.splitlines():
+        match = _RGW_ERROR_RE.search(line.strip())
+        if not match:
+            continue
+        message = match.group("message").strip()
+        if any(expr.search(message) for expr in _RGW_ERROR_NOISE):
+            continue
+        try:
+            timestamp = datetime.fromisoformat(match.group("timestamp").replace("Z", "+00:00"))
+        except ValueError:
+            timestamp = None
+        rows.append({"timestamp": timestamp, "timestamp_raw": match.group("timestamp"),
+                     "message": message, "raw": line.strip()})
+    return rows
+
+
+def fetch_rgw_error_log(host: str) -> list[dict]:
+    raw = run_command_on_node(host, _DAEMON_LOG_COMMAND, RGW_LOG_COMMAND_TIMEOUT_SECONDS)
+    return parse_rgw_error_log(raw)
+
+
+def fetch_rgw_error_log_with(host: str, ssh_user: str, ssh_key_path: str) -> list[dict]:
+    raw = run_command_on_node_with(
+        host, _DAEMON_LOG_COMMAND, ssh_user, ssh_key_path, RGW_LOG_COMMAND_TIMEOUT_SECONDS
+    )
+    return parse_rgw_error_log(raw)
 
 
 def fetch_bucket_access_log(host: str, bucket: str | None = None) -> list[dict]:
