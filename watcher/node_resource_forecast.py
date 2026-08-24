@@ -89,8 +89,12 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
     start = end - timedelta(days=max(1, settings.node_resource_forecast_history_days))
     selector = '{job="%s", cluster="%s", host="%s"}' % (
         JOB, cluster.replace('"', '\\"'), host.replace('"', '\\"'))
+    # Loki applies ``limit`` before returning the result.  Reading forward
+    # over a long, busy stream therefore keeps the oldest rows and can hide
+    # current metrics, making a healthy stream appear stale.  Ask for the
+    # newest page; ``rows`` is sorted below for forecast consumers.
     params = {"query": selector, "start": str(int(start.timestamp() * 1e9)),
-              "end": str(int(end.timestamp() * 1e9)), "limit": "5000", "direction": "forward"}
+              "end": str(int(end.timestamp() * 1e9)), "limit": "5000", "direction": "backward"}
     response = httpx.get(f"{_base_url()}/loki/api/v1/query_range", params=params,
                          headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
     response.raise_for_status()

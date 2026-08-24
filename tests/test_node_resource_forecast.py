@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -51,6 +52,36 @@ def test_forecast_reads_loki_samples(monkeypatch):
     result = forecast.forecast("CS-LAB", "node-1")
     assert set(result) == {"cpu", "ram"}
     assert result["cpu"].samples == 30
+
+
+def test_fetch_samples_requests_newest_loki_page_and_sorts_it(monkeypatch):
+    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
+    older = now - timedelta(minutes=1)
+    requested_params = {}
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"result": [{"values": [
+                [str(int(now.timestamp() * 1e9)),
+                 '{"cpu_percent":42,"mem_percent":62}'],
+                [str(int(older.timestamp() * 1e9)),
+                 '{"cpu_percent":41,"mem_percent":61}'],
+            ]}]}}
+
+    def fake_get(url, *, params, headers, timeout):
+        requested_params.update(params)
+        return Response()
+
+    monkeypatch.setattr(forecast.settings, "log_intel_loki_url", "http://loki")
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    samples = forecast.fetch_samples("CS-LAB", "node-1", now=now)
+
+    assert requested_params["direction"] == "backward"
+    assert [sample[0] for sample in samples] == [older, now]
 
 
 def test_latest_metrics_comes_from_newest_loki_sample(monkeypatch):
