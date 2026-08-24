@@ -78,3 +78,14 @@ def test_claude_provider_uses_dashboard_account_directory(monkeypatch, tmp_path)
     assert provider == "claude"
     assert f"CLAUDE_CONFIG_DIR={tmp_path / '.claude-account'}" in command
     assert command[-1] == "repair it"
+
+
+def test_codex_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
+    provider, command = code_repair._provider_command(
+        "codex", tmp_path, "repair it", 30,
+        codex_home=tmp_path / ".codex-account",
+    )
+    assert provider == "codex"
+    assert f"CODEX_HOME={tmp_path / '.codex-account'}" in command
+    assert command[-1] == "-"
