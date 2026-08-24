@@ -88,4 +88,6 @@ def test_codex_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
     )
     assert provider == "codex"
     assert f"CODEX_HOME={tmp_path / '.codex-account'}" in command
+    assert "--approve-for-me" in command
+    assert "--sandbox" not in command
     assert command[-1] == "-"

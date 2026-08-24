@@ -130,7 +130,10 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
         elif claude:
             provider = "claude"
     if provider == "codex" and codex:
-        command = [codex, "exec", "--ephemeral", "--approve-for-me", "--sandbox", "workspace-write", "-C", str(worktree), "-"]
+        # Current Codex CLI makes --approve-for-me mutually exclusive with
+        # --sandbox; approve-for-me itself routes commands through its
+        # workspace-write automatic reviewer.
+        command = [codex, "exec", "--ephemeral", "--approve-for-me", "-C", str(worktree), "-"]
         if codex_home:
             command = ["env", f"CODEX_HOME={codex_home}", *command]
         return provider, command
