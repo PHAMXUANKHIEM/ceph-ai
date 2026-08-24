@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import time
+import subprocess
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,7 +92,25 @@ def run_forever(*, max_iterations: int | None = None) -> None:
     while settings.code_repair_auto_enabled:
         candidate = None
         if settings.ceph_capability_learning_enabled:
-            seen = set(learning_state.setdefault("findings", {}))
+            base_revision = subprocess.run(
+                ["git", "rev-parse", "origin/main"], cwd=repo, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            ).stdout.strip()
+            # A crashed process must not leave a finding RUNNING forever.
+            now = datetime.now(timezone.utc)
+            for value in learning_state.setdefault("findings", {}).values():
+                if value.get("status") != "RUNNING":
+                    continue
+                try:
+                    age = (now - datetime.fromisoformat(value["updated_at"])).total_seconds()
+                except (KeyError, TypeError, ValueError):
+                    age = settings.code_repair_running_stale_seconds + 1
+                if age > settings.code_repair_running_stale_seconds:
+                    value["status"] = "FAILED_STALE"
+            seen = ceph_learning.blocked_keys(
+                learning_state, base_revision,
+                max_attempts=settings.code_repair_max_attempts,
+            )
             candidate = ceph_learning.next_candidate(seen)
         if candidate is not None:
             if not candidate.verification.eligible_for_learning:
@@ -111,7 +131,10 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                 )
                 candidate = None
         if candidate is not None:
-            ceph_learning.mark(learning_state, candidate, "RUNNING")
+            ceph_learning.mark(
+                learning_state, candidate, "RUNNING", base_revision=base_revision,
+                increment_attempt=True,
+            )
             ceph_learning.save_state(learning_state_file, learning_state)
             result = run_repair(
                 candidate.evidence,
@@ -125,9 +148,17 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                     promote_main=settings.code_repair_promote_main,
                     task_kind="ceph-capability-learning",
                     task_instructions=ceph_learning.LEARNING_INSTRUCTIONS,
+                    max_ai_attempts=settings.code_repair_max_attempts,
+                    max_pipeline_attempts=settings.code_repair_max_attempts,
+                    running_stale_seconds=settings.code_repair_running_stale_seconds,
                 ),
             )
-            ceph_learning.mark(learning_state, candidate, result.status)
+            learned_status = "LEARNED" if result.status in {
+                "PUSHED", "STAGING_VERIFIED", "PROMOTED",
+            } else result.status
+            ceph_learning.mark(
+                learning_state, candidate, learned_status, base_revision=base_revision,
+            )
             ceph_learning.save_state(learning_state_file, learning_state)
             logger.info(
                 "Ceph capability learning completed: %s finding=%s fingerprint=%s",
@@ -149,6 +180,9 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                         push=settings.code_repair_push,
                         deploy_staging=settings.code_repair_deploy_staging,
                         promote_main=settings.code_repair_promote_main,
+                        max_ai_attempts=settings.code_repair_max_attempts,
+                        max_pipeline_attempts=settings.code_repair_max_attempts,
+                        running_stale_seconds=settings.code_repair_running_stale_seconds,
                     ),
                 )
                 logger.info("automatic Code Repair completed: %s (%s)", result.status, result.fingerprint)

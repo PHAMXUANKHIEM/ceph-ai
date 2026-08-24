@@ -354,6 +354,8 @@ class Settings(BaseSettings):
         "--deselect=tests/test_dashboard_settings.py::test_migrate_database_route_adds_missing_table"
     )
     code_repair_timeout_seconds: int = 1800
+    code_repair_max_attempts: int = 3
+    code_repair_running_stale_seconds: int = 3600
     code_repair_push: bool = False
     code_repair_deploy_staging: bool = False
     code_repair_promote_main: bool = False

@@ -85,6 +85,9 @@ class RepairConfig:
     state_file: Path = Path("/var/lib/ceph-ai/code-repair-state.json")
     task_kind: str = "application-repair"
     task_instructions: str | None = None
+    max_ai_attempts: int = 3
+    max_pipeline_attempts: int = 3
+    running_stale_seconds: int = 3600
 
 
 @dataclass
@@ -257,6 +260,24 @@ def _validate_changes(worktree: Path) -> list[str]:
     return files
 
 
+def _focused_test_command(files: list[str]) -> str | None:
+    tests = sorted({path for path in files if path.startswith("tests/") and path.endswith(".py")})
+    if not tests:
+        return None
+    return "PYTHONPATH=. .venv/bin/pytest -q " + " ".join(shlex.quote(path) for path in tests)
+
+
+_INFRA_TEST_RE = re.compile(
+    r"(?i)(sqlite3\.OperationalError: no such table|database is locked|"
+    r"connection refused|temporary failure in name resolution|no space left on device|"
+    r"systemerror: AST constructor recursion depth mismatch|INTERNALERROR>)"
+)
+
+
+def _test_failure_kind(output: str) -> str:
+    return "INFRASTRUCTURE" if _INFRA_TEST_RE.search(output or "") else "CANDIDATE"
+
+
 def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> RepairResult:
     # Repeated polls of one traceback often contain different timestamps,
     # Paramiko chatter and object addresses. Fingerprint the concise exception
@@ -269,15 +290,35 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
     fp = fingerprint(fingerprint_input)
     state = _load_state(config.state_file)
     previous = state.setdefault("attempts", {}).get(fp)
+    previous_attempts = int((previous or {}).get("attempt_count") or (1 if previous else 0))
     if previous and not force:
-        return RepairResult(status="SKIPPED_DUPLICATE", fingerprint=fp, branch=previous.get("branch"))
+        previous_status = str(previous.get("status") or "")
+        stale_running = False
+        if previous_status == "RUNNING":
+            try:
+                started = datetime.fromisoformat(str(previous.get("started_at")))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                stale_running = (
+                    datetime.now(timezone.utc) - started
+                ).total_seconds() > config.running_stale_seconds
+            except ValueError:
+                stale_running = True
+        terminal = previous_status in {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED"}
+        exhausted = previous_attempts >= config.max_pipeline_attempts
+        if terminal or exhausted or (previous_status == "RUNNING" and not stale_running):
+            return RepairResult(status="SKIPPED_DUPLICATE", fingerprint=fp, branch=previous.get("branch"))
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     branch = f"{config.branch_prefix}{stamp}-{fp[:8]}"
     result = RepairResult(status="FAILED", fingerprint=fp, branch=branch)
     notifier = RepairProgressNotifier(evidence, branch)
     notifier.start()
-    state["attempts"][fp] = {"status": "RUNNING", "branch": branch, "started_at": stamp}
+    state["attempts"][fp] = {
+        "status": "RUNNING", "branch": branch,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "attempt_count": previous_attempts + 1,
+    }
     _save_state(config.state_file, state)
     worktree_root = Path(tempfile.mkdtemp(prefix="ceph-ai-repair-"))
     worktree = worktree_root / "repo"
@@ -300,23 +341,52 @@ Observed application failure (credentials already redacted):
 {evidence}
 ---
 """
-        provider, command = _provider_command(
-            config.provider, worktree, prompt, config.timeout_seconds,
-            claude_config_dir=config.repo / ".claude-account",
-            codex_home=config.repo / ".codex-account",
-        )
-        result.provider = provider
-        notifier.update(20, f"{provider} đang phân tích lỗi và sửa code")
-        ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
-                  input_text=prompt if provider == "codex" else None, check=False)
-        if ai.returncode != 0:
-            raise RepairError(f"{provider} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
-        result.changed_files = _validate_changes(worktree)
-        notifier.update(45, "Patch đã tạo; guardrail hợp lệ, đang chạy test")
-        tests = _run(["bash", "-lc", config.test_command], cwd=worktree,
-                     timeout=config.timeout_seconds, check=False)
-        result.test_output = tests.stdout[-12_000:]
-        if tests.returncode != 0:
+        feedback = ""
+        for ai_attempt in range(1, max(1, config.max_ai_attempts) + 1):
+            attempt_prompt = prompt + feedback
+            provider, command = _provider_command(
+                config.provider, worktree, attempt_prompt, config.timeout_seconds,
+                claude_config_dir=config.repo / ".claude-account",
+                codex_home=config.repo / ".codex-account",
+            )
+            result.provider = provider
+            notifier.update(15 + ai_attempt * 10, f"{provider} đang sửa code, vòng {ai_attempt}/{config.max_ai_attempts}")
+            ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
+                      input_text=attempt_prompt if provider == "codex" else None, check=False)
+            if ai.returncode != 0:
+                raise RepairError(f"{provider} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
+            result.changed_files = _validate_changes(worktree)
+            focused_command = _focused_test_command(result.changed_files)
+            if focused_command:
+                notifier.update(40, "Patch hợp lệ; đang chạy test theo phạm vi thay đổi")
+                focused = _run(["bash", "-lc", focused_command], cwd=worktree,
+                               timeout=config.timeout_seconds, check=False)
+                if focused.returncode != 0:
+                    result.test_output = focused.stdout[-12_000:]
+                    if _test_failure_kind(focused.stdout) == "INFRASTRUCTURE":
+                        raise RepairError(f"test infrastructure failed:\n{focused.stdout[-6000:]}")
+                    if ai_attempt < config.max_ai_attempts:
+                        feedback = (
+                            "\nThe previous patch failed its focused tests. Fix the patch; do not weaken tests.\n"
+                            f"TEST OUTPUT:\n{focused.stdout[-6000:]}\n"
+                        )
+                        continue
+                    raise RepairError(f"focused test gate failed ({focused.returncode}):\n{focused.stdout[-6000:]}")
+            notifier.update(55, "Test phạm vi đã đạt; đang chạy regression gate")
+            tests = _run(["bash", "-lc", config.test_command], cwd=worktree,
+                         timeout=config.timeout_seconds, check=False)
+            result.test_output = tests.stdout[-12_000:]
+            if tests.returncode == 0:
+                break
+            if _test_failure_kind(tests.stdout) == "INFRASTRUCTURE":
+                raise RepairError(f"test infrastructure failed:\n{tests.stdout[-6000:]}")
+            if ai_attempt < config.max_ai_attempts:
+                feedback = (
+                    "\nThe previous patch failed regression tests. Fix the implementation while preserving existing behavior; "
+                    "do not delete or weaken tests.\n"
+                    f"TEST OUTPUT:\n{tests.stdout[-6000:]}\n"
+                )
+                continue
             raise RepairError(f"test gate failed ({tests.returncode}):\n{tests.stdout[-6000:]}")
         _run(["git", "add", "--", *result.changed_files], cwd=worktree)
         notifier.update(65, "Test đã đạt; đang tạo commit")
@@ -348,7 +418,10 @@ Observed application failure (credentials already redacted):
         if worktree.exists():
             _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=config.repo, check=False)
         shutil.rmtree(worktree_root, ignore_errors=True)
-        state["attempts"][fp] = {**asdict(result), "finished_at": datetime.now(timezone.utc).isoformat()}
+        state["attempts"][fp] = {
+            **asdict(result), "attempt_count": previous_attempts + 1,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
         _save_state(config.state_file, state)
         notifier.finish(result)
     return result

@@ -94,14 +94,28 @@ def test_diff_secret_guard_allows_setting_reference_but_blocks_literal():
 
 def test_duplicate_error_is_not_sent_to_ai(monkeypatch, tmp_path):
     evidence = "ERROR stable failure"
-    fp = code_repair.fingerprint(evidence)
+    fp = code_repair.fingerprint(code_repair.summarize_evidence(code_repair.clean_evidence(evidence)))
     state = tmp_path / "state.json"
-    state.write_text('{"attempts":{"%s":{"branch":"ai-repair/existing"}}}' % fp)
+    state.write_text('{"attempts":{"%s":{"status":"PUSHED","branch":"ai-repair/existing"}}}' % fp)
     config = code_repair.RepairConfig(repo=tmp_path, state_file=state)
     monkeypatch.setattr(code_repair, "_run", lambda *a, **k: pytest.fail("must not run"))
     result = code_repair.run_repair(evidence, config)
     assert result.status == "SKIPPED_DUPLICATE"
     assert result.branch == "ai-repair/existing"
+
+
+def test_focused_test_command_uses_only_changed_test_files():
+    command = code_repair._focused_test_command([
+        "worker/code_repair.py", "tests/test_code_repair.py", "tests/test_commands.py",
+    ])
+    assert command == (
+        "PYTHONPATH=. .venv/bin/pytest -q tests/test_code_repair.py tests/test_commands.py"
+    )
+
+
+def test_test_failure_kind_separates_infrastructure_from_candidate():
+    assert code_repair._test_failure_kind("sqlite3.OperationalError: no such table: actions") == "INFRASTRUCTURE"
+    assert code_repair._test_failure_kind("AssertionError: expected 2 got 3") == "CANDIDATE"
 
 
 def test_claude_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):

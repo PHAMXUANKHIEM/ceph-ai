@@ -68,6 +68,20 @@ def build_evidence(finding: LogFinding, patterns: list[LogPattern]) -> str:
     return "CEPH CAPABILITY LEARNING\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def blocked_keys(state: dict, base_revision: str, *, max_attempts: int = 3) -> set[str]:
+    """Only successful or exhausted findings are blocked on this source base."""
+    blocked = set()
+    for key, value in state.setdefault("findings", {}).items():
+        status = str(value.get("status") or "")
+        attempts = int(value.get("attempts") or (1 if status == "FAILED" else 0))
+        same_base = value.get("base_revision") == base_revision
+        if status in {"LEARNED", "PROMOTED", "STAGING_VERIFIED", "PUSHED"}:
+            blocked.add(key)
+        elif same_base and attempts >= max_attempts:
+            blocked.add(key)
+    return blocked
+
+
 def next_candidate(seen_keys: set[str]) -> LearningCandidate | None:
     with db.SessionLocal() as session:
         rows = session.query(LogFinding).order_by(LogFinding.created_at.asc()).all()
@@ -113,10 +127,17 @@ def save_state(path: Path, state: dict) -> None:
     os.replace(temporary, path)
 
 
-def mark(state: dict, candidate: LearningCandidate, status: str) -> None:
-    state.setdefault("findings", {})[candidate.dedupe_key] = {
+def mark(
+    state: dict, candidate: LearningCandidate, status: str, *,
+    base_revision: str | None = None, increment_attempt: bool = False,
+) -> None:
+    previous = state.setdefault("findings", {}).get(candidate.dedupe_key, {})
+    attempts = int(previous.get("attempts") or 0) + (1 if increment_attempt else 0)
+    state["findings"][candidate.dedupe_key] = {
         "finding_id": candidate.finding_id,
         "status": status,
+        "attempts": attempts,
+        "base_revision": base_revision or previous.get("base_revision"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 

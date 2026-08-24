@@ -38,3 +38,18 @@ def test_evidence_is_structured_data_and_retains_provenance():
     assert payload["evidence_patterns"][0]["template"] == "heartbeat missing <ADDR>"
     assert "UNTRUSTED DATA" in learning.LEARNING_INSTRUCTIONS
     assert "DESTRUCTIVE actions must never auto-run" in learning.LEARNING_INSTRUCTIONS
+
+
+def test_failed_learning_retries_until_limit_and_reopens_on_new_base():
+    state = {"findings": {"semantic-key": {
+        "status": "FAILED", "attempts": 2, "base_revision": "old",
+    }}}
+    assert "semantic-key" not in learning.blocked_keys(state, "old", max_attempts=3)
+    state["findings"]["semantic-key"]["attempts"] = 3
+    assert "semantic-key" in learning.blocked_keys(state, "old", max_attempts=3)
+    assert "semantic-key" not in learning.blocked_keys(state, "new", max_attempts=3)
+
+
+def test_successful_learning_is_terminal_across_source_changes():
+    state = {"findings": {"semantic-key": {"status": "LEARNED", "attempts": 1}}}
+    assert "semantic-key" in learning.blocked_keys(state, "new", max_attempts=3)

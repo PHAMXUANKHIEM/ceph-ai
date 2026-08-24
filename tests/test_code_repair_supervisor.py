@@ -38,7 +38,7 @@ def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor.ceph_learning, "load_state", lambda p: {"initialized": True, "findings": {}})
     monkeypatch.setattr(supervisor.ceph_learning, "save_state", lambda *a: None)
     monkeypatch.setattr(supervisor.ceph_learning, "next_candidate", lambda seen: candidate)
-    monkeypatch.setattr(supervisor.ceph_learning, "mark", lambda state, item, status: captured.setdefault("statuses", []).append(status))
+    monkeypatch.setattr(supervisor.ceph_learning, "mark", lambda state, item, status, **kwargs: captured.setdefault("statuses", []).append(status))
     monkeypatch.setattr(supervisor.settings, "code_repair_cursor_file", str(tmp_path / "cursor.json"))
     monkeypatch.setattr(supervisor.settings, "ceph_capability_learning_state_file", str(tmp_path / "learning.json"))
     monkeypatch.setattr(supervisor.settings, "ceph_capability_learning_enabled", True)
@@ -46,6 +46,8 @@ def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
     monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
     monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_max_attempts", 3)
+    monkeypatch.setattr(supervisor.settings, "code_repair_running_stale_seconds", 3600)
 
     def fake_run(evidence, config):
         captured["evidence"] = evidence
@@ -60,4 +62,4 @@ def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
     assert captured["config"].push is True
     assert captured["config"].deploy_staging is True
     assert captured["config"].promote_main is True
-    assert captured["statuses"] == ["RUNNING", "PROMOTED"]
+    assert captured["statuses"] == ["RUNNING", "LEARNED"]
