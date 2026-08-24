@@ -887,7 +887,7 @@ def resolve_stale_findings(
 
     Trả về số bản ghi đã chuyển sang RESOLVED.
     """
-    resolved_titles: list[str] = []
+    resolved_items: list[tuple[str, list[str], str | None]] = []
     with db.SessionLocal() as session:
         open_findings = (
             session.query(LogFinding)
@@ -912,14 +912,33 @@ def resolve_stale_findings(
             if still_active:
                 continue
 
+            patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all()
+            daemon_types = sorted({row.daemon_type for row in patterns})
+            verification_summary = None
+            if "rgw" in daemon_types:
+                from watcher.ceph_finding_verifier import verify_vault_recovery
+                live_cluster = cluster or session.get(Cluster, cluster_id)
+                if live_cluster is None:
+                    continue
+                verification = verify_vault_recovery(finding, patterns, live_cluster)
+                if not verification.eligible_for_learning:
+                    logger.warning(
+                        "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
+                        finding.id, verification.code, verification.summary,
+                    )
+                    continue
+                verification_summary = f"{verification.code}: {verification.summary}"
+
             finding.status = LogFindingStatus.RESOLVED.value
             # Đóng luôn Incident/Action chờ duyệt đi kèm (L4) -- vấn đề đã
             # hết thì hàng chờ duyệt phải tự sạch.
             _resolve_incident_for(session, finding.dedupe_key)
-            resolved_titles.append(finding.title or "(không tiêu đề)")
+            resolved_items.append((
+                finding.title or "(không tiêu đề)", daemon_types, verification_summary,
+            ))
         session.commit()
 
-    for title in resolved_titles:
+    for title, daemon_types, verification_summary in resolved_items:
         try:
             has_cluster_channel = bool(
                 cluster and cluster.telegram_bot_token and cluster.telegram_chat_id
@@ -930,13 +949,15 @@ def resolve_stale_findings(
                 bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
                 chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
                 enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                daemon_types=daemon_types,
+                verification_summary=verification_summary,
             )
         except Exception:
             logger.exception("log_analysis: gửi thông báo đã-hết thất bại")
 
-    if resolved_titles:
-        logger.info("log_analysis: đã đóng %d phát hiện log", len(resolved_titles))
-    return len(resolved_titles)
+    if resolved_items:
+        logger.info("log_analysis: đã đóng %d phát hiện log", len(resolved_items))
+    return len(resolved_items)
 
 
 def resolve_pattern_templates(finding: LogFinding) -> list[str]:

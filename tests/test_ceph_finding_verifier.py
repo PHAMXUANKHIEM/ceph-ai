@@ -112,3 +112,47 @@ def test_cephadm_stats_token_inside_orchestrated_rgw_container(monkeypatch):
     assert result.code == "VAULT_AUTH_OR_KEY_LOOKUP_FAILURE"
     assert calls == [("rgw1", "/opt/vault/vault_token", "3a14dd52cc9e")]
     assert "rgw_deployment=cephadm containers=1" in result.live_facts
+
+
+def test_vault_recovery_requires_successful_live_token_lookup(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
+         "value": "/opt/vault/vault_token"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_addr",
+         "value": "http://vault.internal:8200"},
+    ], None))
+    monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([{
+        "container_id": "3a14dd52cc9e", "daemon_name": "rgw.sse.host.abc",
+    }], None))
+    monkeypatch.setattr(
+        verifier, "_probe_vault_token",
+        lambda *args: "VAULT_HEALTH_HTTP=200 TOKEN_LOOKUP_HTTP=200",
+    )
+    result = verifier.verify_vault_recovery(
+        _finding(), [_pattern("failed to retrieve actual key")], _cluster(),
+    )
+    assert result.code == "VAULT_RECOVERY_VERIFIED"
+    assert result.eligible_for_learning is True
+
+
+def test_vault_recovery_rejects_invalid_token(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
+         "value": "/opt/vault/vault_token"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_addr",
+         "value": "http://vault.internal:8200"},
+    ], None))
+    monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([{
+        "container_id": "3a14dd52cc9e", "daemon_name": "rgw.sse.host.abc",
+    }], None))
+    monkeypatch.setattr(
+        verifier, "_probe_vault_token",
+        lambda *args: "VAULT_HEALTH_HTTP=200 TOKEN_LOOKUP_HTTP=403",
+    )
+    result = verifier.verify_vault_recovery(
+        _finding(), [_pattern("failed to retrieve actual key")], _cluster(),
+    )
+    assert result.code == "VAULT_RECOVERY_UNVERIFIED"
+    assert result.eligible_for_learning is False

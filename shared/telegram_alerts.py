@@ -459,16 +459,31 @@ def send_log_finding_alert(
 def send_log_finding_resolved_alert(
     title: str, *, cluster_name: str | None = None, bot_token: str | None = None,
     chat_id: str | None = None, enabled: bool | None = None,
+    daemon_types: list[str] | None = None, verification_summary: str | None = None,
 ) -> None:
     """Gửi khi các mẫu log của một phát hiện đã ngừng xuất hiện — đóng vòng
     đời OPEN -> RESOLVED, để người trực biết vấn đề đã hết mà không phải tự
     vào Dashboard kiểm tra."""
+    daemon_set = {value.strip().lower() for value in (daemon_types or []) if isinstance(value, str)}
+    is_rgw = "rgw" in daemon_set
+    selected_token = settings.telegram_rgw_bot_token if is_rgw else (
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token
+    )
+    selected_chat = settings.telegram_rgw_chat_id if is_rgw else (
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id
+    )
+    selected_enabled = settings.telegram_rgw_enabled if is_rgw else (
+        enabled if enabled is not None else settings.telegram_incident_enabled
+    )
+    lines = [
+        f"✅ RGW ĐÃ XÁC NHẬN PHỤC HỒI: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}"
+        if is_rgw else f"🟢 Đã hết: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        "Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
+    ]
+    if verification_summary:
+        lines.append(f"🔎 Live verification: {_compact(verification_summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
     _send(
-        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
-        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
-        enabled if enabled is not None else settings.telegram_incident_enabled,
-        f"\U0001f7e2 Đã hết: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}\n"
-        f"Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
+        selected_token, selected_chat, selected_enabled, "\n".join(lines),
         cluster_name,
     )
 

@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import Cluster, LogFinding, LogPattern
@@ -125,6 +126,133 @@ def _stat_token(
         return ceph_client.run_command_on_node_with(host, command, ssh_user, ssh_key, timeout=5).strip()[:300]
     except Exception as exc:
         return "SSH_ERROR " + " ".join(str(exc).split())[:240]
+
+
+def _safe_vault_addr(value: object) -> str | None:
+    addr = str(value or "").strip().rstrip("/")
+    parsed = urlparse(addr)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+        return None
+    return addr
+
+
+def _probe_vault_token(
+    host: str, path: str, addr: str, cluster: Cluster, container_id: str | None = None,
+) -> str:
+    """Validate Vault reachability and token without printing token contents."""
+    safe_path = _safe_token_path(path)
+    safe_addr = _safe_vault_addr(addr)
+    if safe_path is None or safe_addr is None:
+        return "UNSAFE_VAULT_CONFIG"
+    probe = (
+        f"test -s {shlex.quote(safe_path)} || {{ echo TOKEN_MISSING_OR_EMPTY; exit 0; }}; "
+        f"h=$(curl -sS -o /dev/null -w '%{{http_code}}' --connect-timeout 3 --max-time 5 "
+        f"{shlex.quote(safe_addr + '/v1/sys/health')} || echo 000); "
+        f"t=$(curl -sS -o /dev/null -w '%{{http_code}}' --connect-timeout 3 --max-time 5 "
+        f"-H \"X-Vault-Token: $(cat {shlex.quote(safe_path)})\" "
+        f"{shlex.quote(safe_addr + '/v1/auth/token/lookup-self')} || echo 000); "
+        "echo VAULT_HEALTH_HTTP=$h TOKEN_LOOKUP_HTTP=$t"
+    )
+    if container_id:
+        if not _SAFE_CONTAINER_ID_RE.fullmatch(container_id):
+            return "UNSAFE_CONTAINER_ID"
+        inner = shlex.quote(probe)
+        command = (
+            f"if command -v podman >/dev/null 2>&1; then podman exec {container_id} sh -c {inner}; "
+            f"elif command -v docker >/dev/null 2>&1; then docker exec {container_id} sh -c {inner}; "
+            "else echo CONTAINER_RUNTIME_MISSING; fi"
+        )
+    else:
+        command = probe
+    ssh_user, ssh_key, _exec_mode, _container = resolve_ssh_creds(cluster)
+    try:
+        return ceph_client.run_command_on_node_with(
+            host, command, ssh_user, ssh_key, timeout=12,
+        ).strip()[:300]
+    except Exception as exc:
+        return "SSH_ERROR " + " ".join(str(exc).split())[:240]
+
+
+def verify_vault_recovery(
+    finding: LogFinding, patterns: list[LogPattern], cluster: Cluster,
+) -> VerificationResult:
+    """Require live Ceph, runtime token metadata and Vault token lookup."""
+    if not _is_vault_finding(finding, patterns):
+        return VerificationResult("NOT_VAULT", "Không cần Vault recovery gate.", (), True)
+    health, health_error = _health(cluster)
+    if health_error or health not in {"HEALTH_OK", "HEALTH_WARN"}:
+        return VerificationResult(
+            "CEPH_RECOVERY_UNVERIFIED", "Ceph chưa phản hồi ổn định để xác nhận phục hồi.",
+            (f"ceph_health={health or 'ERROR'}",), False,
+        )
+    facts = [f"ceph_health={health}"]
+    config_rows, config_error = _ceph_vault_config(cluster)
+    if config_error:
+        return VerificationResult(
+            "VAULT_CONFIG_UNREACHABLE", "Không đọc được ceph config dump.",
+            tuple(facts + [f"ceph_config_dump_error={config_error}"]), False,
+        )
+    pairs = []
+    by_section_name = {
+        (str(row.get("section")), str(row.get("name"))): row.get("value")
+        for row in config_rows
+    }
+    for row in config_rows:
+        name = str(row.get("name") or "")
+        if not name.endswith("vault_token_file"):
+            continue
+        section = str(row.get("section") or "")
+        path = _safe_token_path(row.get("value"))
+        addr = _safe_vault_addr(by_section_name.get((section, name[:-10] + "addr")))
+        if path and addr:
+            pairs.append((section, name, path, addr))
+    if not pairs:
+        return VerificationResult(
+            "VAULT_RECOVERY_CONFIG_INCOMPLETE",
+            "Không ghép được Vault token_file với vault_addr trong ceph config dump.",
+            tuple(facts), False,
+        )
+    daemons, orch_error = _rgw_orch_daemons(cluster)
+    affected = set(_json_hosts(finding.affected_hosts_json))
+    rgw_hosts = {row["host"] for row in configured_nodes(cluster) if "RGW" in row["roles"]}
+    targets = sorted((affected & rgw_hosts) or rgw_hosts)
+    outcomes: dict[str, str] = {}
+    if daemons:
+        facts.append(f"rgw_deployment=cephadm containers={len(daemons)}")
+        for daemon in daemons:
+            container_id = str(daemon["container_id"])
+            daemon_name = str(daemon.get("daemon_name") or container_id)
+            for host in targets:
+                for section, name, path, addr in pairs:
+                    value = _probe_vault_token(host, path, addr, cluster, container_id)
+                    if not value.startswith("SSH_ERROR"):
+                        outcomes[f"{host}/{daemon_name}:{name}"] = value
+    else:
+        facts.append(f"ceph_orch_ps_error={orch_error or 'no RGW daemons'}")
+        for host in targets:
+            for section, name, path, addr in pairs:
+                outcomes[f"{host}:{name}"] = _probe_vault_token(host, path, addr, cluster)
+    facts.extend(f"vault_probe[{target}]={value}" for target, value in outcomes.items())
+    accepted_health = {"200", "429", "472", "473"}
+    healthy = []
+    for value in outcomes.values():
+        health_match = re.search(r"VAULT_HEALTH_HTTP=(\d{3})", value)
+        token_match = re.search(r"TOKEN_LOOKUP_HTTP=(\d{3})", value)
+        healthy.append(
+            bool(health_match and health_match.group(1) in accepted_health)
+            and bool(token_match and token_match.group(1) == "200")
+        )
+    if outcomes and all(healthy):
+        return VerificationResult(
+            "VAULT_RECOVERY_VERIFIED",
+            "Ceph ổn định; mọi Vault endpoint và token RGW đã xác thực live thành công.",
+            tuple(facts), True,
+        )
+    return VerificationResult(
+        "VAULT_RECOVERY_UNVERIFIED",
+        "Log đã ngừng nhưng Vault endpoint/token chưa vượt qua kiểm tra live; giữ finding OPEN.",
+        tuple(facts), False,
+    )
 
 
 def verify(finding: LogFinding, patterns: list[LogPattern], cluster: Cluster) -> VerificationResult:
