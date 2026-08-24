@@ -282,3 +282,30 @@ def test_incident_and_node_channels_are_independent(monkeypatch):
 
     assert len(calls) == 1
     assert "10.0.0.5" in calls[0]
+
+
+def test_log_finding_alert_includes_recommendations_and_review_commands(monkeypatch):
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args))
+    calls = []
+    telegram_alerts.send_log_finding_alert(
+        "RGW key invalid", "WARNING", "HIGH", "Key is AES256", "Sai định dạng",
+        recommended_steps=["Khuyến nghị tốt nhất: gỡ khóa sai"],
+        operator_commands=["ceph config dump"], daemon_types=["rgw"],
+    )
+    text = calls[0][3]
+    assert "💡 Gợi ý xử lý:" in text
+    assert "Khuyến nghị tốt nhất: gỡ khóa sai" in text
+    assert "Lệnh kiểm tra đề xuất (chưa tự chạy)" in text
+
+
+def test_pending_default_key_alert_includes_best_option(monkeypatch):
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args))
+    calls = []
+    telegram_alerts.send_log_finding_recovery_pending_alert(
+        "RGW key invalid", "still invalid", ("ceph_health=HEALTH_OK",),
+        verification_code="RGW_DEFAULT_ENCRYPTION_KEY_INVALID",
+    )
+    text = calls[0][3]
+    assert "Gợi ý tốt nhất" in text
+    assert "Vault SSE-S3" in text
+    assert "Phương án khác" in text

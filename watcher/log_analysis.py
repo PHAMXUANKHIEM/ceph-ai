@@ -114,6 +114,10 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 # rồi viết tiếp như thể đang ở ngoài vùng dữ liệu. Vô hiệu hoá bằng cách
 # phá chuỗi đó ngay trong nội dung.
 _FENCE_BREAKER_RE = re.compile(r"<<<\s*/?\s*(?:END_)?UNTRUSTED_LOG_DATA\s*>>>", re.IGNORECASE)
+_RGW_DEFAULT_KEY_RE = re.compile(
+    r"rgw[ _]crypt[ _]default[ _]encryption[ _]key|default encryption key",
+    re.IGNORECASE,
+)
 
 SYSTEM_PROMPT = (
     "You are an expert Ceph storage SRE performing root-cause analysis on "
@@ -143,7 +147,10 @@ SYSTEM_PROMPT = (
     "5. If the patterns are unremarkable, answer verdict=NO_FINDING. Do "
     "not manufacture a problem to seem useful.\n\n"
     "Write `title`, `summary`, `root_cause_hypothesis` and "
-    "`recommended_manual_steps` in Vietnamese, for an operator to read."
+    "`recommended_manual_steps` in Vietnamese, for an operator to read. "
+    "For every FINDING, recommended_manual_steps MUST start with the single "
+    "best remediation supported by the evidence, followed by safer alternatives "
+    "or verification steps. Never return a FINDING without a useful recommendation."
 )
 
 
@@ -537,6 +544,22 @@ def _validate(
     steps = payload.get("recommended_manual_steps")
     steps = [s for s in steps if isinstance(s, str)] if isinstance(steps, list) else []
     commands = _validated_ai_commands(payload.get("recommended_commands"), notes)
+    diagnosis_text = " ".join(str(payload.get(key) or "") for key in (
+        "title", "summary", "root_cause_hypothesis",
+    ))
+    if _RGW_DEFAULT_KEY_RE.search(diagnosis_text):
+        steps = [
+            "Khuyến nghị tốt nhất: nếu RGW đang dùng Vault SSE-S3, gỡ rgw_crypt_default_encryption_key sai khỏi đúng section client.rgw; không thay AES256 bằng một khóa đoán.",
+            "Sau khi gỡ, restart tuần tự từng RGW daemon vì tùy chọn này không cập nhật nóng.",
+            "Kiểm thử PUT và GET một object SSE-S3; chỉ đóng lỗi khi request thành công và log giải mã khóa không tái xuất hiện.",
+            "Lựa chọn thay thế (chỉ khi chủ đích dùng automatic encryption): đặt một khóa ngẫu nhiên 32 byte được mã hóa base64, rồi restart và kiểm thử tương tự.",
+        ]
+    elif verdict == LogFindingVerdict.FINDING.value and not steps:
+        steps = [
+            "Khuyến nghị tốt nhất: xác minh trực tiếp cấu hình và trạng thái daemon liên quan trên cluster trước khi thay đổi.",
+            "Đối chiếu lại log sau phép kiểm tra; chỉ thực hiện remediation khi nguyên nhân đã được xác nhận.",
+        ]
+        notes.append("AI không đưa ra gợi ý; hệ thống đã bổ sung phương án an toàn mặc định")
 
     return {
         "verdict": verdict,
@@ -861,6 +884,7 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             payload["recommended_action_id"],
             payload["validation_notes"],
             operator_commands=_operator_commands_for(payload, evidence_templates),
+            recommended_steps=payload.get("recommended_manual_steps"),
             cluster_name=cluster.name if cluster is not None else None,
             bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
             chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
@@ -934,7 +958,7 @@ def resolve_stale_findings(
                         finding.recovery_notified_at = window_start
                         pending_items.append((
                             finding.title or "(không tiêu đề)", verification.summary,
-                            verification.live_facts,
+                            verification.live_facts, verification.code,
                         ))
                     logger.warning(
                         "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
@@ -974,10 +998,11 @@ def resolve_stale_findings(
         except Exception:
             logger.exception("log_analysis: gửi thông báo đã-hết thất bại")
 
-    for title, summary, live_facts in pending_items:
+    for title, summary, live_facts, verification_code in pending_items:
         try:
             telegram_alerts.send_log_finding_recovery_pending_alert(
                 title, summary, live_facts, cluster_name=cluster.name if cluster else None,
+                verification_code=verification_code,
             )
         except Exception:
             logger.exception("log_analysis: gửi thông báo recovery-chưa-đạt thất bại")

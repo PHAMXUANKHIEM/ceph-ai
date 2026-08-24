@@ -409,6 +409,7 @@ def send_log_finding_alert(
     validation_notes: str | None = None,
     *,
     operator_commands: list[str] | None = None,
+    recommended_steps: list[str] | None = None,
     cluster_name: str | None = None,
     bot_token: str | None = None,
     chat_id: str | None = None,
@@ -420,11 +421,8 @@ def send_log_finding_alert(
     đang OPEN) — cùng nếp "một thông báo cho một vấn đề thật sự mới" mà
     send_node_alert/send_osd_latency_alert/send_crush_skew_alert đã theo.
 
-    Telegram intentionally carries only the concise conclusion. Raw evidence,
-    internal action ids and diagnostic command catalogues remain available in
-    the Dashboard finding, where they can be reviewed without flooding every
-    notification channel. `validation_notes` remains visible when the server
-    had to correct/downgrade model output."""
+    Telegram carries the conclusion and actionable recommendations. Raw
+    evidence and internal action ids remain in the Dashboard."""
     prefix = _LOG_FINDING_SEVERITY_PREFIX.get(severity, f"⚠️ {severity}")
     daemon_set = {value.strip().lower() for value in (daemon_types or []) if isinstance(value, str)}
     source_label = "Cảnh báo RGW do AI phân tích" if "rgw" in daemon_set else "Phát hiện từ log"
@@ -437,6 +435,17 @@ def send_log_finding_alert(
         lines.append(f"🧠 Tóm tắt: {_compact(summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if root_cause:
         lines.append(f"🔎 Nguyên nhân nghi ngờ: {_compact(root_cause, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    clean_steps = [str(value).strip() for value in (recommended_steps or []) if str(value).strip()]
+    if clean_steps:
+        lines.append("💡 Gợi ý xử lý:")
+        lines.extend(
+            f"{index}. {_compact(step, _MAX_FOLLOWUP_FIELD_CHARS)}"
+            for index, step in enumerate(clean_steps[:4], 1)
+        )
+    clean_commands = [str(value).strip() for value in (operator_commands or []) if str(value).strip()]
+    if clean_commands:
+        lines.append("🔧 Lệnh kiểm tra đề xuất (chưa tự chạy):")
+        lines.extend(f"• {_compact(command, _MAX_EXCERPT_CHARS)}" for command in clean_commands[:4])
     if validation_notes:
         lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if "rgw" in daemon_set:
@@ -490,7 +499,7 @@ def send_log_finding_resolved_alert(
 
 def send_log_finding_recovery_pending_alert(
     title: str, summary: str, live_facts: tuple[str, ...] | list[str], *,
-    cluster_name: str | None = None,
+    cluster_name: str | None = None, verification_code: str | None = None,
 ) -> None:
     """RGW recovery gate failed; rate limiting is persisted by LogFinding."""
     lines = [
@@ -503,6 +512,14 @@ def send_log_finding_recovery_pending_alert(
             or fact.startswith("rgw_default_key_status")
         ):
             lines.append(f"• {_compact(fact, _MAX_EXCERPT_CHARS)}")
+    if verification_code == "RGW_DEFAULT_ENCRYPTION_KEY_INVALID":
+        lines.extend((
+            "💡 Gợi ý tốt nhất: cluster dùng Vault SSE-S3 thì gỡ "
+            "rgw_crypt_default_encryption_key sai, restart tuần tự RGW và test PUT/GET SSE-S3.",
+            "↪️ Phương án khác: chỉ khi chủ đích dùng automatic encryption, "
+            "đặt khóa ngẫu nhiên 32 byte dạng base64.",
+            "⚠️ Chưa tự chạy; cần duyệt hành động trên hàng chờ.",
+        ))
     lines.append("Finding vẫn OPEN; hệ thống sẽ kiểm tra lại tự động.")
     _send(
         settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id,

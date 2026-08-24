@@ -142,6 +142,29 @@ def _response(**overrides):
     return payload
 
 
+def test_default_key_finding_gets_deterministic_best_recommendation():
+    payload = _response(
+        title="RGW failed to decode default encryption key",
+        summary="rgw crypt default encryption key is AES256",
+    )
+    validated = log_analysis._validate(
+        payload, {"pat-1"}, {"10.0.0.1"}, LogIngestStatus.OK.value,
+    )
+    steps = validated["recommended_manual_steps"]
+    assert steps[0].startswith("Khuyến nghị tốt nhất")
+    assert "Vault SSE-S3" in steps[0]
+    assert "khóa đoán" in steps[0]
+    assert any("Lựa chọn thay thế" in step for step in steps)
+
+
+def test_finding_without_ai_suggestion_gets_safe_fallback():
+    validated = log_analysis._validate(
+        _response(), {"pat-1"}, {"10.0.0.1"}, LogIngestStatus.OK.value,
+    )
+    assert validated["recommended_manual_steps"][0].startswith("Khuyến nghị tốt nhất")
+    assert "AI không đưa ra gợi ý" in validated["validation_notes"]
+
+
 def _stub_router(monkeypatch, payload):
     async def fake(user_content, allowed_action_ids):
         return payload
