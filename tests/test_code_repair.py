@@ -22,6 +22,28 @@ def test_extract_latest_error_uses_newest_log_and_redacts_secret(tmp_path):
     assert "API_KEY=<redacted>" in evidence
 
 
+def test_telegram_evidence_drops_paramiko_noise_and_keeps_actual_error():
+    evidence = """Source application log: ceph-ai-remediation-watcher.log
+2026-08-24 14:06:07 INFO:paramiko.transport:Connected (version 2.0, client OpenSSH_9.9)
+2026-08-24 14:06:07 INFO:paramiko.transport:Authentication (publickey) successful!
+2026-08-24 14:06:37 ERROR:watcher.verify: Vault token lookup returned HTTP 403
+2026-08-24 14:06:47 INFO:paramiko.transport:Authentication (publickey) successful!
+"""
+    summary = code_repair.summarize_evidence(evidence)
+    assert summary == (
+        "ceph-ai-remediation-watcher.log: "
+        "2026-08-24 14:06:37 ERROR:watcher.verify: Vault token lookup returned HTTP 403"
+    )
+    assert "Authentication" not in summary
+
+
+def test_telegram_evidence_is_short_and_redacted():
+    evidence = "Source application log: worker.log\nERROR token=very-secret " + "x" * 1000
+    summary = code_repair.summarize_evidence(evidence)
+    assert len(summary) <= 360
+    assert "very-secret" not in summary
+
+
 def test_fingerprint_ignores_timestamps_ids_and_line_numbers():
     first = "2026-08-24T01:00:00 ERROR incident abcdef123456 line 42"
     second = "2026-08-25T02:00:00 ERROR incident fedcba654321 line 99"

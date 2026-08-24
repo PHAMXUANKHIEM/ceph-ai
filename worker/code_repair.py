@@ -33,10 +33,35 @@ DIFF_SECRET_RE = re.compile(
     r"(?i)(?:api[_-]?key|secret|password|token)\s*[=:]\s*"
     r"[\"'][A-Za-z0-9_./+:-]{16,}[\"']"
 )
+_TELEGRAM_NOISE_RE = re.compile(
+    r"(?i)(paramiko\.transport:)?(?:connected \(version|authentication \(publickey\) successful)"
+)
+_SOURCE_LOG_RE = re.compile(r"^Source (?:application )?log:\s*(?P<name>\S+)", re.MULTILINE)
 
 
 class RepairError(RuntimeError):
     pass
+
+
+def summarize_evidence(evidence: str, *, max_chars: int = 360) -> str:
+    """Return one useful error line for Telegram; AI still receives full evidence."""
+    source = _SOURCE_LOG_RE.search(evidence)
+    source_name = source.group("name") if source else None
+    lines = [" ".join(line.split()) for line in evidence.splitlines()]
+    useful = [line for line in lines if line and not _TELEGRAM_NOISE_RE.search(line)]
+    marker_indexes = [index for index, line in enumerate(useful) if ERROR_RE.search(line)]
+    selected = useful[marker_indexes[-1]] if marker_indexes else (useful[-1] if useful else "Lỗi không rõ")
+    if "Traceback (most recent call last):" in selected and marker_indexes:
+        tail = useful[marker_indexes[-1] + 1:]
+        exception_lines = [
+            line for line in tail
+            if re.match(r"^[A-Za-z_][\w.]*?(?:Error|Exception):", line)
+        ]
+        if exception_lines:
+            selected = exception_lines[-1]
+    selected = SECRET_RE.sub(lambda match: match.group(1) + "=<redacted>", selected)
+    prefix = f"{source_name}: " if source_name else ""
+    return (prefix + selected)[:max_chars]
 
 
 @dataclass(frozen=True)
@@ -72,7 +97,7 @@ class RepairProgressNotifier:
     """Telegram lifecycle reporter with a ten-minute in-progress heartbeat."""
 
     def __init__(self, evidence: str, branch: str, *, interval_seconds: int = 600) -> None:
-        self.evidence = " ".join(evidence.split())[:700]
+        self.evidence = summarize_evidence(evidence)
         self.branch = branch
         self.interval_seconds = interval_seconds
         self.percent = 5
