@@ -314,8 +314,8 @@ def _process_analysis_jobs(limit: int = 1) -> None:
             job.started_at = datetime.utcnow()
             job_id, cluster_id = job.id, job.cluster_id
             host, message = event.rgw_host, event.message
-            session.commit()
             session.expunge(cluster)
+            session.commit()
 
         label = f"RGW-{job_id[:8]}"
         heartbeat_stop = threading.Event()
