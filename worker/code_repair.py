@@ -106,7 +106,8 @@ def _save_state(path: Path, state: dict) -> None:
     os.replace(temporary, path)
 
 
-def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int) -> tuple[str, list[str]]:
+def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
+                      *, claude_config_dir: Path | None = None) -> tuple[str, list[str]]:
     codex = shutil.which("codex")
     claude = shutil.which("claude")
     if provider == "auto":
@@ -123,7 +124,12 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int) 
     if provider == "codex" and codex:
         return provider, [codex, "exec", "--ephemeral", "--approve-for-me", "--sandbox", "workspace-write", "-C", str(worktree), "-"]
     if provider == "claude" and claude:
-        return provider, [claude, "-p", "--permission-mode", "acceptEdits", "--no-session-persistence", prompt]
+        command = [claude, "-p", "--permission-mode", "acceptEdits", "--no-session-persistence", prompt]
+        if claude_config_dir:
+            # The dashboard stores its CLI session in a repo-local, gitignored
+            # directory rather than root's default ~/.claude account.
+            command = ["env", f"CLAUDE_CONFIG_DIR={claude_config_dir}", "DISABLE_AUTOUPDATER=1", *command]
+        return provider, command
     raise RepairError(f"AI coding provider {provider!r} is unavailable or not authenticated")
 
 
@@ -172,7 +178,10 @@ Do not edit .env, credentials, GitHub workflows, migrations, deployment scripts,
 Do not commit, push, deploy, or weaken/delete tests. You may inspect files and run focused tests.
 Finish only after the working tree contains the proposed source and test changes.
 """
-        provider, command = _provider_command(config.provider, worktree, prompt, config.timeout_seconds)
+        provider, command = _provider_command(
+            config.provider, worktree, prompt, config.timeout_seconds,
+            claude_config_dir=config.repo / ".claude-account",
+        )
         result.provider = provider
         ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
                   input_text=prompt if provider == "codex" else None, check=False)

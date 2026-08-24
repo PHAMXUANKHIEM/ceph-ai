@@ -50,3 +50,14 @@ def test_duplicate_error_is_not_sent_to_ai(monkeypatch, tmp_path):
     result = code_repair.run_repair(evidence, config)
     assert result.status == "SKIPPED_DUPLICATE"
     assert result.branch == "ai-repair/existing"
+
+
+def test_claude_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
+    provider, command = code_repair._provider_command(
+        "claude", tmp_path, "repair it", 30,
+        claude_config_dir=tmp_path / ".claude-account",
+    )
+    assert provider == "claude"
+    assert f"CLAUDE_CONFIG_DIR={tmp_path / '.claude-account'}" in command
+    assert command[-1] == "repair it"
