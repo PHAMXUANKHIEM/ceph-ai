@@ -27,7 +27,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+
+from sqlalchemy import text
 
 from config.settings import settings
 from shared import db
@@ -47,6 +51,8 @@ from watcher.log_source import get_log_source
 from watcher.log_source.base import DAEMON_TYPES, LogRecord
 
 logger = logging.getLogger(__name__)
+_LOCAL_SCAN_LOCKS: dict[str, threading.Lock] = {}
+_LOCAL_SCAN_LOCKS_GUARD = threading.Lock()
 
 # Một dòng mẫu giữ lại cho người đọc -- cắt ngắn để không biến bảng
 # log_patterns thành nơi chứa log thô (ràng buộc R1).
@@ -239,6 +245,27 @@ def _to_utc_naive(parsed: datetime) -> datetime:
 # --- Quét và lưu -------------------------------------------------------
 
 
+@contextmanager
+def _cluster_scan_lock(cluster_id: str | None):
+    """Serialize scheduled and immediate scans, including across processes."""
+    key = f"ceph-ai:log-intel:{cluster_id or 'default'}"
+    if db.engine.dialect.name == "postgresql":
+        connection = db.engine.connect()
+        try:
+            connection.execute(text("SELECT pg_advisory_lock(hashtext(:key))"), {"key": key})
+            yield
+        finally:
+            try:
+                connection.execute(text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": key})
+            finally:
+                connection.close()
+        return
+    with _LOCAL_SCAN_LOCKS_GUARD:
+        lock = _LOCAL_SCAN_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
 def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None) -> str | None:
     """Một chu kỳ quét -- gọi từ vòng lặp `watcher/main.py` theo cadence
     riêng `log_intel_scan_interval_seconds`.
@@ -247,6 +274,13 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
     Không bao giờ raise: một node chết chỉ làm lần quét thành PARTIAL, đúng
     nếp best-effort của mọi collector khác trong Watcher.
     """
+    with _cluster_scan_lock(cluster_id):
+        return _scan_and_store_unlocked(cluster_id, cluster)
+
+
+def _scan_and_store_unlocked(
+    cluster_id: str | None = None, cluster: Cluster | None = None,
+) -> str | None:
     if not settings.log_intel_enabled:
         return None
 
