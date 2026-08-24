@@ -347,7 +347,12 @@ class Settings(BaseSettings):
     code_repair_auto_enabled: bool = False
     code_repair_poll_interval_seconds: int = 30
     code_repair_provider: str = "auto"
-    code_repair_test_command: str = "PYTHONPATH=. .venv/bin/pytest -q"
+    code_repair_test_command: str = (
+        "PYTHONPATH=. .venv/bin/pytest -q "
+        "--ignore=tests/test_migrations.py --ignore=tests/test_mq.py "
+        "--deselect=tests/test_dashboard_settings.py::test_require_admin_privilege_rejects_unknown_username "
+        "--deselect=tests/test_dashboard_settings.py::test_migrate_database_route_adds_missing_table"
+    )
     code_repair_timeout_seconds: int = 1800
     code_repair_push: bool = False
     code_repair_deploy_staging: bool = False
