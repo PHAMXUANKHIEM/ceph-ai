@@ -196,6 +196,28 @@ def test_resolving_duplicate_does_not_cancel_action_while_same_finding_is_open(i
         assert session.get(Action, action.id).status == ActionStatus.PENDING_APPROVAL.value
 
 
+def test_rgw_approval_is_not_cancelled_by_concurrent_stale_resolver(isolated_db):
+    cluster_id, _run_id = isolated_db
+    dedupe_key = "rgw-race"
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id=cluster_id, ceph_code=log_analysis.ceph_code_for(dedupe_key),
+            status=IncidentStatus.PENDING_APPROVAL.value, detected_at=WINDOW_START,
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="remove_invalid_rgw_default_key",
+            classification="RISKY", status=ActionStatus.PENDING_APPROVAL.value,
+        )
+        session.add(action)
+        session.commit()
+        log_analysis._resolve_incident_for(session, dedupe_key)
+        session.commit()
+        assert session.get(Incident, incident.id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Action, action.id).status == ActionStatus.PENDING_APPROVAL.value
+
+
 def _stub_router(monkeypatch, payload):
     async def fake(user_content, allowed_action_ids):
         return payload

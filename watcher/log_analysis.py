@@ -1231,5 +1231,17 @@ def _resolve_incident_for(session, dedupe_key: str) -> None:
         .filter(Incident.status.in_(_RESOLVABLE_INCIDENT_STATUSES))
         .all()
     ):
+        rgw_action = (
+            session.query(Action.id)
+            .filter(Action.incident_id == incident.id)
+            .filter(Action.action_id == "remove_invalid_rgw_default_key")
+            .filter(Action.status == ActionStatus.PENDING_APPROVAL.value)
+            .first()
+        )
+        if rgw_action is not None:
+            # A concurrent scan may temporarily disagree about RGW recovery.
+            # Preserve the approval proposal; its closed command re-checks
+            # Vault backend and current config at execution time.
+            continue
         incident.status = IncidentStatus.RESOLVED.value
         cancel_pending_actions(session, incident.id)
