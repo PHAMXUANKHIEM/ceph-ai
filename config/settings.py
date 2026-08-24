@@ -364,6 +364,11 @@ class Settings(BaseSettings):
     telegram_rgw_bot_token: str = ""
     telegram_rgw_chat_id: str = ""
     telegram_rgw_enabled: bool = True
+    # Per-request RGW audit collector.  It is deliberately independent of
+    # Log Intelligence: CRUD access events are facts, not AI findings, and
+    # must not be suppressed or grouped by the anomaly/noise pipeline.
+    rgw_access_audit_enabled: bool = True
+    rgw_access_audit_interval_seconds: int = 15
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's

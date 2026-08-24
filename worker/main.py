@@ -239,7 +239,7 @@ async def run(
 
 async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
-    from worker import bucket_logging
+    from worker import bucket_logging, rgw_access_audit
     from worker.llm.router_client import diagnose_incident, poll_approved_actions
 
     # Story 4.3: the approved-RISKY-action poller runs alongside the
@@ -255,6 +255,7 @@ async def _main() -> None:
         poll_approved_actions(),
         backup_scheduler.run(),
         bucket_logging.run(),
+        rgw_access_audit.run(),
     )
 
 

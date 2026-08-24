@@ -37,7 +37,7 @@ from datetime import datetime
 from config.settings import settings
 from watcher import ceph_client
 from watcher.ceph_client import run_command_on_node, run_command_on_node_with
-from watcher.rgw_log import fetch_rgw_log_with
+from watcher.rgw_log import RGW_LOG_COMMAND_TIMEOUT_SECONDS, fetch_rgw_log_with
 from watcher.rgw_log import RgwLogError, fetch_rgw_log  # noqa: F401 — re-exported for callers
 
 _BEAST_LOG_RE = re.compile(
@@ -73,6 +73,29 @@ _ACTION_VI = {
     ("HEAD", True): "Kiểm tra tệp",
     ("HEAD", False): "Kiểm tra Bucket",
 }
+
+_OPS_ACTION_VI = {
+    "create_bucket": "Tạo Bucket",
+    "delete_bucket": "Xoá Bucket",
+    "put_obj": "Tải lên",
+    "get_obj": "Tải xuống",
+    "head_obj": "Kiểm tra tệp",
+    "delete_obj": "Xoá tệp",
+    "list_buckets": "Liệt kê Bucket",
+    "list_bucket": "Liệt kê tệp",
+    "init_multipart": "Khởi tạo multipart",
+    "complete_multipart": "Hoàn tất multipart",
+    "abort_multipart": "Huỷ multipart",
+}
+
+# Cephadm writes this file on the host and rotates it automatically.  A
+# large tail keeps a 15-second collector tick lossless for normal operator
+# traffic while remaining bounded.  The path and command are fixed (no
+# bucket/object/user input reaches the shell).
+_OPS_LOG_COMMAND = (
+    "find /var/log/ceph -type f -name 'ops-log-*.log' -print0 2>/dev/null "
+    "| xargs -0 -r tail -n 3000"
+)
 
 
 def _action_label(method: str, has_object: bool) -> str:
@@ -148,6 +171,76 @@ def parse_beast_access_log(raw_text: str) -> list[dict]:
         )
     records.sort(key=lambda r: r["timestamp"] or datetime.min.replace(tzinfo=None), reverse=True)
     return records
+
+
+def parse_rgw_ops_log(raw_text: str) -> list[dict]:
+    """Parse Ceph's native JSON ops log, one object per completed request."""
+    records: list[dict] = []
+    for line in raw_text.splitlines():
+        try:
+            payload = json.loads(line[line.index("{"):])
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not payload.get("operation"):
+            continue
+        uri = str(payload.get("uri") or "")
+        match = re.match(r"(?P<method>[A-Z]+)\s+(?P<path>\S+)(?:\s+HTTP/[\d.]+)?", uri)
+        if not match:
+            continue
+        method, path = match.group("method"), match.group("path")
+        bucket = str(payload.get("bucket") or "").strip() or None
+        _path_bucket, obj = _parse_bucket_and_object(path)
+        if bucket and obj is None:
+            stripped = path.split("?", 1)[0].lstrip("/")
+            prefix = bucket + "/"
+            obj = stripped[len(prefix):] or None if stripped.startswith(prefix) else None
+        operation = str(payload["operation"])
+        action = _OPS_ACTION_VI.get(operation, operation)
+        if method == "HEAD":
+            action = "Kiểm tra tệp" if obj else "Kiểm tra Bucket"
+        timestamp_raw = str(payload.get("time") or payload.get("time_local") or "")
+        try:
+            timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
+        except ValueError:
+            timestamp = None
+        records.append({
+            "remote_addr": payload.get("remote_addr"),
+            "requester": payload.get("user"),
+            "user_agent": payload.get("user_agent"),
+            "timestamp": timestamp,
+            "timestamp_raw": timestamp_raw,
+            "method": method,
+            "path": path,
+            "bucket": bucket,
+            "object": obj,
+            "action": action,
+            "status": int(payload.get("http_status") or 0),
+            "bytes_sent": int(payload.get("bytes_sent") or 0),
+            "latency_ms": float(payload.get("total_time") or 0),
+            "transaction_id": payload.get("trans_id"),
+        })
+    records.sort(key=lambda row: row["timestamp"] or datetime.min.replace(tzinfo=None), reverse=True)
+    return records
+
+
+def fetch_rgw_audit_log(host: str) -> list[dict]:
+    """Read native ops-log JSON, falling back to legacy Beast access lines."""
+    try:
+        raw = run_command_on_node(host, _OPS_LOG_COMMAND, RGW_LOG_COMMAND_TIMEOUT_SECONDS)
+    except Exception:
+        return fetch_bucket_access_log(host)
+    records = parse_rgw_ops_log(raw)
+    return records if records else fetch_bucket_access_log(host)
+
+
+def fetch_rgw_audit_log_with(host: str, ssh_user: str, ssh_key_path: str) -> list[dict]:
+    try:
+        raw = run_command_on_node_with(
+            host, _OPS_LOG_COMMAND, ssh_user, ssh_key_path, RGW_LOG_COMMAND_TIMEOUT_SECONDS
+        )
+    except Exception:
+        return []
+    return parse_rgw_ops_log(raw)
 
 
 def fetch_bucket_access_log(host: str, bucket: str | None = None) -> list[dict]:

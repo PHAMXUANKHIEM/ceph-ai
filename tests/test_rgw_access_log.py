@@ -1,5 +1,20 @@
 import watcher.rgw_access_log as ral
 
+
+def test_parse_native_ops_log_covers_object_request_without_leaking_query():
+    raw = '{"bucket":"photos","time":"2026-08-24T05:13:01.193346Z","remote_addr":"10.0.0.4","user":"alice","operation":"get_obj","uri":"GET /photos/a.jpg?X-Amz-Signature=secret HTTP/1.1","http_status":"200","bytes_sent":12,"total_time":4,"trans_id":"tx-1"}'
+    row = ral.parse_rgw_ops_log(raw)[0]
+    assert row["method"] == "GET"
+    assert row["bucket"] == "photos"
+    assert row["object"] == "a.jpg"
+    assert row["action"] == "Tải xuống"
+    assert row["transaction_id"] == "tx-1"
+
+
+def test_parse_native_ops_log_labels_head_as_check_not_download():
+    raw = '{"bucket":"photos","time":"2026-08-24T05:13:01Z","operation":"get_obj","uri":"HEAD /photos/a.jpg HTTP/1.1","http_status":"200"}'
+    assert ral.parse_rgw_ops_log(raw)[0]["action"] == "Kiểm tra tệp"
+
 # Real example line verified against ceph/ceph#33083 (the PR that added
 # Beast's access log) — see watcher/rgw_access_log.py's own docstring.
 HEAD_LINE = (
