@@ -405,7 +405,8 @@ async def bucket_access_history_api(
             (page - 1) * page_size
         ).limit(page_size).all()
         items = [{
-            "id": row.id, "timestamp": to_utc_iso(row.event_at), "ip": row.remote_addr,
+            "id": row.id, "request_id": row.transaction_id,
+            "timestamp": to_utc_iso(row.event_at), "ip": row.remote_addr,
             "requester": row.requester, "method": row.method, "action": row.action,
             "bucket": row.bucket, "object": row.object_key, "status": row.http_status,
             "size": row.bytes_sent, "encryption": row.encryption, "rgw_host": row.rgw_host,

@@ -13,6 +13,7 @@ def _row(method="PUT", path="/photos/a.jpg", status=200):
     return {"timestamp": datetime(2026, 8, 24, 1, 2, 3, 4000, timezone.utc),
             "timestamp_raw": "24/Aug/2026:01:02:03.004 +0000", "method": method,
             "path": path, "bucket": "photos", "object": "a.jpg", "action": "Tải lên",
+            "transaction_id": "tx-test-123",
             "requester": "alice", "remote_addr": "10.0.0.4", "status": status,
             "bytes_sent": 12, "latency_ms": 1.5}
 
@@ -39,6 +40,7 @@ def test_first_scan_baselines_then_new_request_is_sent(db_session, monkeypatch):
     audit._deliver_pending(db_session)
     assert len(sent) == 1
     assert "ObjectAccessed:Get" in sent[0]
+    assert "Request ID: tx-test-123" in sent[0]
     assert "Bucket: photos" in sent[0] and "File: a.jpg" in sent[0]
     assert "Giờ VN: 08:02:03 - 24/08/2026" in sent[0]
     assert "secret" not in sent[0]
@@ -54,11 +56,12 @@ def test_business_message_formats_upload_size_and_event_name(db_session):
     db_session.add(cluster)
     db_session.flush()
     event = RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="a" * 64,
-        method="PUT", action="Tải lên", bucket="khiem.mmt204.test", object_key="test",
+        transaction_id="tx-put-456", method="PUT", action="Tải lên", bucket="khiem.mmt204.test", object_key="test",
         requester="admin", remote_addr="1.2.3.4", http_status=200, bytes_sent=12,
         encryption="SSE-S3 (AES256)", event_at=datetime(2026, 3, 26, 8, 31, 14))
     message = audit._message(event, "ceph")
     assert "Hành động: ObjectCreated:Put" in message
+    assert "Request ID: tx-put-456" in message
     assert "Size: 12.00 B" in message
     assert "User: admin" in message
     assert "Mã hóa: 🔐 SSE-S3 (AES256)" in message

@@ -620,6 +620,7 @@ class RgwAccessAuditEvent(Base):
     cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
     rgw_host: Mapped[str] = mapped_column(String(255), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    transaction_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     method: Mapped[str] = mapped_column(String(16), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)

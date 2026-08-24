@@ -54,7 +54,7 @@ def test_persistent_history_filters_by_client_ip_and_method(dashboard_client):
         cluster = session.query(Cluster).filter_by(is_default=True).one()
         session.add_all([
             RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="1" * 64,
-                method="PUT", action="Tải lên", bucket="photos", object_key="a.jpg",
+                transaction_id="tx-history-put", method="PUT", action="Tải lên", bucket="photos", object_key="a.jpg",
                 requester="admin", remote_addr="10.0.0.8", http_status=200,
                 encryption="SSE-S3 (AES256)", event_at=datetime(2026, 8, 24, 1, 2, 3)),
             RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="2" * 64,
@@ -68,6 +68,7 @@ def test_persistent_history_filters_by_client_ip_and_method(dashboard_client):
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["ip"] == "10.0.0.8"
+    assert body["items"][0]["request_id"] == "tx-history-put"
     assert body["items"][0]["encryption"] == "SSE-S3 (AES256)"
 
 

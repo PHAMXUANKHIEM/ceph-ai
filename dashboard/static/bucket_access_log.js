@@ -177,7 +177,7 @@
         var body = document.getElementById("bah-body"); while (body.firstChild) body.removeChild(body.firstChild);
         data.items.forEach(function (r) {
           var tr = document.createElement("tr");
-          [formatVnDateTime(r.timestamp), r.ip || "—", r.requester || "—", r.method + " / " + r.action,
+          [formatVnDateTime(r.timestamp), r.request_id || "—", r.ip || "—", r.requester || "—", r.method + " / " + r.action,
            r.bucket || "—", r.object || "—", String(r.status), r.encryption || "—", r.rgw_host].forEach(function (v) { tr.appendChild(cell(v)); });
           body.appendChild(tr);
         });
