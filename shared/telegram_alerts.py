@@ -87,6 +87,16 @@ def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: 
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
 
 
+def send_code_repair_alert(text: str) -> None:
+    """Send a status update for the application code-repair supervisor."""
+    _send(
+        settings.telegram_code_repair_bot_token,
+        settings.telegram_code_repair_chat_id,
+        settings.telegram_code_repair_enabled,
+        text,
+    )
+
+
 def send_incident_alert(
     ceph_code: str,
     severity: str | None,

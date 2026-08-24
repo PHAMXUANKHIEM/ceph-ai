@@ -37,7 +37,7 @@ templates = make_templates()
 # added to shared/env_config.py — nothing outside this route needs it.
 CLUSTER_NAME_ENV_NAME = "CLUSTER_NAME"
 
-# Single source of truth for the 3 channels this page manages — label,
+# Single source of truth for the channels this page manages — label,
 # which config.settings.Settings fields back it, which .env variable names
 # shared/env_config.py maps those fields to, and which process actually
 # reads it (so a save here restarts ONLY that process, not both like the
@@ -50,6 +50,7 @@ _CHANNELS: dict[str, dict] = {
         "enabled_field": "telegram_backup_enabled",
         "env_names": env_config.TELEGRAM_BACKUP_ENV_NAMES,
         "restart": "worker",
+        "approval_enabled": True,
     },
     "incident": {
         "label": "Cảnh báo lỗi cụm",
@@ -58,6 +59,7 @@ _CHANNELS: dict[str, dict] = {
         "enabled_field": "telegram_incident_enabled",
         "env_names": env_config.TELEGRAM_INCIDENT_ENV_NAMES,
         "restart": "watcher",
+        "approval_enabled": True,
     },
     "node": {
         "label": "Cảnh báo phần cứng",
@@ -66,6 +68,16 @@ _CHANNELS: dict[str, dict] = {
         "enabled_field": "telegram_node_enabled",
         "env_names": env_config.TELEGRAM_NODE_ENV_NAMES,
         "restart": "watcher",
+        "approval_enabled": True,
+    },
+    "code-repair": {
+        "label": "AI Code Repair — sửa hệ thống",
+        "bot_token_field": "telegram_code_repair_bot_token",
+        "chat_id_field": "telegram_code_repair_chat_id",
+        "enabled_field": "telegram_code_repair_enabled",
+        "env_names": env_config.TELEGRAM_CODE_REPAIR_ENV_NAMES,
+        "restart": "none",
+        "approval_enabled": False,
     },
 }
 
@@ -153,6 +165,7 @@ def _context(
             "chat_id": getattr(settings, info["chat_id_field"]),
             "masked_bot_token": _mask_key(bot_token) if bot_token else None,
             "enabled": enabled,
+            "approval_enabled": info["approval_enabled"],
             # "Đã tắt" is only meaningful once a channel actually HAS a
             # token+chat id -- an unconfigured channel is just "chưa cấu
             # hình", not "tắt", even though `enabled` defaults True either
@@ -276,14 +289,20 @@ async def telegram_channel_submit(
     if info["restart"] == "worker":
         restart_label = "Worker"
         await asyncio.to_thread(restart_worker)
-    else:
+    elif info["restart"] == "watcher":
         restart_label = "Watcher"
         await asyncio.to_thread(restart_watcher)
+    else:
+        restart_label = "không cần restart dịch vụ"
 
     return templates.TemplateResponse(
         request,
         "telegram_alerts.html",
-        _context(user, successes={channel: f"Đã lưu — {restart_label} đã khởi động lại để áp dụng ngay."}),
+        _context(user, successes={channel: (
+            f"Đã lưu — {restart_label} đã khởi động lại để áp dụng ngay."
+            if info["restart"] != "none" else
+            "Đã lưu — lượt Code Repair kế tiếp sẽ dùng cấu hình này."
+        )}),
     )
 
 
@@ -324,15 +343,21 @@ async def telegram_channel_toggle(
     if info["restart"] == "worker":
         restart_label = "Worker"
         await asyncio.to_thread(restart_worker)
-    else:
+    elif info["restart"] == "watcher":
         restart_label = "Watcher"
         await asyncio.to_thread(restart_watcher)
+    else:
+        restart_label = "không cần restart dịch vụ"
 
     state_label = "Đã bật" if new_enabled else "Đã tắt"
     return templates.TemplateResponse(
         request,
         "telegram_alerts.html",
-        _context(user, successes={channel: f"{state_label} kênh này — {restart_label} đã khởi động lại để áp dụng ngay."}),
+        _context(user, successes={channel: (
+            f"{state_label} kênh này — {restart_label} đã khởi động lại để áp dụng ngay."
+            if info["restart"] != "none" else
+            f"{state_label} kênh này — lượt Code Repair kế tiếp sẽ áp dụng."
+        )}),
     )
 
 

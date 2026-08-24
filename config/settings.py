@@ -338,6 +338,10 @@ class Settings(BaseSettings):
     telegram_node_bot_token: str = ""
     telegram_node_chat_id: str = ""
     telegram_node_enabled: bool = True
+    # Notification-only channel for repairs to the ceph-ai application.
+    telegram_code_repair_bot_token: str = ""
+    telegram_code_repair_chat_id: str = ""
+    telegram_code_repair_enabled: bool = True
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's

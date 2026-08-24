@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,23 @@ def test_codex_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
     assert "--approve-for-me" in command
     assert "--sandbox" not in command
     assert command[-1] == "-"
+
+
+def test_progress_notifier_sends_start_periodic_and_success(monkeypatch):
+    messages = []
+    monkeypatch.setattr(code_repair, "send_code_repair_alert", messages.append)
+    notifier = code_repair.RepairProgressNotifier(
+        "ERROR Telegram timeout", "ai-repair/test", interval_seconds=0.01,
+    )
+    notifier.start()
+    notifier.update(45, "đang chạy test")
+    time.sleep(0.03)
+    notifier.finish(code_repair.RepairResult(
+        status="PUSHED", fingerprint="abc", branch="ai-repair/test",
+        commit="deadbeef", changed_files=["shared/telegram_client.py"],
+    ))
+
+    assert "BẮT ĐẦU" in messages[0]
+    assert any("45%" in message and "đang chạy test" in message for message in messages)
+    assert "THÀNH CÔNG" in messages[-1]
+    assert "100%" in messages[-1]

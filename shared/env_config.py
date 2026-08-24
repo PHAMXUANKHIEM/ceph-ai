@@ -95,6 +95,11 @@ TELEGRAM_NODE_ENV_NAMES: dict[str, str] = {
     "telegram_node_chat_id": "TELEGRAM_NODE_CHAT_ID",
     "telegram_node_enabled": "TELEGRAM_NODE_ENABLED",
 }
+TELEGRAM_CODE_REPAIR_ENV_NAMES: dict[str, str] = {
+    "telegram_code_repair_bot_token": "TELEGRAM_CODE_REPAIR_BOT_TOKEN",
+    "telegram_code_repair_chat_id": "TELEGRAM_CODE_REPAIR_CHAT_ID",
+    "telegram_code_repair_enabled": "TELEGRAM_CODE_REPAIR_ENABLED",
+}
 
 
 def apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:
