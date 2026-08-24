@@ -266,7 +266,13 @@ def _cluster_scan_lock(cluster_id: str | None):
         yield
 
 
-def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None) -> str | None:
+def scan_and_store(
+    cluster_id: str | None = None,
+    cluster: Cluster | None = None,
+    *,
+    target_host: str | None = None,
+    target_daemon_type: str | None = None,
+) -> str | None:
     """Một chu kỳ quét -- gọi từ vòng lặp `watcher/main.py` theo cadence
     riêng `log_intel_scan_interval_seconds`.
 
@@ -275,11 +281,18 @@ def scan_and_store(cluster_id: str | None = None, cluster: Cluster | None = None
     nếp best-effort của mọi collector khác trong Watcher.
     """
     with _cluster_scan_lock(cluster_id):
-        return _scan_and_store_unlocked(cluster_id, cluster)
+        return _scan_and_store_unlocked(
+            cluster_id, cluster,
+            target_host=target_host, target_daemon_type=target_daemon_type,
+        )
 
 
 def _scan_and_store_unlocked(
-    cluster_id: str | None = None, cluster: Cluster | None = None,
+    cluster_id: str | None = None,
+    cluster: Cluster | None = None,
+    *,
+    target_host: str | None = None,
+    target_daemon_type: str | None = None,
 ) -> str | None:
     if not settings.log_intel_enabled:
         return None
@@ -310,6 +323,15 @@ def _scan_and_store_unlocked(
         )
 
     hosts = _hosts_by_daemon_type(cluster)
+    if target_host is not None:
+        daemon_types = hosts.get(target_host, set())
+        hosts = {target_host: daemon_types} if daemon_types else {}
+    if target_daemon_type is not None:
+        hosts = {
+            host: {target_daemon_type}
+            for host, daemon_types in hosts.items()
+            if target_daemon_type in daemon_types
+        }
     if not hosts:
         return _store_run(
             cluster_id, settings.log_intel_source, window_start, window_end,

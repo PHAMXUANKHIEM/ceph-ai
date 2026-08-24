@@ -330,7 +330,9 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                 "Trạng thái: RUNNING — đang quét Loki và phân tích nguyên nhân."
             )
             heartbeat.start()
-            run_id = log_intel.scan_and_store(cluster_id, cluster=cluster)
+            run_id = log_intel.scan_and_store(
+                cluster_id, cluster=cluster, target_host=host, target_daemon_type="rgw",
+            )
             with db.SessionLocal() as session:
                 run = session.get(LogIngestRun, run_id) if run_id else None
                 if run is None:
