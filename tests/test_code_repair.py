@@ -1,0 +1,52 @@
+import os
+from pathlib import Path
+
+import pytest
+
+from worker import code_repair
+
+
+def test_extract_latest_error_uses_newest_log_and_redacts_secret(tmp_path):
+    old = tmp_path / "old.log"
+    old.write_text("ERROR old failure")
+    new = tmp_path / "new.log"
+    new.write_text("prefix\nTraceback (most recent call last):\nAPI_KEY=very-secret\nValueError: broken")
+    os.utime(old, (1, 1))
+    os.utime(new, (2, 2))
+
+    evidence = code_repair.extract_latest_error([old, new])
+
+    assert "ValueError: broken" in evidence
+    assert "very-secret" not in evidence
+    assert "API_KEY=<redacted>" in evidence
+
+
+def test_fingerprint_ignores_timestamps_ids_and_line_numbers():
+    first = "2026-08-24T01:00:00 ERROR incident abcdef123456 line 42"
+    second = "2026-08-25T02:00:00 ERROR incident fedcba654321 line 99"
+    assert code_repair.fingerprint(first) == code_repair.fingerprint(second)
+
+
+def test_validate_changes_rejects_deployment_script(monkeypatch, tmp_path):
+    outputs = iter([
+        " M scripts/deploy/restart_services.sh\n",
+        "diff --git a/scripts/deploy/restart_services.sh b/scripts/deploy/restart_services.sh\n",
+    ])
+    monkeypatch.setattr(
+        code_repair, "_run",
+        lambda *args, **kwargs: type("R", (), {"stdout": next(outputs), "returncode": 0})(),
+    )
+    with pytest.raises(code_repair.RepairError, match="outside the repair allowlist"):
+        code_repair._validate_changes(tmp_path)
+
+
+def test_duplicate_error_is_not_sent_to_ai(monkeypatch, tmp_path):
+    evidence = "ERROR stable failure"
+    fp = code_repair.fingerprint(evidence)
+    state = tmp_path / "state.json"
+    state.write_text('{"attempts":{"%s":{"branch":"ai-repair/existing"}}}' % fp)
+    config = code_repair.RepairConfig(repo=tmp_path, state_file=state)
+    monkeypatch.setattr(code_repair, "_run", lambda *a, **k: pytest.fail("must not run"))
+    result = code_repair.run_repair(evidence, config)
+    assert result.status == "SKIPPED_DUPLICATE"
+    assert result.branch == "ai-repair/existing"

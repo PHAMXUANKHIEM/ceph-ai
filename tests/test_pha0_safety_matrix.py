@@ -243,6 +243,9 @@ def test_prompt_injection_via_diagnosis_text_still_bounded_by_closed_schema(isol
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
     monkeypatch.setattr(router_client, "execute_command", lambda host, command, **kwargs: "ok")
+    # Capability enforcement is tested separately; this case isolates the
+    # boundary between model-authored rationale and closed command builders.
+    monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
 
     with db_module.SessionLocal() as session:
         from shared.models import Incident, IncidentStatus

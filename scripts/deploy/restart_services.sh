@@ -39,9 +39,21 @@ cd "$REPO_DIR"
 VENV_PYTHON="$REPO_DIR/.venv/bin/python"
 LOG_TAG="$(basename "$REPO_DIR")"
 
-echo "==> Pulling latest main"
-git fetch origin main
-git reset --hard origin/main
+DEPLOY_REF="${DEPLOY_REF:-origin/main}"
+echo "==> Deploying $DEPLOY_REF"
+if [[ "$DEPLOY_REF" == origin/* ]]; then
+  git fetch origin "${DEPLOY_REF#origin/}"
+elif [[ ! "$DEPLOY_REF" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "ERROR: DEPLOY_REF must be origin/<branch> or a full commit SHA"
+  exit 2
+fi
+if [ "$DEPLOY_REF" = "origin/main" ]; then
+  git checkout -B main origin/main
+else
+  # Candidate staging deployments must not move the local main branch.
+  git checkout --detach "$DEPLOY_REF"
+fi
+git reset --hard "$DEPLOY_REF"
 
 echo "==> Installing dependencies"
 source .venv/bin/activate

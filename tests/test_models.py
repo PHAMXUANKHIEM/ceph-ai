@@ -108,6 +108,9 @@ def test_action_has_required_columns():
         # docstrings in shared/models.py.
         "expires_at",
         "idempotency_key",
+        "grace_until",
+        "cancelled_at",
+        "cancelled_by",
         "created_at",
         "updated_at",
     }

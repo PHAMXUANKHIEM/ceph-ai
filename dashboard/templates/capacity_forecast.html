@@ -15,4 +15,4 @@
 <div class="table-wrap"><table><thead><tr><th>Kịch bản</th><th>OSD mất</th><th>Cụm sau lỗi</th><th>OSD cao nhất</th><th>Ngưỡng</th><th>Cần thêm để về 80%</th><th>Pool nguy cơ</th></tr></thead><tbody>
 {% for s in failure_simulation.scenarios %}<tr><td><strong>{{ s.domain_type }}: {{ s.domain_name }}</strong></td><td>{{ s.lost_osd_ids|join(', ') }}</td><td>{{ s.cluster_projected_percent }}%</td><td>{{ s.max_osd_projected_percent }}%</td><td>{{ (s.highest_threshold|string + '%') if s.highest_threshold else 'An toàn' }}</td><td>{{ (s.additional_bytes_for_80_percent / 1073741824)|round(1) }} GiB</td><td>{% if s.pools_at_risk %}{{ s.pools_at_risk|map(attribute='pool')|join(', ') }}{% else %}—{% endif %}</td></tr>{% endfor %}
 </tbody></table></div><p class="hint">Nguồn: {{ failure_simulation['_citations'][0].source_id }} · {{ failure_simulation.captured_at }}; {{ failure_simulation['_citations'][1].source_id }} · {{ failure_simulation.distribution_at }}</p>{% endif %}
-</div></section></main></body></html>
+</div></section></main><script src="/static/app.js?v={{ static_version }}"></script></body></html>

@@ -112,6 +112,6 @@ def test_pools_react_component_limits_each_page_to_ten_rows():
 
 def test_navigation_places_volume_performance_under_monitoring():
     source = open("dashboard/static/app.js", encoding="utf-8").read()
-    assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/volumes", "/crush-map"] }' in source
-    assert '{ label: "Pool", paths: ["/pools", "/pgs", "/trash"] }' in source
-    assert 'if (path === "/volumes") link.textContent = "Volume Performance";' in source
+    assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] }' in source
+    assert '{ label: "Pool", paths: ["/pools", "/pgs"] }' in source
+    assert '{ label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] }' in source
