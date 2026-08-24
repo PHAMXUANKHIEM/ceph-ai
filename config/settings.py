@@ -342,6 +342,11 @@ class Settings(BaseSettings):
     telegram_code_repair_bot_token: str = ""
     telegram_code_repair_chat_id: str = ""
     telegram_code_repair_enabled: bool = True
+    # Dedicated notification-only channel for AI-analyzed RADOS Gateway
+    # findings. Members receive RGW alerts but cannot approve Actions.
+    telegram_rgw_bot_token: str = ""
+    telegram_rgw_chat_id: str = ""
+    telegram_rgw_enabled: bool = True
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's

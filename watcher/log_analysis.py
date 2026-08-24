@@ -668,6 +668,13 @@ def analyze_window(
         return None
 
     validated = _validate(raw, known_pattern_ids, known_hosts, ingest_status)
+    # Daemon ownership is evidence, not an AI opinion.  Derive it from the
+    # cited, server-known patterns so a model cannot label an OSD finding as
+    # RGW (or hide an RGW finding) merely by changing affected_daemons.
+    cited_ids = set(validated["evidence_pattern_ids"])
+    validated["affected_daemons"] = sorted({
+        result.daemon_type for result in results if result.pattern_id in cited_ids
+    })
 
     # A one-hour Loki window often still contains recovery churn from a
     # daemon restart long after the cluster has settled.  Do not turn an AI
@@ -804,6 +811,11 @@ def analyze_window(
             "recommended_manual_steps": validated["recommended_manual_steps"],
             "recommended_commands": validated["recommended_commands"],
             "validation_notes": finding.validation_notes,
+            # Keep the daemon classification produced by the model in the
+            # notification payload.  It has already been constrained to
+            # strings by _validate; _maybe_alert performs the final RGW
+            # classification from both this value and trusted evidence.
+            "affected_daemons": validated["affected_daemons"],
         }
 
     logger.warning(
@@ -852,6 +864,7 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
             chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
             enabled=cluster.telegram_enabled if has_cluster_channel else None,
+            daemon_types=payload.get("affected_daemons"),
         )
     except Exception:
         logger.exception("log_analysis: gửi cảnh báo Telegram thất bại")

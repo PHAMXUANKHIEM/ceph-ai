@@ -54,7 +54,7 @@ def test_unauthenticated_get_telegram_alerts_redirects_to_login(dashboard_client
     assert response.headers["location"] == "/login"
 
 
-def test_get_telegram_alerts_shows_4_channel_cards_for_admin(dashboard_client):
+def test_get_telegram_alerts_shows_5_channel_cards_for_admin(dashboard_client):
     _login(dashboard_client)
 
     response = dashboard_client.get("/telegram-alerts")
@@ -64,10 +64,12 @@ def test_get_telegram_alerts_shows_4_channel_cards_for_admin(dashboard_client):
     assert "Cảnh báo lỗi cụm" in response.text
     assert "Cảnh báo phần cứng" in response.text
     assert "AI Code Repair — sửa hệ thống" in response.text
+    assert "Cảnh báo RGW — AI phân tích" in response.text
     assert 'action="/telegram-alerts/backup"' in response.text
     assert 'action="/telegram-alerts/incident"' in response.text
     assert 'action="/telegram-alerts/node"' in response.text
     assert 'action="/telegram-alerts/code-repair"' in response.text
+    assert 'action="/telegram-alerts/rgw"' in response.text
     assert "NOTIFICATION-ONLY" in response.text
     assert "Muốn tách khỏi chat Hardware?" in response.text
     assert 'href="/telegram-alerts/help#code-repair-private-chat"' in response.text
@@ -220,6 +222,27 @@ def test_submit_code_repair_channel_needs_no_service_restart(dashboard_client, m
     assert "TELEGRAM_CODE_REPAIR_BOT_TOKEN=123456:RepairToken" in tmp_env.read_text()
     assert "TELEGRAM_CODE_REPAIR_CHAT_ID=-100888" in tmp_env.read_text()
     assert restart_calls == {"worker": 0, "watcher": 0}
+
+
+def test_submit_rgw_channel_persists_separate_config(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = _mock_restarts(monkeypatch)
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/telegram-alerts/rgw",
+        data={"bot_token": "123456:RGWToken", "chat_id": "-100777"},
+    )
+
+    assert response.status_code == 200
+    assert settings.telegram_rgw_bot_token == "123456:RGWToken"
+    assert settings.telegram_rgw_chat_id == "-100777"
+    assert "TELEGRAM_RGW_BOT_TOKEN=123456:RGWToken" in tmp_env.read_text()
+    assert "TELEGRAM_RGW_CHAT_ID=-100777" in tmp_env.read_text()
+    assert restart_calls == {"worker": 0, "watcher": 1}
 
 
 def test_submit_channels_are_independent(dashboard_client, monkeypatch, tmp_path):

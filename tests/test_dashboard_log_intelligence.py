@@ -120,6 +120,20 @@ def test_page_states_findings_are_hypotheses_not_measurements(dashboard_client, 
     assert "giả thuyết" in response.text.lower()
 
 
+def test_rgw_finding_is_highlighted_in_dedicated_ai_alert_section(dashboard_client, seeded):
+    with db.SessionLocal() as session:
+        finding = session.get(LogFinding, seeded["finding_id"])
+        finding.title = "RGW trả nhiều HTTP 503"
+        finding.affected_daemons_json = json.dumps(["rgw"])
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/log-intelligence")
+
+    assert "Cảnh báo RGW — AI phân tích" in response.text
+    assert "RGW trả nhiều HTTP 503" in response.text
+
+
 def test_page_shows_server_correlated_health_incident(dashboard_client, seeded):
     with db.SessionLocal() as session:
         incident = Incident(

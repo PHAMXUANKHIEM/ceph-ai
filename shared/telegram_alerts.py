@@ -388,10 +388,8 @@ def send_update_failure_alert(
 
 # --- Log Intelligence L3 (Plan/log-intelligence-rca-plan.md) --------------
 #
-# Dùng chung kênh "Cụm Ceph" (telegram_incident_*) với send_ai_incident_alert
-# / send_trash_capacity_alert — KHÔNG mở kênh thứ 4. Đây là chẩn đoán AI về
-# sức khoẻ cụm, đúng loại nội dung kênh đó đang mang; và thiết kế 3 kênh
-# được giữ nguyên là 3 (xem docstring đầu module + AD-31).
+# Generic findings use the cluster-incident channel. RGW findings use a
+# dedicated notification-only channel.
 
 _LOG_FINDING_SEVERITY_PREFIX = {
     "CRITICAL": "\U0001f534 NGHIÊM TRỌNG",  # red circle
@@ -415,6 +413,7 @@ def send_log_finding_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
+    daemon_types: list[str] | None = None,
 ) -> None:
     """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
     (`watcher/log_analysis.py` chỉ gọi khi `dedupe_key` chưa có bản ghi nào
@@ -427,8 +426,11 @@ def send_log_finding_alert(
     trả lời của model thì người đọc cần biết ngay trên điện thoại, chứ không
     phải mở Dashboard mới thấy."""
     prefix = _LOG_FINDING_SEVERITY_PREFIX.get(severity, f"⚠️ {severity}")
+    daemon_set = {value.strip().lower() for value in (daemon_types or []) if isinstance(value, str)}
+    source_label = "Cảnh báo RGW do AI phân tích" if "rgw" in daemon_set else "Phát hiện từ log"
+    source_icon = "🌐 " if "rgw" in daemon_set else ""
     lines = [
-        f"{prefix} Phát hiện từ log: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        f"{prefix} {source_icon}{source_label}: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
         f"🎯 Độ tin cậy: {confidence}",
     ]
     if summary:
@@ -444,10 +446,18 @@ def send_log_finding_alert(
         lines.extend(f"`{_compact(command, _MAX_EXCERPT_CHARS)}`" for command in operator_commands)
     if validation_notes:
         lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    if "rgw" in daemon_set:
+        selected_token = settings.telegram_rgw_bot_token
+        selected_chat = settings.telegram_rgw_chat_id
+        selected_enabled = settings.telegram_rgw_enabled
+    else:
+        selected_token = bot_token if bot_token is not None else settings.telegram_incident_bot_token
+        selected_chat = chat_id if chat_id is not None else settings.telegram_incident_chat_id
+        selected_enabled = enabled if enabled is not None else settings.telegram_incident_enabled
     _send(
-        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
-        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
-        enabled if enabled is not None else settings.telegram_incident_enabled,
+        selected_token,
+        selected_chat,
+        selected_enabled,
         "\n".join(lines),
         cluster_name,
     )

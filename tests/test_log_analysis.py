@@ -29,6 +29,7 @@ from shared.models import (
     LogIngestStatus,
 )
 from watcher import log_analysis
+from shared import telegram_alerts
 
 
 def test_operator_commands_are_deterministic_for_pg_and_rgw():
@@ -62,6 +63,24 @@ def test_ai_commands_allow_ceph_remediation_but_reject_shell_and_destructive():
         "radosgw-admin zone modify --rgw-zone=us-east-1 --endpoints=<url>",
     ]
     assert len(notes) == 3
+
+
+def test_rgw_finding_uses_dedicated_ai_alert_label(monkeypatch):
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: sent.append(args))
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "rgw-token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "rgw-chat")
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+
+    telegram_alerts.send_log_finding_alert(
+        "RGW trả nhiều HTTP 503", "CRITICAL", "HIGH", "Tỷ lệ lỗi tăng", None,
+        daemon_types=["rgw"], enabled=True,
+    )
+
+    assert len(sent) == 1
+    assert sent[0][:3] == ("rgw-token", "rgw-chat", True)
+    assert "Cảnh báo RGW do AI phân tích" in sent[0][3]
+    assert "RGW trả nhiều HTTP 503" in sent[0][3]
 from watcher.log_triage import TriageReason, TriageResult
 from worker.policy import gate
 

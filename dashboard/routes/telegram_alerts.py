@@ -79,6 +79,15 @@ _CHANNELS: dict[str, dict] = {
         "restart": "none",
         "approval_enabled": False,
     },
+    "rgw": {
+        "label": "Cảnh báo RGW — AI phân tích",
+        "bot_token_field": "telegram_rgw_bot_token",
+        "chat_id_field": "telegram_rgw_chat_id",
+        "enabled_field": "telegram_rgw_enabled",
+        "env_names": env_config.TELEGRAM_RGW_ENV_NAMES,
+        "restart": "watcher",
+        "approval_enabled": False,
+    },
 }
 
 
