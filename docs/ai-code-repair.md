@@ -47,3 +47,8 @@ bash scripts/deploy/ai_repair_candidate.sh ai-repair/<candidate-branch>
 The controller reruns the complete test suite, deploys the detached candidate,
 checks Dashboard/Watcher/Worker and requires a fresh successful Watcher
 heartbeat. Any failure redeploys the exact previous commit automatically.
+
+The staging gate excludes migration tests that require a newer SQLite than
+the host OS supplies and RabbitMQ topology tests that require exclusive queue
+ownership. Those remain mandatory in isolated CI; the staging gate runs the
+remaining application suite plus the candidate's focused regression tests.
