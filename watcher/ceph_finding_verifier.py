@@ -8,8 +8,9 @@ import shlex
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from shared import db
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.models import Cluster, LogFinding, LogPattern
+from shared.models import Cluster, LogFinding, LogPattern, RgwAccessAuditEvent
 from watcher import ceph_client
 
 _VAULT_RE = re.compile(r"vault|failed to retrieve actual key", re.IGNORECASE)
@@ -173,6 +174,39 @@ def _probe_vault_token(
         return "SSH_ERROR " + " ".join(str(exc).split())[:240]
 
 
+def _functional_rgw_recovery(
+    finding: LogFinding, patterns: list[LogPattern],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Correlate a successful encrypted request after the latest error evidence."""
+    cluster_id = getattr(finding, "cluster_id", None)
+    evidence_times = [row.last_seen_at for row in patterns if getattr(row, "last_seen_at", None)]
+    if not cluster_id or not evidence_times:
+        return None, ()
+    latest_error_at = max(evidence_times)
+    affected = _json_hosts(finding.affected_hosts_json)
+    with db.SessionLocal() as session:
+        query = (
+            session.query(RgwAccessAuditEvent)
+            .filter(RgwAccessAuditEvent.cluster_id == cluster_id)
+            .filter(RgwAccessAuditEvent.event_at > latest_error_at)
+            .filter(RgwAccessAuditEvent.http_status >= 200)
+            .filter(RgwAccessAuditEvent.http_status < 300)
+            .filter(RgwAccessAuditEvent.encryption.isnot(None))
+        )
+        if affected:
+            query = query.filter(RgwAccessAuditEvent.rgw_host.in_(affected))
+        event = query.order_by(RgwAccessAuditEvent.event_at.desc()).first()
+    if event is None:
+        return None, ()
+    encryption = str(event.encryption or "").lower()
+    family = "sse_s3" if "sse-s3" in encryption else ("kms" if "kms" in encryption else None)
+    facts = (
+        f"functional_request={event.method} {event.http_status} encryption={event.encryption}",
+        f"functional_request_at={event.event_at.isoformat()} host={event.rgw_host}",
+    )
+    return family, facts
+
+
 def verify_vault_recovery(
     finding: LogFinding, patterns: list[LogPattern], cluster: Cluster,
 ) -> VerificationResult:
@@ -186,6 +220,8 @@ def verify_vault_recovery(
             (f"ceph_health={health or 'ERROR'}",), False,
         )
     facts = [f"ceph_health={health}"]
+    backend_family, functional_facts = _functional_rgw_recovery(finding, patterns)
+    facts.extend(functional_facts)
     config_rows, config_error = _ceph_vault_config(cluster)
     if config_error:
         return VerificationResult(
@@ -200,6 +236,10 @@ def verify_vault_recovery(
     for row in config_rows:
         name = str(row.get("name") or "")
         if not name.endswith("vault_token_file"):
+            continue
+        if backend_family == "sse_s3" and "_sse_s3_vault_" not in name:
+            continue
+        if backend_family == "kms" and "_sse_s3_vault_" in name:
             continue
         section = str(row.get("section") or "")
         path = _safe_token_path(row.get("value"))

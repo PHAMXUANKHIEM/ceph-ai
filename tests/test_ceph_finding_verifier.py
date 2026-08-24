@@ -156,3 +156,34 @@ def test_vault_recovery_rejects_invalid_token(monkeypatch):
     )
     assert result.code == "VAULT_RECOVERY_UNVERIFIED"
     assert result.eligible_for_learning is False
+
+
+def test_sse_s3_recovery_does_not_require_unrelated_legacy_kms_backend(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(
+        verifier, "_functional_rgw_recovery",
+        lambda finding, patterns: ("sse_s3", ("functional_request=PUT 200 encryption=SSE-S3",)),
+    )
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_vault_token_file",
+         "value": "/etc/ceph/vault_token"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_vault_addr",
+         "value": "http://active-vault:8200"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
+         "value": "/opt/vault/vault_token"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_addr",
+         "value": "http://retired-vault:8200"},
+    ], None))
+    monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([{
+        "container_id": "3a14dd52cc9e", "daemon_name": "rgw.sse.host.abc",
+    }], None))
+    calls = []
+    def fake_probe(host, path, addr, cluster, container_id=None):
+        calls.append((path, addr))
+        return "VAULT_HEALTH_HTTP=429 TOKEN_LOOKUP_HTTP=200"
+    monkeypatch.setattr(verifier, "_probe_vault_token", fake_probe)
+    result = verifier.verify_vault_recovery(
+        _finding(), [_pattern("failed to retrieve actual key")], _cluster(),
+    )
+    assert result.code == "VAULT_RECOVERY_VERIFIED"
+    assert calls == [("/etc/ceph/vault_token", "http://active-vault:8200")]
