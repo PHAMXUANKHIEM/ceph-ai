@@ -81,7 +81,7 @@ def ai_on(monkeypatch):
 @pytest.fixture()
 def sent(monkeypatch):
     """Bắt mọi lời gọi gửi Telegram thay vì thật sự gửi."""
-    alerts = {"new": [], "resolved": []}
+    alerts = {"new": [], "resolved": [], "recovery_pending": []}
     monkeypatch.setattr(
         log_analysis.telegram_alerts, "send_log_finding_alert",
         lambda *a, **k: alerts["new"].append((a, k)),
@@ -89,6 +89,10 @@ def sent(monkeypatch):
     monkeypatch.setattr(
         log_analysis.telegram_alerts, "send_log_finding_resolved_alert",
         lambda *a, **k: alerts["resolved"].append((a, k)),
+    )
+    monkeypatch.setattr(
+        log_analysis.telegram_alerts, "send_log_finding_recovery_pending_alert",
+        lambda *a, **k: alerts["recovery_pending"].append((a, k)),
     )
     return alerts
 
@@ -326,6 +330,11 @@ def test_rgw_vault_finding_only_resolves_after_live_recovery_gate(
     with db_module.SessionLocal() as session:
         assert session.get(LogFinding, finding_id).status == LogFindingStatus.OPEN.value
     assert sent["resolved"] == []
+    assert len(sent["recovery_pending"]) == 1
+
+    # Cooldown prevents the same failed recovery check from spamming Telegram.
+    assert log_analysis.resolve_stale_findings(cluster_id, later + timedelta(minutes=15)) == 0
+    assert len(sent["recovery_pending"]) == 1
 
     verified = ceph_finding_verifier.VerificationResult(
         "VAULT_RECOVERY_VERIFIED", "Vault token lookup thành công", (), True,

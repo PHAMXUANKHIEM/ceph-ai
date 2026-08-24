@@ -469,6 +469,25 @@ def send_log_finding_resolved_alert(
     selected_token = settings.telegram_rgw_bot_token if is_rgw else (
         bot_token if bot_token is not None else settings.telegram_incident_bot_token
     )
+
+
+def send_log_finding_recovery_pending_alert(
+    title: str, summary: str, live_facts: tuple[str, ...] | list[str], *,
+    cluster_name: str | None = None,
+) -> None:
+    """RGW recovery gate failed; rate limiting is persisted by LogFinding."""
+    lines = [
+        f"⚠️ RGW CHƯA XÁC NHẬN PHỤC HỒI: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        f"Kết luận: {_compact(summary, _MAX_FOLLOWUP_FIELD_CHARS)}",
+    ]
+    for fact in live_facts:
+        if "vault_probe[" in fact or fact.startswith("ceph_health="):
+            lines.append(f"• {_compact(fact, _MAX_EXCERPT_CHARS)}")
+    lines.append("Finding vẫn OPEN; hệ thống sẽ kiểm tra lại tự động.")
+    _send(
+        settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id,
+        settings.telegram_rgw_enabled, "\n".join(lines), cluster_name,
+    )
     selected_chat = settings.telegram_rgw_chat_id if is_rgw else (
         chat_id if chat_id is not None else settings.telegram_incident_chat_id
     )

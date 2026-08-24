@@ -839,6 +839,7 @@ _ALERTABLE_SEVERITIES = frozenset({
     LogFindingSeverity.WARNING.value,
     LogFindingSeverity.CRITICAL.value,
 })
+_RECOVERY_PENDING_NOTIFY_INTERVAL = timedelta(hours=1)
 
 
 def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster | None) -> None:
@@ -888,6 +889,7 @@ def resolve_stale_findings(
     Trả về số bản ghi đã chuyển sang RESOLVED.
     """
     resolved_items: list[tuple[str, list[str], str | None]] = []
+    pending_items: list[tuple[str, str, tuple[str, ...]]] = []
     with db.SessionLocal() as session:
         open_findings = (
             session.query(LogFinding)
@@ -922,12 +924,30 @@ def resolve_stale_findings(
                     continue
                 verification = verify_vault_recovery(finding, patterns, live_cluster)
                 if not verification.eligible_for_learning:
+                    previous_code = finding.recovery_check_code
+                    should_notify = (
+                        finding.recovery_notified_at is None
+                        or previous_code != verification.code
+                        or finding.recovery_notified_at <= window_start - _RECOVERY_PENDING_NOTIFY_INTERVAL
+                    )
+                    finding.recovery_check_code = verification.code
+                    finding.recovery_check_summary = verification.summary
+                    finding.recovery_checked_at = window_start
+                    if should_notify:
+                        finding.recovery_notified_at = window_start
+                        pending_items.append((
+                            finding.title or "(không tiêu đề)", verification.summary,
+                            verification.live_facts,
+                        ))
                     logger.warning(
                         "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
                         finding.id, verification.code, verification.summary,
                     )
                     continue
                 verification_summary = f"{verification.code}: {verification.summary}"
+                finding.recovery_check_code = verification.code
+                finding.recovery_check_summary = verification.summary
+                finding.recovery_checked_at = window_start
 
             finding.status = LogFindingStatus.RESOLVED.value
             # Đóng luôn Incident/Action chờ duyệt đi kèm (L4) -- vấn đề đã
@@ -954,6 +974,14 @@ def resolve_stale_findings(
             )
         except Exception:
             logger.exception("log_analysis: gửi thông báo đã-hết thất bại")
+
+    for title, summary, live_facts in pending_items:
+        try:
+            telegram_alerts.send_log_finding_recovery_pending_alert(
+                title, summary, live_facts, cluster_name=cluster.name if cluster else None,
+            )
+        except Exception:
+            logger.exception("log_analysis: gửi thông báo recovery-chưa-đạt thất bại")
 
     if resolved_items:
         logger.info("log_analysis: đã đóng %d phát hiện log", len(resolved_items))

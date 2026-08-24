@@ -2154,6 +2154,10 @@ class LogFinding(Base):
     # đã có ít nhất một lần can thiệp -- đọc được ngay trên Dashboard thay
     # vì phải lục log.
     validation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovery_check_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recovery_check_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovery_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recovery_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, index=True
     )
