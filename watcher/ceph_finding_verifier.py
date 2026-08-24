@@ -179,7 +179,11 @@ def _functional_rgw_recovery(
 ) -> tuple[str | None, tuple[str, ...]]:
     """Correlate a successful encrypted request after the latest error evidence."""
     cluster_id = getattr(finding, "cluster_id", None)
-    evidence_times = [row.last_seen_at for row in patterns if getattr(row, "last_seen_at", None)]
+    evidence_times = [
+        row.last_seen_at for row in patterns
+        if getattr(row, "last_seen_at", None)
+        and any(_VAULT_RE.search(value or "") for value in (row.template, row.sample_line))
+    ]
     if not cluster_id or not evidence_times:
         return None, ()
     latest_error_at = max(evidence_times)

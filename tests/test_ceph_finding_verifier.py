@@ -218,7 +218,13 @@ def test_functional_recovery_ignores_newer_plaintext_request(db_session, monkeyp
     ])
     db_session.commit()
     finding = _finding(cluster_id=cluster.id)
-    pattern = SimpleNamespace(last_seen_at=error_at)
-    family, facts = verifier._functional_rgw_recovery(finding, [pattern])
+    pattern = SimpleNamespace(
+        last_seen_at=error_at, template="failed to retrieve actual key from Vault", sample_line="",
+    )
+    unrelated = SimpleNamespace(
+        last_seen_at=error_at + timedelta(minutes=20), template="osd df routine chatter",
+        sample_line="",
+    )
+    family, facts = verifier._functional_rgw_recovery(finding, [pattern, unrelated])
     assert family == "sse_s3"
     assert any("PUT 200 encryption=SSE-S3" in fact for fact in facts)
