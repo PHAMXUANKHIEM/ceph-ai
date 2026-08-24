@@ -227,6 +227,58 @@ def test_known_operational_events_are_not_severe(isolated_db, template):
 
 
 @pytest.mark.parametrize("template", [
+    "rocksdb: (Original Log Time <N><PATH>:<N>:<N>) [db<PATH>:<N>] [default] "
+    "Manual compaction from level-<N> to level-<N> from 'ABC' seq:<N>, type:<N> "
+    ".. 'DEF' seq:<N>, type:<N>; will stop at (end)",
+    "rocksdb: [db<PATH>:<N>] [default]: Compaction start summary: Base version <N> "
+    "Base level <N>, inputs: [<N>(23MB)], [<N>(64MB)]",
+    "rocksdb: [db<PATH>:<N>] [L]: Compaction start summary: Base version <N> "
+    "Base level <N>, inputs: [<N>(9191B)], [<N>(80KB)]",
+])
+def test_routine_rocksdb_compaction_is_silent_even_when_novel(isolated_db, template):
+    pattern_id = _add_pattern(
+        isolated_db, template=template, severity=-1,
+        first_seen=WINDOW_START + timedelta(minutes=1), fingerprint=template[:38],
+    )
+    _observe(pattern_id, WINDOW_START, 500)
+
+    assert _triage(isolated_db) == []
+
+
+def test_operator_can_mark_routine_compaction_notable(isolated_db):
+    template = (
+        "rocksdb: [db<PATH>:<N>] [default]: Compaction start summary: "
+        "Base version <N> Base level <N>, inputs: [<N>(23MB)]"
+    )
+    pattern_id = _add_pattern(
+        isolated_db, template=template, severity=-1,
+        label=LogPatternTriageLabel.NOTABLE,
+    )
+    _observe(pattern_id, WINDOW_START, 1)
+
+    results = _triage(isolated_db)
+    assert len(results) == 1
+    assert TriageReason.NOTABLE in results[0].reasons
+
+
+@pytest.mark.parametrize("template", [
+    "Interval WAL: 20K writes, <N> syncs, <PG> writes per sync, written: <PG> GB, <PG> MB/s",
+    "Cumulative writes: 742K writes, 29M keys, 742K commit groups, <PG> writes per commit group, ingest: <PG> GB, <PG> MB/s",
+    "L6 <N>/<N> <PG> MB <PG> <PG> <PG> <PG> <PG> <PG> <PG> <PG>",
+    "Sum <N>/<N> <PG> MB <PG> <PG> <PG> <PG> <PG> <PG> <PG> <PG>",
+    "log_channel(cluster) log [DBG] : pgmap v126114: <N> pgs: <N> active+clean; <N> GiB data, <N> GiB used",
+    "[balancer INFO root] pools ['images', 'volumes', '.mgr']",
+])
+def test_known_periodic_status_lines_are_silent_when_novel(isolated_db, template):
+    pattern_id = _add_pattern(
+        isolated_db, template=template, severity=0,
+        first_seen=WINDOW_START + timedelta(minutes=1), fingerprint=template[:38],
+    )
+    _observe(pattern_id, WINDOW_START, 100)
+    assert _triage(isolated_db) == []
+
+
+@pytest.mark.parametrize("template", [
     "osd.<ID> heartbeat_check: no reply from <ADDR>",
     "<N> slow requests are blocked",
     "log_channel cluster scrub error on pg <PG>",

@@ -75,6 +75,17 @@ _KNOWN_BENIGN_SEVERE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(expr, re.IGNORECASE)
     for expr in (
         r"^rocksdb: EVENT_LOG_v1 .*\"event\": \"(?:flush|compaction)_(?:started|finished)\"",
+        # Routine BlueStore/RocksDB maintenance.  The embedded SST sizes and
+        # key ranges create thousands of normalized templates during Loki
+        # onboarding, making each one look NOVEL even though the operation is
+        # healthy background work.  Match only the known lifecycle messages;
+        # compaction failures/corruption remain visible.
+        r"^rocksdb: .*Manual compaction from level-<N> to level-<N>.*will stop at \(end\)$",
+        r"^rocksdb: .*\[[^\]]+\]: Compaction start summary: Base version <N> Base level <N>, inputs:",
+        r"^(?:Interval|Cumulative) (?:writes|WAL): .*writes",
+        r"^(?:L[0-6]|Sum|Low|Int) <N>/<N> <PG> (?:KB|MB|GB) (?:<PG>\s+){4,}",
+        r"^log_channel\(cluster\) log \[DBG\] : pgmap v\d+: <N> pgs: <N> active\+clean;",
+        r"^\[balancer INFO root\] pools \[",
         r"^rgw user sync thread: user is idle, not doing a full sync",
     )
 )
@@ -140,6 +151,14 @@ def triage_window(
         candidates = [
             p for p in patterns
             if p.triage_label != LogPatternTriageLabel.BENIGN.value
+            # A NOTABLE operator label deliberately overrides the built-in
+            # noise catalogue.  Otherwise known maintenance events are
+            # removed before NOVEL/BURST evaluation, not merely exempted
+            # from SEVERE classification.
+            and (
+                p.triage_label == LogPatternTriageLabel.NOTABLE.value
+                or not _is_known_benign(p)
+            )
         ]
         if not candidates:
             return []
@@ -223,11 +242,15 @@ def _evaluate(
 
 
 def _is_severe(pattern: LogPattern) -> bool:
-    if any(expr.search(pattern.template) for expr in _KNOWN_BENIGN_SEVERE_PATTERNS):
+    if _is_known_benign(pattern):
         return False
     if pattern.severity is not None and pattern.severity <= SEVERE_PRIORITY_MAX:
         return True
     return any(expr.search(pattern.template) for expr in _SEVERE_PATTERNS)
+
+
+def _is_known_benign(pattern: LogPattern) -> bool:
+    return any(expr.search(pattern.template) for expr in _KNOWN_BENIGN_SEVERE_PATTERNS)
 
 
 def _burst_check(
