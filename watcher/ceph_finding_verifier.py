@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 import shlex
@@ -14,6 +16,7 @@ from shared.models import Cluster, LogFinding, LogPattern, RgwAccessAuditEvent
 from watcher import ceph_client
 
 _VAULT_RE = re.compile(r"vault|failed to retrieve actual key", re.IGNORECASE)
+_DEFAULT_KEY_RE = re.compile(r"rgw[ _]crypt[ _]default[ _]encryption[ _]key|default encryption key", re.IGNORECASE)
 _TOKEN_PATH_RE = re.compile(r"Vault token file ['\"](?P<path>/[^'\"]+)['\"]", re.IGNORECASE)
 _SAFE_TOKEN_PATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+){1,30}$")
 _SAFE_CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{12,64}$")
@@ -43,8 +46,7 @@ def _safe_token_path(value: object) -> str | None:
     return path
 
 
-def _ceph_vault_config(cluster: Cluster) -> tuple[list[dict], str | None]:
-    """Read effective RGW Vault configuration from Ceph's config database."""
+def _ceph_config_dump(cluster: Cluster) -> tuple[list[dict], str | None]:
     ssh_user, ssh_key, exec_mode, container = resolve_ssh_creds(cluster)
     mons = [value.strip() for value in cluster.ceph_mon_nodes.split(",") if value.strip()]
     try:
@@ -55,13 +57,54 @@ def _ceph_vault_config(cluster: Cluster) -> tuple[list[dict], str | None]:
         return [], " ".join(str(exc).split())[:500]
     if not isinstance(payload, list):
         return [], "ceph config dump returned a non-list response"
+    return [row for row in payload if isinstance(row, dict)], None
+
+
+def _ceph_vault_config(cluster: Cluster) -> tuple[list[dict], str | None]:
+    """Read effective RGW Vault configuration from Ceph's config database."""
+    payload, error = _ceph_config_dump(cluster)
+    if error:
+        return [], error
     rows = [
         row for row in payload
-        if isinstance(row, dict)
-        and str(row.get("section") or "").startswith("client.rgw")
+        if str(row.get("section") or "").startswith("client.rgw")
         and "vault" in str(row.get("name") or "").lower()
     ]
     return rows, None
+
+
+def _is_default_key_finding(finding: LogFinding, patterns: list[LogPattern]) -> bool:
+    texts = [finding.title, finding.summary, finding.root_cause_hypothesis]
+    texts.extend(value for row in patterns for value in (row.template, row.sample_line))
+    return any(_DEFAULT_KEY_RE.search(value or "") for value in texts)
+
+
+def _default_key_config_status(cluster: Cluster) -> tuple[str, tuple[str, ...]]:
+    rows, error = _ceph_config_dump(cluster)
+    if error:
+        return "UNREACHABLE", (f"ceph_config_dump_error={error}",)
+    matches = [
+        row for row in rows
+        if str(row.get("section") or "").startswith("client.rgw")
+        and str(row.get("name") or "") == "rgw_crypt_default_encryption_key"
+    ]
+    if not matches:
+        return "UNSET", ("rgw_default_key_status=UNSET",)
+    facts = []
+    valid = True
+    for row in matches:
+        value = str(row.get("value") or "").strip()
+        try:
+            decoded = base64.b64decode(value, validate=True)
+            row_valid = len(decoded) == 32
+        except (binascii.Error, ValueError):
+            row_valid = False
+        valid = valid and row_valid
+        facts.append(
+            f"rgw_default_key_status[section={row.get('section')}]="
+            f"{'VALID_BASE64_256' if row_valid else 'INVALID_BASE64_OR_LENGTH'}"
+        )
+    return ("VALID" if valid else "INVALID"), tuple(facts)
 
 
 def _rgw_orch_daemons(cluster: Cluster) -> tuple[list[dict], str | None]:
@@ -175,14 +218,14 @@ def _probe_vault_token(
 
 
 def _functional_rgw_recovery(
-    finding: LogFinding, patterns: list[LogPattern],
+    finding: LogFinding, patterns: list[LogPattern], *, evidence_re: re.Pattern[str] = _VAULT_RE,
 ) -> tuple[str | None, tuple[str, ...]]:
     """Correlate a successful encrypted request after the latest error evidence."""
     cluster_id = getattr(finding, "cluster_id", None)
     evidence_times = [
         row.last_seen_at for row in patterns
         if getattr(row, "last_seen_at", None)
-        and any(_VAULT_RE.search(value or "") for value in (row.template, row.sample_line))
+        and any(evidence_re.search(value or "") for value in (row.template, row.sample_line))
     ]
     if not cluster_id or not evidence_times:
         return None, ()
@@ -216,6 +259,34 @@ def verify_vault_recovery(
     finding: LogFinding, patterns: list[LogPattern], cluster: Cluster,
 ) -> VerificationResult:
     """Require live Ceph, runtime token metadata and Vault token lookup."""
+    if _is_default_key_finding(finding, patterns):
+        health, health_error = _health(cluster)
+        status, config_facts = _default_key_config_status(cluster)
+        facts = (f"ceph_health={health or 'ERROR'}",) + config_facts
+        if health_error or status in {"UNREACHABLE", "INVALID"}:
+            return VerificationResult(
+                "RGW_DEFAULT_ENCRYPTION_KEY_INVALID",
+                "rgw_crypt_default_encryption_key vẫn không phải khóa base64 256-bit hợp lệ.",
+                facts, False,
+            )
+        if status == "UNSET":
+            return VerificationResult(
+                "RGW_DEFAULT_ENCRYPTION_KEY_REMOVED",
+                "Cấu hình default encryption key sai đã được gỡ bỏ.", facts, True,
+            )
+        _family, functional_facts = _functional_rgw_recovery(
+            finding, patterns, evidence_re=_DEFAULT_KEY_RE,
+        )
+        if functional_facts:
+            return VerificationResult(
+                "RGW_DEFAULT_ENCRYPTION_KEY_RECOVERY_VERIFIED",
+                "Khóa mặc định hợp lệ và có request mã hóa thành công sau lỗi.",
+                facts + functional_facts, True,
+            )
+        return VerificationResult(
+            "RGW_DEFAULT_ENCRYPTION_KEY_RECOVERY_UNVERIFIED",
+            "Khóa đã hợp lệ nhưng chưa có request mã hóa thành công sau lỗi.", facts, False,
+        )
     if not _is_vault_finding(finding, patterns):
         return VerificationResult("NOT_VAULT", "Không cần Vault recovery gate.", (), True)
     health, health_error = _health(cluster)
@@ -310,6 +381,25 @@ def verify(finding: LogFinding, patterns: list[LogPattern], cluster: Cluster) ->
         )
 
     facts = [f"ceph_health={health}"]
+    if _is_default_key_finding(finding, patterns):
+        status, config_facts = _default_key_config_status(cluster)
+        facts.extend(config_facts)
+        if status == "INVALID":
+            return VerificationResult(
+                "RGW_DEFAULT_ENCRYPTION_KEY_INVALID",
+                "Cấu hình đang dùng tên thuật toán/giá trị sai thay vì khóa base64 256-bit.",
+                tuple(facts), False,
+            )
+        if status == "VALID":
+            return VerificationResult(
+                "RGW_DEFAULT_ENCRYPTION_KEY_VALID",
+                "Default encryption key trong Ceph config là base64 256-bit hợp lệ.",
+                tuple(facts), False,
+            )
+        return VerificationResult(
+            "RGW_DEFAULT_ENCRYPTION_KEY_UNSET",
+            "Không còn cấu hình default encryption key trong Ceph config.", tuple(facts), False,
+        )
     if not _is_vault_finding(finding, patterns):
         affected = set(_json_hosts(finding.affected_hosts_json))
         allowed = {row["host"] for row in configured_nodes(cluster)}

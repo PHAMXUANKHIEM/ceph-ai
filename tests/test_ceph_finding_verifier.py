@@ -228,3 +228,37 @@ def test_functional_recovery_ignores_newer_plaintext_request(db_session, monkeyp
     family, facts = verifier._functional_rgw_recovery(finding, [pattern, unrelated])
     assert family == "sse_s3"
     assert any("PUT 200 encryption=SSE-S3" in fact for fact in facts)
+
+
+def test_default_encryption_key_algorithm_name_is_classified_as_invalid(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_config_dump", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc",
+        "name": "rgw_crypt_default_encryption_key", "value": "AES256",
+    }], None))
+    finding = _finding(
+        title="RGW failed to decode default encryption key",
+        summary="rgw crypt default encryption key invalid",
+    )
+    result = verifier.verify(
+        finding, [_pattern("failed to decode 'rgw crypt default encryption key' to 256 bit string")],
+        _cluster(),
+    )
+    assert result.code == "RGW_DEFAULT_ENCRYPTION_KEY_INVALID"
+    assert "INVALID_BASE64_OR_LENGTH" in result.live_facts[-1]
+    assert "AES256" not in " ".join(result.live_facts)
+
+
+def test_invalid_default_encryption_key_blocks_auto_resolution(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_config_dump", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc",
+        "name": "rgw_crypt_default_encryption_key", "value": "AES256",
+    }], None))
+    finding = _finding(title="RGW default encryption key decode error")
+    result = verifier.verify_vault_recovery(
+        finding, [_pattern("failed to decode 'rgw crypt default encryption key' to 256 bit string")],
+        _cluster(),
+    )
+    assert result.code == "RGW_DEFAULT_ENCRYPTION_KEY_INVALID"
+    assert result.eligible_for_learning is False

@@ -498,7 +498,10 @@ def send_log_finding_recovery_pending_alert(
         f"Kết luận: {_compact(summary, _MAX_FOLLOWUP_FIELD_CHARS)}",
     ]
     for fact in live_facts:
-        if "vault_probe[" in fact or fact.startswith("ceph_health="):
+        if (
+            "vault_probe[" in fact or fact.startswith("ceph_health=")
+            or fact.startswith("rgw_default_key_status")
+        ):
             lines.append(f"• {_compact(fact, _MAX_EXCERPT_CHARS)}")
     lines.append("Finding vẫn OPEN; hệ thống sẽ kiểm tra lại tự động.")
     _send(
