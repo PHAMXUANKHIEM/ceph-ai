@@ -37,6 +37,7 @@ from watcher.database_capacity_monitor import DATABASE_SIZE_HIGH_PREFIX
 from watcher.device_health_monitor import DEVICE_HEALTH_EVACUATE_PREFIX
 from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
+from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from shared import db, heartbeat, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
@@ -321,6 +322,12 @@ def _resolve_recovered_incidents(
                 # family's own create/resolve lifecycle (its own
                 # consecutive-high-scans streak per osd_id), never a real
                 # `ceph health detail` check code.
+                continue
+            if incident.ceph_code.startswith(LOG_ANOMALY_PREFIX):
+                # Log Intelligence findings have their own evidence and live
+                # recovery gate. Their synthetic code never appears in
+                # `ceph health detail`, so generic health reconciliation must
+                # not resolve them or cancel a Telegram approval proposal.
                 continue
             if incident.ceph_code.startswith(CRUSH_SKEW_USE_PREFIX) or incident.ceph_code.startswith(
                 CRUSH_SKEW_PG_PREFIX

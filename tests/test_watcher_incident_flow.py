@@ -263,6 +263,17 @@ def test_volume_saturated_incident_is_never_auto_resolved_by_recovery(isolated_d
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_log_anomaly_incident_is_owned_by_log_recovery_gate(isolated_db):
+    pending_id = _seed_incident("LOG_ANOMALY:16883d76f840", IncidentStatus.PENDING_APPROVAL.value)
+    real_failed_id = _seed_incident("OSD_DOWN", IncidentStatus.FAILED.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, pending_id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
+
+
 def test_node_resource_high_incident_is_never_auto_resolved_by_recovery(isolated_db):
     # 2026-08-05: same bug class as CHAT_REQUEST/CLUSTER_UPGRADE/
     # VOLUME_SATURATED above — watcher/node_health_monitor.py's synthetic
