@@ -40,6 +40,18 @@ def test_validate_changes_rejects_deployment_script(monkeypatch, tmp_path):
         code_repair._validate_changes(tmp_path)
 
 
+def test_validate_changes_ignores_supervisor_venv_symlink(monkeypatch, tmp_path):
+    outputs = iter([
+        "?? .venv\n M worker/example.py\n",
+        "diff --git a/worker/example.py b/worker/example.py\n",
+    ])
+    monkeypatch.setattr(
+        code_repair, "_run",
+        lambda *args, **kwargs: type("R", (), {"stdout": next(outputs), "returncode": 0})(),
+    )
+    assert code_repair._validate_changes(tmp_path) == ["worker/example.py"]
+
+
 def test_duplicate_error_is_not_sent_to_ai(monkeypatch, tmp_path):
     evidence = "ERROR stable failure"
     fp = code_repair.fingerprint(evidence)

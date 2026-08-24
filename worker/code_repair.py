@@ -135,7 +135,9 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
 
 def _validate_changes(worktree: Path) -> list[str]:
     output = _run(["git", "status", "--porcelain"], cwd=worktree).stdout
-    files = [line[3:] for line in output.splitlines() if len(line) > 3]
+    # .venv is the supervisor-created symlink to the already provisioned
+    # test environment, never an AI-authored candidate change.
+    files = [line[3:] for line in output.splitlines() if len(line) > 3 and line[3:] != ".venv"]
     if not files:
         raise RepairError("AI did not produce a patch")
     invalid = [p for p in files if not p.startswith(ALLOWED_PREFIXES) or p.startswith(FORBIDDEN_PREFIXES)]
