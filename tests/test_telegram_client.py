@@ -201,6 +201,15 @@ def test_get_updates_returns_empty_list_when_result_missing(monkeypatch):
     assert get_telegram_updates("123:ABC", None, 30) == []
 
 
+def test_get_updates_treats_read_timeout_as_empty_long_poll(monkeypatch):
+    def fake_post(url, json, timeout):
+        raise telegram_client.httpx.ReadTimeout("long poll expired")
+
+    monkeypatch.setattr(telegram_client.httpx, "post", fake_post)
+
+    assert get_telegram_updates("123:ABC", None, 30) == []
+
+
 def test_get_updates_raises_when_token_blank():
     with pytest.raises(TelegramSendError):
         get_telegram_updates("", None, 30)

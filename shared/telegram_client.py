@@ -156,9 +156,18 @@ def get_telegram_updates(bot_token: str, offset: int | None, timeout_seconds: in
     payload: dict = {"timeout": timeout_seconds, "allowed_updates": ["callback_query"]}
     if offset is not None:
         payload["offset"] = offset
-    body = _call_telegram_api(
-        bot_token, "getUpdates", payload, timeout=httpx.Timeout(timeout_seconds + 10)
-    )
+    try:
+        body = _call_telegram_api(
+            bot_token, "getUpdates", payload, timeout=httpx.Timeout(timeout_seconds + 10)
+        )
+    except TelegramSendError as exc:
+        # A long poll that reaches the client's read deadline has the same
+        # meaning to this caller as Telegram returning an empty result: there
+        # was no update to process during this cycle.  Keep all other network
+        # and API failures visible so the listener can log and back off.
+        if isinstance(exc.__cause__, httpx.ReadTimeout):
+            return []
+        raise
     result = body.get("result")
     return result if isinstance(result, list) else []
 
