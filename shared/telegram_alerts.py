@@ -469,6 +469,23 @@ def send_log_finding_resolved_alert(
     selected_token = settings.telegram_rgw_bot_token if is_rgw else (
         bot_token if bot_token is not None else settings.telegram_incident_bot_token
     )
+    selected_chat = settings.telegram_rgw_chat_id if is_rgw else (
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id
+    )
+    selected_enabled = settings.telegram_rgw_enabled if is_rgw else (
+        enabled if enabled is not None else settings.telegram_incident_enabled
+    )
+    lines = [
+        f"✅ RGW ĐÃ XÁC NHẬN PHỤC HỒI: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}"
+        if is_rgw else f"🟢 Đã hết: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        "Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
+    ]
+    if verification_summary:
+        lines.append(f"🔎 Live verification: {_compact(verification_summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    _send(
+        selected_token, selected_chat, selected_enabled, "\n".join(lines),
+        cluster_name,
+    )
 
 
 def send_log_finding_recovery_pending_alert(
@@ -487,23 +504,6 @@ def send_log_finding_recovery_pending_alert(
     _send(
         settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id,
         settings.telegram_rgw_enabled, "\n".join(lines), cluster_name,
-    )
-    selected_chat = settings.telegram_rgw_chat_id if is_rgw else (
-        chat_id if chat_id is not None else settings.telegram_incident_chat_id
-    )
-    selected_enabled = settings.telegram_rgw_enabled if is_rgw else (
-        enabled if enabled is not None else settings.telegram_incident_enabled
-    )
-    lines = [
-        f"✅ RGW ĐÃ XÁC NHẬN PHỤC HỒI: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}"
-        if is_rgw else f"🟢 Đã hết: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
-        "Các mẫu log liên quan không còn xuất hiện trong các lần quét gần đây.",
-    ]
-    if verification_summary:
-        lines.append(f"🔎 Live verification: {_compact(verification_summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
-    _send(
-        selected_token, selected_chat, selected_enabled, "\n".join(lines),
-        cluster_name,
     )
 
 

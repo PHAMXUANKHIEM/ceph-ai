@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from config.settings import settings
 from shared import db as db_module
+from shared import telegram_alerts
 from shared.db import Base
 from shared.models import (
     Cluster,
@@ -30,6 +31,26 @@ from watcher.log_triage import TriageReason, TriageResult
 
 WINDOW_START = datetime(2026, 8, 19, 10, 0)
 WINDOW_END = datetime(2026, 8, 19, 11, 0)
+
+
+def test_real_rgw_recovery_telegram_formatters_route_and_render(monkeypatch):
+    delivered = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: delivered.append(args))
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "rgw-token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "rgw-chat")
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+    telegram_alerts.send_log_finding_resolved_alert(
+        "Vault recovered", daemon_types=["rgw"],
+        verification_summary="VAULT_RECOVERY_VERIFIED",
+    )
+    telegram_alerts.send_log_finding_recovery_pending_alert(
+        "Vault pending", "token lookup failed",
+        ("ceph_health=HEALTH_OK", "vault_probe[x]=TOKEN_LOOKUP_HTTP=403"),
+    )
+    assert delivered[0][:3] == ("rgw-token", "rgw-chat", True)
+    assert "RGW ĐÃ XÁC NHẬN PHỤC HỒI" in delivered[0][3]
+    assert delivered[1][:3] == ("rgw-token", "rgw-chat", True)
+    assert "RGW CHƯA XÁC NHẬN PHỤC HỒI" in delivered[1][3]
 
 
 @pytest.fixture()
