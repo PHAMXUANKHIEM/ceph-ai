@@ -121,12 +121,12 @@ disown
 
 # The repair supervisor must survive candidate deployments because it owns the
 # test/deploy/promote decision. Start it only when absent; never kill it in the
-# stop section above. It exits immediately when CODE_REPAIR_AUTO_ENABLED=false.
-if ! pgrep -f "$VENV_PYTHON -m worker.code_repair_supervisor" >/dev/null; then
-  nohup "$VENV_PYTHON" -m worker.code_repair_supervisor \
-    >> "/var/log/${LOG_TAG}-code-repair-supervisor.log" 2>&1 &
-  disown
-fi
+# stop section above. Starting an extra copy is safe: its advisory lock makes
+# the newcomer exit immediately when a supervisor already owns the pipeline.
+# This avoids brittle pgrep matching during an SSH-driven deployment.
+nohup "$VENV_PYTHON" -m worker.code_repair_supervisor \
+  >> "/var/log/${LOG_TAG}-code-repair-supervisor.log" 2>&1 &
+disown
 
 sleep 3
 
