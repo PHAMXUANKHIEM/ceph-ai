@@ -65,6 +65,11 @@ _SEVERE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bdamaged\b",
         r"map gap",                  # OSD tụt lại quá xa khỏi osdmap
         r"\bwedged\b",
+        # RGW server-side encryption cannot service the request when its
+        # Vault credential/key lookup fails. Ceph emits some of these at
+        # priority 0 even though the literal message is ERROR.
+        r"Vault token file .* not found",
+        r"failed to retrieve actual key",
     )
 )
 
@@ -87,6 +92,9 @@ _KNOWN_BENIGN_SEVERE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"^log_channel\(cluster\) log \[DBG\] : pgmap v\d+: <N> pgs: <N> active\+clean;",
         r"^\[balancer INFO root\] pools \[",
         r"^rgw user sync thread: user is idle, not doing a full sync",
+        # Client closing Beast's HTTP stream is routine transport chatter.
+        # Correlated Vault/key errors above remain independently severe.
+        r"^failed to read header: end of stream$",
     )
 )
 

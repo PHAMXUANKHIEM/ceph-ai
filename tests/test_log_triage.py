@@ -217,6 +217,7 @@ def test_error_priority_is_flagged_severe(isolated_db):
     'rocksdb: EVENT_LOG_v1 {"event": "flush_started", "job": <N>}',
     'rocksdb: EVENT_LOG_v1 {"event": "compaction_finished", "job": <N>}',
     "rgw user sync thread: user is idle, not doing a full sync (user=admin)",
+    "failed to read header: end of stream",
 ])
 def test_known_operational_events_are_not_severe(isolated_db, template):
     pattern_id = _add_pattern(
@@ -287,6 +288,8 @@ def test_known_periodic_status_lines_are_silent_when_novel(isolated_db, template
     "*** Caught signal (Segmentation fault) **",
     "osd.<ID> is full, stopping writes",
     "osd.<ID> map gap, too far behind",
+    "req <N> <N>.010000082s ERROR: Vault token file '<PATH>' not found",
+    "req <N> <N>.010000082s ERROR: failed to retrieve actual key",
 ])
 def test_core_ceph_keywords_are_flagged_even_at_info_priority(isolated_db, template):
     """Từ khoá hạt nhân bắt được cả khi Ceph không ghi ở mức lỗi."""
