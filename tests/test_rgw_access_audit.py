@@ -173,6 +173,7 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
                 window_start=datetime.utcnow() - timedelta(minutes=20),
                 window_end=datetime.utcnow(), status="OK", hosts_scanned=1,
                 hosts_failed=0, lines_scanned=2, patterns_seen=1, patterns_new=1,
+                patterns_flagged=1,
             )
             session.add(run)
             session.commit()
@@ -188,3 +189,4 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
     assert persisted.ingest_run_id
     assert any("BẮT ĐẦU" in message and f"RGW-{job.id[:8]}" in message for message in sent)
     assert any("HOÀN TẤT" in message for message in sent)
+    assert any("đã nhận 1 pattern" in message for message in sent)

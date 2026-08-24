@@ -348,7 +348,13 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                     .order_by(LogFinding.created_at.desc())
                     .first()
                 ) if run_id else None
-                result_text = "Không có pattern đủ điều kiện tạo finding trong cửa sổ hiện tại."
+                if run.patterns_flagged:
+                    result_text = (
+                        f"Tầng AI đã nhận {run.patterns_flagged} pattern liên quan; "
+                        "không có finding mới được lưu."
+                    )
+                else:
+                    result_text = "Không có pattern liên quan đủ điều kiện đưa vào tầng AI."
                 finding_id = None
                 if finding is not None:
                     finding_id = finding.id
