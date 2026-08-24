@@ -312,9 +312,19 @@ def verify_vault_recovery(
                 facts, False,
             )
         if status == "UNSET":
+            _family, functional_facts = _functional_rgw_recovery(
+                finding, patterns, evidence_re=_DEFAULT_KEY_RE,
+            )
+            if functional_facts:
+                return VerificationResult(
+                    "RGW_DEFAULT_ENCRYPTION_KEY_RECOVERY_VERIFIED",
+                    "Cấu hình khóa sai đã được gỡ và có request mã hóa thành công sau lỗi.",
+                    facts + functional_facts, True,
+                )
             return VerificationResult(
-                "RGW_DEFAULT_ENCRYPTION_KEY_REMOVED",
-                "Cấu hình default encryption key sai đã được gỡ bỏ.", facts, True,
+                "RGW_DEFAULT_ENCRYPTION_KEY_REMOVED_AWAITING_IO",
+                "Đã gỡ cấu hình khóa sai; đang chờ PUT/GET mã hóa thành công để xác nhận.",
+                facts, False,
             )
         _family, functional_facts = _functional_rgw_recovery(
             finding, patterns, evidence_re=_DEFAULT_KEY_RE,
