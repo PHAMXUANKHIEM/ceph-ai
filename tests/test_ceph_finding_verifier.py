@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
+from shared import db
+from shared.models import Cluster, RgwAccessAuditEvent
 from watcher import ceph_finding_verifier as verifier
 
 
@@ -187,3 +190,35 @@ def test_sse_s3_recovery_does_not_require_unrelated_legacy_kms_backend(monkeypat
     )
     assert result.code == "VAULT_RECOVERY_VERIFIED"
     assert calls == [("/etc/ceph/vault_token", "http://active-vault:8200")]
+
+
+def test_functional_recovery_ignores_newer_plaintext_request(db_session, monkeypatch):
+    monkeypatch.setattr(
+        db, "SessionLocal", sessionmaker(bind=db_session.get_bind(), autoflush=False),
+    )
+    cluster = Cluster(
+        name="functional", ceph_mon_nodes="", ceph_rgw_nodes="rgw1",
+        ssh_user="root", ssh_key_path="/key",
+    )
+    db_session.add(cluster)
+    db_session.flush()
+    from datetime import datetime, timedelta
+    error_at = datetime(2026, 8, 24, 7, 37)
+    db_session.add_all([
+        RgwAccessAuditEvent(
+            cluster_id=cluster.id, rgw_host="rgw1", fingerprint="a" * 64,
+            method="PUT", action="upload", http_status=200, encryption="SSE-S3 (AES256)",
+            event_at=error_at + timedelta(minutes=2),
+        ),
+        RgwAccessAuditEvent(
+            cluster_id=cluster.id, rgw_host="rgw1", fingerprint="b" * 64,
+            method="GET", action="download", http_status=200, encryption="Plaintext",
+            event_at=error_at + timedelta(minutes=12),
+        ),
+    ])
+    db_session.commit()
+    finding = _finding(cluster_id=cluster.id)
+    pattern = SimpleNamespace(last_seen_at=error_at)
+    family, facts = verifier._functional_rgw_recovery(finding, [pattern])
+    assert family == "sse_s3"
+    assert any("PUT 200 encryption=SSE-S3" in fact for fact in facts)

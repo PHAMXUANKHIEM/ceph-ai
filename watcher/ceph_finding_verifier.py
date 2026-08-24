@@ -192,6 +192,7 @@ def _functional_rgw_recovery(
             .filter(RgwAccessAuditEvent.http_status >= 200)
             .filter(RgwAccessAuditEvent.http_status < 300)
             .filter(RgwAccessAuditEvent.encryption.isnot(None))
+            .filter(RgwAccessAuditEvent.encryption != "Plaintext")
         )
         if affected:
             query = query.filter(RgwAccessAuditEvent.rgw_host.in_(affected))
