@@ -34,12 +34,30 @@ def test_first_scan_baselines_then_new_request_is_sent(db_session, monkeypatch):
     audit._ingest_host(db_session, cluster, "rgw1")
     audit._deliver_pending(db_session)
     assert len(sent) == 1
-    assert "GET" in sent[0] and "photos/a.jpg" in sent[0]
+    assert "ObjectAccessed:Get" in sent[0]
+    assert "Bucket: photos" in sent[0] and "File: a.jpg" in sent[0]
+    assert "Giờ VN: 08:02:03 - 24/08/2026" in sent[0]
     assert "secret" not in sent[0]
 
     events = db_session.query(RgwAccessAuditEvent).all()
     assert len(events) == 2
     assert all(event.telegram_sent for event in events)
+
+
+def test_business_message_formats_upload_size_and_event_name(db_session):
+    cluster = Cluster(name="audit", ceph_mon_nodes="", ceph_rgw_nodes="", is_default=False,
+                      is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    event = RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="a" * 64,
+        method="PUT", action="Tải lên", bucket="khiem.mmt204.test", object_key="test",
+        requester="admin", remote_addr="1.2.3.4", http_status=200, bytes_sent=12,
+        event_at=datetime(2026, 3, 26, 8, 31, 14))
+    message = audit._message(event, "ceph")
+    assert "Hành động: ObjectCreated:Put" in message
+    assert "Size: 12.00 B" in message
+    assert "User: admin" in message
+    assert "Giờ VN: 15:31:14 - 26/03/2026" in message
 
 
 def test_failed_delivery_remains_pending_for_retry(db_session, monkeypatch):

@@ -15,6 +15,11 @@ def test_parse_native_ops_log_labels_head_as_check_not_download():
     raw = '{"bucket":"photos","time":"2026-08-24T05:13:01Z","operation":"get_obj","uri":"HEAD /photos/a.jpg HTTP/1.1","http_status":"200"}'
     assert ral.parse_rgw_ops_log(raw)[0]["action"] == "Kiểm tra tệp"
 
+
+def test_parse_native_ops_log_uses_received_bytes_for_put_size():
+    raw = '{"bucket":"b","time":"2026-08-24T05:13:01Z","operation":"put_obj","uri":"PUT /b/x HTTP/1.1","http_status":"200","bytes_sent":0,"bytes_received":12}'
+    assert ral.parse_rgw_ops_log(raw)[0]["bytes_sent"] == 12
+
 # Real example line verified against ceph/ceph#33083 (the PR that added
 # Beast's access log) — see watcher/rgw_access_log.py's own docstring.
 HEAD_LINE = (

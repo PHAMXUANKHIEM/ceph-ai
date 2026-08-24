@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 
@@ -20,6 +21,7 @@ from watcher.rgw_access_log import fetch_rgw_audit_log, fetch_rgw_audit_log_with
 logger = logging.getLogger(__name__)
 _MAX_OBJECT_CHARS = 500
 _MAX_ERROR_CHARS = 1000
+_VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def _fingerprint(cluster_id: str, host: str, row: dict) -> str:
@@ -41,25 +43,50 @@ def _naive_utc(value: object) -> datetime:
     return datetime.utcnow()
 
 
+def _event_name(event: RgwAccessAuditEvent) -> str:
+    has_object = bool(event.object_key)
+    if event.method == "PUT":
+        return "ObjectCreated:Put" if has_object else "BucketCreated:Put"
+    if event.method == "POST":
+        return "ObjectCreated:Post"
+    if event.method == "DELETE":
+        return "ObjectRemoved:Delete" if has_object else "BucketRemoved:Delete"
+    if event.method == "HEAD":
+        return "ObjectAccessed:Head" if has_object else "BucketAccessed:Head"
+    if event.method == "GET":
+        return "ObjectAccessed:Get" if has_object else "BucketAccessed:List"
+    return f"RgwRequest:{event.method.title()}"
+
+
+def _human_size(value: int | None) -> str:
+    if value is None:
+        return "-"
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TB"
+
+
 def _message(event: RgwAccessAuditEvent, cluster_name: str) -> str:
-    icon = "🟢" if event.http_status < 400 else ("🟡" if event.http_status < 500 else "🔴")
-    target = event.bucket or "(không xác định)"
-    if event.object_key:
-        obj = event.object_key
-        if len(obj) > _MAX_OBJECT_CHARS:
-            obj = obj[: _MAX_OBJECT_CHARS - 1] + "…"
-        target += f"/{obj}"
-    size = "-" if event.bytes_sent is None else str(event.bytes_sent)
-    latency = "-" if event.latency_ms is None else f"{event.latency_ms:.2f} ms"
+    obj = event.object_key or "-"
+    if len(obj) > _MAX_OBJECT_CHARS:
+        obj = obj[: _MAX_OBJECT_CHARS - 1] + "…"
+    local_time = event.event_at.replace(tzinfo=timezone.utc).astimezone(_VIETNAM_TZ)
+    status_line = () if event.http_status < 400 else (f"❗ Kết quả: HTTP {event.http_status}",)
     return "\n".join((
-        f"📍 Cụm: {cluster_name}",
-        f"{icon} RGW ACCESS — {event.method} / {event.action}",
-        f"Bucket/Object: {target}",
-        f"Requester: {event.requester or '-'}",
-        f"IP nguồn: {event.remote_addr or '-'}",
-        f"HTTP: {event.http_status} | Bytes: {size} | Latency: {latency}",
-        f"RGW host: {event.rgw_host}",
-        f"Thời gian UTC: {event.event_at.isoformat(timespec='milliseconds')}Z",
+        "🔔 THÔNG BÁO CEPH S3",
+        "━━━━━━━━━━━━━━━━━━",
+        f"📝 Hành động: {_event_name(event)}",
+        f"📁 Bucket: {event.bucket or '-'}",
+        f"📄 File: {obj}",
+        f"⚖️ Size: {_human_size(event.bytes_sent)}",
+        "🛡️ Mã hóa: ❔ Không xác định từ RGW Ops Log",
+        f"👤 User: {event.requester or '-'}",
+        *status_line,
+        f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
+        "━━━━━━━━━━━━━━━━━━",
     ))
 
 

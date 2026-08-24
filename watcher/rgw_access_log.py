@@ -215,7 +215,13 @@ def parse_rgw_ops_log(raw_text: str) -> list[dict]:
             "object": obj,
             "action": action,
             "status": int(payload.get("http_status") or 0),
-            "bytes_sent": int(payload.get("bytes_sent") or 0),
+            # For uploads the meaningful object size travels *into* RGW;
+            # downloads travel out.  Keep one transfer-size field for the
+            # notification instead of showing 0 B for every successful PUT.
+            "bytes_sent": int(
+                (payload.get("bytes_received") if method in {"PUT", "POST"} else payload.get("bytes_sent"))
+                or 0
+            ),
             "latency_ms": float(payload.get("total_time") or 0),
             "transaction_id": payload.get("trans_id"),
         })
