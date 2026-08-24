@@ -19,7 +19,11 @@ from shared import db as db_module
 from shared import telegram_alerts
 from shared.db import Base
 from shared.models import (
+    Action,
+    ActionStatus,
     Cluster,
+    Incident,
+    IncidentStatus,
     LogFinding,
     LogFindingStatus,
     LogIngestRun,
@@ -163,6 +167,33 @@ def test_finding_without_ai_suggestion_gets_safe_fallback():
     )
     assert validated["recommended_manual_steps"][0].startswith("Khuyến nghị tốt nhất")
     assert "AI không đưa ra gợi ý" in validated["validation_notes"]
+
+
+def test_resolving_duplicate_does_not_cancel_action_while_same_finding_is_open(isolated_db):
+    cluster_id, run_id = isolated_db
+    dedupe_key = "same-rgw-problem"
+    with db_module.SessionLocal() as session:
+        session.add(LogFinding(
+            cluster_id=cluster_id, ingest_run_id=run_id, verdict="FINDING",
+            severity="WARNING", confidence="HIGH", dedupe_key=dedupe_key,
+            status=LogFindingStatus.OPEN.value,
+        ))
+        incident = Incident(
+            cluster_id=cluster_id, ceph_code=log_analysis.ceph_code_for(dedupe_key),
+            status=IncidentStatus.PENDING_APPROVAL.value, detected_at=WINDOW_START,
+        )
+        session.add(incident)
+        session.flush()
+        action = Action(
+            incident_id=incident.id, action_id="remove_invalid_rgw_default_key",
+            classification="RISKY", status=ActionStatus.PENDING_APPROVAL.value,
+        )
+        session.add(action)
+        session.commit()
+        log_analysis._resolve_incident_for(session, dedupe_key)
+        session.commit()
+        assert session.get(Incident, incident.id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Action, action.id).status == ActionStatus.PENDING_APPROVAL.value
 
 
 def _stub_router(monkeypatch, payload):

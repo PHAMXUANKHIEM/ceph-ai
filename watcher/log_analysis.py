@@ -1213,6 +1213,17 @@ def _resolve_incident_for(session, dedupe_key: str) -> None:
     """Đóng Incident đi kèm khi phát hiện đã hết -- cùng nếp
     `create_or_resolve_*` của mọi monitor khác: vấn đề tự hết thì hàng chờ
     duyệt cũng phải tự sạch, không bắt operator dọn tay."""
+    # Re-analysis can leave an older duplicate row reaching RESOLVED while a
+    # canonical row with the same identity is still OPEN. Never let that old
+    # row cancel the live remediation proposal.
+    still_open = (
+        session.query(LogFinding.id)
+        .filter(LogFinding.dedupe_key == dedupe_key)
+        .filter(LogFinding.status == LogFindingStatus.OPEN.value)
+        .first()
+    )
+    if still_open is not None:
+        return
     ceph_code = ceph_code_for(dedupe_key)
     for incident in (
         session.query(Incident)
