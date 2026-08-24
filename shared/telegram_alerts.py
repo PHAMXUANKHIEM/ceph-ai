@@ -530,6 +530,7 @@ def send_log_finding_recovery_pending_alert(
 def send_incident_verified_alert(
     ceph_code: str,
     attempted_command: str | None = None,
+    display_name: str | None = None,
     cluster_name: str | None = None,
     bot_token: str | None = None,
     chat_id: str | None = None,
@@ -548,7 +549,10 @@ def send_incident_verified_alert(
     cố này lúc đầu — đóng lại đúng chỗ đã mở ra, để một cuộc hội thoại nằm
     gọn trong một chat thay vì rải ra các kênh khác nhau.
     """
-    text = f"✅ ĐÃ KHẮC PHỤC · {ceph_code}"
+    readable_name = _compact(display_name or ceph_code, _MAX_FOLLOWUP_FIELD_CHARS)
+    text = f"✅ ĐÃ KHẮC PHỤC · {readable_name}"
+    if display_name and display_name != ceph_code:
+        text += f"\n🆔 Mã đối chiếu: {ceph_code}"
     text += "\nĐã kiểm chứng lại trên cụm: lỗi không còn xuất hiện trong `ceph health detail`."
     if attempted_command:
         text += f"\n💻 Lệnh đã chạy: {_compact(attempted_command, _MAX_FOLLOWUP_FIELD_CHARS)}"

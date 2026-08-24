@@ -54,12 +54,28 @@ from datetime import datetime
 
 from config.settings import settings
 from shared import audit, db, remediation_cases, telegram_alerts
-from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, RemediationCase
+from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, LogFinding, RemediationCase
 from watcher import publisher
 from watcher.ceph_code_families import is_monitor_owned
 from worker.policy.playbook_registry import PostcheckResult, resolve_case_postcheck, run_postcheck
 
 logger = logging.getLogger(__name__)
+_LOG_ANOMALY_PREFIX = "LOG_ANOMALY:"
+
+
+def _incident_display_name(session, incident: Incident) -> str | None:
+    """Resolve synthetic Log Intelligence codes to the operator-facing title."""
+    if not incident.ceph_code.startswith(_LOG_ANOMALY_PREFIX):
+        return None
+    short_key = incident.ceph_code[len(_LOG_ANOMALY_PREFIX):]
+    finding = (
+        session.query(LogFinding)
+        .filter(LogFinding.cluster_id == incident.cluster_id)
+        .filter(LogFinding.dedupe_key.like(f"{short_key}%"))
+        .order_by(LogFinding.created_at.desc())
+        .first()
+    )
+    return finding.title if finding is not None and finding.title else "Lỗi được phát hiện từ log"
 
 
 def _cluster_channel_kwargs(cluster: Cluster | None) -> dict:
@@ -221,6 +237,7 @@ def verify_pending_incidents(
                 telegram_alerts.send_incident_verified_alert(
                     incident.ceph_code,
                     attempted_command=command,
+                    display_name=_incident_display_name(session, incident),
                     **_cluster_channel_kwargs(cluster),
                 )
                 counts["verified"] += 1
