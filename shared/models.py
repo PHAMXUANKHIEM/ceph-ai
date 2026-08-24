@@ -629,6 +629,7 @@ class RgwAccessAuditEvent(Base):
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
     bytes_sent: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    encryption: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telegram_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

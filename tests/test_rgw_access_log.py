@@ -20,6 +20,18 @@ def test_parse_native_ops_log_uses_received_bytes_for_put_size():
     raw = '{"bucket":"b","time":"2026-08-24T05:13:01Z","operation":"put_obj","uri":"PUT /b/x HTTP/1.1","http_status":"200","bytes_sent":0,"bytes_received":12}'
     assert ral.parse_rgw_ops_log(raw)[0]["bytes_sent"] == 12
 
+
+def test_parse_native_ops_log_detects_sse_variants_and_plaintext():
+    base = '"bucket":"b","time":"2026-08-24T05:13:01Z","operation":"put_obj","uri":"PUT /b/x HTTP/1.1","http_status":"200"'
+    s3 = ral.parse_rgw_ops_log("{" + base + ',"http_x_headers":[{"HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION":"AES256"}]}')[0]
+    kms = ral.parse_rgw_ops_log("{" + base + ',"http_x_headers":[{"HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION":"aws:kms"}]}')[0]
+    ssec = ral.parse_rgw_ops_log("{" + base + ',"http_x_headers":[{"HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION_CUSTOMER_ALGORITHM":"AES256"}]}')[0]
+    plain = ral.parse_rgw_ops_log("{" + base + "}")[0]
+    assert s3["encryption"] == "SSE-S3 (AES256)"
+    assert kms["encryption"] == "SSE-KMS"
+    assert ssec["encryption"] == "SSE-C (AES256)"
+    assert plain["encryption"] == "Plaintext"
+
 # Real example line verified against ceph/ceph#33083 (the PR that added
 # Beast's access log) — see watcher/rgw_access_log.py's own docstring.
 HEAD_LINE = (

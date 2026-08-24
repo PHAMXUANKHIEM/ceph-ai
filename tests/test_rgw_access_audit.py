@@ -52,11 +52,12 @@ def test_business_message_formats_upload_size_and_event_name(db_session):
     event = RgwAccessAuditEvent(cluster_id=cluster.id, rgw_host="rgw1", fingerprint="a" * 64,
         method="PUT", action="Tải lên", bucket="khiem.mmt204.test", object_key="test",
         requester="admin", remote_addr="1.2.3.4", http_status=200, bytes_sent=12,
-        event_at=datetime(2026, 3, 26, 8, 31, 14))
+        encryption="SSE-S3 (AES256)", event_at=datetime(2026, 3, 26, 8, 31, 14))
     message = audit._message(event, "ceph")
     assert "Hành động: ObjectCreated:Put" in message
     assert "Size: 12.00 B" in message
     assert "User: admin" in message
+    assert "Mã hóa: 🔐 SSE-S3 (AES256)" in message
     assert "Giờ VN: 15:31:14 - 26/03/2026" in message
 
 

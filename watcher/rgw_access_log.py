@@ -203,6 +203,20 @@ def parse_rgw_ops_log(raw_text: str) -> list[dict]:
             timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
         except ValueError:
             timestamp = None
+        headers: dict[str, str] = {}
+        for item in payload.get("http_x_headers") or []:
+            if isinstance(item, dict):
+                headers.update({str(key).upper(): str(value) for key, value in item.items()})
+        customer_algorithm = headers.get("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION_CUSTOMER_ALGORITHM")
+        server_algorithm = headers.get("HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION")
+        if customer_algorithm:
+            encryption = f"SSE-C ({customer_algorithm})"
+        elif server_algorithm and server_algorithm.lower() == "aws:kms":
+            encryption = "SSE-KMS"
+        elif server_algorithm:
+            encryption = f"SSE-S3 ({server_algorithm})"
+        else:
+            encryption = "Plaintext"
         records.append({
             "remote_addr": payload.get("remote_addr"),
             "requester": payload.get("user"),
@@ -223,6 +237,7 @@ def parse_rgw_ops_log(raw_text: str) -> list[dict]:
                 or 0
             ),
             "latency_ms": float(payload.get("total_time") or 0),
+            "encryption": encryption,
             "transaction_id": payload.get("trans_id"),
         })
     records.sort(key=lambda row: row["timestamp"] or datetime.min.replace(tzinfo=None), reverse=True)

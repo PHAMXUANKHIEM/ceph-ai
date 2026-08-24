@@ -75,6 +75,12 @@ def _message(event: RgwAccessAuditEvent, cluster_name: str) -> str:
         obj = obj[: _MAX_OBJECT_CHARS - 1] + "…"
     local_time = event.event_at.replace(tzinfo=timezone.utc).astimezone(_VIETNAM_TZ)
     status_line = () if event.http_status < 400 else (f"❗ Kết quả: HTTP {event.http_status}",)
+    if event.encryption == "Plaintext":
+        encryption_text = "🔓 Không mã hóa (Plaintext)"
+    elif event.encryption:
+        encryption_text = f"🔐 {event.encryption}"
+    else:
+        encryption_text = "❔ Không xác định từ RGW Ops Log"
     return "\n".join((
         "🔔 THÔNG BÁO CEPH S3",
         "━━━━━━━━━━━━━━━━━━",
@@ -82,7 +88,7 @@ def _message(event: RgwAccessAuditEvent, cluster_name: str) -> str:
         f"📁 Bucket: {event.bucket or '-'}",
         f"📄 File: {obj}",
         f"⚖️ Size: {_human_size(event.bytes_sent)}",
-        "🛡️ Mã hóa: ❔ Không xác định từ RGW Ops Log",
+        f"🛡️ Mã hóa: {encryption_text}",
         f"👤 User: {event.requester or '-'}",
         *status_line,
         f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
@@ -121,6 +127,7 @@ def _ingest_host(session, cluster: Cluster, host: str) -> None:
             http_status=int(row.get("status") or 0),
             bytes_sent=row.get("bytes_sent"),
             latency_ms=row.get("latency_ms"),
+            encryption=(str(row["encryption"])[:64] if row.get("encryption") else None),
             event_at=_naive_utc(row.get("timestamp")),
             # On the first scan, establish a baseline without flooding the
             # chat with old requests already present in the daemon tail.
