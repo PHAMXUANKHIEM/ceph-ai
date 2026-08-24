@@ -332,6 +332,7 @@ def _process_analysis_jobs(limit: int = 1) -> None:
             heartbeat.start()
             run_id = log_intel.scan_and_store(
                 cluster_id, cluster=cluster, target_host=host, target_daemon_type="rgw",
+                focus_message=message,
             )
             with db.SessionLocal() as session:
                 run = session.get(LogIngestRun, run_id) if run_id else None

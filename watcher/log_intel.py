@@ -272,6 +272,7 @@ def scan_and_store(
     *,
     target_host: str | None = None,
     target_daemon_type: str | None = None,
+    focus_message: str | None = None,
 ) -> str | None:
     """Một chu kỳ quét -- gọi từ vòng lặp `watcher/main.py` theo cadence
     riêng `log_intel_scan_interval_seconds`.
@@ -284,6 +285,7 @@ def scan_and_store(
         return _scan_and_store_unlocked(
             cluster_id, cluster,
             target_host=target_host, target_daemon_type=target_daemon_type,
+            focus_message=focus_message,
         )
 
 
@@ -293,6 +295,7 @@ def _scan_and_store_unlocked(
     *,
     target_host: str | None = None,
     target_daemon_type: str | None = None,
+    focus_message: str | None = None,
 ) -> str | None:
     if not settings.log_intel_enabled:
         return None
@@ -396,6 +399,9 @@ def _scan_and_store_unlocked(
     except Exception:
         logger.exception("log_intel.scan_and_store: triage thất bại (dữ liệu thu thập vẫn được giữ)")
 
+    if focus_message:
+        flagged = [item for item in flagged if _matches_focus(item.template, focus_message)]
+
     if flagged:
         # WARNING chứ không phải INFO: trước khi L3 (Telegram) và L4
         # (Dashboard) có mặt, log của Watcher LÀ kênh duy nhất vận hành
@@ -466,6 +472,21 @@ def _scan_and_store_unlocked(
             logger.exception("log_intel: đóng phát hiện cũ thất bại")
 
     return run_id
+
+
+def _matches_focus(template: str, message: str) -> bool:
+    """Keep only triage evidence related to an immediate detector message."""
+    template_lower = template.lower()
+    message_lower = message.lower()
+    vault_markers = ("vault", "retrieve actual key", "error -13")
+    if any(marker in message_lower for marker in vault_markers):
+        return any(marker in template_lower for marker in vault_markers)
+    ignored = {"error", "failed", "request", "from", "with", "that", "this"}
+    tokens = {
+        token for token in re.findall(r"[a-z][a-z0-9_-]{3,}", normalize(message_lower))
+        if token not in ignored
+    }
+    return bool(tokens) and len(tokens.intersection(template_lower.split())) >= min(2, len(tokens))
 
 
 def _hosts_by_daemon_type(cluster: Cluster | None) -> dict[str, set[str]]:

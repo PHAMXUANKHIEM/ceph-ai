@@ -157,12 +157,16 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
     sent = []
     monkeypatch.setattr(audit, "_send_analysis_status", sent.append)
 
-    def fake_scan(cluster_id, cluster=None, *, target_host=None, target_daemon_type=None):
+    def fake_scan(
+        cluster_id, cluster=None, *, target_host=None, target_daemon_type=None,
+        focus_message=None,
+    ):
         # Regression: the real scanner reads detached cluster attributes.
         # They must remain loaded after the job claim transaction commits.
         assert cluster.name == "rgw-run"
         assert target_host == "10.3.53.1"
         assert target_daemon_type == "rgw"
+        assert focus_message == "Request to Vault failed with error -13"
         with db.SessionLocal() as session:
             run = LogIngestRun(
                 cluster_id=cluster_id, source="loki",
