@@ -342,6 +342,18 @@ class Settings(BaseSettings):
     telegram_code_repair_bot_token: str = ""
     telegram_code_repair_chat_id: str = ""
     telegram_code_repair_enabled: bool = True
+    # External supervisor for application self-repair. Disabled by default;
+    # staging may explicitly enable the full test/deploy/promote pipeline.
+    code_repair_auto_enabled: bool = False
+    code_repair_poll_interval_seconds: int = 30
+    code_repair_provider: str = "auto"
+    code_repair_test_command: str = "PYTHONPATH=. .venv/bin/pytest -q"
+    code_repair_timeout_seconds: int = 1800
+    code_repair_push: bool = False
+    code_repair_deploy_staging: bool = False
+    code_repair_promote_main: bool = False
+    code_repair_cursor_file: str = "/var/lib/ceph-ai/code-repair-cursors.json"
+    code_repair_lock_file: str = "/var/lib/ceph-ai/code-repair.lock"
     # Dedicated notification-only channel for AI-analyzed RADOS Gateway
     # findings. Members receive RGW alerts but cannot approve Actions.
     telegram_rgw_bot_token: str = ""

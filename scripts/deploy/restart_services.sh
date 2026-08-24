@@ -119,6 +119,15 @@ nohup "$VENV_PYTHON" -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --por
   >> "/var/log/${LOG_TAG}-dashboard.log" 2>&1 &
 disown
 
+# The repair supervisor must survive candidate deployments because it owns the
+# test/deploy/promote decision. Start it only when absent; never kill it in the
+# stop section above. It exits immediately when CODE_REPAIR_AUTO_ENABLED=false.
+if ! pgrep -f "$VENV_PYTHON -m worker.code_repair_supervisor" >/dev/null; then
+  nohup "$VENV_PYTHON" -m worker.code_repair_supervisor \
+    >> "/var/log/${LOG_TAG}-code-repair-supervisor.log" 2>&1 &
+  disown
+fi
+
 sleep 3
 
 # A code pull can update static/app.js immediately while an old Uvicorn
@@ -153,4 +162,4 @@ fi
 echo "==> Deploy complete: $(date -u +%FT%TZ)"
 echo "==> Dashboard route check: /pgs HTTP $DASHBOARD_ROUTE_STATUS"
 echo "==> Running processes:"
-pgrep -fa "$VENV_PYTHON -m watcher\.(main|remediation_main)|$VENV_PYTHON -m worker\.main|$VENV_PYTHON -m uvicorn dashboard.app" || echo "WARNING: no matching processes found after restart"
+pgrep -fa "$VENV_PYTHON -m watcher\.(main|remediation_main)|$VENV_PYTHON -m worker\.(main|code_repair_supervisor)|$VENV_PYTHON -m uvicorn dashboard.app" || echo "WARNING: no matching processes found after restart"
