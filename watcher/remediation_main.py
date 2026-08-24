@@ -14,6 +14,8 @@ from typing import Optional
 from config.settings import settings
 from shared import db
 from shared.clusters import get_default_cluster_id
+from shared.cluster_nodes import resolve_ssh_creds
+from shared.models import Cluster
 from watcher import ceph_client, verify
 from watcher.ceph_client import CephQueryError
 from watcher.main import (
@@ -28,12 +30,20 @@ logger = logging.getLogger(__name__)
 def run(max_iterations: Optional[int] = None) -> None:
     with db.SessionLocal() as session:
         cluster_id = get_default_cluster_id(session)
+        cluster = session.get(Cluster, cluster_id)
+        if cluster is None:
+            raise RuntimeError(f"default cluster {cluster_id!r} not found")
+        mon_nodes = [value.strip() for value in cluster.ceph_mon_nodes.split(",") if value.strip()]
+        ssh_user, ssh_key, exec_mode, container = resolve_ssh_creds(cluster)
 
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         started = time.monotonic()
         try:
-            health = ceph_client.query_cluster_health()
+            health = ceph_client.query_cluster_health_with(
+                mon_nodes, container, ssh_user, ssh_key, exec_mode,
+                update_sticky_fallback=True,
+            )
             current_checks = set((health.get("checks") or {}).keys())
             _resolve_recovered_incidents(current_checks, cluster_id=cluster_id)
             _reconcile_terminal_actions()
