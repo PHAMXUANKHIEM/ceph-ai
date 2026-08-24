@@ -31,7 +31,8 @@ def test_supervisor_ignores_its_own_log(tmp_path):
 
 
 def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
-    candidate = supervisor.ceph_learning.LearningCandidate("f1", "key1", "CEPH evidence")
+    verification = supervisor.ceph_learning.VerificationResult("VERIFIED", "ok", (), True)
+    candidate = supervisor.ceph_learning.LearningCandidate("f1", "key1", "CEPH evidence", verification)
     captured = {}
     monkeypatch.setattr(supervisor, "read_new_errors", lambda *a, **k: [])
     monkeypatch.setattr(supervisor.ceph_learning, "load_state", lambda p: {"initialized": True, "findings": {}})

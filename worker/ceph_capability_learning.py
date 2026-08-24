@@ -15,9 +15,10 @@ from pathlib import Path
 
 from shared import db
 from shared.models import (
-    LogFinding, LogFindingConfidence, LogFindingSeverity, LogFindingStatus,
+    Cluster, LogFinding, LogFindingConfidence, LogFindingSeverity, LogFindingStatus,
     LogFindingVerdict, LogPattern,
 )
+from watcher.ceph_finding_verifier import VerificationResult, verify
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class LearningCandidate:
     finding_id: str
     dedupe_key: str
     evidence: str
+    verification: VerificationResult
 
 
 def eligible(finding: LogFinding) -> bool:
@@ -74,7 +76,20 @@ def next_candidate(seen_keys: set[str]) -> LearningCandidate | None:
                 continue
             pattern_ids = _json_list(finding.evidence_pattern_ids_json)
             patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all() if pattern_ids else []
-            return LearningCandidate(finding.id, finding.dedupe_key, build_evidence(finding, patterns))
+            cluster = session.get(Cluster, finding.cluster_id)
+            if cluster is None:
+                verification = VerificationResult(
+                    "CLUSTER_NOT_FOUND", "Không tìm thấy cluster của finding.", (), False,
+                )
+            else:
+                verification = verify(finding, patterns, cluster)
+            evidence = build_evidence(finding, patterns)
+            evidence += "\nLIVE VERIFICATION\n" + json.dumps({
+                "code": verification.code,
+                "summary": verification.summary,
+                "facts": verification.live_facts,
+            }, ensure_ascii=False, indent=2)
+            return LearningCandidate(finding.id, finding.dedupe_key, evidence, verification)
     return None
 
 

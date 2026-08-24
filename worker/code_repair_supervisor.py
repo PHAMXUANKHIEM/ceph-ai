@@ -18,6 +18,7 @@ from pathlib import Path
 from config.settings import settings
 from worker.code_repair import ERROR_RE, SECRET_RE, RepairConfig, run_repair
 from worker import ceph_capability_learning as ceph_learning
+from shared.telegram_alerts import send_code_repair_alert
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,24 @@ def run_forever(*, max_iterations: int | None = None) -> None:
         if settings.ceph_capability_learning_enabled:
             seen = set(learning_state.setdefault("findings", {}))
             candidate = ceph_learning.next_candidate(seen)
+        if candidate is not None:
+            if not candidate.verification.eligible_for_learning:
+                status = f"VERIFIED_NO_CODE_CHANGE:{candidate.verification.code}"
+                ceph_learning.mark(learning_state, candidate, status)
+                ceph_learning.save_state(learning_state_file, learning_state)
+                facts = "\n".join(f"• {fact}" for fact in candidate.verification.live_facts)
+                send_code_repair_alert(
+                    "🔎 CEPH LIVE VERIFICATION\n"
+                    f"Kết luận: {candidate.verification.summary}\n"
+                    f"Mã: {candidate.verification.code}\n"
+                    f"{facts}\n"
+                    "Không sửa source ceph-ai từ finding này."
+                )
+                logger.info(
+                    "Ceph finding verified without learning: %s finding=%s",
+                    candidate.verification.code, candidate.finding_id,
+                )
+                candidate = None
         if candidate is not None:
             ceph_learning.mark(learning_state, candidate, "RUNNING")
             ceph_learning.save_state(learning_state_file, learning_state)
