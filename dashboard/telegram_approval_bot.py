@@ -138,6 +138,9 @@ _ACTION_SOLUTION_LABELS = {
     "crash_archive_all": "Lưu trữ các crash report đã được kiểm tra.",
     "pg_repair_force": "Kiểm tra PG và thực hiện repair thủ công sau khi xác minh dữ liệu.",
     "investigate_manually": "Điều tra thủ công; chưa có thao tác tự động đủ an toàn.",
+    "remove_invalid_rgw_default_key": (
+        "Gỡ khóa RGW mặc định sai khi Vault SSE-S3 đã được xác nhận, rồi restart tuần tự RGW."
+    ),
 }
 
 # (channel_key, bot_token field, chat_id field, enabled field) on
@@ -151,6 +154,7 @@ _CHANNELS = (
     ("backup", "telegram_backup_bot_token", "telegram_backup_chat_id", "telegram_backup_enabled"),
     ("incident", "telegram_incident_bot_token", "telegram_incident_chat_id", "telegram_incident_enabled"),
     ("node", "telegram_node_bot_token", "telegram_node_chat_id", "telegram_node_enabled"),
+    ("rgw", "telegram_rgw_bot_token", "telegram_rgw_chat_id", "telegram_rgw_enabled"),
 )
 
 
@@ -239,7 +243,8 @@ def channels_for_action(
         default_cluster_id = get_default_cluster_id(session)
         if incident.cluster_id != default_cluster_id:
             return channels
-    return [channel for channel in channels if channel[0] == "incident"]
+    wanted = "rgw" if action is not None and action.action_id == "remove_invalid_rgw_default_key" else "incident"
+    return [channel for channel in channels if channel[0] == wanted]
 
 
 # 2026-08-10 (multi-tenant remediation Phase 2): `_listen_supervisor_loop`'s

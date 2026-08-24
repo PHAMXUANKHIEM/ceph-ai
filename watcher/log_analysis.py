@@ -862,7 +862,7 @@ _ALERTABLE_SEVERITIES = frozenset({
     LogFindingSeverity.WARNING.value,
     LogFindingSeverity.CRITICAL.value,
 })
-_RECOVERY_PENDING_NOTIFY_INTERVAL = timedelta(hours=1)
+_RECOVERY_PENDING_NOTIFY_INTERVAL = timedelta(minutes=10)
 
 
 def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster | None) -> None:
@@ -1140,11 +1140,24 @@ def _maybe_propose_action(
         return
 
     action_id = payload.get("recommended_action_id") or _FALLBACK_ACTION_ID
+    action_params = {"dedupe_key": dedupe_key}
+    target_nodes: list[str] = []
     ceph_code = ceph_code_for(dedupe_key)
     rationale = _rationale_for(payload, evidence_templates)
 
     try:
         with db.SessionLocal() as session:
+            cluster = session.get(Cluster, cluster_id)
+            if cluster is not None and _RGW_DEFAULT_KEY_RE.search(" ".join(
+                str(payload.get(key) or "") for key in ("title", "summary", "root_cause")
+            )):
+                from watcher.ceph_finding_verifier import default_key_vault_remediation_candidate
+                candidate = default_key_vault_remediation_candidate(cluster)
+                mons = [value.strip() for value in cluster.ceph_mon_nodes.split(",") if value.strip()]
+                if candidate is not None and mons:
+                    action_id = "remove_invalid_rgw_default_key"
+                    action_params.update(candidate)
+                    target_nodes = [mons[0]]
             # Cùng khoá danh tính với finding, nên một vấn đề kéo dài không
             # bao giờ đẻ ra Incident thứ hai -- bước dedupe của finding đã
             # chặn ở trên, đây là lớp chặn thứ hai phòng khi bảng findings
@@ -1178,8 +1191,8 @@ def _maybe_propose_action(
                 # chỉ đích danh node nào phải nhận lệnh. Operator đọc
                 # rationale rồi tự quyết -- cùng cách
                 # watcher/node_health_monitor.py để trống hai trường này.
-                target_nodes=json.dumps([]),
-                action_params=json.dumps({"dedupe_key": dedupe_key}),
+                target_nodes=json.dumps(target_nodes),
+                action_params=json.dumps(action_params),
             )
             session.add(action)
             session.flush()

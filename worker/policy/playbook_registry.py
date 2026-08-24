@@ -149,6 +149,10 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         command_builder=None, preflight=None, postcheck=None,
         command_builder_version=None,
     ),
+    "remove_invalid_rgw_default_key": _contract(
+        "remove_invalid_rgw_default_key", target_schema="host", max_autonomy="L2",
+        conflict_scope="cluster", postcheck="fresh_health_telemetry",
+    ),
 }
 
 

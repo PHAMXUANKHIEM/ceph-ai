@@ -1266,3 +1266,23 @@ def test_bluestore_omap_quick_fix_requires_osd_id(monkeypatch):
 
 def test_has_command_true_for_bluestore_omap_quick_fix():
     assert commands_module.has_command("bluestore_omap_quick_fix") is True
+
+
+def test_remove_invalid_rgw_default_key_is_closed_and_restarts_sequentially():
+    command = get_command("remove_invalid_rgw_default_key", "10.0.0.1", {
+        "section": "client.rgw.sse.host.abc",
+        "daemon_names": ["rgw.sse.host.a", "rgw.sse.host.b"],
+    })
+    assert "rgw_crypt_sse_s3_backend)\" = vault" in command
+    assert "ceph config rm client.rgw.sse.host.abc rgw_crypt_default_encryption_key" in command
+    assert command.index("restart rgw.sse.host.a") < command.index("restart rgw.sse.host.b")
+
+
+@pytest.mark.parametrize("params", [
+    {"section": "client.rgw.x;id", "daemon_names": ["rgw.x"]},
+    {"section": "client.rgw.x", "daemon_names": ["rgw.x;id"]},
+    {"section": "client.rgw.x", "daemon_names": []},
+])
+def test_remove_invalid_rgw_default_key_rejects_untrusted_params(params):
+    with pytest.raises(ExecutorError):
+        get_command("remove_invalid_rgw_default_key", "10.0.0.1", params)

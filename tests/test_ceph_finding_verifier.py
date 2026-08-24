@@ -262,3 +262,24 @@ def test_invalid_default_encryption_key_blocks_auto_resolution(monkeypatch):
     )
     assert result.code == "RGW_DEFAULT_ENCRYPTION_KEY_INVALID"
     assert result.eligible_for_learning is False
+
+
+def test_default_key_remediation_candidate_requires_vault_and_exact_live_targets(monkeypatch):
+    monkeypatch.setattr(verifier, "_ceph_config_dump", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_default_encryption_key", "value": "AES256"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_backend", "value": "vault"},
+    ], None))
+    monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([
+        {"daemon_name": "rgw.sse.host.abc"},
+    ], None))
+    assert verifier.default_key_vault_remediation_candidate(_cluster()) == {
+        "section": "client.rgw.sse.host.abc", "daemon_names": ["rgw.sse.host.abc"],
+    }
+
+
+def test_default_key_remediation_candidate_refuses_non_vault_backend(monkeypatch):
+    monkeypatch.setattr(verifier, "_ceph_config_dump", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_default_encryption_key", "value": "AES256"},
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_backend", "value": "barbican"},
+    ], None))
+    assert verifier.default_key_vault_remediation_candidate(_cluster()) is None

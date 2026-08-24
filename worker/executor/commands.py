@@ -51,6 +51,28 @@ COMMANDS: dict[str, str] = {
 # have no leading whitespace once matched.
 _SYSTEMCTL_UNIT_RE = re.compile(r"^\s*(\S+\.service)\b")
 _OSD_UNIT_ID_RE = re.compile(r"osd[.@](\d+)\b", re.IGNORECASE)
+_RGW_SECTION_RE = re.compile(r"^client\.rgw\.[A-Za-z0-9_.-]{1,180}$")
+_RGW_DAEMON_RE = re.compile(r"^rgw\.[A-Za-z0-9_.-]{1,180}$")
+
+
+def _remove_invalid_rgw_default_key_command(params: dict) -> str:
+    section = str(params.get("section") or "")
+    daemon_names = params.get("daemon_names")
+    if not _RGW_SECTION_RE.fullmatch(section):
+        raise ExecutorError("invalid or missing RGW config section")
+    if not isinstance(daemon_names, list) or not daemon_names or not all(
+        isinstance(name, str) and _RGW_DAEMON_RE.fullmatch(name) for name in daemon_names
+    ):
+        raise ExecutorError("invalid or missing RGW daemon names")
+    quoted_section = shlex.quote(section)
+    checks = (
+        f"test \"$(ceph config get {quoted_section} rgw_crypt_sse_s3_backend)\" = vault && "
+        f"ceph config rm {quoted_section} rgw_crypt_default_encryption_key"
+    )
+    restarts = " && ".join(
+        f"ceph orch daemon restart {shlex.quote(name)}" for name in daemon_names
+    )
+    return f"{checks} && {restarts}"
 
 # Substring match, not a strict positional parse — deliberately, because
 # where the daemon type sits in the unit name differs by deployment style
@@ -533,6 +555,7 @@ _MANAGEMENT_COMMAND_BUILDERS = {
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {
     "finalize_osd_release": _finalize_osd_release_command,
+    "remove_invalid_rgw_default_key": _remove_invalid_rgw_default_key_command,
 }
 
 # 2026-08-01 (Story C, DeviceHealth-driven evacuation): a SEPARATE dict from

@@ -20,6 +20,7 @@ action_ids:
   # the Worker resolves it deterministically and proposes the compatibility
   # floor change for operator approval.
   - finalize_osd_release
+  - remove_invalid_rgw_default_key
 
 # 2026-07-23: cluster-MANAGEMENT actions the Chat-with-AI feature
 # (dashboard/chat_client.py) can propose — deliberately a SEPARATE list from
@@ -292,6 +293,7 @@ safe:
   - crash_archive_all
 
 risky:
+  - remove_invalid_rgw_default_key
   - execute_node_command
   - restart_osd_daemon
   - finalize_osd_release

@@ -376,9 +376,9 @@ def test_rgw_vault_finding_only_resolves_after_live_recovery_gate(
     assert sent["resolved"] == []
     assert len(sent["recovery_pending"]) == 1
 
-    # Cooldown prevents the same failed recovery check from spamming Telegram.
+    # Operator requested a progress reminder every 10 minutes while still open.
     assert log_analysis.resolve_stale_findings(cluster_id, later + timedelta(minutes=15)) == 0
-    assert len(sent["recovery_pending"]) == 1
+    assert len(sent["recovery_pending"]) == 2
 
     verified = ceph_finding_verifier.VerificationResult(
         "VAULT_RECOVERY_VERIFIED", "Vault token lookup thành công", (), True,

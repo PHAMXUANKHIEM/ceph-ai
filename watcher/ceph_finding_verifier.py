@@ -20,6 +20,8 @@ _DEFAULT_KEY_RE = re.compile(r"rgw[ _]crypt[ _]default[ _]encryption[ _]key|defa
 _TOKEN_PATH_RE = re.compile(r"Vault token file ['\"](?P<path>/[^'\"]+)['\"]", re.IGNORECASE)
 _SAFE_TOKEN_PATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+){1,30}$")
 _SAFE_CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{12,64}$")
+_SAFE_RGW_SECTION_RE = re.compile(r"^client\.rgw\.[A-Za-z0-9_.-]{1,180}$")
+_SAFE_RGW_DAEMON_RE = re.compile(r"^rgw\.[A-Za-z0-9_.-]{1,180}$")
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,46 @@ def _default_key_config_status(cluster: Cluster) -> tuple[str, tuple[str, ...]]:
             f"{'VALID_BASE64_256' if row_valid else 'INVALID_BASE64_OR_LENGTH'}"
         )
     return ("VALID" if valid else "INVALID"), tuple(facts)
+
+
+def default_key_vault_remediation_candidate(cluster: Cluster) -> dict | None:
+    """Return closed, non-secret params only when removing the key is safe.
+
+    The proposal is deliberately deterministic: exact RGW section, invalid
+    default key, and Vault SSE-S3 backend must all be present in live config.
+    """
+    rows, error = _ceph_config_dump(cluster)
+    if error:
+        return None
+    by_section: dict[str, dict[str, str]] = {}
+    for row in rows:
+        section = str(row.get("section") or "")
+        name = str(row.get("name") or "")
+        if _SAFE_RGW_SECTION_RE.fullmatch(section):
+            by_section.setdefault(section, {})[name] = str(row.get("value") or "").strip()
+    candidates = []
+    for section, values in by_section.items():
+        raw_key = values.get("rgw_crypt_default_encryption_key")
+        if raw_key is None or values.get("rgw_crypt_sse_s3_backend", "").lower() != "vault":
+            continue
+        try:
+            key_valid = len(base64.b64decode(raw_key, validate=True)) == 32
+        except (binascii.Error, ValueError):
+            key_valid = False
+        if not key_valid:
+            candidates.append(section)
+    if len(candidates) != 1:
+        return None
+    daemons, daemon_error = _rgw_orch_daemons(cluster)
+    if daemon_error:
+        return None
+    daemon_names = sorted({
+        str(row.get("daemon_name") or "") for row in daemons
+        if _SAFE_RGW_DAEMON_RE.fullmatch(str(row.get("daemon_name") or ""))
+    })
+    if not daemon_names:
+        return None
+    return {"section": candidates[0], "daemon_names": daemon_names}
 
 
 def _rgw_orch_daemons(cluster: Cluster) -> tuple[list[dict], str | None]:
