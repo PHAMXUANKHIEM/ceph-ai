@@ -905,17 +905,14 @@ def resolve_stale_findings(
             if not pattern_ids:
                 continue
 
+            patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all()
+            daemon_types = sorted({row.daemon_type for row in patterns})
             still_active = (
                 session.query(LogPattern)
                 .filter(LogPattern.id.in_(pattern_ids))
                 .filter(LogPattern.last_seen_at >= window_start)
                 .count()
             )
-            if still_active:
-                continue
-
-            patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all()
-            daemon_types = sorted({row.daemon_type for row in patterns})
             verification_summary = None
             if "rgw" in daemon_types:
                 from watcher.ceph_finding_verifier import verify_vault_recovery
@@ -948,6 +945,8 @@ def resolve_stale_findings(
                 finding.recovery_check_code = verification.code
                 finding.recovery_check_summary = verification.summary
                 finding.recovery_checked_at = window_start
+            elif still_active:
+                continue
 
             finding.status = LogFindingStatus.RESOLVED.value
             # Đóng luôn Incident/Action chờ duyệt đi kèm (L4) -- vấn đề đã

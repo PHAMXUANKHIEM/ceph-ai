@@ -345,6 +345,30 @@ def test_rgw_vault_finding_only_resolves_after_live_recovery_gate(
     assert "VAULT_RECOVERY_VERIFIED" in sent["resolved"][0][1]["verification_summary"]
 
 
+def test_functional_rgw_recovery_can_resolve_before_log_window_ages_out(
+    isolated_db, sent, monkeypatch,
+):
+    from watcher import ceph_finding_verifier
+    cluster_id, run_id = isolated_db
+    with db_module.SessionLocal() as session:
+        pattern = session.get(LogPattern, "pat-1")
+        pattern.daemon_type = "rgw"
+        pattern.template = "failed to retrieve actual key from Vault"
+        session.commit()
+    finding_id = _make_open_finding(cluster_id, run_id, title="RGW Vault recovered")
+    verified = ceph_finding_verifier.VerificationResult(
+        "VAULT_RECOVERY_VERIFIED", "PUT SSE-S3 200 after latest error", (), True,
+    )
+    monkeypatch.setattr(ceph_finding_verifier, "verify_vault_recovery", lambda *args: verified)
+
+    # Pattern is still inside this Loki window, but a later functional PUT
+    # is stronger recovery evidence and must close immediately.
+    assert log_analysis.resolve_stale_findings(cluster_id, WINDOW_START) == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(LogFinding, finding_id).status == LogFindingStatus.RESOLVED.value
+    assert len(sent["resolved"]) == 1
+
+
 def test_partially_active_evidence_keeps_finding_open(isolated_db, sent):
     """Chỉ đóng khi MỌI mẫu đã ngừng — một mẫu còn chạy nghĩa là hiện tượng
     mới giảm đi chứ chưa hết."""
