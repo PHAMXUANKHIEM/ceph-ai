@@ -251,7 +251,7 @@ def _resolve_recovered_incidents(
     (non-default) clusters never have such legacy rows, so their loop calls
     this with `include_legacy_null=False` — a real UUID match only.
     """
-    recovered: dict[tuple[str | None, str], Cluster | None] = {}
+    recovered: dict[tuple[str | None, str], dict] = {}
     with db.SessionLocal() as session:
         cluster_filter = (
             or_(Incident.cluster_id == cluster_id, Incident.cluster_id.is_(None))
@@ -354,16 +354,22 @@ def _resolve_recovered_incidents(
                 cancel_pending_actions(session, incident.id)
                 key = (incident.cluster_id, incident.ceph_code)
                 if key not in recovered:
-                    recovered[key] = (
+                    cluster = (
                         session.get(Cluster, incident.cluster_id)
-                        if incident.cluster_id is not None else None
+                        if incident.cluster_id is not None
+                        else None
                     )
+                    # Session.commit() expires ORM attributes by default and
+                    # this alert is deliberately sent after the transaction.
+                    # Snapshot the channel values while the Cluster is still
+                    # attached instead of carrying it beyond the session.
+                    recovered[key] = verify._cluster_channel_kwargs(cluster)
         session.commit()
 
-    for (_cluster_id, ceph_code), cluster in recovered.items():
+    for (_cluster_id, ceph_code), channel_kwargs in recovered.items():
         telegram_alerts.send_incident_verified_alert(
             ceph_code,
-            **verify._cluster_channel_kwargs(cluster),
+            **channel_kwargs,
         )
 
 
