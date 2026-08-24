@@ -1,7 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config.settings import settings
-from shared.models import Cluster, RgwAccessAuditEvent
+from sqlalchemy.orm import sessionmaker
+from shared import db
+from shared.models import (
+    Cluster, LogIngestRun, RgwAccessAuditEvent, RgwAnalysisJob, RgwErrorNotification,
+)
 from worker import rgw_access_audit as audit
 
 
@@ -80,3 +84,98 @@ def test_failed_delivery_remains_pending_for_retry(db_session, monkeypatch):
     db_session.refresh(event)
     assert not event.telegram_sent
     assert event.telegram_attempts == 1
+
+
+def _error_event(db_session, cluster, message, *, fingerprint):
+    event = RgwErrorNotification(
+        cluster_id=cluster.id, rgw_host="10.3.53.1", fingerprint=fingerprint,
+        message=message, event_at=datetime.utcnow(),
+    )
+    db_session.add(event)
+    db_session.flush()
+    return event
+
+
+def test_vault_errors_share_one_immediate_analysis_job(db_session):
+    cluster = Cluster(name="rgw-jobs", ceph_mon_nodes="", ceph_rgw_nodes="10.3.53.1",
+                      is_default=False, is_active=True, ssh_user="root",
+                      ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    first = _error_event(db_session, cluster, "Request to Vault failed with error -13",
+                         fingerprint="1" * 64)
+    first.created_at = datetime.utcnow()
+    assert audit._queue_analysis_job(db_session, first) is not None
+    db_session.flush()
+    second = _error_event(
+        db_session, cluster,
+        "failed to retrieve actual key from key_id: 74e81cdc-d01b-4fcb-ac7e-8708583c6d51.1",
+        fingerprint="2" * 64,
+    )
+    second.created_at = first.created_at + timedelta(seconds=1)
+    assert audit._queue_analysis_job(db_session, second) is None
+    assert db_session.query(RgwAnalysisJob).count() == 1
+
+
+def test_error_telegram_exposes_real_job_state(db_session, monkeypatch):
+    cluster = Cluster(name="rgw-message", ceph_mon_nodes="", ceph_rgw_nodes="10.3.53.1",
+                      is_default=False, is_active=True, ssh_user="root",
+                      ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    event = _error_event(db_session, cluster, "Request to Vault failed with error -13",
+                         fingerprint="3" * 64)
+    job = audit._queue_analysis_job(db_session, event)
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "chat")
+    monkeypatch.setattr(audit, "send_telegram_message", lambda _token, _chat, text: sent.append(text))
+
+    audit._deliver_pending(db_session)
+
+    assert f"RGW-{job.id[:8]}" in sent[0]
+    assert "QUEUED" in sent[0]
+    assert "Đã chuyển vào Log Intelligence" not in sent[0]
+
+
+def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, monkeypatch):
+    monkeypatch.setattr(
+        db, "SessionLocal",
+        sessionmaker(bind=db_session.get_bind(), autoflush=False, autocommit=False),
+    )
+    cluster = Cluster(name="rgw-run", ceph_mon_nodes="10.3.53.1",
+                      ceph_rgw_nodes="10.3.53.1", is_default=False, is_active=True,
+                      ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    event = _error_event(db_session, cluster, "Request to Vault failed with error -13",
+                         fingerprint="4" * 64)
+    job = audit._queue_analysis_job(db_session, event)
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(audit, "_send_analysis_status", sent.append)
+
+    def fake_scan(cluster_id, cluster=None):
+        with db.SessionLocal() as session:
+            run = LogIngestRun(
+                cluster_id=cluster_id, source="loki",
+                window_start=datetime.utcnow() - timedelta(minutes=20),
+                window_end=datetime.utcnow(), status="OK", hosts_scanned=1,
+                hosts_failed=0, lines_scanned=2, patterns_seen=1, patterns_new=1,
+            )
+            session.add(run)
+            session.commit()
+            return run.id
+
+    from watcher import log_intel
+    monkeypatch.setattr(log_intel, "scan_and_store", fake_scan)
+    audit._process_analysis_jobs()
+
+    db_session.expire_all()
+    persisted = db_session.get(RgwAnalysisJob, job.id)
+    assert persisted.status == "COMPLETED"
+    assert persisted.ingest_run_id
+    assert any("BẮT ĐẦU" in message and f"RGW-{job.id[:8]}" in message for message in sent)
+    assert any("HOÀN TẤT" in message for message in sent)

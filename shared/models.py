@@ -659,6 +659,34 @@ class RgwErrorNotification(Base):
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class RgwAnalysisJob(Base):
+    """Durable immediate Log Intelligence job correlated to one RGW error."""
+
+    __tablename__ = "rgw_analysis_jobs"
+    __table_args__ = (
+        Index("ix_rgw_analysis_job_pending", "status", "created_at"),
+        Index("ix_rgw_analysis_job_signature", "signature", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    source_event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rgw_error_notifications.id"), nullable=False
+    )
+    signature: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="QUEUED")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ingest_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("log_ingest_runs.id"), nullable=True
+    )
+    finding_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("log_findings.id"), nullable=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class BucketLoggingConfig(Base):
     """Version-selected native or compatibility bucket logging config."""
 

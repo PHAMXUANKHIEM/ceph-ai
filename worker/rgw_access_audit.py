@@ -6,6 +6,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
+import threading
+import uuid
+from datetime import timedelta
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -14,7 +18,10 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from shared import db
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.models import Cluster, RgwAccessAuditEvent, RgwErrorNotification
+from shared.models import (
+    Cluster, LogFinding, LogIngestRun, LogPattern, RgwAccessAuditEvent, RgwAnalysisJob,
+    RgwErrorNotification,
+)
 from shared.telegram_client import TelegramSendError, send_telegram_message
 from watcher.rgw_access_log import (
     fetch_rgw_audit_log, fetch_rgw_audit_log_with,
@@ -25,6 +32,36 @@ logger = logging.getLogger(__name__)
 _MAX_OBJECT_CHARS = 500
 _MAX_ERROR_CHARS = 1000
 _VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+_ANALYSIS_DEBOUNCE_SECONDS = 60
+_ANALYSIS_PROGRESS_SECONDS = 600
+
+
+def _analysis_signature(cluster_id: str, host: str, message: str) -> str:
+    lowered = message.lower()
+    if "vault" in lowered or "retrieve actual key" in lowered or "error -13" in lowered:
+        family = "rgw-vault-key-retrieval"
+    else:
+        family = re.sub(r"[0-9a-f]{8,}|\d+", "#", lowered)
+    return hashlib.sha256(f"{cluster_id}|{host}|{family}".encode()).hexdigest()
+
+
+def _queue_analysis_job(session, event: RgwErrorNotification) -> RgwAnalysisJob | None:
+    signature = _analysis_signature(event.cluster_id, event.rgw_host, event.message)
+    cutoff = event.created_at - timedelta(seconds=_ANALYSIS_DEBOUNCE_SECONDS)
+    duplicate = (
+        session.query(RgwAnalysisJob.id)
+        .filter(RgwAnalysisJob.signature == signature)
+        .filter(RgwAnalysisJob.created_at >= cutoff)
+        .first()
+    )
+    if duplicate:
+        return None
+    job = RgwAnalysisJob(
+        id=str(uuid.uuid4()), cluster_id=event.cluster_id, source_event_id=event.id,
+        signature=signature, status="QUEUED",
+    )
+    session.add(job)
+    return job
 
 
 def _fingerprint(cluster_id: str, host: str, row: dict) -> str:
@@ -125,11 +162,15 @@ def _ingest_errors(session, cluster: Cluster, host: str) -> None:
         ).hexdigest()
         if session.query(RgwErrorNotification.id).filter_by(fingerprint=fingerprint).first():
             continue
-        session.add(RgwErrorNotification(
+        event = RgwErrorNotification(
             cluster_id=cluster.id, rgw_host=host, fingerprint=fingerprint,
             message=str(row["message"])[:2000], event_at=_naive_utc(row.get("timestamp")),
             telegram_sent=not initialized,
-        ))
+        )
+        session.add(event)
+        session.flush()
+        if initialized:
+            _queue_analysis_job(session, event)
     session.commit()
 
 
@@ -201,12 +242,15 @@ def _deliver_pending(session) -> None:
     for event in errors:
         event.telegram_attempts += 1
         local_time = event.event_at.replace(tzinfo=timezone.utc).astimezone(_VIETNAM_TZ)
+        job = session.query(RgwAnalysisJob).filter_by(source_event_id=event.id).first()
+        job_label = f"RGW-{job.id[:8]}" if job else "đã gộp với job gần nhất"
         text = "\n".join((
             "🚨 LỖI CEPH RGW",
             "━━━━━━━━━━━━━━━━━━",
             f"📍 Host: {event.rgw_host}",
             f"❌ Lỗi: {event.message}",
-            "🧠 AI: Đã chuyển vào Log Intelligence để phân tích nguyên nhân và đề xuất xử lý.",
+            f"🧠 AI job: {job_label}",
+            "📋 Trạng thái: QUEUED — đã vào hàng đợi Log Intelligence.",
             f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
             "━━━━━━━━━━━━━━━━━━",
         ))
@@ -220,6 +264,126 @@ def _deliver_pending(session) -> None:
         event.telegram_sent_at = datetime.utcnow()
         event.telegram_error = None
         session.commit()
+
+
+def _send_analysis_status(text: str) -> None:
+    if settings.telegram_rgw_enabled and settings.telegram_rgw_bot_token and settings.telegram_rgw_chat_id:
+        send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
+
+
+def _analysis_heartbeat(stop: threading.Event, label: str, host: str) -> None:
+    elapsed = 0
+    while not stop.wait(_ANALYSIS_PROGRESS_SECONDS):
+        elapsed += _ANALYSIS_PROGRESS_SECONDS
+        try:
+            _send_analysis_status(
+                "⏳ AI VẪN ĐANG PHÂN TÍCH RGW\n"
+                f"Job: {label}\nHost: {host}\n"
+                f"Tiến trình: RUNNING — đã chạy {elapsed // 60} phút; đang quét Loki, "
+                "đối chiếu finding và kiểm tra trạng thái Ceph thực tế."
+            )
+        except Exception:
+            logger.exception("failed to send RGW analysis heartbeat for %s", label)
+
+
+def _process_analysis_jobs(limit: int = 1) -> None:
+    """Claim and execute immediate jobs sequentially; polling remains fallback."""
+    from watcher import log_intel
+    from watcher.ceph_finding_verifier import verify
+
+    for _ in range(limit):
+        with db.SessionLocal() as session:
+            job = (
+                session.query(RgwAnalysisJob)
+                .filter(RgwAnalysisJob.status == "QUEUED")
+                .order_by(RgwAnalysisJob.created_at)
+                .first()
+            )
+            if job is None:
+                return
+            event = session.get(RgwErrorNotification, job.source_event_id)
+            cluster = session.get(Cluster, job.cluster_id)
+            if event is None or cluster is None:
+                job.status = "FAILED"
+                job.error = "source event or cluster no longer exists"
+                job.finished_at = datetime.utcnow()
+                session.commit()
+                continue
+            job.status = "RUNNING"
+            job.attempts += 1
+            job.started_at = datetime.utcnow()
+            job_id, cluster_id = job.id, job.cluster_id
+            host, message = event.rgw_host, event.message
+            session.commit()
+            session.expunge(cluster)
+
+        label = f"RGW-{job_id[:8]}"
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=_analysis_heartbeat, args=(heartbeat_stop, label, host),
+            name=f"rgw-analysis-{job_id[:8]}", daemon=True,
+        )
+        try:
+            _send_analysis_status(
+                "🧠 AI BẮT ĐẦU PHÂN TÍCH RGW\n"
+                f"Job: {label}\nHost: {host}\nLỗi: {message[:500]}\n"
+                "Trạng thái: RUNNING — đang quét Loki và phân tích nguyên nhân."
+            )
+            heartbeat.start()
+            run_id = log_intel.scan_and_store(cluster_id, cluster=cluster)
+            with db.SessionLocal() as session:
+                run = session.get(LogIngestRun, run_id) if run_id else None
+                if run is None:
+                    raise RuntimeError("Log Intelligence bị tắt hoặc không tạo được ingest run")
+                if run.status == "FAILED":
+                    raise RuntimeError(
+                        "Quét Loki thất bại: " + (run.error_message or "không có chi tiết")
+                    )
+                finding = (
+                    session.query(LogFinding)
+                    .filter(LogFinding.ingest_run_id == run_id)
+                    .order_by(LogFinding.created_at.desc())
+                    .first()
+                ) if run_id else None
+                result_text = "Không có pattern đủ điều kiện tạo finding trong cửa sổ hiện tại."
+                finding_id = None
+                if finding is not None:
+                    finding_id = finding.id
+                    pattern_ids = json.loads(finding.evidence_pattern_ids_json or "[]")
+                    patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all() if pattern_ids else []
+                    verification = verify(finding, patterns, cluster)
+                    result_text = (
+                        f"Finding: {finding.title or finding.id}\n"
+                        f"Live verification: {verification.code}\n{verification.summary}"
+                    )
+                row = session.get(RgwAnalysisJob, job_id)
+                row.status = "COMPLETED"
+                row.ingest_run_id = run_id
+                row.finding_id = finding_id
+                row.finished_at = datetime.utcnow()
+                session.commit()
+            _send_analysis_status(
+                f"✅ AI PHÂN TÍCH RGW HOÀN TẤT\nJob: {label}\n{result_text}"
+            )
+        except Exception as exc:
+            logger.exception("immediate RGW analysis job %s failed", job_id)
+            with db.SessionLocal() as session:
+                row = session.get(RgwAnalysisJob, job_id)
+                if row:
+                    row.status = "FAILED"
+                    row.error = " ".join(str(exc).split())[:1000]
+                    row.finished_at = datetime.utcnow()
+                    session.commit()
+            try:
+                _send_analysis_status(
+                    f"❌ AI PHÂN TÍCH RGW THẤT BẠI\nJob: {label}\nLỗi: {' '.join(str(exc).split())[:700]}"
+                )
+            except Exception:
+                logger.exception("failed to send RGW analysis failure status")
+        finally:
+            heartbeat_stop.set()
+            if heartbeat.is_alive():
+                heartbeat.join(timeout=1)
 
 
 def collect_once() -> None:
@@ -239,6 +403,7 @@ def collect_once() -> None:
                     session.rollback()
                     logger.exception("RGW access audit collection failed for %s/%s", cluster.name, node["host"])
         _deliver_pending(session)
+    _process_analysis_jobs(limit=1)
 
 
 async def run() -> None:
