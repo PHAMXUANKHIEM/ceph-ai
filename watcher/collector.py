@@ -431,9 +431,12 @@ def collect_relevant_logs(
             return [], "LARGE_OMAP_EVIDENCE unavailable: no MON node configured"
         host = mon_nodes[0]
         command = r'''line=$(ceph log last 2000 2>/dev/null | grep 'Large omap object found' | tail -1)
-obj=$(printf '%s\n' "$line" | sed -n 's/.*Object: [^:]*:::\([^:]*\):head.*/\1/p')
+obj=$(printf '%s\n' "$line" | sed -n 's/.*Object: .*:::\([^:]*\):head.*/\1/p')
 instance=$(printf '%s\n' "$obj" | sed -E 's/^\.dir\.//; s/\.[0-9]+\.[0-9]+$//')
-entry=$(radosgw-admin metadata list bucket.instance 2>/dev/null | grep -F ":${instance}" | tail -1 | tr -d ' ",')
+entry=''
+if [ -n "$instance" ]; then
+  entry=$(radosgw-admin metadata list bucket.instance 2>/dev/null | grep -F ":${instance}" | tail -1 | tr -d ' ",')
+fi
 bucket=${entry%%:*}
 threshold=$(ceph config get osd osd_deep_scrub_large_omap_object_key_threshold 2>/dev/null)
 shards=$(radosgw-admin bucket stats --bucket="$bucket" 2>/dev/null | sed -n 's/.*"num_shards": \([0-9]*\).*/\1/p' | head -1)

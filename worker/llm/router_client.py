@@ -210,7 +210,10 @@ def _large_omap_reshard_params(envelope: dict) -> dict | None:
     # Autonomous reshard is deliberately limited to explicit lab buckets.
     # Production bucket names remain approval-gated/manual until an operator
     # supplies the same evidence through a dedicated policy override.
-    if not bucket.startswith("test-") or current_shards != 1 or threshold <= 0 or keys <= threshold:
+    if (
+        not object_name.startswith(".dir.") or not bucket.startswith("test-")
+        or current_shards != 1 or threshold <= 0 or keys <= threshold
+    ):
         return None
     target_per_shard = max(1, int(threshold * 0.8))
     suggested = max(2, (keys + target_per_shard - 1) // target_per_shard)
