@@ -189,8 +189,38 @@ def test_error_telegram_exposes_real_job_state(db_session, monkeypatch):
     audit._deliver_pending(db_session)
 
     assert f"RGW-{job.id[:8]}" in sent[0]
-    assert "QUEUED" in sent[0]
+    assert "RGW không thể tạo hoặc lấy khóa mã hóa từ Vault" in sent[0]
+    assert "Các request S3 cần khóa này có thể thất bại" in sent[0]
+    assert "Kiểm tra trạng thái Vault" in sent[0]
     assert "Đã chuyển vào Log Intelligence" not in sent[0]
+
+
+def test_duplicate_vault_error_explains_that_analysis_is_deduplicated(db_session, monkeypatch):
+    cluster = Cluster(name="rgw-message", ceph_mon_nodes="", ceph_rgw_nodes="10.3.53.1",
+                      is_default=False, is_active=True, ssh_user="root",
+                      ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    first = _error_event(db_session, cluster, "Request to Vault failed with error -22",
+                         fingerprint="5" * 64)
+    audit._queue_analysis_job(db_session, first)
+    duplicate = _error_event(
+        db_session, cluster, "failed to retrieve actual key from key_id: key.1",
+        fingerprint="6" * 64,
+    )
+    duplicate.created_at = first.created_at + timedelta(seconds=1)
+    assert audit._queue_analysis_job(db_session, duplicate) is None
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "chat")
+    monkeypatch.setattr(audit, "send_telegram_message", lambda _token, _chat, text: sent.append(text))
+
+    audit._deliver_pending(db_session)
+
+    assert any("Cùng sự cố vừa báo" in message for message in sent)
+    assert all("đã gộp với job gần nhất" not in message for message in sent)
 
 
 def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, monkeypatch):
@@ -241,5 +271,7 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
     assert persisted.status == "COMPLETED"
     assert persisted.ingest_run_id
     assert any("BẮT ĐẦU" in message and f"RGW-{job.id[:8]}" in message for message in sent)
-    assert any("HOÀN TẤT" in message for message in sent)
-    assert any("đã nhận 1 pattern" in message for message in sent)
+    result = next(message for message in sent if "KẾT QUẢ PHÂN TÍCH" in message)
+    assert "Chưa đủ bằng chứng để xác định nguyên nhân gốc" in result
+    assert "Đã đối chiếu: 1 nhóm log liên quan" in result
+    assert "CẦN KIỂM TRA — chưa được coi là đã khắc phục" in result

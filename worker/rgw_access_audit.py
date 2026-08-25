@@ -46,6 +46,34 @@ def _analysis_signature(cluster_id: str, host: str, message: str) -> str:
     return hashlib.sha256(f"{cluster_id}|{host}|{family}".encode()).hexdigest()
 
 
+def _operator_error_context(message: str) -> tuple[str, str, str]:
+    """Translate known RGW errors into an operator-facing explanation."""
+    lowered = message.lower()
+    if "vault" in lowered or "retrieve actual key" in lowered:
+        return (
+            "RGW không thể tạo hoặc lấy khóa mã hóa từ Vault.",
+            "Các request S3 cần khóa này có thể thất bại; chưa có bằng chứng object bị mất.",
+            "Kiểm tra trạng thái Vault, kết nối từ RGW, token/policy và cấu hình khóa.",
+        )
+    return (
+        "RGW ghi nhận lỗi khi xử lý request S3.",
+        "Ảnh hưởng chưa xác định; cần đối chiếu request thất bại và trạng thái RGW.",
+        "Kiểm tra log RGW trên host được báo và tình trạng cụm tại cùng thời điểm.",
+    )
+
+
+def _inconclusive_analysis_text(message: str, patterns_flagged: int) -> str:
+    problem, impact, action = _operator_error_context(message)
+    return "\n".join((
+        "⚠️ Kết luận: Chưa đủ bằng chứng để xác định nguyên nhân gốc.",
+        f"🔎 Đã đối chiếu: {patterns_flagged} nhóm log liên quan.",
+        f"📌 Vấn đề: {problem}",
+        f"💥 Ảnh hưởng: {impact}",
+        f"🛠 Cần làm: {action}",
+        "📋 Trạng thái: CẦN KIỂM TRA — chưa được coi là đã khắc phục.",
+    ))
+
+
 def _queue_analysis_job(session, event: RgwErrorNotification) -> RgwAnalysisJob | None:
     signature = _analysis_signature(event.cluster_id, event.rgw_host, event.message)
     cutoff = event.created_at - timedelta(seconds=_ANALYSIS_DEBOUNCE_SECONDS)
@@ -282,14 +310,21 @@ def _deliver_pending(session) -> None:
         event.telegram_attempts += 1
         local_time = event.event_at.replace(tzinfo=timezone.utc).astimezone(_VIETNAM_TZ)
         job = session.query(RgwAnalysisJob).filter_by(source_event_id=event.id).first()
-        job_label = f"RGW-{job.id[:8]}" if job else "đã gộp với job gần nhất"
+        problem, impact, action = _operator_error_context(event.message)
+        analysis_status = (
+            f"Đang chờ phân tích — job RGW-{job.id[:8]}."
+            if job else
+            "Cùng sự cố vừa báo — không tạo thêm job phân tích trùng."
+        )
         text = "\n".join((
-            "🚨 LỖI CEPH RGW",
+            "🚨 CEPH RGW GẶP LỖI",
             "━━━━━━━━━━━━━━━━━━",
             f"📍 Host: {event.rgw_host}",
-            f"❌ Lỗi: {event.message}",
-            f"🧠 AI job: {job_label}",
-            "📋 Trạng thái: QUEUED — đã vào hàng đợi Log Intelligence.",
+            f"📌 Vấn đề: {problem}",
+            f"💥 Ảnh hưởng: {impact}",
+            f"🛠 Cần làm: {action}",
+            f"🧠 Phân tích: {analysis_status}",
+            f"🔧 Chi tiết kỹ thuật: {event.message}",
             f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
             "━━━━━━━━━━━━━━━━━━",
         ))
@@ -388,12 +423,9 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                     .first()
                 ) if run_id else None
                 if run.patterns_flagged:
-                    result_text = (
-                        f"Tầng AI đã nhận {run.patterns_flagged} pattern liên quan; "
-                        "không có finding mới được lưu."
-                    )
+                    result_text = _inconclusive_analysis_text(message, run.patterns_flagged)
                 else:
-                    result_text = "Không có pattern liên quan đủ điều kiện đưa vào tầng AI."
+                    result_text = _inconclusive_analysis_text(message, 0)
                 finding_id = None
                 if finding is not None:
                     finding_id = finding.id
@@ -411,7 +443,7 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                 row.finished_at = datetime.utcnow()
                 session.commit()
             _send_analysis_status(
-                f"✅ AI PHÂN TÍCH RGW HOÀN TẤT\nJob: {label}\n{result_text}"
+                f"🧠 KẾT QUẢ PHÂN TÍCH RGW\nJob: {label}\n{result_text}"
             )
         except Exception as exc:
             logger.exception("immediate RGW analysis job %s failed", job_id)
