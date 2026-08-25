@@ -110,6 +110,23 @@ def test_early_forecast_is_hourly_idempotent(db_session, monkeypatch):
     assert db_session.query(VolumeEarlyForecast).count() == 9
 
 
+def test_early_forecast_is_created_when_baseline_candidates_already_exist(db_session, monkeypatch):
+    cluster = _cluster(db_session)
+    _history(db_session, cluster.id)
+    monkeypatch.setattr(settings, "volume_learning_min_samples", 24)
+    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "72")
+    monkeypatch.setattr(settings, "volume_forecast_enabled", False)
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW)
+    db_session.commit()
+
+    monkeypatch.setattr(settings, "volume_forecast_enabled", True)
+    learning._last_attempt_bucket.clear()
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW + timedelta(minutes=20))
+    db_session.commit()
+
+    assert db_session.query(VolumeEarlyForecast).count() == 9
+
+
 def test_same_hour_is_idempotent(db_session, monkeypatch):
     cluster = _cluster(db_session)
     _history(db_session, cluster.id)

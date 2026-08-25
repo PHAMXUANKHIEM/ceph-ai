@@ -212,6 +212,16 @@ def _record_early_forecasts(
         return 0
     bucket = observed_at.replace(minute=0, second=0, microsecond=0)
     horizons = _forecast_horizons()
+    forecast_keys = [
+        f"{cluster_id}|{pool}|{image}|{metric}|{horizon}|{FORECAST_MODEL_VERSION}|{bucket.isoformat()}"
+        for metric in METRICS for horizon in horizons
+    ]
+    existing_keys = {
+        row[0] for row in session.query(VolumeEarlyForecast.idempotency_key)
+        .filter(VolumeEarlyForecast.idempotency_key.in_(forecast_keys)).all()
+    }
+    if len(existing_keys) == len(forecast_keys):
+        return 0
     created = 0
     max_window = min(
         max(_candidate_windows()), max(1, settings.volume_learning_history_days) * 24
@@ -240,7 +250,7 @@ def _record_early_forecasts(
                 f"{cluster_id}|{pool}|{image}|{metric}|{horizon}|"
                 f"{FORECAST_MODEL_VERSION}|{bucket.isoformat()}"
             )
-            if session.query(VolumeEarlyForecast.id).filter_by(idempotency_key=key).first():
+            if key in existing_keys:
                 continue
             target_at = observed_at + timedelta(hours=horizon)
             baseline = _baseline(points, target_at)
@@ -286,6 +296,7 @@ def observe_sample(
     actual = {metric: float(sample[metric]) for metric in METRICS}
     evaluated = _evaluate_due(session, cluster_id, pool, image, actual, observed_at)
     bucket = observed_at.replace(minute=0, second=0, microsecond=0)
+    _record_early_forecasts(session, cluster_id, pool, image, actual, observed_at)
     windows = _candidate_windows()
     keys = [
         f"{cluster_id}|{pool}|{image}|{metric}|{ALGORITHM}|{window}|{bucket.isoformat()}"
@@ -330,5 +341,4 @@ def observe_sample(
                 status="PENDING", idempotency_key=key,
             ))
         _select_models(session, cluster_id, pool, image, metric)
-    _record_early_forecasts(session, cluster_id, pool, image, actual, observed_at)
     return evaluated
