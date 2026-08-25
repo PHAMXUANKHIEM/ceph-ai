@@ -82,6 +82,21 @@ echo "==> Applying DB migrations"
 alembic upgrade heads
 
 echo "==> Stopping existing services (if running)"
+# Match by checkout cwd as well as module name.  Older deployments launched
+# the interpreter as relative `.venv/bin/python`; an absolute-path-only pkill
+# missed those processes and left two workers consuming the same queue.
+stop_checkout_services() {
+  local signal="${1:-TERM}" proc_dir proc_cwd proc_cmd
+  for proc_dir in /proc/[0-9]*; do
+    proc_cwd="$(readlink "$proc_dir/cwd" 2>/dev/null || true)"
+    [ "$proc_cwd" = "$REPO_DIR" ] || continue
+    proc_cmd="$(tr '\0' ' ' < "$proc_dir/cmdline" 2>/dev/null || true)"
+    if [[ "$proc_cmd" =~ -m[[:space:]]+(watcher\.main|watcher\.remediation_main|worker\.main|uvicorn[[:space:]]+dashboard\.app:app) ]]; then
+      kill -"$signal" "${proc_dir##*/}" 2>/dev/null || true
+    fi
+  done
+}
+stop_checkout_services TERM
 pkill -f "$VENV_PYTHON -m watcher.main" || true
 pkill -f "$VENV_PYTHON -m watcher.remediation_main" || true
 pkill -f "$VENV_PYTHON -m worker.main" || true
@@ -93,6 +108,7 @@ pkill -9 -f "$VENV_PYTHON -m watcher.main" || true
 pkill -9 -f "$VENV_PYTHON -m watcher.remediation_main" || true
 pkill -9 -f "$VENV_PYTHON -m worker.main" || true
 pkill -9 -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
+stop_checkout_services KILL
 
 echo "==> Starting services"
 # Optional server-local override (gitignored, never committed — this repo
