@@ -30,6 +30,20 @@ def test_supervisor_ignores_its_own_log(tmp_path):
     assert read_new_errors([log], {}, initialize_at_end=False) == []
 
 
+def test_large_backlog_skips_stale_error_and_reads_fresh_tail(tmp_path):
+    log = tmp_path / "ceph-ai-watcher.log"
+    stale = "ERROR stale detached instance\n"
+    log.write_text(stale + ("routine chatter\n" * 30_000) + "ERROR fresh failure\n")
+    cursors = {str(log): Cursor(log.stat().st_ino, 0)}
+
+    found = read_new_errors([log], cursors, initialize_at_end=False)
+
+    assert len(found) == 1
+    assert "fresh failure" in found[0]
+    assert "stale detached instance" not in found[0]
+    assert cursors[str(log)].offset == log.stat().st_size
+
+
 def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
     verification = supervisor.ceph_learning.VerificationResult("VERIFIED", "ok", (), True)
     candidate = supervisor.ceph_learning.LearningCandidate("f1", "key1", "CEPH evidence", verification)

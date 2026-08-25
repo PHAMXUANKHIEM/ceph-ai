@@ -49,6 +49,7 @@ def _save_cursors(path: Path, cursors: dict[str, Cursor]) -> None:
 
 def read_new_errors(paths: list[Path], cursors: dict[str, Cursor], *, initialize_at_end: bool) -> list[str]:
     """Read only appended bytes, skipping historical errors on first startup."""
+    max_tail_bytes = 250_000
     evidence: list[str] = []
     for path in paths:
         if "code-repair" in path.name or not path.is_file():
@@ -62,9 +63,15 @@ def read_new_errors(paths: list[Path], cursors: dict[str, Cursor], *, initialize
             offset = 0  # rotation/truncation: the replacement file is new data
         else:
             offset = cursor.offset
+        # Busy watcher logs can grow faster than one supervisor poll. Reading
+        # the *first* 250 KB after an old cursor made the supervisor replay a
+        # historical traceback for hours while never catching up. Keep only
+        # the freshest bounded tail and advance to EOF; Code Repair is for a
+        # current application failure, not archival log processing.
+        offset = max(offset, stat.st_size - max_tail_bytes)
         with path.open("r", errors="replace") as handle:
             handle.seek(offset)
-            appended = handle.read(250_000)
+            appended = handle.read()
             cursors[key] = Cursor(stat.st_ino, handle.tell())
         matches = list(ERROR_RE.finditer(appended))
         if matches:
