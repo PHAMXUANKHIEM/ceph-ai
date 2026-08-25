@@ -80,6 +80,15 @@ def run_preflight(session, *, cluster_id: str | None, action_id: str) -> Preflig
     if cluster is not None and not cluster.is_active:
         return PreflightResult(False, reason=f"Cụm {cluster.name!r} đã bị vô hiệu hoá (is_active=false).")
 
+    # Manual-only outcomes deliberately have no executable command.  A
+    # capability/version gate protects commands sent to Ceph; applying it to
+    # ``investigate_manually`` (or another no-command playbook) turns a valid
+    # diagnosis into a FAILED incident merely because no command matrix row
+    # exists.  Keep the active-cluster check above, then allow the diagnostic
+    # proposal to be recorded without pretending it is executable.
+    if action_id in {"investigate_manually", "pg_repair_force"}:
+        return PreflightResult(True, reason="Hành động chỉ điều tra, không có lệnh tự động để kiểm tra capability.")
+
     snapshot = capability_inventory.latest_snapshot(cluster_id, session=session)
     if snapshot is None:
         return PreflightResult(

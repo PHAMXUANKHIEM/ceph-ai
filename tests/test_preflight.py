@@ -212,3 +212,14 @@ def test_blocked_when_cluster_inactive(isolated_db, monkeypatch):
         result = preflight.run_preflight(session, cluster_id=cluster_id, action_id="resync_ntp")
     assert result.allowed is False
     assert "vô hiệu hoá" in result.reason
+
+
+def test_manual_only_action_does_not_require_capability_matrix(isolated_db):
+    cluster_id = _default_cluster_id()
+    with db_module.SessionLocal() as session:
+        result = preflight.run_preflight(
+            session, cluster_id=cluster_id, action_id="investigate_manually"
+        )
+
+    assert result.allowed is True
+    assert "không có lệnh tự động" in result.reason
