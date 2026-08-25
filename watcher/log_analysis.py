@@ -980,6 +980,26 @@ def resolve_stale_findings(
             resolved_items.append((
                 finding.title or "(không tiêu đề)", daemon_types, verification_summary,
             ))
+
+        # SessionLocal is configured with autoflush=False.  Persist lifecycle
+        # transitions before _resolve_incident_for() checks whether any OPEN
+        # row remains, otherwise it reads the old database state and leaves
+        # the corresponding Incident stuck in PENDING_APPROVAL.
+        if resolved_items:
+            session.flush()
+
+        # Reconcile incidents for findings that were resolved in an earlier
+        # transaction.  Without this pass, a proposal created milliseconds
+        # after its finding was resolved can remain PENDING_APPROVAL forever
+        # and the Telegram reminder loop keeps reporting a recovered fault.
+        resolved_keys = (
+            session.query(LogFinding.dedupe_key)
+            .filter(LogFinding.cluster_id == cluster_id)
+            .filter(LogFinding.status == LogFindingStatus.RESOLVED.value)
+            .all()
+        )
+        for (dedupe_key,) in resolved_keys:
+            _resolve_incident_for(session, dedupe_key)
         session.commit()
 
     for title, daemon_types, verification_summary in resolved_items:
@@ -1148,6 +1168,21 @@ def _maybe_propose_action(
 
     try:
         with db.SessionLocal() as session:
+            # The finding and proposal are intentionally separate
+            # transactions because Telegram/proposal creation is best-effort.
+            # Re-check lifecycle state here so a concurrent stale-finding
+            # resolver cannot be followed by a brand-new orphan approval.
+            known_finding = (
+                session.query(LogFinding.status)
+                .filter(LogFinding.cluster_id == cluster_id)
+                .filter(LogFinding.dedupe_key == dedupe_key)
+                .first()
+            )
+            if known_finding is not None and known_finding[0] == LogFindingStatus.RESOLVED.value:
+                logger.info(
+                    "log_analysis: bỏ proposal %s vì finding đã RESOLVED", ceph_code,
+                )
+                return
             cluster = session.get(Cluster, cluster_id)
             if cluster is not None and _RGW_DEFAULT_KEY_RE.search(" ".join(
                 str(payload.get(key) or "") for key in ("title", "summary", "root_cause")

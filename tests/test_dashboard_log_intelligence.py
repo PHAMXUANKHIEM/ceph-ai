@@ -339,6 +339,19 @@ def test_repeat_proposal_does_not_duplicate_incident(seeded):
         ).count() == 1
 
 
+def test_proposal_is_not_created_after_finding_was_resolved(seeded):
+    dedupe_key = "dk-abc123456789"
+    with db.SessionLocal() as session:
+        finding = session.query(LogFinding).filter_by(dedupe_key=dedupe_key).one()
+        finding.status = LogFindingStatus.RESOLVED.value
+        session.commit()
+
+    log_analysis._maybe_propose_action(seeded["cluster_id"], _payload(), dedupe_key, [])
+
+    with db.SessionLocal() as session:
+        assert session.query(Action).count() == 0
+
+
 def test_resolving_finding_also_closes_its_pending_incident(seeded):
     """Vấn đề tự hết thì hàng chờ duyệt cũng phải tự sạch."""
     cluster_id = seeded["cluster_id"]
