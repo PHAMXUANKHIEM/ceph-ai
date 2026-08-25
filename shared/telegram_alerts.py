@@ -443,7 +443,10 @@ def send_log_finding_alert(
             for index, step in enumerate(clean_steps[:4], 1)
         )
     clean_commands = [str(value).strip() for value in (operator_commands or []) if str(value).strip()]
-    if clean_commands:
+    # Review commands are supporting detail for an actionable recommendation,
+    # not a standalone section. Keeping command-only findings concise also
+    # avoids presenting internal diagnostics as operator guidance.
+    if clean_steps and clean_commands:
         lines.append("🔧 Lệnh kiểm tra đề xuất (chưa tự chạy):")
         lines.extend(f"• {_compact(command, _MAX_EXCERPT_CHARS)}" for command in clean_commands[:4])
     if validation_notes:

@@ -883,7 +883,6 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             evidence_templates,
             payload["recommended_action_id"],
             payload["validation_notes"],
-            operator_commands=_operator_commands_for(payload, evidence_templates),
             recommended_steps=payload.get("recommended_manual_steps"),
             cluster_name=cluster.name if cluster is not None else None,
             bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
@@ -1213,6 +1212,11 @@ def _resolve_incident_for(session, dedupe_key: str) -> None:
     """Đóng Incident đi kèm khi phát hiện đã hết -- cùng nếp
     `create_or_resolve_*` của mọi monitor khác: vấn đề tự hết thì hàng chờ
     duyệt cũng phải tự sạch, không bắt operator dọn tay."""
+    # SessionLocal disables autoflush. Persist any finding status changes made
+    # by the caller before checking whether the same identity is still OPEN;
+    # otherwise the finding being resolved is mistaken for a live duplicate.
+    session.flush()
+
     # Re-analysis can leave an older duplicate row reaching RESOLVED while a
     # canonical row with the same identity is still OPEN. Never let that old
     # row cancel the live remediation proposal.
