@@ -25,7 +25,9 @@ COMMANDS: dict[str, str] = {
     # file descriptors lets SSH return before systemd tears down the node.
     "hard_reboot_node": "nohup systemctl reboot --force --force >/dev/null 2>&1 &",
     "resync_ntp": (
-        "if command -v chronyc >/dev/null 2>&1; then chronyc -a makestep; "
+        "if command -v chronyc >/dev/null 2>&1; then "
+        "(systemctl start chronyd 2>/dev/null || systemctl start chrony 2>/dev/null || true) && "
+        "chronyc -a makestep; "
         "elif command -v ntpdate >/dev/null 2>&1; then ntpdate -u pool.ntp.org; "
         "elif systemctl list-unit-files 2>/dev/null | grep -q systemd-timesyncd; then "
         "timedatectl set-ntp true && systemctl restart systemd-timesyncd; "

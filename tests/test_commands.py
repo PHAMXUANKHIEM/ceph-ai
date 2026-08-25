@@ -38,6 +38,7 @@ CEPHADM_SYSTEMCTL_OUTPUT = (
 def test_get_command_returns_resync_ntp_command():
     command = get_command("resync_ntp")
     assert "chronyc" in command
+    assert "systemctl start chronyd" in command
     assert "ntpdate" in command
     assert "systemd-timesyncd" in command
 
