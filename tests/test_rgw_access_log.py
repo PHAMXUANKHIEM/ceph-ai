@@ -75,6 +75,15 @@ FORBIDDEN_LINE = (
 NON_BEAST_LINE = "2024-06-12T13:16:00.000+0000 7fc49be9a710  1 some unrelated log line"
 
 
+def test_build_purge_bucket_command_is_closed_and_shell_quotes_name():
+    assert ral.build_purge_bucket_command("team-archive") == (
+        "radosgw-admin bucket rm --bucket=team-archive --purge-objects"
+    )
+    assert ral.build_purge_bucket_command("name; touch owned") == (
+        "radosgw-admin bucket rm --bucket='name; touch owned' --purge-objects"
+    )
+
+
 def test_parse_head_service_root_line():
     records = ral.parse_beast_access_log(HEAD_LINE)
 

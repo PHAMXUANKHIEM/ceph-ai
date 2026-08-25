@@ -51,6 +51,8 @@ from watcher.rgw_access_log import (
     execute_bucket_quota_with,
     fetch_bucket_objects,
     fetch_bucket_objects_with,
+    purge_bucket,
+    purge_bucket_with,
 )
 
 
@@ -785,6 +787,26 @@ def _execute_delete_bucket(cluster, payload: dict) -> None:
     _with_owner_s3(cluster, payload, execute)
 
 
+def _delete_all_buckets(cluster) -> list[str]:
+    hosts = _rgw_hosts(cluster)
+    if not hosts:
+        raise ObjectStorageError("Chưa cấu hình node RGW cho cluster đang chọn.")
+    host, buckets = _list_from_first_reachable_rgw(cluster, hosts)
+    for bucket in buckets:
+        try:
+            if cluster.is_default:
+                purge_bucket(host, bucket)
+            else:
+                ssh_user, ssh_key, mode, _container = resolve_ssh_creds(cluster)
+                purge_bucket_with(host, bucket, ssh_user, ssh_key, mode,
+                                  cluster.ceph_rgw_container_name)
+        except (RgwLogError, ValueError) as exc:
+            raise ObjectStorageError(
+                f"Đã xóa {buckets.index(bucket)}/{len(buckets)} bucket; dừng tại {bucket}: {_safe_error(exc)}"
+            ) from exc
+    return buckets
+
+
 def _format_bytes(value: object) -> str:
     try:
         size = max(0, int(value or 0))
@@ -1505,6 +1527,33 @@ async def bucket_delete_execute(request: Request, user: str = Depends(require_lo
         raise HTTPException(status_code=502, detail=safe_error) from exc
     await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
     return {"ok": True, "action": payload["action"], "bucket": payload["bucket"], "request_id": audit_id}
+
+
+@router.post("/api/object-storage/buckets/delete-all")
+async def bucket_delete_all(request: Request, user: str = Depends(require_login)):
+    """Immediately purge every bucket in the selected cluster; no approval flow."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa tất cả bucket")
+    cluster = selected_cluster(request)
+    payload = {"action": "delete_all", "bucket": "*"}
+    try:
+        audit_id = await asyncio.to_thread(
+            _start_governance_audit, cluster.id, user, payload,
+            "Purge toàn bộ object/version và xóa tất cả bucket trên cluster",
+        )
+    except Exception as exc:
+        logger.exception("cannot persist delete-all bucket audit entry")
+        raise HTTPException(status_code=503, detail="Không ghi được audit; thao tác đã bị từ chối") from exc
+    try:
+        deleted = await asyncio.to_thread(_delete_all_buckets, cluster)
+    except ObjectStorageError as exc:
+        safe_error = _safe_error(exc)
+        await asyncio.to_thread(_bucket_audit_finish, audit_id, "failed", safe_error)
+        invalidate_object_storage_cache(cluster.id, "buckets")
+        raise HTTPException(status_code=502, detail=safe_error) from exc
+    await asyncio.to_thread(_bucket_audit_finish, audit_id, "succeeded")
+    return {"ok": True, "action": "delete_all", "deleted_count": len(deleted),
+            "deleted_buckets": deleted, "request_id": audit_id}
 
 
 @router.get("/api/object-storage/buckets/{bucket}")
