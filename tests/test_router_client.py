@@ -3141,6 +3141,34 @@ def test_expired_cluster_lease_is_recovered_after_worker_crash(isolated_db):
         assert session.query(AutopilotLease).one().action_id == new_action.id
 
 
+def test_enable_mon_msgr2_is_not_suppressed_by_target_cooldown(isolated_db):
+    from worker.autonomy_runtime import check_limits
+
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            cluster_id="test-default-cluster", ceph_code="MON_MSGR2_NOT_ENABLED",
+            status=IncidentStatus.RESOLVED.value, detected_at=now,
+        )
+        session.add(incident)
+        session.flush()
+        session.add(Action(
+            incident_id=incident.id, action_id="enable_mon_msgr2",
+            target_nodes='["mon-a"]', classification="SAFE",
+            status=ActionStatus.AUTO_EXECUTED.value,
+            executed_at=now - timedelta(minutes=2),
+        ))
+        session.commit()
+
+        result = check_limits(
+            session, cluster_id="test-default-cluster",
+            action_id="enable_mon_msgr2", target_nodes='["mon-a"]',
+            now=now, max_hour=50, max_day=100, cooldown_seconds=1800,
+        )
+
+        assert result.allowed
+
+
 def test_reconciler_keeps_live_execution_lease_untouched(isolated_db):
     from worker.autonomy_runtime import reconcile_expired_executions
 

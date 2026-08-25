@@ -34,8 +34,14 @@ def check_limits(session, *, cluster_id: str, action_id: str, target_nodes: str 
     if (not unlimited_verified_osd_restart and max_day > 0
             and base.filter(Action.executed_at >= now - timedelta(days=1)).count() >= max_day):
         return RuntimeResult(False, f"cluster daily auto-remediation limit ({max_day}) reached")
+    # Enabling msgr2 is an idempotent cluster-map operation.  If an operator
+    # or automation removes the v2 addresses again, leaving the cluster in
+    # HEALTH_WARN for the generic target cooldown is worse than safely
+    # re-applying the same command.  Hour/day limits and the cluster write
+    # lease still protect against a runaway loop.
+    cooldown_exempt = action_id in {"restart_osd_daemon", "enable_mon_msgr2"}
     repeated = None
-    if not unlimited_verified_osd_restart and cooldown_seconds > 0:
+    if not cooldown_exempt and cooldown_seconds > 0:
         repeated = base.filter(
             Action.action_id == action_id, Action.target_nodes == target_nodes,
             Action.executed_at >= now - timedelta(seconds=cooldown_seconds),
