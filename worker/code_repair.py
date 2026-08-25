@@ -105,7 +105,7 @@ class RepairResult:
 class RepairProgressNotifier:
     """Telegram lifecycle reporter with a ten-minute in-progress heartbeat."""
 
-    def __init__(self, evidence: str, branch: str, *, interval_seconds: int = 600) -> None:
+    def __init__(self, evidence: str, branch: str, *, interval_seconds: int = 3600) -> None:
         self.evidence = summarize_evidence(evidence)
         self.branch = branch
         self.interval_seconds = interval_seconds
@@ -135,7 +135,7 @@ class RepairProgressNotifier:
                 f"Lỗi: {self.evidence}\n"
                 f"Đang sửa: {self.stage}\n"
                 f"Tiến trình: {self.percent}%\n"
-                "Hệ thống sẽ cập nhật lại sau 10 phút nếu chưa hoàn tất."
+                "Hệ thống sẽ cập nhật lại sau 60 phút nếu chưa hoàn tất."
             )
 
     def finish(self, result: RepairResult) -> None:

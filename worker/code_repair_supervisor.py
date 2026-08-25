@@ -23,7 +23,7 @@ from worker import ceph_capability_learning as ceph_learning
 from shared.telegram_alerts import send_code_repair_alert
 
 logger = logging.getLogger(__name__)
-APPLICATION_REPAIR_COOLDOWN_SECONDS = 3600
+REPAIR_COOLDOWN_SECONDS = 3600
 
 
 @dataclass
@@ -97,7 +97,10 @@ def run_forever(*, max_iterations: int | None = None) -> None:
         learning_state["initialized"] = True
         ceph_learning.save_state(learning_state_file, learning_state)
     iterations = 0
-    last_application_repair_at: float | None = None
+    # A restart/deploy must not immediately replay a queued learning job and
+    # surprise operators with another repair notification. Tests that request
+    # a bounded run still start immediately.
+    last_repair_at: float | None = time.monotonic() if max_iterations is None else None
     while settings.code_repair_auto_enabled:
         candidate = None
         if settings.ceph_capability_learning_enabled:
@@ -121,6 +124,13 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                 max_attempts=settings.code_repair_max_attempts,
             )
             candidate = ceph_learning.next_candidate(seen)
+        cooldown_elapsed = (
+            last_repair_at is None
+            or time.monotonic() - last_repair_at >= REPAIR_COOLDOWN_SECONDS
+        )
+        if candidate is not None and not cooldown_elapsed:
+            logger.info("Ceph capability learning deferred during repair cooldown")
+            candidate = None
         if candidate is not None:
             if not candidate.verification.eligible_for_learning:
                 status = f"VERIFIED_NO_CODE_CHANGE:{candidate.verification.code}"
@@ -140,6 +150,7 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                 )
                 candidate = None
         if candidate is not None:
+            last_repair_at = time.monotonic()
             ceph_learning.mark(
                 learning_state, candidate, "RUNNING", base_revision=base_revision,
                 increment_attempt=True,
@@ -178,16 +189,11 @@ def run_forever(*, max_iterations: int | None = None) -> None:
             errors = read_new_errors(paths, cursors, initialize_at_end=first_scan)
             first_scan = False
             _save_cursors(cursor_file, cursors)
-            cooldown_elapsed = (
-                last_application_repair_at is None
-                or time.monotonic() - last_application_repair_at
-                >= APPLICATION_REPAIR_COOLDOWN_SECONDS
-            )
             if errors and cooldown_elapsed:
                 # Set before invoking the pipeline: FAILED is still an
                 # attempt and must not recursively trigger dozens of new
                 # repairs from logs emitted by its own staging smoke test.
-                last_application_repair_at = time.monotonic()
+                last_repair_at = time.monotonic()
                 result = run_repair(
                     max(errors, key=len),
                     RepairConfig(
@@ -207,7 +213,7 @@ def run_forever(*, max_iterations: int | None = None) -> None:
             elif errors:
                 logger.warning(
                     "automatic Code Repair suppressed %d error block(s) during %ss cooldown",
-                    len(errors), APPLICATION_REPAIR_COOLDOWN_SECONDS,
+                    len(errors), REPAIR_COOLDOWN_SECONDS,
                 )
         iterations += 1
         if max_iterations is not None and iterations >= max_iterations:
