@@ -8,6 +8,7 @@ from shared.telegram_client import (
     get_telegram_updates,
     send_telegram_message,
     send_telegram_message_with_keyboard,
+    sanitize_telegram_text,
 )
 
 
@@ -37,6 +38,60 @@ def test_send_telegram_message_posts_to_correct_url_and_payload(monkeypatch):
     assert url == "https://api.telegram.org/bot123:ABC/sendMessage"
     assert payload == {"chat_id": "-100999", "text": "hello"}
     assert timeout == telegram_client.TELEGRAM_TIMEOUT_SECONDS
+
+
+def test_all_outbound_text_is_sanitized_at_client_boundary(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        telegram_client.httpx, "post",
+        lambda url, json, timeout: calls.append(json) or FakeResponse(),
+    )
+    secret_token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+    text = (
+        "Vault\x00 failed\x01 secret_key=supersecret " + secret_token
+        + " [SQL: INSERT INTO x VALUES (1)] [parameters: {'password': 'hidden'}]"
+    )
+
+    send_telegram_message("123:ABC", "-100999", text)
+
+    sent = calls[0]["text"]
+    assert "\x00" not in sent and "\x01" not in sent
+    assert "supersecret" not in sent
+    assert secret_token not in sent
+    assert "INSERT INTO" not in sent and "[parameters:" not in sent
+    assert "<TELEGRAM_BOT_TOKEN>" in sent
+    assert "[chi tiết SQL và parameters đã ẩn]" in sent
+
+
+def test_telegram_text_is_capped_without_cutting_suffix():
+    result = sanitize_telegram_text("x" * 5000)
+    assert len(result) <= telegram_client.TELEGRAM_TEXT_LIMIT
+    assert result.endswith("[đã rút gọn để phù hợp giới hạn Telegram]")
+
+
+def test_httpx_log_filter_redacts_bot_token_url():
+    record = __import__("logging").LogRecord(
+        "httpx", 20, __file__, 1, "HTTP Request: %s", (), None
+    )
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+    record.args = (f"https://api.telegram.org/bot{token}/sendMessage",)
+
+    assert telegram_client._TelegramUrlRedactionFilter().filter(record) is True
+    assert token not in str(record.args)
+    assert "bot<REDACTED>" in str(record.args)
+
+
+def test_network_error_never_exposes_bot_token(monkeypatch):
+    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+    monkeypatch.setattr(
+        telegram_client.httpx, "post",
+        lambda url, json, timeout: (_ for _ in ()).throw(RuntimeError(f"failed URL {url}")),
+    )
+
+    with pytest.raises(TelegramSendError) as caught:
+        send_telegram_message(token, "-100999", "hello")
+
+    assert token not in str(caught.value)
 
 
 def test_send_telegram_message_raises_when_token_blank():

@@ -31,10 +31,56 @@ shared/router_client.py.
 
 from __future__ import annotations
 
+import logging
+import re
+
 import httpx
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 TELEGRAM_TIMEOUT_SECONDS = 10
+TELEGRAM_TEXT_LIMIT = 4096
+_TRUNCATION_SUFFIX = "\n… [đã rút gọn để phù hợp giới hạn Telegram]"
+_CONTROL_TRANSLATION = {
+    codepoint: " " for codepoint in (*range(0x20), 0x7F)
+    if codepoint not in (0x09, 0x0A, 0x0D)
+}
+_SECRET_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b"), "<TELEGRAM_BOT_TOKEN>"),
+    (re.compile(r"\bAQ[A-Za-z0-9+/=]{20,}"), "<CEPHX_KEY>"),
+    (re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{12,20}\b"), "<AWS_ACCESS_KEY>"),
+    (re.compile(r"(?i)\bauthorization\s*[:=]\s*[^\r\n]+"), "authorization: <REDACTED>"),
+    (re.compile(r"(?i)\b(secret(?:_access)?_key|password|passwd|token)\s*[:=]\s*[^\s,;]+"), r"\1=<REDACTED>"),
+    (re.compile(r"(?is)\s*\[SQL:\s*.*"), "\n[chi tiết SQL và parameters đã ẩn]"),
+)
+
+
+def sanitize_telegram_text(value: str | None, *, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+    """Sanitize every operator-facing Telegram text at the final boundary."""
+    text = (value or "").translate(_CONTROL_TRANSLATION)
+    for pattern, replacement in _SECRET_REDACTIONS:
+        text = pattern.sub(replacement, text)
+    if len(text) > limit:
+        keep = max(0, limit - len(_TRUNCATION_SUFFIX))
+        text = text[:keep].rstrip() + _TRUNCATION_SUFFIX
+    return text
+
+
+class _TelegramUrlRedactionFilter(logging.Filter):
+    """Prevent httpx INFO logs from exposing Bot API tokens in URL paths."""
+
+    _url_re = re.compile(r"/bot[^/\s]+/")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args:
+            record.args = tuple(
+                self._url_re.sub("/bot<REDACTED>/", str(arg))
+                if "api.telegram.org/bot" in str(arg) else arg
+                for arg in record.args
+            )
+        return True
+
+
+logging.getLogger("httpx").addFilter(_TelegramUrlRedactionFilter())
 
 
 class TelegramSendError(Exception):
@@ -62,7 +108,9 @@ def _call_telegram_api(bot_token: str, method: str, payload: dict, *, timeout: f
     try:
         response = httpx.post(url, json=payload, timeout=timeout)
     except Exception as exc:
-        raise TelegramSendError(f"Không gọi được Telegram API ({method}): {exc}") from exc
+        safe_error = sanitize_telegram_text(str(exc), limit=500)
+        safe_error = safe_error.replace(bot_token, "<TELEGRAM_BOT_TOKEN>")
+        raise TelegramSendError(f"Không gọi được Telegram API ({method}): {safe_error}") from exc
 
     try:
         body = response.json()
@@ -71,7 +119,8 @@ def _call_telegram_api(bot_token: str, method: str, payload: dict, *, timeout: f
 
     if response.status_code != 200 or not isinstance(body, dict) or not body.get("ok", False):
         description = (body or {}).get("description") if isinstance(body, dict) else None
-        detail = description or response.text or f"HTTP {response.status_code}"
+        detail = sanitize_telegram_text(description or response.text, limit=500) or f"HTTP {response.status_code}"
+        detail = detail.replace(bot_token, "<TELEGRAM_BOT_TOKEN>")
         raise TelegramSendError(f"Telegram API ({method}) từ chối: {detail}")
     return body
 
@@ -86,7 +135,8 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
     if not bot_token or not chat_id:
         raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
     _call_telegram_api(
-        bot_token, "sendMessage", {"chat_id": chat_id, "text": text}, timeout=TELEGRAM_TIMEOUT_SECONDS
+        bot_token, "sendMessage", {"chat_id": chat_id, "text": sanitize_telegram_text(text)},
+        timeout=TELEGRAM_TIMEOUT_SECONDS
     )
 
 
@@ -105,7 +155,7 @@ def send_telegram_message_with_keyboard(
         raise TelegramSendError("Chưa cấu hình Telegram bot token / chat id")
     payload = {
         "chat_id": chat_id,
-        "text": text,
+        "text": sanitize_telegram_text(text),
         "reply_markup": {
             "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
         },
@@ -129,7 +179,7 @@ def edit_telegram_message(bot_token: str, chat_id: str, message_id: int, text: s
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
-        "text": text,
+        "text": sanitize_telegram_text(text),
         "reply_markup": {"inline_keyboard": []},
     }
     _call_telegram_api(bot_token, "editMessageText", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
@@ -183,5 +233,5 @@ def answer_telegram_callback(bot_token: str, callback_query_id: str, text: str |
         raise TelegramSendError("Chưa cấu hình Telegram bot token")
     payload: dict = {"callback_query_id": callback_query_id}
     if text:
-        payload["text"] = text
+        payload["text"] = sanitize_telegram_text(text, limit=200)
     _call_telegram_api(bot_token, "answerCallbackQuery", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
