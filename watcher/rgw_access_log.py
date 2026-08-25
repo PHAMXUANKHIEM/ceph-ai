@@ -245,6 +245,35 @@ def fetch_bucket_list_with(host: str, ssh_user: str, ssh_key_path: str,
         raise RgwLogError(f"RGW {host} trả về danh sách bucket không hợp lệ") from exc
 
 
+def build_purge_bucket_command(bucket: str) -> str:
+    """Build the closed command used by the admin-only delete-all flow."""
+    # Tenant-qualified RGW bucket names may contain ``tenant/bucket``.
+    if not bucket or len(bucket) > 255 or any(ord(char) < 32 for char in bucket):
+        raise ValueError("Invalid bucket name")
+    return f"radosgw-admin bucket rm --bucket={shlex.quote(bucket)} --purge-objects"
+
+
+def purge_bucket(host: str, bucket: str) -> None:
+    inner = build_purge_bucket_command(bucket)
+    command = ceph_client.build_exec_command(
+        settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner
+    )
+    try:
+        run_command_on_node(host, command)
+    except Exception as exc:
+        raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {exc}") from exc
+
+
+def purge_bucket_with(host: str, bucket: str, ssh_user: str, ssh_key_path: str,
+                      exec_mode: str, rgw_container_name: str) -> None:
+    inner = build_purge_bucket_command(bucket)
+    command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
+    try:
+        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+    except Exception as exc:
+        raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {exc}") from exc
+
+
 def build_bucket_object_list_command(bucket: str, marker: str = "", max_entries: int = 101) -> str:
     """Build the closed, ordered RGW bucket-index listing used by Object Browser."""
     if not bucket or len(bucket) > 255 or any(ord(char) < 32 for char in bucket):

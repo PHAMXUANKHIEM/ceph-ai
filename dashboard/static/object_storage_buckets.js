@@ -28,6 +28,20 @@
 })();
 
 (function () {
+  var button = document.getElementById("bucket-delete-all");
+  if (!button) return;
+  var status = document.getElementById("bucket-delete-all-status");
+  button.addEventListener("click", function () {
+    button.disabled = true;
+    status.textContent = "Đang purge object và xóa tất cả bucket...";
+    fetch("/api/object-storage/buckets/delete-all?cluster=" + encodeURIComponent(button.dataset.cluster), {method: "POST"})
+      .then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); })
+      .then(function (data) { status.textContent = "Đã xóa " + data.deleted_count + " bucket. Request ID: " + data.request_id; window.location.reload(); })
+      .catch(function (error) { status.textContent = "Lỗi: " + error.message; button.disabled = false; });
+  });
+})();
+
+(function () {
   var capabilityStatus = document.getElementById("object-storage-capability-status");
   if (!capabilityStatus) return;
   var source = document.getElementById("bucket-create-form");

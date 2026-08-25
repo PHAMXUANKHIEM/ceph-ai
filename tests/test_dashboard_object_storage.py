@@ -549,6 +549,7 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
         "/api/object-storage/buckets/policy-acl/execute",
         "/api/object-storage/buckets/delete/preview",
         "/api/object-storage/buckets/delete/execute",
+        "/api/object-storage/buckets/delete-all",
         "/api/object-storage/objects/presign/preview",
         "/api/object-storage/objects/presign/execute",
     ]
@@ -556,6 +557,42 @@ def test_non_admin_cannot_call_any_bucket_write_api(dashboard_client):
     assert [(path, dashboard_client.post(path, json={}).status_code) for path in paths] == [
         (path, 403) for path in paths
     ]
+
+
+def test_admin_delete_all_buckets_purges_objects_without_approval(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list",
+                        lambda host: ["archive", "images"])
+    purged = []
+    monkeypatch.setattr(object_storage_route, "purge_bucket",
+                        lambda host, bucket: purged.append((host, bucket)))
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+
+    assert response.status_code == 200
+    assert response.json()["deleted_count"] == 2
+    assert response.json()["deleted_buckets"] == ["archive", "images"]
+    assert purged == [("10.20.1.90", "archive"), ("10.20.1.90", "images")]
+
+
+def test_delete_all_stops_and_reports_partial_failure(dashboard_client, monkeypatch):
+    _configure_nodes(monkeypatch)
+    monkeypatch.setattr(object_storage_route, "fetch_bucket_list",
+                        lambda host: ["a-bucket", "b-bucket", "c-bucket"])
+    purged = []
+    def purge(host, bucket):
+        purged.append(bucket)
+        if bucket == "b-bucket":
+            raise object_storage_route.RgwLogError("object is locked")
+    monkeypatch.setattr(object_storage_route, "purge_bucket", purge)
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/api/object-storage/buckets/delete-all")
+
+    assert response.status_code == 502
+    assert "Đã xóa 1/3 bucket" in response.json()["detail"]
+    assert purged == ["a-bucket", "b-bucket"]
 
 
 def test_bucket_operation_families_reject_free_form_actions(dashboard_client):
