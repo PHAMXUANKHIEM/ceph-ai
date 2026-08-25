@@ -68,6 +68,56 @@ def test_business_message_formats_upload_size_and_event_name(db_session):
     assert "Giờ VN: 15:31:14 - 26/03/2026" in message
 
 
+def test_delete_message_uses_previous_object_size_not_empty_response(db_session, monkeypatch):
+    cluster = Cluster(name="audit", ceph_mon_nodes="", ceph_rgw_nodes="", is_default=False,
+                      is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    uploaded = RgwAccessAuditEvent(
+        cluster_id=cluster.id, rgw_host="rgw1", fingerprint="b" * 64,
+        method="PUT", action="Tải lên", bucket="test-s3", object_key="concurrent-put-144.bin",
+        requester="admin", remote_addr="10.20.1.39", http_status=200, bytes_sent=65536,
+        event_at=datetime(2026, 8, 24, 9, 58, 35), telegram_sent=True,
+    )
+    deleted = RgwAccessAuditEvent(
+        cluster_id=cluster.id, rgw_host="rgw1", fingerprint="c" * 64,
+        method="DELETE", action="Xoá tệp", bucket="test-s3", object_key="concurrent-put-144.bin",
+        requester="admin", remote_addr="10.20.1.39", http_status=204, bytes_sent=0,
+        event_at=datetime(2026, 8, 25, 1, 55, 1),
+    )
+    db_session.add_all((uploaded, deleted))
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
+    monkeypatch.setattr(settings, "telegram_rgw_bot_token", "token")
+    monkeypatch.setattr(settings, "telegram_rgw_chat_id", "chat")
+    monkeypatch.setattr(audit, "send_telegram_message", lambda _token, _chat, text: sent.append(text))
+
+    audit._deliver_pending(db_session)
+
+    assert len(sent) == 1
+    assert "ObjectRemoved:Delete" in sent[0]
+    assert "Size: 64.00 KB" in sent[0]
+
+
+def test_delete_message_reports_unknown_when_no_prior_size(db_session):
+    cluster = Cluster(name="audit", ceph_mon_nodes="", ceph_rgw_nodes="", is_default=False,
+                      is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    deleted = RgwAccessAuditEvent(
+        cluster_id=cluster.id, rgw_host="rgw1", fingerprint="d" * 64,
+        method="DELETE", action="Xoá tệp", bucket="b", object_key="unknown.bin",
+        requester="admin", remote_addr="10.20.1.39", http_status=204, bytes_sent=0,
+        event_at=datetime(2026, 8, 25, 1, 55, 1),
+    )
+    db_session.add(deleted)
+    db_session.commit()
+
+    assert audit._notification_size(db_session, deleted) is None
+    assert "Size: -" in audit._message(deleted, "ceph", None)
+
+
 def test_failed_delivery_remains_pending_for_retry(db_session, monkeypatch):
     cluster = Cluster(name="audit", ceph_mon_nodes="", ceph_rgw_nodes="", is_default=False,
                       is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")

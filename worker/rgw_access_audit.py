@@ -34,6 +34,7 @@ _MAX_ERROR_CHARS = 1000
 _VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 _ANALYSIS_DEBOUNCE_SECONDS = 60
 _ANALYSIS_PROGRESS_SECONDS = 600
+_USE_EVENT_TRANSFER_SIZE = object()
 
 
 def _analysis_signature(cluster_id: str, host: str, message: str) -> str:
@@ -109,7 +110,39 @@ def _human_size(value: int | None) -> str:
     return f"{size:.2f} TB"
 
 
-def _message(event: RgwAccessAuditEvent, cluster_name: str) -> str:
+def _notification_size(session, event: RgwAccessAuditEvent) -> int | None:
+    """Return object size, not the DELETE response-body size.
+
+    RGW records ``bytes_sent=0`` for a successful DELETE because its HTTP
+    response has no body.  The durable audit table already contains the
+    preceding successful PUT/POST (or GET) for the same object, so use the
+    newest positive transfer size observed before the delete.  Unknown is
+    safer than incorrectly reporting a zero-byte object.
+    """
+    if event.method != "DELETE":
+        return event.bytes_sent
+    previous = (
+        session.query(RgwAccessAuditEvent.bytes_sent)
+        .filter(
+            RgwAccessAuditEvent.cluster_id == event.cluster_id,
+            RgwAccessAuditEvent.bucket == event.bucket,
+            RgwAccessAuditEvent.object_key == event.object_key,
+            RgwAccessAuditEvent.event_at < event.event_at,
+            RgwAccessAuditEvent.method.in_(("PUT", "POST", "GET", "HEAD")),
+            RgwAccessAuditEvent.http_status < 400,
+            RgwAccessAuditEvent.bytes_sent > 0,
+        )
+        .order_by(RgwAccessAuditEvent.event_at.desc())
+        .first()
+    )
+    return int(previous[0]) if previous else None
+
+
+def _message(
+    event: RgwAccessAuditEvent,
+    cluster_name: str,
+    size_bytes: int | None | object = _USE_EVENT_TRANSFER_SIZE,
+) -> str:
     obj = event.object_key or "-"
     if len(obj) > _MAX_OBJECT_CHARS:
         obj = obj[: _MAX_OBJECT_CHARS - 1] + "…"
@@ -128,7 +161,7 @@ def _message(event: RgwAccessAuditEvent, cluster_name: str) -> str:
         f"🆔 Request ID: {event.transaction_id or '-'}",
         f"📁 Bucket: {event.bucket or '-'}",
         f"📄 File: {obj}",
-        f"⚖️ Size: {_human_size(event.bytes_sent)}",
+        f"⚖️ Size: {_human_size(event.bytes_sent if size_bytes is _USE_EVENT_TRANSFER_SIZE else size_bytes)}",
         f"🛡️ Mã hóa: {encryption_text}",
         f"👤 User: {event.requester or '-'}",
         f"🌐 IP thực hiện: {event.remote_addr or '-'}",
@@ -226,7 +259,11 @@ def _deliver_pending(session) -> None:
             send_telegram_message(
                 settings.telegram_rgw_bot_token,
                 settings.telegram_rgw_chat_id,
-                _message(event, cluster_names.get(event.cluster_id, event.cluster_id)),
+                _message(
+                    event,
+                    cluster_names.get(event.cluster_id, event.cluster_id),
+                    _notification_size(session, event),
+                ),
             )
         except TelegramSendError as exc:
             event.telegram_error = str(exc)[:_MAX_ERROR_CHARS]
