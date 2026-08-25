@@ -61,6 +61,19 @@ SAMPLE_LINE_MAX_CHARS = 500
 # dump JSON) không được phép trở thành một hàng khổng lồ trong DB.
 TEMPLATE_MAX_CHARS = 500
 
+# PostgreSQL text/varchar rejects NUL outright. Other C0 control bytes make
+# templates/fingerprints unstable. Preserve legitimate whitespace controls;
+# normalize the rest to spaces so neighbouring tokens are not concatenated.
+_UNSAFE_CONTROL_TRANSLATION = {
+    codepoint: " " for codepoint in (*range(0x20), 0x7F)
+    if codepoint not in (0x09, 0x0A, 0x0D)
+}
+
+
+def sanitize_log_text(value: str | None) -> str:
+    """Return DB-safe log text without NUL/C0 controls."""
+    return (value or "").translate(_UNSAFE_CONTROL_TRANSLATION)
+
 # --- Redaction (ràng buộc R6) ------------------------------------------
 #
 # Chạy TRƯỚC khi bất cứ thứ gì được lưu hoặc (ở L2) gửi tới model. Trọng
@@ -150,6 +163,7 @@ _JOURNAL_PREFIX_RE = re.compile(
 
 def normalize(message: str) -> str:
     """Biến một dòng log thành template đã bỏ biến số."""
+    message = sanitize_log_text(message)
     for pattern, replacement in _NORMALIZATIONS:
         message = pattern.sub(replacement, message)
     return message.strip()[:TEMPLATE_MAX_CHARS]
@@ -172,7 +186,7 @@ def parse_log_line(line: str, host: str, daemon_type: str) -> LogRecord | None:
     dạng, hoặc do một daemon bất thường sinh ra chính là thứ RCA quan tâm
     nhất, và cũng là thứ một parser cứng nhắc sẽ âm thầm đánh rơi.
     """
-    line = line.rstrip("\n")
+    line = sanitize_log_text(line).rstrip("\n")
     if not line.strip():
         return None
     # Bỏ tiêu đề phân tách của cephadm khi một host có nhiều daemon cùng loại.
@@ -527,7 +541,9 @@ def _persist_patterns(
     # hiện 100k lần trong cửa sổ.
     aggregated: dict[tuple[str, str], dict] = {}
     for record in records:
-        template = normalize(record.message)
+        safe_message = sanitize_log_text(record.message)
+        safe_sample = sanitize_log_text(record.raw)[:SAMPLE_LINE_MAX_CHARS]
+        template = normalize(safe_message)
         if not template:
             continue
         fingerprint = fingerprint_of(template, record.daemon_type)
@@ -541,7 +557,7 @@ def _persist_patterns(
                 "template": template,
                 "daemon_type": record.daemon_type,
                 "severity": record.severity,
-                "sample_line": record.raw,
+                "sample_line": safe_sample,
                 "host": record.host,
                 "buckets": {bucket: 1},
                 "first_ts": ts,
@@ -556,7 +572,7 @@ def _persist_patterns(
                 entry["severity"] is None or record.severity < entry["severity"]
             ):
                 entry["severity"] = record.severity
-                entry["sample_line"] = record.raw
+                entry["sample_line"] = safe_sample
 
     new_patterns = 0
     with db.SessionLocal() as session:

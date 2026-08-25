@@ -130,6 +130,34 @@ def test_stored_sample_line_is_redacted_not_raw(isolated_db):
     assert "AQBvcGRl" not in record.message
 
 
+def test_nul_and_unsafe_controls_are_removed_before_fingerprint_and_storage(isolated_db):
+    record = LogRecord(
+        ts=datetime(2026, 8, 25, 4), host="10.3.53.1", daemon_type="rgw",
+        message="unexpected\x00response\x01 from Vault",
+        raw="rgw: unexpected\x00response\x02 from Vault", severity=-1,
+    )
+
+    cluster_id, seen, new = log_intel._persist_patterns([record], None, datetime(2026, 8, 25, 4))
+
+    assert seen == 1 and new == 1
+    with db_module.SessionLocal() as session:
+        row = session.query(LogPattern).filter_by(cluster_id=cluster_id).one()
+        assert "\x00" not in row.template
+        assert "\x00" not in row.sample_line
+        assert "\x01" not in row.template
+        assert "\x02" not in row.sample_line
+        assert "unexpected response" in row.template
+
+
+def test_parse_log_line_sanitizes_nul_before_redaction():
+    record = log_intel.parse_log_line(
+        "rgw: Vault\x00 key\x07 failed", host="10.3.53.1", daemon_type="rgw"
+    )
+    assert record is not None
+    assert record.raw == "rgw: Vault  key  failed"
+    assert "\x00" not in record.message
+
+
 # --- parse_log_line() ------------------------------------------------------
 
 

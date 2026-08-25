@@ -275,3 +275,17 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
     assert "Chưa đủ bằng chứng để xác định nguyên nhân gốc" in result
     assert "Đã đối chiếu: 1 nhóm log liên quan" in result
     assert "CẦN KIỂM TRA — chưa được coi là đã khắc phục" in result
+
+
+def test_rgw_analysis_failure_hides_sql_and_explains_nul():
+    exc = RuntimeError(
+        "PostgreSQL text fields cannot contain NUL (0x00) bytes "
+        "[SQL: INSERT INTO log_patterns ...] [parameters: {'sample_line': 'secret'}]"
+    )
+
+    message = audit._public_analysis_error(exc)
+
+    assert "Log Loki chứa ký tự NUL" in message
+    assert "INSERT INTO" not in message
+    assert "parameters" not in message
+    assert "secret" not in message

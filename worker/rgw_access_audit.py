@@ -360,6 +360,19 @@ def _analysis_heartbeat(stop: threading.Event, label: str, host: str) -> None:
             logger.exception("failed to send RGW analysis heartbeat for %s", label)
 
 
+def _public_analysis_error(exc: Exception) -> str:
+    """Operator-safe summary: never expose SQL text/parameters on Telegram."""
+    compact = " ".join(str(exc).replace("\x00", " ").split())
+    lowered = compact.lower()
+    if "cannot contain nul" in lowered or "nul (0x00)" in lowered:
+        return "Log Loki chứa ký tự NUL không hợp lệ; dữ liệu đã bị chặn trước PostgreSQL."
+    for marker in (" [SQL:", " [parameters:", " (Background on this error"):
+        compact = compact.split(marker, 1)[0]
+    if compact.startswith("Quét Loki thất bại:"):
+        return compact[:300]
+    return f"Lỗi nội bộ Log Intelligence ({type(exc).__name__}); xem log server để biết chi tiết."
+
+
 def _process_analysis_jobs(limit: int = 1) -> None:
     """Claim and execute immediate jobs sequentially; polling remains fallback."""
     from watcher import log_intel
@@ -447,16 +460,19 @@ def _process_analysis_jobs(limit: int = 1) -> None:
             )
         except Exception as exc:
             logger.exception("immediate RGW analysis job %s failed", job_id)
+            public_error = _public_analysis_error(exc)
             with db.SessionLocal() as session:
                 row = session.get(RgwAnalysisJob, job_id)
                 if row:
                     row.status = "FAILED"
-                    row.error = " ".join(str(exc).split())[:1000]
+                    row.error = public_error[:1000]
                     row.finished_at = datetime.utcnow()
                     session.commit()
             try:
                 _send_analysis_status(
-                    f"❌ AI PHÂN TÍCH RGW THẤT BẠI\nJob: {label}\nLỗi: {' '.join(str(exc).split())[:700]}"
+                    f"❌ AI PHÂN TÍCH RGW THẤT BẠI\nJob: {label}\n"
+                    f"Nguyên nhân: {public_error}\n"
+                    "Trạng thái: Đã dừng an toàn, chưa lưu kết quả phân tích."
                 )
             except Exception:
                 logger.exception("failed to send RGW analysis failure status")
