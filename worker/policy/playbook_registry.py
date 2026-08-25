@@ -108,7 +108,7 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         conflict_scope="host", max_targets=2,
     ),
     "enable_mon_msgr2": _contract(
-        "enable_mon_msgr2", target_schema="cluster", max_autonomy="L3",
+        "enable_mon_msgr2", version="2", target_schema="cluster", max_autonomy="L3",
         conflict_scope="cluster", cooldown_seconds=3600,
     ),
     "crash_archive_all": _contract(

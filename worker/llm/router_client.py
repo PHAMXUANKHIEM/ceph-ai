@@ -43,7 +43,7 @@ from worker.backup import engine as backup_engine
 from worker.executor import cinder_reconciliation, cluster_deploy, commands, rbd_reconciliation, vm_perf, volume_perf
 from worker.executor.ssh_executor import ExecutorError, execute_command
 from worker.policy import gate
-from worker.policy.playbook_registry import evaluate_auto_execution
+from worker.policy.playbook_registry import evaluate_auto_execution, get_contract
 from worker.preflight import run_preflight
 from worker.operational_gate import evaluate as evaluate_operational_gate
 from worker.autonomy_runtime import (
@@ -773,6 +773,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # management action from operator-confirmed Chat is SAFE.
                 classification = ActionClassification.RISKY
             nodes = envelope.get("nodes")
+            contract = get_contract(action_id)
+            if contract is not None and contract.target_schema == "cluster" and isinstance(nodes, list):
+                # A cluster-wide Ceph CLI command needs one reachable MON,
+                # not one execution per MON mentioned in health detail.
+                nodes = nodes[:1]
             if action_id == "finalize_osd_release" and isinstance(nodes, list):
                 nodes = nodes[:1]
             action_params = None
