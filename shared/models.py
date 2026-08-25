@@ -1380,6 +1380,40 @@ class VolumeModelState(Base):
     )
 
 
+class VolumeEarlyForecast(Base):
+    """Auditable 1h/6h/24h RBD forecast; never grants execution rights."""
+
+    __tablename__ = "volume_early_forecasts"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_volume_early_forecast_idempotency"),
+        Index("ix_volume_early_forecast_scope", "cluster_id", "pool", "image", "generated_at"),
+        Index("ix_volume_early_forecast_status", "status", "target_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric: Mapped[str] = mapped_column(String(32), nullable=False)
+    horizon_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source_latest_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    current_value: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_value: Mapped[float] = mapped_column(Float, nullable=False)
+    threshold_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    threshold_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    training_samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    training_window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    seasonal_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class VolumePerfSweep(Base):
     """Result of an on-demand "Đo hiệu năng tối đa" (load sweep) benchmark
     — dashboard/routes/volumes.py's propose route, worker/executor/

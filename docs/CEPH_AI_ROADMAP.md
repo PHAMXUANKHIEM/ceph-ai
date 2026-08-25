@@ -138,11 +138,14 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
   - Triển khai 2026-08-25: seasonal median ưu tiên hour-of-week/hour-of-day,
     outcome 1 giờ, MAE/MAPE bền vững và tự chọn cửa sổ 24/72/168/720 giờ;
     trạng thái hiển thị read-only tại trang AI Learning.
-- [ ] **2. Dự báo và cảnh báo sớm**
+- [x] **2. Dự báo và cảnh báo sớm**
   - Dự báo IOPS/latency cho 1h, 6h và 24h; cảnh báo khi có khả năng chạm knee
     hoặc latency SLO trước khi workload thực sự suy giảm.
   - Mỗi cảnh báo phải kèm timestamp, số mẫu, training window, confidence và
     forecast/model version; dữ liệu stale hoặc thiếu phải fail closed.
+  - Triển khai 2026-08-25: forecast seasonal-trend cho 1h/6h/24h; latency
+    đối chiếu SLO, IOPS chỉ cảnh báo khi đã có knee từ load sweep; lưu đầy đủ
+    source timestamp, training window, confidence và model version trên AI Learning.
 - [ ] **3. Correlation nguyên nhân**
   - Ghép anomaly volume với log Ceph từ Loki, pool/PG/OSD latency, CPU/RAM node,
     network và QoS để phân biệt bottleneck tại image, pool, OSD hay host.

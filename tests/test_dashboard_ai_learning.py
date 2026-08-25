@@ -10,7 +10,7 @@ from shared.models import (
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceModelState,
-    VolumeForecastRun,
+    VolumeEarlyForecast, VolumeForecastRun,
     VolumeModelState,
 )
 
@@ -171,3 +171,31 @@ def test_ai_learning_shows_selected_volume_baseline(dashboard_client):
     assert "hour_of_day" in response.text
     assert "92.0%" in response.text
     assert "2.3" in response.text
+
+
+def test_ai_learning_shows_auditable_volume_early_warning(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        session.add(VolumeEarlyForecast(
+            cluster_id=cluster.id, pool="vms", image="hot-disk",
+            metric="write_latency_ms", horizon_hours=6,
+            generated_at=NOW, target_at=NOW + timedelta(hours=6),
+            source_latest_at=NOW, current_value=12.0, predicted_value=24.0,
+            threshold_type="latency_slo_ms", threshold_value=20.0,
+            confidence=.84, training_samples=72, training_window_hours=72,
+            seasonal_scope="hour_of_day", model_version="seasonal-trend-v1",
+            status="WARNING", reason="Dự báo có thể chạm latency SLO trong 6 giờ.",
+            idempotency_key="dashboard-early-warning",
+        ))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    assert "vms/hot-disk" in response.text
+    assert "Cảnh báo sớm" in response.text
+    assert "seasonal-trend-v1" in response.text
+    payload = dashboard_client.get(f"/api/ai-learning?cluster={cluster_id}").json()
+    assert payload["volume_learning"]["forecast_warning_count"] == 1

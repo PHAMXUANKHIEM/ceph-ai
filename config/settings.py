@@ -439,6 +439,13 @@ class Settings(BaseSettings):
     volume_learning_min_samples: int = 24
     volume_learning_min_outcomes: int = 10
     volume_learning_candidate_hours: str = "24,72,168,720"
+    # Read-only early warning generated from the selected seasonal baseline.
+    volume_forecast_enabled: bool = True
+    volume_forecast_horizons: str = "1,6,24"
+    volume_forecast_min_confidence: float = 0.5
+    volume_forecast_max_staleness_minutes: int = 30
+    volume_forecast_latency_slo_ms: float = 20.0
+    volume_forecast_knee_warning_ratio: float = 0.9
 
     # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
     # device_health/node_health above because `ceph osd perf` is a single

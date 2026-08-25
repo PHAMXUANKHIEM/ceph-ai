@@ -17,6 +17,7 @@ from shared.models import (
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceModelState,
+    VolumeEarlyForecast,
     VolumeForecastRun,
     VolumeModelState,
 )
@@ -150,6 +151,45 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "updated_at": state.updated_at,
             })
 
+        latest_forecast_times = (
+            session.query(
+                VolumeEarlyForecast.pool.label("pool"),
+                VolumeEarlyForecast.image.label("image"),
+                VolumeEarlyForecast.metric.label("metric"),
+                VolumeEarlyForecast.horizon_hours.label("horizon_hours"),
+                func.max(VolumeEarlyForecast.generated_at).label("latest_at"),
+            ).filter(VolumeEarlyForecast.cluster_id == cluster_id).group_by(
+                VolumeEarlyForecast.pool, VolumeEarlyForecast.image,
+                VolumeEarlyForecast.metric, VolumeEarlyForecast.horizon_hours,
+            ).subquery()
+        )
+        latest_forecasts = session.query(VolumeEarlyForecast).join(
+            latest_forecast_times,
+            (VolumeEarlyForecast.pool == latest_forecast_times.c.pool)
+            & (VolumeEarlyForecast.image == latest_forecast_times.c.image)
+            & (VolumeEarlyForecast.metric == latest_forecast_times.c.metric)
+            & (VolumeEarlyForecast.horizon_hours == latest_forecast_times.c.horizon_hours)
+            & (VolumeEarlyForecast.generated_at == latest_forecast_times.c.latest_at),
+        ).filter(VolumeEarlyForecast.cluster_id == cluster_id).order_by(
+            VolumeEarlyForecast.status.desc(), VolumeEarlyForecast.target_at
+        ).limit(200).all()
+        forecast_rows = [{
+            "pool": row.pool, "image": row.image, "metric": row.metric,
+            "horizon_hours": row.horizon_hours,
+            "current_value": round(row.current_value, 3),
+            "predicted_value": round(row.predicted_value, 3),
+            "threshold_type": row.threshold_type,
+            "threshold_value": round(row.threshold_value, 3) if row.threshold_value is not None else None,
+            "confidence": round(row.confidence, 3),
+            "training_samples": row.training_samples,
+            "training_window_hours": row.training_window_hours,
+            "seasonal_scope": row.seasonal_scope,
+            "model_version": row.model_version,
+            "status": row.status, "reason": row.reason,
+            "generated_at": row.generated_at, "target_at": row.target_at,
+            "source_latest_at": row.source_latest_at,
+        } for row in latest_forecasts]
+
         sample_query = session.query(LogLearningSample).filter(
             LogLearningSample.cluster_id == cluster_id
         )
@@ -221,6 +261,10 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "run_counts": volume_run_counts,
                 "selected_models": [row for row in volume_models if row["selected"]],
                 "candidate_models": volume_models,
+                "early_forecasts": forecast_rows,
+                "forecast_warning_count": sum(row["status"] == "WARNING" for row in forecast_rows),
+                "forecast_horizons": settings.volume_forecast_horizons,
+                "forecast_latency_slo_ms": settings.volume_forecast_latency_slo_ms,
             },
             "log_learning": {
                 "sample_count": sample_count,

@@ -28,9 +28,22 @@
       </form>
       <p><strong>CPU/RAM:</strong> {{ resource_learning.run_counts.get('EVALUATED', 0) }} dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} đang chờ outcome.</p>
       <p><strong>RBD volume:</strong> {{ volume_learning.run_counts.get('EVALUATED', 0) }} baseline đã đối chiếu · {{ volume_learning.run_counts.get('PENDING', 0) }} đang chờ outcome · {{ volume_learning.selected_models|length }} model được chọn.</p>
+      <p><strong>Dự báo sớm RBD:</strong> {{ volume_learning.early_forecasts|length }} forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo.</p>
       <p><strong>Log daemon:</strong> {{ log_learning.sample_count }} mẫu · {{ log_learning.eligible_count }} đủ điều kiện học · {{ log_learning.blocked_count }} bị chặn.</p>
       <p class="hint">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</p>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Dự báo sớm RBD volume</h2><p class="hint">Mốc {{ volume_learning.forecast_horizons }} giờ · latency SLO {{ volume_learning.forecast_latency_slo_ms }}ms · dữ liệu thiếu/stale hoặc confidence thấp sẽ không cảnh báo.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Volume</th><th>Metric</th><th>Mốc</th><th>Hiện tại → dự báo</th><th>Ngưỡng</th><th>Confidence</th><th>Evidence</th><th>Trạng thái</th></tr></thead><tbody>
+    {% for forecast in volume_learning.early_forecasts %}<tr>
+      <td><code>{{ forecast.pool }}/{{ forecast.image }}</code></td><td>{{ forecast.metric }}</td><td>{{ forecast.horizon_hours }} giờ<br><span class="hint">{{ forecast.target_at|vntime }}</span></td>
+      <td>{{ forecast.current_value }} → {{ forecast.predicted_value }}</td><td>{{ forecast.threshold_value if forecast.threshold_value is not none else '—' }}<div class="hint">{{ forecast.threshold_type or 'chưa đo knee' }}</div></td>
+      <td>{{ (forecast.confidence * 100)|round(1) }}%</td><td>{{ forecast.training_samples }} mẫu / {{ forecast.training_window_hours }}h<div class="hint">{{ forecast.seasonal_scope }} · {{ forecast.model_version }} · nguồn {{ forecast.source_latest_at|vntime }}</div></td>
+      <td>{% if forecast.status == 'WARNING' %}<span class="badge badge-err">Cảnh báo sớm</span>{% elif forecast.status == 'SAFE' %}<span class="badge badge-ok">Bình thường</span>{% else %}<span class="badge badge-warn">{{ forecast.status }}</span>{% endif %}<div class="hint">{{ forecast.reason }}</div></td>
+    </tr>{% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa đủ dữ liệu mới để tạo forecast 1h/6h/24h.</div></td></tr>{% endfor %}
+    </tbody></table></div>
   </section>
 
   <section class="card">

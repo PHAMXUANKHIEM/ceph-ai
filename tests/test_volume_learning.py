@@ -4,7 +4,7 @@ import pytest
 
 from config.settings import settings
 from shared.models import (
-    Cluster, VolumeForecastRun, VolumeMetric, VolumeModelState,
+    Cluster, VolumeEarlyForecast, VolumeForecastRun, VolumeMetric, VolumeModelState,
 )
 from watcher import volume_learning as learning
 
@@ -67,6 +67,47 @@ def test_observe_records_hourly_candidates_for_each_volume_metric(db_session, mo
     assert all(run.status == "PENDING" for run in runs)
     assert all(run.training_samples >= 3 for run in runs)
     assert {run.seasonal_scope for run in runs} <= {"hour_of_day", "all_history"}
+
+
+def test_observe_records_fail_closed_early_forecasts_for_all_horizons(db_session, monkeypatch):
+    cluster = _cluster(db_session)
+    _history(db_session, cluster.id)
+    monkeypatch.setattr(settings, "volume_learning_min_samples", 24)
+    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "72")
+    monkeypatch.setattr(settings, "volume_forecast_enabled", True)
+    monkeypatch.setattr(settings, "volume_forecast_horizons", "1,6,24")
+    monkeypatch.setattr(settings, "volume_forecast_latency_slo_ms", 1.0)
+    monkeypatch.setattr(settings, "volume_forecast_min_confidence", 0.0)
+
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW)
+    db_session.commit()
+
+    rows = db_session.query(VolumeEarlyForecast).all()
+    assert len(rows) == 9
+    assert {row.horizon_hours for row in rows} == {1, 6, 24}
+    assert {row.model_version for row in rows} == {"seasonal-trend-v1"}
+    assert all(row.training_samples >= 3 for row in rows)
+    assert all(row.source_latest_at <= row.generated_at for row in rows)
+    iops = [row for row in rows if row.metric == "iops"]
+    assert {row.status for row in iops} == {"NO_THRESHOLD"}
+    assert all(row.threshold_value is None for row in iops)
+    latency = [row for row in rows if row.metric != "iops"]
+    assert {row.status for row in latency} == {"WARNING"}
+
+
+def test_early_forecast_is_hourly_idempotent(db_session, monkeypatch):
+    cluster = _cluster(db_session)
+    _history(db_session, cluster.id)
+    monkeypatch.setattr(settings, "volume_learning_min_samples", 24)
+    monkeypatch.setattr(settings, "volume_learning_candidate_hours", "72")
+    monkeypatch.setattr(settings, "volume_forecast_horizons", "1,6,24")
+
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW)
+    learning._last_attempt_bucket.clear()
+    learning.observe_sample(db_session, cluster.id, _sample(), NOW + timedelta(minutes=20))
+    db_session.commit()
+
+    assert db_session.query(VolumeEarlyForecast).count() == 9
 
 
 def test_same_hour_is_idempotent(db_session, monkeypatch):
