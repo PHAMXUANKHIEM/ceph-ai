@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -53,6 +54,30 @@ from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
+
+OPERATIONAL_TELEMETRY_ATTEMPTS = 5
+OPERATIONAL_TELEMETRY_RETRY_SECONDS = 3.0
+
+
+def _read_operational_status(connection):
+    """Read live Ceph status, tolerating a short MON election window.
+
+    Address changes and MON failover can make one SSH/Ceph query fail even
+    though quorum is already recovering.  Autopilot must still fail closed,
+    but only after bounded retries so a transient election does not turn an
+    otherwise L3-safe remediation into a manual approval.
+    """
+    last_error = None
+    for attempt in range(OPERATIONAL_TELEMETRY_ATTEMPTS):
+        try:
+            return run_ceph_json_command_with(*connection, "ceph status")
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < OPERATIONAL_TELEMETRY_ATTEMPTS:
+                time.sleep(OPERATIONAL_TELEMETRY_RETRY_SECONDS)
+    raise CephQueryError(
+        f"fresh ceph status unavailable after {OPERATIONAL_TELEMETRY_ATTEMPTS} attempts: {last_error}"
+    )
 
 # 2026-08-07 (incident follow-up): was 1024 -- verified against this
 # deployment's real worker.log that a reasoning-style model
@@ -1108,7 +1133,7 @@ def _maybe_execute_safe_action(
                 cluster.ceph_container_name, cluster.ssh_user, cluster.ssh_key_path,
                 cluster.ceph_exec_mode,
             )
-        _host, fresh_status = run_ceph_json_command_with(*connection, "ceph status")
+        _host, fresh_status = _read_operational_status(connection)
         operational = evaluate_operational_gate(
             fresh_status,
             max_recovery_bytes_per_sec=settings.autopilot_max_recovery_bytes_per_sec,

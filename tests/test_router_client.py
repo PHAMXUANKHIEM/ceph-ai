@@ -3027,6 +3027,27 @@ def test_operational_gate_blocks_health_err_before_ssh(isolated_db, monkeypatch)
         ).count() == 1
 
 
+def test_operational_status_retries_transient_mon_election(monkeypatch):
+    calls = []
+
+    def query(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("monitor election in progress")
+        return "mon-a", {"health": {"status": "HEALTH_OK"}}
+
+    monkeypatch.setattr(router_client, "run_ceph_json_command_with", query)
+    monkeypatch.setattr(router_client.time, "sleep", lambda _seconds: None)
+
+    host, status = router_client._read_operational_status(
+        (["mon-a"], "ceph-mon", "root", "/tmp/key", "none")
+    )
+
+    assert host == "mon-a"
+    assert status["health"]["status"] == "HEALTH_OK"
+    assert len(calls) == 3
+
+
 def test_autopilot_runtime_rate_limit_and_cluster_lease(isolated_db):
     from worker.autonomy_runtime import acquire_lease, check_limits, release_lease
 
