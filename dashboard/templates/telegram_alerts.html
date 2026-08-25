@@ -53,10 +53,10 @@
       <div class="card-body">
         <p class="hint">Các kênh ở đây là cấu hình toàn hệ thống và fallback của cụm mặc định. Kênh riêng của cluster phụ được cấu hình tại <a href="/clusters">Clusters</a>.</p>
         <p class="hint">
-          5 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
+          6 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
           bằng chính việc điền hay để trống Chat ID (không có công tắc riêng). <strong>Yêu cầu phê duyệt
-          (Duyệt/Từ chối)</strong> áp dụng cho ba kênh vận hành Backup/Lỗi cụm/Phần cứng. Kênh RGW và
-          Code Repair chỉ nhận thông báo, không cấp quyền phê duyệt. Với ba kênh vận hành, hễ một kênh
+          (Duyệt/Từ chối)</strong> áp dụng cho ba kênh vận hành Backup/Lỗi cụm/Phần cứng. Kênh Dự báo RBD,
+          RGW và Code Repair chỉ nhận thông báo, không cấp quyền phê duyệt. Với ba kênh vận hành, hễ một kênh
           có đủ Bot Token + Chat ID, mọi đề xuất đang chờ duyệt sẽ tự động kèm 2 nút Duyệt/Từ chối gửi tới
           đúng kênh đó, không cần bật thêm gì. Duyệt/Từ chối ở BẤT KỲ kênh nào trong số đang cấu hình đều
           xử lý được — xem lưu ý về mức độ tin cậy (TRUST MODEL) ngay dưới mỗi kênh trước khi điền Chat ID.

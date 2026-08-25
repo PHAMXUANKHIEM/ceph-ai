@@ -61,6 +61,15 @@ _CHANNELS: dict[str, dict] = {
         "restart": "watcher",
         "approval_enabled": True,
     },
+    "rbd-forecast": {
+        "label": "Dự báo sớm RBD Volume",
+        "bot_token_field": "telegram_rbd_forecast_bot_token",
+        "chat_id_field": "telegram_rbd_forecast_chat_id",
+        "enabled_field": "telegram_rbd_forecast_enabled",
+        "env_names": env_config.TELEGRAM_RBD_FORECAST_ENV_NAMES,
+        "restart": "watcher",
+        "approval_enabled": False,
+    },
     "node": {
         "label": "Cảnh báo phần cứng",
         "bot_token_field": "telegram_node_bot_token",

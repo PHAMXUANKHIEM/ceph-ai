@@ -138,6 +138,8 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "telegram_backup_chat_id", "", raising=False)
     monkeypatch.setattr(settings, "telegram_incident_bot_token", "", raising=False)
     monkeypatch.setattr(settings, "telegram_incident_chat_id", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_rbd_forecast_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_rbd_forecast_chat_id", "", raising=False)
     monkeypatch.setattr(settings, "telegram_node_bot_token", "", raising=False)
     monkeypatch.setattr(settings, "telegram_node_chat_id", "", raising=False)
     # 2026-08-07: separate per-channel `_enabled` toggle reintroduced (Alert
@@ -148,6 +150,7 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     # flips one off would otherwise leave it off for every later test.
     monkeypatch.setattr(settings, "telegram_backup_enabled", True, raising=False)
     monkeypatch.setattr(settings, "telegram_incident_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "telegram_rbd_forecast_enabled", True, raising=False)
     monkeypatch.setattr(settings, "telegram_node_enabled", True, raising=False)
     # 2026-08-07: cluster_name is written the same way (plain setattr in
     # dashboard/routes/telegram_alerts.py::telegram_cluster_name_submit,

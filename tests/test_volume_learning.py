@@ -160,8 +160,9 @@ def test_warning_telegram_is_marked_only_once_after_success(db_session, monkeypa
     db_session.expire_all()
     assert db_session.query(VolumeEarlyForecast).one().telegram_sent_at is not None
     assert len(calls) == 1
-    assert calls[0]["bot_token"] == "cluster-token"
-    assert calls[0]["chat_id"] == "cluster-chat"
+    assert calls[0]["cluster_name"] == "volume-learning"
+    assert "bot_token" not in calls[0]
+    assert "chat_id" not in calls[0]
 
 
 def test_same_hour_is_idempotent(db_session, monkeypatch):

@@ -114,12 +114,13 @@ gõ lại gì. Cùng cơ chế khởi động lại đúng tiến trình như b�
 
 ### 1.4. Cấu hình thay thế qua `.env`
 
-9 field ánh xạ trực tiếp sang biến `.env` (`shared/env_config.py`):
+Các field ánh xạ trực tiếp sang biến `.env` (`shared/env_config.py`):
 
 | Kênh | Field (`config/settings.py`) | Biến `.env` |
 |---|---|---|
 | Backup | `telegram_backup_bot_token` / `telegram_backup_chat_id` / `telegram_backup_enabled` | `TELEGRAM_BACKUP_BOT_TOKEN` / `TELEGRAM_BACKUP_CHAT_ID` / `TELEGRAM_BACKUP_ENABLED` |
 | Lỗi cụm | `telegram_incident_bot_token` / `telegram_incident_chat_id` / `telegram_incident_enabled` | `TELEGRAM_INCIDENT_BOT_TOKEN` / `TELEGRAM_INCIDENT_CHAT_ID` / `TELEGRAM_INCIDENT_ENABLED` |
+| Dự báo RBD | `telegram_rbd_forecast_bot_token` / `telegram_rbd_forecast_chat_id` / `telegram_rbd_forecast_enabled` | `TELEGRAM_RBD_FORECAST_BOT_TOKEN` / `TELEGRAM_RBD_FORECAST_CHAT_ID` / `TELEGRAM_RBD_FORECAST_ENABLED` |
 | Phần cứng | `telegram_node_bot_token` / `telegram_node_chat_id` / `telegram_node_enabled` | `TELEGRAM_NODE_BOT_TOKEN` / `TELEGRAM_NODE_CHAT_ID` / `TELEGRAM_NODE_ENABLED` |
 
 `*_enabled` nhận giá trị chuỗi `true`/`false` (cùng convention với

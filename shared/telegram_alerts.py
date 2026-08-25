@@ -100,7 +100,7 @@ def send_volume_forecast_alert(
     bot_token: str | None = None, chat_id: str | None = None,
     enabled: bool | None = None,
 ) -> bool:
-    """Send one fail-closed RBD forecast warning to the Ceph incident channel."""
+    """Send one fail-closed warning to the dedicated RBD forecast channel."""
     labels = {
         "iops": "IOPS", "read_latency_ms": "Read Latency",
         "write_latency_ms": "Write Latency",
@@ -131,9 +131,9 @@ def send_volume_forecast_alert(
         "ℹ️ Chỉ cảnh báo — hệ thống không tự chỉnh QoS hoặc resize."
     )
     return _send(
-        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
-        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
-        enabled if enabled is not None else settings.telegram_incident_enabled,
+        bot_token if bot_token is not None else settings.telegram_rbd_forecast_bot_token,
+        chat_id if chat_id is not None else settings.telegram_rbd_forecast_chat_id,
+        enabled if enabled is not None else settings.telegram_rbd_forecast_enabled,
         text, cluster_name,
     )
 

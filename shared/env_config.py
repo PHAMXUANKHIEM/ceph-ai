@@ -90,6 +90,11 @@ TELEGRAM_INCIDENT_ENV_NAMES: dict[str, str] = {
     "telegram_incident_chat_id": "TELEGRAM_INCIDENT_CHAT_ID",
     "telegram_incident_enabled": "TELEGRAM_INCIDENT_ENABLED",
 }
+TELEGRAM_RBD_FORECAST_ENV_NAMES: dict[str, str] = {
+    "telegram_rbd_forecast_bot_token": "TELEGRAM_RBD_FORECAST_BOT_TOKEN",
+    "telegram_rbd_forecast_chat_id": "TELEGRAM_RBD_FORECAST_CHAT_ID",
+    "telegram_rbd_forecast_enabled": "TELEGRAM_RBD_FORECAST_ENABLED",
+}
 TELEGRAM_NODE_ENV_NAMES: dict[str, str] = {
     "telegram_node_bot_token": "TELEGRAM_NODE_BOT_TOKEN",
     "telegram_node_chat_id": "TELEGRAM_NODE_CHAT_ID",

@@ -335,6 +335,10 @@ class Settings(BaseSettings):
     telegram_incident_bot_token: str = ""
     telegram_incident_chat_id: str = ""
     telegram_incident_enabled: bool = True
+    # Dedicated notification-only channel for early RBD forecasts.
+    telegram_rbd_forecast_bot_token: str = ""
+    telegram_rbd_forecast_chat_id: str = ""
+    telegram_rbd_forecast_enabled: bool = True
     telegram_node_bot_token: str = ""
     telegram_node_chat_id: str = ""
     telegram_node_enabled: bool = True

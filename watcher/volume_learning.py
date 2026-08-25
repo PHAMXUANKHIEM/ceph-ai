@@ -358,7 +358,6 @@ def deliver_pending_forecast_alerts(cluster_id: str | None) -> int:
         rows = session.query(VolumeEarlyForecast).filter_by(
             cluster_id=cluster_id, status="WARNING", telegram_sent_at=None,
         ).order_by(VolumeEarlyForecast.created_at).limit(50).all()
-        has_cluster_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
         for row in rows:
             sent = telegram_alerts.send_volume_forecast_alert(
                 pool=row.pool, image=row.image, metric=row.metric,
@@ -369,9 +368,6 @@ def deliver_pending_forecast_alerts(cluster_id: str | None) -> int:
                 training_window_hours=row.training_window_hours,
                 model_version=row.model_version, target_at=row.target_at,
                 cluster_name=cluster.name,
-                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-                enabled=cluster.telegram_enabled if has_cluster_channel else None,
             )
             if sent:
                 row.telegram_sent_at = datetime.utcnow()

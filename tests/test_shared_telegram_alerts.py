@@ -13,6 +13,12 @@ def _configure_node(monkeypatch, *, token="123:ABC", chat_id="-100999"):
     monkeypatch.setattr(telegram_alerts.settings, "telegram_node_chat_id", chat_id, raising=False)
 
 
+def _configure_rbd_forecast(monkeypatch, *, token="456:RBD", chat_id="-100777"):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_rbd_forecast_bot_token", token, raising=False)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_rbd_forecast_chat_id", chat_id, raising=False)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_rbd_forecast_enabled", True, raising=False)
+
+
 # --- send_incident_alert ----------------------------------------------------
 
 
@@ -103,9 +109,8 @@ def test_send_incident_alert_swallows_send_failure(monkeypatch):
     telegram_alerts.send_incident_alert("MON_DOWN", "HEALTH_ERR", "mon.a is down")  # must not raise
 
 
-def test_send_volume_forecast_alert_uses_incident_channel_and_auditable_format(monkeypatch):
-    _configure_incident(monkeypatch)
-    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+def test_send_volume_forecast_alert_uses_dedicated_channel_and_auditable_format(monkeypatch):
+    _configure_rbd_forecast(monkeypatch)
     calls = []
     monkeypatch.setattr(
         telegram_alerts, "send_telegram_message",
@@ -123,7 +128,7 @@ def test_send_volume_forecast_alert_uses_incident_channel_and_auditable_format(m
 
     assert sent is True
     token, chat_id, text = calls[0]
-    assert (token, chat_id) == ("123:ABC", "-100999")
+    assert (token, chat_id) == ("456:RBD", "-100777")
     assert "Cụm: LAB" in text
     assert "CẢNH BÁO SỚM RBD VOLUME" in text
     assert "volumes/vm-disk" in text
@@ -131,6 +136,25 @@ def test_send_volume_forecast_alert_uses_incident_channel_and_auditable_format(m
     assert "Confidence: 84.0%" in text
     assert "seasonal-trend-v1" in text
     assert "không tự chỉnh QoS hoặc resize" in text
+
+
+def test_volume_forecast_does_not_fall_back_to_incident_channel(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_rbd_forecast_bot_token", "", raising=False)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_rbd_forecast_chat_id", "", raising=False)
+    calls = []
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *args: calls.append(args))
+
+    sent = telegram_alerts.send_volume_forecast_alert(
+        pool="volumes", image="disk", metric="iops", horizon_hours=1,
+        current_value=100, predicted_value=200, threshold_type="measured_knee_iops",
+        threshold_value=180, confidence=.9, training_samples=72,
+        training_window_hours=72, model_version="v1", target_at=datetime(2026, 8, 25, 4),
+    )
+
+    assert sent is False
+    assert calls == []
 
 
 def test_send_ai_incident_alert_sends_diagnosis_and_rationale(monkeypatch):

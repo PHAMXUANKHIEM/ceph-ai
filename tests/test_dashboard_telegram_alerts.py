@@ -185,6 +185,27 @@ def test_submit_incident_channel_restarts_only_watcher(dashboard_client, monkeyp
     assert restart_calls == {"worker": 0, "watcher": 1}
 
 
+def test_submit_rbd_forecast_channel_is_independent_and_restarts_watcher(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = _mock_restarts(monkeypatch)
+    monkeypatch.setattr(settings, "telegram_rbd_forecast_bot_token", "", raising=False)
+    monkeypatch.setattr(settings, "telegram_rbd_forecast_chat_id", "", raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/telegram-alerts/rbd-forecast",
+        data={"bot_token": "456:RBDToken", "chat_id": "-100777"},
+    )
+
+    assert response.status_code == 200
+    assert settings.telegram_rbd_forecast_bot_token == "456:RBDToken"
+    assert settings.telegram_rbd_forecast_chat_id == "-100777"
+    assert "TELEGRAM_RBD_FORECAST_BOT_TOKEN=456:RBDToken" in tmp_env.read_text()
+    assert "TELEGRAM_RBD_FORECAST_CHAT_ID=-100777" in tmp_env.read_text()
+    assert restart_calls == {"worker": 0, "watcher": 1}
+
+
 def test_submit_node_channel_restarts_only_watcher(dashboard_client, monkeypatch, tmp_path):
     monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
     restart_calls = _mock_restarts(monkeypatch)
