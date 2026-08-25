@@ -254,6 +254,7 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
         for sample in samples:
             volume_learning.observe_sample(session, cluster_id, sample, polled_at)
         session.commit()
+    volume_learning.deliver_pending_forecast_alerts(cluster_id)
 
 
 def _rationale_for(detail: dict) -> str:

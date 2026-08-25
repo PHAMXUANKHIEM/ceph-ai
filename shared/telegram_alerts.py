@@ -30,6 +30,8 @@ triggered it.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from config.settings import settings
 from shared.telegram_client import TelegramSendError, send_telegram_message
@@ -74,17 +76,66 @@ def _compact(value: str | None, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: str | None = None) -> None:
+def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: str | None = None) -> bool:
     """`enabled` (2026-08-07, Alert Telegram page) is a SEPARATE on/off
     switch from "configured" (bot_token/chat_id both non-blank) — lets an
     operator pause a channel with one click without losing/retyping its
     Chat ID, unlike the earlier "blank the chat id to pause" design."""
     if not enabled or not bot_token or not chat_id:
-        return
+        return False
     try:
         send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
+        return True
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
+        return False
+
+
+def send_volume_forecast_alert(
+    *, pool: str, image: str, metric: str, horizon_hours: int,
+    current_value: float, predicted_value: float,
+    threshold_type: str | None, threshold_value: float | None,
+    confidence: float, training_samples: int, training_window_hours: int,
+    model_version: str, target_at: datetime, cluster_name: str | None = None,
+    bot_token: str | None = None, chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> bool:
+    """Send one fail-closed RBD forecast warning to the Ceph incident channel."""
+    labels = {
+        "iops": "IOPS", "read_latency_ms": "Read Latency",
+        "write_latency_ms": "Write Latency",
+    }
+    threshold_labels = {
+        "latency_slo_ms": "Latency SLO", "measured_knee_iops": "90% knee IOPS",
+    }
+    unit = " ms" if metric.endswith("latency_ms") else " IOPS"
+    if target_at.tzinfo is None:
+        target_at = target_at.replace(tzinfo=UTC)
+    target_vn = target_at.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%H:%M:%S - %d/%m/%Y")
+    threshold = (
+        f"{threshold_value:.2f}{unit}" if threshold_value is not None else "Chưa xác định"
+    )
+    text = (
+        "⚠️ CẢNH BÁO SỚM RBD VOLUME\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💽 Volume: {pool}/{image}\n"
+        f"📊 Chỉ số: {labels.get(metric, metric)}\n"
+        f"⏱️ Dự báo: {predicted_value:.2f}{unit} sau {horizon_hours} giờ\n"
+        f"🎯 {threshold_labels.get(threshold_type or '', threshold_type or 'Ngưỡng')}: {threshold}\n"
+        f"📈 Hiện tại: {current_value:.2f}{unit}\n"
+        f"🧠 Confidence: {confidence * 100:.1f}%\n"
+        f"🗂️ Dữ liệu học: {training_samples} mẫu / cửa sổ {training_window_hours} giờ\n"
+        f"🔬 Model: {model_version}\n"
+        f"⏰ Thời điểm dự kiến: {target_vn}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "ℹ️ Chỉ cảnh báo — hệ thống không tự chỉnh QoS hoặc resize."
+    )
+    return _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        text, cluster_name,
+    )
 
 
 def send_code_repair_alert(text: str) -> None:

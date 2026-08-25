@@ -1,5 +1,6 @@
 import shared.telegram_alerts as telegram_alerts
 from shared.telegram_client import TelegramSendError
+from datetime import datetime
 
 
 def _configure_incident(monkeypatch, *, token="123:ABC", chat_id="-100999"):
@@ -100,6 +101,36 @@ def test_send_incident_alert_swallows_send_failure(monkeypatch):
     monkeypatch.setattr(telegram_alerts, "send_telegram_message", _boom)
 
     telegram_alerts.send_incident_alert("MON_DOWN", "HEALTH_ERR", "mon.a is down")  # must not raise
+
+
+def test_send_volume_forecast_alert_uses_incident_channel_and_auditable_format(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message",
+        lambda token, chat_id, text: calls.append((token, chat_id, text)),
+    )
+
+    sent = telegram_alerts.send_volume_forecast_alert(
+        pool="volumes", image="vm-disk", metric="write_latency_ms",
+        horizon_hours=6, current_value=12, predicted_value=24,
+        threshold_type="latency_slo_ms", threshold_value=20,
+        confidence=.84, training_samples=72, training_window_hours=72,
+        model_version="seasonal-trend-v1", target_at=datetime(2026, 8, 25, 4),
+        cluster_name="LAB",
+    )
+
+    assert sent is True
+    token, chat_id, text = calls[0]
+    assert (token, chat_id) == ("123:ABC", "-100999")
+    assert "Cụm: LAB" in text
+    assert "CẢNH BÁO SỚM RBD VOLUME" in text
+    assert "volumes/vm-disk" in text
+    assert "24.00 ms sau 6 giờ" in text
+    assert "Confidence: 84.0%" in text
+    assert "seasonal-trend-v1" in text
+    assert "không tự chỉnh QoS hoặc resize" in text
 
 
 def test_send_ai_incident_alert_sends_diagnosis_and_rationale(monkeypatch):

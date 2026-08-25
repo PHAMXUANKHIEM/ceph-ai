@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 
 from config.settings import settings
+from shared import db, telegram_alerts
 from shared.models import (
+    Cluster,
     VolumeEarlyForecast, VolumeForecastRun, VolumeMetric, VolumeModelState,
     VolumePerfSweep,
 )
@@ -342,3 +344,37 @@ def observe_sample(
             ))
         _select_models(session, cluster_id, pool, image, metric)
     return evaluated
+
+
+def deliver_pending_forecast_alerts(cluster_id: str | None) -> int:
+    """Best-effort delivery of unsent WARNING rows; mark only after success."""
+    if not cluster_id:
+        return 0
+    delivered = 0
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(id=cluster_id).one_or_none()
+        if cluster is None:
+            return 0
+        rows = session.query(VolumeEarlyForecast).filter_by(
+            cluster_id=cluster_id, status="WARNING", telegram_sent_at=None,
+        ).order_by(VolumeEarlyForecast.created_at).limit(50).all()
+        has_cluster_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
+        for row in rows:
+            sent = telegram_alerts.send_volume_forecast_alert(
+                pool=row.pool, image=row.image, metric=row.metric,
+                horizon_hours=row.horizon_hours, current_value=row.current_value,
+                predicted_value=row.predicted_value,
+                threshold_type=row.threshold_type, threshold_value=row.threshold_value,
+                confidence=row.confidence, training_samples=row.training_samples,
+                training_window_hours=row.training_window_hours,
+                model_version=row.model_version, target_at=row.target_at,
+                cluster_name=cluster.name,
+                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+                enabled=cluster.telegram_enabled if has_cluster_channel else None,
+            )
+            if sent:
+                row.telegram_sent_at = datetime.utcnow()
+                delivered += 1
+        session.commit()
+    return delivered

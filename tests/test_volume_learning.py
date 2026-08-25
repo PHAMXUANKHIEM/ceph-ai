@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from config.settings import settings
 from shared.models import (
@@ -125,6 +126,42 @@ def test_early_forecast_is_created_when_baseline_candidates_already_exist(db_ses
     db_session.commit()
 
     assert db_session.query(VolumeEarlyForecast).count() == 9
+
+
+def test_warning_telegram_is_marked_only_once_after_success(db_session, monkeypatch):
+    cluster = _cluster(db_session)
+    cluster.telegram_bot_token = "cluster-token"
+    cluster.telegram_chat_id = "cluster-chat"
+    cluster.telegram_enabled = True
+    row = VolumeEarlyForecast(
+        cluster_id=cluster.id, pool="vms", image="hot-disk",
+        metric="write_latency_ms", horizon_hours=6,
+        generated_at=NOW, target_at=NOW + timedelta(hours=6), source_latest_at=NOW,
+        current_value=12, predicted_value=24, threshold_type="latency_slo_ms",
+        threshold_value=20, confidence=.84, training_samples=72,
+        training_window_hours=72, seasonal_scope="hour_of_day",
+        model_version="seasonal-trend-v1", status="WARNING", reason="threshold",
+        idempotency_key="telegram-warning",
+    )
+    db_session.add(row)
+    db_session.commit()
+    monkeypatch.setattr(
+        learning.db, "SessionLocal", sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    )
+    calls = []
+    monkeypatch.setattr(
+        learning.telegram_alerts, "send_volume_forecast_alert",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    assert learning.deliver_pending_forecast_alerts(cluster.id) == 1
+    assert learning.deliver_pending_forecast_alerts(cluster.id) == 0
+
+    db_session.expire_all()
+    assert db_session.query(VolumeEarlyForecast).one().telegram_sent_at is not None
+    assert len(calls) == 1
+    assert calls[0]["bot_token"] == "cluster-token"
+    assert calls[0]["chat_id"] == "cluster-chat"
 
 
 def test_same_hour_is_idempotent(db_session, monkeypatch):

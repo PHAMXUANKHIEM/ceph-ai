@@ -1411,6 +1411,7 @@ class VolumeEarlyForecast(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
