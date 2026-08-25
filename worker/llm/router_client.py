@@ -1038,8 +1038,19 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             _route_safe_to_approval(incident_id, action_pk, resolved_action_id)
             return
         try:
+            # Diagnosis may start with every node mentioned by the health
+            # check, while the playbook contract deliberately normalizes a
+            # cluster-scoped command to one MON before persisting Action.
+            # Runtime safety must evaluate and execute that persisted target,
+            # not the stale pre-normalization envelope (otherwise msgr2 was
+            # incorrectly blocked as a two/three-host blast radius).
+            execution_envelope = dict(envelope)
+            with db.SessionLocal() as execution_session:
+                persisted_action = execution_session.get(Action, action_pk)
+                if persisted_action is not None and persisted_action.target_nodes:
+                    execution_envelope["nodes"] = json.loads(persisted_action.target_nodes)
             _maybe_execute_safe_action(
-                incident_id, action_pk, resolved_action_id, envelope, action_params
+                incident_id, action_pk, resolved_action_id, execution_envelope, action_params
             )
         except Exception:
             # Belt-and-suspenders: _maybe_execute_safe_action is designed to
