@@ -638,9 +638,29 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     incident_id,
                     existing_action.status,
                 )
-                incident.status = _INCIDENT_STATUS_FOR_RESOLVED_ACTION.get(
-                    existing_action.status, IncidentStatus.FAILED.value
-                )
+                pending_case = session.query(RemediationCase).filter_by(
+                    action_id=existing_action.id,
+                    outcome="EXECUTED_PENDING_VERIFY",
+                ).one_or_none()
+                if (
+                    existing_action.status == ActionStatus.AUTO_EXECUTED.value
+                    and pending_case is not None
+                ):
+                    # The first post-check may have run while a restarted
+                    # daemon was active in systemd but had not rejoined Ceph.
+                    # verify.py then requeues diagnosis. A redelivery must not
+                    # turn that unverified Action into terminal AUTO_FIXED;
+                    # schedule another telemetry check without executing SSH
+                    # again. This is exactly the state discovered by the
+                    # staging OSD fault-injection campaign on 2026-08-25.
+                    incident.status = IncidentStatus.VERIFYING.value
+                    incident.verify_after = datetime.utcnow() + timedelta(
+                        seconds=max(0, settings.incident_verify_delay_seconds)
+                    )
+                else:
+                    incident.status = _INCIDENT_STATUS_FOR_RESOLVED_ACTION.get(
+                        existing_action.status, IncidentStatus.FAILED.value
+                    )
                 session.commit()
                 return
         else:

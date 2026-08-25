@@ -2651,6 +2651,46 @@ def test_diagnose_incident_redelivery_of_already_resolved_action_restores_incide
         assert session.query(Action).filter_by(incident_id="incident-5h").count() == 1
 
 
+def test_redelivery_keeps_auto_executed_case_in_verification(isolated_db, monkeypatch):
+    _create_incident("incident-5h-pending-verify")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-5h-pending-verify")
+        incident.status = IncidentStatus.DIAGNOSING.value
+        action = Action(
+            incident_id=incident.id, action_id="restart_osd_daemon",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.AUTO_EXECUTED.value,
+        )
+        session.add(action)
+        session.flush()
+        session.add(RemediationCase(
+            incident_id=incident.id, action_id=action.id,
+            cluster_id=incident.cluster_id, fault_family="OSD_DOWN",
+            evidence_fingerprint="a" * 64, prompt_version="test-v1",
+            classification="SAFE", autonomy_decision="AUTO_EXECUTE",
+            playbook_version="1", outcome="EXECUTED_PENDING_VERIFY",
+        ))
+        session.commit()
+
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_safe)
+    monkeypatch.setattr(settings, "incident_verify_delay_seconds", 30)
+    execute_calls = []
+    monkeypatch.setattr(
+        router_client, "execute_command", lambda *args, **kwargs: execute_calls.append(args)
+    )
+    before = datetime.utcnow()
+    asyncio.run(router_client.diagnose_incident(
+        "incident-5h-pending-verify",
+        dict(ENVELOPE, incident_id="incident-5h-pending-verify"),
+    ))
+
+    assert execute_calls == []
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-5h-pending-verify")
+        assert incident.status == IncidentStatus.VERIFYING.value
+        assert incident.verify_after >= before + timedelta(seconds=29)
+
+
 def test_diagnose_incident_malformed_nodes_field_marks_failed_instead_of_guessing(
     isolated_db, monkeypatch
 ):
