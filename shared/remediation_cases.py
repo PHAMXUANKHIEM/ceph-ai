@@ -209,6 +209,13 @@ _REGRESSION_WINDOWS = (
 )
 
 
+def _is_lab_fault_injection(case: RemediationCase) -> bool:
+    entities = _safe_load(case.entity_keys_json, {})
+    params = entities.get("action_params") if isinstance(entities, dict) else None
+    bucket = params.get("bucket_name") if isinstance(params, dict) else None
+    return case.fault_family == "LARGE_OMAP_OBJECTS" and isinstance(bucket, str) and bucket.startswith("test-")
+
+
 def evaluate_regressions(session, *, now: datetime, limit: int = 200) -> int:
     """Evaluate recurrence without prematurely writing a negative result.
 
@@ -216,6 +223,22 @@ def evaluate_regressions(session, *, now: datetime, limit: int = 200) -> int:
     recurrence may set True immediately; False is only final after the full
     window closes. Historical/unverified cases are never candidates.
     """
+    changed = 0
+    # Repair labels written by older versions before selecting only pending
+    # recurrence windows below.
+    for lab_case in session.query(RemediationCase).filter(
+        RemediationCase.outcome == "VERIFIED_SUCCESS"
+    ).all():
+        if not _is_lab_fault_injection(lab_case):
+            continue
+        case_changed = False
+        for field, _window in _REGRESSION_WINDOWS:
+            if getattr(lab_case, field) is not False:
+                setattr(lab_case, field, False)
+                case_changed = True
+        if case_changed:
+            changed += 1
+
     candidates = (
         session.query(RemediationCase)
         .filter(RemediationCase.outcome == "VERIFIED_SUCCESS")
@@ -229,9 +252,21 @@ def evaluate_regressions(session, *, now: datetime, limit: int = 200) -> int:
         .limit(max(1, limit))
         .all()
     )
-    changed = 0
     for case in candidates:
         case_changed = False
+        # Repeated LARGE_OMAP_OBJECTS on an explicitly guarded test-* bucket
+        # is produced by the lab harness on purpose.  It validates another
+        # repair; it is not a production regression of the previous repair.
+        # Correct earlier True values too, since old evaluators could label a
+        # later training round as a 1h/24h/7d recurrence failure.
+        if _is_lab_fault_injection(case):
+            for field, _window in _REGRESSION_WINDOWS:
+                if getattr(case, field) is not False:
+                    setattr(case, field, False)
+                    case_changed = True
+            if case_changed:
+                changed += 1
+            continue
         recurrence = (
             session.query(Incident.detected_at)
             .join(RemediationCase, RemediationCase.incident_id == Incident.id)
