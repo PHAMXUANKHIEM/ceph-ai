@@ -106,6 +106,9 @@ _RECOVERABLE_STATUSES = {
 # failure permanently suppresses Autopilot for that ceph_code.
 _IN_FLIGHT_DEDUPE_STATUSES = _RECOVERABLE_STATUSES - {IncidentStatus.FAILED.value}
 _OSD_RESTART_RETRY_AFTER_SECONDS = 30
+_IDEMPOTENT_VERIFY_RETRY_ACTIONS = {
+    "MON_MSGR2_NOT_ENABLED": "enable_mon_msgr2",
+}
 
 # Mirrors dashboard/routes/chat.py::CHAT_REQUEST_CEPH_CODE (kept as its own
 # copy rather than a cross-import — Watcher and Dashboard are independent
@@ -497,6 +500,35 @@ def build_and_publish_incident(
                     break
             if retryable:
                 already_open_codes.discard("OSD_DOWN")
+
+        # An idempotent SAFE repair can be deliberately undone while its
+        # previous action is still waiting in VERIFYING.  The new health
+        # transition is regression evidence, not a duplicate: allow one new
+        # attempt when every open row is the already AUTO_EXECUTED verifier.
+        # Once that new row exists in NEW/DIAGNOSING/etc. normal dedupe takes
+        # over again, so watcher restarts cannot create an incident storm.
+        for retry_code, retry_action_id in _IDEMPOTENT_VERIFY_RETRY_ACTIONS.items():
+            if retry_code not in already_open_codes:
+                continue
+            retry_query = session.query(Incident).filter(
+                Incident.ceph_code == retry_code,
+                Incident.status.in_(_IN_FLIGHT_DEDUPE_STATUSES),
+            )
+            retry_query = (
+                retry_query.filter(Incident.cluster_id == cluster_id)
+                if cluster_id is not None else retry_query.filter(Incident.cluster_id.is_(None))
+            )
+            open_rows = retry_query.all()
+            if open_rows and all(
+                row.status == IncidentStatus.VERIFYING.value
+                and session.query(Action).filter(
+                    Action.incident_id == row.id,
+                    Action.action_id == retry_action_id,
+                    Action.status == ActionStatus.AUTO_EXECUTED.value,
+                ).first() is not None
+                for row in open_rows
+            ):
+                already_open_codes.discard(retry_code)
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
