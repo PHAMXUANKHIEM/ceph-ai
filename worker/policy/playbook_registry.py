@@ -107,6 +107,10 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         "resync_ntp", target_schema="host", max_autonomy="L3",
         conflict_scope="host", max_targets=2,
     ),
+    "enable_mon_msgr2": _contract(
+        "enable_mon_msgr2", target_schema="cluster", max_autonomy="L3",
+        conflict_scope="cluster", cooldown_seconds=3600,
+    ),
     "crash_archive_all": _contract(
         "crash_archive_all", target_schema="cluster", max_autonomy="L3",
         conflict_scope="cluster", cooldown_seconds=3600,

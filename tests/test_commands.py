@@ -46,6 +46,10 @@ def test_get_command_returns_crash_archive_all_command():
     assert get_command("crash_archive_all") == "ceph crash archive-all"
 
 
+def test_get_command_returns_enable_mon_msgr2_command():
+    assert get_command("enable_mon_msgr2") == "ceph mon enable-msgr2"
+
+
 def test_get_command_builds_osd_release_finalize_command():
     assert get_command("finalize_osd_release", params={"release": "pacific"}) == (
         "ceph osd require-osd-release pacific"

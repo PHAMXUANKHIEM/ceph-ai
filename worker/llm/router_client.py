@@ -195,6 +195,8 @@ SYSTEM_PROMPT = (
     "remediation action from the fixed set provided in the tool schema. "
     "Every recommendation must be a concrete action the system can execute; "
     "never recommend manual investigation or a generic diagnostic check. "
+    "For MON_CLOCK_SKEW choose resync_ntp; for MON_MSGR2_NOT_ENABLED choose "
+    "enable_mon_msgr2. "
     "Write diagnosis_text and rationale in concise, natural Vietnamese (at most "
     "two short sentences each). Keep Ceph error codes, daemon names, pool names, "
     "commands, paths, and technical identifiers unchanged instead of translating them."

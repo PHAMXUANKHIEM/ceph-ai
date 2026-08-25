@@ -8,6 +8,7 @@
 action_ids:
   - restart_osd_daemon
   - resync_ntp
+  - enable_mon_msgr2
   - pg_repair_force
   - investigate_manually  # fallback: no automated action applies
   - hard_reboot_node      # RAM >= 90% for two node-health scans; always approval-gated
@@ -236,6 +237,9 @@ bluestore_action_ids:
 
 safe:
   - resync_ntp
+  # Adds the standard v2 listener to the monitor map.  The command is
+  # idempotent and retains v1 addresses for older clients.
+  - enable_mon_msgr2
   # 2026-07-23: operator explicitly requested every management action
   # execute immediately on chat confirm (single click via
   # dashboard/routes/chat.py's confirm-action endpoint), same as any other

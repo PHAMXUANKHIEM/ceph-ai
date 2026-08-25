@@ -31,6 +31,9 @@ COMMANDS: dict[str, str] = {
         "timedatectl set-ntp true && systemctl restart systemd-timesyncd; "
         "else echo 'no supported NTP tool found' >&2; exit 1; fi"
     ),
+    # Idempotent cluster-wide repair for MON_MSGR2_NOT_ENABLED.  Ceph keeps
+    # the existing v1 listener, so enabling v2 does not strand v1 clients.
+    "enable_mon_msgr2": "ceph mon enable-msgr2",
     # Story A (Crash-module visibility, 2026-08-01): remediates RECENT_CRASH
     # — unlike pg_repair_force (deliberately NOT given a command, see this
     # dict's own comment above), `ceph crash archive-all` takes NO id
