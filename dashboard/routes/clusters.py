@@ -4,12 +4,15 @@ import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import and_, delete, exists, or_, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.routes.settings import restart_watcher, restart_worker
 from dashboard.templating import make_templates
 from shared import db
+from shared.db import Base
 from shared.clusters import ensure_default_cluster
 from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, WatcherHeartbeat
 from watcher import capability_inventory
@@ -532,91 +535,92 @@ async def update_cluster_connection(
 
 
 def _purge_cluster_data(session, cluster_id: str) -> dict[str, int]:
-    """Hard-deletes every DB row scoped to exactly this ONE additional
-    (non-default) cluster — called by delete_cluster() below, inside the
-    SAME session/transaction as that Cluster row's own deletion so a crash
-    partway through can never leave orphaned child rows behind.
+    """Delete every row owned by one additional cluster, child first.
 
-    Only 3 tables carry a `cluster_id`/FK chain back to `clusters.id`
-    (Incident, WatcherHeartbeat, BackupJob — see shared/models.py; every
-    OTHER table in this app is still default-cluster-only, per Cluster's
-    own docstring: patch/upgrade/RestoreDrill/digest/CRUSH-monitor/
-    volume-monitor/node-diagnostics never run for an
-    additional cluster). So this is NOT a generic "cascade delete
-    anything that might reference this row" helper — it is exactly these
-    3 tables' rows, deleted in FK-dependency order (children before
-    parents), the same "manually break/delete the FK before the parent"
-    idiom dashboard/routes/maintenance.py::purge_old_records already uses
-    for the identical Incident -> Action -> AuditEntry chain (there is no
-    ORM/DB cascade configured anywhere in this codebase).
-
-    Deliberately does NOT touch ChatMessage.proposed_incident_id (a
-    nullable FK to Incident) the way purge_old_records does — that purge
-    can hit ANY Incident, chat-originated ones included, so it must null
-    the reference first. Chat (dashboard/routes/chat.py) has no cluster
-    picker and only ever creates Incidents with cluster_id=None (the
-    default cluster) — no ChatMessage row can ever reference a
-    non-default cluster's Incident in the first place, so there is
-    nothing to break here.
+    The ownership graph comes from declared foreign keys, so newly added
+    AI/RGW/RBD tables cannot silently make this route stale again.
     """
-    incident_ids = [
-        row[0] for row in session.query(Incident.id).filter(Incident.cluster_id == cluster_id).all()
-    ]
-    audit_deleted = action_deleted = incident_deleted = 0
-    if incident_ids:
-        audit_deleted = (
-            session.query(AuditEntry)
-            .filter(AuditEntry.incident_id.in_(incident_ids))
-            .delete(synchronize_session=False)
-        )
-        action_deleted = (
-            session.query(Action)
-            .filter(Action.incident_id.in_(incident_ids))
-            .delete(synchronize_session=False)
-        )
-        incident_deleted = (
-            session.query(Incident)
-            .filter(Incident.id.in_(incident_ids))
-            .delete(synchronize_session=False)
-        )
+    cluster_table = Base.metadata.tables["clusters"]
+    children = {table: set() for table in Base.metadata.tables.values()}
+    for table in Base.metadata.tables.values():
+        for constraint in table.foreign_key_constraints:
+            parent = next(iter(constraint.elements)).column.table
+            if parent is not table:
+                children[parent].add(table)
 
-    backup_job_ids = [
-        row[0] for row in session.query(BackupJob.id).filter(BackupJob.cluster_id == cluster_id).all()
-    ]
-    backup_anomaly_deleted = backup_job_deleted = 0
-    if backup_job_ids:
-        backup_anomaly_deleted = (
-            session.query(BackupAnomaly)
-            .filter(BackupAnomaly.backup_job_id.in_(backup_job_ids))
-            .delete(synchronize_session=False)
-        )
-        # BackupJob.base_job_id is a SELF-FK (an incremental row points at
-        # the full export its export-diff chain is based on) — deleting a
-        # whole cluster's chain via one bulk DELETE can otherwise trip that
-        # constraint depending on row-processing order, so break every
-        # self-reference within this cluster's own rows first (same "null
-        # the FK before deleting" idiom as ChatMessage above, just
-        # self-referencing instead of cross-table).
-        session.query(BackupJob).filter(BackupJob.id.in_(backup_job_ids)).update(
-            {"base_job_id": None}, synchronize_session=False
-        )
-        backup_job_deleted = (
-            session.query(BackupJob).filter(BackupJob.id.in_(backup_job_ids)).delete(synchronize_session=False)
-        )
+    reachable = set()
 
-    heartbeat_deleted = (
-        session.query(WatcherHeartbeat)
-        .filter(WatcherHeartbeat.cluster_id == cluster_id)
-        .delete(synchronize_session=False)
-    )
+    def collect(table):
+        for child in children.get(table, ()):
+            if child not in reachable:
+                reachable.add(child)
+                collect(child)
+
+    collect(cluster_table)
+
+    def owned(table, trail=frozenset()):
+        predicates = []
+        for constraint in table.foreign_key_constraints:
+            elements = list(constraint.elements)
+            parent = elements[0].column.table
+            if parent is table or parent in trail:
+                continue
+            if parent is cluster_table:
+                # Avoid a multi-table DELETE criterion: SQLite has no
+                # DELETE..USING. All cluster FKs reference clusters.id.
+                predicates.append(and_(*[
+                    element.parent == cluster_id for element in elements
+                ]))
+            elif parent in reachable:
+                links = [element.parent == element.column for element in elements]
+                parent_owned = owned(parent, trail | {table})
+                if parent_owned is not None:
+                    predicates.append(
+                        exists(select(1).select_from(parent).where(and_(*links, parent_owned)))
+                    )
+        return or_(*predicates) if predicates else None
+
+    # True child-first topological order. A table may reference two parents;
+    # a DFS with a global visited set can otherwise place it after one parent
+    # depending on set iteration order and still violate that FK on DELETE.
+    remaining = set(reachable)
+    ordered = []
+    while remaining:
+        leaves = sorted(
+            (table for table in remaining if not (children.get(table, set()) & remaining)),
+            key=lambda table: table.name,
+        )
+        if not leaves:
+            raise RuntimeError("Không thể xác định thứ tự xóa do vòng lặp khóa ngoại")
+        ordered.extend(leaves)
+        remaining.difference_update(leaves)
+    counts = {}
+    for table in ordered:
+        predicate = owned(table)
+        if predicate is None:
+            continue
+        for constraint in table.foreign_key_constraints:
+            elements = list(constraint.elements)
+            if elements[0].column.table is not table:
+                continue
+            nullable = [element.parent for element in elements if element.parent.nullable]
+            if nullable:
+                session.execute(
+                    update(table).where(predicate).values(
+                        {column.name: None for column in nullable}
+                    )
+                )
+        result = session.execute(delete(table).where(predicate))
+        counts[table.name] = result.rowcount or 0
 
     return {
-        "incidents": incident_deleted,
-        "actions": action_deleted,
-        "audit_entries": audit_deleted,
-        "backup_jobs": backup_job_deleted,
-        "backup_anomalies": backup_anomaly_deleted,
-        "heartbeats": heartbeat_deleted,
+        "incidents": counts.get("incidents", 0),
+        "actions": counts.get("actions", 0),
+        "audit_entries": counts.get("audit_entries", 0),
+        "backup_jobs": counts.get("backup_jobs", 0),
+        "backup_anomalies": counts.get("backup_anomalies", 0),
+        "heartbeats": counts.get("watcher_heartbeat", 0),
+        "all_records": sum(counts.values()),
     }
 
 
@@ -631,22 +635,37 @@ async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(
     target here, same guard/reasoning as toggle_cluster_active above."""
     _require_admin_privilege(user)
 
-    with db.SessionLocal() as session:
-        target = session.get(Cluster, cluster_id)
-        if target is None:
-            return templates.TemplateResponse(
-                request, "clusters.html", _clusters_context(user, cluster_delete_error="Không tìm thấy cụm.")
-            )
-        if target.is_default:
-            return templates.TemplateResponse(
-                request,
-                "clusters.html",
-                _clusters_context(user, cluster_delete_error="Không thể xoá cụm mặc định."),
-            )
-        cluster_name = target.name
-        counts = _purge_cluster_data(session, cluster_id)
-        session.delete(target)
-        session.commit()
+    try:
+        with db.SessionLocal() as session:
+            target = session.get(Cluster, cluster_id)
+            if target is None:
+                return templates.TemplateResponse(
+                    request, "clusters.html", _clusters_context(user, cluster_delete_error="Không tìm thấy cụm.")
+                )
+            if target.is_default:
+                return templates.TemplateResponse(
+                    request,
+                    "clusters.html",
+                    _clusters_context(user, cluster_delete_error="Không thể xoá cụm mặc định."),
+                )
+            cluster_name = target.name
+            counts = _purge_cluster_data(session, cluster_id)
+            session.delete(target)
+            session.commit()
+    except (SQLAlchemyError, RuntimeError):
+        logger.exception("delete_cluster: database purge failed for %s", cluster_id)
+        return templates.TemplateResponse(
+            request,
+            "clusters.html",
+            _clusters_context(
+                user,
+                cluster_delete_error=(
+                    "Không thể xoá cụm vì dữ liệu liên quan chưa được dọn sạch. "
+                    "Không có thay đổi nào được lưu; xem log Dashboard để biết chi tiết."
+                ),
+            ),
+            status_code=409,
+        )
 
     # Same "config only takes effect after a restart" reasoning as
     # create_cluster()/toggle_cluster_active() above — Watcher's poll
@@ -675,6 +694,7 @@ async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(
                 f"{counts['incidents']} incident, {counts['actions']} action, "
                 f"{counts['audit_entries']} audit entry, {counts['backup_jobs']} backup job, "
                 f"{counts['backup_anomalies']} backup anomaly, {counts['heartbeats']} heartbeat. "
+                f"Tổng cộng {counts['all_records']} bản ghi liên quan. "
                 + (f"Không restart được {', '.join(failed)}; cần restart thủ công."
                    if failed else "Watcher/Worker đã khởi động lại.")
             ),

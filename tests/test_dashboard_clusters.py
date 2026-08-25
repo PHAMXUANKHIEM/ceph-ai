@@ -4,7 +4,11 @@ import pytest
 
 import dashboard.routes.clusters as clusters_route
 from shared import db as db_module
-from shared.models import Action, AuditEntry, BackupAnomaly, BackupJob, Cluster, Incident, User, WatcherHeartbeat
+from shared.models import (
+    Action, AuditEntry, BackupAnomaly, BackupJob, CephCapacitySample,
+    Cluster, ClusterCapabilityInventory, Incident, RemediationCase, User,
+    WatcherHeartbeat,
+)
 
 
 def _login(client):
@@ -375,7 +379,22 @@ def _seed_cluster_with_full_data(cluster_id: str) -> None:
         session.add(action)
         session.flush()
 
+        session.add(RemediationCase(
+            incident_id=incident.id, action_id=action.id, cluster_id=cluster_id,
+            fault_family="OSD_DOWN", evidence_fingerprint="a" * 64,
+            prompt_version="test-v1", classification="SAFE",
+            autonomy_decision="PENDING_APPROVAL", outcome="PROPOSED",
+        ))
+
         session.add(AuditEntry(incident_id=incident.id, action_id=action.id, event_type="seed", actor="test"))
+        session.add(ClusterCapabilityInventory(
+            cluster_id=cluster_id, status="SUPPORTED", deployment_mode="cephadm",
+            is_mixed_version=False, current_version="18.2.2", current_major=18,
+        ))
+        session.add(CephCapacitySample(
+            cluster_id=cluster_id, entity_type="cluster", entity_name="ceph",
+            used_bytes=1, total_bytes=10, used_percent=10.0,
+        ))
 
         backup_job = BackupJob(
             cluster_id=cluster_id,
@@ -440,6 +459,9 @@ def test_delete_cluster_purges_only_that_clusters_own_data(dashboard_client, mon
         assert session.query(Incident).filter_by(cluster_id=cluster_b_id).count() == 0
         assert session.query(BackupJob).filter_by(cluster_id=cluster_b_id).count() == 0
         assert session.query(WatcherHeartbeat).filter_by(cluster_id=cluster_b_id).count() == 0
+        assert session.query(RemediationCase).filter_by(cluster_id=cluster_b_id).count() == 0
+        assert session.query(ClusterCapabilityInventory).filter_by(cluster_id=cluster_b_id).count() == 0
+        assert session.query(CephCapacitySample).filter_by(cluster_id=cluster_b_id).count() == 0
         assert (
             session.query(Action)
             .join(Incident, Action.incident_id == Incident.id)
@@ -454,6 +476,9 @@ def test_delete_cluster_purges_only_that_clusters_own_data(dashboard_client, mon
         assert session.query(Incident).filter_by(cluster_id=cluster_a_id).count() == 1
         assert session.query(BackupJob).filter_by(cluster_id=cluster_a_id).count() == 1
         assert session.query(WatcherHeartbeat).filter_by(cluster_id=cluster_a_id).count() == 1
+        assert session.query(RemediationCase).filter_by(cluster_id=cluster_a_id).count() == 1
+        assert session.query(ClusterCapabilityInventory).filter_by(cluster_id=cluster_a_id).count() == 1
+        assert session.query(CephCapacitySample).filter_by(cluster_id=cluster_a_id).count() == 1
         assert (
             session.query(Action)
             .join(Incident, Action.incident_id == Incident.id)
