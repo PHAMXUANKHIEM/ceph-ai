@@ -612,7 +612,32 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     payload = default_redactor.redact(enriched_envelope)
     user_content = _build_user_content(payload)
 
-    result = await _call_router(user_content)
+    deterministic_omap = envelope.get("ceph_code") == _LARGE_OMAP_OBJECTS_CODE
+    if deterministic_omap:
+        omap_plan = _large_omap_reshard_params(envelope)
+        if omap_plan:
+            omap_text = (
+                f"Bucket {omap_plan['bucket_name']} có {omap_plan['key_count']} key/"
+                f"{omap_plan['current_shards']} shard, vượt ngưỡng {omap_plan['key_threshold']}. "
+                f"Controller chọn {omap_plan['num_shards']} shard để giữ tải dự kiến dưới 80% "
+                "ngưỡng; evidence gồm object và PG thật từ deep-scrub."
+            )
+            result = {
+                "diagnosis_text": omap_text,
+                "action_id": "reshard_rgw_bucket",
+                "rationale": omap_text,
+                "diagnosis_confidence": 0.99,
+            }
+        else:
+            omap_text = _large_omap_diagnosis(envelope)
+            result = {
+                "diagnosis_text": omap_text,
+                "action_id": "investigate_manually",
+                "rationale": omap_text,
+                "diagnosis_confidence": 1.0,
+            }
+    else:
+        result = await _call_router(user_content)
 
     diagnosis_text = (result.get("diagnosis_text") or "").strip()
     action_id = (result.get("action_id") or "").strip()
@@ -989,6 +1014,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     session, incident=incident, action=action, redacted_envelope=payload,
                     diagnosis=diagnosis_text,
                     model_provider=(
+                        "deterministic-controller" if deterministic_omap else
                         "codex" if settings.codex_chat_enabled else
                         "claude" if settings.claude_chat_enabled else settings.router_provider
                     ),
