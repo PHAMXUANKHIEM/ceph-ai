@@ -12,7 +12,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import audit, db, incident_events, remediation_cases, trust_engine
+from shared import audit, db, incident_events, log_learning, remediation_cases, trust_engine
 from shared.case_retrieval import find_verified_cases
 from shared.models import (
     Action,
@@ -2173,6 +2173,8 @@ def _process_approved_actions_once() -> None:
         scrubbed = remediation_cases.scrub_existing_case_memory(session)
         trust_updated = trust_engine.recompute_playbook_stats(session, now=datetime.utcnow())
         promotion_updated = trust_engine.evaluate_promotion_candidates(session, now=datetime.utcnow())
+        log_learning_updated = log_learning.reconcile_samples(session, now=datetime.utcnow())
+        log_fault_stats_updated = log_learning.recompute_fault_stats(session, now=datetime.utcnow())
     if recovered:
         logger.warning(
             "reconciled %d expired autonomous execution(s) as INCONCLUSIVE; none were retried",
@@ -2188,6 +2190,10 @@ def _process_approved_actions_once() -> None:
         logger.info("recomputed %d Playbook Trust aggregate(s)", trust_updated)
     if promotion_updated:
         logger.info("updated %d playbook promotion candidate evaluation(s)", promotion_updated)
+    if log_learning_updated:
+        logger.info("updated %d daemon-log learning sample(s)", log_learning_updated)
+    if log_fault_stats_updated:
+        logger.info("recomputed %d daemon-log fault aggregate(s)", log_fault_stats_updated)
     _reconcile_stuck_rbd_actions_once()
     _process_due_grace_actions_once()
     with db.SessionLocal() as session:

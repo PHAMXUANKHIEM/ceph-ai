@@ -7,6 +7,9 @@ người trực nhận cảnh báo.
 Cập nhật: 2026-08-21. Trạng thái code: L0–L5 đã hoàn thành; production đã
 chạy nguồn Loki. Xem trạng thái bàn giao tổng thể tại `docs/CEPH_AI_HANDOFF.md`.
 
+Quy trình triển khai để biến LogFinding đã xác minh thành dữ liệu học có giám
+sát nằm tại [`loki-daemon-log-learning.md`](loki-daemon-log-learning.md).
+
 ---
 
 ## 1. Nó làm gì

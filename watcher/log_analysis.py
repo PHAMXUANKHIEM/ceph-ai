@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 import httpx
 
 from config.settings import settings
-from shared import db
+from shared import db, log_learning
 from shared.incident_actions import cancel_pending_actions
 from shared.cluster_nodes import configured_nodes
 from shared import audit
@@ -821,6 +821,7 @@ def analyze_window(
         session.add(finding)
         session.flush()
         correlate_finding(session, finding, now=window_end)
+        log_learning.record_finding_sample(session, finding, now=window_end)
         session.commit()
         finding_id = finding.id
         evidence_templates = resolve_pattern_templates(finding)

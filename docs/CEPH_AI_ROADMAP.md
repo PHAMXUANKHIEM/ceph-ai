@@ -62,6 +62,8 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
   - Operator đánh dấu chẩn đoán đúng/sai, false positive và hiệu quả action.
   - Báo cáo precision/false-positive theo health code, fault family và AI provider.
   - Trước mắt dùng phản hồi để chỉnh rule/prompt; chưa tự fine-tune từ dữ liệu production.
+  - Quy trình triển khai vòng học lỗi daemon từ Loki được đặc tả tại
+    [`loki-daemon-log-learning.md`](loki-daemon-log-learning.md).
 - [ ] **8. Autonomous Operations theo playbook maturity**
   - Lưu Remediation Case và outcome đã verify để tái sử dụng cho lỗi quen thuộc.
   - Chạy Shadow Autopilot trước khi mở quyền tự thực thi trên lab/production.
