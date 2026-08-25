@@ -29,6 +29,12 @@ _FAMILY_CODES: dict[str, tuple[str, ...]] = {
     "clock_skew": ("MON_CLOCK_SKEW", "CLOCK_SKEW"),
     "authentication": ("AUTH_",),
     "rgw_request": ("RGW_",),
+    "rgw_encryption_key": ("RGW_", "AUTH_"),
+    "rgw_permission": ("RGW_", "AUTH_"),
+    "mon_operational": ("MON_",),
+    "mgr_operational": ("MGR_",),
+    "osd_operational": ("OSD_",),
+    "mds_operational": ("MDS_",),
 }
 
 _TERMINAL_STATUSES = {

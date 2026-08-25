@@ -20,6 +20,15 @@ class SemanticIdentity:
 
 
 _FAMILY_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("rgw_encryption_key", re.compile(
+        r"\b(?:vault token|vault secrets engine|request to vault|"
+        r"failed to retrieve actual key|crypt default encryption key|"
+        r"key_id)\b", re.I
+    )),
+    ("rgw_permission", re.compile(
+        r"\b(?:s3:|rgw|radosgw)\b.*\b(?:access denied|permission(?:s)? .*not found|"
+        r"signaturedoesnotmatch|invalidaccesskeyid|forbidden)\b", re.I
+    )),
     ("disk_io", re.compile(r"\b(?:i/o error|input/output error|read error|write error|medium error|smart)\b", re.I)),
     ("bluestore_slow_ops", re.compile(r"\b(?:bluestore|bluefs)\b.*\b(?:slow|stalled|latency)\b|\bslow ops?\b", re.I)),
     ("network_heartbeat", re.compile(r"\b(?:heartbeat|no reply|connection reset|connection refused|broken pipe)\b", re.I)),
@@ -39,6 +48,18 @@ _FAMILY_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("rgw_request", re.compile(r"\b(?:radosgw|rgw|s3)\b.*\b(?:error|failed|timeout|slow)\b", re.I)),
 )
 
+_ERROR_HINT = re.compile(
+    r"\b(?:error|failed|failure|timeout|timed out|unreachable|denied|corrupt|stalled|crash)\b",
+    re.I,
+)
+_DAEMON_FALLBACK_FAMILIES = {
+    "mon": "mon_operational",
+    "mgr": "mgr_operational",
+    "osd": "osd_operational",
+    "mds": "mds_operational",
+    "rgw": "rgw_request",
+}
+
 _VOLUME_PATTERNS = (
     re.compile(r"\b(?:rbd(?:\s+image)?|volume)\s+['\"]?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", re.I),
     re.compile(
@@ -53,6 +74,17 @@ def derive_identity(
 ) -> SemanticIdentity:
     text = "\n".join(value for value in templates if isinstance(value, str))
     family = next((name for name, pattern in _FAMILY_RULES if pattern.search(text)), None)
+    trusted_daemon_types = {
+        value.strip().lower().split(".", 1)[0]
+        for value in affected_daemons
+        if isinstance(value, str) and value.strip()
+    }
+    # A finding has already passed anomaly triage, but a generic fallback is
+    # still only allowed when its cited template contains an explicit failure
+    # hint. Informational chatter must remain unknown rather than becoming a
+    # false semantic label merely because it came from a known daemon.
+    if family is None and _ERROR_HINT.search(text) and len(trusted_daemon_types) == 1:
+        family = _DAEMON_FALLBACK_FAMILIES.get(next(iter(trusted_daemon_types)))
     entities = {
         *(f"host:{value.strip().lower()}" for value in affected_hosts if isinstance(value, str) and value.strip()),
         *(f"daemon:{value.strip().lower()}" for value in affected_daemons if isinstance(value, str) and value.strip()),

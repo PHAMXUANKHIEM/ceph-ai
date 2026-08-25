@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from shared import db
+from shared import db, log_learning
 from shared.models import (
     Action,
     ActionStatus,
@@ -13,6 +13,8 @@ from shared.models import (
     IncidentStatus,
     LogFinding,
     LogFindingStatus,
+    LogLearningAudit,
+    LogLearningSample,
     LogIngestRun,
     LogIngestStatus,
     LogPattern,
@@ -224,6 +226,45 @@ def test_acknowledge_unknown_finding_is_404(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.post("/log-intelligence/findings/khong-co/acknowledge")
     assert response.status_code == 404
+
+
+def test_learning_dashboard_shows_state_and_audit_only_gate(dashboard_client, seeded):
+    with db.SessionLocal() as session:
+        finding = session.get(LogFinding, seeded["finding_id"])
+        sample = log_learning.record_finding_sample(session, finding, now=NOW)
+        log_learning.recompute_fault_stats(session, now=NOW)
+        sample_id = sample.id
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/log-intelligence")
+    assert response.status_code == 200
+    assert "AI Learning từ log daemon" in response.text
+    assert "INSUFFICIENT_EVIDENCE" in response.text
+    assert "audit-only" in response.text
+    assert sample_id in response.text
+
+
+def test_admin_can_record_audited_negative_learning_verdict(dashboard_client, seeded):
+    with db.SessionLocal() as session:
+        finding = session.get(LogFinding, seeded["finding_id"])
+        sample_id = log_learning.record_finding_sample(session, finding, now=NOW).id
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        f"/log-intelligence/learning/{sample_id}/verdict",
+        data={"verdict": "FALSE_POSITIVE", "note": "Log kiểm thử có chủ đích"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    with db.SessionLocal() as session:
+        sample = session.get(LogLearningSample, sample_id)
+        # PARTIAL coverage remains the stronger fail-closed gate.
+        assert sample.operator_verdict == "FALSE_POSITIVE"
+        assert sample.eligible_for_learning is False
+        audit = session.query(LogLearningAudit).one()
+        assert audit.actor == "admin"
+        assert audit.event_type == "OPERATOR_VERDICT_UPDATED"
 
 
 # --- Đề xuất hành động (advisory) -----------------------------------------

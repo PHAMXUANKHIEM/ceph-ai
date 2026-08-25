@@ -27,12 +27,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db
+from shared import db, log_learning
 from shared.models import (
     Incident,
     LogFinding,
     LogFindingStatus,
     LogIngestRun,
+    LogFaultStat,
+    LogLearningSample,
     LogPattern,
     LogPatternTriageLabel,
 )
@@ -44,6 +46,7 @@ templates = make_templates()
 MAX_RUNS = 10
 MAX_FINDINGS = 50
 MAX_PATTERNS = 100
+MAX_LEARNING_SAMPLES = 100
 
 
 def _require_admin_privilege(user: str) -> None:
@@ -69,6 +72,18 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
             session.query(LogFinding)
             .order_by(LogFinding.created_at.desc())
             .limit(MAX_FINDINGS)
+            .all()
+        )
+        learning_samples = (
+            session.query(LogLearningSample)
+            .order_by(LogLearningSample.created_at.desc())
+            .limit(MAX_LEARNING_SAMPLES)
+            .all()
+        )
+        samples_by_finding = {sample.log_finding_id: sample for sample in learning_samples}
+        fault_stats = (
+            session.query(LogFaultStat)
+            .order_by(LogFaultStat.sample_count.desc(), LogFaultStat.daemon_type, LogFaultStat.fault_family)
             .all()
         )
         patterns = (
@@ -100,6 +115,7 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
                 "ceph_code": ceph_code_for(finding.dedupe_key),
                 "correlated_incident": correlated_incidents.get(finding.correlated_incident_id),
                 "is_rgw": "rgw" in daemon_types,
+                "learning_sample": samples_by_finding.get(finding.id),
             })
 
         # Tách các đối tượng ra khỏi session trước khi nó đóng: template
@@ -113,6 +129,8 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
         "finding_rows": finding_rows,
         "rgw_finding_rows": [item for item in finding_rows if item["is_rgw"]],
         "patterns": patterns,
+        "learning_samples": learning_samples,
+        "fault_stats": fault_stats,
         "open_status": LogFindingStatus.OPEN.value,
         "acknowledged_status": LogFindingStatus.ACKNOWLEDGED.value,
         "resolved_status": LogFindingStatus.RESOLVED.value,
@@ -143,6 +161,32 @@ async def acknowledge_finding(finding_id: str, user: str = Depends(require_login
             finding.status = LogFindingStatus.ACKNOWLEDGED.value
             session.commit()
     return RedirectResponse("/log-intelligence", status_code=303)
+
+
+@router.post("/log-intelligence/learning/{sample_id}/verdict")
+async def learning_verdict(
+    sample_id: str,
+    user: str = Depends(require_login),
+    verdict: str = Form(""),
+    note: str = Form(""),
+):
+    """Audited supervision only; it cannot execute or promote a playbook."""
+    _require_admin_privilege(user)
+    with db.SessionLocal() as session:
+        sample = session.get(LogLearningSample, sample_id)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy mẫu học")
+        try:
+            log_learning.set_operator_verdict(
+                session, sample=sample, verdict=verdict, note=note, actor=user,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                f"/log-intelligence?error={str(exc).replace(' ', '+')}", status_code=303
+            )
+        session.commit()
+        log_learning.recompute_fault_stats(session)
+    return RedirectResponse("/log-intelligence?message=learning-verdict-saved", status_code=303)
 
 
 @router.post("/log-intelligence/patterns/{pattern_id}/label")

@@ -55,6 +55,8 @@ def test_family_catalogue_rejects_log_intel_synthetic_incident():
 def test_capacity_family_accepts_real_ceph_code_variants():
     assert family_matches_code("capacity_pressure", "OSD_BACKFILLFULL")
     assert family_matches_code("capacity_pressure", "POOL_NEAR_FULL")
+    assert family_matches_code("rgw_encryption_key", "RGW_SERVICE_ERROR")
+    assert family_matches_code("osd_operational", "OSD_DOWN")
 
 
 def test_volume_correlation_requires_matching_pool_and_image():

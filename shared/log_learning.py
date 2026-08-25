@@ -11,6 +11,7 @@ from shared.models import (
     LogFaultStat,
     LogFinding,
     LogIngestRun,
+    LogLearningAudit,
     LogLearningSample,
     LogPattern,
     RemediationCase,
@@ -19,6 +20,9 @@ from shared.models import (
 PARSER_VERSION = "log-pattern-v1"
 SEMANTIC_VERSION = "daemon-fault-v1"
 BAD_OPERATOR_VERDICTS = {"FALSE_POSITIVE", "UNSAFE", "INEFFECTIVE"}
+VALID_OPERATOR_VERDICTS = {
+    "CORRECT", "FALSE_POSITIVE", "WRONG_ROOT_CAUSE", "INEFFECTIVE", "UNSAFE",
+}
 
 
 def _json_list(value: str | None) -> list[str]:
@@ -121,6 +125,13 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
         sample.label = "UNVERIFIED"
         sample.eligible_for_learning = False
         sample.exclusion_reason = "missing ingest provenance" if run is None else f"ingest coverage is {run.status}"
+    elif sample.operator_verdict in BAD_OPERATOR_VERDICTS | {"WRONG_ROOT_CAUSE"}:
+        sample.state = "FALSE_POSITIVE"
+        sample.label = "VERIFIED_FAILED"
+        sample.eligible_for_learning = True
+        sample.exclusion_reason = None
+        sample.outcome_source = "OPERATOR_VERDICT"
+        sample.verified_at = sample.operator_verdict_at or (now or datetime.utcnow())
     else:
         finding = session.get(LogFinding, sample.log_finding_id)
         sample.incident_id = finding.correlated_incident_id if finding else sample.incident_id
@@ -187,6 +198,93 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
     return before != after
 
 
+def set_operator_verdict(
+    session, *, sample: LogLearningSample, verdict: str, note: str,
+    actor: str, now: datetime | None = None,
+) -> None:
+    """Set an audited supervised label; positive labels still need telemetry."""
+    verdict = (verdict or "").strip().upper()
+    note = (note or "").strip()
+    if verdict not in VALID_OPERATOR_VERDICTS:
+        raise ValueError("invalid operator verdict")
+    if verdict != "CORRECT" and len(note) < 5:
+        raise ValueError("a reason of at least 5 characters is required")
+    if len(note) > 2000:
+        raise ValueError("operator note is too long")
+    now = now or datetime.utcnow()
+    previous = {
+        "verdict": sample.operator_verdict,
+        "note": sample.operator_note,
+        "actor": sample.operator_verdict_by,
+        "at": sample.operator_verdict_at.isoformat() if sample.operator_verdict_at else None,
+    }
+    sample.operator_verdict = verdict
+    sample.operator_note = note or None
+    sample.operator_verdict_by = actor
+    sample.operator_verdict_at = now
+    evaluate_sample(session, sample, now=now)
+    session.add(LogLearningAudit(
+        sample_id=sample.id,
+        event_type="OPERATOR_VERDICT_UPDATED",
+        actor=actor,
+        previous_value_json=json.dumps(previous, sort_keys=True),
+        new_value_json=json.dumps({"verdict": verdict, "note": note or None}, sort_keys=True),
+        created_at=now,
+    ))
+
+
+def reclassify_unverified_samples(session, *, now: datetime | None = None, limit: int = 500) -> int:
+    """Apply the current server catalogue to unverified legacy snapshots."""
+    from watcher.log_semantics import derive_identity
+
+    now = now or datetime.utcnow()
+    samples = (
+        session.query(LogLearningSample)
+        .filter(LogLearningSample.eligible_for_learning.is_(False))
+        .order_by(LogLearningSample.updated_at)
+        .limit(limit)
+        .all()
+    )
+    changed = 0
+    for sample in samples:
+        finding = session.get(LogFinding, sample.log_finding_id)
+        if finding is None:
+            continue
+        pattern_ids = _json_list(finding.evidence_pattern_ids_json)
+        patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all() if pattern_ids else []
+        semantic = derive_identity(
+            [pattern.template for pattern in patterns],
+            _json_list(finding.affected_hosts_json),
+            _json_list(finding.affected_daemons_json),
+        )
+        new_family = semantic.fault_family or "unknown"
+        if new_family == sample.fault_family and set(semantic.entities) == set(_json_list(finding.semantic_entities_json)):
+            continue
+        previous = {"fault_family": sample.fault_family, "entity_key": sample.entity_key}
+        finding.fault_family = semantic.fault_family
+        finding.semantic_entities_json = json.dumps(semantic.entities)
+        sample.fault_family = new_family
+        daemon_type, daemon_id, host, entity_key = _identity(finding, patterns)
+        sample.daemon_type = daemon_type
+        sample.daemon_id = daemon_id
+        sample.host = host
+        sample.entity_key = entity_key
+        run = session.get(LogIngestRun, sample.ingest_run_id)
+        if run is not None:
+            sample.evidence_fingerprint = _fingerprint(finding, run, pattern_ids)
+        sample.semantic_version = SEMANTIC_VERSION
+        sample.updated_at = now
+        session.add(LogLearningAudit(
+            sample_id=sample.id, event_type="SEMANTIC_RECLASSIFIED", actor="system",
+            previous_value_json=json.dumps(previous, sort_keys=True),
+            new_value_json=json.dumps({"fault_family": new_family, "entity_key": entity_key}, sort_keys=True),
+            created_at=now,
+        ))
+        changed += 1
+    session.commit()
+    return changed
+
+
 def reconcile_samples(session, *, now: datetime | None = None, limit: int = 500) -> int:
     """Create missing samples and refresh outcome projections in bounded batches."""
     now = now or datetime.utcnow()
@@ -202,6 +300,7 @@ def reconcile_samples(session, *, now: datetime | None = None, limit: int = 500)
     for sample in session.query(LogLearningSample).order_by(LogLearningSample.updated_at).limit(limit).all():
         changed += int(evaluate_sample(session, sample, now=now))
     session.commit()
+    changed += reclassify_unverified_samples(session, now=now, limit=limit)
     return changed
 
 
@@ -219,6 +318,12 @@ def recompute_fault_stats(session, *, now: datetime | None = None) -> int:
         )
         grouped[key].append(sample)
     changed = 0
+    active_keys = set(grouped)
+    for stat in session.query(LogFaultStat).all():
+        key = (stat.cluster_id, stat.daemon_type, stat.fault_family, stat.playbook_id, stat.playbook_version)
+        if key not in active_keys:
+            session.delete(stat)
+            changed += 1
     for key, samples in grouped.items():
         eligible = [sample for sample in samples if sample.eligible_for_learning]
         successes = sum(sample.label == "VERIFIED_SUCCESS" for sample in eligible)

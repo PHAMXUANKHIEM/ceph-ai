@@ -2216,12 +2216,32 @@ class LogLearningSample(Base):
     eligible_for_learning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     exclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    operator_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    operator_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator_verdict_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    operator_verdict_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     regressed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class LogLearningAudit(Base):
+    """Append-only audit for supervised labels and semantic reconciliation."""
+
+    __tablename__ = "log_learning_audit"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    sample_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("log_learning_samples.id"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_value_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class LogFaultStat(Base):

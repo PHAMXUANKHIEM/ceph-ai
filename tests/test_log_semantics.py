@@ -39,3 +39,17 @@ def test_unknown_family_fails_closed():
     identity = derive_identity(["an unfamiliar message"], ["node-a"], ["osd.5"])
     assert identity.fault_family is None
     assert not same_semantic_problem(None, set(identity.entities), None, set(identity.entities))
+
+
+def test_rgw_vault_key_failures_have_a_stable_server_family():
+    identity = derive_identity(
+        ["req <N> ERROR: Vault token file '<PATH>' not found",
+         "ERROR: failed to retrieve actual key from key_id: <UUID>"],
+        ["rgw-1"], ["rgw"],
+    )
+    assert identity.fault_family == "rgw_encryption_key"
+
+
+def test_generic_daemon_fallback_requires_an_explicit_failure_hint():
+    assert derive_identity(["manager module failed to load"], [], ["mgr"]).fault_family == "mgr_operational"
+    assert derive_identity(["manager module loaded"], [], ["mgr"]).fault_family is None

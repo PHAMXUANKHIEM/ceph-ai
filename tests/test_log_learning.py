@@ -10,6 +10,7 @@ from shared.log_learning import (
     evaluate_sample,
     record_finding_sample,
     recompute_fault_stats,
+    set_operator_verdict,
 )
 from shared.models import (
     Action,
@@ -19,6 +20,7 @@ from shared.models import (
     LogFinding,
     LogIngestRun,
     LogLearningSample,
+    LogLearningAudit,
     LogPattern,
 )
 from shared.remediation_cases import create_for_action, record_verified
@@ -166,3 +168,39 @@ def test_bad_operator_verdict_is_a_verified_negative_even_after_success():
     assert sample.label == "VERIFIED_FAILED"
     assert sample.eligible_for_learning is True
     assert sample.outcome_source == "OPERATOR_VERDICT"
+
+
+def test_sample_operator_verdict_is_audited_and_fails_closed_for_positive():
+    session = _session()
+    now, _cluster, _incident, finding = _seed(session, correlated=False)
+    sample = record_finding_sample(session, finding, now=now)
+
+    set_operator_verdict(
+        session, sample=sample, verdict="CORRECT", note="", actor="admin", now=now,
+    )
+    assert sample.eligible_for_learning is False
+    assert sample.label == "UNVERIFIED"
+
+    set_operator_verdict(
+        session, sample=sample, verdict="FALSE_POSITIVE",
+        note="Log kiểm thử có chủ đích", actor="admin", now=now,
+    )
+    session.commit()
+    assert sample.eligible_for_learning is True
+    assert sample.label == "VERIFIED_FAILED"
+    assert sample.outcome_source == "OPERATOR_VERDICT"
+    assert session.query(LogLearningAudit).count() == 2
+
+
+def test_bad_verdict_requires_a_meaningful_note():
+    session = _session()
+    now, _cluster, _incident, finding = _seed(session)
+    sample = record_finding_sample(session, finding, now=now)
+    try:
+        set_operator_verdict(
+            session, sample=sample, verdict="UNSAFE", note="no", actor="admin", now=now,
+        )
+    except ValueError as exc:
+        assert "at least 5" in str(exc)
+    else:
+        raise AssertionError("short unsafe verdict note was accepted")

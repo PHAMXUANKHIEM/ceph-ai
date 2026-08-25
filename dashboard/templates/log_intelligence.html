@@ -97,6 +97,70 @@
       </div>
     </section>
 
+    <section class="card" id="ai-learning">
+      <div class="card-header"><h2>AI Learning từ log daemon</h2></div>
+      <div class="card-body">
+        <p class="muted">
+          Chỉ outcome đã xác minh hoặc verdict xấu có audit mới được tính vào trust.
+          Aggregate hiện ở chế độ <strong>audit-only</strong>, không tự mở Autopilot.
+        </p>
+        {% if fault_stats %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Daemon</th><th>Fault family</th><th>Playbook</th><th>Mẫu</th><th>Verified</th><th>Thành công/Thất bại</th><th>Wilson trust</th><th>Gate</th></tr></thead>
+            <tbody>
+              {% for stat in fault_stats %}
+              <tr>
+                <td>{{ stat.daemon_type }}</td><td><code>{{ stat.fault_family }}</code></td>
+                <td><code>{{ stat.playbook_id }}</code></td><td>{{ stat.sample_count }}</td>
+                <td>{{ stat.verified_count }}</td><td>{{ stat.success_count }}/{{ stat.failure_count }}</td>
+                <td>{{ '%.3f'|format(stat.trust_score) }}</td>
+                <td class="muted">{{ stat.promotion_blocked_reason }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}<p class="muted">Chưa có aggregate học.</p>{% endif %}
+
+        {% if learning_samples %}
+        <div class="table-wrap" style="margin-top:1rem">
+          <table>
+            <thead><tr><th>Thời điểm</th><th>Daemon/entity</th><th>Family</th><th>State</th><th>Được học</th><th>Lý do</th>{% if is_admin %}<th>Operator verdict</th>{% endif %}</tr></thead>
+            <tbody>
+              {% for sample in learning_samples %}
+              <tr>
+                <td>{{ sample.created_at.strftime('%d/%m %H:%M') }}</td>
+                <td>{{ sample.daemon_type }}<div class="muted">{{ sample.entity_key }}</div></td>
+                <td><code>{{ sample.fault_family }}</code></td>
+                <td><span class="badge">{{ sample.state }}</span><div class="muted">{{ sample.label }}</div></td>
+                <td>{% if sample.eligible_for_learning %}<span class="badge badge-ok">Có</span>{% else %}<span class="badge">Không</span>{% endif %}</td>
+                <td class="muted">{{ sample.exclusion_reason or sample.outcome_source or '—' }}</td>
+                {% if is_admin %}
+                <td>
+                  {% if sample.operator_verdict %}<div><strong>{{ sample.operator_verdict }}</strong> · {{ sample.operator_verdict_by }}</div>{% endif %}
+                  <form method="post" action="/log-intelligence/learning/{{ sample.id }}/verdict" style="display:grid;gap:.25rem;min-width:16rem">
+                    <select name="verdict">
+                      <option value="CORRECT">Đúng</option>
+                      <option value="FALSE_POSITIVE">False positive</option>
+                      <option value="WRONG_ROOT_CAUSE">Sai nguyên nhân</option>
+                      <option value="INEFFECTIVE">Action không hiệu quả</option>
+                      <option value="UNSAFE">Không an toàn</option>
+                    </select>
+                    <input name="note" maxlength="2000" placeholder="Lý do (bắt buộc nếu verdict xấu)">
+                    <button type="submit" class="btn btn-ghost btn-sm">Lưu verdict</button>
+                  </form>
+                </td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
     <section class="card">
       <div class="card-header"><h2>🌐 Cảnh báo RGW — AI phân tích</h2></div>
       <div class="card-body">
