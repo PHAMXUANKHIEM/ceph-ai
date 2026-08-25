@@ -94,6 +94,38 @@ def _create_incident(incident_id: str) -> None:
         session.commit()
 
 
+def test_pool_too_many_pgs_extracts_only_decreasing_ceph_targets():
+    envelope = {
+        "cluster_snapshot": {"checks": {"POOL_TOO_MANY_PGS": {"detail": [
+            {"message": "Pool 'images' has 128 placement groups, should have 32"},
+            {"message": "Pool volumes has 64 placement groups, should have 16"},
+            {"message": "Pool bad has 8 placement groups, should have 32"},
+        ]}}},
+    }
+
+    assert router_client._pool_pg_adjustments_from_health_detail(
+        envelope, check_code="POOL_TOO_MANY_PGS",
+    ) == [
+        {"pool_name": "images", "current_pg_num": 128, "pg_num": 32},
+        {"pool_name": "volumes", "current_pg_num": 64, "pg_num": 16},
+    ]
+
+
+def test_large_omap_diagnosis_is_read_only_and_rgw_specific():
+    envelope = {
+        "cluster_snapshot": {"checks": {"LARGE_OMAP_OBJECTS": {"detail": [
+            {"message": "2 large objects found in pool '.rgw.buckets.index'"},
+        ]}}},
+        "log_excerpt": "Large omap object found. Object: .dir.bucket-marker key count 250000",
+    }
+
+    diagnosis = router_client._large_omap_diagnosis(envelope)
+
+    assert ".rgw.buckets.index" in diagnosis
+    assert "rgw_dynamic_resharding" in diagnosis
+    assert "không được xoá" in diagnosis
+
+
 def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, monkeypatch):
     redact_calls = []
 

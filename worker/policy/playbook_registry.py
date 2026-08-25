@@ -134,6 +134,18 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         "set_pool_pg_num", target_schema="cluster", max_autonomy="L2",
         conflict_scope="cluster", postcheck="pool_pg_health_telemetry",
     ),
+    "enable_pool_pg_autoscaler": _contract(
+        "enable_pool_pg_autoscaler", target_schema="cluster", max_autonomy="L2",
+        conflict_scope="cluster", postcheck="pool_pg_health_telemetry",
+    ),
+    "reshard_rgw_bucket": _contract(
+        "reshard_rgw_bucket", target_schema="cluster", max_autonomy="L2",
+        conflict_scope="cluster", cooldown_seconds=3600,
+    ),
+    "deep_scrub_omap_pg": _contract(
+        "deep_scrub_omap_pg", target_schema="cluster", max_autonomy="L2",
+        conflict_scope="cluster", cooldown_seconds=3600,
+    ),
     "enable_pool_application": _contract(
         "enable_pool_application", target_schema="cluster", max_autonomy="L2",
         conflict_scope="cluster", postcheck="pool_application_health_telemetry",

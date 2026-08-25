@@ -642,6 +642,25 @@ def test_get_command_set_pool_pg_num_builds_expected_command():
     assert command == "ceph osd pool set rbd_data pg_num 64"
 
 
+def test_get_command_enable_pool_pg_autoscaler_builds_scoped_batch():
+    command = get_command(
+        "enable_pool_pg_autoscaler", params={"pools": ["images", "volumes"]},
+    )
+    assert command == (
+        "ceph osd pool set images pg_autoscale_mode on && "
+        "ceph osd pool set volumes pg_autoscale_mode on"
+    )
+
+
+def test_get_command_builds_bounded_large_omap_operations():
+    assert get_command(
+        "reshard_rgw_bucket", params={"bucket_name": "archive-data", "num_shards": 31},
+    ) == "radosgw-admin bucket reshard --bucket=archive-data --num-shards=31"
+    assert get_command(
+        "deep_scrub_omap_pg", params={"pg_id": "12.ab"},
+    ) == "ceph pg deep-scrub 12.ab"
+
+
 def test_get_command_set_pool_pg_num_builds_health_detail_batch():
     command = get_command(
         "set_pool_pg_num",

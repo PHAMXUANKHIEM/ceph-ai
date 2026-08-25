@@ -319,6 +319,36 @@ def _set_pool_pg_num_command(params: dict) -> str:
     return f"ceph osd pool set {shlex.quote(pool_name)} pg_num {pg_num}"
 
 
+def _enable_pool_pg_autoscaler_command(params: dict) -> str:
+    pools = params.get("pools") if isinstance(params, dict) else None
+    if not isinstance(pools, list) or not pools:
+        raise ExecutorError("pools must be a non-empty list")
+    names = []
+    for value in pools:
+        names.append(_require_pool_name({"pool_name": value}))
+    return " && ".join(
+        f"ceph osd pool set {shlex.quote(name)} pg_autoscale_mode on" for name in names
+    )
+
+
+def _reshard_rgw_bucket_command(params: dict) -> str:
+    bucket = params.get("bucket_name") if isinstance(params, dict) else None
+    if not isinstance(bucket, str) or not bucket or len(bucket) > 255 or bucket.startswith("-"):
+        raise ExecutorError(f"invalid or missing bucket_name: {bucket!r}")
+    shards = _require_int(params, "num_shards", (2, 19999))
+    return (
+        "radosgw-admin bucket reshard "
+        f"--bucket={shlex.quote(bucket)} --num-shards={shards}"
+    )
+
+
+def _deep_scrub_omap_pg_command(params: dict) -> str:
+    pg_id = params.get("pg_id") if isinstance(params, dict) else None
+    if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
+        raise ExecutorError(f"invalid or missing pg_id: {pg_id!r}")
+    return f"ceph pg deep-scrub {shlex.quote(pg_id)}"
+
+
 def _edit_pool_command(params: dict) -> str:
     pool_name = _require_pool_name(params)
     size = _require_int(params, "size", _POOL_SIZE_RANGE)
@@ -541,6 +571,9 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "delete_pool": _delete_pool_command,
     "set_pool_size": _set_pool_size_command,
     "set_pool_pg_num": _set_pool_pg_num_command,
+    "enable_pool_pg_autoscaler": _enable_pool_pg_autoscaler_command,
+    "reshard_rgw_bucket": _reshard_rgw_bucket_command,
+    "deep_scrub_omap_pg": _deep_scrub_omap_pg_command,
     "mark_osd_out": lambda params: _mark_osd_command("out", params),
     "mark_osd_in": lambda params: _mark_osd_command("in", params),
     "mark_osd_down": lambda params: _mark_osd_command("down", params),

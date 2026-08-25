@@ -114,6 +114,8 @@ AI_EXECUTABLE_ACTION_IDS = frozenset(
 ) | frozenset({"enable_pool_application"})
 _POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
 _POOL_TOO_FEW_PGS_CODE = "POOL_TOO_FEW_PGS"
+_POOL_TOO_MANY_PGS_CODE = "POOL_TOO_MANY_PGS"
+_LARGE_OMAP_OBJECTS_CODE = "LARGE_OMAP_OBJECTS"
 _OSD_UPGRADE_FINISHED_CODE = "OSD_UPGRADE_FINISHED"
 _KNOWN_CEPH_CODENAMES = frozenset(row["codename"] for row in RELEASES.values())
 _POOL_NAME_PATTERNS = (
@@ -127,11 +129,13 @@ _POOL_TOO_FEW_PGS_PATTERN = re.compile(
 )
 
 
-def _pool_pg_adjustments_from_health_detail(envelope: dict) -> list[dict]:
+def _pool_pg_adjustments_from_health_detail(
+    envelope: dict, *, check_code: str = _POOL_TOO_FEW_PGS_CODE,
+) -> list[dict]:
     """Extract Ceph's exact per-pool PG targets; never ask the LLM to guess them."""
     check = (
         ((envelope.get("cluster_snapshot") or {}).get("checks") or {}).get(
-            _POOL_TOO_FEW_PGS_CODE
+            check_code
         )
         or {}
     )
@@ -149,13 +153,47 @@ def _pool_pg_adjustments_from_health_detail(envelope: dict) -> list[dict]:
         for match in _POOL_TOO_FEW_PGS_PATTERN.finditer(message):
             pool_name, current_raw, target_raw = match.groups()
             current, target = int(current_raw), int(target_raw)
-            if 1 <= current < target <= 32768:
+            valid_direction = current < target if check_code == _POOL_TOO_FEW_PGS_CODE else current > target
+            if 1 <= current <= 32768 and 1 <= target <= 32768 and valid_direction:
                 by_pool[pool_name] = {
                     "pool_name": pool_name,
                     "current_pg_num": current,
                     "pg_num": target,
                 }
     return list(by_pool.values())
+
+
+def _large_omap_diagnosis(envelope: dict) -> str:
+    """Build deterministic, non-mutating guidance from Ceph's own evidence."""
+    check = (
+        ((envelope.get("cluster_snapshot") or {}).get("checks") or {}).get(
+            _LARGE_OMAP_OBJECTS_CODE
+        ) or {}
+    )
+    messages = [
+        str(row.get("message") or "") for row in check.get("detail", [])
+        if isinstance(row, dict)
+    ]
+    excerpt = str(envelope.get("log_excerpt") or "")
+    evidence = "\n".join(messages + ([excerpt] if excerpt else []))
+    pools = sorted(set(re.findall(r"pool\s+['\"]?([A-Za-z0-9_.-]+)", evidence, re.I)))
+    objects = sorted(set(re.findall(
+        r"(?:object|object_name)\s*[=:]\s*['\"]?([^\s,'\"]+)", evidence, re.I,
+    )))
+    facts = []
+    if pools:
+        facts.append("pool=" + ", ".join(pools[:5]))
+    if objects:
+        facts.append("object=" + ", ".join(objects[:5]))
+    fact_text = "; ".join(facts) if facts else "health detail chưa chứa tên object"
+    return (
+        f"Ceph xác nhận LARGE_OMAP_OBJECTS ({fact_text}). Không được suy diễn thành lỗi OSD "
+        "và không được xoá OMAP object. Cần lấy log 'Large omap object found' để xác định "
+        "pool/object/key count/value bytes. Nếu thuộc .rgw.buckets.index và object dạng .dir.<id>, "
+        "ánh xạ bucket instance, đọc bucket stats/num_shards và reshard queue; kiểm tra "
+        "rgw_dynamic_resharding, rgw_max_objs_per_shard và multisite resharding trước khi đề xuất "
+        "manual reshard. Chỉ deep-scrub đúng PG khi cụm active+clean và tải cho phép."
+    )
 
 
 def _pool_name_from_snapshot(envelope: dict) -> str | None:
@@ -557,6 +595,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     deterministic_code = envelope.get("ceph_code") in {
         _OSD_UPGRADE_FINISHED_CODE,
         _POOL_TOO_FEW_PGS_CODE,
+        _POOL_TOO_MANY_PGS_CODE,
+        _LARGE_OMAP_OBJECTS_CODE,
     }
     if (
         not diagnosis_text
@@ -573,6 +613,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
 
     osd_release = None
     pool_pg_adjustments = None
+    pool_autoscale_pools = None
     if envelope.get("ceph_code") == _OSD_UPGRADE_FINISHED_CODE:
         osd_release = _osd_upgrade_finished_release(envelope)
         if osd_release is None:
@@ -599,6 +640,29 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             "Ceph health detail đã chỉ rõ PG mục tiêu cho từng pool; "
             f"đề xuất điều chỉnh đúng các giá trị này ({changes})."
         )
+    elif envelope.get("ceph_code") == _POOL_TOO_MANY_PGS_CODE:
+        pool_pg_adjustments = _pool_pg_adjustments_from_health_detail(
+            envelope, check_code=_POOL_TOO_MANY_PGS_CODE,
+        )
+        if not pool_pg_adjustments:
+            raise RouterDiagnosisError(
+                "POOL_TOO_MANY_PGS không chứa pool/PG mục tiêu hợp lệ; từ chối đoán tham số lệnh"
+            )
+        action_id = "enable_pool_pg_autoscaler"
+        pools = ", ".join(
+            f"{item['pool_name']} ({item['current_pg_num']} -> khuyến nghị {item['pg_num']})"
+            for item in pool_pg_adjustments
+        )
+        pool_autoscale_pools = [item["pool_name"] for item in pool_pg_adjustments]
+        rationale = (
+            "Ceph health detail đã chỉ rõ pool có quá nhiều PG: " + pools + ". "
+            "Đề xuất bật PG autoscaler cho đúng các pool này; đây vẫn là RISKY/L2 vì có thể "
+            "kích hoạt PG merge và remap dữ liệu."
+        )
+    elif envelope.get("ceph_code") == _LARGE_OMAP_OBJECTS_CODE:
+        action_id = "investigate_manually"
+        diagnosis_text = _large_omap_diagnosis(envelope)
+        rationale = diagnosis_text
     logger.info("diagnose_incident: incident %s rationale: %s", incident_id, rationale)
 
     action_params: dict | None = None
@@ -814,7 +878,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # Park this as a Telegram choice even though the generic
                 # policy classifies the metadata update as SAFE.
                 classification = ActionClassification.RISKY
-            if pool_pg_adjustments is not None:
+            if pool_pg_adjustments is not None or pool_autoscale_pools is not None:
                 # Increasing PGs redistributes data, so an incident-driven
                 # proposal must be explicitly approved even though the same
                 # management action from operator-confirmed Chat is SAFE.
@@ -832,6 +896,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_params = {"release": osd_release}
             elif pool_pg_adjustments is not None:
                 action_params = {"adjustments": pool_pg_adjustments}
+            elif pool_autoscale_pools is not None:
+                action_params = {"pools": pool_autoscale_pools}
             elif pool_name:
                 action_params = {"pool_name": pool_name}
             elif verified_bluestore_restart or verified_osd_down_restart:

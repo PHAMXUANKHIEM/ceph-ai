@@ -22,6 +22,7 @@ action_ids:
   # floor change for operator approval.
   - finalize_osd_release
   - remove_invalid_rgw_default_key
+  - enable_pool_pg_autoscaler
 
 # 2026-07-23: cluster-MANAGEMENT actions the Chat-with-AI feature
 # (dashboard/chat_client.py) can propose — deliberately a SEPARATE list from
@@ -43,6 +44,8 @@ management_action_ids:
   - delete_pool
   - set_pool_size
   - set_pool_pg_num
+  - reshard_rgw_bucket
+  - deep_scrub_omap_pg
   - mark_osd_out
   - mark_osd_in
   - mark_osd_down
@@ -297,6 +300,9 @@ safe:
   - crash_archive_all
 
 risky:
+  - enable_pool_pg_autoscaler
+  - reshard_rgw_bucket
+  - deep_scrub_omap_pg
   - remove_invalid_rgw_default_key
   - execute_node_command
   - restart_osd_daemon
