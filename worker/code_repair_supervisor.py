@@ -23,6 +23,7 @@ from worker import ceph_capability_learning as ceph_learning
 from shared.telegram_alerts import send_code_repair_alert
 
 logger = logging.getLogger(__name__)
+APPLICATION_REPAIR_COOLDOWN_SECONDS = 3600
 
 
 @dataclass
@@ -89,6 +90,7 @@ def run_forever(*, max_iterations: int | None = None) -> None:
         learning_state["initialized"] = True
         ceph_learning.save_state(learning_state_file, learning_state)
     iterations = 0
+    last_application_repair_at: float | None = None
     while settings.code_repair_auto_enabled:
         candidate = None
         if settings.ceph_capability_learning_enabled:
@@ -169,7 +171,16 @@ def run_forever(*, max_iterations: int | None = None) -> None:
             errors = read_new_errors(paths, cursors, initialize_at_end=first_scan)
             first_scan = False
             _save_cursors(cursor_file, cursors)
-            if errors:
+            cooldown_elapsed = (
+                last_application_repair_at is None
+                or time.monotonic() - last_application_repair_at
+                >= APPLICATION_REPAIR_COOLDOWN_SECONDS
+            )
+            if errors and cooldown_elapsed:
+                # Set before invoking the pipeline: FAILED is still an
+                # attempt and must not recursively trigger dozens of new
+                # repairs from logs emitted by its own staging smoke test.
+                last_application_repair_at = time.monotonic()
                 result = run_repair(
                     max(errors, key=len),
                     RepairConfig(
@@ -186,6 +197,11 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                     ),
                 )
                 logger.info("automatic Code Repair completed: %s (%s)", result.status, result.fingerprint)
+            elif errors:
+                logger.warning(
+                    "automatic Code Repair suppressed %d error block(s) during %ss cooldown",
+                    len(errors), APPLICATION_REPAIR_COOLDOWN_SECONDS,
+                )
         iterations += 1
         if max_iterations is not None and iterations >= max_iterations:
             return

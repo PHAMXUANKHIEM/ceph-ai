@@ -198,6 +198,37 @@ def test_generic_recovery_notifies_once_but_leaves_verifying_to_verifier(
     assert notifications == ["OSD_DOWN"]
 
 
+def test_cluster_recovery_copies_telegram_values_before_session_closes(
+    isolated_db, monkeypatch
+):
+    notifications = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_verified_alert",
+        lambda code, **kwargs: notifications.append((code, kwargs)),
+    )
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="CS-LAB", ceph_mon_nodes="10.0.0.1", ssh_user="root",
+            ssh_key_path="/key", telegram_bot_token="token",
+            telegram_chat_id="chat", telegram_enabled=True, is_default=True,
+        )
+        session.add(cluster); session.flush()
+        session.add(Incident(
+            cluster_id=cluster.id, ceph_code="OSD_DOWN",
+            status=IncidentStatus.FAILED.value, detected_at=datetime.utcnow(),
+        ))
+        cluster_id = cluster.id
+        session.commit()
+
+    watcher_main._resolve_recovered_incidents(set(), cluster_id=cluster_id)
+
+    assert notifications == [("OSD_DOWN", {
+        "cluster_name": "CS-LAB", "bot_token": "token", "chat_id": "chat",
+        "enabled": True,
+    })]
+
+
 def test_chat_request_incident_is_never_auto_resolved_by_recovery(isolated_db):
     # 2026-07-23 regression: a chat-confirmed action's synthetic Incident
     # (ceph_code="CHAT_REQUEST") never matches any real `ceph health
