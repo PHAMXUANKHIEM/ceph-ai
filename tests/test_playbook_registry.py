@@ -19,7 +19,7 @@ def test_complete_safe_playbook_can_reach_l3():
         "resync_ntp", "SAFE", target_nodes=["mon-a"], command_builder_available=True,
     )
     assert decision.allowed is True
-    assert decision.contract.version == "2"
+    assert decision.contract.version == "3"
     assert decision.effective_max_autonomy == "L3"
 
 
@@ -161,7 +161,7 @@ def test_registry_coverage_reports_missing_actions_sorted():
 def test_case_postcheck_resolution_uses_frozen_contract_and_fails_closed():
     snapshot = {"registry": get_contract("resync_ntp").snapshot(), "registered": True}
     hook_id, error = resolve_case_postcheck(
-        action_id="resync_ntp", playbook_version="2", contract_snapshot=snapshot,
+        action_id="resync_ntp", playbook_version="3", contract_snapshot=snapshot,
     )
     assert error is None and hook_id == "fresh_health_telemetry"
     assert run_postcheck(hook_id, fault_present=False, health={}).outcome == "PASSED"
