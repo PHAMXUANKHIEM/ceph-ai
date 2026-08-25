@@ -117,6 +117,16 @@ def test_identify_relevant_nodes_for_mon_code_parses_mon_names():
     assert set(nodes) == {name_to_ip["khiempx-mon2"], name_to_ip["khiempx-mon3"]}
 
 
+def test_identify_relevant_nodes_matches_short_mon_name_to_fqdn_inventory(monkeypatch):
+    from config.settings import settings
+
+    monkeypatch.setattr(settings, "ceph_mon_hostnames", "ceph1.example,ceph2.example,ceph3.example")
+    monkeypatch.setattr(settings, "ceph_mon_nodes", "10.0.0.1,10.0.0.2,10.0.0.3")
+    detail = {"detail": [{"message": "mon.ceph3 clock skew 5.9s > max 0.05s"}]}
+
+    assert identify_relevant_nodes("MON_CLOCK_SKEW", detail) == ["10.0.0.3"]
+
+
 def test_collect_relevant_logs_for_osd_code_never_touches_mon_nodes(fake_ssh):
     from config.settings import settings
 

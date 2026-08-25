@@ -35,7 +35,14 @@ def _mon_hostname_to_ip(cluster: "Cluster | None" = None) -> dict[str, str]:
             len(names),
             len(ips),
         )
-    return dict(zip(names, ips))
+    mapping = dict(zip(names, ips))
+    # Health detail uses the MON daemon id (`mon.host`) while inventory may
+    # store an FQDN (`host.example`).  Include the short DNS label so a
+    # targeted warning does not fall back to the first MON and repair the
+    # wrong host.
+    for name, ip in zip(names, ips):
+        mapping.setdefault(name.split(".", 1)[0], ip)
+    return mapping
 
 
 def _get_osd_nodes(cluster: "Cluster | None" = None) -> list[str]:
