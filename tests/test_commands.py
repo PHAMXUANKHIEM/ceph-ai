@@ -659,6 +659,13 @@ def test_get_command_builds_bounded_large_omap_operations():
     assert get_command(
         "deep_scrub_omap_pg", params={"pg_id": "12.ab"},
     ) == "ceph pg deep-scrub 12.ab"
+    assert get_command(
+        "reshard_rgw_bucket",
+        params={"bucket_name": "test-large-omap", "num_shards": 3, "pg_id": "6.c"},
+    ) == (
+        "radosgw-admin bucket reshard --bucket=test-large-omap --num-shards=3 "
+        "&& ceph pg deep-scrub 6.c"
+    )
 
 
 def test_get_command_set_pool_pg_num_builds_health_detail_batch():

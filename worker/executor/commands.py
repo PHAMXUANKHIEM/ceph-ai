@@ -336,10 +336,16 @@ def _reshard_rgw_bucket_command(params: dict) -> str:
     if not isinstance(bucket, str) or not bucket or len(bucket) > 255 or bucket.startswith("-"):
         raise ExecutorError(f"invalid or missing bucket_name: {bucket!r}")
     shards = _require_int(params, "num_shards", (2, 19999))
-    return (
+    command = (
         "radosgw-admin bucket reshard "
         f"--bucket={shlex.quote(bucket)} --num-shards={shards}"
     )
+    pg_id = params.get("pg_id")
+    if pg_id is not None:
+        if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
+            raise ExecutorError(f"invalid pg_id: {pg_id!r}")
+        command += f" && ceph pg deep-scrub {shlex.quote(pg_id)}"
+    return command
 
 
 def _deep_scrub_omap_pg_command(params: dict) -> str:

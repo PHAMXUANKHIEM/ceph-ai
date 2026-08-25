@@ -947,6 +947,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_params = {
                     "bucket_name": large_omap_params["bucket_name"],
                     "num_shards": large_omap_params["num_shards"],
+                    "pg_id": large_omap_params["pg_id"],
                 }
             elif pool_name:
                 action_params = {"pool_name": pool_name}

@@ -140,7 +140,7 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
     ),
     "reshard_rgw_bucket": _contract(
         "reshard_rgw_bucket", target_schema="cluster", max_autonomy="L3",
-        conflict_scope="cluster", cooldown_seconds=3600,
+        conflict_scope="cluster", cooldown_seconds=0,
     ),
     "deep_scrub_omap_pg": _contract(
         "deep_scrub_omap_pg", target_schema="cluster", max_autonomy="L2",
