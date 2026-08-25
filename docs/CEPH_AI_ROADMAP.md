@@ -128,13 +128,16 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
 
 ### Thứ tự triển khai tiếp theo
 
-- [ ] **1. Baseline tự học theo volume**
+- [x] **1. Baseline tự học theo volume**
   - Học IOPS và read/write latency bình thường theo `cluster/pool/image`, giờ
     trong ngày và ngày trong tuần từ lịch sử `volume_metrics`.
   - Chạy nhiều cửa sổ candidate, lưu forecast/outcome, tính MAE và tự chọn cửa
     sổ tốt nhất giống cơ chế CPU/RAM; restart Watcher không làm mất trạng thái học.
   - Giữ hard safety gate: học chỉ thay mô hình/baseline, không thay policy hoặc
     tự cấp quyền thực thi.
+  - Triển khai 2026-08-25: seasonal median ưu tiên hour-of-week/hour-of-day,
+    outcome 1 giờ, MAE/MAPE bền vững và tự chọn cửa sổ 24/72/168/720 giờ;
+    trạng thái hiển thị read-only tại trang AI Learning.
 - [ ] **2. Dự báo và cảnh báo sớm**
   - Dự báo IOPS/latency cho 1h, 6h và 24h; cảnh báo khi có khả năng chạm knee
     hoặc latency SLO trước khi workload thực sự suy giảm.

@@ -42,7 +42,7 @@ from datetime import datetime
 from shared import audit, db
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, VolumeMetric
-from watcher import ceph_client
+from watcher import ceph_client, volume_learning
 from watcher.ceph_client import CephQueryError
 from worker.policy import gate
 
@@ -236,7 +236,7 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
         return
     polled_at = datetime.utcnow()
     with db.SessionLocal() as session:
-        session.add_all(
+        rows = [
             VolumeMetric(
                 cluster_id=cluster_id,
                 pool=sample["pool"],
@@ -248,7 +248,11 @@ def persist_last_poll_metrics(cluster_id: str | None = None) -> None:
                 polled_at=polled_at,
             )
             for sample in samples
-        )
+        ]
+        session.add_all(rows)
+        session.flush()
+        for sample in samples:
+            volume_learning.observe_sample(session, cluster_id, sample, polled_at)
         session.commit()
 
 

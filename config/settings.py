@@ -431,6 +431,15 @@ class Settings(BaseSettings):
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
 
+    # Per-RBD-volume seasonal baseline learning. Predictions are audit-only:
+    # they may change the selected baseline, never policy or action rights.
+    volume_learning_enabled: bool = True
+    volume_learning_history_days: int = 30
+    volume_learning_evaluation_hours: int = 1
+    volume_learning_min_samples: int = 24
+    volume_learning_min_outcomes: int = 10
+    volume_learning_candidate_hours: str = "24,72,168,720"
+
     # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
     # device_health/node_health above because `ceph osd perf` is a single
     # cheap JSON-RPC query through a MON (no SSH round trip per node/OSD at

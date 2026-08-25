@@ -10,6 +10,8 @@ from shared.models import (
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceModelState,
+    VolumeForecastRun,
+    VolumeModelState,
 )
 
 
@@ -137,3 +139,35 @@ def test_twenty_good_outcomes_are_marked_reliable(dashboard_client):
     response = dashboard_client.get("/api/ai-learning")
 
     assert response.json()["resource_learning"]["selected_models"][0]["quality_status"] == "RELIABLE"
+
+
+def test_ai_learning_shows_selected_volume_baseline(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        state = VolumeModelState(
+            cluster_id=cluster.id, pool="vms", image="vm-101-disk",
+            metric="read_latency_ms", algorithm="seasonal_median",
+            window_hours=72, evaluated_count=12, mean_absolute_error=.4,
+            mean_percentage_error=8.0, last_absolute_error=.2, selected=True,
+            updated_at=NOW,
+        )
+        run = VolumeForecastRun(
+            cluster_id=cluster.id, pool="vms", image="vm-101-disk",
+            metric="read_latency_ms", algorithm="seasonal_median",
+            window_hours=72, predicted_at=NOW, target_at=NOW + timedelta(hours=1),
+            current_value=2.1, predicted_value=2.3, confidence=.85,
+            seasonal_scope="hour_of_day", training_samples=8, status="PENDING",
+            idempotency_key="volume-dashboard-test",
+        )
+        session.add_all((state, run))
+        session.commit()
+        cluster_id = cluster.id
+    _login(dashboard_client)
+
+    response = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    assert "vms/vm-101-disk" in response.text
+    assert "hour_of_day" in response.text
+    assert "92.0%" in response.text
+    assert "2.3" in response.text

@@ -27,9 +27,20 @@
         <label>Cụm<select name="cluster" onchange="this.form.submit()">{% for item in clusters %}<option value="{{ item.id }}" {% if item.id == cluster.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
       </form>
       <p><strong>CPU/RAM:</strong> {{ resource_learning.run_counts.get('EVALUATED', 0) }} dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} đang chờ outcome.</p>
+      <p><strong>RBD volume:</strong> {{ volume_learning.run_counts.get('EVALUATED', 0) }} baseline đã đối chiếu · {{ volume_learning.run_counts.get('PENDING', 0) }} đang chờ outcome · {{ volume_learning.selected_models|length }} model được chọn.</p>
       <p><strong>Log daemon:</strong> {{ log_learning.sample_count }} mẫu · {{ log_learning.eligible_count }} đủ điều kiện học · {{ log_learning.blocked_count }} bị chặn.</p>
       <p class="hint">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</p>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Baseline tự học theo RBD volume</h2><p class="hint">IOPS/read/write latency theo giờ trong tuần hoặc giờ trong ngày · đánh giá sau {{ volume_learning.evaluation_hours }} giờ · không tự thay QoS hay resize volume.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Volume</th><th>Metric</th><th>Cửa sổ</th><th>Mùa vụ</th><th>Outcome</th><th>MAE / MAPE</th><th>Chính xác ước tính</th><th>Baseline mới nhất</th><th>Đánh giá</th></tr></thead><tbody>
+    {% for model in volume_learning.selected_models %}<tr>
+      <td><code>{{ model.pool }}/{{ model.image }}</code></td><td>{{ model.metric }}</td><td>{{ model.window_hours }} giờ</td><td>{{ model.seasonal_scope or '—' }}{% if model.training_samples %}<div class="hint">{{ model.training_samples }} mẫu giờ</div>{% endif %}</td><td>{{ model.evaluated_count }}</td><td>{{ model.mae if model.mae is not none else '—' }} / {{ (model.mape|string + '%') if model.mape is not none else '—' }}</td><td>{{ (model.accuracy_estimate|string + '%') if model.accuracy_estimate is not none else '—' }}</td><td>{{ model.latest_prediction if model.latest_prediction is not none else '—' }}{% if model.latest_confidence is not none %}<div class="hint">confidence {{ (model.latest_confidence * 100)|round(1) }}%</div>{% endif %}</td>
+      <td>{% if model.quality_status == 'RELIABLE' %}<span class="badge badge-ok">Đáng tin</span>{% elif model.quality_status == 'PROMISING' %}<span class="badge badge-warn">Tín hiệu tốt</span>{% elif model.quality_status == 'NEEDS_IMPROVEMENT' %}<span class="badge badge-err">Cần cải thiện</span>{% else %}<span class="badge">Đang học</span>{% endif %}<div class="hint">{{ model.quality_reason }}</div></td>
+    </tr>{% else %}<tr class="empty-row"><td colspan="9"><div class="empty-state">{% if volume_learning.run_counts.get('PENDING', 0) %}Đã tạo {{ volume_learning.run_counts.get('PENDING', 0) }} candidate; đang chờ outcome đầu tiên sau {{ volume_learning.evaluation_hours }} giờ.{% else %}Chưa đủ {{ volume_learning.minimum_samples }} mẫu giờ để tạo baseline volume.{% endif %}</div></td></tr>{% endfor %}
+    </tbody></table></div>
   </section>
 
   <section class="card">

@@ -17,6 +17,8 @@ from shared.models import (
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceModelState,
+    VolumeForecastRun,
+    VolumeModelState,
 )
 
 router = APIRouter()
@@ -32,6 +34,18 @@ def _quality(mae: float | None, outcomes: int) -> tuple[str, str, float | None]:
     if accuracy >= 80:
         return "PROMISING", "Kết quả ban đầu tốt nhưng số outcome còn ít.", accuracy
     return "NEEDS_IMPROVEMENT", "Sai số trung bình còn lớn hơn 20 điểm %.", accuracy
+
+
+def _volume_quality(mape: float | None, outcomes: int) -> tuple[str, str, float | None]:
+    if mape is None or outcomes < settings.volume_learning_min_outcomes:
+        accuracy = round(max(0.0, 100.0 - mape), 2) if mape is not None else None
+        return "COLLECTING", "Chưa đủ outcome tối thiểu để đánh giá ổn định.", accuracy
+    accuracy = round(max(0.0, 100.0 - mape), 2)
+    if outcomes >= 20 and accuracy >= 80:
+        return "RELIABLE", "Đã có ít nhất 20 outcome và MAPE không quá 20%.", accuracy
+    if accuracy >= 80:
+        return "PROMISING", "Kết quả ban đầu tốt nhưng số outcome còn ít.", accuracy
+    return "NEEDS_IMPROVEMENT", "MAPE còn lớn hơn 20%.", accuracy
 
 
 def learning_status(cluster_id: str, cluster_name: str) -> dict:
@@ -71,6 +85,68 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "latest_confidence": round(latest.confidence, 3) if latest else None,
                 "latest_prediction": round(latest.predicted_percent, 2) if latest else None,
                 "latest_target_at": latest.target_at if latest else None,
+                "updated_at": state.updated_at,
+            })
+
+        volume_run_counts = dict(
+            session.query(VolumeForecastRun.status, func.count(VolumeForecastRun.id))
+            .filter(VolumeForecastRun.cluster_id == cluster_id)
+            .group_by(VolumeForecastRun.status).all()
+        )
+        volume_states = session.query(VolumeModelState).filter_by(cluster_id=cluster_id).all()
+        latest_volume_times = (
+            session.query(
+                VolumeForecastRun.pool.label("pool"),
+                VolumeForecastRun.image.label("image"),
+                VolumeForecastRun.metric.label("metric"),
+                VolumeForecastRun.window_hours.label("window_hours"),
+                func.max(VolumeForecastRun.predicted_at).label("latest_at"),
+            )
+            .filter(VolumeForecastRun.cluster_id == cluster_id)
+            .group_by(
+                VolumeForecastRun.pool, VolumeForecastRun.image,
+                VolumeForecastRun.metric, VolumeForecastRun.window_hours,
+            ).subquery()
+        )
+        latest_volume_runs = {
+            (row.pool, row.image, row.metric, row.window_hours): row
+            for row in session.query(VolumeForecastRun).join(
+                latest_volume_times,
+                (VolumeForecastRun.pool == latest_volume_times.c.pool)
+                & (VolumeForecastRun.image == latest_volume_times.c.image)
+                & (VolumeForecastRun.metric == latest_volume_times.c.metric)
+                & (VolumeForecastRun.window_hours == latest_volume_times.c.window_hours)
+                & (VolumeForecastRun.predicted_at == latest_volume_times.c.latest_at),
+            ).filter(VolumeForecastRun.cluster_id == cluster_id).all()
+        }
+        volume_models = []
+        for state in sorted(
+            volume_states,
+            key=lambda row: (row.pool, row.image, row.metric, row.window_hours),
+        ):
+            status, reason, accuracy = _volume_quality(
+                state.mean_percentage_error, state.evaluated_count
+            )
+            latest = latest_volume_runs.get(
+                (state.pool, state.image, state.metric, state.window_hours)
+            )
+            volume_models.append({
+                "pool": state.pool,
+                "image": state.image,
+                "metric": state.metric,
+                "window_hours": state.window_hours,
+                "selected": state.selected,
+                "evaluated_count": state.evaluated_count,
+                "mae": round(state.mean_absolute_error, 3) if state.mean_absolute_error is not None else None,
+                "mape": round(state.mean_percentage_error, 3) if state.mean_percentage_error is not None else None,
+                "last_error": round(state.last_absolute_error, 3) if state.last_absolute_error is not None else None,
+                "accuracy_estimate": accuracy,
+                "quality_status": status,
+                "quality_reason": reason,
+                "latest_prediction": round(latest.predicted_value, 3) if latest else None,
+                "latest_confidence": round(latest.confidence, 3) if latest else None,
+                "seasonal_scope": latest.seasonal_scope if latest else None,
+                "training_samples": latest.training_samples if latest else None,
                 "updated_at": state.updated_at,
             })
 
@@ -135,6 +211,16 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
                 "run_counts": run_counts,
                 "selected_models": [row for row in resource_models if row["selected"]],
                 "candidate_models": resource_models,
+            },
+            "volume_learning": {
+                "enabled": settings.volume_learning_enabled,
+                "evaluation_hours": settings.volume_learning_evaluation_hours,
+                "minimum_outcomes": settings.volume_learning_min_outcomes,
+                "minimum_samples": settings.volume_learning_min_samples,
+                "candidate_windows": settings.volume_learning_candidate_hours,
+                "run_counts": volume_run_counts,
+                "selected_models": [row for row in volume_models if row["selected"]],
+                "candidate_models": volume_models,
             },
             "log_learning": {
                 "sample_count": sample_count,

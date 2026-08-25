@@ -1318,6 +1318,68 @@ class VolumeMetric(Base):
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class VolumeForecastRun(Base):
+    """One auditable candidate baseline and its later observed outcome."""
+
+    __tablename__ = "volume_forecast_runs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_volume_forecast_idempotency"),
+        Index("ix_volume_forecast_due", "status", "target_at"),
+        Index("ix_volume_forecast_scope", "cluster_id", "pool", "image", "metric"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric: Mapped[str] = mapped_column(String(32), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="seasonal_median")
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    target_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    current_value: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_value: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    seasonal_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    training_samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    percentage_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class VolumeModelState(Base):
+    """Persistent online error score for one volume/metric/window."""
+
+    __tablename__ = "volume_model_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id", "pool", "image", "metric", "algorithm", "window_hours",
+            name="uq_volume_model_identity",
+        ),
+        Index("ix_volume_model_scope", "cluster_id", "pool", "image", "metric"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    image: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric: Mapped[str] = mapped_column(String(32), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False, default="seasonal_median")
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mean_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mean_percentage_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_absolute_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class VolumePerfSweep(Base):
     """Result of an on-demand "Đo hiệu năng tối đa" (load sweep) benchmark
     — dashboard/routes/volumes.py's propose route, worker/executor/
