@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from config.settings import settings
 from sqlalchemy.orm import sessionmaker
 from shared import db
 from shared.models import (
-    Cluster, LogIngestRun, RgwAccessAuditEvent, RgwAnalysisJob, RgwErrorNotification,
+    Cluster, LogFinding, LogIngestRun, RgwAccessAuditEvent, RgwAnalysisJob, RgwErrorNotification,
 )
 from worker import rgw_access_audit as audit
 
@@ -271,10 +272,36 @@ def test_immediate_job_runs_log_intelligence_and_reports_completion(db_session, 
     assert persisted.status == "COMPLETED"
     assert persisted.ingest_run_id
     assert any("BẮT ĐẦU" in message and f"RGW-{job.id[:8]}" in message for message in sent)
-    result = next(message for message in sent if "KẾT QUẢ PHÂN TÍCH" in message)
+    result = next(message for message in sent if "PHÂN TÍCH RGW HOÀN TẤT" in message)
+    assert "📍 Host: 10.3.53.1" in result
     assert "Chưa đủ bằng chứng để xác định nguyên nhân gốc" in result
     assert "Đã đối chiếu: 1 nhóm log liên quan" in result
     assert "CẦN KIỂM TRA — chưa được coi là đã khắc phục" in result
+
+
+def test_finding_result_explains_conclusion_confidence_impact_and_action():
+    finding = LogFinding(
+        title="Vault không trả được khóa",
+        root_cause_hypothesis="Vault token hết hạn hoặc policy không cho phép đọc key.",
+        summary="Request S3 dùng SSE-KMS có thể thất bại.",
+        confidence="HIGH",
+        recommended_action_id="check_rgw_vault",
+    )
+    verification = SimpleNamespace(
+        code="STILL_PRESENT",
+        summary="Lỗi vẫn xuất hiện trong log RGW gần nhất.",
+    )
+
+    message = audit._finding_analysis_text(
+        finding, verification, "Request to Vault failed with error -22"
+    )
+
+    assert "Nguyên nhân dự đoán: Vault token hết hạn" in message
+    assert "Độ tin cậy: Cao (HIGH)" in message
+    assert "Ảnh hưởng: Request S3 dùng SSE-KMS có thể thất bại" in message
+    assert "Kiểm tra thực tế: STILL_PRESENT" in message
+    assert "check_rgw_vault" in message
+    assert "cần người vận hành xác nhận" in message
 
 
 def test_rgw_analysis_failure_hides_sql_and_explains_nul():

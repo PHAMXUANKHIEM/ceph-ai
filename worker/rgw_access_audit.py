@@ -74,6 +74,40 @@ def _inconclusive_analysis_text(message: str, patterns_flagged: int) -> str:
     ))
 
 
+def _confidence_label(value: str | None) -> str:
+    labels = {"HIGH": "Cao", "MEDIUM": "Trung bình", "LOW": "Thấp"}
+    normalized = str(value or "LOW").strip().upper()
+    return f"{labels.get(normalized, 'Chưa xác định')} ({normalized})"
+
+
+def _finding_analysis_text(
+    finding: LogFinding,
+    verification,
+    message: str,
+) -> str:
+    """Render an operator-facing conclusion instead of database terminology."""
+    _problem, default_impact, default_action = _operator_error_context(message)
+    conclusion = finding.root_cause_hypothesis or finding.title or "Chưa xác định"
+    impact = finding.summary or default_impact
+    action = (
+        f"Kiểm tra đề xuất `{finding.recommended_action_id}` trên Dashboard và chỉ thực hiện sau khi duyệt."
+        if finding.recommended_action_id
+        else default_action
+    )
+    verification_code = str(getattr(verification, "code", "UNKNOWN") or "UNKNOWN")
+    verification_summary = str(
+        getattr(verification, "summary", "Chưa có kết quả kiểm tra thực tế.")
+    )
+    return "\n".join((
+        f"🔎 Nguyên nhân dự đoán: {conclusion}",
+        f"🎯 Độ tin cậy: {_confidence_label(finding.confidence)}",
+        f"💥 Ảnh hưởng: {impact}",
+        f"🩺 Kiểm tra thực tế: {verification_code} — {verification_summary}",
+        f"🛠 Cần làm: {action}",
+        "📋 Trạng thái: ĐÃ CÓ KẾT LUẬN — cần người vận hành xác nhận.",
+    ))
+
+
 def _queue_analysis_job(session, event: RgwErrorNotification) -> RgwAnalysisJob | None:
     signature = _analysis_signature(event.cluster_id, event.rgw_host, event.message)
     cutoff = event.created_at - timedelta(seconds=_ANALYSIS_DEBOUNCE_SECONDS)
@@ -413,8 +447,10 @@ def _process_analysis_jobs(limit: int = 1) -> None:
         try:
             _send_analysis_status(
                 "🧠 AI BẮT ĐẦU PHÂN TÍCH RGW\n"
-                f"Job: {label}\nHost: {host}\nLỗi: {message[:500]}\n"
-                "Trạng thái: RUNNING — đang quét Loki và phân tích nguyên nhân."
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"🧠 Job: {label}\n📍 Host: {host}\n❌ Lỗi gốc: {message[:500]}\n"
+                "⏳ Trạng thái: ĐANG PHÂN TÍCH — quét Loki và đối chiếu trạng thái Ceph.\n"
+                "━━━━━━━━━━━━━━━━━━"
             )
             heartbeat.start()
             run_id = log_intel.scan_and_store(
@@ -445,10 +481,7 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                     pattern_ids = json.loads(finding.evidence_pattern_ids_json or "[]")
                     patterns = session.query(LogPattern).filter(LogPattern.id.in_(pattern_ids)).all() if pattern_ids else []
                     verification = verify(finding, patterns, cluster)
-                    result_text = (
-                        f"Finding: {finding.title or finding.id}\n"
-                        f"Live verification: {verification.code}\n{verification.summary}"
-                    )
+                    result_text = _finding_analysis_text(finding, verification, message)
                 row = session.get(RgwAnalysisJob, job_id)
                 row.status = "COMPLETED"
                 row.ingest_run_id = run_id
@@ -456,7 +489,10 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                 row.finished_at = datetime.utcnow()
                 session.commit()
             _send_analysis_status(
-                f"🧠 KẾT QUẢ PHÂN TÍCH RGW\nJob: {label}\n{result_text}"
+                "✅ AI PHÂN TÍCH RGW HOÀN TẤT\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"🧠 Job: {label}\n📍 Host: {host}\n{result_text}\n"
+                "━━━━━━━━━━━━━━━━━━"
             )
         except Exception as exc:
             logger.exception("immediate RGW analysis job %s failed", job_id)
@@ -470,9 +506,13 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                     session.commit()
             try:
                 _send_analysis_status(
-                    f"❌ AI PHÂN TÍCH RGW THẤT BẠI\nJob: {label}\n"
-                    f"Nguyên nhân: {public_error}\n"
-                    "Trạng thái: Đã dừng an toàn, chưa lưu kết quả phân tích."
+                    "❌ AI PHÂN TÍCH RGW THẤT BẠI\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"🧠 Job: {label}\n📍 Host: {host}\n"
+                    f"🔎 Nguyên nhân: {public_error}\n"
+                    "🛡 Trạng thái: ĐÃ DỪNG AN TOÀN — không lưu kết luận chưa hoàn chỉnh.\n"
+                    "🛠 Cần làm: Xem log Worker theo Job ID, sửa nguồn lỗi rồi chạy phân tích lại.\n"
+                    "━━━━━━━━━━━━━━━━━━"
                 )
             except Exception:
                 logger.exception("failed to send RGW analysis failure status")
