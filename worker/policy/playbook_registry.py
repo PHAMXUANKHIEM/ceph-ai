@@ -139,7 +139,7 @@ PLAYBOOKS: dict[str, PlaybookContract] = {
         conflict_scope="cluster", postcheck="pool_pg_health_telemetry",
     ),
     "reshard_rgw_bucket": _contract(
-        "reshard_rgw_bucket", target_schema="cluster", max_autonomy="L2",
+        "reshard_rgw_bucket", target_schema="cluster", max_autonomy="L3",
         conflict_scope="cluster", cooldown_seconds=3600,
     ),
     "deep_scrub_omap_pg": _contract(
