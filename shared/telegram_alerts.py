@@ -421,33 +421,24 @@ def send_log_finding_alert(
     đang OPEN) — cùng nếp "một thông báo cho một vấn đề thật sự mới" mà
     send_node_alert/send_osd_latency_alert/send_crush_skew_alert đã theo.
 
-    Telegram carries the conclusion and actionable recommendations. Raw
-    evidence and internal action ids remain in the Dashboard."""
+    Telegram is deliberately a short on-call signal. Full summary, evidence,
+    commands and every recommendation remain in the Dashboard."""
     prefix = _LOG_FINDING_SEVERITY_PREFIX.get(severity, f"⚠️ {severity}")
     daemon_set = {value.strip().lower() for value in (daemon_types or []) if isinstance(value, str)}
     source_label = "Cảnh báo RGW do AI phân tích" if "rgw" in daemon_set else "Phát hiện từ log"
     source_icon = "🌐 " if "rgw" in daemon_set else ""
     lines = [
-        f"{prefix} {source_icon}{source_label}: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
-        f"🎯 Độ tin cậy: {confidence}",
+        f"{prefix} {source_icon}{source_label}: {_compact(title, 160)}",
+        f"🎯 Tin cậy: {confidence}",
     ]
-    if summary:
-        lines.append(f"🧠 Tóm tắt: {_compact(summary, _MAX_FOLLOWUP_FIELD_CHARS)}")
-    if root_cause:
-        lines.append(f"🔎 Nguyên nhân nghi ngờ: {_compact(root_cause, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    conclusion = root_cause or summary
+    if conclusion:
+        lines.append(f"🔎 Nhận định: {_compact(conclusion, 180)}")
     clean_steps = [str(value).strip() for value in (recommended_steps or []) if str(value).strip()]
     if clean_steps:
-        lines.append("💡 Gợi ý xử lý:")
-        lines.extend(
-            f"{index}. {_compact(step, _MAX_FOLLOWUP_FIELD_CHARS)}"
-            for index, step in enumerate(clean_steps[:4], 1)
-        )
-    clean_commands = [str(value).strip() for value in (operator_commands or []) if str(value).strip()]
-    if clean_commands:
-        lines.append("🔧 Lệnh kiểm tra đề xuất (chưa tự chạy):")
-        lines.extend(f"• {_compact(command, _MAX_EXCERPT_CHARS)}" for command in clean_commands[:4])
+        lines.append(f"💡 Ưu tiên: {_compact(clean_steps[0], 180)}")
     if validation_notes:
-        lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
+        lines.append(f"⚠️ Đã hiệu chỉnh: {_compact(validation_notes, 120)}")
     if "rgw" in daemon_set:
         selected_token = settings.telegram_rgw_bot_token
         selected_chat = settings.telegram_rgw_chat_id

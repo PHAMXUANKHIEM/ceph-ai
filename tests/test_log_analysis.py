@@ -100,7 +100,8 @@ def test_generic_finding_notification_is_concise_too(monkeypatch):
         operator_commands=["ceph status"], daemon_types=["osd"],
     )
     text = sent[0][3]
-    assert "OSD chậm" in text and "Latency tăng" in text and "Disk nghẽn" in text
+    assert "OSD chậm" in text and "Disk nghẽn" in text
+    assert "Latency tăng" not in text
     assert "📄 Log:" not in text
     assert "investigate_manually" not in text
     assert "Lệnh kiểm tra" not in text
