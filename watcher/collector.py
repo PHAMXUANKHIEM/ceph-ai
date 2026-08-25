@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+LARGE_OMAP_OBJECTS_CODE = "LARGE_OMAP_OBJECTS"
+
 LOG_TAIL_LINES = 50
 # Only word characters and hyphens after "mon." — a bare \S+ would also
 # swallow trailing punctuation (e.g. "mon.khiempx-mon2," or "mon.name)"),
@@ -418,6 +420,31 @@ def collect_relevant_logs(
         return _collect_recent_crash_excerpt(cluster)
     if ceph_code.startswith(DEVICE_HEALTH_CEPH_CODE_PREFIX):
         return _collect_device_health_excerpt(cluster)
+    if ceph_code == LARGE_OMAP_OBJECTS_CODE:
+        # OMAP warnings are emitted to the Ceph cluster log during deep
+        # scrub, not necessarily to a package-style ceph-osd@*.service
+        # journal.  Collect the actual index object and resolve its bucket
+        # instance on one MON so the router can make an evidence-bound
+        # reshard decision instead of guessing from health-detail alone.
+        mon_nodes = _get_mon_nodes(cluster)
+        if not mon_nodes:
+            return [], "LARGE_OMAP_EVIDENCE unavailable: no MON node configured"
+        host = mon_nodes[0]
+        command = r'''line=$(ceph log last 2000 2>/dev/null | grep 'Large omap object found' | tail -1)
+obj=$(printf '%s\n' "$line" | sed -n 's/.*Object: [^:]*:::\([^:]*\):head.*/\1/p')
+instance=$(printf '%s\n' "$obj" | sed -E 's/^\.dir\.//; s/\.[0-9]+\.[0-9]+$//')
+entry=$(radosgw-admin metadata list bucket.instance 2>/dev/null | grep -F ":${instance}" | tail -1 | tr -d ' ",')
+bucket=${entry%%:*}
+threshold=$(ceph config get osd osd_deep_scrub_large_omap_object_key_threshold 2>/dev/null)
+shards=$(radosgw-admin bucket stats --bucket="$bucket" 2>/dev/null | sed -n 's/.*"num_shards": \([0-9]*\).*/\1/p' | head -1)
+keys=$(printf '%s\n' "$line" | sed -n 's/.*Key count: \([0-9]*\).*/\1/p')
+pg=$(printf '%s\n' "$line" | sed -n 's/.*PG: [^ ]* (\([^)]*\)).*/\1/p')
+printf 'LARGE_OMAP_EVIDENCE bucket=%s object=%s keys=%s threshold=%s shards=%s pg=%s\n%s\n' "$bucket" "$obj" "$keys" "$threshold" "$shards" "$pg" "$line"'''
+        try:
+            return [host], _run_on_host(host, command, cluster)
+        except Exception as exc:
+            logger.warning("large OMAP evidence collection failed on %s: %s", host, exc)
+            return [host], f"LARGE_OMAP_EVIDENCE unavailable: {exc}"
 
     nodes = identify_relevant_nodes(ceph_code, check_detail, cluster, osd_host_map)
     exec_mode = cluster.ceph_exec_mode if cluster is not None else settings.ceph_exec_mode

@@ -196,6 +196,35 @@ def _large_omap_diagnosis(envelope: dict) -> str:
     )
 
 
+def _large_omap_reshard_params(envelope: dict) -> dict | None:
+    """Return a bounded lab reshard plan only from collector-labelled evidence."""
+    text = str(envelope.get("log_excerpt") or "")
+    match = re.search(
+        r"LARGE_OMAP_EVIDENCE bucket=([^\s]+) object=([^\s]+) keys=(\d+) "
+        r"threshold=(\d+) shards=(\d+) pg=([0-9]+\.[0-9a-fA-F]+)", text,
+    )
+    if not match:
+        return None
+    bucket, object_name, keys_raw, threshold_raw, shards_raw, pg_id = match.groups()
+    keys, threshold, current_shards = int(keys_raw), int(threshold_raw), int(shards_raw)
+    # Autonomous reshard is deliberately limited to explicit lab buckets.
+    # Production bucket names remain approval-gated/manual until an operator
+    # supplies the same evidence through a dedicated policy override.
+    if not bucket.startswith("test-") or current_shards != 1 or threshold <= 0 or keys <= threshold:
+        return None
+    target_per_shard = max(1, int(threshold * 0.8))
+    suggested = max(2, (keys + target_per_shard - 1) // target_per_shard)
+    if suggested % 2 == 0:
+        suggested += 1
+    if suggested > 19999:
+        return None
+    return {
+        "bucket_name": bucket, "num_shards": suggested, "current_shards": current_shards,
+        "key_count": keys, "key_threshold": threshold, "index_object": object_name,
+        "pg_id": pg_id,
+    }
+
+
 def _pool_name_from_snapshot(envelope: dict) -> str | None:
     text = json.dumps(envelope.get("cluster_snapshot") or {}, ensure_ascii=False)
     for pattern in _POOL_NAME_PATTERNS:
@@ -614,6 +643,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     osd_release = None
     pool_pg_adjustments = None
     pool_autoscale_pools = None
+    large_omap_params = None
     if envelope.get("ceph_code") == _OSD_UPGRADE_FINISHED_CODE:
         osd_release = _osd_upgrade_finished_release(envelope)
         if osd_release is None:
@@ -660,8 +690,16 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             "kích hoạt PG merge và remap dữ liệu."
         )
     elif envelope.get("ceph_code") == _LARGE_OMAP_OBJECTS_CODE:
-        action_id = "investigate_manually"
+        large_omap_params = _large_omap_reshard_params(envelope)
+        action_id = "reshard_rgw_bucket" if large_omap_params else "investigate_manually"
         diagnosis_text = _large_omap_diagnosis(envelope)
+        if large_omap_params:
+            diagnosis_text = (
+                f"Bucket {large_omap_params['bucket_name']} có {large_omap_params['key_count']} key/"
+                f"{large_omap_params['current_shards']} shard, vượt ngưỡng "
+                f"{large_omap_params['key_threshold']}. AI chọn {large_omap_params['num_shards']} shard "
+                "để giữ tải dự kiến dưới 80% ngưỡng; evidence gồm object và PG thật từ deep-scrub."
+            )
         rationale = diagnosis_text
     logger.info("diagnose_incident: incident %s rationale: %s", incident_id, rationale)
 
@@ -883,6 +921,10 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 # proposal must be explicitly approved even though the same
                 # management action from operator-confirmed Chat is SAFE.
                 classification = ActionClassification.RISKY
+            if large_omap_params is not None:
+                # Contextual SAFE applies only to the collector's bounded
+                # test-* bucket evidence accepted above.
+                classification = ActionClassification.SAFE
             nodes = envelope.get("nodes")
             contract = get_contract(action_id)
             if contract is not None and contract.target_schema == "cluster" and isinstance(nodes, list):
@@ -898,6 +940,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_params = {"adjustments": pool_pg_adjustments}
             elif pool_autoscale_pools is not None:
                 action_params = {"pools": pool_autoscale_pools}
+            elif large_omap_params is not None:
+                action_params = {
+                    "bucket_name": large_omap_params["bucket_name"],
+                    "num_shards": large_omap_params["num_shards"],
+                }
             elif pool_name:
                 action_params = {"pool_name": pool_name}
             elif verified_bluestore_restart or verified_osd_down_restart:

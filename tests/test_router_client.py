@@ -126,6 +126,32 @@ def test_large_omap_diagnosis_is_read_only_and_rgw_specific():
     assert "không được xoá" in diagnosis
 
 
+def test_large_omap_lab_evidence_calculates_safe_headroom_shards():
+    envelope = {
+        "log_excerpt": (
+            "LARGE_OMAP_EVIDENCE bucket=test-large-omap "
+            "object=.dir.instance.3.0 keys=10922 threshold=5000 shards=1 pg=6.5"
+        )
+    }
+
+    params = router_client._large_omap_reshard_params(envelope)
+
+    assert params["bucket_name"] == "test-large-omap"
+    assert params["num_shards"] == 3
+    assert params["pg_id"] == "6.5"
+
+
+def test_large_omap_production_bucket_is_not_contextually_safe():
+    envelope = {
+        "log_excerpt": (
+            "LARGE_OMAP_EVIDENCE bucket=customer-data "
+            "object=.dir.instance.3.0 keys=250000 threshold=200000 shards=1 pg=6.a"
+        )
+    }
+
+    assert router_client._large_omap_reshard_params(envelope) is None
+
+
 def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, monkeypatch):
     redact_calls = []
 
