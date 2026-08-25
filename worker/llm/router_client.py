@@ -672,6 +672,26 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 if (
                     existing_action.status == ActionStatus.AUTO_EXECUTED.value
                     and pending_case is not None
+                    and existing_action.action_id == "enable_mon_msgr2"
+                ):
+                    # This playbook is idempotent and explicitly exempt from
+                    # target cooldown.  If post-check still sees the fault,
+                    # verify.py requeues diagnosis; actually re-run the
+                    # command instead of merely moving verify_after forward
+                    # forever without a new execution.
+                    existing_action.status = ActionStatus.PENDING.value
+                    incident.verify_after = None
+                    action_pk = existing_action.id
+                    classification = ActionClassification(existing_action.classification)
+                    resolved_action_id = existing_action.action_id
+                    try:
+                        action_params = json.loads(existing_action.action_params or "null")
+                    except (TypeError, ValueError):
+                        action_params = None
+                    session.commit()
+                elif (
+                    existing_action.status == ActionStatus.AUTO_EXECUTED.value
+                    and pending_case is not None
                 ):
                     # The first post-check may have run while a restarted
                     # daemon was active in systemd but had not rejoined Ceph.
@@ -684,12 +704,14 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     incident.verify_after = datetime.utcnow() + timedelta(
                         seconds=max(0, settings.incident_verify_delay_seconds)
                     )
+                    session.commit()
+                    return
                 else:
                     incident.status = _INCIDENT_STATUS_FOR_RESOLVED_ACTION.get(
                         existing_action.status, IncidentStatus.FAILED.value
                     )
-                session.commit()
-                return
+                    session.commit()
+                    return
         else:
             # AI roadmap Pha 0.3: fail-closed capability/version preflight,
             # run BEFORE classification/Action creation for every fresh

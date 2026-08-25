@@ -2691,6 +2691,61 @@ def test_redelivery_keeps_auto_executed_case_in_verification(isolated_db, monkey
         assert incident.verify_after >= before + timedelta(seconds=29)
 
 
+def test_msgr2_retry_reexecutes_instead_of_only_resetting_verify_timer(isolated_db, monkeypatch):
+    incident_id = "incident-msgr2-retry"
+    _create_incident(incident_id)
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        incident.ceph_code = "MON_MSGR2_NOT_ENABLED"
+        incident.status = IncidentStatus.DIAGNOSING.value
+        action = Action(
+            incident_id=incident.id, action_id="enable_mon_msgr2",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.AUTO_EXECUTED.value,
+            target_nodes='["mon-a"]',
+        )
+        session.add(action)
+        session.flush()
+        session.add(RemediationCase(
+            incident_id=incident.id, action_id=action.id,
+            cluster_id=incident.cluster_id, fault_family="MON_MSGR2_NOT_ENABLED",
+            evidence_fingerprint="b" * 64, prompt_version="test-v1",
+            classification="SAFE", autonomy_decision="AUTO_EXECUTE",
+            playbook_version="3", outcome="EXECUTED_PENDING_VERIFY",
+        ))
+        session.commit()
+
+    async def msgr2_response(_user_content):
+        return {
+            "diagnosis_text": "MON lacks a v2 endpoint",
+            "action_id": "enable_mon_msgr2",
+            "rationale": "enable the idempotent msgr2 listener",
+        }
+
+    execute_calls = []
+    monkeypatch.setattr(router_client, "_call_router", msgr2_response)
+    monkeypatch.setattr(
+        router_client, "execute_command",
+        lambda host, command, **kwargs: execute_calls.append((host, command)) or "ok",
+    )
+
+    asyncio.run(router_client.diagnose_incident(
+        incident_id,
+        dict(ENVELOPE, incident_id=incident_id,
+             ceph_code="MON_MSGR2_NOT_ENABLED", nodes=["mon-a"]),
+    ))
+
+    assert len(execute_calls) == 1
+    assert execute_calls[0][0] == "mon-a"
+    with db_module.SessionLocal() as session:
+        actions = session.query(Action).filter_by(incident_id=incident_id).all()
+        assert len(actions) == 1
+        assert actions[0].status == ActionStatus.AUTO_EXECUTED.value
+        incident = session.get(Incident, incident_id)
+        assert incident.status == IncidentStatus.VERIFYING.value
+        assert incident.verify_after is not None
+
+
 def test_diagnose_incident_malformed_nodes_field_marks_failed_instead_of_guessing(
     isolated_db, monkeypatch
 ):
