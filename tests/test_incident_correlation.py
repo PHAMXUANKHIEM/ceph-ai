@@ -123,8 +123,15 @@ def test_does_not_correlate_wrong_fault_family():
     assert correlate_finding(session, finding, now=now) is None
 
 
-def test_does_not_correlate_resolved_incident():
+def test_correlates_resolved_incident_for_delayed_loki_analysis():
     session = _session()
     now, finding, incident = _seed(session)
     incident.status = IncidentStatus.RESOLVED.value
+    assert correlate_finding(session, finding, now=now) is incident
+
+
+def test_does_not_correlate_rejected_incident():
+    session = _session()
+    now, finding, incident = _seed(session)
+    incident.status = IncidentStatus.REJECTED.value
     assert correlate_finding(session, finding, now=now) is None

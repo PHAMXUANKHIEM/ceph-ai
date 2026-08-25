@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
 from shared.log_learning import (
+    correlate_unverified_samples,
     evaluate_sample,
     record_finding_sample,
     recompute_fault_stats,
@@ -140,6 +141,33 @@ def test_verified_case_becomes_positive_sample_and_updates_wilson_stat():
     assert 0 < stat.trust_score < 1
     assert stat.promotion_candidate_at is None
     assert "audit-only" in stat.promotion_blocked_reason
+
+
+def test_delayed_loki_sample_correlates_to_resolved_verified_incident():
+    session = _session()
+    now, _cluster, incident, finding = _seed(session, correlated=False)
+    incident.status = "RESOLVED"
+    action = Action(
+        incident_id=incident.id, action_id="restart_osd_daemon",
+        classification="SAFE", status="AUTO_EXECUTED", target_nodes='["node-a"]',
+    )
+    session.add(action); session.flush()
+    create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="heartbeat failure", model_provider="test",
+    )
+    record_verified(
+        session, incident_id=incident.id, succeeded=True,
+        verified_at=now + timedelta(minutes=10), post_state={"health": "OK"},
+    )
+    sample = record_finding_sample(session, finding, now=now)
+
+    assert correlate_unverified_samples(session, now=now + timedelta(minutes=11)) == 1
+    assert evaluate_sample(session, sample, now=now + timedelta(minutes=11)) is True
+    assert sample.incident_id == incident.id
+    assert sample.label == "VERIFIED_SUCCESS"
+    assert sample.eligible_for_learning is True
 
 
 def test_bad_operator_verdict_is_a_verified_negative_even_after_success():

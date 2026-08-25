@@ -285,6 +285,42 @@ def reclassify_unverified_samples(session, *, now: datetime | None = None, limit
     return changed
 
 
+def correlate_unverified_samples(session, *, now: datetime | None = None, limit: int = 500) -> int:
+    """Retry deterministic Incident correlation after delayed Loki analysis.
+
+    Loki findings can arrive after autonomous remediation has already closed
+    the matching Incident.  Correlation at finding creation is therefore not
+    sufficient; retry unlinked samples using their own ingest window as the
+    event clock, never wall-clock time.
+    """
+    from watcher.incident_correlation import correlate_finding
+
+    changed = 0
+    samples = (
+        session.query(LogLearningSample)
+        .filter(LogLearningSample.eligible_for_learning.is_(False))
+        .filter(LogLearningSample.incident_id.is_(None))
+        .order_by(LogLearningSample.updated_at)
+        .limit(limit)
+        .all()
+    )
+    for sample in samples:
+        finding = session.get(LogFinding, sample.log_finding_id)
+        run = session.get(LogIngestRun, sample.ingest_run_id)
+        if finding is None or run is None or run.status != "OK":
+            continue
+        incident = correlate_finding(session, finding, now=run.window_end)
+        if incident is None:
+            continue
+        sample.incident_id = incident.id
+        sample.state = "CORRELATED"
+        sample.exclusion_reason = "awaiting Remediation Case"
+        sample.updated_at = now or datetime.utcnow()
+        changed += 1
+    session.commit()
+    return changed
+
+
 def reconcile_samples(session, *, now: datetime | None = None, limit: int = 500) -> int:
     """Create missing samples and refresh outcome projections in bounded batches."""
     now = now or datetime.utcnow()
@@ -297,10 +333,11 @@ def reconcile_samples(session, *, now: datetime | None = None, limit: int = 500)
     for finding in findings:
         record_finding_sample(session, finding, now=now)
         changed += 1
+    changed += reclassify_unverified_samples(session, now=now, limit=limit)
+    changed += correlate_unverified_samples(session, now=now, limit=limit)
     for sample in session.query(LogLearningSample).order_by(LogLearningSample.updated_at).limit(limit).all():
         changed += int(evaluate_sample(session, sample, now=now))
     session.commit()
-    changed += reclassify_unverified_samples(session, now=now, limit=limit)
     return changed
 
 

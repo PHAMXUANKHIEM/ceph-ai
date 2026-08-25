@@ -37,11 +37,11 @@ _FAMILY_CODES: dict[str, tuple[str, ...]] = {
     "mds_operational": ("MDS_",),
 }
 
-_TERMINAL_STATUSES = {
-    IncidentStatus.RESOLVED.value,
-    IncidentStatus.REJECTED.value,
-    IncidentStatus.AUTO_FIXED.value,
-}
+# A Loki window is commonly analysed after a fast autonomous repair has
+# already closed its Incident.  RESOLVED/AUTO_FIXED therefore remain valid
+# correlation truth inside CORRELATION_LOOKBACK.  REJECTED is the only
+# terminal state that says the Incident must not supervise a log label.
+_NON_CORRELATABLE_STATUSES = {IncidentStatus.REJECTED.value}
 _OSD_RE = re.compile(r"\bosd[.\s_-]?(\d+)\b", re.IGNORECASE)
 _VOLUME_CODE_RE = re.compile(r"^VOLUME_SATURATED:([^/]+)/(.+)$", re.IGNORECASE)
 _NODE_RESOURCE_CODE_RE = re.compile(r"^NODE_RESOURCE_HIGH:(.+)$", re.IGNORECASE)
@@ -123,7 +123,7 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
     candidates = (
         session.query(Incident)
         .filter(_same_cluster_filter(finding.cluster_id, is_default))
-        .filter(Incident.status.notin_(_TERMINAL_STATUSES))
+        .filter(Incident.status.notin_(_NON_CORRELATABLE_STATUSES))
         .filter(Incident.detected_at >= now - CORRELATION_LOOKBACK)
         .filter(Incident.detected_at <= now + timedelta(minutes=15))
         .order_by(Incident.detected_at.desc(), Incident.created_at.desc())
