@@ -1,7 +1,7 @@
 <!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Capacity Forecast — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head><body>
 <header class="topbar"><div class="topbar-inner"><a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-<nav class="main-nav"><a href="/" class="nav-link">Dashboard</a><a href="/nodes" class="nav-link">Cluster Metrics</a><a href="/capacity-forecast" class="nav-link active">Capacity Forecast</a><a href="/settings" class="nav-link">Settings</a></nav>
+<nav class="main-nav"><a href="/" class="nav-link">Dashboard</a><a href="/nodes" class="nav-link">Cluster Metrics</a><a href="/capacity-forecast" class="nav-link active">Capacity Forecast</a><a href="/ai-learning" class="nav-link">AI Learning</a><a href="/settings" class="nav-link">Settings</a></nav>
 <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Logout</button></form></div></header>
 <main class="page"><section class="card"><div class="card-header"><h2>Dự báo dung lượng Ceph</h2></div><div class="card-body">
 <form method="get"><label>Cụm <select name="cluster_id" onchange="this.form.submit()">{% for c in clusters %}<option value="{{ c.id }}" {% if c.id == cluster.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></label></form>

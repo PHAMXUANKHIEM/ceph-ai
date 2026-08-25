@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Learning — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
+  <nav class="main-nav">
+    <a href="/" class="nav-link">Dashboard</a>
+    <a href="/nodes" class="nav-link">Cluster Metrics</a>
+    <a href="/log-intelligence" class="nav-link">Log Intelligence</a>
+    <a href="/ai-learning" class="nav-link active">AI Learning</a>
+    <a href="/settings" class="nav-link">Settings</a>
+  </nav>
+  <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Logout</button></form>
+</div></header>
+
+<main class="page">
+  <section class="card">
+    <div class="card-header"><div><h2>AI đang học gì?</h2><p class="hint">Chỉ đọc · số liệu outcome đã lưu, không cho AI thay policy hoặc tự cấp quyền thực thi.</p></div></div>
+    <div class="card-body">
+      <form method="get" action="/ai-learning" class="audit-filters">
+        <label>Cụm<select name="cluster" onchange="this.form.submit()">{% for item in clusters %}<option value="{{ item.id }}" {% if item.id == cluster.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
+      </form>
+      <p><strong>CPU/RAM:</strong> {{ resource_learning.run_counts.get('EVALUATED', 0) }} dự báo đã đối chiếu · {{ resource_learning.run_counts.get('PENDING', 0) }} đang chờ outcome.</p>
+      <p><strong>Log daemon:</strong> {{ log_learning.sample_count }} mẫu · {{ log_learning.eligible_count }} đủ điều kiện học · {{ log_learning.blocked_count }} bị chặn.</p>
+      <p class="hint">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Model CPU/RAM đang được chọn</h2><p class="hint">Đánh giá sau mỗi {{ resource_learning.evaluation_hours }} giờ · tối thiểu {{ resource_learning.minimum_outcomes }} outcome · candidate {{ resource_learning.candidate_windows }} giờ.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Host</th><th>Metric</th><th>Cửa sổ</th><th>Outcome</th><th>MAE</th><th>Chính xác ước tính</th><th>Confidence mới nhất</th><th>Đánh giá</th></tr></thead><tbody>
+    {% for model in resource_learning.selected_models %}
+      <tr>
+        <td><code>{{ model.host }}</code></td><td>{{ model.metric }}</td><td>{{ model.window_hours }} giờ</td><td>{{ model.evaluated_count }}</td>
+        <td>{{ model.mae if model.mae is not none else '—' }} điểm %</td>
+        <td>{{ (model.accuracy_estimate|string + '%') if model.accuracy_estimate is not none else '—' }}</td>
+        <td>{{ ((model.latest_confidence * 100)|round(1)|string + '%') if model.latest_confidence is not none else '—' }}</td>
+        <td>{% if model.quality_status == 'RELIABLE' %}<span class="badge badge-ok">Đáng tin</span>{% elif model.quality_status == 'PROMISING' %}<span class="badge badge-warn">Tín hiệu tốt, còn ít mẫu</span>{% elif model.quality_status == 'NEEDS_IMPROVEMENT' %}<span class="badge badge-err">Cần cải thiện</span>{% else %}<span class="badge">Đang thu thập</span>{% endif %}<div class="hint">{{ model.quality_reason }}</div></td>
+      </tr>
+    {% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa có model CPU/RAM được chọn cho cụm này.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Chi tiết các cửa sổ CPU/RAM</h2><p class="hint">Dùng để thấy model đã thử cửa sổ nào và vì sao cửa sổ hiện tại được chọn.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Host</th><th>Metric</th><th>Cửa sổ</th><th>Được chọn</th><th>Outcome</th><th>MAE</th><th>Lỗi gần nhất</th><th>Cập nhật</th></tr></thead><tbody>
+    {% for model in resource_learning.candidate_models %}<tr><td><code>{{ model.host }}</code></td><td>{{ model.metric }}</td><td>{{ model.window_hours }} giờ</td><td>{% if model.selected %}<span class="badge badge-ok">Có</span>{% else %}Không{% endif %}</td><td>{{ model.evaluated_count }}</td><td>{{ model.mae if model.mae is not none else '—' }}</td><td>{{ model.last_error if model.last_error is not none else '—' }}</td><td>{{ model.updated_at|vntime }}</td></tr>
+    {% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa có outcome CPU/RAM.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Học từ log daemon</h2><p class="hint">Chế độ {{ log_learning.mode }}: kết quả chỉ phục vụ audit/ranking, chưa được mở Autopilot.</p></div></div>
+    <div class="card-body">
+      <p><strong>Trạng thái:</strong> {% for name, count in log_learning.state_counts.items() %}<span class="badge">{{ name }}: {{ count }}</span> {% else %}Chưa có mẫu{% endfor %}</p>
+      <p><strong>Nhãn outcome:</strong> {% for name, count in log_learning.label_counts.items() %}<span class="badge">{{ name }}: {{ count }}</span> {% else %}Chưa có nhãn{% endfor %}</p>
+      <h3>Lý do chưa được học</h3>
+      <ul>{% for blocker in log_learning.top_blockers %}<li>{{ blocker.reason }} — {{ blocker.count }} mẫu</li>{% else %}<li>Không có blocker.</li>{% endfor %}</ul>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Daemon / lỗi</th><th>Playbook</th><th>Mẫu</th><th>Đã verify</th><th>Thành công / thất bại</th><th>Trust</th><th>Chặn promotion</th></tr></thead><tbody>
+    {% for stat in log_learning.fault_stats %}<tr><td>{{ stat.daemon_type }} / <code>{{ stat.fault_family }}</code></td><td>{{ stat.playbook_id }}</td><td>{{ stat.sample_count }}</td><td>{{ stat.verified_count }}</td><td>{{ stat.success_count }} / {{ stat.failure_count }}</td><td>{{ stat.trust_percent }}%</td><td>{{ stat.blocked_reason or '—' }}</td></tr>
+    {% else %}<tr class="empty-row"><td colspan="7"><div class="empty-state">Chưa có nhóm lỗi đủ dữ liệu để tính trust.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>20 mẫu log-learning gần nhất</h2><p class="hint">Cho biết AI đã nhận mẫu nào, nhãn gì và tại sao chưa được dùng để tăng trust.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Cập nhật</th><th>Finding</th><th>Daemon/host</th><th>Fault family</th><th>State</th><th>Label</th><th>Đủ điều kiện</th><th>Lý do</th></tr></thead><tbody>
+    {% for sample in log_learning.recent_samples %}<tr><td>{{ sample.updated_at|vntime }}</td><td>{{ sample.title }}</td><td>{{ sample.daemon_type }}{% if sample.host %}<br><code>{{ sample.host }}</code>{% endif %}</td><td><code>{{ sample.fault_family }}</code></td><td>{{ sample.state }}</td><td>{{ sample.label }}</td><td>{% if sample.eligible %}<span class="badge badge-ok">Có</span>{% else %}<span class="badge badge-warn">Không</span>{% endif %}</td><td>{{ sample.exclusion_reason or '—' }}</td></tr>
+    {% else %}<tr class="empty-row"><td colspan="8"><div class="empty-state">Chưa có mẫu log-learning cho cụm này.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+</main>
+<script src="/static/app.js?v={{ static_version }}"></script>
+</body></html>

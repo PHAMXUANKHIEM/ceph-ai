@@ -15,6 +15,7 @@ from config.settings import (
 from dashboard import telegram_approval_bot
 from dashboard.routes import (
     actions,
+    ai_learning as ai_learning_routes,
     auth,
     backups,
     block_storage,
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     application.include_router(settings_routes.router)
     application.include_router(maintenance.router)
     application.include_router(actions.router)
+    application.include_router(ai_learning_routes.router)
     application.include_router(chat.router)
     application.include_router(upgrade.router)
     application.include_router(deploy_cluster.router)
