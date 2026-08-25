@@ -104,7 +104,7 @@ def _contract(action_id: str, *, version: str = "1", target_schema: str,
 # a complete L3 contract; all other actions remain approval-gated.
 PLAYBOOKS: dict[str, PlaybookContract] = {
     "resync_ntp": _contract(
-        "resync_ntp", target_schema="host", max_autonomy="L3",
+        "resync_ntp", version="2", target_schema="host", max_autonomy="L3",
         conflict_scope="host", max_targets=2,
     ),
     "enable_mon_msgr2": _contract(
