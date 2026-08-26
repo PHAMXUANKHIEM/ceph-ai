@@ -236,6 +236,32 @@ def test_fetch_bucket_access_log_propagates_rgw_log_error(monkeypatch):
 
 # --- fetch_bucket_stats() / summarize_bucket_stats() ----------------------
 
+
+def test_fetch_rgw_audit_log_reads_cephadm_host_log_before_systemd_fallback(monkeypatch):
+    calls = []
+    beast = (
+        'beast: 0x1: 10.0.0.5 - alice [12/Jun/2024:13:10:07.404 +0000] '
+        '"GET /bucket/object HTTP/1.1" 200 5 - "agent" - latency=0.001s'
+    )
+
+    def fake_run(host, command, timeout):
+        calls.append(command)
+        return "" if command == ral._OPS_LOG_COMMAND else beast
+
+    monkeypatch.setattr(ral, "run_command_on_node", fake_run)
+    monkeypatch.setattr(
+        ral, "fetch_bucket_access_log",
+        lambda host: (_ for _ in ()).throw(AssertionError("systemd fallback must not run")),
+    )
+
+    records = ral.fetch_rgw_audit_log("10.20.1.90")
+
+    assert records[0]["bucket"] == "bucket"
+    assert calls == [ral._OPS_LOG_COMMAND, ral._HOST_DAEMON_LOG_COMMAND]
+
+
+# --- fetch_bucket_stats() / summarize_bucket_stats() ----------------------
+
 RADOSGW_ADMIN_BUCKET_STATS_JSON = """{
   "bucket": "my-bucket",
   "num_shards": 11,

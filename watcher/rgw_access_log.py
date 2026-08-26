@@ -96,6 +96,10 @@ _OPS_LOG_COMMAND = (
     "find /var/log/ceph -type f -name 'ops-log-*.log' -print0 2>/dev/null "
     "| xargs -0 -r tail -n 3000"
 )
+_HOST_DAEMON_LOG_COMMAND = (
+    "find /var/log/ceph -type f -name 'ceph-client.rgw*.log' -print0 2>/dev/null "
+    "| xargs -0 -r tail -n 3000"
+)
 _DAEMON_LOG_COMMAND = (
     "find /var/log/ceph -type f -name 'ceph-client.rgw*.log' -print0 2>/dev/null "
     "| xargs -0 -r tail -n 3000"
@@ -258,9 +262,17 @@ def fetch_rgw_audit_log(host: str) -> list[dict]:
     try:
         raw = run_command_on_node(host, _OPS_LOG_COMMAND, RGW_LOG_COMMAND_TIMEOUT_SECONDS)
     except Exception:
-        return fetch_bucket_access_log(host)
+        raw = ""
     records = parse_rgw_ops_log(raw)
-    return records if records else fetch_bucket_access_log(host)
+    if records:
+        return records
+    try:
+        legacy_raw = run_command_on_node(
+            host, _HOST_DAEMON_LOG_COMMAND, RGW_LOG_COMMAND_TIMEOUT_SECONDS
+        )
+    except Exception:
+        return fetch_bucket_access_log(host)
+    return parse_beast_access_log(legacy_raw)
 
 
 def fetch_rgw_audit_log_with(host: str, ssh_user: str, ssh_key_path: str) -> list[dict]:

@@ -485,11 +485,19 @@ def query_rbd_iostat(pool: str) -> list[VolumeIoSample]:
     doesn't look like the expected shape, so an unexpected-schema surprise
     degrades to "no data this poll" rather than crashing the Watcher loop.
     """
-    _, payload = run_ceph_json_command(
-        _rbd_iostat_command(pool, settings.ceph_exec_mode, settings.ceph_keyring_path),
-        append_json_format=False,
-        cephadm_mount_path=settings.ceph_keyring_path,
-    )
+    try:
+        _, payload = run_ceph_json_command(
+            _rbd_iostat_command(pool, settings.ceph_exec_mode, settings.ceph_keyring_path),
+            append_json_format=False,
+            cephadm_mount_path=settings.ceph_keyring_path,
+        )
+    except CephQueryError as exc:
+        # Reef prints this when rbd_support has no fresh client statistics.
+        # The bounded CLI then exits 124; that is an empty activity sample,
+        # not proof that the MON hosts are unhealthy.
+        if "waiting for initial image stats" in str(exc).lower():
+            return []
+        raise
     return _normalize_rbd_iostat(pool, payload)
 
 
@@ -499,11 +507,16 @@ def query_rbd_iostat_with(
     ceph_keyring_path: str = "/etc/ceph/ceph.client.admin.keyring",
 ) -> list[VolumeIoSample]:
     """Cluster-scoped counterpart to :func:`query_rbd_iostat`."""
-    _, payload = run_ceph_json_command_with(
-        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
-        _rbd_iostat_command(pool, exec_mode, ceph_keyring_path), append_json_format=False,
-        cephadm_mount_path=ceph_keyring_path,
-    )
+    try:
+        _, payload = run_ceph_json_command_with(
+            mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
+            _rbd_iostat_command(pool, exec_mode, ceph_keyring_path), append_json_format=False,
+            cephadm_mount_path=ceph_keyring_path,
+        )
+    except CephQueryError as exc:
+        if "waiting for initial image stats" in str(exc).lower():
+            return []
+        raise
     return _normalize_rbd_iostat(pool, payload)
 
 

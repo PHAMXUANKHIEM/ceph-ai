@@ -92,6 +92,19 @@ def test_finding_snapshot_is_idempotent_and_contains_no_raw_log():
     assert first.eligible_for_learning is False
 
 
+def test_learning_identity_does_not_mix_daemon_types():
+    session = _session()
+    _now, _cluster, _incident, finding = _seed(session)
+    finding.semantic_entities_json = json.dumps(["daemon:mgr", "daemon:osd.5", "host:node-a"])
+    finding.affected_daemons_json = json.dumps(["mgr", "osd.5"])
+
+    sample = record_finding_sample(session, finding)
+
+    assert sample.daemon_type == "osd"
+    assert sample.daemon_id == "osd.5"
+    assert sample.entity_key == "daemon:osd.5"
+
+
 def test_partial_loki_coverage_is_never_eligible():
     session = _session()
     _now, _cluster, _incident, finding = _seed(session, ingest_status="PARTIAL")

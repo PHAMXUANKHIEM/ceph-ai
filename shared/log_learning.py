@@ -38,11 +38,25 @@ def _identity(finding: LogFinding, patterns: list[LogPattern]) -> tuple[str, str
     entities = _json_list(finding.semantic_entities_json)
     hosts = _json_list(finding.affected_hosts_json)
     daemon_type = patterns[0].daemon_type if patterns else (daemons[0].split(".", 1)[0] if daemons else "unknown")
-    daemon_entity = next((item for item in entities if item.startswith("daemon:")), None)
+    daemon_entities = [item for item in entities if item.startswith("daemon:")]
+    daemon_entity = next(
+        (
+            item for item in daemon_entities
+            if item.removeprefix("daemon:").split(".", 1)[0] == daemon_type
+        ),
+        None,
+    )
+    if daemon_entity is None:
+        daemon_entity = next(
+            (f"daemon:{item}" for item in daemons if item.split(".", 1)[0] == daemon_type),
+            None,
+        )
     daemon_id = daemon_entity.removeprefix("daemon:") if daemon_entity else None
     host_entity = next((item for item in entities if item.startswith("host:")), None)
     host = host_entity.removeprefix("host:") if host_entity else (hosts[0] if hosts else None)
-    entity_key = next((item for item in entities if item != "unknown"), "unknown")
+    entity_key = daemon_entity or host_entity or next(
+        (item for item in entities if item != "unknown"), "unknown"
+    )
     return daemon_type or "unknown", daemon_id, host, entity_key
 
 

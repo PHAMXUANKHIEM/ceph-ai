@@ -1221,6 +1221,27 @@ def test_query_rbd_iostat_raises_when_all_mon_nodes_fail(fake_ssh, monkeypatch):
         query_rbd_iostat("vms")
 
 
+def test_query_rbd_iostat_treats_initial_stats_timeout_as_idle(monkeypatch):
+    def idle(*args, **kwargs):
+        raise CephQueryError(
+            "All MON nodes failed: command exited 124: rbd: waiting for initial image stats"
+        )
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", idle)
+
+    assert query_rbd_iostat("vms") == []
+
+
+def test_query_rbd_iostat_does_not_hide_transport_timeout(monkeypatch):
+    def unreachable(*args, **kwargs):
+        raise CephQueryError("All MON nodes failed: 10.20.1.150: TimeoutError")
+
+    monkeypatch.setattr(ceph_client, "run_ceph_json_command", unreachable)
+
+    with pytest.raises(CephQueryError, match="TimeoutError"):
+        query_rbd_iostat("vms")
+
+
 # --- query_rbd_trash (Volume Trash — dashboard/routes/volumes.py) -------
 
 
