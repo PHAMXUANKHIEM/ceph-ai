@@ -7,7 +7,7 @@ import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 
 from config.settings import settings
-from shared import db
+from shared import db, service_health
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Cluster, Incident, IncidentStatus
 from shared.telegram_alerts import send_ai_unavailable_alert
@@ -250,12 +250,18 @@ async def _main() -> None:
     # same reasoning — it creates its own synthetic Incident/Action and
     # calls straight into _execute_approved_action(), no separate queue or
     # poll loop of its own (see worker/backup/scheduler.py's docstring).
+    async def service_heartbeat() -> None:
+        while True:
+            service_health.record("worker")
+            await asyncio.sleep(15)
+
     await asyncio.gather(
         run(process_incident=diagnose_incident),
         poll_approved_actions(),
         backup_scheduler.run(),
         bucket_logging.run(),
         rgw_access_audit.run(),
+        service_heartbeat(),
     )
 
 

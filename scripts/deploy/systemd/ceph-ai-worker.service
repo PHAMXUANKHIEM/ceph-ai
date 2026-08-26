@@ -1,0 +1,20 @@
+[Unit]
+Description=Ceph AI Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ceph-ai
+Environment=CEPH_AI_RUNTIME_DIR=/run/ceph-ai
+RuntimeDirectory=ceph-ai
+RuntimeDirectoryPreserve=yes
+ExecStart=/root/ceph-ai/.venv/bin/python -m worker.main
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+StandardOutput=append:/var/log/ceph-ai-worker.log
+StandardError=append:/var/log/ceph-ai-worker.log
+
+[Install]
+WantedBy=multi-user.target

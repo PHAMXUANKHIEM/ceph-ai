@@ -39,7 +39,7 @@ from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
-from shared import db, heartbeat, telegram_alerts
+from shared import db, heartbeat, service_health, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
@@ -687,6 +687,7 @@ def run(
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        service_health.record("watcher")
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
         # query_cluster_health() itself succeeded) — so the generic except
         # below (Review Story 5.2) only records a FAILED heartbeat when the

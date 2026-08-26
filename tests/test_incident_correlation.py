@@ -110,6 +110,33 @@ def test_correlates_same_family_and_osd():
     assert json.loads(finding.correlation_evidence_json)["commit_latency_ms"] == 42
 
 
+def test_correlates_osd_from_metric_evidence_when_code_and_excerpt_are_generic():
+    session = _session()
+    now, finding, incident = _seed(
+        session, incident_code="BLUESTORE_SLOW_OP_ALERT", incident_excerpt="slow operation",
+    )
+    finding.fault_family = "bluestore_slow_ops"
+    incident.signal_evidence_json = json.dumps({
+        "source": "ceph_osd_perf", "osd_id": 5, "host": "node-a",
+    })
+
+    assert correlate_finding(session, finding, now=now) is incident
+    assert "osd=5" in finding.correlation_reason
+    assert "signal_evidence" in finding.correlation_reason
+
+
+def test_metric_evidence_rejects_conflicting_osd():
+    session = _session()
+    now, finding, incident = _seed(
+        session, incident_code="BLUESTORE_SLOW_OP_ALERT", incident_excerpt="slow operation",
+    )
+    finding.fault_family = "bluestore_slow_ops"
+    finding.semantic_entities_json = json.dumps(["daemon:osd.7"])
+    incident.signal_evidence_json = json.dumps({"source": "ceph_osd_perf", "osd_id": 5})
+
+    assert correlate_finding(session, finding, now=now) is None
+
+
 def test_does_not_correlate_conflicting_osd_entity():
     session = _session()
     now, finding, _ = _seed(session, finding_osd="7")

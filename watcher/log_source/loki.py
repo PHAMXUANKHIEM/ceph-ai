@@ -110,7 +110,20 @@ def fetch(
         return LogSourceResult(records=[], error=f"{host}/{daemon_type}: Loki: {exc}")
 
     records: list[LogRecord] = []
+    label_errors: list[str] = []
     for stream in (payload.get("data") or {}).get("result") or []:
+        labels = stream.get("stream") if isinstance(stream, dict) else None
+        expected_cluster = cluster.name if cluster is not None else "default"
+        if not isinstance(labels, dict) or any(
+            labels.get(key) != expected
+            for key, expected in (
+                ("cluster", expected_cluster), ("host", host), ("daemon_type", daemon_type)
+            )
+        ):
+            label_errors.append(
+                f"Loki stream label không khớp selector {expected_cluster}/{host}/{daemon_type}"
+            )
+            continue
         for entry in stream.get("values") or []:
             # Each entry is [<unix-nanoseconds-as-string>, <line>].
             if not isinstance(entry, list) or len(entry) != 2:
@@ -136,7 +149,7 @@ def fetch(
                     severity=record.severity,
                 )
             )
-    return LogSourceResult(records=records)
+    return LogSourceResult(records=records, error="; ".join(sorted(set(label_errors))) or None)
 
 
 def check_reachable() -> None:

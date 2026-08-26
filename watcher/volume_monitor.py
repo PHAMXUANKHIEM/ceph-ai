@@ -36,6 +36,7 @@ single heuristic below, which already covers the general case.
 
 import json
 import logging
+import threading
 from collections import deque
 from datetime import datetime
 
@@ -157,29 +158,46 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
             logger.warning("check_volumes: cluster %s pool discovery failed: %s", cluster.id, exc)
             return {}
 
-    for pool in pools:
-        try:
-            if cluster is None:
-                samples = ceph_client.query_rbd_iostat(pool)
-            else:
-                samples = ceph_client.query_rbd_iostat_with(
-                    pool, mon_nodes, cluster.ceph_container_name, cluster.ssh_user,
-                    cluster.ssh_key_path, cluster.ceph_exec_mode, cluster.ceph_keyring_path,
-                )
-        except CephQueryError as exc:
-            logger.warning(
-                "check_volumes: cluster %s failed to query RBD pool %r: %s",
-                effective_cluster_id or "default", pool, exc,
-            )
-            # ``rbd perf image iostat`` can wait indefinitely for its first
-            # sample when rbd_support has no fresh client statistics.  Once
-            # every MON has timed out, retrying the same command for every
-            # remaining pool multiplies one outage into a minutes-long poll
-            # and makes the Watcher heartbeat appear dead.
-            if "TimeoutError" in str(exc):
-                break
-            continue
+    def query(pool: str):
+        if cluster is None:
+            return ceph_client.query_rbd_iostat(pool)
+        return ceph_client.query_rbd_iostat_with(
+            pool, mon_nodes, cluster.ceph_container_name, cluster.ssh_user,
+            cluster.ssh_key_path, cluster.ceph_exec_mode, cluster.ceph_keyring_path,
+        )
 
+    # Each idle pool can legitimately wait for rbd_support's bounded sample
+    # timeout. Query pools concurrently so four idle pools cost one timeout,
+    # not four, while keeping per-pool failures isolated.
+    pool_results: dict[str, list] = {}
+    pool_errors: dict[str, CephQueryError] = {}
+    result_lock = threading.Lock()
+
+    def query_and_store(pool: str) -> None:
+        try:
+            samples = query(pool)
+            with result_lock:
+                pool_results[pool] = samples
+        except CephQueryError as exc:
+            with result_lock:
+                pool_errors[pool] = exc
+
+    threads = [
+        threading.Thread(target=query_and_store, args=(pool,), name=f"rbd-iostat-{pool}", daemon=True)
+        for pool in pools
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    for pool, exc in pool_errors.items():
+        logger.warning(
+            "check_volumes: cluster %s failed to query RBD pool %r: %s",
+            effective_cluster_id or "default", pool, exc,
+        )
+
+    for pool in pools:
+        samples = pool_results.get(pool, [])
         for sample in samples:
             key = (effective_cluster_id, sample["pool"], sample["image"])
             state = _state.setdefault(key, _VolumeState())

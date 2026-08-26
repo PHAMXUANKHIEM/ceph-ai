@@ -82,6 +82,11 @@ echo "==> Applying DB migrations"
 alembic upgrade heads
 
 echo "==> Stopping existing services (if running)"
+USE_SYSTEMD=false
+if systemctl cat ceph-ai-watcher.service >/dev/null 2>&1; then
+  USE_SYSTEMD=true
+  systemctl stop ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard || true
+fi
 # Match by checkout cwd as well as module name.  Older deployments launched
 # the interpreter as relative `.venv/bin/python`; an absolute-path-only pkill
 # missed those processes and left two workers consuming the same queue.
@@ -125,14 +130,18 @@ fi
 DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 
-nohup "$VENV_PYTHON" -m watcher.main >> "/var/log/${LOG_TAG}-watcher.log" 2>&1 &
-disown
+if [ "$USE_SYSTEMD" = "true" ]; then
+  systemctl start ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard
+else
+  nohup "$VENV_PYTHON" -m watcher.main >> "/var/log/${LOG_TAG}-watcher.log" 2>&1 &
+  disown
+  nohup "$VENV_PYTHON" -m worker.main >> "/var/log/${LOG_TAG}-worker.log" 2>&1 &
+  disown
+  nohup "$VENV_PYTHON" -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
+    >> "/var/log/${LOG_TAG}-dashboard.log" 2>&1 &
+  disown
+fi
 nohup "$VENV_PYTHON" -m watcher.remediation_main >> "/var/log/${LOG_TAG}-remediation-watcher.log" 2>&1 &
-disown
-nohup "$VENV_PYTHON" -m worker.main >> "/var/log/${LOG_TAG}-worker.log" 2>&1 &
-disown
-nohup "$VENV_PYTHON" -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
-  >> "/var/log/${LOG_TAG}-dashboard.log" 2>&1 &
 disown
 
 # The repair supervisor must survive candidate deployments because it owns the

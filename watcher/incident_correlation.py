@@ -70,7 +70,23 @@ def _finding_osds(finding: LogFinding) -> set[str]:
 
 def _incident_osds(incident: Incident) -> set[str]:
     text = f"{incident.ceph_code}\n{incident.log_excerpt or ''}"
-    return set(_OSD_RE.findall(text))
+    result = set(_OSD_RE.findall(text))
+    evidence = _signal_evidence(incident)
+    value = evidence.get("osd_id")
+    if isinstance(value, (str, int)) and str(value).isdigit():
+        result.add(str(value))
+    for value in evidence.get("osd_ids", []) if isinstance(evidence.get("osd_ids"), list) else []:
+        if isinstance(value, (str, int)) and str(value).isdigit():
+            result.add(str(value))
+    return result
+
+
+def _signal_evidence(incident: Incident) -> dict:
+    try:
+        value = json.loads(incident.signal_evidence_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _finding_volumes(finding: LogFinding) -> set[str]:
@@ -104,7 +120,13 @@ def _finding_hosts(finding: LogFinding) -> set[str]:
 
 def _incident_hosts(incident: Incident) -> set[str]:
     match = _NODE_RESOURCE_CODE_RE.match(incident.ceph_code)
-    return {match.group(1).lower()} if match else set()
+    result = {match.group(1).lower()} if match else set()
+    evidence = _signal_evidence(incident)
+    for key in ("host", "hostname", "node"):
+        value = evidence.get(key)
+        if isinstance(value, str) and value.strip():
+            result.add(value.strip().lower())
+    return result
 
 
 def _same_cluster_filter(cluster_id: str, is_default: bool):
@@ -152,6 +174,7 @@ def correlate_finding(session, finding: LogFinding, *, now: datetime | None = No
             + (f":osd={','.join(sorted(finding_osds & incident_osds))}" if finding_osds & incident_osds else "")
             + (f":volume={','.join(sorted(matched_volumes))}" if matched_volumes else "")
             + (f":host={','.join(sorted(matched_hosts))}" if matched_hosts else "")
+            + (":signal_evidence" if incident.signal_evidence_json else "")
         )
         finding.correlated_at = now
         finding.correlation_evidence_json = incident.signal_evidence_json

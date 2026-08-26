@@ -40,6 +40,7 @@ from dashboard.routes import (
     pgs,
     restore_cluster,
     settings as settings_routes,
+    system_health as system_health_routes,
     telegram_alerts,
     upgrade,
     users,
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     application.add_middleware(GZipMiddleware, minimum_size=500)
     application.mount("/static", _CachedStaticFiles(directory=str(STATIC_DIR)), name="static")
     application.include_router(auth.router)
+    application.include_router(system_health_routes.router)
     application.include_router(incidents.router)
     application.include_router(nodes.router)
     application.include_router(block_storage.router)

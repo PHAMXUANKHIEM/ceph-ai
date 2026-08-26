@@ -170,7 +170,7 @@ def test_check_volumes_skips_a_pool_that_fails_to_query(monkeypatch):
     assert vm.check_volumes() == {}  # must not raise
 
 
-def test_check_volumes_stops_after_all_mon_nodes_time_out(monkeypatch):
+def test_check_volumes_bounds_all_pool_timeouts_in_one_parallel_batch(monkeypatch):
     monkeypatch.setattr(vm.ceph_client, "configured_rbd_pools", lambda: ["slow", "not-queried"])
     queried = []
 
@@ -181,7 +181,7 @@ def test_check_volumes_stops_after_all_mon_nodes_time_out(monkeypatch):
     monkeypatch.setattr(vm.ceph_client, "query_rbd_iostat", fake_iostat)
 
     assert vm.check_volumes() == {}
-    assert queried == ["slow"]
+    assert set(queried) == {"slow", "not-queried"}
 
 
 # --- create_or_resolve_volume_incidents() -------------------------------

@@ -16,7 +16,12 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
 
 def make_engine(database_url: str | None = None):
     url = database_url or settings.database_url
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+    if url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False}
+    elif url.startswith("postgresql"):
+        connect_args = {"options": "-c idle_in_transaction_session_timeout=60000"}
+    else:
+        connect_args = {}
     engine = create_engine(url, connect_args=connect_args)
     if url.startswith("sqlite"):
         # SQLite ignores FK constraints by default — without this, the

@@ -314,6 +314,14 @@ def _scan_and_store_unlocked(
     if not settings.log_intel_enabled:
         return None
 
+    if cluster_id is None:
+        with db.SessionLocal() as session:
+            default_cluster = ensure_default_cluster(session)
+            cluster_id = default_cluster.id
+            if cluster is None:
+                session.expunge(default_cluster)
+                cluster = default_cluster
+
     # The default-cluster loop historically passed only cluster_id.  That
     # was enough for DB scoping, but not for source adapters: Loki then saw
     # cluster=None and queried the literal label cluster="default" instead
@@ -328,7 +336,26 @@ def _scan_and_store_unlocked(
                 session.expunge(cluster)
 
     window_end = datetime.utcnow()
-    window_start = window_end - timedelta(minutes=max(1, settings.log_intel_window_minutes))
+    fallback_start = window_end - timedelta(minutes=max(1, settings.log_intel_window_minutes))
+    window_start = fallback_start
+    # Advance only from a complete run. PARTIAL/FAILED must be replayed on
+    # the next scan, while a two-minute overlap absorbs late Loki delivery;
+    # persistence in log_ingest_runs makes this survive process restarts.
+    try:
+        with db.SessionLocal() as session:
+            latest_ok = (
+                session.query(LogIngestRun.window_end)
+                .filter(LogIngestRun.cluster_id == cluster_id)
+                .filter(LogIngestRun.source == settings.log_intel_source)
+                .filter(LogIngestRun.status == LogIngestStatus.OK.value)
+                .order_by(LogIngestRun.window_end.desc())
+                .limit(1)
+                .scalar()
+            )
+        if latest_ok is not None:
+            window_start = max(fallback_start, latest_ok - timedelta(minutes=2))
+    except Exception:
+        logger.exception("log_intel: không đọc được watermark; dùng cửa sổ fallback")
 
     try:
         source = get_log_source(settings.log_intel_source)

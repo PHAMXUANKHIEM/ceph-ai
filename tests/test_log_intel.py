@@ -382,6 +382,24 @@ def test_repeat_scan_accumulates_instead_of_duplicating(isolated_db, enabled, mo
         assert [r.patterns_new for r in session.query(LogIngestRun).all()] == [1, 0]
 
 
+def test_complete_run_advances_watermark_with_overlap(isolated_db, enabled, monkeypatch):
+    _one_node(monkeypatch)
+    windows = []
+
+    class Source:
+        @staticmethod
+        def fetch(host, daemon_type, window_start, window_end, cluster=None):
+            windows.append((window_start, window_end))
+            return LogSourceResult(records=[_record(host, "osd.5 slow request")])
+
+    monkeypatch.setattr(log_intel, "get_log_source", lambda _name: Source)
+
+    log_intel.scan_and_store()
+    log_intel.scan_and_store()
+
+    assert windows[1][0] == windows[0][1] - timedelta(minutes=2)
+
+
 def test_observations_are_split_per_host_and_hour(isolated_db, enabled, monkeypatch):
     monkeypatch.setattr(log_intel, "configured_nodes", lambda cluster=None: [
         {"host": "10.0.0.1", "roles": ["osd"]},
