@@ -9,6 +9,7 @@ from shared.db import Base
 from shared.log_learning import (
     correlate_unverified_samples,
     evaluate_sample,
+    reclassify_unverified_samples,
     record_finding_sample,
     recompute_fault_stats,
     set_operator_verdict,
@@ -103,6 +104,22 @@ def test_learning_identity_does_not_mix_daemon_types():
     assert sample.daemon_type == "osd"
     assert sample.daemon_id == "osd.5"
     assert sample.entity_key == "daemon:osd.5"
+
+
+def test_reclassify_repairs_stale_cross_daemon_identity():
+    session = _session()
+    _now, _cluster, _incident, finding = _seed(session)
+    sample = record_finding_sample(session, finding)
+    sample.daemon_id = "mgr"
+    sample.entity_key = "daemon:mgr"
+    session.commit()
+
+    changed = reclassify_unverified_samples(session)
+
+    assert changed == 1
+    assert sample.daemon_type == "osd"
+    assert sample.daemon_id == "osd"
+    assert sample.entity_key == "daemon:osd"
 
 
 def test_partial_loki_coverage_is_never_eligible():

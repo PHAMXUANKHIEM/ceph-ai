@@ -272,13 +272,24 @@ def reclassify_unverified_samples(session, *, now: datetime | None = None, limit
             _json_list(finding.affected_daemons_json),
         )
         new_family = semantic.fault_family or "unknown"
-        if new_family == sample.fault_family and set(semantic.entities) == set(_json_list(finding.semantic_entities_json)):
+        semantic_changed = (
+            new_family != sample.fault_family
+            or set(semantic.entities) != set(_json_list(finding.semantic_entities_json))
+        )
+        if semantic_changed:
+            finding.fault_family = semantic.fault_family
+            finding.semantic_entities_json = json.dumps(semantic.entities)
+        daemon_type, daemon_id, host, entity_key = _identity(finding, patterns)
+        identity_changed = (
+            sample.daemon_type != daemon_type
+            or sample.daemon_id != daemon_id
+            or sample.host != host
+            or sample.entity_key != entity_key
+        )
+        if not semantic_changed and not identity_changed:
             continue
         previous = {"fault_family": sample.fault_family, "entity_key": sample.entity_key}
-        finding.fault_family = semantic.fault_family
-        finding.semantic_entities_json = json.dumps(semantic.entities)
         sample.fault_family = new_family
-        daemon_type, daemon_id, host, entity_key = _identity(finding, patterns)
         sample.daemon_type = daemon_type
         sample.daemon_id = daemon_id
         sample.host = host
