@@ -1242,6 +1242,21 @@ def test_query_rbd_iostat_does_not_hide_transport_timeout(monkeypatch):
         query_rbd_iostat("vms")
 
 
+def test_rbd_idle_timeout_does_not_retry_other_mon_nodes(monkeypatch):
+    calls = []
+
+    def idle(host, *args, **kwargs):
+        calls.append(host)
+        raise RuntimeError("command exited 124: rbd: waiting for initial image stats")
+
+    monkeypatch.setattr(ceph_client, "_run_remote_command_with", idle)
+
+    assert ceph_client.query_rbd_iostat_with(
+        "vms", ["mon-a", "mon-b"], "", "root", "/key", "none"
+    ) == []
+    assert calls == ["mon-a"]
+
+
 # --- query_rbd_trash (Volume Trash — dashboard/routes/volumes.py) -------
 
 

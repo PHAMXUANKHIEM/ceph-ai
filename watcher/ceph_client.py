@@ -1056,6 +1056,16 @@ def run_ceph_json_command_with(
             output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
         except Exception as exc:
             error = str(exc) or type(exc).__name__
+            # rbd_support reports cluster-wide activity, so an idle response
+            # from one MON cannot be improved by retrying the same streaming
+            # sample on every MON.  Let query_rbd_iostat[_with] normalize it
+            # to an empty sample without warning/retry amplification.
+            if (
+                "rbd" in inner_command
+                and "perf image iostat" in inner_command
+                and "waiting for initial image stats" in error.lower()
+            ):
+                raise CephQueryError(error) from exc
             logger.warning("run_ceph_json_command_with: %s failed: %s", host, error)
             errors.append(f"{host}: {error}")
             continue
