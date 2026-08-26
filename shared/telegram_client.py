@@ -211,11 +211,12 @@ def get_telegram_updates(bot_token: str, offset: int | None, timeout_seconds: in
             bot_token, "getUpdates", payload, timeout=httpx.Timeout(timeout_seconds + 10)
         )
     except TelegramSendError as exc:
-        # A long poll that reaches the client's read deadline has the same
-        # meaning to this caller as Telegram returning an empty result: there
-        # was no update to process during this cycle.  Keep all other network
+        # A timeout at any stage of a long-poll request (including a TLS
+        # handshake ConnectTimeout) is transient and leaves no update to
+        # process.  Let the polling loop start the next cycle without logging
+        # a misleading application-error traceback.  Keep non-timeout network
         # and API failures visible so the listener can log and back off.
-        if isinstance(exc.__cause__, httpx.ReadTimeout):
+        if isinstance(exc.__cause__, httpx.TimeoutException):
             return []
         raise
     result = body.get("result")
