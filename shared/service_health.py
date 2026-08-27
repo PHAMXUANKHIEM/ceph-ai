@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def runtime_dir() -> Path:
@@ -22,6 +25,16 @@ def record(service: str) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }), encoding="utf-8")
     os.replace(temporary, target)
+
+
+def record_safe(service: str) -> bool:
+    """Record a heartbeat without taking down the monitored service."""
+    try:
+        record(service)
+        return True
+    except OSError:
+        logger.warning("Unable to write %s service heartbeat", service, exc_info=True)
+        return False
 
 
 def status(service: str, *, stale_after_seconds: int = 60) -> dict:
