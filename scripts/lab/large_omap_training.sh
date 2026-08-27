@@ -45,7 +45,7 @@ if [[ -z "$index_object" || -z "$pg_id" || "$key_count" -le "$TEST_THRESHOLD" ]]
   exit 4
 fi
 echo "[inject] object=$index_object keys=$key_count pg=$pg_id"
-remote "ceph pg deep-scrub '$pg_id'" >/dev/null
+remote "ceph pg '$pg_id' deep_scrub" >/dev/null
 
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
