@@ -100,6 +100,11 @@ def _clusters_context(
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "clusters": clusters,
+        # `_nav.html` renders the multi-cluster switcher whenever a second
+        # cluster exists. Keep this context complete for every success/error
+        # response from this route, not only pages that call cluster_selection.
+        # The list is default-first, so the default is the safe fallback here.
+        "selected_cluster": clusters[0] if clusters else None,
         "capability_by_cluster": _capability_by_cluster(clusters),
         "cluster_create_error": cluster_create_error,
         "cluster_create_success": cluster_create_success,
