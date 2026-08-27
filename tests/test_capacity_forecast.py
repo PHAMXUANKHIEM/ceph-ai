@@ -44,7 +44,8 @@ def test_collect_stores_cluster_all_pools_and_all_osds(dashboard_client, default
           "pools": [{"name": f"p{i}", "stats": {"bytes_used": 10, "max_avail": 90, "percent_used": .1}} for i in range(12)]}
     osd = {"nodes": [{"id": i, "kb": 100, "kb_used": 10, "kb_avail": 90, "utilization": 10} for i in range(12)]}
     monkeypatch.setattr(subject, "_query", lambda _cluster, command: osd if command == "ceph osd df" else df)
-    monkeypatch.setattr(subject, "send_capacity_threshold_alert", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subject, "send_capacity_threshold_alert", lambda *args, **kwargs: True)
+    monkeypatch.setattr(subject, "send_capacity_recovery_alert", lambda *args, **kwargs: True)
     assert subject.collect_and_store(default_cluster_id) == 25
 
 
@@ -59,7 +60,8 @@ def test_collect_alerts_only_when_crossing_a_higher_threshold(dashboard_client, 
 
     alerts = []
     monkeypatch.setattr(subject, "_query", query)
-    monkeypatch.setattr(subject, "send_capacity_threshold_alert", lambda *args, **kwargs: alerts.append((args, kwargs)))
+    monkeypatch.setattr(subject, "send_capacity_threshold_alert", lambda *args, **kwargs: alerts.append((args, kwargs)) or True)
+    monkeypatch.setattr(subject, "send_capacity_recovery_alert", lambda *args, **kwargs: True)
 
     subject.collect_and_store(default_cluster_id, now=datetime(2026, 1, 1))
     percent["value"] = 81
@@ -82,7 +84,8 @@ def test_collect_realerts_after_capacity_recovers_and_recrosses(dashboard_client
         return {"stats": {"total_bytes": 1000, "total_used_bytes": used, "total_avail_bytes": 1000 - used}, "pools": []}
 
     monkeypatch.setattr(subject, "_query", query)
-    monkeypatch.setattr(subject, "send_capacity_threshold_alert", lambda *args, **kwargs: alerts.append(args[3]))
+    monkeypatch.setattr(subject, "send_capacity_threshold_alert", lambda *args, **kwargs: alerts.append(args[3]) or True)
+    monkeypatch.setattr(subject, "send_capacity_recovery_alert", lambda *args, **kwargs: True)
     subject.collect_and_store(default_cluster_id, now=datetime(2026, 2, 1))
     percent["value"] = 70
     subject.collect_and_store(default_cluster_id, now=datetime(2026, 2, 2))
@@ -90,3 +93,33 @@ def test_collect_realerts_after_capacity_recovers_and_recrosses(dashboard_client
     subject.collect_and_store(default_cluster_id, now=datetime(2026, 2, 3))
 
     assert alerts == [95, 95]
+
+
+def test_failed_delivery_is_retried_and_recovery_is_sent(dashboard_client, default_cluster_id, monkeypatch):
+    percent = {"value": 79.0}
+    attempts = []
+    recoveries = []
+
+    def query(_cluster, command):
+        if command == "ceph osd df":
+            return {"nodes": []}
+        used = int(percent["value"] * 10)
+        return {"stats": {"total_bytes": 1000, "total_used_bytes": used, "total_avail_bytes": 1000 - used}, "pools": []}
+
+    def send(*args, **kwargs):
+        attempts.append(args[3])
+        return len(attempts) > 1
+
+    monkeypatch.setattr(subject, "_query", query)
+    monkeypatch.setattr(subject, "send_capacity_threshold_alert", send)
+    monkeypatch.setattr(subject, "send_capacity_recovery_alert", lambda *args, **kwargs: recoveries.append(args[3:5]) or True)
+    subject.collect_and_store(default_cluster_id, now=datetime(2026, 3, 1))
+    percent["value"] = 81
+    subject.collect_and_store(default_cluster_id, now=datetime(2026, 3, 2))
+    subject.collect_and_store(default_cluster_id, now=datetime(2026, 3, 2, 0, 1))
+    subject.collect_and_store(default_cluster_id, now=datetime(2026, 3, 2, 0, 6))
+    percent["value"] = 70
+    subject.collect_and_store(default_cluster_id, now=datetime(2026, 3, 3))
+
+    assert attempts == [80, 80]
+    assert recoveries == [(80, 0)]

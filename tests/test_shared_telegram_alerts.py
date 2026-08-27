@@ -257,7 +257,7 @@ def test_send_trash_capacity_alert_uses_incident_channel(monkeypatch):
 
 def test_send_capacity_threshold_alert_uses_incident_channel(monkeypatch):
     sent = []
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append((args, kwargs)))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append((args, kwargs)) or True)
 
     telegram_alerts.send_capacity_threshold_alert(
         "pool", "volumes", 91.25, 90, 91, 100, cluster_name="cluster-b",
@@ -271,6 +271,17 @@ def test_send_capacity_threshold_alert_uses_incident_channel(monkeypatch):
     )
     assert "Pool volumes: 91.25%" in args[3]
     assert args[4] == "cluster-b"
+
+
+def test_send_capacity_recovery_alert_marks_remaining_level(monkeypatch):
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append(args) or True)
+
+    assert telegram_alerts.send_capacity_recovery_alert(
+        "osd", "osd.1", 91.0, 95, 90, cluster_name="cluster-b",
+    ) is True
+    assert "phục hồi dưới mốc 95%" in sent[0][3]
+    assert "vẫn ở mức cảnh báo 90%" in sent[0][3]
 
 # --- send_node_alert ---------------------------------------------------------
 

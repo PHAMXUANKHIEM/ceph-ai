@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+import uuid
 
 from sqlalchemy import and_, func
+from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import db
-from shared.models import CephCapacitySample, Cluster
-from shared.telegram_alerts import send_capacity_threshold_alert
+from shared.models import CapacityAlertState, CephCapacitySample, Cluster
+from shared.telegram_alerts import send_capacity_recovery_alert, send_capacity_threshold_alert
 from watcher.capacity_evidence import _cluster_stats, _osd_stats, _pool_stats, _query
 
 
@@ -27,10 +29,81 @@ class Forecast:
 
 
 CAPACITY_THRESHOLDS = (80, 90, 95)
+ALERT_RETRY_SECONDS = 300
 
 
 def _reached_threshold(percent: float) -> int | None:
     return next((threshold for threshold in reversed(CAPACITY_THRESHOLDS) if percent >= threshold), None)
+
+
+def _deliver_transition(
+    cluster_id: str, cluster_name: str | None, kind: str, name: str, row: dict,
+    previous_percent: float | None, now: datetime,
+) -> None:
+    """Claim and deliver one transition; failed deliveries remain retryable."""
+    current = _reached_threshold(float(row["used_percent"])) or 0
+    previous = _reached_threshold(previous_percent or 0.0) or 0
+    with db.SessionLocal() as session:
+        state = session.query(CapacityAlertState).filter_by(
+            cluster_id=cluster_id, entity_type=kind, entity_name=name,
+        ).one_or_none()
+        if state is None:
+            # Existing series are bootstrapped as already notified so a
+            # deployment does not replay historical thresholds.
+            state = CapacityAlertState(
+                id=str(uuid.uuid4()), cluster_id=cluster_id, entity_type=kind,
+                entity_name=name, current_threshold=current,
+                notified_threshold=previous if previous_percent is not None else 0,
+                updated_at=now,
+            )
+            session.add(state)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                state = session.query(CapacityAlertState).filter_by(
+                    cluster_id=cluster_id, entity_type=kind, entity_name=name,
+                ).one()
+        if state.current_threshold != current:
+            state.current_threshold = current
+            state.updated_at = now
+            state.last_attempt_at = None
+            session.commit()
+        notified = state.notified_threshold
+        retry_before = now - timedelta(seconds=ALERT_RETRY_SECONDS)
+        claimed = session.query(CapacityAlertState).filter(
+            CapacityAlertState.id == state.id,
+            CapacityAlertState.current_threshold == current,
+            CapacityAlertState.notified_threshold == notified,
+            CapacityAlertState.current_threshold != CapacityAlertState.notified_threshold,
+            (CapacityAlertState.last_attempt_at.is_(None))
+            | (CapacityAlertState.last_attempt_at <= retry_before),
+        ).update({CapacityAlertState.last_attempt_at: now}, synchronize_session=False)
+        session.commit()
+        if not claimed:
+            return
+        state_id = state.id
+
+    if current > notified:
+        delivered = send_capacity_threshold_alert(
+            kind, name, float(row["used_percent"]), current,
+            int(row["used_bytes"]), int(row["total_bytes"]), cluster_name=cluster_name,
+        )
+    else:
+        delivered = send_capacity_recovery_alert(
+            kind, name, float(row["used_percent"]), notified, current,
+            cluster_name=cluster_name,
+        )
+    if delivered:
+        with db.SessionLocal() as session:
+            session.query(CapacityAlertState).filter(
+                CapacityAlertState.id == state_id,
+                CapacityAlertState.current_threshold == current,
+            ).update({
+                CapacityAlertState.notified_threshold: current,
+                CapacityAlertState.updated_at: now,
+            }, synchronize_session=False)
+            session.commit()
 
 
 def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: datetime | None = None) -> int:
@@ -76,17 +149,10 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
         cluster_name = cluster.name if cluster is not None else session.query(Cluster.name).filter_by(id=cluster_id).scalar()
 
     for kind, name, row in valid:
-        current_percent = float(row["used_percent"])
-        current_threshold = _reached_threshold(current_percent)
-        previous_threshold = _reached_threshold(previous.get((kind, name), 0.0))
-        if current_threshold is not None and (
-            previous_threshold is None or current_threshold > previous_threshold
-        ):
-            send_capacity_threshold_alert(
-                kind, name, current_percent, current_threshold,
-                int(row["used_bytes"]), int(row["total_bytes"]),
-                cluster_name=cluster_name,
-            )
+        _deliver_transition(
+            cluster_id, cluster_name, kind, name, row,
+            previous.get((kind, name)), captured_at,
+        )
     return len(valid)
 
 

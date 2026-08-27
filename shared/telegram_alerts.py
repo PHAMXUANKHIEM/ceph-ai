@@ -325,7 +325,7 @@ def send_capacity_threshold_alert(
     total_bytes: int,
     *,
     cluster_name: str | None = None,
-) -> None:
+) -> bool:
     """Notify once when a cluster, pool or OSD crosses 80/90/95%."""
     severity = "🔴 CRITICAL" if threshold >= 95 else ("🟠 WARNING" if threshold >= 90 else "🟡 WARNING")
     labels = {"cluster": "Toàn cụm", "pool": "Pool", "osd": "OSD"}
@@ -337,7 +337,37 @@ def send_capacity_threshold_alert(
         f"💾 {entity}: {used_percent:.2f}% ({used_bytes / gib:.2f} / {total_bytes / gib:.2f} GiB)",
         "🔧 Đề xuất: kiểm tra tốc độ tăng trưởng, dọn dữ liệu an toàn hoặc bổ sung dung lượng trước khi cụm đầy.",
     ))
-    _send(
+    return _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+
+
+def send_capacity_recovery_alert(
+    entity_type: str,
+    entity_name: str,
+    used_percent: float,
+    previous_threshold: int,
+    current_threshold: int,
+    *,
+    cluster_name: str | None = None,
+) -> bool:
+    """Close or downgrade a capacity alert after usage falls."""
+    labels = {"cluster": "Toàn cụm", "pool": "Pool", "osd": "OSD"}
+    label = labels.get(entity_type, entity_type)
+    entity = label if entity_type == "cluster" else f"{label} {entity_name}"
+    remaining = (
+        f"Hiện vẫn ở mức cảnh báo {current_threshold}%."
+        if current_threshold else "Hiện đã dưới mốc cảnh báo 80%."
+    )
+    text = "\n".join((
+        f"🟢 Dung lượng đã phục hồi dưới mốc {previous_threshold}%",
+        f"💾 {entity}: {used_percent:.2f}%. {remaining}",
+    ))
+    return _send(
         settings.telegram_incident_bot_token,
         settings.telegram_incident_chat_id,
         settings.telegram_incident_enabled,

@@ -2444,3 +2444,25 @@ class AIInvocation(Base):
     output_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class CapacityAlertState(Base):
+    """Durable delivery state for capacity threshold transitions."""
+
+    __tablename__ = "capacity_alert_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id", "entity_type", "entity_name", name="uq_capacity_alert_state_entity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entity_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    current_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notified_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
