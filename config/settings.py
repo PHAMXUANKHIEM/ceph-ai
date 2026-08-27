@@ -287,6 +287,19 @@ class Settings(BaseSettings):
     # to an external endpoint.
     backup_alert_webhook_url: str = ""
 
+    # Shared outbound notification channels. Blank endpoints/host disable
+    # each channel independently; delivery is best-effort and never blocks
+    # the watcher/worker operation that produced the alert.
+    alert_webhook_url: str = ""
+    alert_slack_webhook_url: str = ""
+    alert_email_smtp_host: str = ""
+    alert_email_smtp_port: int = 587
+    alert_email_smtp_username: str = ""
+    alert_email_smtp_password: str = ""
+    alert_email_from: str = ""
+    alert_email_to: str = ""
+    alert_email_starttls: bool = True
+
     # 2026-08-07: label identifying WHICH Ceph cluster an alert came from —
     # for operators running several ceph-aiops instances (one per cluster)
     # that all point their Telegram channels at the SAME chat(s), so alerts

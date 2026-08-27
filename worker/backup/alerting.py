@@ -27,6 +27,7 @@ from config.settings import settings
 from shared import db
 from shared.clusters import list_active_clusters
 from shared.models import BackupJob
+from shared.notification_channels import send_external_alert
 from shared.telegram_client import TelegramSendError, send_telegram_message
 from worker.backup.cluster_scope import parse_tracked_images
 from worker.backup.policy_config import load_backup_policy
@@ -136,6 +137,10 @@ def send_alert(
         message,
         backup_job_id,
         cluster.id if cluster is not None else None,
+    )
+    send_external_alert(
+        category="backup", severity=severity, message=message,
+        cluster_name=cluster.name.strip() if cluster is not None else settings.cluster_name.strip(),
     )
     url = settings.backup_alert_webhook_url
     if url:

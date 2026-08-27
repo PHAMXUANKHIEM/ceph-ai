@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from config.settings import settings
+from shared.notification_channels import send_external_alert
 from shared.telegram_client import TelegramSendError, send_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -81,14 +82,18 @@ def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: 
     switch from "configured" (bot_token/chat_id both non-blank) — lets an
     operator pause a channel with one click without losing/retyping its
     Chat ID, unlike the earlier "blank the chat id to pause" design."""
+    resolved_cluster = (cluster_name if cluster_name is not None else settings.cluster_name).strip()
+    external = send_external_alert(
+        category="ceph", severity="warning", message=text, cluster_name=resolved_cluster,
+    )
     if not enabled or not bot_token or not chat_id:
-        return False
+        return any(external.values())
     try:
         send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
         return True
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
-        return False
+        return any(external.values())
 
 
 def send_volume_forecast_alert(
