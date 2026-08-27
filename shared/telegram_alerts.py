@@ -156,6 +156,17 @@ def send_code_repair_alert(text: str) -> None:
     )
 
 
+def send_ai_ops_digest_alert(text: str, *, cluster_name: str | None = None) -> bool:
+    """Send a periodic read-only operations digest through the incident channel."""
+    return _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+
+
 def send_incident_alert(
     ceph_code: str,
     severity: str | None,

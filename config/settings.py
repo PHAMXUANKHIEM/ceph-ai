@@ -208,6 +208,13 @@ class Settings(BaseSettings):
     ai_cost_input_usd_per_million_tokens: float = 0.0
     ai_cost_output_usd_per_million_tokens: float = 0.0
 
+    # Weekly read-only health digest. It is sent only through configured
+    # alert channels and never creates or executes an Action.
+    ai_ops_weekly_digest_enabled: bool = True
+    ai_ops_weekly_digest_day: str = "mon"
+    ai_ops_weekly_digest_hour: int = Field(default=8, ge=0, le=23)
+    ai_ops_weekly_digest_minute: int = Field(default=0, ge=0, le=59)
+
     # Vitastor is a separate product workspace, so its chat connection must
     # not silently inherit or overwrite the Ceph AI provider configuration.
     vitastor_router_provider: str = "9router"
