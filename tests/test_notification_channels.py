@@ -28,3 +28,23 @@ def test_one_channel_failure_does_not_skip_the_other(monkeypatch):
     result = notification_channels.send_external_alert(category="node", severity="warning", message="hot")
     assert result["webhook"] is False
     assert result["slack"] is True
+
+
+def test_invalid_email_header_is_contained(monkeypatch):
+    monkeypatch.setattr(settings, "alert_webhook_url", "")
+    monkeypatch.setattr(settings, "alert_slack_webhook_url", "")
+    monkeypatch.setattr(settings, "alert_email_smtp_host", "smtp.example")
+    monkeypatch.setattr(settings, "alert_email_from", "alerts@example.com")
+    monkeypatch.setattr(settings, "alert_email_to", "ops@example.com")
+    result = notification_channels.send_external_alert(
+        category="incident", severity="warning", message="x", cluster_name="bad\nBcc: victim@example.com"
+    )
+    assert result["email"] is False
+
+
+def test_enqueue_is_non_blocking_and_bounded(monkeypatch):
+    submitted = []
+    monkeypatch.setattr(settings, "alert_webhook_url", "https://hooks.example")
+    monkeypatch.setattr(notification_channels._EXECUTOR, "submit", lambda fn, **kwargs: submitted.append(kwargs) or SimpleNamespace(add_done_callback=lambda callback: None))
+    assert notification_channels.enqueue_external_alert(category="node", severity="warning", message="hot") is True
+    assert submitted[0]["category"] == "node"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 
 import httpx
@@ -12,6 +14,8 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 10
+_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="alert-delivery")
+_CAPACITY = threading.BoundedSemaphore(100)
 
 
 def send_external_alert(*, category: str, severity: str, message: str, cluster_name: str = "") -> dict[str, bool]:
@@ -43,12 +47,14 @@ def send_external_alert(*, category: str, severity: str, message: str, cluster_n
             logger.exception("Slack alert delivery failed")
     recipients = [item.strip() for item in settings.alert_email_to.split(",") if item.strip()]
     if settings.alert_email_smtp_host and settings.alert_email_from and recipients:
-        email = EmailMessage()
-        email["From"] = settings.alert_email_from
-        email["To"] = ", ".join(recipients)
-        email["Subject"] = f"[{severity.upper()}] {cluster_name + ' · ' if cluster_name else ''}{category}"
-        email.set_content(message)
         try:
+            if any("\n" in value or "\r" in value for value in [settings.alert_email_from, *recipients, cluster_name, category, severity]):
+                raise ValueError("email headers must not contain newlines")
+            email = EmailMessage()
+            email["From"] = settings.alert_email_from
+            email["To"] = ", ".join(recipients)
+            email["Subject"] = f"[{severity.upper()}] {cluster_name + ' · ' if cluster_name else ''}{category}"
+            email.set_content(message)
             with smtplib.SMTP(settings.alert_email_smtp_host, settings.alert_email_smtp_port, timeout=TIMEOUT_SECONDS) as smtp:
                 if settings.alert_email_starttls:
                     smtp.starttls()
@@ -59,3 +65,24 @@ def send_external_alert(*, category: str, severity: str, message: str, cluster_n
         except Exception:
             logger.exception("email alert delivery failed")
     return result
+
+
+def enqueue_external_alert(**kwargs) -> bool:
+    """Queue delivery without delaying health polling or Telegram."""
+    if not (
+        settings.alert_webhook_url
+        or settings.alert_slack_webhook_url
+        or (settings.alert_email_smtp_host and settings.alert_email_from and settings.alert_email_to)
+    ):
+        return False
+    if not _CAPACITY.acquire(blocking=False):
+        logger.error("external alert queue is full; dropping alert category=%s", kwargs.get("category"))
+        return False
+    try:
+        future = _EXECUTOR.submit(send_external_alert, **kwargs)
+    except Exception:
+        _CAPACITY.release()
+        logger.exception("failed to queue external alert")
+        return False
+    future.add_done_callback(lambda _future: _CAPACITY.release())
+    return True

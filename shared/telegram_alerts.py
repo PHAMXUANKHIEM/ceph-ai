@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from config.settings import settings
-from shared.notification_channels import send_external_alert
+from shared.notification_channels import enqueue_external_alert
 from shared.telegram_client import TelegramSendError, send_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -83,17 +83,20 @@ def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: 
     operator pause a channel with one click without losing/retyping its
     Chat ID, unlike the earlier "blank the chat id to pause" design."""
     resolved_cluster = (cluster_name if cluster_name is not None else settings.cluster_name).strip()
-    external = send_external_alert(
-        category="ceph", severity="warning", message=text, cluster_name=resolved_cluster,
+    upper = text.upper()
+    severity = "critical" if any(value in upper for value in ("HEALTH_ERR", "CRITICAL", "🔴")) else "info" if any(value in upper for value in ("RECOVERED", "HEALTH_OK", "🟢", "ĐÃ KHẮC PHỤC")) else "warning"
+    category = "capacity" if "DUNG LƯỢNG" in upper or "CAPACITY" in upper else "hardware" if any(value in upper for value in ("NODE ", "OSD CHẬM", "DEVICEHEALTH", "CRUSH")) else "log-intelligence" if "LOG" in upper else "code-repair" if "CODE REPAIR" in upper else "incident"
+    enqueue_external_alert(
+        category=category, severity=severity, message=text, cluster_name=resolved_cluster,
     )
     if not enabled or not bot_token or not chat_id:
-        return any(external.values())
+        return False
     try:
         send_telegram_message(bot_token, chat_id, _with_cluster_prefix(text, cluster_name))
         return True
     except TelegramSendError:
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
-        return any(external.values())
+        return False
 
 
 def send_volume_forecast_alert(

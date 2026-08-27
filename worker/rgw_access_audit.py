@@ -23,6 +23,7 @@ from shared.models import (
     RgwErrorNotification,
 )
 from shared.telegram_client import TelegramSendError, send_telegram_message
+from shared.notification_channels import enqueue_external_alert
 from watcher.rgw_access_log import (
     fetch_rgw_audit_log, fetch_rgw_audit_log_with,
     fetch_rgw_error_log, fetch_rgw_error_log_with,
@@ -309,7 +310,9 @@ def _ingest_host(session, cluster: Cluster, host: str) -> None:
 
 
 def _deliver_pending(session) -> None:
-    if not (settings.telegram_rgw_enabled and settings.telegram_rgw_bot_token and settings.telegram_rgw_chat_id):
+    telegram_configured = bool(settings.telegram_rgw_enabled and settings.telegram_rgw_bot_token and settings.telegram_rgw_chat_id)
+    external_configured = bool(settings.alert_webhook_url or settings.alert_slack_webhook_url or (settings.alert_email_smtp_host and settings.alert_email_from and settings.alert_email_to))
+    if not telegram_configured and not external_configured:
         return
     pending = session.query(RgwAccessAuditEvent).filter_by(telegram_sent=False).order_by(
         RgwAccessAuditEvent.event_at, RgwAccessAuditEvent.created_at
@@ -317,21 +320,17 @@ def _deliver_pending(session) -> None:
     cluster_names = {row.id: row.name for row in session.query(Cluster).all()}
     for event in pending:
         event.telegram_attempts += 1
+        text = _message(event, cluster_names.get(event.cluster_id, event.cluster_id), _notification_size(session, event))
+        external_queued = enqueue_external_alert(category="rgw-access", severity="info", message=text, cluster_name=cluster_names.get(event.cluster_id, "")) if external_configured else False
         try:
-            send_telegram_message(
-                settings.telegram_rgw_bot_token,
-                settings.telegram_rgw_chat_id,
-                _message(
-                    event,
-                    cluster_names.get(event.cluster_id, event.cluster_id),
-                    _notification_size(session, event),
-                ),
-            )
+            if telegram_configured:
+                send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
         except TelegramSendError as exc:
             event.telegram_error = str(exc)[:_MAX_ERROR_CHARS]
             session.commit()
             logger.warning("RGW audit Telegram delivery failed for %s: %s", event.id, exc)
-            break
+            if not external_queued:
+                break
         event.telegram_sent = True
         event.telegram_sent_at = datetime.utcnow()
         event.telegram_error = None
@@ -362,12 +361,15 @@ def _deliver_pending(session) -> None:
             f"⏰ Giờ VN: {local_time:%H:%M:%S - %d/%m/%Y}",
             "━━━━━━━━━━━━━━━━━━",
         ))
+        external_queued = enqueue_external_alert(category="rgw-error", severity="critical", message=text) if external_configured else False
         try:
-            send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
+            if telegram_configured:
+                send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
         except TelegramSendError as exc:
             event.telegram_error = str(exc)[:_MAX_ERROR_CHARS]
             session.commit()
-            break
+            if not external_queued:
+                break
         event.telegram_sent = True
         event.telegram_sent_at = datetime.utcnow()
         event.telegram_error = None
@@ -375,6 +377,7 @@ def _deliver_pending(session) -> None:
 
 
 def _send_analysis_status(text: str) -> None:
+    enqueue_external_alert(category="rgw-analysis", severity="info", message=text)
     if settings.telegram_rgw_enabled and settings.telegram_rgw_bot_token and settings.telegram_rgw_chat_id:
         send_telegram_message(settings.telegram_rgw_bot_token, settings.telegram_rgw_chat_id, text)
 
