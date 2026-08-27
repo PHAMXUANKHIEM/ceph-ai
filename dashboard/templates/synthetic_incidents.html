@@ -14,7 +14,7 @@
       <input type="hidden" name="publish" value="1"><div><button class="btn btn-primary" type="submit">Tạo &amp; gửi AI queue</button></div>
     </form></div></section>
   <section class="card" style="margin-top:1rem"><div class="card-header"><h2>Recent synthetic runs</h2>
-    <form method="post" action="/synthetic-incidents/cleanup"><input type="hidden" name="cluster_id" value="{{ selected_cluster.id if selected_cluster else '' }}"><button class="btn btn-secondary btn-sm" type="submit">Cleanup cluster mặc định</button></form></div>
+    <form method="post" action="/synthetic-incidents/cleanup"><select name="cluster_id" aria-label="Cluster cleanup" required>{% for cluster in clusters %}<option value="{{ cluster.id }}">{{ cluster.name }}</option>{% endfor %}</select><button class="btn btn-secondary btn-sm" type="submit">Cleanup cluster</button></form></div>
     <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Cluster</th><th>Scenario</th><th>Incident</th><th>Status</th><th>Run ID</th></tr></thead><tbody>
     {% for row in synthetic_rows %}<tr><td>{{ row.incident.created_at }}</td><td>{{ row.cluster_name }}</td><td><code>{{ row.scenario }}</code></td><td><a href="/incidents/{{ row.incident.id }}/timeline">{{ row.incident.id }}</a></td><td>{{ row.incident.status }}</td><td><code>{{ row.run_id }}</code></td></tr>{% else %}<tr><td colspan="6" class="empty-state">Chưa có synthetic run.</td></tr>{% endfor %}
     </tbody></table></div></section>

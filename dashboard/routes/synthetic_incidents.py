@@ -23,7 +23,7 @@ def _page_context(request: Request, user: str, *, message: str = "", error: str 
         rows = []
         incidents = (
             session.query(Incident)
-            .filter(Incident.signal_evidence_json.like('%"synthetic_injection": true%'))
+            .filter(Incident.signal_evidence_json.like('%synthetic_injection%'))
             .order_by(Incident.created_at.desc()).limit(30).all()
         )
         for incident in incidents:
