@@ -30,3 +30,19 @@ def test_summary_hides_cost_when_pricing_is_not_configured(dashboard_client, mon
     data = summary(24)
     assert data["pricing_configured"] is False
     assert data["estimated_cost_usd"] is None
+
+
+def test_total_cost_is_not_lost_when_each_group_rounds_to_zero(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 27, 12, 0)
+    with db.SessionLocal() as session:
+        session.add_all([
+            AIInvocation(id="tiny-a", feature="tiny-a", provider="router", model_id="m", status="SUCCESS",
+                         latency_ms=1, input_chars=4, output_chars=0, created_at=now),
+            AIInvocation(id="tiny-b", feature="tiny-b", provider="router", model_id="m", status="SUCCESS",
+                         latency_ms=1, input_chars=4, output_chars=0, created_at=now),
+        ])
+        session.commit()
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_input_usd_per_million_tokens", 0.5)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_output_usd_per_million_tokens", 0.5)
+    data = summary(24, now=now)
+    assert data["estimated_cost_usd"] == 0.000001

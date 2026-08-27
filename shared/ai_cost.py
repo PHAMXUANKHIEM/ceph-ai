@@ -32,10 +32,12 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
     output_rate = max(0.0, float(getattr(settings, "ai_cost_output_usd_per_million_tokens", 0.0)))
     configured = bool(input_rate or output_rate)
     result = []
+    total_cost = 0.0
     for (feature, provider, model_id), items in sorted(groups.items()):
         input_tokens = sum(_estimated_tokens(row.input_chars) for row in items)
         output_tokens = sum(_estimated_tokens(row.output_chars) for row in items)
         cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+        total_cost += cost
         result.append({
             "feature": feature,
             "provider": provider,
@@ -56,7 +58,6 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
         "errors": sum(row.status == "ERROR" for row in rows),
         "input_tokens": sum(row["input_tokens"] for row in result),
         "output_tokens": sum(row["output_tokens"] for row in result),
-        "estimated_cost_usd": round(sum(row["estimated_cost_usd"] or 0 for row in result), 6)
-        if configured else None,
+        "estimated_cost_usd": round(total_cost, 6) if configured else None,
         "groups": result,
     }
