@@ -15,6 +15,7 @@ from shared import db
 from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent
 from shared.router_client import build_router_client
 from shared.ai_redaction import default_redactor
+from shared.ai_observability import observe_ai_call
 
 PROMPT_VERSION = "v1"
 TOOL_NAME = "report_incident_postmortem"
@@ -103,6 +104,7 @@ def _schema() -> dict:
                            "required": list(properties), "additionalProperties": False}}}
 
 
+@observe_ai_call("incident_postmortem")
 async def _call_model(payload: dict) -> dict:
     payload = default_redactor.redact(payload)
     schema = _schema()

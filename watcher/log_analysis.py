@@ -42,6 +42,7 @@ import httpx
 from config.settings import settings
 from shared import db, log_learning
 from shared.ai_redaction import redact_text
+from shared.ai_observability import observe_ai_call
 from shared.incident_actions import cancel_pending_actions
 from shared.cluster_nodes import configured_nodes
 from shared import audit
@@ -367,6 +368,7 @@ def _cluster_context(cluster_id: str) -> str:
         )
 
 
+@observe_ai_call("log_rca")
 async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict:
     user_content = redact_text(user_content)
     schema = _tool_schema(allowed_action_ids)

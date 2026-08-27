@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from shared.ai_redaction import redact_text
+from shared.ai_observability import observe_ai_call
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
 
 from config.settings import settings
@@ -781,6 +782,7 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
     return result_text[:limit], is_error
 
 
+@observe_ai_call("ceph_chat")
 async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster=None) -> dict:
     """Runs one chat turn: sends `user_text` (plus prior `history`) to
     9router (OpenAI-compatible /v1/chat/completions), executing any

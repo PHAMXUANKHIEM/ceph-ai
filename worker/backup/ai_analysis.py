@@ -19,6 +19,7 @@ import httpx
 
 from config.settings import settings
 from shared import db
+from shared.ai_observability import observe_ai_call
 from shared.models import BackupAnomaly, BackupJob
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
@@ -99,6 +100,7 @@ def _build_user_content(context: dict) -> str:
     )
 
 
+@observe_ai_call("backup_analysis")
 async def _call_router(user_content: str) -> dict:
     """The single call site to the router (AD-6's redaction insertion
     point is the caller, right before this runs) — same tool-use/
@@ -193,6 +195,7 @@ def _build_digest_user_content(stats: dict) -> str:
     )
 
 
+@observe_ai_call("backup_digest")
 async def _call_digest_router(user_content: str) -> str:
     """Digest has no structured schema (AC #6 only needs free-text prose,
     unlike per-job analysis's machine-readable severity) — still uses

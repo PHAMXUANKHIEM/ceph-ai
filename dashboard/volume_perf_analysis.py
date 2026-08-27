@@ -30,6 +30,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from shared.ai_redaction import default_redactor
+from shared.ai_observability import observe_ai_call
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ def _build_user_content(sweep: dict) -> str:
     )
 
 
+@observe_ai_call("volume_perf_analysis")
 async def analyze_volume_perf_sweep(sweep: dict) -> dict:
     """`sweep` is the plain-dict shape volume_perf_sweep_analyze_api builds
     from a VolumePerfSweep row: {"pool", "scratch_image", "steps", "knee",

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from shared import audit, db, incident_events, log_learning, remediation_cases, trust_engine
 from shared.case_retrieval import find_verified_cases
+from shared.ai_observability import observe_ai_call
 from shared.models import (
     Action,
     ActionClassification,
@@ -461,6 +462,7 @@ def _get_client():
     return build_router_client(settings.router_api_key, settings.router_base_url)
 
 
+@observe_ai_call("incident_diagnosis")
 async def _call_router(user_content: str) -> dict:
     """The single call site to 9router (AD-6's insertion point is the
     caller's redaction step, right before this function runs).

@@ -39,6 +39,7 @@ from shared.models import (
 from shared.node_upgrade_gate import claim_node_upgrade_gate_lock
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from shared.ai_redaction import redact_text
+from shared.ai_observability import observe_ai_call
 from watcher.ceph_client import (
     CephQueryError,
     get_upgrade_status,
@@ -305,6 +306,7 @@ class UpgradeProcedureSummaryError(Exception):
     unconfigured must not lose the operator's uploaded runbook."""
 
 
+@observe_ai_call("upgrade_summary")
 async def _summarize_upgrade_procedure(raw_text: str) -> str:
     """Sends the operator's uploaded upgrade-procedure document to 9router
     for a plain-language Vietnamese summary — same client + streaming-call
