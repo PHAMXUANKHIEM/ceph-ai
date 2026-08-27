@@ -76,6 +76,7 @@ EVENT_BACKUP_MANUAL_REQUESTED = "backup_manual_requested"
 # EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS above,
 # not a real Action row to attach to).
 EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT = "proposal_blocked_by_preflight"
+EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE = "proposal_blocked_by_low_confidence"
 EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED = "autopilot_kill_switch_blocked"
 EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED = "autopilot_cluster_gate_blocked"
 EVENT_AUTOPILOT_GRACE_STARTED = "autopilot_grace_started"

@@ -658,9 +658,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     if (
         not diagnosis_text
         or not rationale
-        or (raw_confidence is not None and (
-            diagnosis_confidence is None or not 0 <= diagnosis_confidence <= 1
-        ))
+        or (diagnosis_confidence is None and settings.ai_min_diagnosis_confidence > 0)
+        or (diagnosis_confidence is not None and not 0 <= diagnosis_confidence <= 1)
         or (not deterministic_code and action_id not in AI_EXECUTABLE_ACTION_IDS)
     ):
         raise RouterDiagnosisError(
@@ -843,6 +842,34 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     session.commit()
                     return
         else:
+            min_confidence = float(settings.ai_min_diagnosis_confidence)
+            if not 0 <= min_confidence <= 1:
+                raise RouterDiagnosisError(
+                    f"ai_min_diagnosis_confidence must be between 0 and 1, got {min_confidence}"
+                )
+            if min_confidence > 0 and diagnosis_confidence < min_confidence:
+                logger.warning(
+                    "diagnose_incident: confidence %.3f below %.3f for incident %s; "
+                    "storing diagnosis without Action",
+                    diagnosis_confidence, min_confidence, incident_id,
+                )
+                incident.diagnosis_text = (
+                    f"{diagnosis_text}\n\n[AI confidence gate] Không tạo Action: "
+                    f"độ tin cậy {diagnosis_confidence:.2f} thấp hơn ngưỡng {min_confidence:.2f}."
+                )
+                incident.status = IncidentStatus.FAILED.value
+                audit.record(
+                    session, incident_id=incident_id, action_id=None,
+                    event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE,
+                    actor=audit.ACTOR_SYSTEM,
+                )
+                session.commit()
+                send_ai_incident_alert(
+                    alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
+                    cluster_name=alert_cluster_name, bot_token=alert_bot_token,
+                    chat_id=alert_chat_id, enabled=alert_enabled,
+                )
+                return
             # AI roadmap Pha 0.3: fail-closed capability/version preflight,
             # run BEFORE classification/Action creation for every fresh
             # proposal — see worker/preflight.py's own module docstring for

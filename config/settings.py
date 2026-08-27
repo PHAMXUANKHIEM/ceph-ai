@@ -483,6 +483,11 @@ class Settings(BaseSettings):
     capacity_forecast_horizon_days: int = 365
     capacity_forecast_min_confidence: float = 0.5
 
+    # Minimum model-reported confidence required before Incident diagnosis
+    # may create an executable Action. Missing/invalid confidence is rejected;
+    # lower confidence remains visible to operators but cannot trigger work.
+    ai_min_diagnosis_confidence: float = 0.6
+
     # watcher/database_capacity_monitor.py's own cadence -- deliberately
     # much slower than every other scan above: this app's own DB size
     # grows on a scale of days/weeks, not seconds, and checking it every

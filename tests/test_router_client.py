@@ -69,6 +69,9 @@ def isolated_db(monkeypatch):
     monkeypatch.setattr(settings, "ai_preflight_enforcement_enabled", False)
     monkeypatch.setattr(settings, "autopilot_enabled", True)
     monkeypatch.setattr(settings, "autopilot_grace_period_seconds", 0)
+    # Legacy execution-path fixtures predate model confidence. Tests dedicated
+    # to the confidence contract below set a production-like threshold.
+    monkeypatch.setattr(settings, "ai_min_diagnosis_confidence", 0.0)
     monkeypatch.setattr(
         router_client, "run_ceph_json_command_with",
         lambda *_args, **_kwargs: ("mon-a", {
@@ -591,6 +594,49 @@ def test_diagnose_incident_raises_when_no_tool_use_block(isolated_db, monkeypatc
         incident = session.get(Incident, "incident-2")
         assert incident.diagnosis_text is None
         assert session.query(Action).filter_by(incident_id="incident-2").count() == 0
+
+
+def test_diagnose_incident_requires_confidence_in_production(isolated_db, monkeypatch):
+    async def fake_call_router(_user_content):
+        return {"diagnosis_text": "clock skew", "action_id": "resync_ntp", "rationale": "NTP drift"}
+
+    monkeypatch.setattr(settings, "ai_min_diagnosis_confidence", 0.6)
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    _create_incident("incident-missing-confidence")
+
+    with pytest.raises(router_client.RouterDiagnosisError):
+        asyncio.run(router_client.diagnose_incident("incident-missing-confidence", dict(
+            ENVELOPE, incident_id="incident-missing-confidence",
+        )))
+
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(incident_id="incident-missing-confidence").count() == 0
+
+
+def test_diagnose_incident_low_confidence_never_creates_action(isolated_db, monkeypatch):
+    async def fake_call_router(_user_content):
+        return {
+            "diagnosis_text": "Có thể do NTP drift.", "action_id": "resync_ntp",
+            "rationale": "Evidence chưa đủ.", "diagnosis_confidence": 0.59,
+        }
+
+    monkeypatch.setattr(settings, "ai_min_diagnosis_confidence", 0.6)
+    monkeypatch.setattr(router_client, "_call_router", fake_call_router)
+    monkeypatch.setattr(router_client, "send_ai_incident_alert", lambda *_args, **_kwargs: None)
+    _create_incident("incident-low-confidence")
+    asyncio.run(router_client.diagnose_incident(
+        "incident-low-confidence", dict(ENVELOPE, incident_id="incident-low-confidence"),
+    ))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-low-confidence")
+        assert incident.status == IncidentStatus.FAILED.value
+        assert "0.59" in incident.diagnosis_text and "0.60" in incident.diagnosis_text
+        assert session.query(Action).filter_by(incident_id=incident.id).count() == 0
+        assert session.query(AuditEntry).filter_by(
+            incident_id=incident.id,
+            event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE,
+        ).count() == 1
 
 
 def test_diagnose_incident_raises_when_action_id_outside_enum(isolated_db, monkeypatch):
