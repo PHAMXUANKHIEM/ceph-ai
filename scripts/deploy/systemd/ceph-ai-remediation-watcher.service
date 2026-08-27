@@ -1,0 +1,17 @@
+[Unit]
+Description=Ceph AI Remediation Watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ceph-ai
+ExecStart=/root/ceph-ai/.venv/bin/python -m watcher.remediation_main
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+StandardOutput=append:/var/log/ceph-ai-remediation-watcher.log
+StandardError=append:/var/log/ceph-ai-remediation-watcher.log
+
+[Install]
+WantedBy=multi-user.target
