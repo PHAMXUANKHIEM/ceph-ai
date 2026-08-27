@@ -432,7 +432,8 @@ def purge_bucket(host: str, bucket: str) -> None:
     try:
         run_command_on_node(host, command, BUCKET_PURGE_TIMEOUT_SECONDS)
     except Exception as exc:
-        raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {exc}") from exc
+        reason = str(exc).strip() or type(exc).__name__
+        raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {reason}") from exc
 
 
 def purge_bucket_with(host: str, bucket: str, ssh_user: str, ssh_key_path: str,
@@ -444,7 +445,8 @@ def purge_bucket_with(host: str, bucket: str, ssh_user: str, ssh_key_path: str,
             host, command, ssh_user, ssh_key_path, BUCKET_PURGE_TIMEOUT_SECONDS
         )
     except Exception as exc:
-        raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {exc}") from exc
+        reason = str(exc).strip() or type(exc).__name__
+        raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {reason}") from exc
 
 
 def build_bucket_object_list_command(bucket: str, marker: str = "", max_entries: int = 101) -> str:
