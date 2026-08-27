@@ -191,6 +191,31 @@ async def _auth_page_context(request: Request, user: str, active_view: str) -> d
     }
 
 
+def _config_dump_page_context(request: Request, user: str) -> dict:
+    clusters, cluster = cluster_selection(request)
+    return {
+        "user": user,
+        "is_admin": auth.is_admin_user(user),
+        "clusters": clusters,
+        "selected_cluster": cluster,
+        "pools": [],
+        "auth_users": [],
+        "error": None,
+        "success": False,
+        "created": False,
+        "active_view": "config-dump",
+    }
+
+
+@router.get("/openstack/config-dump", response_class=HTMLResponse)
+async def config_dump_page(request: Request, user: str = Depends(require_login)):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xem Ceph config dump")
+    return templates.TemplateResponse(
+        request, "openstack_auth_pool.html", _config_dump_page_context(request, user)
+    )
+
+
 @router.get("/api/openstack/auth-config-dump")
 async def auth_config_dump(request: Request, user: str = Depends(require_login)):
     """Read the selected cluster's Ceph config for the Ceph-Auth inspector.

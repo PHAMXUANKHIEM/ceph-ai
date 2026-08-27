@@ -129,8 +129,21 @@ def test_main_sidebar_defines_ceph_auth_group():
         content = source.read()
     assert (
         '{ label: "ceph-auth", paths: ["/openstack/auth-pool", '
-        '"/openstack/auth-user/create"] }'
+        '"/openstack/config-dump", "/openstack/auth-user/create"] }'
     ) in content
+
+
+def test_config_dump_page_is_separate_from_auth_pool(dashboard_client, monkeypatch):
+    def fail_if_ceph_is_called(*args):
+        raise AssertionError("config dump page should load data lazily")
+
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fail_if_ceph_is_called)
+    _login(dashboard_client)
+    response = dashboard_client.get("/openstack/config-dump")
+    assert response.status_code == 200
+    assert "Ceph Config Dump" in response.text
+    assert "Tải ceph config dump" in response.text
+    assert "<h2>OpenStack Auth-Pool" not in response.text
 
 
 def test_create_auth_user_page_has_create_form(dashboard_client, monkeypatch):

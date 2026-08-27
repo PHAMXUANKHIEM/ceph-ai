@@ -2,16 +2,18 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenStack Auth-Pool — Ceph AIOps</title>
+  <title>{% if active_view == 'config-dump' %}Ceph Config Dump{% elif active_view == 'create-user' %}Create Auth User{% else %}OpenStack Auth-Pool{% endif %} — Ceph AIOps</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
   <main class="page">
     <section class="card">
-      <div class="card-header"><h2>{{ 'Tạo Ceph Auth User' if active_view == 'create-user' else 'OpenStack Auth-Pool' }} — {{ selected_cluster.name }}</h2></div>
+      <div class="card-header"><h2>{% if active_view == 'create-user' %}Tạo Ceph Auth User{% elif active_view == 'config-dump' %}Ceph Config Dump{% else %}OpenStack Auth-Pool{% endif %} — {{ selected_cluster.name }}</h2></div>
       <div class="card-body">
-        {% if active_view == 'create-user' %}
+        {% if active_view == 'config-dump' %}
+        <p class="hint">Xem cấu hình runtime của cụm đang chọn. Các giá trị token, secret, password và key được che trước khi hiển thị.</p>
+        {% elif active_view == 'create-user' %}
         <p class="hint">Tạo mới Ceph auth user và cấp ngay quyền RBD trên pool đã chọn.</p>
         {% if created %}<p class="success">Đã tạo auth user, cấp quyền pool và chuyển các file Ceph sang OpenStack thành công.</p>{% endif %}
         {% if error %}<p class="error">Không tải được dữ liệu: {{ error }}</p>{% endif %}
@@ -38,7 +40,7 @@
         {% endif %}
       </div>
       {% if auth_users %}<div class="card-body table-wrap"><table><thead><tr><th>User</th><th>MON caps</th><th>OSD caps</th></tr></thead><tbody>{% for item in auth_users %}<tr><td><code>{{ item.entity }}</code></td><td><code>{{ item.caps.mon or '—' }}</code></td><td><code>{{ item.caps.osd or '—' }}</code></td></tr>{% endfor %}</tbody></table></div>{% endif %}
-      {% if is_admin %}
+      {% if active_view == 'config-dump' and is_admin %}
       <div class="card-body ceph-config-dump" id="ceph-config-dump-panel" data-cluster="{{ selected_cluster.id }}">
         <div class="card-header"><h3>Ceph config dump</h3></div>
         <p class="hint">Xem cấu hình runtime của cụm đang chọn. Các giá trị token, secret, password và key được che trước khi hiển thị.</p>

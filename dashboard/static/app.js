@@ -133,7 +133,7 @@
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
     "/backups": "□", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
     "/object-storage/user-settings": "⚙", "/bucket-access-log": "≡", "/pgs": "∷",
-    "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+"
+    "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+", "/openstack/config-dump": "▤"
   };
 
   var mainNav = topbar.querySelector(".main-nav");
@@ -162,6 +162,7 @@
       ["/volume-performance", "Performance"],
       ["/bucket-access-log", "Bucket Logging"],
       ["/openstack/auth-pool", "Auth-Pool"],
+      ["/openstack/config-dump", "Config Dump"],
       ["/deploy-cluster", "Deploy Cluster"],
       ["/delete-cluster", "Delete Cluster"],
       ["/upgrade", "Upgrade Cluster"],
@@ -232,6 +233,13 @@
       createAuthLink.textContent = "Create Auth User";
       linksByPath["/openstack/auth-user/create"] = createAuthLink;
     }
+    if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/config-dump"]) {
+      var configDumpLink = document.createElement("a");
+      configDumpLink.href = "/openstack/config-dump";
+      configDumpLink.className = window.location.pathname === configDumpLink.pathname ? "nav-link active" : "nav-link";
+      configDumpLink.textContent = "Config Dump";
+      linksByPath["/openstack/config-dump"] = configDumpLink;
+    }
 
     // Information architecture for Ceph operators. Keep permission-aware
     // links from the server (admin-only destinations may not exist), then
@@ -241,7 +249,7 @@
       { label: "Pool", paths: ["/pools", "/pgs"] },
       { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },
-      { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
+      { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/config-dump", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
       { label: "Backup", paths: ["/backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
