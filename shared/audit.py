@@ -16,6 +16,7 @@ EVENT_RISKY_ACTION_APPROVED = "risky_action_approved"
 EVENT_RISKY_ACTION_REJECTED = "risky_action_rejected"
 EVENT_RISKY_ACTION_EXECUTED = "risky_action_executed"
 EVENT_RISKY_ACTION_FAILED = "risky_action_failed"
+EVENT_CHANGE_RISK_BLOCKED_AUTOPILOT = "change_risk_blocked_autopilot"
 # 2026-07-23: fired by dashboard/routes/actions.py::approve_action instead
 # of EVENT_RISKY_ACTION_APPROVED when the action_id has no automated
 # command at all (investigate_manually, pg_repair_force — see

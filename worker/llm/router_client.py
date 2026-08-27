@@ -13,7 +13,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import audit, db, incident_events, log_learning, remediation_cases, trust_engine
+from shared import audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import observe_ai_call
 from shared.models import (
@@ -1069,6 +1069,10 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     model_provider=model_provider,
                     diagnosis_confidence=diagnosis_confidence,
                 )
+                risk = change_risk.assess_and_record(
+                    session, action=action, incident=incident,
+                )
+                change_risk.attach_summary(action, risk)
                 trust_engine.record_shadow_decision(
                     session, case=remediation_case, action=action,
                 )
@@ -1253,6 +1257,25 @@ def _maybe_execute_safe_action(
         _route_safe_to_approval(
             incident_id, action_pk, action_id,
             event_type=audit.EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED,
+        )
+        return
+    with db.SessionLocal() as session:
+        risk_action = session.get(Action, action_pk)
+        risk_incident = session.get(Incident, incident_id)
+        risk = change_risk.assess_and_record(
+            session, action=risk_action, incident=risk_incident,
+        ) if risk_action is not None else None
+        if risk_action is not None and risk is not None:
+            change_risk.attach_summary(risk_action, risk)
+        session.commit()
+    if risk is not None and risk.blocks_autopilot:
+        logger.warning(
+            "_maybe_execute_safe_action: change-risk gate blocked action_id=%s: %s",
+            action_id, risk.summary,
+        )
+        _route_safe_to_approval(
+            incident_id, action_pk, action_id,
+            event_type=audit.EVENT_CHANGE_RISK_BLOCKED_AUTOPILOT,
         )
         return
     if settings.autopilot_grace_period_seconds > 0:
@@ -2625,6 +2648,9 @@ def _execute_approved_action(action_pk: str) -> None:
         action_id_str = action.action_id
         target_nodes_raw = action.target_nodes
         action_params_raw = action.action_params
+        risk = change_risk.assess_and_record(session, action=action)
+        change_risk.attach_summary(action, risk)
+        session.commit()
         # Atomic execution claim: multiple Worker processes may poll the same
         # APPROVED row at once. The first one transitions its Incident to
         # EXECUTING; every contender then observes rowcount=0 and must leave
