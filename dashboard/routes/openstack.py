@@ -24,6 +24,9 @@ _CONFIG_SENSITIVE_RE = re.compile(
     r"encryption[_-]?key|keyring)",
     re.IGNORECASE,
 )
+_CONFIG_SECTION_RE = re.compile(r"^[A-Za-z0-9_.-]{1,180}$")
+_CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,180}$")
+_RGW_DAEMON_RE = re.compile(r"^rgw\.[A-Za-z0-9_.-]{1,180}$")
 
 
 def _pool_names(payload: dict | list) -> list[str]:
@@ -66,7 +69,8 @@ def _config_dump_rows(payload: dict | list) -> list[dict]:
             display_value = str(value)
         else:
             display_value = str(value)
-        if _CONFIG_SENSITIVE_RE.search(name):
+        redacted = bool(_CONFIG_SENSITIVE_RE.search(name))
+        if redacted:
             display_value = "[REDACTED]"
         normalized.append(
             {
@@ -75,6 +79,7 @@ def _config_dump_rows(payload: dict | list) -> list[dict]:
                 "value": display_value,
                 "level": str(row.get("level") or ""),
                 "can_update_at_runtime": bool(row.get("can_update_at_runtime", False)),
+                "redacted": redacted,
             }
         )
     return sorted(normalized, key=lambda row: (row["section"].lower(), row["name"].lower()))
@@ -201,10 +206,83 @@ def _config_dump_page_context(request: Request, user: str) -> dict:
         "pools": [],
         "auth_users": [],
         "error": None,
-        "success": False,
+        "success": request.query_params.get("updated") == "1",
         "created": False,
         "active_view": "config-dump",
     }
+
+
+def _rgw_daemon_names(payload: dict | list) -> list[str]:
+    rows = payload if isinstance(payload, list) else payload.get("daemons", []) if isinstance(payload, dict) else []
+    names = {
+        str(row.get("daemon_name") or row.get("name") or "").strip()
+        for row in rows
+        if isinstance(row, dict)
+    }
+    return sorted(name for name in names if _RGW_DAEMON_RE.fullmatch(name))
+
+
+def _restart_rgw_daemons(connection: tuple[list[str], str, str, str, str]) -> list[str]:
+    """Restart every RGW daemon reported by the selected cluster."""
+    _host, payload = run_ceph_json_command_with(*connection, "ceph orch ps --daemon_type rgw")
+    daemon_names = _rgw_daemon_names(payload)
+    if not daemon_names:
+        raise CephQueryError("Không tìm thấy RGW daemon để restart")
+    failures: list[str] = []
+    for daemon_name in daemon_names:
+        command = build_exec_command(
+            connection[4], connection[1], f"ceph orch daemon restart {shlex.quote(daemon_name)}"
+        )
+        try:
+            execute_command(connection[0][0], command, user=connection[2], key_path=connection[3])
+        except ExecutorError as exc:
+            failures.append(f"{daemon_name}: {exc}")
+    if failures:
+        raise ExecutorError("; ".join(failures))
+    return daemon_names
+
+
+@router.post("/openstack/config-dump")
+async def mutate_config_dump(
+    request: Request,
+    user: str = Depends(require_login),
+    action: str = Form("set"),
+    section: str = Form(""),
+    name: str = Form(""),
+    value: str = Form(""),
+):
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được sửa Ceph config")
+    action = action.strip().lower()
+    section = section.strip()
+    name = name.strip()
+    if action not in {"set", "rm"}:
+        raise HTTPException(status_code=400, detail="Thao tác cấu hình không hợp lệ")
+    if not _CONFIG_SECTION_RE.fullmatch(section) or not _CONFIG_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=400, detail="Section hoặc option không hợp lệ")
+    if action == "set" and len(value) > 4096:
+        raise HTTPException(status_code=400, detail="Giá trị option vượt quá 4096 ký tự")
+    _clusters, cluster = cluster_selection(request)
+    connection = cluster_connection(cluster)
+    if action == "set":
+        inner_command = f"ceph config set {shlex.quote(section)} {shlex.quote(name)} {shlex.quote(value)}"
+    else:
+        inner_command = f"ceph config rm {shlex.quote(section)} {shlex.quote(name)}"
+    command = build_exec_command(connection[4], connection[1], inner_command)
+    try:
+        await asyncio.to_thread(
+            execute_command, connection[0][0], command, user=connection[2], key_path=connection[3]
+        )
+        daemon_names = await asyncio.to_thread(_restart_rgw_daemons, connection)
+    except (CephQueryError, ExecutorError, IndexError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Đã gửi thay đổi nhưng không hoàn tất restart RGW: {exc}",
+        ) from exc
+    return RedirectResponse(
+        f"/openstack/config-dump?cluster={cluster.id}&updated=1&rgw={len(daemon_names)}",
+        status_code=303,
+    )
 
 
 @router.get("/openstack/config-dump", response_class=HTMLResponse)

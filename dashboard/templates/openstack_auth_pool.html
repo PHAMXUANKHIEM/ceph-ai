@@ -44,6 +44,15 @@
       <div class="card-body ceph-config-dump" id="ceph-config-dump-panel" data-cluster="{{ selected_cluster.id }}">
         <div class="card-header"><h3>Ceph config dump</h3></div>
         <p class="hint">Xem cấu hình runtime của cụm đang chọn. Các giá trị token, secret, password và key được che trước khi hiển thị.</p>
+        {% if success %}<p class="success">Đã cập nhật cấu hình và restart {{ request.query_params.get('rgw', 'các') }} RGW thành công.</p>{% endif %}
+        <form method="post" action="/openstack/config-dump?cluster={{ selected_cluster.id }}" class="audit-filters" id="ceph-config-dump-form">
+          <input type="hidden" name="action" value="set" id="ceph-config-dump-action">
+          <label>Section<input type="text" name="section" id="ceph-config-dump-section" required maxlength="180" pattern="[A-Za-z0-9_.-]+" placeholder="global hoặc client.rgw.name"></label>
+          <label>Option<input type="text" name="name" id="ceph-config-dump-name" required maxlength="180" pattern="[A-Za-z0-9_.-]+" placeholder="option_name"></label>
+          <label>Value<input type="text" name="value" id="ceph-config-dump-value" maxlength="4096" placeholder="Giá trị mới"></label>
+          <button type="submit" class="btn btn-primary" id="ceph-config-dump-submit">Tạo / Cập nhật</button>
+          <button type="button" class="btn" id="ceph-config-dump-reset" hidden>Hủy sửa</button>
+        </form>
         <div class="audit-filters">
           <button type="button" class="btn" id="ceph-config-dump-load">Tải ceph config dump</button>
           <label class="ceph-config-dump-filter">Lọc<input type="search" id="ceph-config-dump-filter-input" placeholder="section hoặc tên option"></label>
@@ -52,7 +61,7 @@
         <p class="hint" id="ceph-config-dump-status" aria-live="polite">Chưa tải dữ liệu.</p>
         <div class="table-wrap" id="ceph-config-dump-table-wrap" hidden>
           <table id="ceph-config-dump-table">
-            <thead><tr><th>Section</th><th>Option</th><th>Value</th><th>Level</th><th>Runtime</th></tr></thead>
+            <thead><tr><th>Section</th><th>Option</th><th>Value</th><th>Level</th><th>Runtime</th><th>Thao tác</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>

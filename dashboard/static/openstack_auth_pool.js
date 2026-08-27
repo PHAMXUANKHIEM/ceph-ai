@@ -6,7 +6,15 @@
   var tableBody = document.querySelector("#ceph-config-dump-table tbody");
   var status = document.getElementById("ceph-config-dump-status");
   var error = document.getElementById("ceph-config-dump-error");
-  if (!panel || !loadButton || !filterInput || !tableWrap || !tableBody || !status || !error) return;
+  var form = document.getElementById("ceph-config-dump-form");
+  var actionInput = document.getElementById("ceph-config-dump-action");
+  var sectionInput = document.getElementById("ceph-config-dump-section");
+  var nameInput = document.getElementById("ceph-config-dump-name");
+  var valueInput = document.getElementById("ceph-config-dump-value");
+  var submitButton = document.getElementById("ceph-config-dump-submit");
+  var resetButton = document.getElementById("ceph-config-dump-reset");
+  if (!panel || !loadButton || !filterInput || !tableWrap || !tableBody || !status || !error ||
+      !form || !actionInput || !sectionInput || !nameInput || !valueInput || !submitButton || !resetButton) return;
 
   var rows = [];
 
@@ -20,7 +28,7 @@
       var empty = document.createElement("tr");
       empty.className = "empty-row";
       var cell = document.createElement("td");
-      cell.colSpan = 5;
+      cell.colSpan = 6;
       cell.textContent = query ? "Không có option phù hợp." : "Cụm không trả về option nào.";
       empty.appendChild(cell);
       tableBody.appendChild(empty);
@@ -32,6 +40,46 @@
           td.textContent = value == null ? "" : String(value);
           tr.appendChild(td);
         });
+        var actions = document.createElement("td");
+        var edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "btn";
+        edit.textContent = "Sửa";
+        edit.addEventListener("click", function () {
+          actionInput.value = "set";
+          sectionInput.value = row.section;
+          nameInput.value = row.name;
+          valueInput.value = row.redacted ? "" : (row.value || "");
+          submitButton.textContent = "Cập nhật";
+          resetButton.hidden = false;
+          valueInput.focus();
+          status.textContent = row.redacted
+            ? "Option nhạy cảm đã được che; nhập giá trị mới rồi bấm Cập nhật."
+            : "Đang sửa " + row.section + "." + row.name + ".";
+        });
+        actions.appendChild(edit);
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn";
+        remove.textContent = "Xóa";
+        remove.addEventListener("click", function () {
+          if (!window.confirm("Xóa option " + row.section + "." + row.name + " và restart RGW?")) return;
+          var deleteForm = document.createElement("form");
+          deleteForm.method = "post";
+          deleteForm.action = "/openstack/config-dump?cluster=" + encodeURIComponent(panel.dataset.cluster || "");
+          [["action", "rm"], ["section", row.section], ["name", row.name]].forEach(function (entry) {
+            var input = document.createElement("input");
+            input.type = "hidden";
+            input.name = entry[0];
+            input.value = entry[1];
+            deleteForm.appendChild(input);
+          });
+          document.body.appendChild(deleteForm);
+          deleteForm.submit();
+        });
+        actions.appendChild(document.createTextNode(" "));
+        actions.appendChild(remove);
+        tr.appendChild(actions);
         tableBody.appendChild(tr);
       });
     }
@@ -67,5 +115,13 @@
 
   filterInput.addEventListener("input", function () {
     if (rows.length) render();
+  });
+
+  resetButton.addEventListener("click", function () {
+    form.reset();
+    actionInput.value = "set";
+    submitButton.textContent = "Tạo / Cập nhật";
+    resetButton.hidden = true;
+    status.textContent = rows.length ? "Đã hủy chỉnh sửa." : "Chưa tải dữ liệu.";
   });
 })();

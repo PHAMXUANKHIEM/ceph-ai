@@ -35,7 +35,9 @@ def test_config_dump_normalization_sorts_and_redacts_credentials():
         ("mon", "mon_allow_pool_delete"),
     ]
     assert rows[0]["value"] == "[REDACTED]"
+    assert rows[0]["redacted"] is True
     assert rows[1]["value"] == "https://vault.internal:8200"
+    assert rows[1]["redacted"] is False
     assert rows[2]["value"] == "[REDACTED]"
     assert rows[3]["value"] == "True"
 
@@ -60,6 +62,7 @@ def test_auth_config_dump_endpoint_returns_masked_rows(dashboard_client, monkeyp
             "value": "https://vault:8200",
             "level": "",
             "can_update_at_runtime": False,
+            "redacted": False,
         },
         {
             "section": "global",
@@ -67,9 +70,51 @@ def test_auth_config_dump_endpoint_returns_masked_rows(dashboard_client, monkeyp
             "value": "[REDACTED]",
             "level": "",
             "can_update_at_runtime": False,
+            "redacted": True,
         },
     ]
     assert "super-secret" not in response.text
+
+
+def test_config_dump_set_restarts_every_rgw(dashboard_client, monkeypatch):
+    executed = []
+
+    def fake_query(*args):
+        assert args[-1] == "ceph orch ps --daemon_type rgw"
+        return "mon1", [
+            {"daemon_name": "rgw.sse.ceph1"},
+            {"daemon_name": "rgw.sse.ceph2"},
+        ]
+
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
+    monkeypatch.setattr(
+        openstack_route,
+        "execute_command",
+        lambda host, command, **kwargs: executed.append((host, command, kwargs)) or "ok",
+    )
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/openstack/config-dump",
+        data={"action": "set", "section": "global", "name": "test_option", "value": "value with spaces"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "updated=1" in response.headers["location"]
+    assert len(executed) == 3
+    assert "ceph config set global test_option 'value with spaces'" in executed[0][1]
+    assert all("ceph orch daemon restart rgw.sse.ceph" in command for _, command, _ in executed[1:])
+
+
+def test_config_dump_rejects_unsafe_option_without_execution(dashboard_client, monkeypatch):
+    executed = []
+    monkeypatch.setattr(openstack_route, "execute_command", lambda *args, **kwargs: executed.append(args))
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/openstack/config-dump",
+        data={"action": "set", "section": "global;id", "name": "bad", "value": "x"},
+    )
+    assert response.status_code == 400
+    assert executed == []
 
 
 def test_caps_command_preserves_existing_caps_and_adds_pool():
