@@ -10,7 +10,7 @@ from config.settings import settings
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared import db
+from shared import db, remediation_feedback
 from shared.models import (
     LogFaultStat,
     LogFinding,
@@ -243,6 +243,9 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
         } for sample, title in recent_rows]
 
         return {
+            "remediation_feedback": remediation_feedback.summary(
+                session, cluster_id=cluster_id
+            ),
             "resource_learning": {
                 "enabled": settings.node_resource_forecast_enabled,
                 "evaluation_hours": settings.node_resource_learning_evaluation_hours,

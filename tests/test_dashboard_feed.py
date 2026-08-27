@@ -87,6 +87,8 @@ def test_operator_can_set_case_verdict_from_incident_timeline(dashboard_client):
         case = session.get(RemediationCase, case_id)
         assert case.operator_verdict == "CORRECT"
         assert case.operator_note == "OSD ổn định sau kiểm chứng."
+        assert case.operator_verdict_by == "admin"
+        assert case.operator_verdict_at is not None
         entry = session.query(AuditEntry).filter_by(action_id=case.action_id).one()
         assert entry.event_type == "remediation_case_verdict_updated"
         assert entry.actor == "admin"
@@ -115,6 +117,28 @@ def test_case_verdict_rejects_invalid_value(dashboard_client):
         f"/incidents/bad-verdict-inc/cases/{case_id}/verdict",
         data={"verdict": "MAKE_AUTONOMOUS", "note": "no"},
     )
+    assert response.status_code == 400
+    with db_module.SessionLocal() as session:
+        assert session.get(RemediationCase, case_id).operator_verdict is None
+
+
+def test_negative_case_verdict_requires_meaningful_note(dashboard_client):
+    with db_module.SessionLocal() as session:
+        incident = Incident(id="negative-note-inc", ceph_code="OSD_DOWN", status="RESOLVED", detected_at=datetime.utcnow())
+        session.add(incident); session.flush()
+        action = Action(incident_id=incident.id, action_id="restart_osd_daemon", classification="RISKY", status="EXECUTED")
+        session.add(action); session.flush()
+        case = RemediationCase(incident_id=incident.id, action_id=action.id, fault_family="OSD_DOWN",
+            evidence_fingerprint="c" * 64, prompt_version="v1", classification="RISKY",
+            autonomy_decision="PENDING_APPROVAL", outcome="VERIFIED_SUCCESS")
+        session.add(case); session.commit(); case_id = case.id
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        f"/incidents/negative-note-inc/cases/{case_id}/verdict",
+        data={"verdict": "UNSAFE", "note": "no"},
+    )
+
     assert response.status_code == 400
     with db_module.SessionLocal() as session:
         assert session.get(RemediationCase, case_id).operator_verdict is None

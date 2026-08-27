@@ -106,6 +106,8 @@ async def update_remediation_case_verdict(
     note = note.strip()
     if verdict not in CASE_VERDICTS:
         raise HTTPException(status_code=400, detail="Operator verdict không hợp lệ")
+    if verdict not in {"CORRECT", "INCONCLUSIVE"} and len(note) < 5:
+        raise HTTPException(status_code=400, detail="Verdict sai/không an toàn cần ghi chú ít nhất 5 ký tự")
     if len(note) > 2000:
         raise HTTPException(status_code=400, detail="Ghi chú tối đa 2000 ký tự")
     _clusters, selected_cluster = _resolve_selected_cluster(
@@ -120,6 +122,8 @@ async def update_remediation_case_verdict(
             raise HTTPException(status_code=404, detail="Không tìm thấy Remediation Case")
         case.operator_verdict = verdict
         case.operator_note = note or None
+        case.operator_verdict_by = user
+        case.operator_verdict_at = datetime.utcnow()
         audit.record(
             session, incident_id=incident_id, action_id=case.action_id,
             event_type=audit.EVENT_REMEDIATION_CASE_VERDICT_UPDATED, actor=user,

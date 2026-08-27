@@ -20,8 +20,29 @@
       <p><strong>RBD volume:</strong> {{ volume_learning.run_counts.get('EVALUATED', 0) }} baseline đã đối chiếu · {{ volume_learning.run_counts.get('PENDING', 0) }} đang chờ outcome · {{ volume_learning.selected_models|length }} model được chọn.</p>
       <p><strong>Dự báo sớm RBD:</strong> {{ volume_learning.early_forecasts|length }} forecast mới nhất · {{ volume_learning.forecast_warning_count }} cảnh báo.</p>
       <p><strong>Log daemon:</strong> {{ log_learning.sample_count }} mẫu · {{ log_learning.eligible_count }} đủ điều kiện học · {{ log_learning.blocked_count }} bị chặn.</p>
+      <p><strong>AI remediation:</strong> {{ remediation_feedback.labeled }}/{{ remediation_feedback.total_cases }} case đã được operator đánh giá · precision {{ (remediation_feedback.precision_percent|string + '%') if remediation_feedback.precision_percent is not none else 'chưa đủ nhãn' }}.</p>
       <p class="hint">“Độ chính xác ước tính” = 100 − MAE, chỉ để dễ đọc. Chỉ đánh dấu đáng tin khi có ít nhất 20 outcome và đạt từ 80%.</p>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Phản hồi & precision AI remediation</h2><p class="hint">Precision = verdict đúng / tổng verdict đúng hoặc sai. INCONCLUSIVE được tính vào coverage nhưng không làm tăng hoặc giảm precision.</p></div></div>
+    <div class="card-body">
+      <p><span class="badge">Coverage {{ (remediation_feedback.coverage_percent|string + '%') if remediation_feedback.coverage_percent is not none else '—' }}</span>
+        <span class="badge badge-ok">Đúng {{ remediation_feedback.correct }}</span>
+        <span class="badge badge-err">Sai {{ remediation_feedback.incorrect }}</span>
+        <span class="badge">Chưa kết luận {{ remediation_feedback.inconclusive }}</span>
+        <span class="badge badge-warn">Chưa đánh giá {{ remediation_feedback.unlabeled }}</span></p>
+      <p><strong>30 ngày gần nhất:</strong> {{ remediation_feedback.recent_30d.scored }} nhãn có kết luận · precision {{ (remediation_feedback.recent_30d.precision_percent|string + '%') if remediation_feedback.recent_30d.precision_percent is not none else '—' }}.</p>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Fault family</th><th>Đúng</th><th>Sai</th><th>Tổng có kết luận</th><th>Precision</th></tr></thead><tbody>
+    {% for item in remediation_feedback.by_fault_family %}<tr><td><code>{{ item.fault_family }}</code></td><td>{{ item.correct }}</td><td>{{ item.incorrect }}</td><td>{{ item.scored }}</td><td>{{ item.precision_percent }}%</td></tr>
+    {% else %}<tr class="empty-row"><td colspan="5"><div class="empty-state">Chưa có verdict đủ kết luận để đo precision.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="card-body"><h3>Case chờ operator đánh giá</h3><ul>
+    {% for item in remediation_feedback.recent_unlabeled %}<li><a href="/incidents/{{ item.incident_id }}/timeline"><code>{{ item.fault_family }}</code> · {{ item.created_at|vntime }}</a>{% if item.diagnosis %} — {{ item.diagnosis|truncate(180) }}{% endif %}</li>
+    {% else %}<li>Không còn case chưa đánh giá.</li>{% endfor %}
+    </ul></div>
   </section>
 
   <section class="card">

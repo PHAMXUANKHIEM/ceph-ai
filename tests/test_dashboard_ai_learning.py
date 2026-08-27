@@ -4,12 +4,14 @@ from config.settings import settings
 from shared import db
 from shared.clusters import ensure_default_cluster
 from shared.models import (
+    Action, Incident,
     LogFaultStat,
     LogFinding,
     LogIngestRun,
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceModelState,
+    RemediationCase,
     VolumeEarlyForecast, VolumeForecastRun,
     VolumeModelState,
 )
@@ -126,6 +128,39 @@ def test_ai_learning_api_returns_selected_model_and_audit_only_mode(dashboard_cl
     assert selected[0]["quality_status"] == "PROMISING"
     assert payload["log_learning"]["mode"] == "AUDIT_ONLY"
     assert payload["log_learning"]["blocked_count"] == 1
+
+
+def test_remediation_feedback_reports_cluster_precision_and_unlabeled_queue(dashboard_client):
+    with db.SessionLocal() as session:
+        cluster = ensure_default_cluster(session)
+        incident = Incident(id="feedback-inc", cluster_id=cluster.id, ceph_code="OSD_DOWN", status="RESOLVED", detected_at=NOW)
+        session.add(incident); session.flush()
+        actions = [
+            Action(incident_id=incident.id, action_id=f"feedback-{index}", classification="RISKY", status="EXECUTED")
+            for index in range(3)
+        ]
+        session.add_all(actions); session.flush()
+        cases = [
+            RemediationCase(incident_id=incident.id, action_id=action.id, cluster_id=cluster.id,
+                fault_family="OSD_DOWN", evidence_fingerprint=str(index) * 64,
+                prompt_version="v1", classification="RISKY", autonomy_decision="PENDING_APPROVAL",
+                outcome="VERIFIED_SUCCESS", operator_verdict=verdict,
+                operator_verdict_at=NOW if verdict else None)
+            for index, (action, verdict) in enumerate(zip(actions, ("CORRECT", "INEFFECTIVE", None)), 1)
+        ]
+        session.add_all(cases); session.commit(); cluster_id = cluster.id
+    _login(dashboard_client)
+
+    payload = dashboard_client.get(f"/api/ai-learning?cluster={cluster_id}").json()["remediation_feedback"]
+
+    assert payload["total_cases"] == 3
+    assert payload["labeled"] == 2
+    assert payload["unlabeled"] == 1
+    assert payload["precision_percent"] == 50.0
+    assert payload["by_fault_family"][0]["precision_percent"] == 50.0
+    page = dashboard_client.get(f"/ai-learning?cluster={cluster_id}")
+    assert "precision AI remediation" in page.text
+    assert "/incidents/feedback-inc/timeline" in page.text
 
 
 def test_twenty_good_outcomes_are_marked_reliable(dashboard_client):
