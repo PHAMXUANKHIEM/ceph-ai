@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Cost — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head>
+<body>{% include "_nav.html" %}
+<main class="page"><section class="card"><div class="card-header"><div><h2>Chi phí AI</h2><p class="hint">Chỉ đọc · token được ước tính từ telemetry kích thước nội dung; prompt/response không được lưu.</p></div>
+<form method="get"><label>Cửa sổ <select name="hours" onchange="this.form.submit()"><option value="24" {% if hours == 24 %}selected{% endif %}>24 giờ</option><option value="168" {% if hours == 168 %}selected{% endif %}>7 ngày</option><option value="720" {% if hours == 720 %}selected{% endif %}>30 ngày</option><option value="8760" {% if hours == 8760 %}selected{% endif %}>365 ngày</option></select></label></form></div>
+<div class="card-body"><p><strong>{{ calls }}</strong> lượt gọi · <strong>{{ errors }}</strong> lỗi · <strong>{{ input_tokens + output_tokens }}</strong> token ước tính.</p>
+{% if pricing_configured %}<p><strong>Chi phí ước tính:</strong> ${{ '%.6f'|format(estimated_cost_usd or 0) }} · input ${{ input_usd_per_million_tokens }}/1M · output ${{ output_usd_per_million_tokens }}/1M.</p>{% else %}<p class="hint">Chưa cấu hình đơn giá token nên chưa tính USD. Đặt <code>AI_COST_INPUT_USD_PER_MILLION_TOKENS</code> và <code>AI_COST_OUTPUT_USD_PER_MILLION_TOKENS</code> trong Settings/.env.</p>{% endif %}</div>
+<div class="table-wrap"><table><thead><tr><th>Module</th><th>Provider / model</th><th>Lượt gọi</th><th>Lỗi</th><th>Input token</th><th>Output token</th><th>Chi phí ước tính</th></tr></thead><tbody>
+{% for row in groups %}<tr><td><code>{{ row.feature }}</code></td><td>{{ row.provider }} / {{ row.model_id }}</td><td>{{ row.calls }}</td><td>{{ row.errors }}</td><td>{{ row.input_tokens }}</td><td>{{ row.output_tokens }}</td><td>{% if pricing_configured %}${{ '%.6f'|format(row.estimated_cost_usd or 0) }}{% else %}—{% endif %}</td></tr>{% else %}<tr><td colspan="7">Chưa có telemetry trong cửa sổ đã chọn.</td></tr>{% endfor %}
+</tbody></table></div></section></main><script src="/static/app.js?v={{ static_version }}"></script></body></html>

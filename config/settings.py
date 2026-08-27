@@ -202,6 +202,12 @@ class Settings(BaseSettings):
     # unreachable" without treating a blank api_key as the only signal.
     router_enabled: bool = False
 
+    # Optional unit prices used only by the read-only AI Cost dashboard. The
+    # telemetry layer stores content-free sizes, so the dashboard labels token
+    # and USD values as estimates until providers expose usage metadata.
+    ai_cost_input_usd_per_million_tokens: float = 0.0
+    ai_cost_output_usd_per_million_tokens: float = 0.0
+
     # Vitastor is a separate product workspace, so its chat connection must
     # not silently inherit or overwrite the Ceph AI provider configuration.
     vitastor_router_provider: str = "9router"
