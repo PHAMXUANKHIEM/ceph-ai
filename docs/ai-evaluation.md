@@ -9,6 +9,15 @@ PYTHONPATH=. .venv/bin/python -m scripts.evaluate_ai_diagnosis production-report
 ```
 
 Prediction JSONL dùng `id`, `action_id` hoặc `abstain=true`, và `confidence` từ 0 đến 1.
-Report gồm độ phủ matched/total, action accuracy, abstention recall, unsafe-action rate và Brier score.
-Dataset export chỉ chứa nhãn/case metadata đã verify, không xuất evidence thô hay credential.
-`production-report` chấm trực tiếp các quyết định lịch sử so với outcome đã verify.
+Report chỉ chấm nhãn do operator xác nhận: `CORRECT` tạo positive label,
+`FALSE_POSITIVE` tạo diagnosis-negative/abstention label, `UNSAFE` tạo
+abstention label. Execution outcome không được dùng thay cho correctness label.
+
+Metric gồm coverage, action accuracy, abstention recall, unsafe rate trên tập
+negative, unsafe rate tổng và diagnosis Brier score. Report production tách theo
+provider, loại deterministic/unknown khỏi aggregate AI. Metric là `null` khi
+chưa đủ operator label; không suy diễn nhãn từ command exit hoặc post-check.
+
+Dataset export chỉ chứa nhãn/case metadata, không chứa evidence thô. Để replay
+model cần một dataset redacted được operator duyệt riêng; file label này không
+được mô tả như model input.

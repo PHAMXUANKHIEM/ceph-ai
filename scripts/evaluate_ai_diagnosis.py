@@ -33,18 +33,20 @@ def _verified_rows(limit: int) -> tuple[list[dict], list[dict]]:
         items = (
             session.query(RemediationCase, Action)
             .join(Action, Action.id == RemediationCase.action_id)
-            .filter(RemediationCase.verified_at.isnot(None))
+            .filter(RemediationCase.outcome.in_(("VERIFIED_SUCCESS", "VERIFIED_FAILED")))
             .order_by(RemediationCase.verified_at.desc(), RemediationCase.id)
             .limit(max(1, limit)).all()
         )
         rows, predictions = [], []
         for case, action in items:
-            successful = case.outcome == "VERIFIED_SUCCESS" and case.operator_verdict not in {"FALSE_POSITIVE", "UNSAFE"}
+            verdict = case.operator_verdict
+            should_act = True if verdict == "CORRECT" else False if verdict in {"FALSE_POSITIVE", "UNSAFE"} else None
+            diagnosis_correct = True if verdict == "CORRECT" else False if verdict == "FALSE_POSITIVE" else None
             rows.append({
                 "id": case.id, "fault_family": case.fault_family,
-                "expected_action_id": action.action_id if successful else None,
-                "should_act": successful, "outcome": case.outcome,
-                "operator_verdict": case.operator_verdict,
+                "expected_action_id": action.action_id if should_act is True else None,
+                "should_act": should_act, "diagnosis_correct": diagnosis_correct,
+                "outcome": case.outcome, "operator_verdict": verdict,
                 "prompt_version": case.prompt_version,
                 "model_provider": case.model_provider,
             })
@@ -59,6 +61,27 @@ def export_verified(path: Path, limit: int) -> int:
     rows, _predictions = _verified_rows(limit)
     _write_jsonl(path, rows)
     return len(rows)
+
+
+def _production_report(limit: int) -> dict:
+    golden, predictions = _verified_rows(limit)
+    providers = sorted({row.get("model_provider") or "unknown" for row in golden})
+    by_provider = {}
+    for provider in providers:
+        ids = {row["id"] for row in golden if (row.get("model_provider") or "unknown") == provider}
+        by_provider[provider] = evaluate(
+            [row for row in golden if row["id"] in ids],
+            [row for row in predictions if row["id"] in ids],
+        ).as_dict()
+    ai_ids = {
+        row["id"] for row in golden
+        if (row.get("model_provider") or "unknown") not in {"deterministic-controller", "unknown"}
+    }
+    ai_report = evaluate(
+        [row for row in golden if row["id"] in ai_ids],
+        [row for row in predictions if row["id"] in ai_ids],
+    ).as_dict()
+    return {"ai_only": ai_report, "by_provider": by_provider, "note": "null metrics mean operator labels are unavailable"}
 
 
 def main() -> int:
@@ -76,8 +99,7 @@ def main() -> int:
     elif args.command == "score":
         print(json.dumps(evaluate(_read_jsonl(args.golden), _read_jsonl(args.predictions)).as_dict(), sort_keys=True))
     else:
-        golden, predictions = _verified_rows(args.limit)
-        print(json.dumps(evaluate(golden, predictions).as_dict(), sort_keys=True))
+        print(json.dumps(_production_report(args.limit), sort_keys=True))
     return 0
 
 
