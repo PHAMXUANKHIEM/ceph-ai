@@ -20,6 +20,58 @@ def test_pool_and_auth_payload_normalization():
     ]})] == ["client.cinder", "client.nova"]
 
 
+def test_config_dump_normalization_sorts_and_redacts_credentials():
+    rows = openstack_route._config_dump_rows([
+        {"section": "global", "name": "rgw_crypt_vault_addr", "value": "https://vault.internal:8200"},
+        {"section": "global", "name": "rgw_crypt_vault_token_file", "value": "/etc/ceph/vault_token"},
+        {"section": "mon", "name": "mon_allow_pool_delete", "value": True, "level": "advanced"},
+        {"section": "global", "name": "cluster_secret", "value": "do-not-leak"},
+        {"section": "global", "name": "", "value": "ignored"},
+    ])
+    assert [(row["section"], row["name"]) for row in rows] == [
+        ("global", "cluster_secret"),
+        ("global", "rgw_crypt_vault_addr"),
+        ("global", "rgw_crypt_vault_token_file"),
+        ("mon", "mon_allow_pool_delete"),
+    ]
+    assert rows[0]["value"] == "[REDACTED]"
+    assert rows[1]["value"] == "https://vault.internal:8200"
+    assert rows[2]["value"] == "[REDACTED]"
+    assert rows[3]["value"] == "True"
+
+
+def test_auth_config_dump_endpoint_returns_masked_rows(dashboard_client, monkeypatch):
+    def fake_query(*args):
+        assert args[-1] == "ceph config dump"
+        return "mon1", [
+            {"section": "global", "name": "rgw_crypt_vault_addr", "value": "https://vault:8200"},
+            {"section": "global", "name": "rgw_crypt_vault_token", "value": "super-secret"},
+        ]
+
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", fake_query)
+    _login(dashboard_client)
+    response = dashboard_client.get("/api/openstack/auth-config-dump")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rows"] == [
+        {
+            "section": "global",
+            "name": "rgw_crypt_vault_addr",
+            "value": "https://vault:8200",
+            "level": "",
+            "can_update_at_runtime": False,
+        },
+        {
+            "section": "global",
+            "name": "rgw_crypt_vault_token",
+            "value": "[REDACTED]",
+            "level": "",
+            "can_update_at_runtime": False,
+        },
+    ]
+    assert "super-secret" not in response.text
+
+
 def test_caps_command_preserves_existing_caps_and_adds_pool():
     command = openstack_route._caps_command(
         "client.cinder", "volumes", "write",

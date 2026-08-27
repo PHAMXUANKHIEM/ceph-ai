@@ -38,7 +38,26 @@
         {% endif %}
       </div>
       {% if auth_users %}<div class="card-body table-wrap"><table><thead><tr><th>User</th><th>MON caps</th><th>OSD caps</th></tr></thead><tbody>{% for item in auth_users %}<tr><td><code>{{ item.entity }}</code></td><td><code>{{ item.caps.mon or '—' }}</code></td><td><code>{{ item.caps.osd or '—' }}</code></td></tr>{% endfor %}</tbody></table></div>{% endif %}
+      {% if is_admin %}
+      <div class="card-body ceph-config-dump" id="ceph-config-dump-panel" data-cluster="{{ selected_cluster.id }}">
+        <div class="card-header"><h3>Ceph config dump</h3></div>
+        <p class="hint">Xem cấu hình runtime của cụm đang chọn. Các giá trị token, secret, password và key được che trước khi hiển thị.</p>
+        <div class="audit-filters">
+          <button type="button" class="btn" id="ceph-config-dump-load">Tải ceph config dump</button>
+          <label class="ceph-config-dump-filter">Lọc<input type="search" id="ceph-config-dump-filter-input" placeholder="section hoặc tên option"></label>
+        </div>
+        <p class="error" id="ceph-config-dump-error" hidden></p>
+        <p class="hint" id="ceph-config-dump-status" aria-live="polite">Chưa tải dữ liệu.</p>
+        <div class="table-wrap" id="ceph-config-dump-table-wrap" hidden>
+          <table id="ceph-config-dump-table">
+            <thead><tr><th>Section</th><th>Option</th><th>Value</th><th>Level</th><th>Runtime</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
     </section>
   </main>
   <script src="/static/app.js?v={{ static_version }}"></script>
+  <script src="/static/openstack_auth_pool.js?v={{ static_version }}"></script>
 </body></html>

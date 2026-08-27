@@ -19,6 +19,11 @@ router = APIRouter()
 templates = make_templates()
 _ENTITY_RE = re.compile(r"^client\.[A-Za-z0-9_.-]+$")
 _POOL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_CONFIG_SENSITIVE_RE = re.compile(
+    r"(?:token|secret|password|passphrase|private|credential|access[_-]?key|"
+    r"encryption[_-]?key|keyring)",
+    re.IGNORECASE,
+)
 
 
 def _pool_names(payload: dict | list) -> list[str]:
@@ -35,6 +40,44 @@ def _auth_rows(payload: dict | list) -> list[dict]:
         [row for row in rows if isinstance(row, dict) and str(row.get("entity", "")).startswith("client.")],
         key=lambda row: str(row.get("entity", "")),
     )
+
+
+def _config_dump_rows(payload: dict | list) -> list[dict]:
+    """Return a stable, safe-to-render view of ``ceph config dump``.
+
+    Ceph returns a list for the JSON format today, but a few releases wrap it
+    in ``config_dump``.  Only the fields needed by the UI are copied so an
+    unexpected field can never leak through the API.  Values for options that
+    commonly contain credentials are redacted before they leave the server.
+    """
+    rows = payload if isinstance(payload, list) else payload.get("config_dump", []) if isinstance(payload, dict) else []
+    normalized: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or row.get("key") or "").strip()
+        if not name:
+            continue
+        section = str(row.get("section") or "unknown").strip() or "unknown"
+        value = row.get("value")
+        if value is None:
+            display_value = ""
+        elif isinstance(value, (dict, list)):
+            display_value = str(value)
+        else:
+            display_value = str(value)
+        if _CONFIG_SENSITIVE_RE.search(name):
+            display_value = "[REDACTED]"
+        normalized.append(
+            {
+                "section": section,
+                "name": name,
+                "value": display_value,
+                "level": str(row.get("level") or ""),
+                "can_update_at_runtime": bool(row.get("can_update_at_runtime", False)),
+            }
+        )
+    return sorted(normalized, key=lambda row: (row["section"].lower(), row["name"].lower()))
 
 
 def _caps_command(entity: str, pool: str, access: str, current_caps: dict) -> str:
@@ -145,6 +188,30 @@ async def _auth_page_context(request: Request, user: str, active_view: str) -> d
         "success": request.query_params.get("saved") == "1",
         "created": request.query_params.get("created") == "1",
         "active_view": active_view,
+    }
+
+
+@router.get("/api/openstack/auth-config-dump")
+async def auth_config_dump(request: Request, user: str = Depends(require_login)):
+    """Read the selected cluster's Ceph config for the Ceph-Auth inspector.
+
+    The command is admin-only because config values can reveal deployment
+    topology.  Credential-like values are redacted by ``_config_dump_rows``
+    before the response is returned.
+    """
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xem Ceph config dump")
+    _clusters, cluster = cluster_selection(request)
+    connection = cluster_connection(cluster)
+    try:
+        _host, payload = await asyncio.to_thread(
+            run_ceph_json_command_with, *connection, "ceph config dump"
+        )
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không đọc được ceph config dump: {exc}") from exc
+    return {
+        "cluster": {"id": cluster.id, "name": cluster.name},
+        "rows": _config_dump_rows(payload),
     }
 
 
