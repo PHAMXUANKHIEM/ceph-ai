@@ -20,6 +20,7 @@ from dashboard.telegram_approval_bot import channels_for_incident, has_configure
 from dashboard.templating import make_templates
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
+from shared.ai_cost import summary as ai_cost_summary
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import (
@@ -780,6 +781,16 @@ async def index(
         # 500/stack trace to the browser either.
         logger.exception("index: failed to prepare dashboard page")
         raise HTTPException(status_code=500, detail="Lỗi khi tải trang — xem log server để biết chi tiết")
+    try:
+        # Keep this compact overview independent from the main incident query:
+        # missing/old telemetry must never make the operational dashboard fail.
+        ai_cost_overview = ai_cost_summary(24)
+    except Exception:
+        logger.exception("index: failed to load AI cost overview")
+        ai_cost_overview = {
+            "calls": 0, "errors": 0, "input_tokens": 0, "output_tokens": 0,
+            "pricing_configured": False, "estimated_cost_usd": None,
+        }
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -802,6 +813,7 @@ async def index(
             "filter_until": until,
             "upgrade_blocks_other_actions": upgrade_blocks_other_actions,
             "backup_alert": backup_alert,
+            "ai_cost_overview": ai_cost_overview,
             # 2026-08-07: the "Chờ duyệt" card only renders when Telegram
             # approval doesn't already cover every pending action (see
             # show_pending_card's own comment above, and
