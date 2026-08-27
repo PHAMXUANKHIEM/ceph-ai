@@ -106,7 +106,8 @@
             {% if incident %}<span class="hint">(lúc {{ incident.detected_at|vntime }})</span>{% endif %}
             {% if not telegram_covered %}<span class="hint">— chưa có kênh Telegram cho cụm này, chỉ duyệt được ở đây</span>{% endif %}
           </p>
-          <p><strong>Chẩn đoán / Lý do:</strong> {{ incident.diagnosis_text if incident and incident.diagnosis_text else (action.rationale if action.rationale else "—") }}</p>
+          <p><strong>Chẩn đoán:</strong> {{ incident.diagnosis_text if incident and incident.diagnosis_text else "—" }}</p>
+          <p><strong>Lý do / Change risk:</strong> {{ action.rationale if action.rationale else "—" }}</p>
           <p><strong>Hành động đề xuất:</strong> <code>{{ action.action_id }}</code></p>
           <p><strong>Lệnh sẽ chạy:</strong>
             {% if action.proposed_command %}<code>{{ action.proposed_command }}</code>

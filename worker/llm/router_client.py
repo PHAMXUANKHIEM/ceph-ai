@@ -22,6 +22,7 @@ from shared.models import (
     ActionStatus,
     ActionPolicyOverride,
     ChatMessage,
+    ChangeRiskAssessment,
     Cluster,
     Incident,
     IncidentStatus,
@@ -2648,8 +2649,32 @@ def _execute_approved_action(action_pk: str) -> None:
         action_id_str = action.action_id
         target_nodes_raw = action.target_nodes
         action_params_raw = action.action_params
+        existing_assessment = session.query(ChangeRiskAssessment).filter_by(
+            action_id=action.id,
+        ).one_or_none()
+        legacy_assessment = (
+            existing_assessment is None
+            or existing_assessment.assessment_hash == "0" * 64
+        )
         risk = change_risk.assess_and_record(session, action=action)
         change_risk.attach_summary(action, risk)
+        assessment = session.query(ChangeRiskAssessment).filter_by(action_id=action.id).one()
+        if legacy_assessment:
+            # An already-APPROVED legacy row predates change-risk fingerprints;
+            # preserve that explicit operator authority once, then require a
+            # matching fingerprint for every later evidence change.
+            assessment.acknowledged_hash = assessment.assessment_hash
+        if assessment.acknowledged_hash != assessment.assessment_hash:
+            action.status = ActionStatus.PENDING_APPROVAL.value
+            incident = session.get(Incident, action.incident_id)
+            if incident is not None:
+                incident.status = IncidentStatus.PENDING_APPROVAL.value
+            session.commit()
+            logger.warning(
+                "_execute_approved_action: change-risk evidence changed for action %s; "
+                "operator reapproval required", action.id,
+            )
+            return
         session.commit()
         # Atomic execution claim: multiple Worker processes may poll the same
         # APPROVED row at once. The first one transitions its Incident to

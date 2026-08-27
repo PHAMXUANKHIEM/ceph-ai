@@ -310,6 +310,11 @@ def _compact_text(value: str | None, limit: int) -> str:
 
 
 def _action_message_text(action: Action, incident: Incident | None, session) -> str:
+    from shared import change_risk
+
+    risk = change_risk.assess_and_record(session, action=action, incident=incident)
+    change_risk.attach_summary(action, risk)
+    session.flush()
     lines = []
     # 2026-08-07: same cluster-name prefix as shared/telegram_alerts.py's
     # _with_cluster_prefix — this module runs in the Dashboard process (not

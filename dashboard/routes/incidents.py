@@ -18,7 +18,7 @@ from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgra
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
-from shared import audit, db, heartbeat
+from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
@@ -457,6 +457,13 @@ def _fetch_dashboard_data(
         pending_actions = []
         for action in pending_actions_rows:
             pending_incident = pending_incidents_by_id.get(action.incident_id)
+            try:
+                risk = change_risk.assess_and_record(
+                    session, action=action, incident=pending_incident,
+                )
+                change_risk.attach_summary(action, risk)
+            except Exception:
+                logger.exception("Unable to refresh change-risk assessment for action %s", action.id)
             cluster_label = ""
             if pending_incident is not None and pending_incident.cluster_id is not None:
                 cluster_label = cluster_names_by_id.get(pending_incident.cluster_id, "")

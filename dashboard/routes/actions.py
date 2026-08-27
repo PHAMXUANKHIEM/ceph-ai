@@ -14,7 +14,7 @@ from dashboard.routes import upgrade as upgrade_routes
 from dashboard.routes.auth import require_login
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
-from shared import audit, db
+from shared import audit, change_risk, db
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending
 
@@ -215,6 +215,9 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
             )
 
         incident = session.get(Incident, action.incident_id)
+
+        risk = change_risk.acknowledge(session, action=action, incident=incident)
+        change_risk.attach_summary(action, risk)
 
         if not executor_commands.has_command(action.action_id):
             action.status = ActionStatus.EXECUTED.value

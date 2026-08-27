@@ -2483,4 +2483,6 @@ class ChangeRiskAssessment(Base):
     regression_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+    assessment_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    acknowledged_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     analyzed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
