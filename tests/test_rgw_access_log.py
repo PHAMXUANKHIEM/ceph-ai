@@ -84,6 +84,20 @@ def test_build_purge_bucket_command_is_closed_and_shell_quotes_name():
     )
 
 
+def test_purge_bucket_uses_long_timeout_for_large_bucket(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ral, "run_command_on_node",
+        lambda host, command, timeout: calls.append((host, command, timeout)),
+    )
+
+    ral.purge_bucket("10.3.53.1", "test-large-omap")
+
+    assert calls[0][0] == "10.3.53.1"
+    assert calls[0][1].endswith("--purge-objects")
+    assert calls[0][2] == ral.BUCKET_PURGE_TIMEOUT_SECONDS
+
+
 def test_parse_head_service_root_line():
     records = ral.parse_beast_access_log(HEAD_LINE)
 

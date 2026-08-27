@@ -61,6 +61,11 @@ _TIMESTAMP_FORMAT = "%d/%b/%Y:%H:%M:%S.%f %z"
 # verified against a real cluster this session.
 _CREATION_TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
+# Purging a bucket walks and removes every object/version.  It is intentionally
+# longer than the 5-second default used by read-only SSH commands, but scoped
+# only to the admin delete-all path.
+BUCKET_PURGE_TIMEOUT_SECONDS = 600
+
 _ACTION_VI = {
     ("GET", True): "Tải xuống",
     ("GET", False): "Liệt kê",
@@ -425,7 +430,7 @@ def purge_bucket(host: str, bucket: str) -> None:
         settings.ceph_exec_mode, settings.ceph_rgw_container_name, inner
     )
     try:
-        run_command_on_node(host, command)
+        run_command_on_node(host, command, BUCKET_PURGE_TIMEOUT_SECONDS)
     except Exception as exc:
         raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {exc}") from exc
 
@@ -435,7 +440,9 @@ def purge_bucket_with(host: str, bucket: str, ssh_user: str, ssh_key_path: str,
     inner = build_purge_bucket_command(bucket)
     command = ceph_client.build_exec_command(exec_mode, rgw_container_name, inner)
     try:
-        run_command_on_node_with(host, command, ssh_user, ssh_key_path)
+        run_command_on_node_with(
+            host, command, ssh_user, ssh_key_path, BUCKET_PURGE_TIMEOUT_SECONDS
+        )
     except Exception as exc:
         raise RgwLogError(f"Không purge được bucket {bucket} trên {host}: {exc}") from exc
 
