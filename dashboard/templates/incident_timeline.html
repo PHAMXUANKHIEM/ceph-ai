@@ -7,10 +7,7 @@
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
-  <header class="topbar"><div class="topbar-inner">
-    <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-    <nav class="main-nav"><a href="/" class="nav-link">Dashboard</a><a href="/log-intelligence" class="nav-link">Log Intelligence</a></nav>
-  </div></header>
+  {% include "_nav.html" %}
   <main class="page-shell">
     <section class="card">
       <div class="card-header"><div><h1>Incident Timeline</h1><p class="hint"><code>{{ incident.ceph_code }}</code> · {{ incident.status }}</p></div>

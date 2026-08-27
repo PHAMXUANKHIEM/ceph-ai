@@ -6,20 +6,7 @@
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
-  <header class="topbar"><div class="topbar-inner">
-    <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-    <nav class="main-nav">
-      <a href="/" class="nav-link">Dashboard</a>
-      <a href="/nodes" class="nav-link">Cluster</a>
-      <a href="/block-storage" class="nav-link active">Block Storage</a>
-      <a href="/bucket-access-log" class="nav-link">Bucket Access Log</a>
-      <a href="/openstack/auth-pool" class="nav-link">ceph-auth</a>
-      <a href="/settings" class="nav-link">Settings</a>
-      {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a><a href="/users" class="nav-link">Users</a><a href="/clusters" class="nav-link">Clusters</a><a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
-    </nav>
-    {% if clusters|length > 1 %}<form method="get" action="/block-storage" class="topbar-cluster-switcher"><select name="cluster" onchange="this.form.submit()" aria-label="Chọn cluster">{% for c in clusters %}<option value="{{ c.id }}" {{ "selected" if c.id == selected_cluster.id else "" }}>{{ c.name }}{% if c.is_default %} (mặc định){% endif %}</option>{% endfor %}</select></form>{% endif %}
-    <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button type="submit" class="btn btn-ghost btn-sm">Logout</button></form>
-  </div></header>
+  {% include "_nav.html" %}
   <main class="page">
     <section class="card block-storage-card">
       <div class="card-header block-storage-header">

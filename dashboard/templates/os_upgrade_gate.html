@@ -7,45 +7,7 @@
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-      <nav class="main-nav">
-        <a href="/" class="nav-link">Dashboard</a>
-        <div class="nav-dropdown">
-          <button type="button" class="nav-link nav-dropdown-toggle active">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
-          <div class="nav-dropdown-menu">
-            <a href="/nodes" class="nav-dropdown-item">Cluster Metrics</a>
-            <a href="/volumes" class="nav-dropdown-item">Volumes</a>
-            <a href="/deploy-cluster" class="nav-dropdown-item">Deploy Cluster</a>
-            <a href="/delete-cluster" class="nav-dropdown-item">Delete Cluster</a>
-            <a href="/convert-cluster" class="nav-dropdown-item">Convert to Cephadm</a>
-            <a href="/upgrade" class="nav-dropdown-item nav-dropdown-item-active">Upgrade Cluster</a>
-            <a href="/patch" class="nav-dropdown-item">Patch Ceph</a>
-            <a href="/backups" class="nav-dropdown-item">Backup</a>
-            <a href="/restore-cluster" class="nav-dropdown-item">Restore Cluster</a>
-            <a href="/bucket-access-log" class="nav-dropdown-item">Bucket Access Log</a>
-            <a href="/log-intelligence" class="nav-dropdown-item">Log Intelligence</a>
-          </div>
-        </div>
-        <div class="nav-dropdown">
-          <button type="button" class="nav-link nav-dropdown-toggle">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
-          <div class="nav-dropdown-menu">
-            <a href="/openstack/auth-pool" class="nav-dropdown-item">Auth-Pool</a>
-          </div>
-        </div>
-        <a href="/settings" class="nav-link">Settings</a>
-        {% if is_admin %}<a href="/telegram-alerts" class="nav-link">Alert Telegram</a>{% endif %}
-        {% if is_admin %}<a href="/users" class="nav-link">Users</a>{% endif %}
-        {% if is_admin %}<a href="/clusters" class="nav-link">Clusters</a>{% endif %}
-        {% if is_admin %}<a href="/crush-map" class="nav-link">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link">Capability Matrix</a>{% endif %}
-      </nav>
-      <form method="post" action="/logout" class="topbar-user">
-        <span class="user-chip">{{ user }}</span>
-        <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
-      </form>
-    </div>
-  </header>
+  {% include "_nav.html" %}
 
   <main class="page">
     <section class="card">
