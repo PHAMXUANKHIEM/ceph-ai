@@ -69,13 +69,19 @@ def build_evidence(finding: LogFinding, patterns: list[LogPattern]) -> str:
 
 
 def blocked_keys(state: dict, base_revision: str, *, max_attempts: int = 3) -> set[str]:
-    """Only successful or exhausted findings are blocked on this source base."""
+    """Block terminal findings and no-code-change verifications on a source base."""
     blocked = set()
     for key, value in state.setdefault("findings", {}).items():
         status = str(value.get("status") or "")
         attempts = int(value.get("attempts") or (1 if status == "FAILED" else 0))
         same_base = value.get("base_revision") == base_revision
         if status in {"LEARNED", "PROMOTED", "STAGING_VERIFIED", "PUSHED"}:
+            blocked.add(key)
+        elif status.startswith("VERIFIED_NO_CODE_CHANGE:") and (
+            not value.get("base_revision") or same_base
+        ):
+            # A live/configuration-only finding must not alert every supervisor
+            # poll. Re-evaluate it only after a new source revision is present.
             blocked.add(key)
         elif same_base and attempts >= max_attempts:
             blocked.add(key)

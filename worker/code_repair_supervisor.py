@@ -134,7 +134,9 @@ def run_forever(*, max_iterations: int | None = None) -> None:
         if candidate is not None:
             if not candidate.verification.eligible_for_learning:
                 status = f"VERIFIED_NO_CODE_CHANGE:{candidate.verification.code}"
-                ceph_learning.mark(learning_state, candidate, status)
+                ceph_learning.mark(
+                    learning_state, candidate, status, base_revision=base_revision,
+                )
                 ceph_learning.save_state(learning_state_file, learning_state)
                 facts = "\n".join(f"• {fact}" for fact in candidate.verification.live_facts)
                 send_code_repair_alert(

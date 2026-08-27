@@ -53,3 +53,20 @@ def test_failed_learning_retries_until_limit_and_reopens_on_new_base():
 def test_successful_learning_is_terminal_across_source_changes():
     state = {"findings": {"semantic-key": {"status": "LEARNED", "attempts": 1}}}
     assert "semantic-key" in learning.blocked_keys(state, "new", max_attempts=3)
+
+
+def test_no_code_change_verification_is_quiet_until_source_changes():
+    state = {"findings": {"semantic-key": {
+        "status": "VERIFIED_NO_CODE_CHANGE:VAULT_NOT_CONFIGURED",
+        "attempts": 0, "base_revision": "old",
+    }}}
+    assert "semantic-key" in learning.blocked_keys(state, "old")
+    assert "semantic-key" not in learning.blocked_keys(state, "new")
+
+
+def test_legacy_no_code_change_without_revision_is_quiet():
+    state = {"findings": {"semantic-key": {
+        "status": "VERIFIED_NO_CODE_CHANGE:VAULT_TOKEN_CHECK_PARTIAL",
+        "attempts": 0, "base_revision": None,
+    }}}
+    assert "semantic-key" in learning.blocked_keys(state, "current")

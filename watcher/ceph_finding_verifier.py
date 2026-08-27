@@ -22,6 +22,7 @@ _SAFE_TOKEN_PATH_RE = re.compile(r"^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+){1,30}$"
 _SAFE_CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{12,64}$")
 _SAFE_RGW_SECTION_RE = re.compile(r"^client\.rgw\.[A-Za-z0-9_.-]{1,180}$")
 _SAFE_RGW_DAEMON_RE = re.compile(r"^rgw\.[A-Za-z0-9_.-]{1,180}$")
+_VAULT_BACKEND_OPTIONS = {"rgw_crypt_sse_s3_backend", "rgw_crypt_s3_kms_backend"}
 
 
 @dataclass(frozen=True)
@@ -70,9 +71,27 @@ def _ceph_vault_config(cluster: Cluster) -> tuple[list[dict], str | None]:
     rows = [
         row for row in payload
         if str(row.get("section") or "").startswith("client.rgw")
-        and "vault" in str(row.get("name") or "").lower()
+        and (
+            "vault" in str(row.get("name") or "").lower()
+            or str(row.get("name") or "").lower() in _VAULT_BACKEND_OPTIONS
+        )
     ]
     return rows, None
+
+
+def _vault_backend_enabled(rows: list[dict]) -> bool:
+    """Return whether RGW currently has a Vault encryption backend enabled.
+
+    Token/address options can remain in Ceph's config database after an
+    operator retires Vault. They are not evidence that RGW still uses Vault;
+    the backend selector is authoritative for deciding whether an old Vault
+    finding is still actionable.
+    """
+    return any(
+        str(row.get("name") or "").strip().lower() in _VAULT_BACKEND_OPTIONS
+        and str(row.get("value") or "").strip().lower() == "vault"
+        for row in rows
+    )
 
 
 def _is_default_key_finding(finding: LogFinding, patterns: list[LogPattern]) -> bool:
@@ -356,6 +375,12 @@ def verify_vault_recovery(
             "VAULT_CONFIG_UNREACHABLE", "Không đọc được ceph config dump.",
             tuple(facts + [f"ceph_config_dump_error={config_error}"]), False,
         )
+    if not _vault_backend_enabled(config_rows):
+        return VerificationResult(
+            "VAULT_NOT_CONFIGURED",
+            "Vault không còn được bật trong cấu hình RGW; finding Vault lịch sử không còn áp dụng.",
+            tuple(facts + ["rgw_vault_backend=DISABLED"]), True,
+        )
     pairs = []
     by_section_name = {
         (str(row.get("section")), str(row.get("name"))): row.get("value")
@@ -469,6 +494,12 @@ def verify(finding: LogFinding, patterns: list[LogPattern], cluster: Cluster) ->
     config_rows, config_error = _ceph_vault_config(cluster)
     if config_error:
         facts.append(f"ceph_config_dump_error={config_error}")
+    if not config_error and not _vault_backend_enabled(config_rows):
+        return VerificationResult(
+            "VAULT_NOT_CONFIGURED",
+            "Vault không còn được bật trong cấu hình RGW; finding lịch sử được coi là ngoài phạm vi.",
+            tuple(facts + ["rgw_vault_backend=DISABLED"]), True,
+        )
     token_configs = [
         (str(row.get("section")), str(row.get("name")), path)
         for row in config_rows

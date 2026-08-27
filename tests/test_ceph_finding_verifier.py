@@ -10,7 +10,11 @@ from watcher import ceph_finding_verifier as verifier
 
 @pytest.fixture(autouse=True)
 def _stub_runtime_discovery(monkeypatch):
-    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([], "not configured"))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc",
+        "name": "rgw_crypt_sse_s3_backend",
+        "value": "vault",
+    }], None))
     monkeypatch.setattr(verifier, "_rgw_orch_daemons", lambda cluster: ([], "not available"))
 
 
@@ -85,6 +89,9 @@ def test_discovers_token_path_from_ceph_config_dump(monkeypatch):
     monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
     monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([{
         "section": "client.rgw.sse.host.abc",
+        "name": "rgw_crypt_sse_s3_backend", "value": "vault",
+    }, {
+        "section": "client.rgw.sse.host.abc",
         "name": "rgw_crypt_sse_s3_vault_token_file",
         "value": "/etc/ceph/vault_token",
     }], None))
@@ -100,6 +107,8 @@ def test_discovers_token_path_from_ceph_config_dump(monkeypatch):
 def test_cephadm_stats_token_inside_orchestrated_rgw_container(monkeypatch):
     monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
     monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_backend", "value": "vault",
+    }, {
         "section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
         "value": "/opt/vault/vault_token",
     }], None))
@@ -120,6 +129,8 @@ def test_cephadm_stats_token_inside_orchestrated_rgw_container(monkeypatch):
 def test_vault_recovery_requires_successful_live_token_lookup(monkeypatch):
     monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
     monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_backend",
+         "value": "vault"},
         {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
          "value": "/opt/vault/vault_token"},
         {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_addr",
@@ -142,6 +153,8 @@ def test_vault_recovery_requires_successful_live_token_lookup(monkeypatch):
 def test_vault_recovery_rejects_invalid_token(monkeypatch):
     monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
     monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_backend",
+         "value": "vault"},
         {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_token_file",
          "value": "/opt/vault/vault_token"},
         {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_vault_addr",
@@ -168,6 +181,8 @@ def test_sse_s3_recovery_does_not_require_unrelated_legacy_kms_backend(monkeypat
         lambda finding, patterns: ("sse_s3", ("functional_request=PUT 200 encryption=SSE-S3",)),
     )
     monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([
+        {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_backend",
+         "value": "vault"},
         {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_vault_token_file",
          "value": "/etc/ceph/vault_token"},
         {"section": "client.rgw.sse.host.abc", "name": "rgw_crypt_sse_s3_vault_addr",
@@ -190,6 +205,33 @@ def test_sse_s3_recovery_does_not_require_unrelated_legacy_kms_backend(monkeypat
     )
     assert result.code == "VAULT_RECOVERY_VERIFIED"
     assert calls == [("/etc/ceph/vault_token", "http://active-vault:8200")]
+
+
+def test_vault_disabled_is_not_actionable(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([], None))
+    monkeypatch.setattr(verifier, "_stat_token", lambda *args: (_ for _ in ()).throw(
+        AssertionError("disabled Vault must not probe token files")
+    ))
+    result = verifier.verify(
+        _finding(), [_pattern("Vault token file '/etc/ceph/vault_token' not found")], _cluster(),
+    )
+    assert result.code == "VAULT_NOT_CONFIGURED"
+    assert result.eligible_for_learning is True
+
+
+def test_vault_recovery_gate_accepts_disabled_backend(monkeypatch):
+    monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_OK", None))
+    monkeypatch.setattr(verifier, "_ceph_vault_config", lambda cluster: ([{
+        "section": "client.rgw.sse.host.abc",
+        "name": "rgw_crypt_sse_s3_backend",
+        "value": "none",
+    }], None))
+    result = verifier.verify_vault_recovery(
+        _finding(), [_pattern("failed to retrieve actual key")], _cluster(),
+    )
+    assert result.code == "VAULT_NOT_CONFIGURED"
+    assert result.eligible_for_learning is True
 
 
 def test_functional_recovery_ignores_newer_plaintext_request(db_session, monkeypatch):
