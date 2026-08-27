@@ -155,6 +155,20 @@ def test_large_omap_production_bucket_is_not_contextually_safe():
     assert router_client._large_omap_reshard_params(envelope) is None
 
 
+def test_large_omap_evidence_returns_all_pg_ids_for_stale_warning_cleanup():
+    envelope = {
+        "log_excerpt": "\n".join(
+            f"LARGE_OMAP_EVIDENCE bucket=test-s3 object=.dir.instance.{index} "
+            f"keys=10922 threshold=200000 shards=11 pg=6.{pg}"
+            for index, pg in enumerate(("c", "12", "10", "1a"))
+        )
+    }
+
+    assert router_client._large_omap_scrub_params(envelope) == {
+        "pg_ids": ["6.c", "6.12", "6.10", "6.1a"]
+    }
+
+
 def test_diagnose_incident_saves_diagnosis_text_on_valid_response(isolated_db, monkeypatch):
     redact_calls = []
 

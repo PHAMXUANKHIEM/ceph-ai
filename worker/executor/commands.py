@@ -349,6 +349,16 @@ def _reshard_rgw_bucket_command(params: dict) -> str:
 
 
 def _deep_scrub_omap_pg_command(params: dict) -> str:
+    pg_ids = params.get("pg_ids") if isinstance(params, dict) else None
+    if pg_ids is not None:
+        if not isinstance(pg_ids, list) or not 1 <= len(pg_ids) <= 4:
+            raise ExecutorError("pg_ids must contain between 1 and 4 PG ids")
+        commands = []
+        for pg_id in pg_ids:
+            if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
+                raise ExecutorError(f"invalid pg_id: {pg_id!r}")
+            commands.append(f"ceph pg deep-scrub {shlex.quote(pg_id)}")
+        return " && ".join(commands)
     pg_id = params.get("pg_id") if isinstance(params, dict) else None
     if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
         raise ExecutorError(f"invalid or missing pg_id: {pg_id!r}")

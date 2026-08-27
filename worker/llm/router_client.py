@@ -198,17 +198,45 @@ def _large_omap_diagnosis(envelope: dict) -> str:
     )
 
 
+_LARGE_OMAP_EVIDENCE_PATTERN = re.compile(
+    r"LARGE_OMAP_EVIDENCE bucket=([^\s]+) object=([^\s]+) keys=(\d+) "
+    r"threshold=(\d+) shards=(\d+) pg=([0-9]+\.[0-9a-fA-F]+)"
+)
+
+
+def _large_omap_evidence_records(envelope: dict) -> list[dict]:
+    """Parse only collector-labelled OMAP records, preserving PG evidence."""
+    text = str(envelope.get("log_excerpt") or "")
+    records = []
+    seen_pgs: set[str] = set()
+    for match in _LARGE_OMAP_EVIDENCE_PATTERN.finditer(text):
+        bucket, object_name, keys_raw, threshold_raw, shards_raw, pg_id = match.groups()
+        if pg_id in seen_pgs:
+            continue
+        seen_pgs.add(pg_id)
+        records.append({
+            "bucket_name": bucket,
+            "object_name": object_name,
+            "key_count": int(keys_raw),
+            "key_threshold": int(threshold_raw),
+            "current_shards": int(shards_raw),
+            "pg_id": pg_id,
+        })
+    return records
+
+
 def _large_omap_reshard_params(envelope: dict) -> dict | None:
     """Return a bounded lab reshard plan only from collector-labelled evidence."""
-    text = str(envelope.get("log_excerpt") or "")
-    match = re.search(
-        r"LARGE_OMAP_EVIDENCE bucket=([^\s]+) object=([^\s]+) keys=(\d+) "
-        r"threshold=(\d+) shards=(\d+) pg=([0-9]+\.[0-9a-fA-F]+)", text,
-    )
-    if not match:
+    records = _large_omap_evidence_records(envelope)
+    if not records:
         return None
-    bucket, object_name, keys_raw, threshold_raw, shards_raw, pg_id = match.groups()
-    keys, threshold, current_shards = int(keys_raw), int(threshold_raw), int(shards_raw)
+    record = records[0]
+    bucket = record["bucket_name"]
+    object_name = record["object_name"]
+    keys = record["key_count"]
+    threshold = record["key_threshold"]
+    current_shards = record["current_shards"]
+    pg_id = record["pg_id"]
     # Autonomous reshard is deliberately limited to explicit lab buckets.
     # Production bucket names remain approval-gated/manual until an operator
     # supplies the same evidence through a dedicated policy override.
@@ -228,6 +256,13 @@ def _large_omap_reshard_params(envelope: dict) -> dict | None:
         "key_count": keys, "key_threshold": threshold, "index_object": object_name,
         "pg_id": pg_id,
     }
+
+
+def _large_omap_scrub_params(envelope: dict) -> dict | None:
+    """Return up to four evidenced PGs for clearing a stale OMAP warning."""
+    records = _large_omap_evidence_records(envelope)
+    pg_ids = [record["pg_id"] for record in records if record["pg_id"]][:4]
+    return {"pg_ids": pg_ids} if pg_ids else None
 
 
 def _pool_name_from_snapshot(envelope: dict) -> str | None:
@@ -631,6 +666,18 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 "rationale": omap_text,
                 "diagnosis_confidence": 0.99,
             }
+        elif (omap_scrub_plan := _large_omap_scrub_params(envelope)):
+            pg_text = ", ".join(omap_scrub_plan["pg_ids"])
+            omap_text = (
+                _large_omap_diagnosis(envelope)
+                + f" Evidence đã xác định PG cần deep-scrub: {pg_text}."
+            )
+            result = {
+                "diagnosis_text": omap_text,
+                "action_id": "deep_scrub_omap_pg",
+                "rationale": omap_text,
+                "diagnosis_confidence": 0.99,
+            }
         else:
             omap_text = _large_omap_diagnosis(envelope)
             result = {
@@ -679,6 +726,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     pool_pg_adjustments = None
     pool_autoscale_pools = None
     large_omap_params = None
+    large_omap_scrub_params = None
     if envelope.get("ceph_code") == _OSD_UPGRADE_FINISHED_CODE:
         osd_release = _osd_upgrade_finished_release(envelope)
         if osd_release is None:
@@ -726,7 +774,14 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         )
     elif envelope.get("ceph_code") == _LARGE_OMAP_OBJECTS_CODE:
         large_omap_params = _large_omap_reshard_params(envelope)
-        action_id = "reshard_rgw_bucket" if large_omap_params else "investigate_manually"
+        large_omap_scrub_params = (
+            None if large_omap_params else _large_omap_scrub_params(envelope)
+        )
+        action_id = (
+            "reshard_rgw_bucket" if large_omap_params
+            else "deep_scrub_omap_pg" if large_omap_scrub_params
+            else "investigate_manually"
+        )
         diagnosis_text = _large_omap_diagnosis(envelope)
         if large_omap_params:
             diagnosis_text = (
@@ -734,6 +789,12 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 f"{large_omap_params['current_shards']} shard, vượt ngưỡng "
                 f"{large_omap_params['key_threshold']}. AI chọn {large_omap_params['num_shards']} shard "
                 "để giữ tải dự kiến dưới 80% ngưỡng; evidence gồm object và PG thật từ deep-scrub."
+            )
+        elif large_omap_scrub_params:
+            diagnosis_text += (
+                " Evidence đã xác định PG cần deep-scrub: "
+                + ", ".join(large_omap_scrub_params["pg_ids"])
+                + "."
             )
         rationale = diagnosis_text
     logger.info("diagnose_incident: incident %s rationale: %s", incident_id, rationale)
@@ -1028,6 +1089,8 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     "num_shards": large_omap_params["num_shards"],
                     "pg_id": large_omap_params["pg_id"],
                 }
+            elif large_omap_scrub_params is not None:
+                action_params = {"pg_ids": large_omap_scrub_params["pg_ids"]}
             elif pool_name:
                 action_params = {"pool_name": pool_name}
             elif verified_bluestore_restart or verified_osd_down_restart:
