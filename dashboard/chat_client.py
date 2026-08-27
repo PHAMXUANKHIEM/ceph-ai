@@ -782,7 +782,11 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
     return result_text[:limit], is_error
 
 
-@observe_ai_call("ceph_chat")
+def _chat_uses_ai(history: list[dict], user_text: str, actor: str, cluster=None) -> bool:
+    return not auth.is_ceph_chat_restricted(actor) or is_ceph_scoped(user_text, history)
+
+
+@observe_ai_call("ceph_chat", when=_chat_uses_ai)
 async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster=None) -> dict:
     """Runs one chat turn: sends `user_text` (plus prior `history`) to
     9router (OpenAI-compatible /v1/chat/completions), executing any

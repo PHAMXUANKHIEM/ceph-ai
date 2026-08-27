@@ -306,7 +306,7 @@ class UpgradeProcedureSummaryError(Exception):
     unconfigured must not lose the operator's uploaded runbook."""
 
 
-@observe_ai_call("upgrade_summary")
+@observe_ai_call("upgrade_summary", backend="router")
 async def _summarize_upgrade_procedure(raw_text: str) -> str:
     """Sends the operator's uploaded upgrade-procedure document to 9router
     for a plain-language Vietnamese summary — same client + streaming-call

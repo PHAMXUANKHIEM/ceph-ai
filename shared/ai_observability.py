@@ -1,6 +1,7 @@
 """Best-effort, content-free telemetry for logical AI calls."""
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import time
@@ -30,11 +31,15 @@ def _content_size(value: Any, *, depth: int = 0) -> int:
     return 0
 
 
-def _provider_and_model(scope: str) -> tuple[str, str]:
+def _provider_and_model(scope: str, backend: str) -> tuple[str, str]:
     prefix = "vitastor_" if scope == "vitastor" else ""
-    if getattr(settings, f"{prefix}codex_chat_enabled", False):
+    if backend == "codex" or (
+        backend == "configured" and getattr(settings, f"{prefix}codex_chat_enabled", False)
+    ):
         return "codex", getattr(settings, f"{prefix}codex_chat_model", "") or "default"
-    if getattr(settings, f"{prefix}claude_chat_enabled", False):
+    if backend == "claude" or (
+        backend == "configured" and getattr(settings, f"{prefix}claude_chat_enabled", False)
+    ):
         return "claude", getattr(settings, f"{prefix}claude_chat_model", "") or "default"
     return (
         getattr(settings, f"{prefix}router_provider", "unknown") or "unknown",
@@ -53,24 +58,34 @@ def _record(**values: Any) -> None:
         logger.warning("Unable to persist AI invocation telemetry", exc_info=True)
 
 
-def observe_ai_call(feature: str, *, scope: str = "ceph") -> Callable:
+def observe_ai_call(
+    feature: str,
+    *,
+    scope: str = "ceph",
+    backend: str = "configured",
+    when: Callable[..., bool] | None = None,
+) -> Callable:
     """Instrument an async logical AI call without storing its content."""
     def decorate(function: Callable) -> Callable:
         @functools.wraps(function)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if when is not None and not when(*args, **kwargs):
+                return await function(*args, **kwargs)
             started = time.monotonic()
             input_chars = _content_size(args) + _content_size(kwargs)
-            provider, model_id = _provider_and_model(scope)
+            provider, model_id = _provider_and_model(scope, backend)
             try:
                 result = await function(*args, **kwargs)
             except Exception as exc:
-                _record(
+                await asyncio.to_thread(
+                    _record,
                     feature=feature, provider=provider, model_id=model_id,
                     status="ERROR", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                     input_chars=input_chars, output_chars=0, error_type=type(exc).__name__,
                 )
                 raise
-            _record(
+            await asyncio.to_thread(
+                _record,
                 feature=feature, provider=provider, model_id=model_id,
                 status="SUCCESS", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                 input_chars=input_chars, output_chars=_content_size(result), error_type=None,
