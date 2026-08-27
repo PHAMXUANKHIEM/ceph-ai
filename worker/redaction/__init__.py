@@ -1,10 +1,17 @@
 from worker.redaction.base import Redactor
 from worker.redaction.noop import NoOpRedactor
+from worker.redaction.sensitive import REDACTED, SensitiveDataRedactor, redact_text
 
-# Single binding point (AD-6): Story 2.3's Claude call site imports and calls
-# `default_redactor.redact(payload)` exactly once, right before sending to
-# the Claude API. Swapping in a real redactor later means changing only this
-# line — never the call site.
-default_redactor: Redactor = NoOpRedactor()
+# Production binding used immediately before incident and backup payloads are
+# sent to any configured AI provider. NoOpRedactor remains available only for
+# explicitly isolated tests/development code.
+default_redactor: Redactor = SensitiveDataRedactor()
 
-__all__ = ["Redactor", "NoOpRedactor", "default_redactor"]
+__all__ = [
+    "REDACTED",
+    "Redactor",
+    "NoOpRedactor",
+    "SensitiveDataRedactor",
+    "default_redactor",
+    "redact_text",
+]

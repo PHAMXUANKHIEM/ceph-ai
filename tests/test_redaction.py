@@ -8,7 +8,13 @@ from sqlalchemy.pool import StaticPool
 from shared import db as db_module
 from shared.db import Base
 from shared.models import Incident, IncidentStatus
-from worker.redaction import NoOpRedactor, Redactor, default_redactor
+from worker.redaction import (
+    REDACTED,
+    NoOpRedactor,
+    Redactor,
+    SensitiveDataRedactor,
+    default_redactor,
+)
 
 SAMPLE_PAYLOAD = {
     "schema_version": "1.0",
@@ -79,10 +85,63 @@ def test_noop_redactor_satisfies_redactor_protocol_via_isinstance():
     assert isinstance(redactor, Redactor)
 
 
-def test_default_redactor_is_a_noop_redactor_instance():
-    assert isinstance(default_redactor, NoOpRedactor)
-    assert default_redactor.redact(SAMPLE_PAYLOAD) == SAMPLE_PAYLOAD
-    assert default_redactor.redact(SAMPLE_PAYLOAD) is SAMPLE_PAYLOAD
+def test_default_redactor_is_sensitive_and_does_not_mutate_input():
+    payload = {**SAMPLE_PAYLOAD, "api_key": "top-secret"}
+
+    result = default_redactor.redact(payload)
+
+    assert isinstance(default_redactor, SensitiveDataRedactor)
+    assert result is not payload
+    assert result["api_key"] == REDACTED
+    assert payload["api_key"] == "top-secret"
+
+
+def test_sensitive_redactor_scrubs_nested_secret_fields_and_text():
+    payload = {
+        "password": "db-password",
+        "nested": [{"telegram_bot_token": "bot-secret"}],
+        "log_excerpt": (
+            "Authorization: Bearer abc.def.ghi\n"
+            "ceph key=AQBabcdefghijklmnopqrstuvwxyz123456== password=hunter2"
+        ),
+    }
+
+    result = SensitiveDataRedactor().redact(payload)
+
+    assert result["password"] == REDACTED
+    assert result["nested"][0]["telegram_bot_token"] == REDACTED
+    assert "abc.def.ghi" not in result["log_excerpt"]
+    assert "AQBabcdefghijklmnopqrstuvwxyz123456==" not in result["log_excerpt"]
+    assert "hunter2" not in result["log_excerpt"]
+
+
+def test_sensitive_redactor_scrubs_url_credentials_presigned_url_and_private_key():
+    payload = {
+        "url": "https://admin:s3cret@example.test/path?X-Amz-Signature=abcdef123",
+        "output": "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----",
+    }
+
+    result = SensitiveDataRedactor().redact(payload)
+
+    rendered = repr(result)
+    assert "s3cret" not in rendered
+    assert "abcdef123" not in rendered
+    assert "abc123" not in rendered
+    assert REDACTED in rendered
+
+
+def test_sensitive_redactor_preserves_operational_evidence():
+    result = SensitiveDataRedactor().redact(SAMPLE_PAYLOAD)
+
+    assert result["ceph_code"] == "MON_CLOCK_SKEW"
+    assert result["nodes"] == ["10.20.1.249", "khiempx-mon2"]
+    assert result["cluster_snapshot"] == SAMPLE_PAYLOAD["cluster_snapshot"]
+
+
+@pytest.mark.parametrize("invalid", [None, "text", 123, ["not", "a", "dict"]])
+def test_sensitive_redactor_fails_closed_for_non_dict_payload(invalid):
+    with pytest.raises(TypeError):
+        SensitiveDataRedactor().redact(invalid)
 
 
 @pytest.fixture()
