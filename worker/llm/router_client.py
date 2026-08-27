@@ -649,6 +649,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             diagnosis_confidence = float(raw_confidence)
         except (TypeError, ValueError):
             diagnosis_confidence = None
+    min_confidence = float(settings.ai_min_diagnosis_confidence)
+    if not 0 <= min_confidence <= 1:
+        raise RouterDiagnosisError(
+            f"ai_min_diagnosis_confidence must be between 0 and 1, got {min_confidence}"
+        )
     deterministic_code = envelope.get("ceph_code") in {
         _OSD_UPGRADE_FINISHED_CODE,
         _POOL_TOO_FEW_PGS_CODE,
@@ -729,6 +734,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             )
         rationale = diagnosis_text
     logger.info("diagnose_incident: incident %s rationale: %s", incident_id, rationale)
+    model_provider = (
+        "deterministic-controller" if deterministic_omap else
+        "codex" if settings.codex_chat_enabled else
+        "claude" if settings.claude_chat_enabled else settings.router_provider
+    )
 
     action_params: dict | None = None
     with db.SessionLocal() as session:
@@ -741,7 +751,13 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         incident.diagnosis_text = diagnosis_text
         incident_events.record(
             session, incident_id=incident_id, event_type="diagnosis_completed",
-            actor="ai", evidence={"prompt_version": "incident-diagnosis-v1"},
+            actor="ai", evidence={
+                "prompt_version": "incident-diagnosis-v1",
+                "model_provider": model_provider,
+                "diagnosis_confidence": diagnosis_confidence,
+                "minimum_confidence": min_confidence,
+                "proposed_action_id": action_id,
+            },
         )
         alert_ceph_code = incident.ceph_code
         alert_severity = incident.severity
@@ -842,11 +858,6 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     session.commit()
                     return
         else:
-            min_confidence = float(settings.ai_min_diagnosis_confidence)
-            if not 0 <= min_confidence <= 1:
-                raise RouterDiagnosisError(
-                    f"ai_min_diagnosis_confidence must be between 0 and 1, got {min_confidence}"
-                )
             if min_confidence > 0 and diagnosis_confidence < min_confidence:
                 logger.warning(
                     "diagnose_incident: confidence %.3f below %.3f for incident %s; "
@@ -862,6 +873,12 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     session, incident_id=incident_id, action_id=None,
                     event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE,
                     actor=audit.ACTOR_SYSTEM,
+                    evidence={
+                        "model_provider": model_provider,
+                        "diagnosis_confidence": diagnosis_confidence,
+                        "minimum_confidence": min_confidence,
+                        "proposed_action_id": action_id,
+                    },
                 )
                 session.commit()
                 send_ai_incident_alert(
@@ -1040,11 +1057,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 remediation_case = remediation_cases.create_for_action(
                     session, incident=incident, action=action, redacted_envelope=payload,
                     diagnosis=diagnosis_text,
-                    model_provider=(
-                        "deterministic-controller" if deterministic_omap else
-                        "codex" if settings.codex_chat_enabled else
-                        "claude" if settings.claude_chat_enabled else settings.router_provider
-                    ),
+                    model_provider=model_provider,
                     diagnosis_confidence=diagnosis_confidence,
                 )
                 trust_engine.record_shadow_decision(

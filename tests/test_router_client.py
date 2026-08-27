@@ -637,6 +637,25 @@ def test_diagnose_incident_low_confidence_never_creates_action(isolated_db, monk
             incident_id=incident.id,
             event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE,
         ).count() == 1
+        events = session.query(IncidentTimelineEvent).filter_by(
+            incident_id=incident.id,
+        ).order_by(IncidentTimelineEvent.created_at).all()
+        completed = next(event for event in events if event.event_type == "diagnosis_completed")
+        blocked = next(
+            event for event in events
+            if event.event_type == audit.EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE
+        )
+        completed_evidence = json.loads(completed.evidence_json)
+        blocked_evidence = json.loads(blocked.evidence_json)
+        assert completed_evidence["diagnosis_confidence"] == 0.59
+        assert completed_evidence["minimum_confidence"] == 0.6
+        assert completed_evidence["proposed_action_id"] == "resync_ntp"
+        assert blocked_evidence == {
+            "diagnosis_confidence": 0.59,
+            "minimum_confidence": 0.6,
+            "model_provider": settings.router_provider,
+            "proposed_action_id": "resync_ntp",
+        }
 
 
 def test_diagnose_incident_raises_when_action_id_outside_enum(isolated_db, monkeypatch):
