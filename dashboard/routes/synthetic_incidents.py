@@ -65,6 +65,7 @@ async def inject_synthetic_incident(request: Request, cluster_id: str = Form(...
         try:
             incident, envelope = create(session, cluster=cluster, scenario_id=scenario, actor=user)
             session.commit()
+            incident_id = incident.id
         except SyntheticInjectionError as exc:
             session.rollback()
             return templates.TemplateResponse(request, "synthetic_incidents.html",
@@ -76,7 +77,7 @@ async def inject_synthetic_incident(request: Request, cluster_id: str = Form(...
             return templates.TemplateResponse(request, "synthetic_incidents.html",
                                               _page_context(request, user, error=f"Đã tạo Incident nhưng publish thất bại: {exc}"))
     mode = "đã gửi vào AI queue" if publish == "1" else "đã tạo, chưa gửi queue"
-    return RedirectResponse(f"/synthetic-incidents?message=Incident+{incident.id}+{mode}", status_code=303)
+    return RedirectResponse(f"/synthetic-incidents?message=Incident+{incident_id}+{mode}", status_code=303)
 
 
 @router.post("/synthetic-incidents/cleanup")

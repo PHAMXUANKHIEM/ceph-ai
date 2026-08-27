@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
                 session, cluster=cluster, scenario_id=args.scenario, actor="synthetic-cli",
             )
             session.commit()
+            incident_id = incident.id
         except SyntheticInjectionError as exc:
             session.rollback()
             print(str(exc), file=sys.stderr)
@@ -82,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"publish failed: {exc}", file=sys.stderr)
             return 1
     print(json.dumps({
-        "incident_id": incident.id,
+        "incident_id": incident_id,
         "run_id": envelope["synthetic_run_id"],
         "scenario": envelope["synthetic_scenario"],
         "published": published,
