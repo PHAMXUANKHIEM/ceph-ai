@@ -88,6 +88,7 @@ EVENT_AUTOPILOT_PLAYBOOK_CONTRACT_BLOCKED = "autopilot_playbook_contract_blocked
 EVENT_PLAYBOOK_POSTCHECK_INCONCLUSIVE = "playbook_postcheck_inconclusive"
 EVENT_AUTOPILOT_EXECUTION_INCONCLUSIVE = "autopilot_execution_inconclusive"
 EVENT_REMEDIATION_CASE_VERDICT_UPDATED = "remediation_case_verdict_updated"
+EVENT_SYNTHETIC_EXECUTION_BLOCKED = "synthetic_execution_blocked"
 
 # AI roadmap Pha 0.4 (dashboard/routes/actions.py::approve_action_core):
 # fired when an operator/Telegram button tries to approve an Action past

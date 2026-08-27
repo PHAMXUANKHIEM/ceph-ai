@@ -43,6 +43,7 @@ from shared import audit, db, heartbeat, service_health, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident, IncidentStatus
+from shared.synthetic_incidents import is_synthetic_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,11 @@ def _resolve_recovered_incidents(
             .all()
         )
         for incident in open_incidents:
+            if is_synthetic_evidence(incident.signal_evidence_json):
+                # Synthetic lab incidents have their own lifecycle. They do
+                # not represent a live Ceph health check and must not be
+                # auto-resolved on the next healthy poll.
+                continue
             if incident.ceph_code in (_CHAT_REQUEST_CEPH_CODE, _CLUSTER_UPGRADE_CEPH_CODE):
                 # 2026-07-23 fix: a chat-confirmed action's (or cluster-
                 # upgrade proposal's) synthetic Incident never corresponds

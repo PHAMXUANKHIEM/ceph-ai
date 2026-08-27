@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
+from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import observe_ai_call
 from shared.models import (
@@ -1175,6 +1176,18 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         chat_id=alert_chat_id,
         enabled=alert_enabled,
     )
+
+    if envelope.get("synthetic_injection") is True:
+        # Synthetic incidents exercise diagnosis, policy and case creation,
+        # but are never allowed to reach a real executor. This remains true
+        # even when global/per-cluster Autopilot is enabled or an operator
+        # later approves the generated Action.
+        _route_safe_to_approval(
+            incident_id, action_pk, resolved_action_id,
+            event_type=audit.EVENT_SYNTHETIC_EXECUTION_BLOCKED,
+        )
+        logger.info("diagnose_incident: synthetic run %s kept shadow-only", incident_id)
+        return
 
     if classification == ActionClassification.SAFE:
         if not settings.autopilot_enabled:
@@ -2709,6 +2722,22 @@ def _execute_approved_action(action_pk: str) -> None:
             # tick, or the row is gone) — nothing to do this tick.
             return
         incident_id = action.incident_id
+        incident = session.get(Incident, incident_id)
+        if incident is not None and is_synthetic_evidence(incident.signal_evidence_json):
+            action.status = ActionStatus.REJECTED.value
+            incident.status = IncidentStatus.REJECTED.value
+            incident.diagnosis_text = (
+                f"{incident.diagnosis_text or ''}\n\n"
+                "[Synthetic lab] Shadow-only run: không được phép thực thi lệnh trên Ceph."
+            ).strip()
+            audit.record(
+                session, incident_id=incident.id, action_id=action.id,
+                event_type=audit.EVENT_SYNTHETIC_EXECUTION_BLOCKED,
+                actor=audit.ACTOR_SYSTEM,
+            )
+            session.commit()
+            logger.warning("_execute_approved_action: blocked synthetic action %s", action_pk)
+            return
         action_id_str = action.action_id
         target_nodes_raw = action.target_nodes
         action_params_raw = action.action_params

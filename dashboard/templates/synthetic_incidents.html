@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic Incident Tests — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head>
+<body>{% include "_nav.html" %}<main class="page">
+  <div class="page-header"><div><span class="eyebrow">LAB ONLY · SHADOW AUTOPILOT</span><h1>Synthetic Incident Tests</h1>
+  <p>Tạo Incident giả để kiểm thử diagnosis, policy và RemediationCase. Không có lệnh Ceph nào được thực thi.</p></div></div>
+  {% if message %}<div class="settings-toast is-success">{{ message }}</div>{% endif %}{% if error %}<div class="settings-toast is-error">{{ error }}</div>{% endif %}
+  <section class="card"><div class="card-header"><h2>Chạy synthetic scenario</h2></div><div class="card-body">
+    <p class="hint">Chỉ cluster có <code>autonomy_environment=lab</code> mới được phép. Action sinh ra luôn shadow-only.</p>
+    <form method="post" action="/synthetic-incidents/inject" class="form-grid">
+      <label>Lab cluster<select name="cluster_id" required>{% for cluster in clusters %}<option value="{{ cluster.id }}">{{ cluster.name }} ({{ cluster.autonomy_environment }})</option>{% endfor %}</select></label>
+      <label>Scenario<select name="scenario" required>{% for scenario in scenarios %}<option value="{{ scenario.id }}">{{ scenario.id }} — {{ scenario.ceph_code }}</option>{% endfor %}</select></label>
+      <input type="hidden" name="publish" value="1"><div><button class="btn btn-primary" type="submit">Tạo &amp; gửi AI queue</button></div>
+    </form></div></section>
+  <section class="card" style="margin-top:1rem"><div class="card-header"><h2>Recent synthetic runs</h2>
+    <form method="post" action="/synthetic-incidents/cleanup"><input type="hidden" name="cluster_id" value="{{ selected_cluster.id if selected_cluster else '' }}"><button class="btn btn-secondary btn-sm" type="submit">Cleanup cluster mặc định</button></form></div>
+    <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Cluster</th><th>Scenario</th><th>Incident</th><th>Status</th><th>Run ID</th></tr></thead><tbody>
+    {% for row in synthetic_rows %}<tr><td>{{ row.incident.created_at }}</td><td>{{ row.cluster_name }}</td><td><code>{{ row.scenario }}</code></td><td><a href="/incidents/{{ row.incident.id }}/timeline">{{ row.incident.id }}</a></td><td>{{ row.incident.status }}</td><td><code>{{ row.run_id }}</code></td></tr>{% else %}<tr><td colspan="6" class="empty-state">Chưa có synthetic run.</td></tr>{% endfor %}
+    </tbody></table></div></section>
+</main></body></html>
