@@ -344,7 +344,7 @@ def _reshard_rgw_bucket_command(params: dict) -> str:
     if pg_id is not None:
         if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
             raise ExecutorError(f"invalid pg_id: {pg_id!r}")
-        command += f" && ceph pg deep-scrub {shlex.quote(pg_id)}"
+        command += f" && ceph pg {shlex.quote(pg_id)} deep_scrub"
     return command
 
 
@@ -357,12 +357,12 @@ def _deep_scrub_omap_pg_command(params: dict) -> str:
         for pg_id in pg_ids:
             if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
                 raise ExecutorError(f"invalid pg_id: {pg_id!r}")
-            commands.append(f"ceph pg deep-scrub {shlex.quote(pg_id)}")
+            commands.append(f"ceph pg {shlex.quote(pg_id)} deep_scrub")
         return " && ".join(commands)
     pg_id = params.get("pg_id") if isinstance(params, dict) else None
     if not isinstance(pg_id, str) or not re.fullmatch(r"[0-9]+\.[0-9a-fA-F]+", pg_id):
         raise ExecutorError(f"invalid or missing pg_id: {pg_id!r}")
-    return f"ceph pg deep-scrub {shlex.quote(pg_id)}"
+    return f"ceph pg {shlex.quote(pg_id)} deep_scrub"
 
 
 def _edit_pool_command(params: dict) -> str:
