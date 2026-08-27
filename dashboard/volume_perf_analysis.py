@@ -29,6 +29,7 @@ from config.settings import settings
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
+from shared.ai_redaction import default_redactor
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
     unchanged (already validated against _REQUIRED_FIELDS)."""
     if not sweep.get("steps"):
         raise VolumePerfAnalysisError("Không có dữ liệu bước đo nào để phân tích.")
+    sweep = default_redactor.redact(sweep)
     if settings.codex_chat_enabled:
         captured: dict = {}
 

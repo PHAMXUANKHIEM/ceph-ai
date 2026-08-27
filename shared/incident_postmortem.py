@@ -14,6 +14,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared import db
 from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent
 from shared.router_client import build_router_client
+from shared.ai_redaction import default_redactor
 
 PROMPT_VERSION = "v1"
 TOOL_NAME = "report_incident_postmortem"
@@ -103,6 +104,7 @@ def _schema() -> dict:
 
 
 async def _call_model(payload: dict) -> dict:
+    payload = default_redactor.redact(payload)
     schema = _schema()
     system = (
         "You write concise Vietnamese Ceph incident postmortems. Use only the supplied JSON. "

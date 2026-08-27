@@ -38,6 +38,7 @@ from shared.models import (
 )
 from shared.node_upgrade_gate import claim_node_upgrade_gate_lock
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
+from shared.ai_redaction import redact_text
 from watcher.ceph_client import (
     CephQueryError,
     get_upgrade_status,
@@ -319,7 +320,7 @@ async def _summarize_upgrade_procedure(raw_text: str) -> str:
     except RouterNotConfiguredError as exc:
         raise UpgradeProcedureSummaryError(str(exc)) from exc
 
-    content = raw_text[:MAX_PROCEDURE_TEXT_CHARS_FOR_AI]
+    content = redact_text(raw_text[:MAX_PROCEDURE_TEXT_CHARS_FOR_AI])
     try:
         async with client.chat.completions.stream(
             model=settings.router_model,

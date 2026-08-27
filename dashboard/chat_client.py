@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from shared.ai_redaction import redact_text
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
 
 from config.settings import settings
@@ -815,16 +816,21 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address,
         cluster_name=getattr(cluster, "name", None),
     )
+    outbound_history = [
+        {**message, "content": redact_text(str(message.get("content") or ""))}
+        for message in history
+    ]
+    outbound_user_text = redact_text(user_text)
 
     if settings.codex_chat_enabled:
-        result = await _run_codex_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
+        result = await _run_codex_chat_turn(outbound_history, outbound_user_text, actor_system_prompt, actor, cluster)
         result["reply_text"] = with_romantic_address(
             _append_citation_footer(result["reply_text"], result.pop("citations", [])),
             ai_name, female_address,
         )
         return result
     if settings.claude_chat_enabled:
-        result = await _run_claude_chat_turn(history, user_text, actor_system_prompt, actor, cluster)
+        result = await _run_claude_chat_turn(outbound_history, outbound_user_text, actor_system_prompt, actor, cluster)
         result["reply_text"] = with_romantic_address(
             _append_citation_footer(result["reply_text"], result.pop("citations", [])),
             ai_name, female_address,
@@ -837,9 +843,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         raise ChatTurnError(str(exc)) from exc
 
     messages = [{"role": "system", "content": actor_system_prompt}]
-    for m in history[-MAX_HISTORY_MESSAGES:]:
+    for m in outbound_history[-MAX_HISTORY_MESSAGES:]:
         messages.append({"role": m["role"], "content": m["content"]})
-    messages.append({"role": "user", "content": user_text})
+    messages.append({"role": "user", "content": outbound_user_text})
 
     is_admin = auth.is_admin_user(actor)
     tools = _tool_schemas(is_admin=is_admin, cluster=cluster)
@@ -935,7 +941,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 tools_used.append(call.function.name)
                 citations.extend(_citations_from_result(result_text))
             messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": result_text}
+                {"role": "tool", "tool_call_id": call.id, "content": redact_text(result_text)}
             )
     else:
         reply_text_parts.append(
@@ -1106,7 +1112,7 @@ async def _run_claude_chat_turn(
             tools_used.append(name)
             citations.extend(_citations_from_result(result_text))
         exchange.append(
-            f"Tool {name} ({'lỗi' if is_error else 'thành công'}): {result_text}"
+            f"Tool {name} ({'lỗi' if is_error else 'thành công'}): {redact_text(result_text)}"
         )
 
     response = {

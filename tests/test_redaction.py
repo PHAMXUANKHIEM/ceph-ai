@@ -130,6 +130,28 @@ def test_sensitive_redactor_scrubs_url_credentials_presigned_url_and_private_key
     assert REDACTED in rendered
 
 
+@pytest.mark.parametrize(
+    "value,secrets",
+    [
+        ('{"password": "super secret", "apiKey": "camel-secret"}', ("super secret", "camel-secret")),
+        ("Cookie: sessionid=cookie-secret; csrftoken=csrf-secret", ("cookie-secret", "csrf-secret")),
+        ("aws_access_key_id=ASIA1234567890ABCDEF", ("ASIA1234567890ABCDEF",)),
+        ("PASSWORD='secret with spaces'", ("secret with spaces", "with spaces")),
+    ],
+)
+def test_sensitive_redactor_scrubs_review_regressions(value, secrets):
+    result = SensitiveDataRedactor().redact({"text": value})["text"]
+    assert REDACTED in result
+    assert all(secret not in result for secret in secrets)
+
+
+def test_sensitive_redactor_scrubs_camel_case_and_rejects_unsupported_nested_types():
+    result = SensitiveDataRedactor().redact({"telegramBotToken": "secret", "accessKeyId": "value"})
+    assert result == {"telegramBotToken": REDACTED, "accessKeyId": REDACTED}
+    with pytest.raises(TypeError):
+        SensitiveDataRedactor().redact({"unsafe": {"secret-in-a-set"}})
+
+
 def test_sensitive_redactor_preserves_operational_evidence():
     result = SensitiveDataRedactor().redact(SAMPLE_PAYLOAD)
 
