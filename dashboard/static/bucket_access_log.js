@@ -164,7 +164,7 @@
   if (historyForm) {
     var historyPage = 1, historyPages = 1;
     function loadHistory() {
-      var params = new URLSearchParams({cluster: historyForm.dataset.cluster, page: String(historyPage), page_size: "50"});
+      var params = new URLSearchParams({cluster: historyForm.dataset.cluster, page: String(historyPage), page_size: "10"});
       [["ip","bah-ip"],["requester","bah-user"],["bucket","bah-bucket"],["method","bah-method"],["date_from","bah-from"],["date_to","bah-to"]].forEach(function (pair) {
         var value = document.getElementById(pair[1]).value.trim();
         if (value) params.set(pair[0], value);

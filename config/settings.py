@@ -379,6 +379,12 @@ class Settings(BaseSettings):
     # must not be suppressed or grouped by the anomaly/noise pipeline.
     rgw_access_audit_enabled: bool = True
     rgw_access_audit_interval_seconds: int = 15
+    # "Lịch sử IP thao tác Bucket/Object" (dashboard/templates/bucket_access_log.html's
+    # #bah-* panel) is a per-request audit table, not a bounded log tail — left
+    # unbounded it grows with every S3 request the cluster ever serves. Pruned
+    # on the same collection tick as ingestion (worker/rgw_access_audit.py::
+    # collect_once), same reasoning as log_intel_*_retention_days above.
+    rgw_access_audit_retention_days: int = 7
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's

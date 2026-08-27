@@ -316,3 +316,30 @@ def test_rgw_analysis_failure_hides_sql_and_explains_nul():
     assert "INSERT INTO" not in message
     assert "parameters" not in message
     assert "secret" not in message
+
+
+def test_prune_old_access_events_deletes_only_past_retention_window(db_session, monkeypatch):
+    monkeypatch.setattr(db, "SessionLocal", sessionmaker(bind=db_session.get_bind()))
+    monkeypatch.setattr(settings, "rgw_access_audit_retention_days", 7)
+    now = datetime(2026, 8, 27, 12, 0, 0)
+
+    cluster = Cluster(id="c1", name="prune-test", ceph_mon_nodes="", is_default=False,
+                       is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.commit()
+
+    def _event(days_old, event_id):
+        return RgwAccessAuditEvent(
+            id=event_id, cluster_id="c1", rgw_host="rgw1", fingerprint=event_id,
+            method="GET", action="ObjectAccessed:Get", http_status=200,
+            event_at=now - timedelta(days=days_old),
+        )
+
+    db_session.add_all([_event(10, "old"), _event(1, "recent")])
+    db_session.commit()
+
+    deleted = audit.prune_old_access_events(now=now)
+
+    assert deleted == 1
+    remaining = {row.id for row in db_session.query(RgwAccessAuditEvent).all()}
+    assert remaining == {"recent"}

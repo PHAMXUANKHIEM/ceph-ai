@@ -522,6 +522,24 @@ def _process_analysis_jobs(limit: int = 1) -> None:
                 heartbeat.join(timeout=1)
 
 
+def prune_old_access_events(now: datetime | None = None) -> int:
+    """Xoá event trong `rgw_access_audit_events` cũ hơn
+    `settings.rgw_access_audit_retention_days` (mặc định 7 ngày). Bảng
+    này không có khoá ngoại nào trỏ vào (không như log_intel's
+    LogFinding -> LogIngestRun), nên không cần thứ tự xoá đặc biệt như
+    `watcher/log_intel.py::prune_old_rows`. Trả về số dòng đã xoá."""
+    now = now or datetime.utcnow()
+    cutoff = now - timedelta(days=max(1, settings.rgw_access_audit_retention_days))
+    with db.SessionLocal() as session:
+        deleted = (
+            session.query(RgwAccessAuditEvent)
+            .filter(RgwAccessAuditEvent.event_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+    return deleted
+
+
 def collect_once() -> None:
     if not settings.rgw_access_audit_enabled:
         return
@@ -540,6 +558,10 @@ def collect_once() -> None:
                     logger.exception("RGW access audit collection failed for %s/%s", cluster.name, node["host"])
         _deliver_pending(session)
     _process_analysis_jobs(limit=1)
+    try:
+        prune_old_access_events()
+    except Exception:
+        logger.exception("RGW access audit retention prune failed")
 
 
 async def run() -> None:

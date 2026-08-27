@@ -376,7 +376,7 @@ async def bucket_access_history_api(
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=100),
+    page_size: int = Query(10, ge=1, le=100),
     user: str = Depends(require_login),
 ):
     """Persistent RGW audit history, unlike the bounded live daemon tail."""
