@@ -108,6 +108,7 @@
           <label>Từ ngày<input id="bah-from" type="datetime-local"></label>
           <label>Đến ngày<input id="bah-to" type="datetime-local"></label>
           <button class="btn btn-primary btn-sm" type="submit">Lọc lịch sử</button>
+          {% if is_admin %}<button class="btn btn-danger btn-sm" id="bah-purge" type="button">Xoá tất cả</button>{% endif %}
         </form>
         <p class="hint">Nếu RGW đi qua HAProxy/Nginx mà chưa truyền IP client, cột IP có thể là IP proxy.</p>
         <p class="hint" id="bah-status"></p>

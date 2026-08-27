@@ -462,3 +462,55 @@ def test_settings_save_warns_when_watcher_restart_fails(dashboard_client, monkey
 
     assert response.status_code == 200
     assert settings.ceph_rgw_nodes == "10.20.1.90"
+
+
+def _seed_access_event(cluster_id, fingerprint):
+    with db.SessionLocal() as session:
+        session.add(RgwAccessAuditEvent(
+            cluster_id=cluster_id, rgw_host="rgw1", fingerprint=fingerprint,
+            method="GET", action="Tải xuống", bucket="photos", object_key="a.jpg",
+            requester="bob", remote_addr="10.0.0.9", http_status=200,
+            event_at=datetime(2026, 8, 24, 1, 3, 3),
+        ))
+        session.commit()
+
+
+def test_purge_history_requires_admin(dashboard_client):
+    from tests.test_dashboard_object_storage import _login_operator
+
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        cluster_id = cluster.id
+    _seed_access_event(cluster_id, "3" * 64)
+    _login_operator(dashboard_client)
+
+    response = dashboard_client.post("/api/bucket-access-history/purge")
+
+    assert response.status_code == 403
+    with db.SessionLocal() as session:
+        assert session.query(RgwAccessAuditEvent).count() == 1
+
+
+def test_admin_can_purge_all_history_for_selected_cluster(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = session.query(Cluster).filter_by(is_default=True).one()
+        other_cluster = Cluster(
+            name="second", ceph_mon_nodes="", is_default=False, is_active=True,
+            ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none",
+        )
+        session.add(other_cluster)
+        session.commit()
+        default_id, other_id = cluster.id, other_cluster.id
+    _seed_access_event(default_id, "4" * 64)
+    _seed_access_event(default_id, "5" * 64)
+    _seed_access_event(other_id, "6" * 64)
+
+    response = dashboard_client.post(f"/api/bucket-access-history/purge?cluster={default_id}")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 2
+    with db.SessionLocal() as session:
+        remaining = session.query(RgwAccessAuditEvent).all()
+        assert len(remaining) == 1
+        assert remaining[0].cluster_id == other_id

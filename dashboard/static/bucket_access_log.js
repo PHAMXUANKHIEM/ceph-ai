@@ -189,6 +189,29 @@
     historyForm.addEventListener("submit", function (event) { event.preventDefault(); historyPage = 1; loadHistory(); });
     document.getElementById("bah-prev").addEventListener("click", function () { if (historyPage > 1) { historyPage -= 1; loadHistory(); } });
     document.getElementById("bah-next").addEventListener("click", function () { if (historyPage < historyPages) { historyPage += 1; loadHistory(); } });
+
+    var purgeButton = document.getElementById("bah-purge");
+    if (purgeButton) {
+      purgeButton.addEventListener("click", function () {
+        if (!window.confirm("Xoá vĩnh viễn TOÀN BỘ lịch sử IP thao tác Bucket/Object của cụm này? Không thể hoàn tác.")) {
+          return;
+        }
+        purgeButton.disabled = true;
+        fetch("/api/bucket-access-history/purge?cluster=" + encodeURIComponent(historyForm.dataset.cluster), {
+          method: "POST", credentials: "same-origin",
+        }).then(handleAuthRedirect).then(function (response) {
+          if (!response.ok) return response.json().then(function (body) { throw new Error(body.detail || "Xoá thất bại"); });
+          return response.json();
+        }).then(function (data) {
+          historyPage = 1;
+          loadHistory();
+          document.getElementById("bah-status").textContent = "Đã xoá " + data.deleted + " bản ghi.";
+        }).catch(function (err) {
+          document.getElementById("bah-status").textContent = "Lỗi: " + err.message;
+        }).finally(function () { purgeButton.disabled = false; });
+      });
+    }
+
     loadHistory();
   }
 

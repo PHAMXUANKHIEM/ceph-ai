@@ -415,6 +415,25 @@ async def bucket_access_history_api(
             "pages": max(1, (total + page_size - 1) // page_size)}
 
 
+@router.post("/api/bucket-access-history/purge")
+async def bucket_access_history_purge(request: Request, user: str = Depends(require_login)):
+    """Admin-only: wipe the persisted IP/bucket access audit trail for the
+    currently selected cluster. Scoped to `cluster.id` (same scope as the
+    history query above), not a global truncate — an operator switching
+    clusters must not lose the other cluster's history by accident."""
+    if not auth.is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Chỉ admin được xóa lịch sử truy cập")
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        deleted = (
+            session.query(RgwAccessAuditEvent)
+            .filter_by(cluster_id=cluster.id)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+    return {"deleted": deleted}
+
+
 @router.post("/api/bucket-logging/preview")
 async def bucket_logging_preview(request: Request, user: str = Depends(require_login)):
     if not auth.is_admin_user(user):
