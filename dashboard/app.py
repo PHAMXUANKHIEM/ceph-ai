@@ -40,6 +40,7 @@ from dashboard.routes import (
     patch,
     pgs,
     restore_cluster,
+    runbooks as runbooks_routes,
     settings as settings_routes,
     system_health as system_health_routes,
     synthetic_incidents as synthetic_incidents_routes,
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router)
     application.include_router(system_health_routes.router)
     application.include_router(synthetic_incidents_routes.router)
+    application.include_router(runbooks_routes.router)
     application.include_router(incidents.router)
     application.include_router(nodes.router)
     application.include_router(block_storage.router)

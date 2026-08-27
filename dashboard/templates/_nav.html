@@ -15,7 +15,7 @@
   "/nodes", "/volumes", "/trash", "/volume-performance", "/pools",
   "/block-storage", "/pgs", "/capacity-forecast", "/disk-risk",
   "/deploy-cluster", "/delete-cluster", "/convert-cluster",
-  "/patch", "/backups", "/restore-cluster", "/log-intelligence", "/ai-learning", "/ai-cost", "/synthetic-incidents"
+  "/patch", "/backups", "/restore-cluster", "/log-intelligence", "/ai-learning", "/ai-cost", "/synthetic-incidents", "/runbooks"
 ] %}
 {% set cluster_group_active = (nav_path in cluster_group_exact) or nav_path.startswith("/upgrade") %}
 {% set object_storage_group_active = nav_path.startswith("/object-storage") or nav_path == "/bucket-access-log" %}
@@ -44,6 +44,7 @@
           <a href="/log-intelligence" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/log-intelligence' else '' }}">Log Intelligence</a>
           <a href="/ai-learning" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/ai-learning' else '' }}">AI Learning</a>
           <a href="/ai-cost" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/ai-cost' else '' }}">AI Cost</a>
+          <a href="/runbooks" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/runbooks' else '' }}">AI Runbooks</a>
           {% if is_admin %}<a href="/synthetic-incidents" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/synthetic-incidents' else '' }}">Synthetic Tests</a>{% endif %}
         </div>
       </div>

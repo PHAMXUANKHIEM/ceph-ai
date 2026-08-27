@@ -71,6 +71,15 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
   - SAFE đủ maturity được tự chạy; RISKY/DESTRUCTIVE giữ trần quyền rõ ràng.
   - Có rate limit, cooldown, distributed lock, rollback, circuit breaker và kill switch.
 
+## Tài liệu vận hành sinh từ case memory
+
+- [x] **Runbook/postmortem từ RemediationCase**
+  - Chỉ tổng hợp các case `VERIFIED_SUCCESS`, loại synthetic và dữ liệu chưa xác minh.
+  - AI nhận payload evidence đã giới hạn và che khóa nhạy cảm; mọi kết luận phải trỏ tới
+    `case:<id>`, `incident:<id>` hoặc `action:<id>` hợp lệ.
+  - Dashboard `/runbooks` cho phép chọn cluster/fault family, xem evidence và tải Markdown;
+    tài liệu chỉ là hướng dẫn, không có quyền thực thi action.
+
 ## CPU/RAM forecast từ Loki
 
 - Alloy ghi mẫu node health vào Loki với `job="ceph-ai-node-metrics"`, labels

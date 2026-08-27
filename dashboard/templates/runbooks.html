@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Runbooks — Ceph AIOps</title><link rel="stylesheet" href="/static/style.css?v={{ static_version }}"></head>
+<body>{% include "_nav.html" %}<main class="page-shell">
+  <section class="card"><div class="card-header"><div><span class="eyebrow">EVIDENCE ONLY · VERIFIED CASES</span><h1>AI Remediation Runbooks</h1>
+  <p class="hint">Tài liệu được tổng hợp từ RemediationCase đã xác minh thành công; không tự thực thi lệnh.</p></div></div>
+  {% if error %}<p class="error-message">{{ error }}</p>{% endif %}
+  <div class="card-body"><form method="get" action="/runbooks" class="form-grid">
+    <label>Cluster<select name="cluster" required>{% for cluster in clusters %}<option value="{{ cluster.id }}" {{ "selected" if cluster.id == selected_cluster.id else "" }}>{{ cluster.name }}</option>{% endfor %}</select></label>
+    <label>Fault family<select name="fault_family" required><option value="">Chọn fault family</option>{% for family in fault_families %}<option value="{{ family }}" {{ "selected" if family == fault_family else "" }}>{{ family }}</option>{% endfor %}</select></label>
+    <div><button class="btn btn-secondary" type="submit">Xem evidence</button></div>
+  </form></div></section>
+  {% if source %}<section class="card" style="margin-top:1rem"><div class="card-header"><div><h2>Evidence source</h2><p class="hint">{{ source.case_count }} case VERIFIED_SUCCESS · <code>{{ source.fault_family }}</code></p></div>
+    {% if is_admin %}<form method="post" action="/runbooks/generate"><input type="hidden" name="cluster_id" value="{{ selected_cluster.id }}"><input type="hidden" name="fault_family" value="{{ source.fault_family }}"><button class="btn btn-primary" type="submit">Sinh runbook bằng AI</button></form>{% endif %}</div>
+    <div class="card-body"><div class="table-wrap"><table><thead><tr><th>Case</th><th>Incident</th><th>Action</th><th>Diagnosis</th><th>Recovery</th></tr></thead><tbody>
+      {% for case in source.cases %}<tr><td><code>{{ case.case_id }}</code></td><td><code>{{ case.incident_id }}</code></td><td><code>{{ case.action_name }}</code></td><td>{{ case.diagnosis or "-" }}</td><td>{{ case.recovery_seconds if case.recovery_seconds is not none else "-" }}s</td></tr>{% endfor %}
+    </tbody></table></div></div></section>{% endif %}
+  {% if report %}<section class="card" style="margin-top:1rem"><div class="card-header"><div><h2>{{ report.title }}</h2><p class="hint">{{ report.source_case_count }} evidence cases · prompt {{ report.prompt_version }}</p></div>
+    <form method="post" action="/runbooks/markdown"><input type="hidden" name="cluster_id" value="{{ selected_cluster.id }}"><input type="hidden" name="fault_family" value="{{ report.fault_family }}"><button class="btn btn-secondary" type="submit">Tải Markdown</button></form></div><div class="card-body">
+    <h3>Khi nào áp dụng</h3><p>{{ report.when_to_use }}</p>
+    {% for title, key in [("Pre-check", "prechecks"), ("Các bước xử lý", "steps"), ("Xác minh", "verification"), ("Rollback", "rollback"), ("Phòng ngừa", "prevention")] %}<h3>{{ title }}</h3><ol>{% for item in report[key] %}<li>{{ item }}</li>{% endfor %}</ol>{% endfor %}
+    <h3>Giới hạn</h3><p>{{ report.limitations }}</p><h3>Evidence citations</h3><ul>{% for citation in report.citations %}<li><code>{{ citation }}</code></li>{% endfor %}</ul>
+  </div></section>{% endif %}
+</main><script src="/static/app.js?v={{ static_version }}"></script></body></html>
