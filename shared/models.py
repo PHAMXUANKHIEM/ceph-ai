@@ -1986,6 +1986,7 @@ class CapabilityMatrixProposal(Base):
     max_major: Mapped[int | None] = mapped_column(Integer, nullable=True)
     doc_url: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
     proposed_by: Mapped[str] = mapped_column(String(64), nullable=False)

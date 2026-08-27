@@ -91,7 +91,7 @@ async def ai_propose_capabilities(request: Request, user: str = Depends(require_
         message = f"AI đã tạo {len(rows)} bản nháp chờ duyệt."
         return templates.TemplateResponse(request, "capability_matrix.html", _context(user, create_success=message))
     except Exception as exc:
-        return templates.TemplateResponse(request, "capability_matrix.html", _context(user, create_error=str(exc)))
+        return templates.TemplateResponse(request, "capability_matrix.html", _context(user, create_error="Không thể tạo proposal AI; kiểm tra cấu hình router và nội dung nguồn."))
 
 
 @router.post("/capability-matrix/proposals/{proposal_id}/{decision}", response_class=HTMLResponse)

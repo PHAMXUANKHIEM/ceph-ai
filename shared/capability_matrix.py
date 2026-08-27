@@ -141,13 +141,17 @@ def create_entry(
     backend: str | None = None,
     notes: str | None = None,
     verified_at: datetime | None = None,
+    session=None,
 ) -> CapabilityMatrixEntry:
     """Adds a new ACTIVE entry + a CREATED audit row. Does NOT deprecate
     any existing overlapping entry for the same command_id -- an operator
     reviewing the admin page decides that explicitly via `deprecate_entry`
     (a silent auto-deprecate here could hide a real conflict the operator
     should see and resolve themselves)."""
-    with db.SessionLocal() as session:
+    owns_session = session is None
+    if owns_session:
+        session = db.SessionLocal()
+    try:
         entry = CapabilityMatrixEntry(
             command_id=command_id,
             inner_command=inner_command,
@@ -172,10 +176,15 @@ def create_entry(
                 entry_snapshot_json=json.dumps(_entry_to_dict(entry)),
             )
         )
-        session.commit()
+        if owns_session:
+            session.commit()
         session.refresh(entry)
-        session.expunge(entry)
+        if owns_session:
+            session.expunge(entry)
         return entry
+    finally:
+        if owns_session:
+            session.close()
 
 
 def deprecate_entry(entry_id: str, actor: str) -> CapabilityMatrixEntry | None:

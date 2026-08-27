@@ -76,6 +76,7 @@ def test_ai_proposal_requires_operator_approval_before_enforcement(dashboard_cli
         row = CapabilityMatrixProposal(command_id="restart_osd_daemon", inner_command="systemctl restart ceph-osd@N",
             min_major=18, max_major=18, doc_url="https://docs.ceph.com/en/reef/releases/reef/",
             evidence_excerpt="The documented OSD service operation remains supported in Reef.",
+            source_sha256="0" * 64,
             rationale="Explicit release documentation", proposed_by="ai:admin", status="PENDING")
         session.add(row); session.commit(); proposal_id = row.id
     assert cm.list_entries() == []
@@ -108,7 +109,9 @@ def test_ai_seed_filters_unknown_command_ids(monkeypatch, dashboard_client):
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))])
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
     monkeypatch.setattr(capability_seed, "build_router_client", lambda *args: client)
-    rows = asyncio.run(capability_seed.generate(doc_url="https://docs.ceph.com/en/reef/releases/reef/", release_notes="x" * 100, actor="admin"))
+    source = "The documented OSD operation is supported in Reef. " + ("x" * 100)
+    payload["proposals"][0]["evidence_excerpt"] = "The documented OSD operation is supported in Reef."
+    rows = asyncio.run(capability_seed.generate(doc_url="https://docs.ceph.com/en/reef/releases/reef/", release_notes=source, actor="admin"))
     assert [row.command_id for row in rows] == ["restart_osd_daemon"]
 
 
