@@ -13,10 +13,17 @@
   var valueInput = document.getElementById("ceph-config-dump-value");
   var submitButton = document.getElementById("ceph-config-dump-submit");
   var resetButton = document.getElementById("ceph-config-dump-reset");
+  var pagination = document.getElementById("ceph-config-dump-pagination");
+  var previousButton = document.getElementById("ceph-config-dump-prev");
+  var nextButton = document.getElementById("ceph-config-dump-next");
+  var pageStatus = document.getElementById("ceph-config-dump-page-status");
   if (!panel || !loadButton || !filterInput || !tableWrap || !tableBody || !status || !error ||
-      !form || !actionInput || !sectionInput || !nameInput || !valueInput || !submitButton || !resetButton) return;
+      !form || !actionInput || !sectionInput || !nameInput || !valueInput || !submitButton || !resetButton ||
+      !pagination || !previousButton || !nextButton || !pageStatus) return;
 
   var rows = [];
+  var currentPage = 1;
+  var pageSize = 10;
 
   function render() {
     var query = filterInput.value.trim().toLowerCase();
@@ -24,6 +31,10 @@
     var visible = rows.filter(function (row) {
       return !query || (row.section + " " + row.name + " " + row.value).toLowerCase().indexOf(query) !== -1;
     });
+    var pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+    currentPage = Math.min(currentPage, pageCount);
+    var first = (currentPage - 1) * pageSize;
+    var pageRows = visible.slice(first, first + pageSize);
     if (!visible.length) {
       var empty = document.createElement("tr");
       empty.className = "empty-row";
@@ -33,7 +44,7 @@
       empty.appendChild(cell);
       tableBody.appendChild(empty);
     } else {
-      visible.forEach(function (row) {
+      pageRows.forEach(function (row) {
         var tr = document.createElement("tr");
         [row.section, row.name, row.value, row.level, row.can_update_at_runtime ? "Có" : "Không"].forEach(function (value) {
           var td = document.createElement("td");
@@ -85,10 +96,17 @@
       });
     }
     tableWrap.hidden = false;
-    status.textContent = "Hiển thị " + visible.length + "/" + rows.length + " option.";
+    pagination.hidden = visible.length <= pageSize;
+    previousButton.disabled = currentPage <= 1;
+    nextButton.disabled = currentPage >= pageCount;
+    pageStatus.textContent = "Trang " + currentPage + "/" + pageCount;
+    var last = Math.min(first + pageRows.length, visible.length);
+    status.textContent = visible.length
+      ? "Hiển thị " + (first + 1) + "–" + last + "/" + visible.length + " option (tổng " + rows.length + ")."
+      : "Không có option phù hợp.";
   }
 
-  loadButton.addEventListener("click", function () {
+  function loadConfig() {
     loadButton.disabled = true;
     error.hidden = true;
     status.textContent = "Đang tải ceph config dump…";
@@ -102,6 +120,7 @@
       })
       .then(function (body) {
         rows = Array.isArray(body.rows) ? body.rows : [];
+        currentPage = 1;
         render();
         status.textContent = "Cụm " + ((body.cluster && body.cluster.name) || "đang chọn") + ": " + rows.length + " option.";
       })
@@ -112,9 +131,20 @@
         status.textContent = "Chưa tải dữ liệu.";
       })
       .finally(function () { loadButton.disabled = false; });
+  }
+
+  loadButton.addEventListener("click", loadConfig);
+
+  previousButton.addEventListener("click", function () {
+    if (currentPage > 1) { currentPage -= 1; render(); }
+  });
+  nextButton.addEventListener("click", function () {
+    var pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+    if (currentPage < pageCount) { currentPage += 1; render(); }
   });
 
   filterInput.addEventListener("input", function () {
+    currentPage = 1;
     if (rows.length) render();
   });
 
@@ -132,4 +162,7 @@
       event.preventDefault();
     }
   });
+
+  // Load immediately so operators see the first page without an extra click.
+  loadConfig();
 })();

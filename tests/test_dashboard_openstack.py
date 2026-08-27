@@ -209,7 +209,7 @@ def test_config_dump_page_is_separate_from_auth_pool(dashboard_client, monkeypat
     response = dashboard_client.get("/openstack/config-dump")
     assert response.status_code == 200
     assert "Ceph Config Dump" in response.text
-    assert "Tải ceph config dump" in response.text
+    assert "Tải lại" in response.text
     assert "<h2>OpenStack Auth-Pool" not in response.text
 
 

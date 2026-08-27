@@ -54,7 +54,7 @@
           <button type="button" class="btn" id="ceph-config-dump-reset" hidden>Hủy sửa</button>
         </form>
         <div class="audit-filters">
-          <button type="button" class="btn" id="ceph-config-dump-load">Tải ceph config dump</button>
+          <button type="button" class="btn" id="ceph-config-dump-load">Tải lại</button>
           <label class="ceph-config-dump-filter">Lọc<input type="search" id="ceph-config-dump-filter-input" placeholder="section hoặc tên option"></label>
         </div>
         <p class="error" id="ceph-config-dump-error" hidden></p>
@@ -64,6 +64,11 @@
             <thead><tr><th>Section</th><th>Option</th><th>Value</th><th>Level</th><th>Runtime</th><th>Thao tác</th></tr></thead>
             <tbody></tbody>
           </table>
+        </div>
+        <div class="audit-filters" id="ceph-config-dump-pagination" hidden>
+          <button type="button" class="btn" id="ceph-config-dump-prev">Trang trước</button>
+          <span class="hint" id="ceph-config-dump-page-status" aria-live="polite"></span>
+          <button type="button" class="btn" id="ceph-config-dump-next">Trang sau</button>
         </div>
       </div>
       {% endif %}
