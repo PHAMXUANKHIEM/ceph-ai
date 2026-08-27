@@ -498,7 +498,9 @@ def verify(finding: LogFinding, patterns: list[LogPattern], cluster: Cluster) ->
         return VerificationResult(
             "VAULT_NOT_CONFIGURED",
             "Vault không còn được bật trong cấu hình RGW; finding lịch sử được coi là ngoài phạm vi.",
-            tuple(facts + ["rgw_vault_backend=DISABLED"]), True,
+            # This verifier feeds capability learning. A retired integration
+            # must be quiet, never become a code-repair candidate.
+            tuple(facts + ["rgw_vault_backend=DISABLED"]), False,
         )
     token_configs = [
         (str(row.get("section")), str(row.get("name")), path)

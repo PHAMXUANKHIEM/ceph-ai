@@ -217,7 +217,7 @@ def test_vault_disabled_is_not_actionable(monkeypatch):
         _finding(), [_pattern("Vault token file '/etc/ceph/vault_token' not found")], _cluster(),
     )
     assert result.code == "VAULT_NOT_CONFIGURED"
-    assert result.eligible_for_learning is True
+    assert result.eligible_for_learning is False
 
 
 def test_vault_recovery_gate_accepts_disabled_backend(monkeypatch):
