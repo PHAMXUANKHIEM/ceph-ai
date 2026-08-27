@@ -25,7 +25,8 @@ def _cluster_filter(column, cluster: Cluster):
 
 def build_digest(*, now: datetime | None = None, period_days: int = 7) -> list[tuple[str, str]]:
     now = now or datetime.utcnow()
-    start = now - timedelta(days=max(1, min(period_days, 31)))
+    period_days = max(1, min(int(period_days), 31))
+    start = now - timedelta(days=period_days)
     with db.SessionLocal() as session:
         clusters = list_active_clusters(session)
         payloads = []
@@ -40,6 +41,7 @@ def build_digest(*, now: datetime | None = None, period_days: int = 7) -> list[t
             ).all()
             latest = session.query(CephCapacitySample).filter(
                 CephCapacitySample.cluster_id == cluster.id,
+                CephCapacitySample.captured_at >= start,
             ).order_by(CephCapacitySample.captured_at.desc()).limit(100).all()
             max_capacity = max((float(row.used_percent) for row in latest), default=None)
             payloads.append((cluster.name, {
@@ -48,7 +50,13 @@ def build_digest(*, now: datetime | None = None, period_days: int = 7) -> list[t
                 "backup_failed": sum(row.status == "FAILED" for row in jobs),
                 "max_capacity": max_capacity,
             }))
-    ai = ai_cost_summary(period_days * 24, now=now)
+    try:
+        ai = ai_cost_summary(period_days * 24, now=now)
+    except Exception:
+        # AI telemetry is supplementary; one malformed/temporarily
+        # unavailable row must not suppress the whole weekly digest.
+        logger.exception("AI Ops digest: AI telemetry unavailable")
+        ai = {"calls": 0, "errors": 0, "input_tokens": 0, "output_tokens": 0}
     messages = []
     for name, data in payloads:
         by_status = {}
@@ -57,11 +65,11 @@ def build_digest(*, now: datetime | None = None, period_days: int = 7) -> list[t
         status = ", ".join(f"{key}: {value}" for key, value in sorted(by_status.items())) or "không có incident"
         capacity = f"{data['max_capacity']:.1f}%" if data["max_capacity"] is not None else "chưa có mẫu"
         text = "\n".join((
-            f"📊 Báo cáo Ceph AIOps 7 ngày · {name}",
+            f"📊 Báo cáo Ceph AIOps {period_days} ngày · {name}",
             f"Incident: {len(data['incidents'])} ({status})",
             f"Backup: {data['backup_success']} thành công · {data['backup_failed']} thất bại",
             f"Dung lượng cao nhất trong mẫu gần nhất: {capacity}",
-            f"AI: {ai['calls']} lượt gọi · {ai['errors']} lỗi · {ai['input_tokens'] + ai['output_tokens']} tokens ước tính",
+            f"AI toàn hệ thống: {ai['calls']} lượt gọi · {ai['errors']} lỗi · {ai['input_tokens'] + ai['output_tokens']} tokens ước tính",
             "Chỉ là báo cáo tổng hợp từ dữ liệu đã lưu; không tự thực thi thao tác.",
         ))
         messages.append((name, text))
