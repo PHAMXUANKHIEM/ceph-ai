@@ -32,6 +32,12 @@ def _normalized_nodes(value) -> tuple[str, ...]:
 def _eligible(case: RemediationCase) -> bool:
     if case.outcome != "VERIFIED_SUCCESS" or not case.preflight_snapshot_json:
         return False
+    try:
+        pre_state = _load(case.pre_state_json, {})
+    except (TypeError, ValueError):
+        pre_state = {}
+    if isinstance(pre_state, dict) and pre_state.get("synthetic_injection") is True:
+        return False
     if case.prompt_version == "legacy-backfill-v1" or case.operator_verdict in _BAD_VERDICTS:
         return False
     if any(value is True for value in (case.regressed_1h, case.regressed_24h, case.regressed_7d)):

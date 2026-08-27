@@ -43,6 +43,15 @@ def scope_key(case: RemediationCase) -> str:
     )
 
 
+def _is_synthetic_case(case: RemediationCase) -> bool:
+    """Synthetic lab runs are pipeline evidence, never trust evidence."""
+    try:
+        snapshot = json.loads(case.pre_state_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(snapshot, dict) and snapshot.get("synthetic_injection") is True
+
+
 def record_shadow_decision(
     session, *, case: RemediationCase, action: Action, now: datetime | None = None,
 ) -> str:
@@ -101,6 +110,7 @@ def shadow_evaluation_report(
         .order_by(RemediationCase.shadow_recorded_at, RemediationCase.id)
         .all()
     )
+    rows = [row for row in rows if not _is_synthetic_case(row[0])]
 
     def summarize(items: list[tuple[RemediationCase, Action]]) -> dict:
         comparisons = [shadow_comparison(case) for case, _action in items]
@@ -149,6 +159,8 @@ def shadow_evaluation_report(
 def _trust_eligible(case: RemediationCase) -> bool:
     # Pha-1 backfill and pre-registry Cases have incomplete provenance. They
     # remain visible in Case Memory but can never grant trust.
+    if _is_synthetic_case(case):
+        return False
     if not case.preflight_snapshot_json or case.prompt_version == "legacy-backfill-v1":
         return False
     try:
