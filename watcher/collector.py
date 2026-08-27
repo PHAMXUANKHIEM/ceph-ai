@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 LARGE_OMAP_OBJECTS_CODE = "LARGE_OMAP_OBJECTS"
 
 LOG_TAIL_LINES = 50
+# The OMAP path may inspect rotated MON logs and RGW metadata in addition to
+# the short cluster log ring.  Keep its longer SSH budget local to this check;
+# all other collectors retain the normal command timeout.
+OMAP_EVIDENCE_TIMEOUT_SECONDS = 30
 # Only word characters and hyphens after "mon." — a bare \S+ would also
 # swallow trailing punctuation (e.g. "mon.khiempx-mon2," or "mon.name)"),
 # silently failing the hostname_to_ip lookup afterwards.
@@ -202,7 +206,12 @@ def _cephadm_daemon_prefix_for_code(ceph_code: str) -> str:
     return "mon."
 
 
-def _run_on_host(host: str, command: str, cluster: "Cluster | None" = None) -> str:
+def _run_on_host(
+    host: str,
+    command: str,
+    cluster: "Cluster | None" = None,
+    timeout: int | None = None,
+) -> str:
     """SSH-runs `command` on `host` using `cluster`'s own creds when given,
     else `settings.ssh_user`/`settings.ssh_key_path` (2026-08-10,
     multi-tenant remediation Phase 1) — every collector.py call site that
@@ -210,8 +219,14 @@ def _run_on_host(host: str, command: str, cluster: "Cluster | None" = None) -> s
     so a non-default cluster's log collection never silently uses the
     DEFAULT cluster's SSH key."""
     if cluster is not None:
-        return run_command_on_node_with(host, command, cluster.ssh_user, cluster.ssh_key_path)
-    return run_command_on_node(host, command)
+        if timeout is None:
+            return run_command_on_node_with(host, command, cluster.ssh_user, cluster.ssh_key_path)
+        return run_command_on_node_with(
+            host, command, cluster.ssh_user, cluster.ssh_key_path, timeout=timeout
+        )
+    if timeout is None:
+        return run_command_on_node(host, command)
+    return run_command_on_node(host, command, timeout=timeout)
 
 
 def _cephadm_relevant_daemon_names(host: str, daemon_prefix: str, cluster: "Cluster | None" = None) -> list[str]:
@@ -430,21 +445,35 @@ def collect_relevant_logs(
         if not mon_nodes:
             return [], "LARGE_OMAP_EVIDENCE unavailable: no MON node configured"
         host = mon_nodes[0]
-        command = r'''line=$(ceph log last 2000 2>/dev/null | grep 'Large omap object found\. Object:' | tail -1)
-obj=$(printf '%s\n' "$line" | sed -n 's/.*Object: .*:::\([^:]*\):head.*/\1/p')
-instance=$(printf '%s\n' "$obj" | sed -E 's/^\.dir\.//; s/\.[0-9]+\.[0-9]+$//')
-entry=''
-if [ -n "$instance" ]; then
-  entry=$(radosgw-admin metadata list bucket.instance 2>/dev/null | grep -F ":${instance}" | tail -1 | tr -d ' ",')
+        command = r'''threshold=$(ceph config get osd osd_deep_scrub_large_omap_object_key_threshold 2>/dev/null)
+metadata=$(radosgw-admin metadata list bucket.instance 2>/dev/null)
+detail_lines=$(
+  {
+    ceph log last 10000 2>/dev/null
+    find /var/log/ceph -maxdepth 3 -type f -size -50M \( -name 'ceph.log' -o -name 'ceph.log-*' \) ! -name '*.gz' -exec grep -h 'Large omap object found\. Object:' {} + 2>/dev/null
+    find /var/log/ceph -maxdepth 3 -type f -name 'ceph.log-*.gz' -size -50M -exec zgrep -h 'Large omap object found\. Object:' {} + 2>/dev/null
+  } | grep 'Large omap object found\. Object:' | awk '!seen[$0]++' | tail -4
+)
+if [ -z "$detail_lines" ]; then
+  printf 'LARGE_OMAP_EVIDENCE bucket= object= keys= threshold=%s shards= pg=\n' "$threshold"
+  exit 0
 fi
-bucket=${entry%%:*}
-threshold=$(ceph config get osd osd_deep_scrub_large_omap_object_key_threshold 2>/dev/null)
-shards=$(radosgw-admin bucket stats --bucket="$bucket" 2>/dev/null | sed -n 's/.*"num_shards": \([0-9]*\).*/\1/p' | head -1)
-keys=$(printf '%s\n' "$line" | sed -n 's/.*Key count: \([0-9]*\).*/\1/p')
-pg=$(printf '%s\n' "$line" | sed -n 's/.*PG: [^ ]* (\([^)]*\)).*/\1/p')
-printf 'LARGE_OMAP_EVIDENCE bucket=%s object=%s keys=%s threshold=%s shards=%s pg=%s\n%s\n' "$bucket" "$obj" "$keys" "$threshold" "$shards" "$pg" "$line"'''
+printf '%s\n' "$detail_lines" | while IFS= read -r line; do
+  obj=$(printf '%s\n' "$line" | sed -n 's/.*Object: [^ ]*:::\([^:]*\):head.*/\1/p')
+  bucket_uuid=$(printf '%s\n' "$obj" | sed -n -E 's/^\.dir\.([0-9a-fA-F-]{36})\..*$/\1/p')
+  entry=''
+  if [ -n "$bucket_uuid" ]; then
+    entry=$(printf '%s\n' "$metadata" | grep -F ":${bucket_uuid}." | tail -1 | tr -d ' ",')
+  fi
+  bucket=${entry%%:*}
+  [ -n "$bucket" ] || bucket=unknown
+  shards=$(radosgw-admin bucket stats --bucket="$bucket" 2>/dev/null | sed -n 's/.*"num_shards": \([0-9]*\).*/\1/p' | head -1)
+  keys=$(printf '%s\n' "$line" | sed -n 's/.*Key count: \([0-9]*\).*/\1/p')
+  pg=$(printf '%s\n' "$line" | sed -n 's/.*PG: [^ ]* (\([^)]*\)).*/\1/p')
+  printf 'LARGE_OMAP_EVIDENCE bucket=%s object=%s keys=%s threshold=%s shards=%s pg=%s\n%s\n' "$bucket" "$obj" "$keys" "$threshold" "$shards" "$pg" "$line"
+done'''
         try:
-            return [host], _run_on_host(host, command, cluster)
+            return [host], _run_on_host(host, command, cluster, OMAP_EVIDENCE_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.warning("large OMAP evidence collection failed on %s: %s", host, exc)
             return [host], f"LARGE_OMAP_EVIDENCE unavailable: {exc}"

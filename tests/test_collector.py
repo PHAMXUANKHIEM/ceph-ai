@@ -157,6 +157,39 @@ def test_collect_relevant_logs_for_mon_code_uses_mon_container(fake_ssh):
     assert "mon2 clock skew log line" in log_excerpt
 
 
+def test_collect_relevant_logs_for_large_omap_uses_cluster_and_local_detail_sources(fake_ssh):
+    """Large-OMAP evidence must not depend only on the short monitor log ring.
+
+    Deep-scrub detail lines can be in the MON's rotated ceph.log even when
+    ``ceph log last`` exposes only the health summary.  Keep the command
+    read-only and bounded so the existing safe/manual fallback remains intact.
+    """
+    from config.settings import settings
+
+    mon_ip = settings.ceph_mon_nodes.split(",")[0]
+    fake_ssh.log_text_by_host = {mon_ip: "LARGE_OMAP_EVIDENCE bucket=test-s3 object=.dir.uuid keys=10922"}
+
+    nodes, log_excerpt = collect_relevant_logs("LARGE_OMAP_OBJECTS", {})
+
+    assert nodes == [mon_ip]
+    assert "LARGE_OMAP_EVIDENCE" in log_excerpt
+    command = fake_ssh.calls[0][1]
+    assert "ceph log last 10000" in command
+    assert "/var/log/ceph" in command
+    assert "radosgw-admin metadata list bucket.instance" in command
+    assert "awk '!seen[$0]++' | tail -4" in command
+
+
+def test_collect_relevant_logs_for_large_omap_does_not_use_osd_log_targets(fake_ssh):
+    from config.settings import settings
+
+    collect_relevant_logs("LARGE_OMAP_OBJECTS", {})
+
+    contacted_hosts = {host for host, _command in fake_ssh.calls}
+    assert contacted_hosts == {settings.ceph_mon_nodes.split(",")[0]}
+    assert all("docker logs" not in command for _host, command in fake_ssh.calls)
+
+
 def test_collect_relevant_logs_survives_unreachable_node(fake_ssh, monkeypatch):
     from config.settings import settings
 
