@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Exposed as module-level constants (not just inline defaults) so other code
@@ -486,7 +487,8 @@ class Settings(BaseSettings):
     # Minimum model-reported confidence required before Incident diagnosis
     # may create an executable Action. Missing/invalid confidence is rejected;
     # lower confidence remains visible to operators but cannot trigger work.
-    ai_min_diagnosis_confidence: float = 0.6
+    ai_min_diagnosis_confidence: float = Field(default=0.6, gt=0, le=1)
+    ai_low_confidence_retry_cooldown_seconds: int = Field(default=3600, ge=60)
 
     # watcher/database_capacity_monitor.py's own cadence -- deliberately
     # much slower than every other scan above: this app's own DB size

@@ -39,10 +39,10 @@ from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
-from shared import db, heartbeat, service_health, telegram_alerts
+from shared import audit, db, heartbeat, service_health, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
-from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
+from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident, IncidentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +464,28 @@ def build_and_publish_incident(
             else query.filter(Incident.cluster_id.is_(None))
         )
         already_open_codes = {row.ceph_code for row in query.all()}
+        # A low-confidence abstention is not an execution failure and should
+        # not immediately create another identical AI request on the next
+        # unrelated health transition or Watcher restart. Retry after a
+        # bounded cooldown so newer evidence can still be reconsidered.
+        low_confidence_cutoff = datetime.utcnow() - timedelta(
+            seconds=settings.ai_low_confidence_retry_cooldown_seconds
+        )
+        low_confidence_query = (
+            session.query(Incident.ceph_code)
+            .join(AuditEntry, AuditEntry.incident_id == Incident.id)
+            .filter(
+                Incident.status == IncidentStatus.FAILED.value,
+                AuditEntry.event_type == audit.EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE,
+                AuditEntry.created_at >= low_confidence_cutoff,
+            )
+        )
+        low_confidence_query = (
+            low_confidence_query.filter(Incident.cluster_id == cluster_id)
+            if cluster_id is not None
+            else low_confidence_query.filter(Incident.cluster_id.is_(None))
+        )
+        already_open_codes.update(row.ceph_code for row in low_confidence_query.all())
 
         # OSD_DOWN can recur immediately after a successful systemd restart
         # (or the daemon can die again while the previous Incident is still
@@ -687,7 +709,7 @@ def run(
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
-        service_health.record("watcher")
+        service_health.record_safe("watcher")
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
         # query_cluster_health() itself succeeded) — so the generic except
         # below (Review Story 5.2) only records a FAILED heartbeat when the

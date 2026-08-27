@@ -739,6 +739,11 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
         "codex" if settings.codex_chat_enabled else
         "claude" if settings.claude_chat_enabled else settings.router_provider
     )
+    model_id = (
+        (settings.codex_chat_model or "default") if settings.codex_chat_enabled else
+        (settings.claude_chat_model or "default") if settings.claude_chat_enabled else
+        (settings.router_model or "unconfigured")
+    )
 
     action_params: dict | None = None
     with db.SessionLocal() as session:
@@ -754,6 +759,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
             actor="ai", evidence={
                 "prompt_version": "incident-diagnosis-v1",
                 "model_provider": model_provider,
+                "model_id": model_id,
                 "diagnosis_confidence": diagnosis_confidence,
                 "minimum_confidence": min_confidence,
                 "proposed_action_id": action_id,
@@ -875,6 +881,7 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     actor=audit.ACTOR_SYSTEM,
                     evidence={
                         "model_provider": model_provider,
+                        "model_id": model_id,
                         "diagnosis_confidence": diagnosis_confidence,
                         "minimum_confidence": min_confidence,
                         "proposed_action_id": action_id,

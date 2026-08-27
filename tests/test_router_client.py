@@ -653,6 +653,7 @@ def test_diagnose_incident_low_confidence_never_creates_action(isolated_db, monk
         assert blocked_evidence == {
             "diagnosis_confidence": 0.59,
             "minimum_confidence": 0.6,
+            "model_id": settings.router_model or "unconfigured",
             "model_provider": settings.router_provider,
             "proposed_action_id": "resync_ntp",
         }
