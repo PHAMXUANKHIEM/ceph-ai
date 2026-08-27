@@ -11,6 +11,22 @@
 
   <main class="page">
     <section class="card">
+      <div class="card-header"><h2>AI seed từ Ceph release notes</h2></div>
+      <div class="card-body"><p class="hint">Dán nội dung từ tài liệu Ceph chính thức. AI chỉ tạo bản nháp; preflight không dùng proposal trước khi admin duyệt.</p>
+        <form class="login-box" method="post" action="/capability-matrix/ai-propose">
+          <label>URL nguồn chính thức<input type="url" name="doc_url" placeholder="https://docs.ceph.com/en/latest/releases/..." required></label>
+          <label>Nội dung release notes<textarea name="release_notes" rows="8" minlength="100" maxlength="30000" required></textarea></label>
+          <button class="btn btn-primary btn-sm" type="submit">AI phân tích và tạo draft</button>
+        </form>
+        <h3>Proposal gần nhất</h3>
+        <div class="table-wrap"><table><thead><tr><th>Command</th><th>Version</th><th>Evidence</th><th>Nguồn</th><th>Trạng thái</th><th>Review</th></tr></thead><tbody>
+        {% for p in proposals %}<tr><td><code>{{ p.command_id }}</code><br><span class="hint">{{ p.inner_command }}</span></td><td>{{ p.min_major }}{% if p.max_major %}–{{ p.max_major }}{% else %}+{% endif %}</td><td>{{ p.evidence_excerpt }}<br><span class="hint">{{ p.rationale }}</span></td><td><a href="{{ p.doc_url }}" target="_blank" rel="noopener">Ceph docs</a></td><td>{{ p.status }}{% if p.reviewed_by %}<br><span class="hint">{{ p.reviewed_by }} · {{ p.reviewed_at|vntime }}</span>{% endif %}</td><td>{% if p.status == 'PENDING' %}<form class="inline-form" method="post" action="/capability-matrix/proposals/{{ p.id }}/approve"><button class="btn btn-sm btn-primary">Duyệt</button></form><form class="inline-form" method="post" action="/capability-matrix/proposals/{{ p.id }}/reject"><button class="btn btn-sm btn-danger">Từ chối</button></form>{% else %}—{% endif %}</td></tr>
+        {% else %}<tr><td colspan="6" class="empty-state">Chưa có AI proposal.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>Mức sẵn sàng bật cổng an toàn (Preflight)</h2></div>
       <div class="card-body">
         <p class="muted">

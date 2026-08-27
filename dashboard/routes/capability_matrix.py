@@ -19,7 +19,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from config.settings import settings
 from dashboard.templating import make_templates
-from shared import capability_matrix, db
+from shared import capability_matrix, capability_seed, db
 from shared.clusters import list_active_clusters
 from watcher import capability_inventory
 
@@ -71,6 +71,7 @@ def _context(
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "entries": entries,
+        "proposals": capability_seed.list_proposals(),
         "coverage": _coverage_by_cluster(),
         "enforcement_enabled": settings.ai_preflight_enforcement_enabled,
         "changes_by_entry": changes_by_entry,
@@ -80,6 +81,28 @@ def _context(
         "deprecate_success": deprecate_success,
         "form_values": form_values or {},
     }
+
+
+@router.post("/capability-matrix/ai-propose", response_class=HTMLResponse)
+async def ai_propose_capabilities(request: Request, user: str = Depends(require_login), doc_url: str = Form(""), release_notes: str = Form("")):
+    _require_admin_privilege(user)
+    try:
+        rows = await capability_seed.generate(doc_url=doc_url, release_notes=release_notes, actor=user)
+        message = f"AI đã tạo {len(rows)} bản nháp chờ duyệt."
+        return templates.TemplateResponse(request, "capability_matrix.html", _context(user, create_success=message))
+    except Exception as exc:
+        return templates.TemplateResponse(request, "capability_matrix.html", _context(user, create_error=str(exc)))
+
+
+@router.post("/capability-matrix/proposals/{proposal_id}/{decision}", response_class=HTMLResponse)
+async def review_capability_proposal(proposal_id: str, decision: str, request: Request, user: str = Depends(require_login)):
+    _require_admin_privilege(user)
+    if decision not in {"approve", "reject"}:
+        raise HTTPException(status_code=400, detail="Quyết định không hợp lệ")
+    row = capability_seed.review(proposal_id, approve=decision == "approve", actor=user)
+    if row is None:
+        raise HTTPException(status_code=409, detail="Proposal không tồn tại hoặc đã được review")
+    return templates.TemplateResponse(request, "capability_matrix.html", _context(user, create_success=f"Đã {decision} proposal {row.command_id}."))
 
 
 @router.get("/capability-matrix", response_class=HTMLResponse)
