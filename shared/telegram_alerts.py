@@ -316,6 +316,36 @@ def send_trash_capacity_alert(trash_bytes: int, total_bytes: int, ratio: float, 
     )
 
 
+def send_capacity_threshold_alert(
+    entity_type: str,
+    entity_name: str,
+    used_percent: float,
+    threshold: int,
+    used_bytes: int,
+    total_bytes: int,
+    *,
+    cluster_name: str | None = None,
+) -> None:
+    """Notify once when a cluster, pool or OSD crosses 80/90/95%."""
+    severity = "🔴 CRITICAL" if threshold >= 95 else ("🟠 WARNING" if threshold >= 90 else "🟡 WARNING")
+    labels = {"cluster": "Toàn cụm", "pool": "Pool", "osd": "OSD"}
+    label = labels.get(entity_type, entity_type)
+    entity = label if entity_type == "cluster" else f"{label} {entity_name}"
+    gib = 1024 ** 3
+    text = "\n".join((
+        f"{severity} Dung lượng đã vượt mốc {threshold}%",
+        f"💾 {entity}: {used_percent:.2f}% ({used_bytes / gib:.2f} / {total_bytes / gib:.2f} GiB)",
+        "🔧 Đề xuất: kiểm tra tốc độ tăng trưởng, dọn dữ liệu an toàn hoặc bổ sung dung lượng trước khi cụm đầy.",
+    ))
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+
+
 def send_osd_latency_alert(osd_id: int, host: str | None, message: str) -> None:
     """Called once per NEWLY-flagged OSD latency outlier
     (watcher/osd_latency_monitor.py::create_or_resolve_osd_latency_incidents

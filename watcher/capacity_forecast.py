@@ -4,9 +4,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 
+from sqlalchemy import and_, func
+
 from config.settings import settings
 from shared import db
 from shared.models import CephCapacitySample, Cluster
+from shared.telegram_alerts import send_capacity_threshold_alert
 from watcher.capacity_evidence import _cluster_stats, _osd_stats, _pool_stats, _query
 
 
@@ -21,6 +24,13 @@ class Forecast:
     history_days: float
     thresholds: dict[str, str | None]
     additional_bytes_at_95: int
+
+
+CAPACITY_THRESHOLDS = (80, 90, 95)
+
+
+def _reached_threshold(percent: float) -> int | None:
+    return next((threshold for threshold in reversed(CAPACITY_THRESHOLDS) if percent >= threshold), None)
 
 
 def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: datetime | None = None) -> int:
@@ -39,12 +49,44 @@ def collect_and_store(cluster_id: str, cluster: Cluster | None = None, *, now: d
         }))
     valid = [(kind, name, row) for kind, name, row in rows if row.get("total_bytes", 0) > 0]
     with db.SessionLocal() as session:
+        latest_times = session.query(
+            CephCapacitySample.entity_type,
+            CephCapacitySample.entity_name,
+            func.max(CephCapacitySample.captured_at).label("captured_at"),
+        ).filter(CephCapacitySample.cluster_id == cluster_id).group_by(
+            CephCapacitySample.entity_type, CephCapacitySample.entity_name,
+        ).subquery()
+        previous_rows = session.query(CephCapacitySample).join(
+            latest_times,
+            and_(
+                CephCapacitySample.entity_type == latest_times.c.entity_type,
+                CephCapacitySample.entity_name == latest_times.c.entity_name,
+                CephCapacitySample.captured_at == latest_times.c.captured_at,
+            ),
+        ).filter(CephCapacitySample.cluster_id == cluster_id).all()
+        previous = {
+            (row.entity_type, row.entity_name): row.used_percent for row in previous_rows
+        }
         session.add_all([CephCapacitySample(
             cluster_id=cluster_id, entity_type=kind, entity_name=name,
             used_bytes=int(row["used_bytes"]), total_bytes=int(row["total_bytes"]),
             used_percent=float(row["used_percent"]), captured_at=captured_at,
         ) for kind, name, row in valid])
         session.commit()
+        cluster_name = cluster.name if cluster is not None else session.query(Cluster.name).filter_by(id=cluster_id).scalar()
+
+    for kind, name, row in valid:
+        current_percent = float(row["used_percent"])
+        current_threshold = _reached_threshold(current_percent)
+        previous_threshold = _reached_threshold(previous.get((kind, name), 0.0))
+        if current_threshold is not None and (
+            previous_threshold is None or current_threshold > previous_threshold
+        ):
+            send_capacity_threshold_alert(
+                kind, name, current_percent, current_threshold,
+                int(row["used_bytes"]), int(row["total_bytes"]),
+                cluster_name=cluster_name,
+            )
     return len(valid)
 
 

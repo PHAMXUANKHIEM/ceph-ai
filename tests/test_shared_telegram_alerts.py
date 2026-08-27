@@ -255,6 +255,23 @@ def test_send_trash_capacity_alert_uses_incident_channel(monkeypatch):
     assert "Đề xuất" in calls[0][2]
 
 
+def test_send_capacity_threshold_alert_uses_incident_channel(monkeypatch):
+    sent = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append((args, kwargs)))
+
+    telegram_alerts.send_capacity_threshold_alert(
+        "pool", "volumes", 91.25, 90, 91, 100, cluster_name="cluster-b",
+    )
+
+    args, kwargs = sent[0]
+    assert args[:3] == (
+        telegram_alerts.settings.telegram_incident_bot_token,
+        telegram_alerts.settings.telegram_incident_chat_id,
+        telegram_alerts.settings.telegram_incident_enabled,
+    )
+    assert "Pool volumes: 91.25%" in args[3]
+    assert args[4] == "cluster-b"
+
 # --- send_node_alert ---------------------------------------------------------
 
 
