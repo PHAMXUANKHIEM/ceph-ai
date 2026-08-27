@@ -57,6 +57,7 @@
         <button type="button" class="nav-link nav-dropdown-toggle{{ ' active' if openstack_group_active else '' }}">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
         <div class="nav-dropdown-menu">
           <a href="/openstack/auth-pool" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path.startswith('/openstack/auth') else '' }}">Auth-Pool</a>
+          {% if is_admin %}<a href="/openstack/config-dump" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/openstack/config-dump' else '' }}">Config Dump</a>{% endif %}
         </div>
       </div>
       <a href="/settings" class="nav-link{{ ' active' if nav_path == '/settings' else '' }}">Settings</a>

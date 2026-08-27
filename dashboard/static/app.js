@@ -162,7 +162,6 @@
       ["/volume-performance", "Performance"],
       ["/bucket-access-log", "Bucket Logging"],
       ["/openstack/auth-pool", "Auth-Pool"],
-      ["/openstack/config-dump", "Config Dump"],
       ["/deploy-cluster", "Deploy Cluster"],
       ["/delete-cluster", "Delete Cluster"],
       ["/upgrade", "Upgrade Cluster"],
@@ -233,14 +232,6 @@
       createAuthLink.textContent = "Create Auth User";
       linksByPath["/openstack/auth-user/create"] = createAuthLink;
     }
-    if (linksByPath["/openstack/auth-pool"] && !linksByPath["/openstack/config-dump"]) {
-      var configDumpLink = document.createElement("a");
-      configDumpLink.href = "/openstack/config-dump";
-      configDumpLink.className = window.location.pathname === configDumpLink.pathname ? "nav-link active" : "nav-link";
-      configDumpLink.textContent = "Config Dump";
-      linksByPath["/openstack/config-dump"] = configDumpLink;
-    }
-
     // Information architecture for Ceph operators. Keep permission-aware
     // links from the server (admin-only destinations may not exist), then
     // regroup only those that were actually rendered.

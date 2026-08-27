@@ -27,6 +27,7 @@ _CONFIG_SENSITIVE_RE = re.compile(
 _CONFIG_SECTION_RE = re.compile(r"^[A-Za-z0-9_.-]{1,180}$")
 _CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,180}$")
 _RGW_DAEMON_RE = re.compile(r"^rgw\.[A-Za-z0-9_.-]{1,180}$")
+_RGW_UNIT_RE = re.compile(r"^(?:ceph-)?radosgw@[A-Za-z0-9_.-]+\.service$")
 
 
 def _pool_names(payload: dict | list) -> list[str]:
@@ -222,24 +223,77 @@ def _rgw_daemon_names(payload: dict | list) -> list[str]:
     return sorted(name for name in names if _RGW_DAEMON_RE.fullmatch(name))
 
 
-def _restart_rgw_daemons(connection: tuple[list[str], str, str, str, str]) -> list[str]:
-    """Restart every RGW daemon reported by the selected cluster."""
-    _host, payload = run_ceph_json_command_with(*connection, "ceph orch ps --daemon_type rgw")
-    daemon_names = _rgw_daemon_names(payload)
-    if not daemon_names:
-        raise CephQueryError("Không tìm thấy RGW daemon để restart")
+def _execute_cluster_command(
+    connection: tuple[list[str], str, str, str, str], command: str
+) -> str:
+    """Execute a mutating command with MON failover."""
     failures: list[str] = []
-    for daemon_name in daemon_names:
-        command = build_exec_command(
-            connection[4], connection[1], f"ceph orch daemon restart {shlex.quote(daemon_name)}"
-        )
+    for host in connection[0]:
         try:
-            execute_command(connection[0][0], command, user=connection[2], key_path=connection[3])
+            return execute_command(host, command, user=connection[2], key_path=connection[3])
         except ExecutorError as exc:
-            failures.append(f"{daemon_name}: {exc}")
+            failures.append(f"{host}: {exc}")
+    raise ExecutorError("; ".join(failures) or "Không có MON để thực thi lệnh")
+
+
+def _systemd_rgw_units(connection: tuple[list[str], str, str, str, str]) -> list[tuple[str, str]]:
+    """Find package-installed RGW units when the cephadm orchestrator is absent."""
+    command = (
+        "systemctl list-units --type=service --all --no-legend "
+        "'ceph-radosgw@*.service' 'radosgw@*.service' 2>/dev/null || true"
+    )
+    found: list[tuple[str, str]] = []
+    for host in connection[0]:
+        try:
+            output = execute_command(host, command, user=connection[2], key_path=connection[3])
+        except ExecutorError:
+            continue
+        for line in output.splitlines():
+            unit = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+            if _RGW_UNIT_RE.fullmatch(unit):
+                found.append((host, unit))
+    return sorted(set(found))
+
+
+def _restart_rgw_daemons(connection: tuple[list[str], str, str, str, str]) -> list[str]:
+    """Restart every RGW daemon, supporting cephadm and package installs."""
+    daemon_names: list[str] = []
+    try:
+        _host, payload = run_ceph_json_command_with(*connection, "ceph orch ps --daemon_type rgw")
+        daemon_names = _rgw_daemon_names(payload)
+    except CephQueryError:
+        # Traditional deployments do not expose `ceph orch`; use systemd
+        # units below instead of treating a successful config update as fatal.
+        pass
+    if daemon_names:
+        failures: list[str] = []
+        command_by_name = {
+            name: build_exec_command(
+                connection[4], connection[1], f"ceph orch daemon restart {shlex.quote(name)}"
+            )
+            for name in daemon_names
+        }
+        for daemon_name, command in command_by_name.items():
+            try:
+                _execute_cluster_command(connection, command)
+            except ExecutorError as exc:
+                failures.append(f"{daemon_name}: {exc}")
+        if failures:
+            raise ExecutorError("; ".join(failures))
+        return daemon_names
+
+    units = _systemd_rgw_units(connection)
+    if not units:
+        raise CephQueryError("Không tìm thấy RGW daemon để restart")
+    failures = []
+    for host, unit in units:
+        try:
+            execute_command(host, f"systemctl restart {shlex.quote(unit)}", user=connection[2], key_path=connection[3])
+        except ExecutorError as exc:
+            failures.append(f"{unit}@{host}: {exc}")
     if failures:
         raise ExecutorError("; ".join(failures))
-    return daemon_names
+    return [unit for _host, unit in units]
 
 
 @router.post("/openstack/config-dump")
@@ -270,9 +324,7 @@ async def mutate_config_dump(
         inner_command = f"ceph config rm {shlex.quote(section)} {shlex.quote(name)}"
     command = build_exec_command(connection[4], connection[1], inner_command)
     try:
-        await asyncio.to_thread(
-            execute_command, connection[0][0], command, user=connection[2], key_path=connection[3]
-        )
+        await asyncio.to_thread(_execute_cluster_command, connection, command)
         daemon_names = await asyncio.to_thread(_restart_rgw_daemons, connection)
     except (CephQueryError, ExecutorError, IndexError) as exc:
         raise HTTPException(

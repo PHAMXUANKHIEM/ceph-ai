@@ -50,6 +50,7 @@
           sectionInput.value = row.section;
           nameInput.value = row.name;
           valueInput.value = row.redacted ? "" : (row.value || "");
+          valueInput.required = Boolean(row.redacted);
           submitButton.textContent = "Cập nhật";
           resetButton.hidden = false;
           valueInput.focus();
@@ -120,8 +121,15 @@
   resetButton.addEventListener("click", function () {
     form.reset();
     actionInput.value = "set";
+    valueInput.required = false;
     submitButton.textContent = "Tạo / Cập nhật";
     resetButton.hidden = true;
     status.textContent = rows.length ? "Đã hủy chỉnh sửa." : "Chưa tải dữ liệu.";
+  });
+
+  form.addEventListener("submit", function (event) {
+    if (!window.confirm("Lưu thay đổi và restart toàn bộ RGW của cụm này?")) {
+      event.preventDefault();
+    }
   });
 })();

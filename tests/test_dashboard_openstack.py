@@ -117,6 +117,28 @@ def test_config_dump_rejects_unsafe_option_without_execution(dashboard_client, m
     assert executed == []
 
 
+def test_rgw_restart_falls_back_to_systemd_units(monkeypatch):
+    connection = (["mon1", "mon2"], "", "root", "/tmp/key", "none")
+    calls = []
+
+    def no_orchestrator(*args):
+        raise openstack_route.CephQueryError("orchestrator unavailable")
+
+    def fake_execute(host, command, **kwargs):
+        calls.append((host, command))
+        if command.startswith("systemctl list-units"):
+            return "ceph-radosgw@rgw.a.service loaded active running RGW\n"
+        return "ok"
+
+    monkeypatch.setattr(openstack_route, "run_ceph_json_command_with", no_orchestrator)
+    monkeypatch.setattr(openstack_route, "execute_command", fake_execute)
+    assert openstack_route._restart_rgw_daemons(connection) == [
+        "ceph-radosgw@rgw.a.service",
+        "ceph-radosgw@rgw.a.service",
+    ]
+    assert sum(command == "systemctl restart ceph-radosgw@rgw.a.service" for _, command in calls) == 2
+
+
 def test_caps_command_preserves_existing_caps_and_adds_pool():
     command = openstack_route._caps_command(
         "client.cinder", "volumes", "write",
