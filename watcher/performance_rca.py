@@ -370,14 +370,33 @@ def build_report(
     distribution_rows = session.query(CrushOsdDistribution).filter(
         CrushOsdDistribution.cluster_id == cluster_id,
     ).all()
-    host_by_osd = {row.osd_id: row.host for row in distribution_rows}
+    fresh_distribution_rows = []
+    stale_distribution_rows = 0
+    for row in distribution_rows:
+        distribution_age = _age(now, row.updated_at)
+        if (
+            row.host
+            and distribution_age is not None
+            and distribution_age <= FRESH_DISTRIBUTION_SECONDS
+        ):
+            fresh_distribution_rows.append(row)
+        else:
+            stale_distribution_rows += 1
+    # A failed CRUSH scan intentionally leaves the latest-known distribution
+    # row in place. Do not use that row to attach host telemetry to an OSD:
+    # an OSD may have moved hosts since the last successful scan.
+    host_by_osd = {row.osd_id: row.host for row in fresh_distribution_rows}
     host_rows = session.query(HostMetricSample).filter(
         HostMetricSample.cluster_id == cluster_id,
         HostMetricSample.collected_at >= window_start,
         HostMetricSample.collected_at <= now,
     ).order_by(HostMetricSample.collected_at.asc()).all()
+    fresh_host_rows = [
+        row for row in host_rows
+        if (_age(now, row.collected_at) or 0) <= FRESH_HOST_SECONDS
+    ]
     host_samples = {}
-    for row in host_rows:
+    for row in fresh_host_rows:
         for identity in (row.node_name, row.host):
             key = _host_key(identity)
             if key:
@@ -432,10 +451,17 @@ def build_report(
     }
     chain["disk"] = {
         "layer": "disk",
-        "status": "observed" if host_rows else ("proxy_only" if osd_summary.get("outliers") else "not_available"),
+        "status": (
+            "observed" if fresh_host_rows
+            else "stale" if host_rows
+            else "proxy_only" if osd_summary.get("outliers") else "not_available"
+        ),
         "detail": (
             "Có host disk IOPS/latency sample cùng time window."
-            if host_rows else "OSD commit latency chỉ là disk/OSD proxy; chưa có host disk sample."
+            if fresh_host_rows
+            else "Host disk sample đã stale quá 5 phút; không dùng làm evidence hiện tại."
+            if host_rows
+            else "OSD commit latency chỉ là disk/OSD proxy; chưa có host disk sample."
         ),
         "source": "host_metric_samples" if host_rows else "ceph_osd_perf_live",
         "freshness": _freshness(now, max((row.collected_at for row in host_rows), default=None), FRESH_HOST_SECONDS)
@@ -444,8 +470,17 @@ def build_report(
     if host_rows:
         chain["host"] = {
             "layer": "host",
-            "status": "observed" if host_join_count else "unscoped",
-            "detail": f"Có {len(host_rows)} host metric samples; {host_join_count} volume analysis join được với OSD→hostname.",
+            "status": (
+                "observed" if host_join_count
+                else "unscoped" if fresh_host_rows
+                else "stale"
+            ),
+            "detail": (
+                f"Có {len(host_rows)} host metric samples; {host_join_count} volume analysis "
+                "join được với OSD→hostname."
+                if fresh_host_rows
+                else f"Có {len(host_rows)} host metric samples nhưng tất cả đã stale quá 5 phút."
+            ),
             "source": "host_metric_samples",
             "freshness": _freshness(now, max(row.collected_at for row in host_rows), FRESH_HOST_SECONDS),
         }
@@ -470,6 +505,7 @@ def build_report(
             "source_id": "host_metric_samples",
             "observed_at": _iso(max(row.collected_at for row in host_rows)),
             "row_count": len(host_rows),
+            "fresh_row_count": len(fresh_host_rows),
         })
 
     gaps = []
@@ -483,8 +519,14 @@ def build_report(
         gaps.append("Chưa có volume→PG→OSD acting-set mapping trong dữ liệu hiện tại.")
     if not host_rows:
         gaps.append("Chưa có host disk/SMART/network sample được lưu theo cùng time window.")
+    elif not fresh_host_rows:
+        gaps.append("Có host metrics nhưng tất cả sample đã stale quá 5 phút; không dùng để suy luận.")
     elif not host_join_count:
         gaps.append("Có host metrics nhưng chưa join được với acting OSD của volume nào trong cửa sổ.")
+    if stale_distribution_rows:
+        gaps.append(
+            f"Có {stale_distribution_rows} OSD→host mapping stale/thiếu host; không dùng cho host correlation."
+        )
     return {
         "status": "ready" if analyses else "insufficient_evidence",
         "conclusion": "correlation_only",
