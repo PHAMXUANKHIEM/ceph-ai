@@ -77,6 +77,11 @@ class RepairConfig:
     base_branch: str = "main"
     branch_prefix: str = "ai-repair/"
     provider: str = "auto"
+    planner_provider: str | None = None
+    planner_model: str = ""
+    implementer_provider: str | None = None
+    implementer_model: str = ""
+    max_review_rounds: int = 2
     test_command: str = "PYTHONPATH=. .venv/bin/pytest -q"
     timeout_seconds: int = 1800
     push: bool = False
@@ -97,6 +102,9 @@ class RepairResult:
     branch: str | None = None
     commit: str | None = None
     provider: str | None = None
+    planner_provider: str | None = None
+    implementer_provider: str | None = None
+    review_rounds: int = 0
     changed_files: list[str] | None = None
     test_output: str = ""
     error: str | None = None
@@ -303,7 +311,10 @@ def cleanup_stale_worktrees(repo: Path, branches: list[str]) -> list[str]:
 
 def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
                       *, claude_config_dir: Path | None = None,
-                      codex_home: Path | None = None) -> tuple[str, list[str]]:
+                      codex_home: Path | None = None,
+                      model: str = "", mode: str = "implement") -> tuple[str, list[str]]:
+    if mode not in {"implement", "review"}:
+        raise RepairError(f"unsupported AI role mode: {mode!r}")
     codex = shutil.which("codex")
     claude = shutil.which("claude")
     if provider == "auto":
@@ -321,15 +332,25 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
         elif claude:
             provider = "claude"
     if provider == "codex" and codex:
-        # Current Codex CLI makes --approve-for-me mutually exclusive with
-        # --sandbox; approve-for-me itself routes commands through its
-        # workspace-write automatic reviewer.
-        command = [codex, "exec", "--ephemeral", "--approve-for-me", "-C", str(worktree), "-"]
+        if mode == "review":
+            command = [codex, "exec", "--ephemeral", "--sandbox", "read-only", "-C", str(worktree)]
+        else:
+            # Current Codex CLI makes --approve-for-me mutually exclusive with
+            # --sandbox; approve-for-me itself routes commands through its
+            # workspace-write automatic reviewer.
+            command = [codex, "exec", "--ephemeral", "--approve-for-me", "-C", str(worktree)]
+        if model.strip():
+            command.extend(["--model", model.strip()])
+        command.append("-")
         if codex_home:
             command = ["env", f"CODEX_HOME={codex_home}", *command]
         return provider, command
     if provider == "claude" and claude:
-        command = [claude, "-p", "--permission-mode", "acceptEdits", "--no-session-persistence", prompt]
+        permission_mode = "plan" if mode == "review" else "acceptEdits"
+        command = [claude, "-p", "--permission-mode", permission_mode, "--no-session-persistence"]
+        if model.strip():
+            command.extend(["--model", model.strip()])
+        command.append(prompt)
         if claude_config_dir:
             # The dashboard stores its CLI session in a repo-local, gitignored
             # directory rather than root's default ~/.claude account.
@@ -352,6 +373,18 @@ def _validate_changes(worktree: Path) -> list[str]:
     if DIFF_SECRET_RE.search(diff):
         raise RepairError("candidate diff appears to contain a credential")
     return files
+
+
+def _worktree_status(worktree: Path) -> str:
+    return _run(["git", "status", "--porcelain"], cwd=worktree).stdout
+
+
+def _review_verdict(output: str) -> str:
+    """Require an explicit, machine-checkable reviewer decision."""
+    verdicts = re.findall(r"(?im)^\s*VERDICT\s*:\s*(PASS|NEEDS_CHANGES)\s*$", output or "")
+    if len(verdicts) != 1:
+        raise RepairError("reviewer phải trả về đúng một dòng VERDICT: PASS hoặc VERDICT: NEEDS_CHANGES")
+    return verdicts[0]
 
 
 def _focused_test_command(files: list[str]) -> str | None:
