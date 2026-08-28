@@ -422,6 +422,7 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             max_tokens=MAX_TOKENS,
             tools=[schema],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
+            stream_options={"include_usage": True},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},

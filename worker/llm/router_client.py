@@ -622,6 +622,7 @@ async def _call_router(user_content: str) -> dict:
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
             tools=[_tool_schema()],
+            stream_options={"include_usage": True},
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},

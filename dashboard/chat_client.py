@@ -875,6 +875,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 tool_choice="auto",
                 temperature=0.1,
                 max_tokens=MAX_TOKENS,
+                stream_options={"include_usage": True},
                 # httpx.Timeout(...), NOT a bare float — verified directly
                 # against a real running 9router: passing a plain float
                 # here silently truncated the streamed response (got back

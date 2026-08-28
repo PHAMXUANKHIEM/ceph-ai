@@ -149,6 +149,7 @@ async def _call_router(user_content: str) -> dict:
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
             tools=[schema],
+            stream_options={"include_usage": True},
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -234,6 +235,7 @@ async def _call_digest_router(user_content: str) -> str:
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
+            stream_options={"include_usage": True},
             messages=[
                 {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},

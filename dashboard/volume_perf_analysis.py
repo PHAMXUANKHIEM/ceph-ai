@@ -195,6 +195,7 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
             tools=[_tool_schema()],
+            stream_options={"include_usage": True},
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},

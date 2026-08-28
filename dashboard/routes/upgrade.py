@@ -327,6 +327,7 @@ async def _summarize_upgrade_procedure(raw_text: str) -> str:
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=PROCEDURE_SUMMARY_MAX_TOKENS,
+            stream_options={"include_usage": True},
             messages=[
                 {"role": "system", "content": _PROCEDURE_SUMMARY_SYSTEM_PROMPT},
                 {"role": "user", "content": content},
