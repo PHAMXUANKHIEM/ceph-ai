@@ -14,6 +14,11 @@ from watcher.performance_rca import PERFORMANCE_RCA_PREFIX, report
 
 logger = logging.getLogger(__name__)
 
+# Performance RCA is sampled on a short cadence and its evidence can briefly
+# disappear while topology/host samples are being refreshed. Do not turn one
+# transient gap into another Telegram alert for the same volume.
+_REOPEN_COOLDOWN_SECONDS = 3600
+
 _OPEN_STATUSES = {
     IncidentStatus.NEW.value,
     IncidentStatus.DIAGNOSING.value,
@@ -95,19 +100,28 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
     now = datetime.utcnow()
 
     with db.SessionLocal() as session:
-        open_incidents = session.query(Incident).filter(
+        incidents = session.query(Incident).filter(
             Incident.cluster_id == cluster_id,
             Incident.ceph_code.like(f"{PERFORMANCE_RCA_PREFIX}%"),
-            Incident.status.in_(_OPEN_STATUSES),
-        ).all()
-        by_code = {incident.ceph_code: incident for incident in open_incidents}
+        ).order_by(Incident.created_at.desc()).all()
+        # Keep the newest historical row per deterministic volume code. This
+        # both reuses a recently-resolved row and cleans up any duplicate open
+        # rows left by the pre-deduplication implementation.
+        latest_by_code = {}
+        for incident in incidents:
+            latest_by_code.setdefault(incident.ceph_code, incident)
 
-        for code, incident in by_code.items():
+        for code, incident in latest_by_code.items():
             if code not in current:
-                incident.status = IncidentStatus.RESOLVED.value
+                for duplicate in incidents:
+                    if (
+                        duplicate.ceph_code == code
+                        and duplicate.status in _OPEN_STATUSES
+                    ):
+                        duplicate.status = IncidentStatus.RESOLVED.value
 
         for code, analysis in current.items():
-            incident = by_code.get(code)
+            incident = latest_by_code.get(code)
             if incident is None:
                 incident = Incident(
                     cluster_id=cluster_id,
@@ -123,8 +137,28 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
                 session.add(incident)
                 session.flush()
                 pending_delivery.append((incident.id, analysis))
-            elif incident.telegram_reminded_at is None:
-                pending_delivery.append((incident.id, analysis))
+            else:
+                for duplicate in incidents:
+                    if (
+                        duplicate.id != incident.id
+                        and duplicate.ceph_code == code
+                        and duplicate.status in _OPEN_STATUSES
+                    ):
+                        duplicate.status = IncidentStatus.RESOLVED.value
+                if incident.status == IncidentStatus.RESOLVED.value:
+                    last_closed_at = incident.updated_at or incident.detected_at or incident.created_at
+                    elapsed = (now - last_closed_at).total_seconds()
+                    if elapsed >= _REOPEN_COOLDOWN_SECONDS:
+                        incident.status = IncidentStatus.NEW.value
+                        incident.detected_at = now
+                        incident.log_excerpt = _log_excerpt(analysis)
+                        incident.signal_evidence_json = json.dumps(
+                            _candidate_payload(analysis), ensure_ascii=False, sort_keys=True,
+                        )
+                        incident.telegram_reminded_at = None
+                        pending_delivery.append((incident.id, analysis))
+                elif incident.telegram_reminded_at is None:
+                    pending_delivery.append((incident.id, analysis))
         session.commit()
 
     delivered = 0

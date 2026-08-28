@@ -177,11 +177,17 @@ def send_performance_rca_alert(
 ) -> bool:
     """Send one read-only RCA candidate through the incident channel."""
     host_lines = []
+    seen_hosts = set()
     for host in (analysis.get("host_evidence") or [])[:4]:
+        host_name = host.get("host") or host.get("node_name") or "unknown"
+        host_key = str(host_name).strip().lower().rstrip(".")
+        if host_key in seen_hosts:
+            continue
+        seen_hosts.add(host_key)
         flags = ", ".join(host.get("flags") or [])
         suffix = f" · {flags}" if flags else ""
         host_lines.append(
-            f"🖥 {host.get('host') or host.get('node_name') or 'unknown'}: "
+            f"🖥 {host_name}: "
             f"CPU {float(host.get('cpu_percent') or 0):.1f}% · "
             f"RAM {float(host.get('mem_percent') or 0):.1f}% · "
             f"disk {float(host.get('disk_latency_ms') or 0):.2f}ms{suffix}"

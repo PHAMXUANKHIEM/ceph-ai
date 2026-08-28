@@ -66,6 +66,18 @@ def test_check_and_alert_is_deduplicated_and_resolves(monkeypatch):
     with factory() as session:
         assert session.query(Incident).one().status == IncidentStatus.RESOLVED.value
 
+    # A transient evidence gap must not create/send a new alert immediately
+    # when the same candidate returns on the next scan.
+    monkeypatch.setattr(
+        performance_rca_monitor,
+        "report",
+        lambda _cluster, **_kwargs: {"analyses": [analysis]},
+    )
+    assert performance_rca_monitor.check_and_alert("c1", cluster) == 0
+    assert len(sent) == 1
+    with factory() as session:
+        assert session.query(Incident).count() == 1
+
     monkeypatch.setattr(settings, "telegram_performance_rca_enabled", False)
     monkeypatch.setattr(performance_rca_monitor, "report", lambda _cluster, **_kwargs: {"analyses": [analysis]})
     assert performance_rca_monitor.check_and_alert("c1", cluster) == 0

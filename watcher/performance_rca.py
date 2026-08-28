@@ -115,10 +115,15 @@ def _host_evidence(
     if not topology:
         return []
     evidence = []
+    seen_hosts: set[str] = set()
     for osd_id in topology.get("acting_osds", []):
         host = host_by_osd.get(osd_id)
         if not host:
             continue
+        host_key = _host_key(host)
+        if host_key in seen_hosts:
+            continue
+        seen_hosts.add(host_key)
         sample = host_samples.get(host.strip().lower().rstrip("."))
         if sample is None or (_age(now, sample.collected_at) or 0) > FRESH_HOST_SECONDS:
             continue

@@ -131,12 +131,13 @@ def test_report_uses_fresh_host_disk_signal_for_mapped_volume(db_session):
     now = datetime(2026, 8, 28, 12, 0)
     db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
     db_session.add_all(_volume("c1", "rbd", "vm-a", [10, 10, 10, 30], now - timedelta(minutes=3)))
-    db_session.add(CrushOsdDistribution(
-        cluster_id="c1", osd_id=3, host="ceph-1", pgs=20, updated_at=now,
-    ))
+    db_session.add_all([
+        CrushOsdDistribution(cluster_id="c1", osd_id=3, host="ceph-1", pgs=20, updated_at=now),
+        CrushOsdDistribution(cluster_id="c1", osd_id=4, host="ceph-1", pgs=20, updated_at=now),
+    ])
     db_session.add(VolumeOsdMapping(
         cluster_id="c1", pool="rbd", image="vm-a", image_id="abc",
-        object_name="rbd_data.abc.0000000000000000", pgid="1.2a", acting_osds_json="[3]",
+        object_name="rbd_data.abc.0000000000000000", pgid="1.2a", acting_osds_json="[3,4]",
         primary_osd=3, pgids_json="[\"1.2a\"]", sampled_objects_json="[\"rbd_data.abc.0000000000000000\"]",
         data_object_count=1, mapping_scope="data_sample", captured_at=now,
     ))
@@ -151,6 +152,7 @@ def test_report_uses_fresh_host_disk_signal_for_mapped_volume(db_session):
 
     assert result["analyses"][0]["hypothesis"] == "host_resource_candidate"
     assert result["analyses"][0]["host_evidence"][0]["flags"] == ["disk_latency_high"]
+    assert len(result["analyses"][0]["host_evidence"]) == 1
     assert result["chain"][4]["status"] == "observed"
     assert result["chain"][5]["status"] == "observed"
 
