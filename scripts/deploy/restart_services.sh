@@ -103,6 +103,19 @@ if ! [[ "$DASHBOARD_HOST" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
   exit 2
 fi
 
+# Keep the RabbitMQ network restriction persistent across reboots. This is a
+# host-wide rule, so install it independently of which checkout is deployed.
+if command -v systemctl >/dev/null 2>&1 && \
+   [ -f "$REPO_DIR/scripts/deploy/ceph-ai-firewall.sh" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.service" ]; then
+  install -m 0755 "$REPO_DIR/scripts/deploy/ceph-ai-firewall.sh" \
+    /usr/local/sbin/ceph-ai-firewall
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.service" \
+    /etc/systemd/system/ceph-ai-firewall.service
+  systemctl daemon-reload
+  systemctl enable --now ceph-ai-firewall.service
+fi
+
 echo "==> Stopping existing services (if running)"
 USE_SYSTEMD=false
 SYSTEMD_CORE_UNITS=(
