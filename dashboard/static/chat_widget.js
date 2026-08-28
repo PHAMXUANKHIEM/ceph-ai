@@ -16,6 +16,8 @@
   var femaleAddressInputEl = document.getElementById("chat-female-address");
   var settingsSuccessEl = document.getElementById("chat-settings-success");
   var panelAiNameEl = document.getElementById("chat-panel-ai-name");
+  var modeSelectEl = document.getElementById("chat-mode-select");
+  var modeHintEl = document.getElementById("chat-mode-hint");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
     return; // not on a page with the chat panel
   }
@@ -249,6 +251,15 @@
 
   function buildMessage(message) {
     var isUser = message.role === "user";
+    var displayContent = message.content || "";
+    var dualSpeaker = "";
+    var dualProvider = "";
+    var dualMatch = !isUser && displayContent.match(/^\[Dual AI: ([^\]·]+) · ([^\]]+)\]\n/);
+    if (dualMatch) {
+      dualSpeaker = dualMatch[1].trim();
+      dualProvider = dualMatch[2].trim();
+      displayContent = displayContent.slice(dualMatch[0].length);
+    }
     var container = document.createElement("div");
     container.className = "chat-msg " + (isUser ? "chat-msg-user" : "chat-msg-assistant");
     container.dataset.messageId = message.id;
@@ -257,17 +268,17 @@
     meta.className = "chat-msg-meta";
     meta.textContent = isUser
       ? "Bạn · " + (message.actor || "?") + " · " + formatTimestamp(message.created_at)
-      : "🤖 " + aiName + " · " + formatTimestamp(message.created_at);
+      : (dualSpeaker ? "🤖 " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + formatTimestamp(message.created_at);
     container.appendChild(meta);
 
     var bubble;
-    if (!isUser && message.content.indexOf(MISSING_AI_CONFIG_MESSAGE) !== -1) {
+    if (!isUser && displayContent.indexOf(MISSING_AI_CONFIG_MESSAGE) !== -1) {
       bubble = buildMissingAiConfigNotice();
     } else {
-      bubble = isUser ? document.createElement("div") : buildAssistantContent(message.content);
+      bubble = isUser ? document.createElement("div") : buildAssistantContent(displayContent);
       if (isUser) {
         bubble.className = "chat-msg-bubble";
-        bubble.textContent = message.content;
+        bubble.textContent = displayContent;
       }
     }
     container.appendChild(bubble);
@@ -344,7 +355,7 @@
 
     var meta = document.createElement("div");
     meta.className = "chat-msg-meta";
-    meta.textContent = "🤖 " + aiName;
+    meta.textContent = modeSelectEl && modeSelectEl.value === "dual" ? "🤖 Hai AI đang trao đổi" : "🤖 " + aiName;
     container.appendChild(meta);
 
     var bubble = document.createElement("div");
@@ -746,6 +757,19 @@
   });
   refreshSendEnabled();
 
+  function updateChatMode() {
+    if (!modeSelectEl) return;
+    var dual = modeSelectEl.value === "dual";
+    if (modeHintEl) modeHintEl.textContent = dual
+      ? "Planner/Reviewer và Implementer sẽ lần lượt phân tích, phản biện và chốt phương án."
+      : "Dùng AI đang cấu hình trong hệ thống.";
+    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : "Nhập câu hỏi về cụm Ceph...";
+  }
+  if (modeSelectEl) {
+    modeSelectEl.addEventListener("change", updateChatMode);
+    updateChatMode();
+  }
+
   inputEl.addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -774,7 +798,7 @@
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: text, session_id: currentSessionId }),
+      body: JSON.stringify({ content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" }),
     })
       .then(handleAuthRedirect)
       .then(function (response) {
@@ -792,7 +816,11 @@
         // case, and every message from here on must carry it.
         currentSessionId = data.user_message.session_id || currentSessionId;
         appendMessage(data.user_message);
-        appendMessage(data.assistant_message);
+        if (data.assistant_messages && data.assistant_messages.length) {
+          data.assistant_messages.forEach(function (message) { appendMessage(message); });
+        } else if (data.assistant_message) {
+          appendMessage(data.assistant_message);
+        }
         checkAiLimitWarnings();
       })
       .catch(function (err) {

@@ -14,6 +14,7 @@ from dashboard.chat_client import (
     run_chat_turn,
     with_romantic_address,
 )
+from dashboard.dual_ai_chat import DualAIChatError, run_dual_ai_chat
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.cluster_scope import selected_cluster
@@ -329,6 +330,9 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     text = (body.get("content") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Nội dung tin nhắn không được để trống")
+    mode = (body.get("mode") or "single").strip().lower()
+    if mode not in {"single", "dual"}:
+        raise HTTPException(status_code=400, detail="Chế độ chat không hợp lệ")
     # Falls back to a fresh id rather than 400ing — a stale/cached frontend
     # bundle that never learned about sessions at all should still work,
     # same "degrade gracefully" posture as open_mcp_tools() elsewhere in
@@ -375,6 +379,38 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         session.commit()
         session.refresh(user_message)
         user_message_dict = _message_to_dict(user_message)
+
+    if mode == "dual":
+        try:
+            events = await run_dual_ai_chat(text, history)
+        except DualAIChatError as exc:
+            logger.warning("post_chat_message dual mode: %s", exc)
+            events = [{
+                "speaker": "Hệ thống",
+                "provider": "—",
+                "model": "",
+                "content": f"Không thể chạy chế độ hai AI: {exc}",
+            }]
+        assistant_messages = []
+        with db.SessionLocal() as session:
+            for event in events:
+                content = (
+                    f"[Dual AI: {event.get('speaker', 'AI')} · {event.get('provider', '—')}]\n"
+                    f"{event.get('content', '')}"
+                )
+                assistant_message = ChatMessage(
+                    session_id=session_id, cluster_id=cluster.id, role="assistant",
+                    content=content, actor=user,
+                )
+                session.add(assistant_message)
+                session.flush()
+                assistant_messages.append(_message_to_dict(assistant_message))
+            session.commit()
+        return {
+            "mode": "dual",
+            "user_message": user_message_dict,
+            "assistant_messages": assistant_messages,
+        }
 
     if pending_node_command_id is not None:
         ai_name = auth.chat_ai_name(user)

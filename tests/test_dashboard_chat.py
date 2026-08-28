@@ -59,6 +59,31 @@ def test_chat_uses_selected_secondary_cluster_and_scopes_history(dashboard_clien
         assert session.query(ChatMessage).filter_by(cluster_id=cluster_id).count() == 2
 
 
+def test_dual_chat_mode_persists_each_ai_reply(dashboard_client, monkeypatch):
+    async def fake_dual_chat(prompt, history):
+        assert prompt == "Thiết kế cảnh báo OSD"
+        return [
+            {"speaker": "Planner/Reviewer", "provider": "codex", "content": "Kế hoạch"},
+            {"speaker": "Implementer", "provider": "claude", "content": "Đề xuất thực hiện"},
+        ]
+
+    monkeypatch.setattr(chat_module, "run_dual_ai_chat", fake_dual_chat)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/chat/messages",
+        json={"session_id": "dual-chat", "content": "Thiết kế cảnh báo OSD", "mode": "dual"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "dual"
+    assert [item["content"] for item in payload["assistant_messages"]] == [
+        "[Dual AI: Planner/Reviewer · codex]\nKế hoạch",
+        "[Dual AI: Implementer · claude]\nĐề xuất thực hiện",
+    ]
+
+
 def test_confirmed_secondary_chat_action_keeps_original_cluster(dashboard_client):
     cluster_id = _seed_secondary_cluster()
     with db_module.SessionLocal() as session:
