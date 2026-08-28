@@ -147,7 +147,7 @@
         if (data.error) parts.push("Lỗi: " + data.error);
         resultEl.textContent = parts.join(" · ") || "Đang chờ worker...";
         outputEl.textContent = data.test_output || "Chưa có kết quả.";
-        if (["PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAILED", "SKIPPED_DUPLICATE"].indexOf(data.status) !== -1) return;
+        if (["PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAILED", "FAILED_STALE", "SKIPPED_DUPLICATE"].indexOf(data.status) !== -1) return;
         window.setTimeout(refreshTask, 4000);
       })
       .catch(function (error) { resultEl.textContent = "Không đọc được trạng thái: " + error.message; window.setTimeout(refreshTask, 6000); });
