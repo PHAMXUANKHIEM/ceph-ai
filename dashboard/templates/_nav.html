@@ -13,7 +13,7 @@
 {% set nav_path = request.url.path %}
 {% set cluster_group_exact = [
   "/nodes", "/volumes", "/trash", "/volume-performance", "/pools",
-  "/block-storage", "/pgs", "/capacity-forecast", "/disk-risk",
+  "/block-storage", "/pgs", "/capacity-forecast", "/performance-rca", "/disk-risk",
   "/deploy-cluster", "/delete-cluster", "/convert-cluster",
   "/patch", "/backups", "/restore-cluster", "/log-intelligence", "/ai-learning", "/synthetic-incidents", "/runbooks"
 ] %}
@@ -33,6 +33,7 @@
           <a href="/pools" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/pools' else '' }}">Pools</a>
           <a href="/block-storage" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/block-storage' else '' }}">Block Storage</a>
           <a href="/capacity-forecast" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/capacity-forecast' else '' }}">Capacity Forecast</a>
+          <a href="/performance-rca" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/performance-rca' else '' }}">Performance RCA</a>
           <a href="/disk-risk" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/disk-risk' else '' }}">Disk Failure Risk</a>
           <a href="/deploy-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/deploy-cluster' else '' }}">Deploy Cluster</a>
           <a href="/delete-cluster" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/delete-cluster' else '' }}">Delete Cluster</a>
