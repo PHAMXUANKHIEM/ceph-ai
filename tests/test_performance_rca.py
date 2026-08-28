@@ -53,7 +53,7 @@ def test_report_ranks_pool_contention_and_marks_missing_layers(db_session):
     )
 
     assert result["status"] == "ready"
-    assert result["analyses"][0]["hypothesis"] == "mapped_osd_latency_candidate"
+    assert result["analyses"][0]["hypothesis"] == "sampled_data_osd_latency_candidate"
     assert result["analyses"][0]["topology"]["pgid"] == "1.2a"
     assert result["analyses"][0]["signals"]["mapped_outlier_osds"] == [3]
     assert result["chain"][2]["status"] == "mapped"
@@ -88,16 +88,43 @@ def test_map_volume_uses_rbd_header_object(monkeypatch):
         command = args[-1]
         calls.append(command)
         if command.startswith("rbd info"):
-            return "mon", {"id": "abc123"}
+            return "mon", {"id": "abc123", "size": 12, "object_size": 4, "block_name_prefix": "rbd_data.abc123"}
         return "mon", {"pgid": "1.2a", "acting": [3, 4, 5]}
 
     monkeypatch.setattr(volume_topology, "_connection", lambda cluster: ([], "container", "user", "key", "docker"))
     monkeypatch.setattr(volume_topology.ceph_client, "run_ceph_json_command_with", fake_run)
     result = volume_topology.map_volume(SimpleNamespace(), "rbd", "vm-a")
 
-    assert result["object_name"] == "rbd_header.abc123"
+    assert result["object_name"] == "rbd_data.abc123.0000000000000000"
     assert result["acting_osds"] == [3, 4, 5]
-    assert calls == ["rbd info rbd/vm-a", "ceph osd map rbd rbd_header.abc123"]
+    assert result["data_object_count"] == 3
+    assert calls == [
+        "rbd info rbd/vm-a",
+        "ceph osd map rbd rbd_data.abc123.0000000000000000",
+        "ceph osd map rbd rbd_data.abc123.0000000000000001",
+        "ceph osd map rbd rbd_data.abc123.0000000000000002",
+    ]
+
+
+def test_report_does_not_use_stale_mapping_for_osd_correlation(db_session):
+    now = datetime(2026, 8, 28, 12, 0)
+    db_session.add(Cluster(id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test"))
+    db_session.add_all(_volume("c1", "rbd", "vm-a", [10, 10, 10, 30], now - timedelta(minutes=3)))
+    db_session.add(VolumeOsdMapping(
+        cluster_id="c1", pool="rbd", image="vm-a", image_id="abc",
+        object_name="rbd_header.abc", pgid="1.2a", acting_osds_json="[3,4,5]",
+        primary_osd=3, captured_at=now - timedelta(hours=2), mapping_scope="header_legacy",
+    ))
+    db_session.commit()
+
+    result = build_report(db_session, "c1", now=now, live_signals={
+        "status": "ready", "measured_osds": 4, "median_commit_latency_ms": 2,
+        "outliers": [{"osd_id": 3, "ratio": 5, "commit_latency_ms": 10}],
+        "freshness": {"observed_at": "2026-08-28T12:00:00Z", "age_seconds": 0, "status": "fresh"},
+    })
+
+    assert result["analyses"][0]["hypothesis"] != "sampled_data_osd_latency_candidate"
+    assert "stale/legacy" in " ".join(result["evidence_gaps"])
 
 
 def test_collector_refreshes_only_recent_volume_mappings(dashboard_client, default_cluster_id, monkeypatch):
@@ -112,6 +139,8 @@ def test_collector_refreshes_only_recent_volume_mappings(dashboard_client, defau
     monkeypatch.setattr(volume_topology, "map_volume", lambda cluster, pool, image: {
         "pool": pool, "image": image, "image_id": "abc", "object_name": "rbd_header.abc",
         "pgid": "1.2a", "acting_osds": [1, 2, 3], "primary_osd": 1,
+        "pgids": ["1.2a"], "sampled_objects": ["rbd_data.abc.0000000000000000"],
+        "data_object_count": 1, "mapping_scope": "data_sample",
     })
     cluster = SimpleNamespace()
     assert volume_topology.collect_and_store(default_cluster_id, cluster, now=now) == 1

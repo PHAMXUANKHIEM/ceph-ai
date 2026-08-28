@@ -135,8 +135,8 @@ def _volume_analysis(
     outlier_ids = {item.get("osd_id") for item in osd_summary.get("outliers", [])}
     mapped_outliers = [osd_id for osd_id in mapped_osds if osd_id in outlier_ids]
     if volume_elevated and mapped_outliers:
-        hypothesis = "mapped_osd_latency_candidate"
-        explanation = "Volume đang tăng latency và acting set hiện tại chứa OSD latency outlier."
+        hypothesis = "sampled_data_osd_latency_candidate"
+        explanation = "Volume đang tăng latency và các data-object PG được sample chứa OSD latency outlier."
         confidence = _clamp(0.55 + volume_score * 0.20 + osd_score * 0.20)
     elif volume_elevated and pool_contention:
         hypothesis = "pool_contention_candidate"
@@ -261,20 +261,46 @@ def build_report(
     mapping_rows = session.query(VolumeOsdMapping).filter(
         VolumeOsdMapping.cluster_id == cluster_id,
     ).all()
-    mapping_latest_at = max((mapping.captured_at for mapping in mapping_rows), default=None)
+    fresh_mapping_latest_at = None
     topology_by_key = {}
+    stale_or_legacy_mappings = 0
     for mapping in mapping_rows:
+        mapping_age = _age(now, mapping.captured_at)
+        if (
+            getattr(mapping, "mapping_scope", "header_legacy") != "data_sample"
+            or mapping_age is None
+            or mapping_age > FRESH_DISTRIBUTION_SECONDS
+        ):
+            stale_or_legacy_mappings += 1
+            continue
+        fresh_mapping_latest_at = max(fresh_mapping_latest_at or mapping.captured_at, mapping.captured_at)
         try:
             acting_osds = json.loads(mapping.acting_osds_json)
         except (TypeError, ValueError):
             acting_osds = []
         if not isinstance(acting_osds, list):
             acting_osds = []
+        try:
+            pgids = json.loads(mapping.pgids_json)
+        except (TypeError, ValueError, AttributeError):
+            pgids = [mapping.pgid]
+        try:
+            sampled_objects = json.loads(mapping.sampled_objects_json)
+        except (TypeError, ValueError, AttributeError):
+            sampled_objects = [mapping.object_name]
+        if not isinstance(pgids, list):
+            pgids = [mapping.pgid]
+        if not isinstance(sampled_objects, list):
+            sampled_objects = [mapping.object_name]
         topology_by_key[(mapping.pool, mapping.image)] = {
             "pgid": mapping.pgid,
+            "pgids": [item for item in pgids if isinstance(item, str)],
             "acting_osds": [item for item in acting_osds if isinstance(item, int)],
             "primary_osd": mapping.primary_osd,
             "object_name": mapping.object_name,
+            "sampled_objects": [item for item in sampled_objects if isinstance(item, str)],
+            "data_object_count": mapping.data_object_count,
+            "mapping_scope": mapping.mapping_scope,
             "captured_at": _iso(mapping.captured_at),
             "freshness": _freshness(now, mapping.captured_at, FRESH_DISTRIBUTION_SECONDS),
             "source": "volume_osd_mappings",
@@ -298,7 +324,7 @@ def build_report(
             "status": "mapped",
             "detail": f"Đã map {len(topology_by_key)} volume tới PG/acting OSD; PG count distribution vẫn lấy từ CRUSH OSD data.",
             "source": "volume_osd_mappings",
-            "freshness": _freshness(now, mapping_latest_at, FRESH_DISTRIBUTION_SECONDS),
+            "freshness": _freshness(now, fresh_mapping_latest_at, FRESH_DISTRIBUTION_SECONDS),
         }
     chain["volume"] = {
         "layer": "volume",
@@ -354,6 +380,8 @@ def build_report(
         gaps.append("Chưa đủ lịch sử VolumeMetric cho volume nào trong cửa sổ.")
     if topology_by_key:
         gaps.append("Mapping PG/OSD là latest snapshot; chưa có lịch sử acting-set để chứng minh thay đổi theo thời gian.")
+    elif stale_or_legacy_mappings:
+        gaps.append(f"Có {stale_or_legacy_mappings} mapping stale/legacy; không dùng để suy luận causal.")
     else:
         gaps.append("Chưa có volume→PG→OSD acting-set mapping trong dữ liệu hiện tại.")
     gaps.append("Chưa có host disk/SMART/network sample được lưu theo cùng time window.")

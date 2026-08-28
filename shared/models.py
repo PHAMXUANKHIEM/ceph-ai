@@ -1351,6 +1351,11 @@ class VolumeOsdMapping(Base):
     pgid: Mapped[str] = mapped_column(String(64), nullable=False)
     acting_osds_json: Mapped[str] = mapped_column(Text, nullable=False)
     primary_osd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sampled data-object placement, not the RBD metadata/header object.
+    pgids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    sampled_objects_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    data_object_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mapping_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="data_sample")
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 

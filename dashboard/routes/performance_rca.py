@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
+from starlette.concurrency import run_in_threadpool
 
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes.auth import require_login
@@ -19,13 +20,13 @@ async def performance_rca_api(
     _user: str = Depends(require_login),
 ):
     _clusters, cluster = cluster_selection(request)
-    return report(cluster, pool=pool, image=image, window_hours=window_hours)
+    return await run_in_threadpool(report, cluster, pool=pool, image=image, window_hours=window_hours)
 
 
 @router.get("/performance-rca", response_class=HTMLResponse)
 async def performance_rca_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
-    data = report(cluster)
+    data = await run_in_threadpool(report, cluster)
     return templates.TemplateResponse(request, "performance_rca.html", {
         "user": user,
         "clusters": clusters,

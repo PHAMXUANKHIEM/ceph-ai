@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 LOOKBACK_MINUTES = 30
 MAX_VOLUMES_PER_SCAN = 50
+MAX_DATA_OBJECT_SAMPLES = 8
 
 
 def _connection(cluster):
@@ -54,8 +55,34 @@ def normalize_osd_map_payload(payload: dict | list) -> dict:
     }
 
 
+def sample_data_object_names(info: dict, image_id: str) -> tuple[list[str], int]:
+    """Return bounded, deterministic samples of RBD data objects.
+
+    RBD object indexes are hexadecimal and zero-padded to 16 characters.
+    Sampling across the image avoids treating the metadata header as the
+    workload placement while keeping the collector bounded for large images.
+    """
+    try:
+        size = max(0, int(info.get("size") or 0))
+        object_size = max(0, int(info.get("object_size") or 0))
+        object_count = int(info.get("num_objs") or 0)
+    except (TypeError, ValueError):
+        size, object_size, object_count = 0, 0, 0
+    if object_count <= 0 and size > 0 and object_size > 0:
+        object_count = (size + object_size - 1) // object_size
+    object_count = max(1, object_count)
+    prefix = info.get("block_name_prefix") or f"rbd_data.{image_id}"
+    if not isinstance(prefix, str) or not prefix:
+        prefix = f"rbd_data.{image_id}"
+    indexes = {0, object_count - 1}
+    for step in range(1, MAX_DATA_OBJECT_SAMPLES - 1):
+        indexes.add(round((object_count - 1) * step / (MAX_DATA_OBJECT_SAMPLES - 1)))
+    indexes = sorted(indexes)[:MAX_DATA_OBJECT_SAMPLES]
+    return [f"{prefix}.{index:016x}" for index in indexes], object_count
+
+
 def map_volume(cluster, pool: str, image: str) -> dict:
-    """Map the RBD header object, which is present even for an idle image."""
+    """Map bounded samples of RBD data objects to their PG/acting OSD sets."""
     connection = _connection(cluster)
     spec = f"{shlex.quote(pool)}/{shlex.quote(image)}"
     _stdout, info = ceph_client.run_ceph_json_command_with(
@@ -64,18 +91,31 @@ def map_volume(cluster, pool: str, image: str) -> dict:
     if not isinstance(info, dict) or not info.get("id"):
         raise ValueError("rbd info không trả image id")
     image_id = str(info["id"])
-    object_name = f"rbd_header.{image_id}"
-    _stdout, mapped = ceph_client.run_ceph_json_command_with(
-        *connection,
-        f"ceph osd map {shlex.quote(pool)} {shlex.quote(object_name)}",
-    )
-    result = normalize_osd_map_payload(mapped)
+    object_names, data_object_count = sample_data_object_names(info, image_id)
+    mapped_objects = []
+    for object_name in object_names:
+        _stdout, mapped = ceph_client.run_ceph_json_command_with(
+            *connection,
+            f"ceph osd map {shlex.quote(pool)} {shlex.quote(object_name)}",
+        )
+        result = normalize_osd_map_payload(mapped)
+        mapped_objects.append({"object_name": object_name, **result})
+    if not mapped_objects:
+        raise ValueError("không map được data object nào")
+    acting_osds = sorted({osd_id for item in mapped_objects for osd_id in item["acting_osds"]})
+    pgids = [item["pgid"] for item in mapped_objects]
     return {
         "pool": pool,
         "image": image,
         "image_id": image_id,
-        "object_name": object_name,
-        **result,
+        "object_name": mapped_objects[0]["object_name"],
+        "pgid": mapped_objects[0]["pgid"],
+        "acting_osds": acting_osds,
+        "primary_osd": mapped_objects[0]["primary_osd"],
+        "pgids": pgids,
+        "sampled_objects": [item["object_name"] for item in mapped_objects],
+        "data_object_count": data_object_count,
+        "mapping_scope": "data_sample",
     }
 
 
@@ -115,6 +155,10 @@ def collect_and_store(cluster_id: str, cluster, *, now: datetime | None = None) 
             row.pgid = mapping["pgid"]
             row.acting_osds_json = json.dumps(mapping["acting_osds"], separators=(",", ":"))
             row.primary_osd = mapping["primary_osd"]
+            row.pgids_json = json.dumps(mapping["pgids"], separators=(",", ":"))
+            row.sampled_objects_json = json.dumps(mapping["sampled_objects"], separators=(",", ":"))
+            row.data_object_count = mapping["data_object_count"]
+            row.mapping_scope = mapping["mapping_scope"]
             row.captured_at = now
             stored += 1
         session.commit()
