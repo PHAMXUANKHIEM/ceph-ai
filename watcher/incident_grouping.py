@@ -146,22 +146,28 @@ def build_group_context(session, incident_id: str, *, limit: int = MAX_GROUP_CON
     root_id = incident.group_root_incident_id or incident.id
     context_limit = max(0, min(limit, MAX_GROUP_CONTEXT_INCIDENTS))
     root = session.get(Incident, root_id) if root_id != incident.id else None
+    if root is not None and root.cluster_id != incident.cluster_id:
+        root = None
+        root_id = incident.id
     rows = [root] if root is not None and context_limit else []
-    remaining = max(0, context_limit - len(rows))
-    related_rows = (
+    related_query = (
         session.query(Incident)
+        .filter(Incident.cluster_id == incident.cluster_id)
         .filter(Incident.detected_at >= incident.detected_at - GROUP_LOOKBACK)
         .filter(Incident.detected_at <= incident.detected_at + timedelta(minutes=15))
         .filter(Incident.group_root_incident_id == root_id)
         .filter(Incident.id != incident.id)
         .filter(Incident.id != root_id)
         .order_by(Incident.detected_at.desc(), Incident.created_at.desc(), Incident.id.desc())
-        .limit(remaining)
-        .all()
     )
+    related_total = related_query.order_by(None).count() + (1 if root is not None else 0)
+    remaining = max(0, context_limit - len(rows))
+    related_rows = related_query.limit(remaining).all()
     rows.extend(related_rows)
     return {
         "root_incident_id": root_id,
+        "related_total": related_total,
+        "related_shown": len(rows),
         "related_incidents": [
             {
                 "incident_id": row.id,

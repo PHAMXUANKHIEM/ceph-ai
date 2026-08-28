@@ -51,12 +51,13 @@ def test_incident_timeline_page_and_postmortem_generation(dashboard_client, monk
 
 def test_incident_timeline_shows_group_context(dashboard_client):
     detected_at = datetime.utcnow()
+    root_detected_at = detected_at - timedelta(minutes=5)
     with db_module.SessionLocal() as session:
         root = Incident(
             id="group-root",
             ceph_code="OSD_DOWN",
             status="RESOLVED",
-            detected_at=detected_at - timedelta(minutes=5),
+            detected_at=root_detected_at,
             diagnosis_text="Network heartbeat interrupted.",
         )
         child = Incident(
@@ -79,6 +80,8 @@ def test_incident_timeline_shows_group_context(dashboard_client):
     assert "group-root" in page.text
     assert "Network heartbeat interrupted." in page.text
     assert "/incidents/group-root/timeline" in page.text
+    assert root_detected_at.strftime("%d/%m/%Y") in page.text
+    assert root_detected_at.isoformat() not in page.text
 
 
 def test_operator_can_set_case_verdict_from_incident_timeline(dashboard_client):

@@ -25,11 +25,12 @@
       </div>
     </section>
     <section class="card incident-group-card">
-      <div class="card-header">
+        <div class="card-header">
         <div><h2>Incident Group</h2><p class="hint">Các sự cố trong cùng fault window để operator đối chiếu; group không tự khẳng định root cause.</p></div>
         <span class="incident-group-root">Root <code>{{ incident_group.root_incident_id }}</code></span>
       </div>
       <div class="card-body">
+        {% if incident_group.related_total > incident_group.related_shown %}<p class="hint">Đang hiển thị {{ incident_group.related_shown }} / {{ incident_group.related_total }} incident trong group gần nhất.</p>{% endif %}
         {% if incident_group.related_incidents %}
         <div class="table-wrap">
           <table class="incident-group-table">
@@ -47,7 +48,7 @@
                 <td><span class="incident-group-role">{{ "Root" if row.incident_id == incident_group.root_incident_id else "Liên quan" }}</span></td>
                 <td><a href="/incidents/{{ row.incident_id }}/timeline"><code>{{ row.ceph_code }}</code></a><br><code>{{ row.incident_id }}</code></td>
                 <td>{{ row.status }}</td><td>{{ row.severity or "—" }}</td>
-                <td><code>{{ row.detected_at }}</code></td>
+                <td><code>{{ row.detected_at_display or row.detected_at }}</code></td>
                 <td>{{ row.diagnosis_text or "Chưa có chẩn đoán." }}</td>
               </tr>
               {% endfor %}

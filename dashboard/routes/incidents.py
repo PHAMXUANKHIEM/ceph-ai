@@ -18,6 +18,7 @@ from dashboard.routes.upgrade import CLUSTER_UPGRADE_CEPH_CODE, is_cluster_upgra
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from dashboard.telegram_approval_bot import channels_for_incident, has_configured_channel
 from dashboard.templating import make_templates
+from dashboard.vntime import format_vn
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
 from shared.ai_cost import summary as ai_cost_summary
@@ -68,6 +69,13 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         if incident is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
         incident_group = incident_grouping.build_group_context(session, incident_id)
+        for related in incident_group.get("related_incidents", []):
+            try:
+                related["detected_at_display"] = format_vn(
+                    datetime.fromisoformat(related["detected_at"])
+                )
+            except (KeyError, TypeError, ValueError):
+                related["detected_at_display"] = related.get("detected_at") or "—"
         timeline = incident_postmortem.build_timeline(session, incident_id)
         postmortem = json.loads(incident.postmortem_json) if incident.postmortem_json else None
         generated_at = incident.postmortem_generated_at

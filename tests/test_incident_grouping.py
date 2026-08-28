@@ -109,6 +109,37 @@ def test_group_context_keeps_root_and_excludes_stale_members():
     assert [row["incident_id"] for row in context["related_incidents"]] == ["root"]
 
 
+def test_group_context_reports_when_results_are_bounded():
+    session = _session()
+    root = _incident(session, "root", "OSD_DOWN", 0, osd_id=3)
+    current = _incident(session, "current", "OSD_DOWN", 10, osd_id=4)
+    for minute in range(1, 10):
+        _incident(session, f"related-{minute}", "OSD_DOWN", minute, osd_id=10 + minute)
+    assign_incident_group(session, root)
+    assign_incident_group(session, current)
+
+    context = build_group_context(session, "current")
+
+    assert context["related_total"] == 10
+    assert context["related_shown"] == 8
+
+
+def test_group_context_does_not_cross_cluster_boundary():
+    session = _session()
+    root = _incident(session, "root", "OSD_DOWN", 0, cluster_id="cluster-a", osd_id=3)
+    current = _incident(session, "current", "OSD_DOWN", 5, cluster_id="cluster-a", osd_id=4)
+    foreign = _incident(session, "foreign", "OSD_DOWN", 5, cluster_id="cluster-b", osd_id=5)
+    assign_incident_group(session, root)
+    assign_incident_group(session, current)
+    foreign.group_root_incident_id = root.id
+    session.flush()
+
+    context = build_group_context(session, "current")
+
+    assert context["related_total"] == 1
+    assert [row["incident_id"] for row in context["related_incidents"]] == ["root"]
+
+
 def test_router_prompt_includes_group_context():
     from worker.llm.router_client import _build_user_content
 
