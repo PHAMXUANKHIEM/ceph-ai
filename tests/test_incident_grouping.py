@@ -94,6 +94,21 @@ def test_group_context_returns_root_and_related_incidents():
     assert [row["incident_id"] for row in context["related_incidents"]] == ["root"]
 
 
+def test_group_context_keeps_root_and_excludes_stale_members():
+    session = _session()
+    root = _incident(session, "root", "OSD_DOWN", 0, osd_id=3)
+    recent = _incident(session, "recent", "OSD_DOWN", 5, osd_id=4)
+    stale = _incident(session, "stale", "OSD_DOWN", -600, osd_id=5)
+    assign_incident_group(session, root)
+    assign_incident_group(session, recent)
+    stale.group_root_incident_id = "root"
+    session.flush()
+
+    context = build_group_context(session, "recent", limit=2)
+
+    assert [row["incident_id"] for row in context["related_incidents"]] == ["root"]
+
+
 def test_router_prompt_includes_group_context():
     from worker.llm.router_client import _build_user_content
 

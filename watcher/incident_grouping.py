@@ -128,6 +128,7 @@ def assign_incident_group(session, incident: Incident) -> str:
 
     members = (
         session.query(Incident)
+        .filter(Incident.detected_at >= window_start, Incident.detected_at <= window_end)
         .filter(or_(Incident.id.in_(root_ids), Incident.group_root_incident_id.in_(root_ids)))
         .all()
     )
@@ -143,14 +144,22 @@ def build_group_context(session, incident_id: str, *, limit: int = MAX_GROUP_CON
     if incident is None:
         return {"root_incident_id": incident_id, "related_incidents": []}
     root_id = incident.group_root_incident_id or incident.id
-    rows = (
+    context_limit = max(0, min(limit, MAX_GROUP_CONTEXT_INCIDENTS))
+    root = session.get(Incident, root_id) if root_id != incident.id else None
+    rows = [root] if root is not None and context_limit else []
+    remaining = max(0, context_limit - len(rows))
+    related_rows = (
         session.query(Incident)
-        .filter(or_(Incident.id == root_id, Incident.group_root_incident_id == root_id))
+        .filter(Incident.detected_at >= incident.detected_at - GROUP_LOOKBACK)
+        .filter(Incident.detected_at <= incident.detected_at + timedelta(minutes=15))
+        .filter(Incident.group_root_incident_id == root_id)
         .filter(Incident.id != incident.id)
+        .filter(Incident.id != root_id)
         .order_by(Incident.detected_at.desc(), Incident.created_at.desc(), Incident.id.desc())
-        .limit(max(0, min(limit, MAX_GROUP_CONTEXT_INCIDENTS)))
+        .limit(remaining)
         .all()
     )
+    rows.extend(related_rows)
     return {
         "root_incident_id": root_id,
         "related_incidents": [

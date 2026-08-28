@@ -207,7 +207,7 @@ class Incident(Base):
     # earliest/root Incident in the same cluster fault window. NULL is kept
     # for legacy rows until they are next processed by the AI Worker.
     group_root_incident_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("incidents.id"), nullable=True, index=True,
+        String(36), ForeignKey("incidents.id", ondelete="SET NULL"), nullable=True, index=True,
     )
     diagnosis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     postmortem_json: Mapped[str | None] = mapped_column(Text, nullable=True)

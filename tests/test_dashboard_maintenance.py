@@ -289,6 +289,42 @@ def test_purge_old_records_dereferences_chat_message_pointing_at_deleted_inciden
         assert message.proposed_incident_id is None
 
 
+def test_purge_old_records_keeps_new_group_child_when_old_root_is_deleted(monkeypatch):
+    engine = make_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(db_module, "engine", engine)
+    monkeypatch.setattr(db_module, "SessionLocal", db_module.sessionmaker(bind=engine))
+
+    with db_module.SessionLocal() as session:
+        session.add(
+            Incident(
+                id="old-root",
+                ceph_code="OSD_DOWN",
+                status=IncidentStatus.RESOLVED.value,
+                detected_at=datetime(2026, 1, 1),
+            )
+        )
+        session.flush()
+        session.add(
+            Incident(
+                id="new-child",
+                ceph_code="OSD_DOWN",
+                status=IncidentStatus.NEW.value,
+                detected_at=datetime(2026, 7, 1),
+                group_root_incident_id="old-root",
+            )
+        )
+        session.commit()
+
+    counts = maintenance_route.purge_old_records(datetime(2026, 3, 1))
+
+    assert counts["incidents"] == 1
+    with db_module.SessionLocal() as session:
+        child = session.get(Incident, "new-child")
+        assert child is not None
+        assert child.group_root_incident_id is None
+
+
 def test_cleanup_files_only_does_not_touch_db(dashboard_client, monkeypatch, tmp_path):
     log_path = tmp_path / "dashboard.log"
     log_path.write_text("2026-01-01 00:00:00 INFO:x:old line\n")
