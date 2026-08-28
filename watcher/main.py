@@ -28,6 +28,7 @@ from watcher import (
     trash_capacity_monitor,
     verify,
     volume_monitor,
+    host_metrics,
     volume_topology,
     vitastor_monitor,
 )
@@ -995,6 +996,11 @@ def run(
                     lambda: volume_topology.collect_and_store(cluster_id, None),
                     background=True,
                 )
+                _run_auxiliary_scan(
+                    f"host-metrics-{cluster_id or 'default'}",
+                    lambda: host_metrics.collect_and_store(cluster_id, None),
+                    background=True,
+                )
 
         if settings.capacity_forecast_enabled and cluster_id and (
             last_capacity_forecast_scan_at is None
@@ -1294,6 +1300,11 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                     _run_auxiliary_scan(
                         f"volume-topology-{cluster.id}",
                         lambda: volume_topology.collect_and_store(cluster.id, cluster),
+                        background=True,
+                    )
+                    _run_auxiliary_scan(
+                        f"host-metrics-{cluster.id}",
+                        lambda: host_metrics.collect_and_store(cluster.id, cluster),
                         background=True,
                     )
                 except Exception:

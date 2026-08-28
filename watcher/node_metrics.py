@@ -14,8 +14,10 @@ SAMPLE_INTERVAL_SECONDS = 1
 
 _MARKER_CPU1 = "===CPU1==="
 _MARKER_DISK1 = "===DISK1==="
+_MARKER_NET1 = "===NET1==="
 _MARKER_CPU2 = "===CPU2==="
 _MARKER_DISK2 = "===DISK2==="
+_MARKER_NET2 = "===NET2==="
 _MARKER_MEM = "===MEM==="
 
 # Two /proc/stat + /proc/diskstats samples SAMPLE_INTERVAL_SECONDS apart, in
@@ -26,9 +28,11 @@ _MARKER_MEM = "===MEM==="
 REMOTE_METRICS_SCRIPT = (
     f"echo {_MARKER_CPU1}; grep '^cpu ' /proc/stat; "
     f"echo {_MARKER_DISK1}; cat /proc/diskstats; "
+    f"echo {_MARKER_NET1}; cat /proc/net/dev; "
     f"sleep {SAMPLE_INTERVAL_SECONDS}; "
     f"echo {_MARKER_CPU2}; grep '^cpu ' /proc/stat; "
     f"echo {_MARKER_DISK2}; cat /proc/diskstats; "
+    f"echo {_MARKER_NET2}; cat /proc/net/dev; "
     f"echo {_MARKER_MEM}; cat /proc/meminfo"
 )
 
@@ -52,6 +56,12 @@ def _extract_section(output: str, start_marker: str, end_marker: str | None) -> 
     if end == -1:
         end = len(output)
     return output[start:end].strip()
+
+
+def _extract_optional_section(output: str, start_marker: str, end_marker: str) -> str:
+    if start_marker not in output:
+        return ""
+    return _extract_section(output, start_marker, end_marker)
 
 
 def _parse_cpu_line(text: str) -> tuple[int, int]:
@@ -120,11 +130,34 @@ def _parse_meminfo(text: str) -> tuple[float, float]:
     return used_kb / 1024, total_kb / 1024
 
 
+def _parse_netdev(text: str) -> tuple[int, int]:
+    """Returns aggregate (RX bytes, TX bytes), excluding loopback."""
+    received = 0
+    transmitted = 0
+    for line in text.splitlines():
+        interface, separator, counters = line.partition(":")
+        if not separator or interface.strip() == "lo":
+            continue
+        fields = counters.split()
+        if len(fields) < 9:
+            continue
+        try:
+            received += max(0, int(fields[0]))
+            transmitted += max(0, int(fields[8]))
+        except ValueError:
+            continue
+    return received, transmitted
+
+
 def parse_node_metrics(raw_output: str) -> dict:
     cpu1_text = _extract_section(raw_output, _MARKER_CPU1, _MARKER_DISK1)
-    disk1_text = _extract_section(raw_output, _MARKER_DISK1, _MARKER_CPU2)
+    disk1_end = _MARKER_NET1 if _MARKER_NET1 in raw_output else _MARKER_CPU2
+    disk1_text = _extract_section(raw_output, _MARKER_DISK1, disk1_end)
+    net1_text = _extract_optional_section(raw_output, _MARKER_NET1, _MARKER_CPU2)
     cpu2_text = _extract_section(raw_output, _MARKER_CPU2, _MARKER_DISK2)
-    disk2_text = _extract_section(raw_output, _MARKER_DISK2, _MARKER_MEM)
+    disk2_end = _MARKER_NET2 if _MARKER_NET2 in raw_output else _MARKER_MEM
+    disk2_text = _extract_section(raw_output, _MARKER_DISK2, disk2_end)
+    net2_text = _extract_optional_section(raw_output, _MARKER_NET2, _MARKER_MEM)
     mem_text = _extract_section(raw_output, _MARKER_MEM, None)
 
     idle1, total1 = _parse_cpu_line(cpu1_text)
@@ -150,6 +183,11 @@ def parse_node_metrics(raw_output: str) -> dict:
     delta_io_time_ms = delta_time_r_ms + delta_time_w_ms
     disk_latency_ms = (delta_io_time_ms / delta_io_count) if delta_io_count > 0 else 0.0
 
+    rx1, tx1 = _parse_netdev(net1_text)
+    rx2, tx2 = _parse_netdev(net2_text)
+    network_rx_bytes_per_sec = max(rx2 - rx1, 0) / SAMPLE_INTERVAL_SECONDS
+    network_tx_bytes_per_sec = max(tx2 - tx1, 0) / SAMPLE_INTERVAL_SECONDS
+
     mem_used_mb, mem_total_mb = _parse_meminfo(mem_text)
     mem_percent = (mem_used_mb / mem_total_mb * 100) if mem_total_mb > 0 else 0.0
 
@@ -161,6 +199,8 @@ def parse_node_metrics(raw_output: str) -> dict:
         "disk_read_iops": round(disk_read_iops, 1),
         "disk_write_iops": round(disk_write_iops, 1),
         "disk_latency_ms": round(disk_latency_ms, 2),
+        "network_rx_bytes_per_sec": round(network_rx_bytes_per_sec, 1),
+        "network_tx_bytes_per_sec": round(network_tx_bytes_per_sec, 1),
     }
 
 

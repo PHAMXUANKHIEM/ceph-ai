@@ -1359,6 +1359,33 @@ class VolumeOsdMapping(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
+class HostMetricSample(Base):
+    """Timestamped read-only host telemetry used by performance RCA.
+
+    One row is collected per configured OSD host. ``node_name`` is obtained
+    from the host itself and lets RCA join the IP-based SSH target to the
+    hostname used by the CRUSH tree without positional assumptions.
+    """
+
+    __tablename__ = "host_metric_samples"
+    __table_args__ = (
+        Index("ix_host_metric_samples_cluster_host_collected", "cluster_id", "host", "collected_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    node_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cpu_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    mem_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    disk_read_iops: Mapped[float] = mapped_column(Float, nullable=False)
+    disk_write_iops: Mapped[float] = mapped_column(Float, nullable=False)
+    disk_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    network_rx_bytes_per_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    network_tx_bytes_per_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
 class VolumeForecastRun(Base):
     """One auditable candidate baseline and its later observed outcome."""
 

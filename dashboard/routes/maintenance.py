@@ -22,6 +22,7 @@ from shared.models import (
     AuditEntry,
     BackupDigestLog,
     ChatMessage,
+    HostMetricSample,
     Incident,
     NodeDiagnosticRun,
     VolumeMetric,
@@ -149,7 +150,7 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
     deletes Incidents (+ their Actions + AuditEntries, cascaded manually —
     there is no ORM/DB cascade configured, and Action/AuditEntry's own FKs
     would reject an orphaning delete) detected before `cutoff`, and
-    NodeDiagnosticRuns/VolumeMetrics created before `cutoff` (unrelated
+    NodeDiagnosticRuns/VolumeMetrics/HostMetricSamples created before `cutoff` (unrelated
     tables, no FK to Incident).
 
     ChatMessage.proposed_incident_id also FKs to Incident (set once a chat
@@ -213,6 +214,11 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
             volume_metric_query = volume_metric_query.filter(VolumeMetric.polled_at < cutoff)
         volume_metric_deleted = volume_metric_query.delete(synchronize_session=False)
 
+        host_metric_query = session.query(HostMetricSample)
+        if cutoff is not None:
+            host_metric_query = host_metric_query.filter(HostMetricSample.collected_at < cutoff)
+        host_metric_deleted = host_metric_query.delete(synchronize_session=False)
+
         session.commit()
 
     return {
@@ -221,6 +227,7 @@ def purge_old_records(cutoff: datetime | None) -> dict[str, int]:
         "audit_entries": audit_deleted,
         "diagnostic_runs": diagnostic_deleted,
         "volume_metrics": volume_metric_deleted,
+        "host_metric_samples": host_metric_deleted,
     }
 
 
@@ -287,7 +294,8 @@ async def cleanup_submit(
             summary_parts.append(
                 f"DB: {counts['incidents']} incident, {counts['actions']} action, "
                 f"{counts['audit_entries']} audit entry, {counts['diagnostic_runs']} chẩn đoán CLI, "
-                f"{counts['volume_metrics']} bản ghi hiệu năng volume."
+                f"{counts['volume_metrics']} bản ghi hiệu năng volume, "
+                f"{counts['host_metric_samples']} bản ghi host metrics."
             )
         if target_files:
             freed_total = 0

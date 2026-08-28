@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from shared import db
-from shared.models import CrushOsdDistribution, VolumeMetric, VolumeOsdMapping
+from shared.models import CrushOsdDistribution, HostMetricSample, VolumeMetric, VolumeOsdMapping
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from shared.cluster_nodes import resolve_ssh_creds
@@ -31,6 +31,10 @@ VOLUME_ELEVATED_RATIO = 1.25
 POOL_ELEVATED_RATIO = 1.20
 FRESH_VOLUME_SECONDS = 15 * 60
 FRESH_DISTRIBUTION_SECONDS = 30 * 60
+FRESH_HOST_SECONDS = 5 * 60
+HOST_CPU_HIGH_PERCENT = 85.0
+HOST_MEM_HIGH_PERCENT = 90.0
+HOST_DISK_LATENCY_HIGH_MS = 20.0
 
 
 def _median(values: list[float]) -> float | None:
@@ -66,6 +70,10 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return round(min(high, max(low, value)), 3)
 
 
+def _host_key(value: str | None) -> str:
+    return (value or "").strip().lower().rstrip(".")
+
+
 def _latest_by_key(rows: list[VolumeMetric]) -> dict[tuple[str, str], VolumeMetric]:
     latest: dict[tuple[str, str], VolumeMetric] = {}
     for row in rows:
@@ -97,6 +105,48 @@ def _osd_summary(live_signals: dict | None) -> dict:
     }
 
 
+def _host_evidence(
+    topology: dict | None,
+    host_by_osd: dict[int, str | None],
+    host_samples: dict[str, HostMetricSample],
+    now: datetime,
+) -> list[dict]:
+    if not topology:
+        return []
+    evidence = []
+    for osd_id in topology.get("acting_osds", []):
+        host = host_by_osd.get(osd_id)
+        if not host:
+            continue
+        sample = host_samples.get(host.strip().lower().rstrip("."))
+        if sample is None or (_age(now, sample.collected_at) or 0) > FRESH_HOST_SECONDS:
+            continue
+        flags = []
+        if sample.cpu_percent >= HOST_CPU_HIGH_PERCENT:
+            flags.append("cpu_high")
+        if sample.mem_percent >= HOST_MEM_HIGH_PERCENT:
+            flags.append("memory_high")
+        if sample.disk_latency_ms >= HOST_DISK_LATENCY_HIGH_MS:
+            flags.append("disk_latency_high")
+        evidence.append({
+            "host": host,
+            "sample_host": sample.host,
+            "node_name": sample.node_name,
+            "osd_id": osd_id,
+            "cpu_percent": round(sample.cpu_percent, 1),
+            "mem_percent": round(sample.mem_percent, 1),
+            "disk_latency_ms": round(sample.disk_latency_ms, 2),
+            "disk_read_iops": round(sample.disk_read_iops, 1),
+            "disk_write_iops": round(sample.disk_write_iops, 1),
+            "network_rx_bytes_per_sec": round(sample.network_rx_bytes_per_sec, 1),
+            "network_tx_bytes_per_sec": round(sample.network_tx_bytes_per_sec, 1),
+            "flags": flags,
+            "bottleneck": bool(flags),
+            "observed_at": _iso(sample.collected_at),
+        })
+    return evidence
+
+
 def _volume_analysis(
     rows: list[VolumeMetric],
     latest: VolumeMetric,
@@ -104,6 +154,7 @@ def _volume_analysis(
     cluster_latest: list[VolumeMetric],
     osd_summary: dict,
     topology: dict | None = None,
+    host_evidence: list[dict] | None = None,
 ) -> dict:
     values = [_latency(row) for row in rows]
     historical = values[:-1] if len(values) > 1 else values
@@ -131,10 +182,16 @@ def _volume_analysis(
     volume_score = _clamp((current / baseline) - 1.0) if baseline and baseline > 0 else 0.0
     pool_score = _clamp((pool_ratio or 1.0) - 1.0)
     osd_score = float(osd_summary.get("score", 0.0))
+    host_evidence = host_evidence or []
+    host_bottlenecks = [item for item in host_evidence if item.get("bottleneck")]
     mapped_osds = topology.get("acting_osds", []) if topology else []
     outlier_ids = {item.get("osd_id") for item in osd_summary.get("outliers", [])}
     mapped_outliers = [osd_id for osd_id in mapped_osds if osd_id in outlier_ids]
-    if volume_elevated and mapped_outliers:
+    if volume_elevated and host_bottlenecks:
+        hypothesis = "host_resource_candidate"
+        explanation = "Volume tăng latency và host của acting set có CPU/RAM/disk signal cao."
+        confidence = _clamp(0.50 + volume_score * 0.20)
+    elif volume_elevated and mapped_outliers:
         hypothesis = "sampled_data_osd_latency_candidate"
         explanation = "Volume đang tăng latency và các data-object PG được sample chứa OSD latency outlier."
         confidence = _clamp(0.55 + volume_score * 0.20 + osd_score * 0.20)
@@ -181,11 +238,16 @@ def _volume_analysis(
             },
             "osd": osd_summary,
             "mapped_outlier_osds": mapped_outliers,
+            "host": {
+                "status": "bottleneck" if host_bottlenecks else ("observed" if host_evidence else "not_available"),
+                "evidence": host_evidence,
+            },
         },
         "hypothesis": hypothesis,
         "explanation": explanation,
         "confidence": confidence,
         "topology": topology,
+        "host_evidence": host_evidence,
     }
 
 
@@ -305,6 +367,21 @@ def build_report(
             "freshness": _freshness(now, mapping.captured_at, FRESH_DISTRIBUTION_SECONDS),
             "source": "volume_osd_mappings",
         }
+    distribution_rows = session.query(CrushOsdDistribution).filter(
+        CrushOsdDistribution.cluster_id == cluster_id,
+    ).all()
+    host_by_osd = {row.osd_id: row.host for row in distribution_rows}
+    host_rows = session.query(HostMetricSample).filter(
+        HostMetricSample.cluster_id == cluster_id,
+        HostMetricSample.collected_at >= window_start,
+        HostMetricSample.collected_at <= now,
+    ).order_by(HostMetricSample.collected_at.asc()).all()
+    host_samples = {}
+    for row in host_rows:
+        for identity in (row.node_name, row.host):
+            key = _host_key(identity)
+            if key:
+                host_samples[key] = row
     analyses = []
     for key, history in grouped.items():
         latest = latest_map[key]
@@ -313,9 +390,11 @@ def build_report(
             analyses.append(_volume_analysis(
                 history, latest, pool_latest, cluster_latest, osd_summary,
                 topology_by_key.get(key),
+                _host_evidence(topology_by_key.get(key), host_by_osd, host_samples, now),
             ))
     analyses.sort(key=lambda item: (item["confidence"], item["current_latency_ms"]), reverse=True)
     analyses = analyses[:MAX_VOLUME_REPORTS]
+    host_join_count = sum(1 for item in analyses if item.get("host_evidence"))
 
     chain, distribution_citation = _distribution_chain(session, cluster_id, now)
     if topology_by_key:
@@ -353,11 +432,23 @@ def build_report(
     }
     chain["disk"] = {
         "layer": "disk",
-        "status": "proxy_only" if osd_summary.get("outliers") else "not_available",
-        "detail": "OSD commit latency chỉ là disk/OSD proxy; chưa phải diskstats hoặc SMART per OSD.",
-        "source": "ceph_osd_perf_live",
-        "freshness": osd_summary.get("freshness"),
+        "status": "observed" if host_rows else ("proxy_only" if osd_summary.get("outliers") else "not_available"),
+        "detail": (
+            "Có host disk IOPS/latency sample cùng time window."
+            if host_rows else "OSD commit latency chỉ là disk/OSD proxy; chưa có host disk sample."
+        ),
+        "source": "host_metric_samples" if host_rows else "ceph_osd_perf_live",
+        "freshness": _freshness(now, max((row.collected_at for row in host_rows), default=None), FRESH_HOST_SECONDS)
+        if host_rows else osd_summary.get("freshness"),
     }
+    if host_rows:
+        chain["host"] = {
+            "layer": "host",
+            "status": "observed" if host_join_count else "unscoped",
+            "detail": f"Có {len(host_rows)} host metric samples; {host_join_count} volume analysis join được với OSD→hostname.",
+            "source": "host_metric_samples",
+            "freshness": _freshness(now, max(row.collected_at for row in host_rows), FRESH_HOST_SECONDS),
+        }
 
     citations = [{
         "source_id": "volume_metrics",
@@ -374,6 +465,12 @@ def build_report(
             "observed_at": live_signals.get("freshness", {}).get("observed_at"),
             "measured_osds": live_signals.get("measured_osds", 0),
         })
+    if host_rows:
+        citations.append({
+            "source_id": "host_metric_samples",
+            "observed_at": _iso(max(row.collected_at for row in host_rows)),
+            "row_count": len(host_rows),
+        })
 
     gaps = []
     if not analyses:
@@ -384,7 +481,10 @@ def build_report(
         gaps.append(f"Có {stale_or_legacy_mappings} mapping stale/legacy; không dùng để suy luận causal.")
     else:
         gaps.append("Chưa có volume→PG→OSD acting-set mapping trong dữ liệu hiện tại.")
-    gaps.append("Chưa có host disk/SMART/network sample được lưu theo cùng time window.")
+    if not host_rows:
+        gaps.append("Chưa có host disk/SMART/network sample được lưu theo cùng time window.")
+    elif not host_join_count:
+        gaps.append("Có host metrics nhưng chưa join được với acting OSD của volume nào trong cửa sổ.")
     return {
         "status": "ready" if analyses else "insufficient_evidence",
         "conclusion": "correlation_only",
