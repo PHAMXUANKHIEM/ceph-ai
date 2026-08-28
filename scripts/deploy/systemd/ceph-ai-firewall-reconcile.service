@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile Ceph AI RabbitMQ network hardening
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart ceph-ai-firewall.service
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

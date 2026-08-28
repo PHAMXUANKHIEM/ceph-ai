@@ -118,8 +118,19 @@ if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
     /usr/local/sbin/ceph-ai-firewall
   install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.service" \
     /etc/systemd/system/ceph-ai-firewall.service
+  if [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall-reconcile.service" ] && \
+     [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.timer" ]; then
+    install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall-reconcile.service" \
+      /etc/systemd/system/ceph-ai-firewall-reconcile.service
+    install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.timer" \
+      /etc/systemd/system/ceph-ai-firewall.timer
+  fi
   systemctl daemon-reload
   systemctl enable --now ceph-ai-firewall.service
+  if [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall-reconcile.service" ] && \
+     [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.timer" ]; then
+    systemctl enable --now ceph-ai-firewall.timer
+  fi
 fi
 
 echo "==> Stopping existing services (if running)"
