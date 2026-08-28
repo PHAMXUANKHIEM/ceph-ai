@@ -18,6 +18,38 @@
         <a class="btn btn-ghost btn-sm" href="/">Dashboard</a>
       </div>
       <div class="card-body">
+        <form method="get" action="/alerts" class="alert-filters">
+          <label>Mã lỗi
+            <input type="search" name="code" value="{{ code_filter }}" placeholder="Ví dụ: OSD_DOWN">
+          </label>
+          <label>Trạng thái
+            <select name="status">
+              <option value="all" {{ "selected" if status_filter == "all" else "" }}>Tất cả</option>
+              <option value="open" {{ "selected" if status_filter == "open" else "" }}>Đang mở</option>
+              <option value="closed" {{ "selected" if status_filter == "closed" else "" }}>Đã đóng</option>
+              <option value="acknowledged" {{ "selected" if status_filter == "acknowledged" else "" }}>Đã xác nhận</option>
+              <option value="muted" {{ "selected" if status_filter == "muted" else "" }}>Đang mute</option>
+            </select>
+          </label>
+          <label>Severity
+            <select name="severity">
+              <option value="all" {{ "selected" if severity_filter == "ALL" else "" }}>Tất cả</option>
+              <option value="health_warn" {{ "selected" if severity_filter == "HEALTH_WARN" else "" }}>HEALTH_WARN</option>
+              <option value="health_err" {{ "selected" if severity_filter == "HEALTH_ERR" else "" }}>HEALTH_ERR</option>
+            </select>
+          </label>
+          <label>Thời gian
+            <select name="period">
+              <option value="all" {{ "selected" if period_filter == "all" else "" }}>Tất cả</option>
+              <option value="24h" {{ "selected" if period_filter == "24h" else "" }}>24 giờ</option>
+              <option value="7d" {{ "selected" if period_filter == "7d" else "" }}>7 ngày</option>
+              <option value="30d" {{ "selected" if period_filter == "30d" else "" }}>30 ngày</option>
+              <option value="1y" {{ "selected" if period_filter == "1y" else "" }}>1 năm</option>
+            </select>
+          </label>
+          <button class="btn btn-primary btn-sm" type="submit">Lọc</button>
+          <a class="btn btn-ghost btn-sm" href="/alerts">Xoá lọc</a>
+        </form>
         <div class="alert-center-summary">
           <span class="status-pill status-warn"><span class="dot"></span><strong>{{ total_groups }} nhóm cảnh báo</strong></span>
           <span class="hint">{{ total_incidents }} lần phát hiện · {{ active_groups }} nhóm đang mở · trang {{ page }}/{{ total_pages }}</span>
@@ -38,11 +70,18 @@
                     </tbody></table></div>
                   </details>
                 </td>
-                <td>{% if group.is_active %}<span class="severity-badge severity-warn">ĐANG MỞ</span>{% else %}<span class="hint">ĐÃ ĐÓNG</span>{% endif %}</td>
+                <td>{% if group.is_active %}<span class="severity-badge severity-warn">ĐANG MỞ</span>{% else %}<span class="hint">ĐÃ ĐÓNG</span>{% endif %}
+                  {% if group.is_acknowledged %}<div class="alert-state-badge">ĐÃ XÁC NHẬN{% if group.acknowledged_by %} · {{ group.acknowledged_by }}{% endif %}</div>{% endif %}
+                  {% if group.is_muted %}<div class="alert-state-badge">MUTE tới {{ group.muted_until|vntime }}</div>{% endif %}
+                </td>
                 <td><strong>{{ group.occurrence_count }}</strong>{% if group.active_count %}<div class="hint">{{ group.active_count }} đang mở</div>{% endif %}</td>
                 <td><code>{{ group.first_seen|vntime }}</code></td>
                 <td><code>{{ group.last_seen|vntime }}</code></td>
-                <td><a class="btn btn-ghost btn-sm" href="/incidents/{{ current.id }}/timeline">Xem timeline</a></td>
+                <td>
+                  <div class="alert-row-actions"><a class="btn btn-ghost btn-sm" href="/incidents/{{ current.id }}/timeline">Xem timeline</a>
+                  {% if group.is_acknowledged %}<form method="post" action="/alerts/{{ current.id }}/unacknowledge"><button class="btn btn-ghost btn-sm" type="submit">Bỏ xác nhận</button></form>{% else %}<form method="post" action="/alerts/{{ current.id }}/acknowledge"><button class="btn btn-ghost btn-sm" type="submit">Xác nhận</button></form>{% endif %}
+                  {% if group.is_muted %}<form method="post" action="/alerts/{{ current.id }}/unmute"><button class="btn btn-ghost btn-sm" type="submit">Bỏ mute</button></form>{% else %}<form method="post" action="/alerts/{{ current.id }}/mute" class="alert-mute-form"><select name="hours" aria-label="Thời gian mute">{% for hours in mute_hours %}<option value="{{ hours }}">{{ hours }}h</option>{% endfor %}</select><button class="btn btn-ghost btn-sm" type="submit">Mute</button></form>{% endif %}</div>
+                </td>
               </tr>
             {% else %}
               <tr class="empty-row"><td colspan="6" class="empty-state">Chưa có cảnh báo nào.</td></tr>
@@ -51,9 +90,9 @@
           </table>
         </div>
         {% if total_pages > 1 %}<nav class="pagination" aria-label="Phân trang cảnh báo">
-          {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page - 1 }}&cluster={{ selected_cluster.id }}">← Trước</a>{% endif %}
+          {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page - 1 }}&{{ filter_query }}">← Trước</a>{% endif %}
           <span class="hint">Trang {{ page }} / {{ total_pages }}</span>
-          {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page + 1 }}&cluster={{ selected_cluster.id }}">Sau →</a>{% endif %}
+          {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page + 1 }}&{{ filter_query }}">Sau →</a>{% endif %}
         </nav>{% endif %}
         <p class="hint alert-center-note">Gom nhóm chỉ thay đổi cách hiển thị. Incident gốc và toàn bộ bằng chứng vẫn được giữ trong timeline; hệ thống không tự xoá hay bỏ qua cảnh báo.</p>
       </div>

@@ -6,6 +6,7 @@ it never changes an Incident or suppresses an alert at the source.
 """
 
 from collections import OrderedDict
+from datetime import datetime
 from math import ceil
 
 
@@ -53,8 +54,15 @@ def build_alert_groups(incidents, *, max_groups: int | None = None) -> list[dict
 
     result = list(groups.values())
     for group in result:
+        representative = group["representative"]
         group["is_active"] = group["active_count"] > 0
         group["merged_count"] = max(group["occurrence_count"] - 1, 0)
+        group["is_acknowledged"] = getattr(representative, "acknowledged_at", None) is not None
+        group["acknowledged_by"] = getattr(representative, "acknowledged_by", None)
+        group["muted_until"] = getattr(representative, "muted_until", None)
+        group["is_muted"] = bool(
+            group["muted_until"] and group["muted_until"] > datetime.utcnow()
+        )
     return result if max_groups is None else result[:max_groups]
 
 

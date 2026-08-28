@@ -8,7 +8,7 @@ from datetime import datetime
 from hashlib import sha1
 
 from config.settings import settings
-from shared import db, telegram_alerts
+from shared import alert_lifecycle, db, telegram_alerts
 from shared.models import Cluster, Incident, IncidentStatus
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX, report
 
@@ -163,6 +163,14 @@ def check_and_alert(cluster_id: str, cluster=None) -> int:
 
     delivered = 0
     for incident_id, analysis in pending_delivery:
+        with db.SessionLocal() as session:
+            incident = session.get(Incident, incident_id)
+            if incident is None:
+                continue
+            muted = alert_lifecycle.inherit_active_mute(session, incident, now=now)
+            session.commit()
+        if muted:
+            continue
         sent = telegram_alerts.send_performance_rca_alert(
             analysis,
             cluster_name=cluster.name,

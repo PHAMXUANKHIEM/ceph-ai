@@ -216,6 +216,13 @@ class Incident(Base):
     # Last hourly Telegram reminder. NULL means no reminder has been sent;
     # created_at remains the baseline for the first reminder.
     telegram_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Operator acknowledgement/mute state for the Alert Center. These are
+    # presentation/lifecycle controls only; they never resolve an Incident
+    # and never disable watcher detection or Telegram safety gates.
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    muted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # 2026-08-20 (xác minh sau khắc phục): thời điểm SỚM NHẤT được phép kiểm
     # chứng. Không kiểm ngay sau khi lệnh chạy xong vì rất nhiều lỗi cần
     # thời gian mới hết (PG backfill xong, OSD vào lại quorum, mon clock

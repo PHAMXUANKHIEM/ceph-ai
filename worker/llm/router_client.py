@@ -13,7 +13,7 @@ import yaml
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
-from shared import audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
+from shared import alert_lifecycle, audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
 from shared.ai_observability import observe_ai_call, record_ai_usage
@@ -1012,11 +1012,12 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     },
                 )
                 session.commit()
-                send_ai_incident_alert(
-                    alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
-                    cluster_name=alert_cluster_name, bot_token=alert_bot_token,
-                    chat_id=alert_chat_id, enabled=alert_enabled,
-                )
+                if not alert_lifecycle.is_active_mute(incident):
+                    send_ai_incident_alert(
+                        alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
+                        cluster_name=alert_cluster_name, bot_token=alert_bot_token,
+                        chat_id=alert_chat_id, enabled=alert_enabled,
+                    )
                 return
             # AI roadmap Pha 0.3: fail-closed capability/version preflight,
             # run BEFORE classification/Action creation for every fresh
@@ -1045,11 +1046,12 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                     # Preflight is an execution guard, never an alert
                     # guard. Operators still need the AI diagnosis and the
                     # exact reason Autopilot declined to act.
-                    send_ai_incident_alert(
-                        alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
-                        cluster_name=alert_cluster_name, bot_token=alert_bot_token,
-                        chat_id=alert_chat_id, enabled=alert_enabled,
-                    )
+                    if not alert_lifecycle.is_active_mute(incident):
+                        send_ai_incident_alert(
+                            alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
+                            cluster_name=alert_cluster_name, bot_token=alert_bot_token,
+                            chat_id=alert_chat_id, enabled=alert_enabled,
+                        )
                     return
                 logger.warning(
                     "diagnose_incident: preflight WOULD block action_id=%s for incident %s "
@@ -1225,16 +1227,17 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     # The old Watcher alert was deliberately sent before AI ran, leaving
     # operators with a raw log-only warning.  This is now the primary alert;
     # SAFE execution outcomes and RISKY approval cards remain follow-ups.
-    send_ai_incident_alert(
-        alert_ceph_code,
-        alert_severity,
-        diagnosis_text,
-        rationale,
-        cluster_name=alert_cluster_name,
-        bot_token=alert_bot_token,
-        chat_id=alert_chat_id,
-        enabled=alert_enabled,
-    )
+    if not alert_lifecycle.is_active_mute(incident):
+        send_ai_incident_alert(
+            alert_ceph_code,
+            alert_severity,
+            diagnosis_text,
+            rationale,
+            cluster_name=alert_cluster_name,
+            bot_token=alert_bot_token,
+            chat_id=alert_chat_id,
+            enabled=alert_enabled,
+        )
 
     if envelope.get("synthetic_injection") is True:
         # Synthetic incidents exercise diagnosis, policy and case creation,

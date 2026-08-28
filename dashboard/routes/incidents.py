@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+from urllib.parse import urlencode
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -50,6 +51,7 @@ CASE_VERDICTS = {
     "INEFFECTIVE": "Không khắc phục được",
     "INCONCLUSIVE": "Chưa đủ bằng chứng",
 }
+ALERT_MUTE_HOURS = (1, 6, 24)
 
 
 def _rca_evidence(raw: str | None) -> dict | None:
@@ -101,8 +103,38 @@ def _rca_evidence(raw: str | None) -> dict | None:
     }
 
 
+def _alert_group_for_incident(session, incident_id: str, selected_cluster: Cluster) -> dict | None:
+    cluster_filter = (
+        or_(Incident.cluster_id == selected_cluster.id, Incident.cluster_id.is_(None))
+        if selected_cluster.is_default
+        else Incident.cluster_id == selected_cluster.id
+    )
+    incidents = session.query(Incident).filter(cluster_filter).order_by(
+        Incident.detected_at.desc(), Incident.id.desc()
+    ).all()
+    for group in alert_center.build_alert_groups(incidents):
+        if any(row.id == incident_id for row in group["incidents"]):
+            return group
+    return None
+
+
+def _alert_redirect(request: Request) -> RedirectResponse:
+    """Return to the centre after a lifecycle action, without trusting an external URL."""
+    return RedirectResponse("/alerts", status_code=303)
+
+
 @router.get("/alerts", response_class=HTMLResponse)
 async def alert_center_page(request: Request, user: str = Depends(require_login)):
+    status_filter = request.query_params.get("status", "all").strip().lower()
+    severity_filter = request.query_params.get("severity", "all").strip().upper()
+    period_filter = request.query_params.get("period", "all").strip().lower()
+    code_filter = request.query_params.get("code", "").strip()
+    if status_filter not in {"all", "open", "closed", "acknowledged", "muted"}:
+        status_filter = "all"
+    if severity_filter not in {"ALL", "HEALTH_WARN", "HEALTH_ERR"}:
+        severity_filter = "ALL"
+    if period_filter not in {"all", "24h", "7d", "30d", "1y"}:
+        period_filter = "all"
     try:
         clusters, selected_cluster = _resolve_selected_cluster(
             request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", "")
@@ -114,18 +146,39 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
             else Incident.cluster_id == selected_cluster.id
         )
         with db.SessionLocal() as session:
-            incidents = session.query(Incident).filter(cluster_filter).order_by(
-                Incident.detected_at.desc(), Incident.id.desc()
-            ).all()
+            query = session.query(Incident).filter(cluster_filter)
+            if severity_filter != "ALL":
+                query = query.filter(Incident.severity == severity_filter)
+            if code_filter:
+                query = query.filter(Incident.ceph_code.ilike(f"%{code_filter}%"))
+            if period_filter != "all":
+                hours = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30, "1y": 24 * 365}[period_filter]
+                query = query.filter(Incident.detected_at >= datetime.utcnow() - timedelta(hours=hours))
+            incidents = query.order_by(Incident.detected_at.desc(), Incident.id.desc()).all()
     except SQLAlchemyError:
         logger.exception("alert_center: failed to query incidents from DB")
         raise HTTPException(status_code=503, detail="Không kết nối được database")
     groups = alert_center.build_alert_groups(incidents)
+    if status_filter == "open":
+        groups = [group for group in groups if group["is_active"]]
+    elif status_filter == "closed":
+        groups = [group for group in groups if not group["is_active"]]
+    elif status_filter == "acknowledged":
+        groups = [group for group in groups if group["is_acknowledged"]]
+    elif status_filter == "muted":
+        groups = [group for group in groups if group["is_muted"]]
     try:
         page = int(request.query_params.get("page", "1"))
     except (TypeError, ValueError):
         page = 1
     page_data = alert_center.paginate_alert_groups(groups, page=page)
+    filter_query = urlencode({
+        "cluster": selected_cluster.id,
+        "status": status_filter,
+        "severity": severity_filter.lower(),
+        "period": period_filter,
+        "code": code_filter,
+    })
     return templates.TemplateResponse(request, "alerts.html", {
         "user": user,
         "is_admin": auth.is_admin_user(user),
@@ -136,8 +189,78 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         "total_pages": page_data["total_pages"],
         "page": page_data["page"],
         "total_incidents": len(incidents),
+        "total_groups": page_data["total_groups"],
         "active_groups": sum(1 for group in groups if group["is_active"]),
+        "status_filter": status_filter,
+        "severity_filter": severity_filter,
+        "period_filter": period_filter,
+        "code_filter": code_filter,
+        "filter_query": filter_query,
+        "mute_hours": ALERT_MUTE_HOURS,
     })
+
+
+async def _update_alert_lifecycle(
+    request: Request, incident_id: str, user: str, operation: str, mute_hours: int | None = None,
+):
+    _clusters, selected_cluster = _resolve_selected_cluster(
+        "", request.session.get("selected_cluster_id", "")
+    )
+    with db.SessionLocal() as session:
+        group = _alert_group_for_incident(session, incident_id, selected_cluster)
+        if group is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy nhóm cảnh báo trong cụm đang chọn")
+        rows = group["incidents"]
+        now = datetime.utcnow()
+        if operation == "acknowledge":
+            for row in rows:
+                row.acknowledged_at, row.acknowledged_by = now, user
+            event_type = audit.EVENT_ALERT_ACKNOWLEDGED
+            evidence = {"occurrence_count": len(rows)}
+        elif operation == "unacknowledge":
+            for row in rows:
+                row.acknowledged_at = row.acknowledged_by = None
+            event_type = audit.EVENT_ALERT_UNACKNOWLEDGED
+            evidence = {"occurrence_count": len(rows)}
+        elif operation == "mute":
+            if mute_hours not in ALERT_MUTE_HOURS:
+                raise HTTPException(status_code=400, detail="Thời gian mute không hợp lệ")
+            until = now + timedelta(hours=mute_hours)
+            for row in rows:
+                row.muted_until, row.muted_by = until, user
+            event_type = audit.EVENT_ALERT_MUTED
+            evidence = {"occurrence_count": len(rows), "hours": mute_hours}
+        else:
+            for row in rows:
+                row.muted_until, row.muted_by = None, None
+            event_type = audit.EVENT_ALERT_UNMUTED
+            evidence = {"occurrence_count": len(rows)}
+        audit.record(session, incident_id=group["representative"].id, action_id=None,
+                     event_type=event_type, actor=user, evidence=evidence)
+        session.commit()
+    return _alert_redirect(request)
+
+
+@router.post("/alerts/{incident_id}/acknowledge")
+async def acknowledge_alert(request: Request, incident_id: str, user: str = Depends(require_login)):
+    return await _update_alert_lifecycle(request, incident_id, user, "acknowledge")
+
+
+@router.post("/alerts/{incident_id}/unacknowledge")
+async def unacknowledge_alert(request: Request, incident_id: str, user: str = Depends(require_login)):
+    return await _update_alert_lifecycle(request, incident_id, user, "unacknowledge")
+
+
+@router.post("/alerts/{incident_id}/mute")
+async def mute_alert(
+    request: Request, incident_id: str, hours: int = Form(...), user: str = Depends(require_login)
+):
+    return await _update_alert_lifecycle(request, incident_id, user, "mute", hours)
+
+
+@router.post("/alerts/{incident_id}/unmute")
+async def unmute_alert(request: Request, incident_id: str, user: str = Depends(require_login)):
+    return await _update_alert_lifecycle(request, incident_id, user, "unmute")
 
 
 def _incident_in_selected_cluster(session, incident_id: str, selected_cluster: Cluster) -> Incident | None:

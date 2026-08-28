@@ -43,7 +43,7 @@ from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
-from shared import audit, db, heartbeat, service_health, telegram_alerts
+from shared import alert_lifecycle, audit, db, heartbeat, service_health, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident, IncidentStatus
@@ -155,6 +155,7 @@ def send_due_incident_reminders(now: datetime | None = None) -> int:
             .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
             .filter(Incident.ceph_code.notin_(_REMINDER_EXCLUDED_CODES))
             .filter(~Incident.ceph_code.like(f"{PERFORMANCE_RCA_PREFIX}%"))
+            .filter(or_(Incident.muted_until.is_(None), Incident.muted_until <= now))
             .order_by(Incident.created_at.desc())
             .all()
         )
@@ -616,13 +617,18 @@ def build_and_publish_incident(
             session.commit()
             session.refresh(incident)
             incident_id = incident.id
+            notification_muted = alert_lifecycle.inherit_active_mute(
+                session, incident, now=detected_at,
+            )
+            session.commit()
 
         # Alert immediately; AI diagnosis is an enrichment and must never be
         # a delivery dependency. send_incident_alert is best-effort and
         # swallows Telegram failures, so RabbitMQ publishing still proceeds.
-        telegram_alerts.send_incident_alert(
-            ceph_code, check_detail.get("severity"), log_excerpt
-        )
+        if not notification_muted:
+            telegram_alerts.send_incident_alert(
+                ceph_code, check_detail.get("severity"), log_excerpt
+            )
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,

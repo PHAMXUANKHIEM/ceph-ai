@@ -100,6 +100,14 @@ EVENT_SYNTHETIC_EXECUTION_BLOCKED = "synthetic_execution_blocked"
 # get their approval to go through".
 EVENT_RISKY_ACTION_APPROVAL_EXPIRED = "risky_action_approval_expired"
 
+# Alert Center operator controls. These are deliberately separate from
+# Incident lifecycle events: acknowledge/mute changes what is surfaced to an
+# operator, never whether the Ceph fault is actually resolved.
+EVENT_ALERT_ACKNOWLEDGED = "alert_acknowledged"
+EVENT_ALERT_UNACKNOWLEDGED = "alert_unacknowledged"
+EVENT_ALERT_MUTED = "alert_muted"
+EVENT_ALERT_UNMUTED = "alert_unmuted"
+
 
 def record(
     session: Session, *, incident_id: str, action_id: str | None, event_type: str, actor: str,
