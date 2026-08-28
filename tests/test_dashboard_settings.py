@@ -55,6 +55,9 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "AI Code Repair" in response.text
     assert 'name="code_repair_planner_provider"' in response.text
     assert 'name="code_repair_implementer_provider"' in response.text
+    assert 'id="code-repair-planner-model"' in response.text
+    assert 'id="code-repair-implementer-model"' in response.text
+    assert 'data-model-provider="code-repair-planner-provider"' in response.text
     assert "Shadow Autopilot Evaluation" not in response.text
     assert "L2 → L3 Promotion Candidates" not in response.text
     assert "Playbook Registry" not in response.text

@@ -828,6 +828,109 @@
   }
 })();
 
+// --- AI Code Repair role model catalog ------------------------------------
+// Planner/Reviewer and Implementer have independent provider/model fields.
+// Reuse the authenticated account status endpoints so the list reflects the
+// actual Codex account (and the server's Claude catalog), not a stale hardcode.
+(function () {
+  var plannerProvider = document.getElementById("code-repair-planner-provider");
+  var implementerProvider = document.getElementById("code-repair-implementer-provider");
+  if (!plannerProvider || !implementerProvider) return;
+
+  var catalogs = {};
+
+  function requestCatalog(provider) {
+    if (catalogs[provider]) return catalogs[provider];
+    var url = provider === "codex" ? "/settings/codex/status" : "/settings/claude/status";
+    catalogs[provider] = fetch(url, { credentials: "same-origin" }).then(function (response) {
+      if (!response.ok) {
+        return response.json().then(function (data) {
+          throw new Error(data.detail || "HTTP " + response.status);
+        });
+      }
+      return response.json();
+    });
+    return catalogs[provider];
+  }
+
+  function addOption(select, value, label, selected) {
+    var option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = selected;
+    select.appendChild(option);
+  }
+
+  function renderModelSelect(select, status, data, preserveCurrent) {
+    var current = preserveCurrent ? (select.dataset.currentModel || "") : "";
+    var models = data && Array.isArray(data.models) ? data.models : [];
+    var seen = {};
+    select.innerHTML = "";
+    addOption(select, "", "Tự động (model mặc định)", !current);
+    models.forEach(function (item) {
+      var id = typeof item === "string" ? item : item.id;
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      var label = typeof item === "string" ? item : (item.label || id);
+      if (item && item.version) label += " " + item.version;
+      if (item && item.is_default) label += " · mặc định";
+      addOption(select, id, label, id === current);
+    });
+    if (current && !seen[current]) {
+      addOption(select, current, current + " · đã lưu", true);
+    }
+    select.value = current;
+    if (status) {
+      if (models.length) {
+        status.textContent = "Đã tải " + models.length + " model từ " + select.dataset.providerName + ".";
+        status.className = "hint success";
+      } else if (data && data.authenticated === false) {
+        status.textContent = "Chưa đăng nhập " + select.dataset.providerName + "; có thể dùng model mặc định hoặc nhập cấu hình sau.";
+        status.className = "hint";
+      } else {
+        status.textContent = "Provider chưa trả danh sách model; đang dùng model mặc định.";
+        status.className = "hint";
+      }
+    }
+  }
+
+  function loadRole(providerSelect, modelSelect, status, preserveCurrent) {
+    var provider = providerSelect.value;
+    modelSelect.dataset.providerName = provider === "codex" ? "Codex" : "Claude";
+    if (provider === "auto") {
+      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent);
+      status.textContent = "auto sẽ chọn provider khả dụng; chọn Codex hoặc Claude để xem catalog model.";
+      status.className = "hint";
+      return;
+    }
+    status.textContent = "Đang tải danh sách model " + modelSelect.dataset.providerName + "…";
+    status.className = "hint";
+    requestCatalog(provider).then(function (data) {
+      renderModelSelect(modelSelect, status, data, preserveCurrent);
+    }).catch(function (error) {
+      renderModelSelect(modelSelect, status, { models: [] }, preserveCurrent);
+      status.textContent = "Không tải được catalog " + modelSelect.dataset.providerName + ": " + error.message;
+      status.className = "hint error";
+    });
+  }
+
+  function bindRole(providerSelect, modelId, statusId) {
+    var modelSelect = document.getElementById(modelId);
+    var status = document.getElementById(statusId);
+    if (!modelSelect || !status) return;
+    providerSelect.addEventListener("change", function () {
+      // A model selected for one provider must not silently be submitted for
+      // another provider. The operator can then choose from the new catalog.
+      modelSelect.dataset.currentModel = "";
+      loadRole(providerSelect, modelSelect, status, false);
+    });
+    loadRole(providerSelect, modelSelect, status, true);
+  }
+
+  bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status");
+  bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status");
+})();
+
 // AI Action Policy: search and filters run locally so looking up an action
 // never reloads the page or disturbs a partially completed policy form.
 (function () {

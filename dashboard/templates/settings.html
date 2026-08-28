@@ -442,28 +442,44 @@
               <h3>Planner / Reviewer — hỏi &amp; kiểm tra</h3>
               <p class="hint">Không được sửa file; dùng cùng role cho lần lập kế hoạch và các vòng review.</p>
               <label>Provider
-                <select name="code_repair_planner_provider">
+                <select id="code-repair-planner-provider" name="code_repair_planner_provider">
                   {% for provider in code_repair_providers %}
                     <option value="{{ provider }}" {% if code_repair_values.code_repair_planner_provider == provider %}selected{% endif %}>{{ provider }}</option>
                   {% endfor %}
                 </select>
               </label>
               <label>Model
-                <input type="text" name="code_repair_planner_model" value="{{ code_repair_values.code_repair_planner_model }}" placeholder="để trống = model mặc định CLI">
+                <select id="code-repair-planner-model" name="code_repair_planner_model"
+                        data-current-model="{{ code_repair_values.code_repair_planner_model }}"
+                        data-model-provider="code-repair-planner-provider">
+                  <option value="">Tự động (model mặc định)</option>
+                  {% if code_repair_values.code_repair_planner_model %}
+                    <option value="{{ code_repair_values.code_repair_planner_model }}" selected>{{ code_repair_values.code_repair_planner_model }} · đã lưu</option>
+                  {% endif %}
+                </select>
+                <span id="code-repair-planner-model-status" class="hint">Chọn provider để tải danh sách model.</span>
               </label>
             </div>
             <div>
               <h3>Implementer — thực hiện</h3>
               <p class="hint">Được sửa trong worktree cô lập; bắt buộc giữ hoặc thêm regression test.</p>
               <label>Provider
-                <select name="code_repair_implementer_provider">
+                <select id="code-repair-implementer-provider" name="code_repair_implementer_provider">
                   {% for provider in code_repair_providers %}
                     <option value="{{ provider }}" {% if code_repair_values.code_repair_implementer_provider == provider %}selected{% endif %}>{{ provider }}</option>
                   {% endfor %}
                 </select>
               </label>
               <label>Model
-                <input type="text" name="code_repair_implementer_model" value="{{ code_repair_values.code_repair_implementer_model }}" placeholder="để trống = model mặc định CLI">
+                <select id="code-repair-implementer-model" name="code_repair_implementer_model"
+                        data-current-model="{{ code_repair_values.code_repair_implementer_model }}"
+                        data-model-provider="code-repair-implementer-provider">
+                  <option value="">Tự động (model mặc định)</option>
+                  {% if code_repair_values.code_repair_implementer_model %}
+                    <option value="{{ code_repair_values.code_repair_implementer_model }}" selected>{{ code_repair_values.code_repair_implementer_model }} · đã lưu</option>
+                  {% endif %}
+                </select>
+                <span id="code-repair-implementer-model-status" class="hint">Chọn provider để tải danh sách model.</span>
               </label>
             </div>
           </div>

@@ -189,6 +189,27 @@ def test_codex_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
     assert command[-1] == "-"
 
 
+def test_codex_reviewer_is_read_only_and_accepts_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
+    provider, command = code_repair._provider_command(
+        "codex", tmp_path, "review it", 30, model="gpt-5-codex", mode="review",
+    )
+    assert provider == "codex"
+    assert "--sandbox" in command
+    assert "read-only" in command
+    assert command[command.index("--model") + 1] == "gpt-5-codex"
+    assert command[-1] == "-"
+
+
+def test_reviewer_verdict_requires_one_explicit_decision():
+    assert code_repair._review_verdict("notes\nVERDICT: PASS\n") == "PASS"
+    assert code_repair._review_verdict("VERDICT: NEEDS_CHANGES") == "NEEDS_CHANGES"
+    with pytest.raises(code_repair.RepairError):
+        code_repair._review_verdict("looks good")
+    with pytest.raises(code_repair.RepairError):
+        code_repair._review_verdict("VERDICT: PASS\nVERDICT: NEEDS_CHANGES")
+
+
 def test_progress_notifier_sends_start_periodic_and_success(monkeypatch):
     messages = []
     monkeypatch.setattr(code_repair, "send_code_repair_alert", messages.append)

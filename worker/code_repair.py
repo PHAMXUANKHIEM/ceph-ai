@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config.settings import settings as app_settings
 from shared.telegram_alerts import send_code_repair_alert
 
 
@@ -448,10 +449,49 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
     }
     _save_state(config.state_file, state)
     worktree_root = Path(tempfile.mkdtemp(prefix="ceph-ai-repair-"))
+    planner_worktree = worktree_root / "planner"
     worktree = worktree_root / "repo"
     try:
+        if not 0 <= int(config.max_review_rounds) <= 5:
+            raise RepairError("max_review_rounds must be between 0 and 5")
         _run(["git", "fetch", config.remote, config.base_branch], cwd=config.repo)
-        notifier.update(10, "Đã lấy source mới nhất, đang tạo worktree cô lập")
+        notifier.update(10, "Đã lấy source mới nhất, đang tạo worktree phân tích cô lập")
+        _run(["git", "worktree", "add", "--detach", str(planner_worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)
+        os.symlink(config.repo / ".venv", planner_worktree / ".venv", target_is_directory=True)
+        planner_provider_spec = config.planner_provider or config.provider
+        implementer_provider_spec = config.implementer_provider or config.provider
+        planner_prompt = f"""You are the Planner/Reviewer for a Ceph AIOps self-repair pipeline.
+
+Work read-only in this isolated worktree. Analyze the failure, inspect the relevant source and tests,
+and produce a concrete implementation plan for another AI. Do not edit files, commit, push, deploy,
+or change configuration. Include likely root cause, exact files/functions, test plan, and risks.
+
+Observed failure (credentials already redacted):
+---
+{evidence}
+---
+"""
+        planner_provider, planner_command = _provider_command(
+            planner_provider_spec, planner_worktree, planner_prompt, config.timeout_seconds,
+            claude_config_dir=config.repo / ".claude-account",
+            codex_home=config.repo / ".codex-account",
+            model=config.planner_model, mode="review",
+        )
+        result.planner_provider = planner_provider
+        notifier.update(15, f"{planner_provider} đang phân tích và lập kế hoạch (Planner/Reviewer)")
+        planner = _run(
+            planner_command, cwd=planner_worktree, timeout=config.timeout_seconds,
+            input_text=planner_prompt if planner_provider == "codex" else None, check=False,
+        )
+        if planner.returncode != 0:
+            raise RepairError(f"{planner_provider} planner failed ({planner.returncode}):\n{planner.stdout[-6000:]}")
+        if _worktree_status(planner_worktree).strip():
+            raise RepairError("Planner/Reviewer phải chạy read-only nhưng đã làm thay đổi worktree")
+        plan = planner.stdout[-16_000:].strip()
+        if not plan:
+            raise RepairError("Planner/Reviewer không trả về kế hoạch")
+
+        notifier.update(25, "Đã có kế hoạch; đang tạo worktree Implementer")
         _run(["git", "worktree", "add", "-b", branch, str(worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)
         # Reuse the tested environment without copying credentials into the worktree.
         os.symlink(config.repo / ".venv", worktree / ".venv", target_is_directory=True)
@@ -463,6 +503,11 @@ Do not commit, push, deploy, or weaken/delete tests. You may inspect files and r
 Finish only after the working tree contains the proposed source and test changes."""
         prompt = f"""{config.task_instructions or default_instructions}
 
+Planner/Reviewer analysis and plan:
+---
+{plan}
+---
+
 Observed application failure (credentials already redacted):
 ---
 {evidence}
@@ -472,11 +517,13 @@ Observed application failure (credentials already redacted):
         for ai_attempt in range(1, max(1, config.max_ai_attempts) + 1):
             attempt_prompt = prompt + feedback
             provider, command = _provider_command(
-                config.provider, worktree, attempt_prompt, config.timeout_seconds,
+                implementer_provider_spec, worktree, attempt_prompt, config.timeout_seconds,
                 claude_config_dir=config.repo / ".claude-account",
                 codex_home=config.repo / ".codex-account",
+                model=config.implementer_model, mode="implement",
             )
             result.provider = provider
+            result.implementer_provider = provider
             notifier.update(15 + ai_attempt * 10, f"{provider} đang sửa code, vòng {ai_attempt}/{config.max_ai_attempts}")
             ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
                       input_text=attempt_prompt if provider == "codex" else None, check=False)
@@ -515,6 +562,90 @@ Observed application failure (credentials already redacted):
                 )
                 continue
             raise RepairError(f"test gate failed ({tests.returncode}):\n{tests.stdout[-6000:]}")
+
+        # Review the tested candidate with a read-only agent. A reviewer may
+        # request bounded corrections, but it can never write the worktree.
+        for review_round in range(1, int(config.max_review_rounds) + 1):
+            result.review_rounds = review_round
+            status_before = _worktree_status(worktree)
+            review_prompt = f"""You are the independent Reviewer in a two-agent repair pipeline.
+
+Inspect the current candidate diff, relevant source, tests, and the original evidence. Work read-only:
+do not edit files, commit, push, deploy, or alter configuration. Check correctness, regression risk,
+security, scope, and whether the tests actually cover the fix.
+
+Original Planner/Reviewer plan:
+---
+{plan}
+---
+Candidate implementation output:
+---
+{result.test_output[-6000:]}
+---
+Original failure:
+---
+{evidence}
+---
+
+End your response with exactly one standalone line:
+VERDICT: PASS
+or
+VERDICT: NEEDS_CHANGES
+If changes are needed, list precise actionable corrections before that line.
+"""
+            reviewer_provider, reviewer_command = _provider_command(
+                planner_provider_spec, worktree, review_prompt, config.timeout_seconds,
+                claude_config_dir=config.repo / ".claude-account",
+                codex_home=config.repo / ".codex-account",
+                model=config.planner_model, mode="review",
+            )
+            result.planner_provider = result.planner_provider or reviewer_provider
+            notifier.update(58, f"{reviewer_provider} đang review candidate ({review_round}/{config.max_review_rounds})")
+            review = _run(
+                reviewer_command, cwd=worktree, timeout=config.timeout_seconds,
+                input_text=review_prompt if reviewer_provider == "codex" else None, check=False,
+            )
+            if review.returncode != 0:
+                raise RepairError(f"{reviewer_provider} reviewer failed ({review.returncode}):\n{review.stdout[-6000:]}")
+            if _worktree_status(worktree) != status_before:
+                raise RepairError("Reviewer phải chạy read-only nhưng đã làm thay đổi candidate worktree")
+            verdict = _review_verdict(review.stdout)
+            if verdict == "PASS":
+                break
+            if review_round == int(config.max_review_rounds):
+                raise RepairError(f"reviewer yêu cầu sửa nhưng đã hết {config.max_review_rounds} vòng:\n{review.stdout[-6000:]}")
+            feedback = (
+                "\nThe independent reviewer found issues. Apply only the necessary corrections, preserve tests, "
+                "then rerun the focused and regression gates.\nREVIEW FEEDBACK:\n"
+                f"{review.stdout[-8000:]}\n"
+            )
+            provider, command = _provider_command(
+                implementer_provider_spec, worktree, prompt + feedback, config.timeout_seconds,
+                claude_config_dir=config.repo / ".claude-account",
+                codex_home=config.repo / ".codex-account",
+                model=config.implementer_model, mode="implement",
+            )
+            result.provider = provider
+            result.implementer_provider = provider
+            fix = _run(
+                command, cwd=worktree, timeout=config.timeout_seconds,
+                input_text=prompt + feedback if provider == "codex" else None, check=False,
+            )
+            if fix.returncode != 0:
+                raise RepairError(f"{provider} reviewer-fix failed ({fix.returncode}):\n{fix.stdout[-6000:]}")
+            result.changed_files = _validate_changes(worktree)
+            notifier.update(60, "Implementer đã sửa theo review; đang chạy lại regression gate")
+            correction_tests = _run(
+                ["bash", "-lc", config.test_command], cwd=worktree,
+                timeout=config.timeout_seconds, check=False,
+            )
+            result.test_output = correction_tests.stdout[-12_000:]
+            if correction_tests.returncode != 0:
+                kind = _test_failure_kind(correction_tests.stdout)
+                if kind == "INFRASTRUCTURE":
+                    raise RepairError(f"test infrastructure failed after review fix:\n{correction_tests.stdout[-6000:]}")
+                raise RepairError(f"test gate failed after review fix ({correction_tests.returncode}):\n{correction_tests.stdout[-6000:]}")
+
         _run(["git", "add", "--", *result.changed_files], cwd=worktree)
         notifier.update(65, "Test đã đạt; đang tạo commit")
         _run(["git", "commit", "-m", f"fix(ai-repair): resolve error {fp}"], cwd=worktree)
@@ -542,6 +673,8 @@ Observed application failure (credentials already redacted):
         result.status = "FAILED"
         result.error = str(exc)
     finally:
+        if planner_worktree.exists():
+            _run(["git", "worktree", "remove", "--force", str(planner_worktree)], cwd=config.repo, check=False)
         if worktree.exists():
             _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=config.repo, check=False)
         shutil.rmtree(worktree_root, ignore_errors=True)
@@ -559,7 +692,12 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--log", action="append", type=Path, default=[])
     parser.add_argument("--evidence-file", type=Path)
-    parser.add_argument("--provider", choices=("auto", "codex", "claude"), default="auto")
+    parser.add_argument("--provider", choices=("auto", "codex", "claude"))
+    parser.add_argument("--planner-provider", choices=("auto", "codex", "claude"))
+    parser.add_argument("--planner-model", default=None)
+    parser.add_argument("--implementer-provider", choices=("auto", "codex", "claude"))
+    parser.add_argument("--implementer-model", default=None)
+    parser.add_argument("--max-review-rounds", type=int, default=None)
     parser.add_argument("--test-command", default="PYTHONPATH=. .venv/bin/pytest -q")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--state-file", type=Path, default=Path("/var/lib/ceph-ai/code-repair-state.json"))
@@ -573,7 +711,14 @@ def main() -> int:
     if not evidence:
         print(json.dumps({"status": "NO_ERROR_FOUND"}))
         return 0
-    config = RepairConfig(repo=args.repo.resolve(), provider=args.provider,
+    config = RepairConfig(
+                          repo=args.repo.resolve(),
+                          provider=args.provider or app_settings.code_repair_provider,
+                          planner_provider=args.planner_provider or app_settings.code_repair_planner_provider,
+                          planner_model=args.planner_model if args.planner_model is not None else app_settings.code_repair_planner_model,
+                          implementer_provider=args.implementer_provider or app_settings.code_repair_implementer_provider,
+                          implementer_model=args.implementer_model if args.implementer_model is not None else app_settings.code_repair_implementer_model,
+                          max_review_rounds=(args.max_review_rounds if args.max_review_rounds is not None else app_settings.code_repair_max_review_rounds),
                           test_command=args.test_command, timeout_seconds=args.timeout,
                           push=args.push, deploy_staging=args.deploy_staging,
                           promote_main=args.promote_main, state_file=args.state_file)

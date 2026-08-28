@@ -183,6 +183,7 @@ MANAGED_SERVICE_UNITS = {
     "worker": "ceph-ai-worker.service",
     "watcher": "ceph-ai-watcher.service",
     "remediation_watcher": "ceph-ai-remediation-watcher.service",
+    "code_repair": "ceph-ai-code-repair-supervisor.service",
 }
 SYSTEMCTL_TIMEOUT_SECONDS = 10
 
@@ -765,6 +766,24 @@ def restart_remediation_watcher() -> dict:
     except Exception:
         logger.exception("restart_remediation_watcher: failed")
         return {"restarted": False, "new_pid": None, "error": "internal error — see server log"}
+
+
+def restart_code_repair() -> dict:
+    """Reload the external supervisor after its role configuration changes."""
+    try:
+        managed = _restart_managed_service("code_repair")
+        if managed is None:
+            return {
+                "restarted": False, "new_pid": None,
+                "error": "Code Repair supervisor chưa chạy dưới systemd",
+            }
+        return managed
+    except Exception:
+        logger.exception("restart_code_repair: failed")
+        return {
+            "restarted": False, "new_pid": None,
+            "error": "Không khởi động lại được Code Repair supervisor — xem server log",
+        }
 
 
 def _dashboard_restart_script(pid: int, host: str, port: int) -> str:
@@ -2670,12 +2689,18 @@ async def code_repair_settings_submit(
         logger.exception("code_repair_settings_submit: failed to persist config")
         return fail("Không ghi được cấu hình — kiểm tra quyền ghi file .env")
 
+    restart = await asyncio.to_thread(restart_code_repair)
+    restart_message = ""
+    if restart.get("restarted"):
+        restart_message = " Supervisor đã được khởi động lại để áp dụng ngay."
+    elif restart.get("error"):
+        restart_message = f" Cấu hình đã lưu nhưng chưa reload supervisor: {restart['error']}."
     return templates.TemplateResponse(
         request, "settings.html",
         _settings_context(
             user,
             code_repair_success=(
-                "Đã lưu cấu hình hai AI. Supervisor sẽ dùng cấu hình này ở lần chạy kế tiếp."
+                "Đã lưu cấu hình hai AI." + restart_message
             ),
         ),
     )

@@ -182,6 +182,11 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                 RepairConfig(
                     repo=repo,
                     provider=settings.code_repair_provider,
+                    planner_provider=settings.code_repair_planner_provider,
+                    planner_model=settings.code_repair_planner_model,
+                    implementer_provider=settings.code_repair_implementer_provider,
+                    implementer_model=settings.code_repair_implementer_model,
+                    max_review_rounds=settings.code_repair_max_review_rounds,
                     test_command=settings.code_repair_test_command,
                     timeout_seconds=settings.code_repair_timeout_seconds,
                     push=settings.code_repair_push,
@@ -220,6 +225,11 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                     RepairConfig(
                         repo=repo,
                         provider=settings.code_repair_provider,
+                        planner_provider=settings.code_repair_planner_provider,
+                        planner_model=settings.code_repair_planner_model,
+                        implementer_provider=settings.code_repair_implementer_provider,
+                        implementer_model=settings.code_repair_implementer_model,
+                        max_review_rounds=settings.code_repair_max_review_rounds,
                         test_command=settings.code_repair_test_command,
                         timeout_seconds=settings.code_repair_timeout_seconds,
                         push=settings.code_repair_push,
