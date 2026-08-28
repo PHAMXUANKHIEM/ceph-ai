@@ -925,14 +925,22 @@ def _code_repair_form_values() -> dict:
     }
 
 
-def _ai_cost_overview() -> dict:
-    """Return the compact 24-hour total shown in Settings → Chi phí."""
+def _cost_hours(raw: str | None) -> int:
     try:
-        return ai_cost_summary(24)
+        return max(1, min(int(raw or 24), 8760))
+    except (TypeError, ValueError):
+        return 24
+
+
+def _ai_cost_overview(hours: int = 24) -> dict:
+    """Return the compact total shown in Settings → Chi phí."""
+    try:
+        return ai_cost_summary(hours)
     except Exception:
         # Reporting must not make Settings unavailable; Budget Guard remains usable.
         logger.exception("settings: failed to load AI cost overview")
         return {
+            "hours": hours,
             "calls": 0,
             "errors": 0,
             "pricing_configured": False,
@@ -994,6 +1002,7 @@ def _settings_context(
     ai_budget_error: str | None = None,
     ai_budget_success: str | None = None,
     ai_budget_values: dict | None = None,
+    ai_cost_hours: int = 24,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -1093,7 +1102,7 @@ def _settings_context(
             "hard_limit": settings.ai_cost_budget_hard_limit,
             "reserve_output": settings.ai_cost_budget_reserve_output_tokens,
         },
-        "ai_cost_overview": _ai_cost_overview(),
+        "ai_cost_overview": _ai_cost_overview(ai_cost_hours),
         "playbook_registry": registry_status_rows(
             command_available=executor_commands.has_command,
         ),
@@ -1251,10 +1260,18 @@ def _normalize_provider(raw: str) -> str:
 
 
 @router.get("/settings", response_class=HTMLResponse)
-async def settings_form(request: Request, user: str = Depends(require_login)):
+async def settings_form(
+    request: Request,
+    user: str = Depends(require_login),
+    cost_hours: str | None = None,
+):
     return templates.TemplateResponse(
         request, "settings.html",
-        _settings_context(user, openstack_cluster_id=request.query_params.get("cluster")),
+        _settings_context(
+            user,
+            openstack_cluster_id=request.query_params.get("cluster"),
+            ai_cost_hours=_cost_hours(cost_hours),
+        ),
     )
 
 
@@ -1264,14 +1281,17 @@ async def settings_ai_budget_submit(
     user: str = Depends(require_login),
     daily_budget: str = Form("0"),
     monthly_budget: str = Form("0"),
-    hard_limit: str = Form(""),
+    hard_limit: str | None = Form(None),
     reserve_output_tokens: str = Form("2048"),
 ):
     """Persist Budget Guard settings and restart every AI worker process."""
     _require_admin_privilege(user)
+    hard_limit_enabled = (
+        settings.ai_cost_budget_hard_limit if hard_limit is None else hard_limit == "1"
+    )
     values = {
         "daily": daily_budget.strip(), "monthly": monthly_budget.strip(),
-        "hard_limit": hard_limit == "1", "reserve_output": reserve_output_tokens.strip(),
+        "hard_limit": hard_limit_enabled, "reserve_output": reserve_output_tokens.strip(),
     }
 
     def parse_budget(raw: str, label: str) -> float:

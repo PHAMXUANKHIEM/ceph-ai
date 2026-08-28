@@ -1695,13 +1695,24 @@ def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
     assert "Chi phí" in response.text
 
 
-def test_legacy_ai_cost_page_redirects_to_settings_cost_panel(dashboard_client):
+def test_ai_cost_detail_page_is_available(dashboard_client):
     _login(dashboard_client)
 
     response = dashboard_client.get("/ai-cost", follow_redirects=False)
 
-    assert response.status_code == 303
-    assert response.headers["location"] == "/settings#cost"
+    assert response.status_code == 200
+    assert "Bảng giá token tham chiếu" in response.text
+
+
+def test_cost_panel_has_period_selector_and_detail_link_without_hard_limit_checkbox(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings?cost_hours=168#cost")
+
+    assert response.status_code == 200
+    assert 'option value="168" selected' in response.text
+    assert 'href="/ai-cost?hours=168"' in response.text
+    assert 'name="hard_limit"' not in response.text
 
 
 def test_restart_worker_route_rejects_non_admin(dashboard_client):

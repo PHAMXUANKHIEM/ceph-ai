@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -23,4 +23,5 @@ async def ai_cost_api(hours: str | None = None, _user: str = Depends(require_log
 
 @router.get("/ai-cost", response_class=HTMLResponse)
 async def ai_cost_page(request: Request, hours: str | None = None, user: str = Depends(require_login)):
-    return RedirectResponse("/settings#cost", status_code=303)
+    data = summary(_hours(hours))
+    return templates.TemplateResponse(request, "ai_cost.html", {"user": user, **data})

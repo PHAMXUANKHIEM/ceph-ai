@@ -626,6 +626,17 @@
         <div class="settings-cost-grid">
           <div class="login-box settings-cost-card">
             <h3>Tổng chi phí</h3>
+            <div class="settings-cost-toolbar">
+              <label>Khoảng thời gian
+                <select onchange="window.location='/settings?cost_hours='+encodeURIComponent(this.value)+'#cost'">
+                  <option value="24" {% if ai_cost_overview.hours == 24 %}selected{% endif %}>24h</option>
+                  <option value="168" {% if ai_cost_overview.hours == 168 %}selected{% endif %}>7days</option>
+                  <option value="720" {% if ai_cost_overview.hours == 720 %}selected{% endif %}>30days</option>
+                  <option value="8760" {% if ai_cost_overview.hours == 8760 %}selected{% endif %}>1y</option>
+                </select>
+              </label>
+              <a class="btn btn-sm" href="/ai-cost?hours={{ ai_cost_overview.hours }}">Xem chi tiết</a>
+            </div>
             {% if ai_cost_overview.pricing_configured %}
               <strong class="settings-cost-total">${{ '%.6f'|format(ai_cost_overview.estimated_cost_usd or 0) }}</strong>
               <p class="settings-cost-vnd">≈ {{ '%.0f'|format(ai_cost_overview.estimated_cost_vnd or 0) }} ₫</p>
@@ -633,7 +644,7 @@
               <strong class="settings-cost-total">—</strong>
               <p class="hint">Chưa có dữ liệu đủ để tính chi phí.</p>
             {% endif %}
-            <p class="hint">24 giờ gần nhất · {{ ai_cost_overview.calls }} lượt gọi · {{ ai_cost_overview.errors }} lỗi</p>
+            <p class="hint">{{ ai_cost_overview.calls }} lượt gọi · {{ ai_cost_overview.errors }} lỗi</p>
           </div>
 
           <div class="login-box settings-cost-card">
@@ -654,7 +665,6 @@
                   <input type="number" name="reserve_output_tokens" min="0" max="100000" step="1" value="{{ ai_budget_values.reserve_output }}">
                 </label>
               </div>
-              <label class="settings-checkbox"><input type="checkbox" name="hard_limit" value="1" {% if ai_budget_values.hard_limit %}checked{% endif %}> Bật chặn cứng khi vượt budget</label>
               <button class="btn btn-primary" type="submit">Lưu Budget Guard</button>
             </form>
             {% else %}
