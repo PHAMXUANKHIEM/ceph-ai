@@ -237,7 +237,7 @@
     // links from the server (admin-only destinations may not exist), then
     // regroup only those that were actually rendered.
     var navGroups = [
-      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/performance-rca", "/crush-map"] },
+      { label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] },
       { label: "Pool", paths: ["/pools", "/pgs"] },
       { label: "Object Storage", paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"] },
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },

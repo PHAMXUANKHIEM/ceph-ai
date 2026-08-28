@@ -167,6 +167,51 @@ def send_ai_ops_digest_alert(text: str, *, cluster_name: str | None = None) -> b
     )
 
 
+def send_performance_rca_alert(
+    analysis: dict,
+    *,
+    cluster_name: str | None = None,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+    enabled: bool | None = None,
+) -> bool:
+    """Send one read-only RCA candidate through the incident channel."""
+    host_lines = []
+    for host in (analysis.get("host_evidence") or [])[:4]:
+        flags = ", ".join(host.get("flags") or [])
+        suffix = f" · {flags}" if flags else ""
+        host_lines.append(
+            f"🖥 {host.get('host') or host.get('node_name') or 'unknown'}: "
+            f"CPU {float(host.get('cpu_percent') or 0):.1f}% · "
+            f"RAM {float(host.get('mem_percent') or 0):.1f}% · "
+            f"disk {float(host.get('disk_latency_ms') or 0):.2f}ms{suffix}"
+        )
+    text_lines = [
+        "🧠 PERFORMANCE RCA",
+        "━━━━━━━━━━━━━━━━━━",
+        f"💽 Volume: {analysis.get('pool', '—')}/{analysis.get('image', '—')}",
+        f"🔎 Ứng viên: {_compact(analysis.get('hypothesis'), 100)}",
+        f"📈 Confidence: {float(analysis.get('confidence') or 0) * 100:.1f}%",
+        f"⏱️ Latency: {float(analysis.get('current_latency_ms') or 0):.2f}ms "
+        f"(baseline {float(analysis.get('baseline_latency_ms') or 0):.2f}ms)",
+        f"ℹ️ {_compact(analysis.get('explanation'), _MAX_FOLLOWUP_FIELD_CHARS)}",
+    ]
+    if host_lines:
+        text_lines.append("Host evidence:")
+        text_lines.extend(host_lines)
+    text_lines.extend((
+        "━━━━━━━━━━━━━━━━━━",
+        "Chỉ là ứng viên tương quan; chưa tự thay đổi Ceph.",
+    ))
+    return _send(
+        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
+        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
+        enabled if enabled is not None else settings.telegram_incident_enabled,
+        "\n".join(text_lines),
+        cluster_name,
+    )
+
+
 def send_incident_alert(
     ceph_code: str,
     severity: str | None,

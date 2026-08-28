@@ -29,6 +29,7 @@ from watcher import (
     verify,
     volume_monitor,
     host_metrics,
+    performance_rca_monitor,
     volume_topology,
     vitastor_monitor,
 )
@@ -41,6 +42,7 @@ from watcher.node_health_monitor import NODE_RESOURCE_HIGH_PREFIX
 from watcher.osd_latency_monitor import OSD_LATENCY_HIGH_PREFIX
 from watcher.log_analysis import LOG_ANOMALY_PREFIX
 from watcher.volume_monitor import VOLUME_SATURATED_PREFIX
+from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
 from shared import audit, db, heartbeat, service_health, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
@@ -152,6 +154,7 @@ def send_due_incident_reminders(now: datetime | None = None) -> int:
             session.query(Incident)
             .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
             .filter(Incident.ceph_code.notin_(_REMINDER_EXCLUDED_CODES))
+            .filter(~Incident.ceph_code.like(f"{PERFORMANCE_RCA_PREFIX}%"))
             .order_by(Incident.created_at.desc())
             .all()
         )
@@ -284,6 +287,11 @@ def _resolve_recovered_incidents(
                 # Synthetic lab incidents have their own lifecycle. They do
                 # not represent a live Ceph health check and must not be
                 # auto-resolved on the next healthy poll.
+                continue
+            if incident.ceph_code.startswith(PERFORMANCE_RCA_PREFIX):
+                # Performance RCA owns this candidate's lifecycle. It is
+                # driven by the RCA scan, not by ceph health detail, and
+                # must not be resolved by this generic health reconciliation.
                 continue
             if incident.ceph_code in (_CHAT_REQUEST_CEPH_CODE, _CLUSTER_UPGRADE_CEPH_CODE):
                 # 2026-07-23 fix: a chat-confirmed action's (or cluster-
@@ -1001,6 +1009,11 @@ def run(
                     lambda: host_metrics.collect_and_store(cluster_id, None),
                     background=True,
                 )
+                _run_auxiliary_scan(
+                    f"performance-rca-{cluster_id or 'default'}",
+                    lambda: performance_rca_monitor.check_and_alert(cluster_id, None),
+                    background=True,
+                )
 
         if settings.capacity_forecast_enabled and cluster_id and (
             last_capacity_forecast_scan_at is None
@@ -1305,6 +1318,11 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                     _run_auxiliary_scan(
                         f"host-metrics-{cluster.id}",
                         lambda: host_metrics.collect_and_store(cluster.id, cluster),
+                        background=True,
+                    )
+                    _run_auxiliary_scan(
+                        f"performance-rca-{cluster.id}",
+                        lambda: performance_rca_monitor.check_and_alert(cluster.id, cluster),
                         background=True,
                     )
                 except Exception:
