@@ -189,7 +189,6 @@ async def alert_center_page(request: Request, user: str = Depends(require_login)
         "total_pages": page_data["total_pages"],
         "page": page_data["page"],
         "total_incidents": len(incidents),
-        "total_groups": page_data["total_groups"],
         "active_groups": sum(1 for group in groups if group["is_active"]),
         "status_filter": status_filter,
         "severity_filter": severity_filter,

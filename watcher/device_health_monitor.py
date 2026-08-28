@@ -35,7 +35,7 @@ import re
 from datetime import datetime, timedelta
 
 from config.settings import settings
-from shared import audit, db
+from shared import alert_lifecycle, audit, db
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.telegram_alerts import send_node_alert
@@ -250,5 +250,6 @@ def create_or_resolve_device_health_incidents(current: dict[str, dict]) -> None:
                 actor=audit.ACTOR_SYSTEM,
             )
 
-            send_node_alert(detail["host"] or detail["mon_host"], rationale)
+            if not alert_lifecycle.inherit_active_mute(session, incident):
+                send_node_alert(detail["host"] or detail["mon_host"], rationale)
         session.commit()

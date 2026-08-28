@@ -43,7 +43,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from shared import audit, db
+from shared import alert_lifecycle, audit, db
 from shared.models import (
     Action,
     ActionStatus,
@@ -504,5 +504,6 @@ def create_or_resolve_crush_skew_incidents(
                 actor=audit.ACTOR_SYSTEM,
             )
 
-            send_crush_skew_alert(detail["signal"], _entity_label_for_alert(detail), rationale)
+            if not alert_lifecycle.inherit_active_mute(session, incident):
+                send_crush_skew_alert(detail["signal"], _entity_label_for_alert(detail), rationale)
         session.commit()

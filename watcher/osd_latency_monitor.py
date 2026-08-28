@@ -40,7 +40,7 @@ import json
 import statistics
 from datetime import datetime
 
-from shared import audit, db
+from shared import alert_lifecycle, audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_osd_latency_alert
@@ -284,5 +284,6 @@ def create_or_resolve_osd_latency_incidents(
                 actor=audit.ACTOR_SYSTEM,
             )
 
-            send_osd_latency_alert(detail["osd_id"], detail["host"], rationale)
+            if not alert_lifecycle.inherit_active_mute(session, incident):
+                send_osd_latency_alert(detail["osd_id"], detail["host"], rationale)
         session.commit()

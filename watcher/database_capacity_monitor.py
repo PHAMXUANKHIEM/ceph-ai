@@ -49,7 +49,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
-from shared import audit, db
+from shared import alert_lifecycle, audit, db
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_database_size_alert
@@ -262,5 +262,6 @@ def create_or_resolve_database_size_incident(
                 actor=audit.ACTOR_SYSTEM,
             )
 
-            send_database_size_alert(rationale)
+            if not alert_lifecycle.inherit_active_mute(session, incident):
+                send_database_size_alert(rationale)
         session.commit()

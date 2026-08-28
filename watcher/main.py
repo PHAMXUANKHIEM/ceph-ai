@@ -1172,17 +1172,22 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             session.commit()
             session.refresh(incident)
             incident_id = incident.id
+            notification_muted = alert_lifecycle.inherit_active_mute(
+                session, incident, now=detected_at,
+            )
+            session.commit()
 
         has_cluster_channel = bool(cluster.telegram_bot_token and cluster.telegram_chat_id)
-        telegram_alerts.send_incident_alert(
-            ceph_code,
-            check_detail.get("severity"),
-            log_excerpt,
-            cluster_name=cluster.name,
-            bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
-            chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
-            enabled=cluster.telegram_enabled if has_cluster_channel else None,
-        )
+        if not notification_muted:
+            telegram_alerts.send_incident_alert(
+                ceph_code,
+                check_detail.get("severity"),
+                log_excerpt,
+                cluster_name=cluster.name,
+                bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
+                chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
+                enabled=cluster.telegram_enabled if has_cluster_channel else None,
+            )
         envelopes.append(
             publisher.build_envelope(
                 incident_id=incident_id,

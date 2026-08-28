@@ -29,7 +29,7 @@ import logging
 from datetime import datetime
 
 from config.settings import settings
-from shared import audit, db
+from shared import alert_lifecycle, audit, db
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
@@ -312,5 +312,6 @@ def create_or_resolve_node_health_incidents(
                 actor=audit.ACTOR_SYSTEM,
             )
 
-            send_node_alert(detail["host"], rationale)
+            if not alert_lifecycle.inherit_active_mute(session, incident):
+                send_node_alert(detail["host"], rationale)
         session.commit()
