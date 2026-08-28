@@ -8,9 +8,10 @@ if [ "$REPO_DIR" != "/root/ceph-ai" ]; then
 fi
 
 install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-*.service /etc/systemd/system/
+install -m 0644 "$REPO_DIR"/scripts/deploy/systemd/ceph-ai-ai-pricing.timer /etc/systemd/system/
 install -m 0644 "$REPO_DIR/scripts/deploy/logrotate/ceph-ai" /etc/logrotate.d/ceph-ai
 systemctl daemon-reload
-systemctl enable ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard
+systemctl enable ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard ceph-ai-ai-pricing.timer
 # Retire the legacy nohup processes before systemd takes ownership. Anchored
 # command patterns cannot match this installer shell itself.
 pkill -TERM -f '^/root/ceph-ai/.venv/bin/python -m watcher.main$' || true

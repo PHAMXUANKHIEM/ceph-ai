@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 
 from config.settings import settings
 from shared import db
+from shared.ai_pricing import merge_with_defaults
 from shared.models import AIInvocation
 
 CHARS_PER_TOKEN = 4
@@ -63,25 +64,30 @@ TOKEN_PRICES: tuple[TokenPrice, ...] = (
 )
 
 
+def _active_prices() -> tuple[TokenPrice, ...]:
+    """Return the latest validated snapshot over safe built-in defaults."""
+    return tuple(merge_with_defaults(TOKEN_PRICES))
+
+
 def pricing_table() -> list[dict]:
     """Return the auditable price table for the dashboard/API."""
-    return [asdict(price) for price in TOKEN_PRICES]
+    return [asdict(price) for price in _active_prices()]
 
 
 def _resolve_price(provider: str, model_id: str) -> TokenPrice | None:
     provider_key = (provider or "").strip().lower()
     model_key = (model_id or "").strip().lower()
-    for price in TOKEN_PRICES:
+    for price in _active_prices():
         if price.provider == provider_key and price.model_id.lower() == model_key:
             return price
 
     # Claude Code reports the stable family alias as simply ``sonnet``.
     if provider_key == "claude" and model_key in {"default", "claude-sonnet-5", "claude-sonnet-5-latest"}:
-        return next(price for price in TOKEN_PRICES if price.provider == "claude")
+        return next(price for price in _active_prices() if price.provider == "claude")
 
     # 9router qualifies Google Cloud models with ``gc/`` in its model id.
     if provider_key == "9router" and model_key.removeprefix("gc/") == "gemini-2.5-flash":
-        return next(price for price in TOKEN_PRICES if price.provider == "9router")
+        return next(price for price in _active_prices() if price.provider == "9router")
     return None
 
 
@@ -117,12 +123,13 @@ def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd
     as the cost table, so an operator can audit every number on this page.
     """
     recommendations = []
+    active_prices = _active_prices()
     for row in groups:
         input_tokens = row["input_tokens"]
         output_tokens = row["output_tokens"]
         current = row["estimated_cost_usd"]
         candidates = []
-        for price in TOKEN_PRICES:
+        for price in active_prices:
             if price.provider == row["provider"] and price.model_id.lower() == row["model_id"].lower():
                 continue
             candidate_cost = (

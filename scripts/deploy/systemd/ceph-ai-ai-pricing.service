@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Ceph AI model pricing snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+ExecStart=/root/ceph-ai/.venv/bin/python -m scripts.update_ai_pricing
+NoNewPrivileges=yes
+PrivateTmp=yes
+

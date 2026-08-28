@@ -65,6 +65,13 @@ else
   echo "WARNING: npm is unavailable; keeping the existing dashboard frontend build"
 fi
 
+# Refresh once during deployment so a newly installed checkout does not wait
+# for the first timer tick. A network/catalog failure is non-fatal because
+# the cost dashboard can use the last validated snapshot or built-in prices.
+if ! "$VENV_PYTHON" -m scripts.update_ai_pricing; then
+  echo "WARNING: AI pricing refresh failed; retaining the previous snapshot/fallback prices"
+fi
+
 echo "==> Applying DB migrations"
 # "heads" (plural), not "head" — 2026-08-07: this repo can legitimately have
 # more than one migration branch tip at once when unrelated feature work
@@ -131,6 +138,19 @@ if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
      [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.timer" ]; then
     systemctl enable --now ceph-ai-firewall.timer
   fi
+fi
+
+# Keep the price snapshot fresh independently of the Watcher poll loop. The
+# oneshot is safe to retry: failed downloads leave the last valid cache intact.
+if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-ai-pricing.service" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-ai-pricing.timer" ]; then
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-ai-pricing.service" \
+    /etc/systemd/system/ceph-ai-ai-pricing.service
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-ai-pricing.timer" \
+    /etc/systemd/system/ceph-ai-ai-pricing.timer
+  systemctl daemon-reload
+  systemctl enable --now ceph-ai-ai-pricing.timer
 fi
 
 echo "==> Stopping existing services (if running)"

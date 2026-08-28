@@ -214,6 +214,9 @@ class Settings(BaseSettings):
     # Reference conversion for the read-only cost dashboard. Update when the
     # chosen accounting exchange rate changes; it does not alter USD costs.
     ai_cost_usd_to_vnd: float = Field(default=26290.0, gt=0)
+    # Runtime cache populated by scripts.update_ai_pricing. The cache is
+    # deliberately outside git because it is refreshed from the network.
+    ai_cost_pricing_cache_path: str = ".ai-pricing.json"
     # Optional AI Budget Guard. Zero disables the corresponding limit. Costs
     # are estimates from content-free telemetry and are evaluated in UTC.
     ai_cost_daily_budget_usd: float = Field(default=0.0, ge=0)

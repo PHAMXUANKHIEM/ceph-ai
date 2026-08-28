@@ -5,6 +5,7 @@ __pycache__/
 *.db-*
 *.db.bak-*
 .env
+.ai-pricing.json
 *.egg-info/
 .pytest_cache/
 *.log
