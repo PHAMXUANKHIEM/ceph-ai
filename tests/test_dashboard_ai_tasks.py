@@ -5,6 +5,7 @@ import pytest
 
 import dashboard.routes.ai_tasks as ai_tasks
 import worker.ai_task_runner as runner
+from worker import ai_task_cleanup
 
 
 def _login(client):
@@ -125,3 +126,19 @@ def test_systemd_runner_uses_server_test_command_and_disables_telegram(
     assert seen["config"].test_command == runner.settings.code_repair_test_command
     assert seen["config"].notify_telegram is False
     assert seen["config"].implementer_account_profile == "separate-one"
+
+
+def test_task_cleanup_removes_only_old_terminal_tasks(tmp_path):
+    old_id = "12345678-1234-1234-1234-123456789abc"
+    active_id = "12345678-1234-1234-1234-123456789abd"
+    for task_id, status in ((old_id, "FAILED"), (active_id, "RUNNING")):
+        directory = tmp_path / task_id
+        directory.mkdir()
+        (directory / "task.json").write_text(json.dumps({
+            "task_id": task_id,
+            "status": status,
+            "created_at": "2020-01-01T00:00:00+00:00" if status == "FAILED" else ai_tasks._utc_now(),
+        }))
+    removed = ai_task_cleanup.cleanup(root=tmp_path, retention_days=1, max_records=100)
+    assert removed == [old_id]
+    assert (tmp_path / active_id).is_dir()

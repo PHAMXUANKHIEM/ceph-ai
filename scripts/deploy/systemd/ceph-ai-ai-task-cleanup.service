@@ -1,0 +1,9 @@
+[Unit]
+Description=Ceph AI completed task retention cleanup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+NoNewPrivileges=yes
+ExecStart=/root/ceph-ai/.venv/bin/python -m worker.ai_task_cleanup

@@ -421,6 +421,8 @@ class Settings(BaseSettings):
     code_repair_promote_main: bool = False
     code_repair_cursor_file: str = "/var/lib/ceph-ai/code-repair-cursors.json"
     code_repair_lock_file: str = "/var/lib/ceph-ai/code-repair.lock"
+    ai_task_retention_days: int = Field(default=30, ge=1, le=3650)
+    ai_task_max_records: int = Field(default=500, ge=10, le=10000)
     ceph_capability_learning_enabled: bool = False
     ceph_capability_learning_include_existing: bool = False
     ceph_capability_learning_state_file: str = "/var/lib/ceph-ai/ceph-capability-learning.json"

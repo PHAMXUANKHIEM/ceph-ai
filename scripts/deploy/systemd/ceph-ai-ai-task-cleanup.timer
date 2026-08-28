@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily cleanup of old Ceph AI task records
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=ceph-ai-ai-task-cleanup.service
+
+[Install]
+WantedBy=timers.target

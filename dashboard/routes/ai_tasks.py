@@ -7,13 +7,14 @@ implementer pipeline works on an isolated branch and reports its result.
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
 import uuid
-import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,9 +33,10 @@ TASK_ROOT = Path("/var/lib/ceph-ai/ai-tasks")
 PROVIDERS = ("auto", "codex", "claude")
 ACCOUNT_SOURCES = ("configured", "separate")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
-TERMINAL_STATUSES = {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAILED", "SKIPPED_DUPLICATE"}
+TERMINAL_STATUSES = {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAILED", "FAILED_STALE", "SKIPPED_DUPLICATE"}
 MAX_ACTIVE_TASKS = 2
-_task_create_lock = asyncio.Lock()
+TASK_MAX_RUNTIME_SECONDS = 2 * 60 * 60 + 5 * 60
+STALE_TASK_ERROR = "AI task không có completion record sau thời gian chạy tối đa; đã giải phóng slot."
 
 
 def _require_admin(user: str) -> None:
@@ -86,6 +88,22 @@ def _task_view(task_id: str) -> dict:
     else:
         view["status"] = metadata.get("status", "QUEUED")
         view["result"] = None
+    started_at = (latest or {}).get("started_at") or metadata.get("created_at")
+    try:
+        started = datetime.fromisoformat(str(started_at))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        stale = (
+            view["status"] not in TERMINAL_STATUSES
+            and (datetime.now(timezone.utc) - started).total_seconds() > TASK_MAX_RUNTIME_SECONDS
+        )
+    except (TypeError, ValueError):
+        stale = False
+    if stale:
+        stale_result = {**(view.get("result") or {}), "status": "FAILED_STALE", "error": STALE_TASK_ERROR}
+        view["status"] = "FAILED_STALE"
+        view["error"] = STALE_TASK_ERROR
+        view["result"] = stale_result
     return view
 
 
@@ -143,6 +161,32 @@ def _cli_executable(name: str) -> str | None:
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
     return None
+
+
+def _reserve_task() -> tuple[str, Path]:
+    """Reserve one task slot across all Dashboard worker processes."""
+    TASK_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = TASK_ROOT / ".create.lock"
+    with lock_path.open("a+") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            if _active_task_count() >= MAX_ACTIVE_TASKS:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Đã đạt giới hạn 2 AI task đồng thời; hãy chờ task hiện tại hoàn tất",
+                )
+            task_id = str(uuid.uuid4())
+            directory = TASK_ROOT / task_id
+            directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+            _write_json(directory / "task.json", {
+                "task_id": task_id,
+                "status": "QUEUED",
+                "created_at": _utc_now(),
+            })
+            return task_id, directory
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _separate_profile_dir(provider: str, profile: str) -> Path:
@@ -256,20 +300,7 @@ async def create_ai_task(
     planner_model = _validate_model(planner_model, "Planner model")
     implementer_model = _validate_model(implementer_model, "Implementer model")
 
-    async with _task_create_lock:
-        if _active_task_count() >= MAX_ACTIVE_TASKS:
-            raise HTTPException(status_code=409, detail="Đã đạt giới hạn 2 AI task đồng thời; hãy chờ task hiện tại hoàn tất")
-        task_id = str(uuid.uuid4())
-        directory = TASK_ROOT / task_id
-        directory.mkdir(mode=0o700, parents=True, exist_ok=False)
-        # Reserve the slot before releasing the lock. Otherwise a concurrent
-        # request can observe the new directory before task.json exists and
-        # bypass the active-task limit.
-        _write_json(directory / "task.json", {
-            "task_id": task_id,
-            "status": "QUEUED",
-            "created_at": _utc_now(),
-        })
+    task_id, directory = await asyncio.to_thread(_reserve_task)
     prompt_path = directory / "prompt.txt"
     instructions_path = directory / "instructions.txt"
     state_path = directory / "state.json"
