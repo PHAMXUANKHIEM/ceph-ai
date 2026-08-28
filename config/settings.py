@@ -497,6 +497,10 @@ class Settings(BaseSettings):
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
     node_resource_forecast_min_confidence: float = 0.5
+    # A forecast must cover enough of its requested training window and may
+    # not bridge an excessively long Loki/Alloy outage.
+    node_resource_forecast_min_coverage: float = 0.6
+    node_resource_forecast_max_gap_hours: float = 6.0
     # Candidate history windows are evaluated against their later outcomes.
     # The lowest-MAE candidate with enough evaluated runs is selected per
     # cluster/host/metric; until then the longest available window wins.

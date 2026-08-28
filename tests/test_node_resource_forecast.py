@@ -44,6 +44,33 @@ def test_risky_forecast_rejects_low_confidence(monkeypatch):
     assert forecast.risky_forecasts({"cpu": value}) == []
 
 
+def test_risky_forecast_rejects_poor_data_quality(monkeypatch):
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_confidence", 0.5)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_coverage", 0.8)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_max_gap_hours", 6.0)
+    value = forecast.ResourceForecast(
+        "ram", 80, 1, 95, 10, 0.9, 30, 29,
+        coverage_ratio=0.5, max_gap_hours=1,
+    )
+    assert forecast.risky_forecasts({"ram": value}) == []
+    value = forecast.ResourceForecast(
+        "ram", 80, 1, 95, 10, 0.9, 30, 29,
+        coverage_ratio=1.0, max_gap_hours=7,
+    )
+    assert forecast.risky_forecasts({"ram": value}) == []
+
+
+def test_linear_forecast_reports_loki_gap_quality(monkeypatch):
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
+    origin = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    points = [(origin + timedelta(hours=index), 20 + index) for index in range(6)]
+    points.append((origin + timedelta(hours=24), 44))
+    result = forecast._linear_forecast(points, "cpu", training_window_hours=24)
+    assert result is not None
+    assert result.max_gap_hours == 19
+    assert result.coverage_ratio == 1.0
+
+
 def test_forecast_reads_loki_samples(monkeypatch):
     monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 24)
     samples = [(ts, value, value / 2) for ts, value in _points()]

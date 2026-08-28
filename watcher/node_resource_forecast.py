@@ -37,6 +37,10 @@ class ResourceForecast:
     window_hours: float
     algorithm: str = "linear"
     training_window_hours: int | None = None
+    # Quality gates prevent a good-looking line fit over sparse or interrupted
+    # history from becoming an operational warning.
+    coverage_ratio: float = 1.0
+    max_gap_hours: float = 0.0
 
 
 class NodeResourceLokiError(Exception):
@@ -152,6 +156,10 @@ def _linear_forecast(
     window = xs[-1] - xs[0]
     if window < 6:
         return None
+    gaps = [right - left for left, right in zip(xs, xs[1:])]
+    max_gap_hours = max(gaps) if gaps else 0.0
+    expected_window = max(1.0, float(training_window_hours or window))
+    coverage_ratio = max(0.0, min(1.0, window / expected_window))
     x_mean, y_mean = sum(xs) / len(xs), sum(ys) / len(ys)
     denominator = sum((x - x_mean) ** 2 for x in xs)
     if denominator <= 0:
@@ -169,9 +177,13 @@ def _linear_forecast(
         crossing = (90 - intercept) / slope
         if crossing >= xs[-1]:
             hours_to_90 = crossing - xs[-1]
-    return ResourceForecast(metric, ys[-1], slope, predicted, hours_to_90,
-                            confidence, len(points), window,
-                            training_window_hours=training_window_hours)
+    return ResourceForecast(
+        metric, ys[-1], slope, predicted, hours_to_90,
+        confidence, len(points), window,
+        training_window_hours=training_window_hours,
+        coverage_ratio=coverage_ratio,
+        max_gap_hours=max_gap_hours,
+    )
 
 
 def _candidate_windows() -> list[int]:
@@ -353,6 +365,8 @@ def risky_forecasts(values: dict[str, ResourceForecast]) -> list[ResourceForecas
             if value.hours_to_90 is not None
             and value.hours_to_90 <= settings.node_resource_forecast_horizon_hours
             and value.confidence >= settings.node_resource_forecast_min_confidence
+            and value.coverage_ratio >= settings.node_resource_forecast_min_coverage
+            and value.max_gap_hours <= settings.node_resource_forecast_max_gap_hours
             and math.isfinite(value.hours_to_90)]
 
 
