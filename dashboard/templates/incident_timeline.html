@@ -24,6 +24,41 @@
         </tbody></table></div>
       </div>
     </section>
+    <section class="card incident-group-card">
+      <div class="card-header">
+        <div><h2>Incident Group</h2><p class="hint">Các sự cố trong cùng fault window để operator đối chiếu; group không tự khẳng định root cause.</p></div>
+        <span class="incident-group-root">Root <code>{{ incident_group.root_incident_id }}</code></span>
+      </div>
+      <div class="card-body">
+        {% if incident_group.related_incidents %}
+        <div class="table-wrap">
+          <table class="incident-group-table">
+            <thead><tr><th>Vai trò</th><th>Mã lỗi / Incident</th><th>Trạng thái</th><th>Severity</th><th>Phát hiện</th><th>Chẩn đoán</th></tr></thead>
+            <tbody>
+              <tr class="incident-group-current{% if incident.id == incident_group.root_incident_id %} incident-group-root-row{% endif %}">
+                <td><span class="incident-group-role">{{ "Root" if incident.id == incident_group.root_incident_id else "Đang xem" }}</span></td>
+                <td><a href="/incidents/{{ incident.id }}/timeline"><code>{{ incident.ceph_code }}</code></a><br><code>{{ incident.id }}</code></td>
+                <td>{{ incident.status }}</td><td>{{ incident.severity or "—" }}</td>
+                <td><code>{{ incident.detected_at|vntime }}</code></td>
+                <td>{{ incident.diagnosis_text or "Chưa có chẩn đoán." }}</td>
+              </tr>
+              {% for row in incident_group.related_incidents %}
+              <tr{% if row.incident_id == incident_group.root_incident_id %} class="incident-group-root-row"{% endif %}>
+                <td><span class="incident-group-role">{{ "Root" if row.incident_id == incident_group.root_incident_id else "Liên quan" }}</span></td>
+                <td><a href="/incidents/{{ row.incident_id }}/timeline"><code>{{ row.ceph_code }}</code></a><br><code>{{ row.incident_id }}</code></td>
+                <td>{{ row.status }}</td><td>{{ row.severity or "—" }}</td>
+                <td><code>{{ row.detected_at }}</code></td>
+                <td>{{ row.diagnosis_text or "Chưa có chẩn đoán." }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="empty-state">Incident này đang là root độc lập; chưa có incident liên quan trong fault window.</p>
+        {% endif %}
+      </div>
+    </section>
     <section class="card">
       <div class="card-header"><div><h2>Remediation Case Memory</h2><p class="hint">Đánh giá của operator được lưu cùng Case và Audit, không tự thay đổi autonomy.</p></div></div>
       <div class="card-body">

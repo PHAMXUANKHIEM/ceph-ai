@@ -29,6 +29,7 @@ from shared.models import (
 )
 from shared.object_storage_cache import get_or_load
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
+from watcher import incident_grouping
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         incident = _incident_in_selected_cluster(session, incident_id, selected_cluster)
         if incident is None:
             raise HTTPException(status_code=404, detail="Không tìm thấy Incident trong cụm đang chọn")
+        incident_group = incident_grouping.build_group_context(session, incident_id)
         timeline = incident_postmortem.build_timeline(session, incident_id)
         postmortem = json.loads(incident.postmortem_json) if incident.postmortem_json else None
         generated_at = incident.postmortem_generated_at
@@ -84,6 +86,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
     return templates.TemplateResponse(request, "incident_timeline.html", {
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": selected_cluster, "incident": incident, "timeline": timeline,
+        "incident_group": incident_group,
         "postmortem": postmortem, "postmortem_generated_at": generated_at,
         "postmortem_error": request.query_params.get("error", ""),
         "remediation_cases": remediation_cases, "case_verdicts": CASE_VERDICTS,

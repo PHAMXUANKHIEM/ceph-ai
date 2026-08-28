@@ -165,7 +165,7 @@
           <tbody>
             {% for incident in incidents %}
             <tr>
-              <td><a href="/incidents/{{ incident.id }}/timeline">{{ incident.ceph_code }}</a> <span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span>
+              <td><a href="/incidents/{{ incident.id }}/timeline">{{ incident.ceph_code }}</a> {% if incident.group_root_incident_id %}<a class="incident-group-badge" href="/incidents/{{ incident.id }}/timeline">Group</a>{% endif %} <span class="hint">(phát hiện lúc {{ incident.detected_at|vntime }})</span>
                 {%- if incident.status == "VERIFYING" %} <span class="hint">· ⏳ đã chạy lệnh, đang chờ kiểm chứng trên cụm</span>{% endif %}</td>
               <td>{% if incident.diagnosis_text %}{{ incident.diagnosis_text }}{% elif incident.status == "DIAGNOSING" %}Đang chẩn đoán...{% else %}Chưa có chẩn đoán.{% endif %}</td>
             </tr>

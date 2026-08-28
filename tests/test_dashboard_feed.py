@@ -5,6 +5,7 @@ import dashboard.routes.incidents as incidents_route
 
 from shared import db as db_module
 from shared.models import Action, AuditEntry, Incident, RemediationCase, WatcherHeartbeat
+from watcher.incident_grouping import assign_incident_group
 
 
 def _login(client):
@@ -46,6 +47,38 @@ def test_incident_timeline_page_and_postmortem_generation(dashboard_client, monk
     response = dashboard_client.post("/incidents/timeline-inc/postmortem", follow_redirects=False)
     assert response.status_code == 303
     assert called == ["timeline-inc"]
+
+
+def test_incident_timeline_shows_group_context(dashboard_client):
+    detected_at = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        root = Incident(
+            id="group-root",
+            ceph_code="OSD_DOWN",
+            status="RESOLVED",
+            detected_at=detected_at - timedelta(minutes=5),
+            diagnosis_text="Network heartbeat interrupted.",
+        )
+        child = Incident(
+            id="group-child",
+            ceph_code="OSD_DOWN",
+            status="NEW",
+            detected_at=detected_at,
+        )
+        session.add_all([root, child])
+        session.flush()
+        assign_incident_group(session, root)
+        assign_incident_group(session, child)
+        session.commit()
+
+    _login(dashboard_client)
+    page = dashboard_client.get("/incidents/group-child/timeline")
+
+    assert page.status_code == 200
+    assert "Incident Group" in page.text
+    assert "group-root" in page.text
+    assert "Network heartbeat interrupted." in page.text
+    assert "/incidents/group-root/timeline" in page.text
 
 
 def test_operator_can_set_case_verdict_from_incident_timeline(dashboard_client):

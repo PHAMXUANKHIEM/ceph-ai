@@ -709,6 +709,24 @@ code {
 .pending-action-card p strong { color: var(--text); }
 .pending-action-buttons { margin-top: var(--space-3); display: flex; gap: var(--space-2); }
 
+/* Incident grouping context */
+.incident-group-card { border-color: rgba(var(--brand-primary-rgb), .35); }
+.incident-group-root { color: var(--text-muted); font-size: .78rem; }
+.incident-group-table { min-width: 780px; }
+.incident-group-table td { vertical-align: top; }
+.incident-group-table td:last-child { min-width: 220px; max-width: 460px; }
+.incident-group-role {
+  display: inline-block; padding: 3px 7px; border-radius: 999px;
+  background: var(--accent-bg); color: var(--accent-hover); font-size: .7rem; font-weight: 700;
+  white-space: nowrap;
+}
+.incident-group-root-row td { background: rgba(var(--brand-primary-rgb), .07); }
+.incident-group-current td { border-top: 1px solid var(--border-strong); }
+.incident-group-badge {
+  display: inline-block; margin-left: 5px; padding: 1px 5px; border: 1px solid rgba(var(--brand-primary-rgb), .38);
+  border-radius: 999px; color: var(--accent-hover); font-size: .68rem; font-weight: 700; vertical-align: 1px;
+}
+
 /* ===== Tables ===== */
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
