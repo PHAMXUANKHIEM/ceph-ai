@@ -2,8 +2,8 @@
 # Redeploys this exact checkout: pulls latest main, installs any new
 # dependencies, applies pending DB migrations, and restarts the four
 # long-running services (watcher, AI remediation watcher, worker, dashboard)
-# the same way they've always been run here — plain `nohup ... & disown`
-# background processes, no systemd unit exists on this host.
+# using the systemd units when they are installed, with the legacy
+# `nohup ... & disown` path retained only for older hosts without units.
 #
 # Run from the repo root, as the same user the services already run as
 # (root, matching this deployment's existing operational model — see the
@@ -83,9 +83,41 @@ alembic upgrade heads
 
 echo "==> Stopping existing services (if running)"
 USE_SYSTEMD=false
-if systemctl cat ceph-ai-watcher.service >/dev/null 2>&1; then
+INSTALLED_SYSTEMD_UNITS=()
+SYSTEMD_UNITS=(
+  ceph-ai-watcher.service
+  ceph-ai-remediation-watcher.service
+  ceph-ai-worker.service
+  ceph-ai-code-repair-supervisor.service
+  ceph-ai-dashboard.service
+)
+for unit in "${SYSTEMD_UNITS[@]}"; do
+  if systemctl cat "$unit" >/dev/null 2>&1; then
+    INSTALLED_SYSTEMD_UNITS+=("$unit")
+  fi
+done
+if [ "${#INSTALLED_SYSTEMD_UNITS[@]}" -eq "${#SYSTEMD_UNITS[@]}" ]; then
   USE_SYSTEMD=true
-  systemctl stop ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard || true
+  # Keep the source templates and installed units identical.  This makes
+  # hardening changes (and the remediation singleton runtime directory)
+  # survive the next deployment instead of being overwritten by an older
+  # /etc/systemd/system copy.
+  for unit in "${SYSTEMD_UNITS[@]}"; do
+    install -m 0644 "$REPO_DIR/scripts/deploy/systemd/$unit" \
+      "/etc/systemd/system/$unit"
+  done
+  systemctl daemon-reload
+  # The repair supervisor owns candidate promotion and must survive a
+  # candidate deployment; the other four services are restarted below.
+  systemctl stop ceph-ai-watcher ceph-ai-remediation-watcher ceph-ai-worker ceph-ai-dashboard || true
+elif [ "${#INSTALLED_SYSTEMD_UNITS[@]}" -gt 0 ]; then
+  # Transitional host: stop every installed unit before falling back to
+  # nohup, otherwise a partial systemd installation would duplicate whichever
+  # watcher/worker units already exist.
+  echo "==> Partial systemd installation detected; stopping installed units"
+  for unit in "${INSTALLED_SYSTEMD_UNITS[@]}"; do
+    systemctl stop "${unit%.service}" || true
+  done
 fi
 # Match by checkout cwd as well as module name.  Older deployments launched
 # the interpreter as relative `.venv/bin/python`; an absolute-path-only pkill
@@ -131,7 +163,7 @@ DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 
 if [ "$USE_SYSTEMD" = "true" ]; then
-  systemctl start ceph-ai-watcher ceph-ai-worker ceph-ai-dashboard
+  systemctl start ceph-ai-watcher ceph-ai-remediation-watcher ceph-ai-worker ceph-ai-dashboard
 else
   nohup "$VENV_PYTHON" -m watcher.main >> "/var/log/${LOG_TAG}-watcher.log" 2>&1 &
   disown
@@ -140,18 +172,23 @@ else
   nohup "$VENV_PYTHON" -m uvicorn dashboard.app:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" \
     >> "/var/log/${LOG_TAG}-dashboard.log" 2>&1 &
   disown
+  nohup "$VENV_PYTHON" -m watcher.remediation_main >> "/var/log/${LOG_TAG}-remediation-watcher.log" 2>&1 &
+  disown
 fi
-nohup "$VENV_PYTHON" -m watcher.remediation_main >> "/var/log/${LOG_TAG}-remediation-watcher.log" 2>&1 &
-disown
 
 # The repair supervisor must survive candidate deployments because it owns the
-# test/deploy/promote decision. Start it only when absent; never kill it in the
-# stop section above. Starting an extra copy is safe: its advisory lock makes
-# the newcomer exit immediately when a supervisor already owns the pipeline.
-# This avoids brittle pgrep matching during an SSH-driven deployment.
-nohup "$VENV_PYTHON" -m worker.code_repair_supervisor \
-  >> "/var/log/${LOG_TAG}-code-repair-supervisor.log" 2>&1 &
-disown
+# test/deploy/promote decision. Under systemd it is left running; on a legacy
+# host start it only if no matching process is present.
+if [ "$USE_SYSTEMD" = "true" ]; then
+  systemctl is-active --quiet ceph-ai-code-repair-supervisor.service || \
+    systemctl start ceph-ai-code-repair-supervisor.service
+else
+  if ! pgrep -f "$VENV_PYTHON -m worker.code_repair_supervisor" >/dev/null 2>&1; then
+    nohup "$VENV_PYTHON" -m worker.code_repair_supervisor \
+      >> "/var/log/${LOG_TAG}-code-repair-supervisor.log" 2>&1 &
+    disown
+  fi
+fi
 
 sleep 3
 
@@ -182,6 +219,14 @@ if [ "$DASHBOARD_ROUTE_READY" != "true" ]; then
   echo "ERROR: Dashboard did not load /pgs after restart (HTTP ${DASHBOARD_ROUTE_STATUS:-000})."
   echo "Check /var/log/${LOG_TAG}-dashboard.log — an old process may still own port ${DASHBOARD_PORT}."
   exit 1
+fi
+if [ "$USE_SYSTEMD" = "true" ]; then
+  for unit in ceph-ai-watcher ceph-ai-remediation-watcher ceph-ai-worker ceph-ai-dashboard; do
+    if ! systemctl is-active --quiet "$unit.service"; then
+      echo "ERROR: $unit is not active after deployment."
+      exit 1
+    fi
+  done
 fi
 
 echo "==> Deploy complete: $(date -u +%FT%TZ)"
