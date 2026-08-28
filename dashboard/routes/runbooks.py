@@ -74,30 +74,20 @@ async def generate_runbook(
             source = remediation_runbook.build_source(
                 session, fault_family=fault_family, cluster_id=selected.id,
             )
-            report = remediation_runbook.get_cached(session, source)
         except remediation_runbook.RunbookError as exc:
             return templates.TemplateResponse(
                 request, "runbooks.html",
                 _context(request, user, clusters=clusters, selected_cluster=selected,
                          fault_family=fault_family, families=families, error=str(exc)),
             )
-    if report is not None:
-        return templates.TemplateResponse(
-            request, "runbooks.html",
-            _context(request, user, clusters=clusters, selected_cluster=selected,
-                     fault_family=fault_family, families=families, source=source,
-                     report=report, cached=True),
-        )
     try:
-        report = await remediation_runbook.generate(source)
+        report = await remediation_runbook.generate_cached(source)
     except remediation_runbook.RunbookError as exc:
         return templates.TemplateResponse(
             request, "runbooks.html",
             _context(request, user, clusters=clusters, selected_cluster=selected,
                      fault_family=fault_family, families=families, source=source, error=str(exc)),
         )
-    with db.SessionLocal() as session:
-        remediation_runbook.store_cached(session, source, report)
     return templates.TemplateResponse(
         request, "runbooks.html",
         _context(request, user, clusters=clusters, selected_cluster=selected,
@@ -121,11 +111,7 @@ async def runbook_markdown(
             if cluster is None or not cluster.is_active:
                 raise HTTPException(status_code=404, detail="Không tìm thấy cluster đang hoạt động")
             source = remediation_runbook.build_source(session, fault_family=fault_family, cluster_id=cluster_id)
-            report = remediation_runbook.get_cached(session, source)
-        if report is None:
-            report = await remediation_runbook.generate(source)
-            with db.SessionLocal() as session:
-                remediation_runbook.store_cached(session, source, report)
+        report = await remediation_runbook.generate_cached(source)
     except remediation_runbook.RunbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", fault_family.strip()) or "runbook"
