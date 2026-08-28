@@ -459,6 +459,16 @@
                 </select>
                 <span id="code-repair-planner-model-status" class="hint">Chọn provider để tải danh sách model.</span>
               </label>
+              <label>Nguồn tài khoản
+                <select id="code-repair-planner-account-source" name="code_repair_planner_account_source">
+                  <option value="configured" {% if code_repair_values.code_repair_planner_account_source == 'configured' %}selected{% endif %}>Tài khoản AI đã cấu hình</option>
+                  <option value="separate" {% if code_repair_values.code_repair_planner_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác / profile riêng</option>
+                </select>
+              </label>
+              <label id="code-repair-planner-account-profile-wrap" hidden>Tên profile riêng
+                <input id="code-repair-planner-account-profile" name="code_repair_planner_account_profile" value="{{ code_repair_values.code_repair_planner_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: planner-1">
+              </label>
+              <p class="hint">Profile riêng dùng thư mục <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
             </div>
             <div>
               <h3>Implementer — thực hiện</h3>
@@ -481,6 +491,16 @@
                 </select>
                 <span id="code-repair-implementer-model-status" class="hint">Chọn provider để tải danh sách model.</span>
               </label>
+              <label>Nguồn tài khoản
+                <select id="code-repair-implementer-account-source" name="code_repair_implementer_account_source">
+                  <option value="configured" {% if code_repair_values.code_repair_implementer_account_source == 'configured' %}selected{% endif %}>Tài khoản AI đã cấu hình</option>
+                  <option value="separate" {% if code_repair_values.code_repair_implementer_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác / profile riêng</option>
+                </select>
+              </label>
+              <label id="code-repair-implementer-account-profile-wrap" hidden>Tên profile riêng
+                <input id="code-repair-implementer-account-profile" name="code_repair_implementer_account_profile" value="{{ code_repair_values.code_repair_implementer_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: implementer-1">
+              </label>
+              <p class="hint">Profile riêng dùng thư mục <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
             </div>
           </div>
           <label>Số vòng review tối đa

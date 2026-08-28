@@ -447,6 +447,8 @@ PATCH_PIPELINE_ENV_NAMES = {
 # isolated worktree.
 CODE_REPAIR_ENV_NAMES = env_config.CODE_REPAIR_ENV_NAMES
 CODE_REPAIR_PROVIDERS = ("auto", "codex", "claude")
+CODE_REPAIR_ACCOUNT_SOURCES = ("configured", "separate")
+CODE_REPAIR_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
 CODE_REPAIR_MAX_REVIEW_ROUNDS = 5
 
 
@@ -1095,6 +1097,7 @@ def _settings_context(
         "code_repair_error": code_repair_error,
         "code_repair_success": code_repair_success,
         "code_repair_providers": CODE_REPAIR_PROVIDERS,
+        "code_repair_account_sources": CODE_REPAIR_ACCOUNT_SOURCES,
         "code_repair_values": (
             code_repair_values if code_repair_values is not None else _code_repair_form_values()
         ),
@@ -2647,8 +2650,12 @@ async def code_repair_settings_submit(
     user: str = Depends(require_login),
     code_repair_planner_provider: str = Form("auto"),
     code_repair_planner_model: str = Form(""),
+    code_repair_planner_account_source: str = Form("configured"),
+    code_repair_planner_account_profile: str = Form(""),
     code_repair_implementer_provider: str = Form("auto"),
     code_repair_implementer_model: str = Form(""),
+    code_repair_implementer_account_source: str = Form("configured"),
+    code_repair_implementer_account_profile: str = Form(""),
     code_repair_max_review_rounds: str = Form("2"),
 ):
     """Persist the two AI roles used by the external repair supervisor."""
@@ -2656,8 +2663,12 @@ async def code_repair_settings_submit(
     values = {
         "code_repair_planner_provider": code_repair_planner_provider.strip().lower(),
         "code_repair_planner_model": code_repair_planner_model.strip(),
+        "code_repair_planner_account_source": code_repair_planner_account_source.strip().lower(),
+        "code_repair_planner_account_profile": code_repair_planner_account_profile.strip(),
         "code_repair_implementer_provider": code_repair_implementer_provider.strip().lower(),
         "code_repair_implementer_model": code_repair_implementer_model.strip(),
+        "code_repair_implementer_account_source": code_repair_implementer_account_source.strip().lower(),
+        "code_repair_implementer_account_profile": code_repair_implementer_account_profile.strip(),
         "code_repair_max_review_rounds": code_repair_max_review_rounds.strip(),
     }
 
@@ -2670,6 +2681,17 @@ async def code_repair_settings_submit(
     for field in ("code_repair_planner_provider", "code_repair_implementer_provider"):
         if values[field] not in CODE_REPAIR_PROVIDERS:
             return fail(f"{field}: provider phải là auto, codex hoặc claude.")
+    for role in ("planner", "implementer"):
+        source_field = f"code_repair_{role}_account_source"
+        profile_field = f"code_repair_{role}_account_profile"
+        source = values[source_field]
+        profile = values[profile_field]
+        if source not in CODE_REPAIR_ACCOUNT_SOURCES:
+            return fail(f"{source_field}: phải là configured hoặc separate.")
+        if source == "separate" and not CODE_REPAIR_PROFILE_RE.fullmatch(profile):
+            return fail(f"{profile_field}: nhập profile riêng hợp lệ (chữ, số, _ hoặc -, tối đa 48 ký tự).")
+        if source == "configured":
+            values[profile_field] = ""
     try:
         rounds = int(values["code_repair_max_review_rounds"])
     except ValueError:

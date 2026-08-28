@@ -55,6 +55,10 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "AI Code Repair" in response.text
     assert 'name="code_repair_planner_provider"' in response.text
     assert 'name="code_repair_implementer_provider"' in response.text
+    assert 'name="code_repair_planner_account_source"' in response.text
+    assert 'name="code_repair_implementer_account_source"' in response.text
+    assert 'name="code_repair_planner_account_profile"' in response.text
+    assert 'name="code_repair_implementer_account_profile"' in response.text
     assert 'id="code-repair-planner-model"' in response.text
     assert 'id="code-repair-implementer-model"' in response.text
     assert 'data-model-provider="code-repair-planner-provider"' in response.text
@@ -89,8 +93,12 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
         data={
             "code_repair_planner_provider": "codex",
             "code_repair_planner_model": "gpt-5-codex",
+            "code_repair_planner_account_source": "separate",
+            "code_repair_planner_account_profile": "planner-1",
             "code_repair_implementer_provider": "claude",
             "code_repair_implementer_model": "claude-sonnet-4-6",
+            "code_repair_implementer_account_source": "configured",
+            "code_repair_implementer_account_profile": "ignored-profile",
             "code_repair_max_review_rounds": "3",
         },
     )
@@ -100,8 +108,12 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
     saved = tmp_env.read_text()
     assert "CODE_REPAIR_PLANNER_PROVIDER=codex" in saved
     assert "CODE_REPAIR_PLANNER_MODEL=gpt-5-codex" in saved
+    assert "CODE_REPAIR_PLANNER_ACCOUNT_SOURCE=separate" in saved
+    assert "CODE_REPAIR_PLANNER_ACCOUNT_PROFILE=planner-1" in saved
     assert "CODE_REPAIR_IMPLEMENTER_PROVIDER=claude" in saved
     assert "CODE_REPAIR_IMPLEMENTER_MODEL=claude-sonnet-4-6" in saved
+    assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_SOURCE=configured" in saved
+    assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_PROFILE=" in saved
     assert "CODE_REPAIR_MAX_REVIEW_ROUNDS=3" in saved
 
 

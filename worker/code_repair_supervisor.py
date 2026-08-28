@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 REPAIR_COOLDOWN_SECONDS = 3600
 
 
+def _configured_account_profile(source: str, profile: str) -> str:
+    """Map Settings' source/profile pair to the pipeline's safe profile value."""
+    return profile.strip() if source == "separate" else "configured"
+
+
 @dataclass
 class Cursor:
     inode: int
@@ -184,8 +189,16 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                     provider=settings.code_repair_provider,
                     planner_provider=settings.code_repair_planner_provider,
                     planner_model=settings.code_repair_planner_model,
+                    planner_account_profile=_configured_account_profile(
+                        settings.code_repair_planner_account_source,
+                        settings.code_repair_planner_account_profile,
+                    ),
                     implementer_provider=settings.code_repair_implementer_provider,
                     implementer_model=settings.code_repair_implementer_model,
+                    implementer_account_profile=_configured_account_profile(
+                        settings.code_repair_implementer_account_source,
+                        settings.code_repair_implementer_account_profile,
+                    ),
                     max_review_rounds=settings.code_repair_max_review_rounds,
                     test_command=settings.code_repair_test_command,
                     timeout_seconds=settings.code_repair_timeout_seconds,
@@ -227,8 +240,16 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                         provider=settings.code_repair_provider,
                         planner_provider=settings.code_repair_planner_provider,
                         planner_model=settings.code_repair_planner_model,
+                        planner_account_profile=_configured_account_profile(
+                            settings.code_repair_planner_account_source,
+                            settings.code_repair_planner_account_profile,
+                        ),
                         implementer_provider=settings.code_repair_implementer_provider,
                         implementer_model=settings.code_repair_implementer_model,
+                        implementer_account_profile=_configured_account_profile(
+                            settings.code_repair_implementer_account_source,
+                            settings.code_repair_implementer_account_profile,
+                        ),
                         max_review_rounds=settings.code_repair_max_review_rounds,
                         test_command=settings.code_repair_test_command,
                         timeout_seconds=settings.code_repair_timeout_seconds,

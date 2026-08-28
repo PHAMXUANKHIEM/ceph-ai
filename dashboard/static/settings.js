@@ -929,6 +929,24 @@
 
   bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status");
   bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status");
+
+  function bindAccountSource(sourceId, wrapId, profileId) {
+    var source = document.getElementById(sourceId);
+    var wrap = document.getElementById(wrapId);
+    var profile = document.getElementById(profileId);
+    if (!source || !wrap || !profile) return;
+    function render() {
+      var separate = source.value === "separate";
+      wrap.hidden = !separate;
+      profile.required = separate;
+      if (!separate) profile.value = "";
+    }
+    source.addEventListener("change", render);
+    render();
+  }
+
+  bindAccountSource("code-repair-planner-account-source", "code-repair-planner-account-profile-wrap", "code-repair-planner-account-profile");
+  bindAccountSource("code-repair-implementer-account-source", "code-repair-implementer-account-profile-wrap", "code-repair-implementer-account-profile");
 })();
 
 // AI Action Policy: search and filters run locally so looking up an action

@@ -116,8 +116,12 @@ TELEGRAM_RGW_ENV_NAMES: dict[str, str] = {
 CODE_REPAIR_ENV_NAMES: dict[str, str] = {
     "code_repair_planner_provider": "CODE_REPAIR_PLANNER_PROVIDER",
     "code_repair_planner_model": "CODE_REPAIR_PLANNER_MODEL",
+    "code_repair_planner_account_source": "CODE_REPAIR_PLANNER_ACCOUNT_SOURCE",
+    "code_repair_planner_account_profile": "CODE_REPAIR_PLANNER_ACCOUNT_PROFILE",
     "code_repair_implementer_provider": "CODE_REPAIR_IMPLEMENTER_PROVIDER",
     "code_repair_implementer_model": "CODE_REPAIR_IMPLEMENTER_MODEL",
+    "code_repair_implementer_account_source": "CODE_REPAIR_IMPLEMENTER_ACCOUNT_SOURCE",
+    "code_repair_implementer_account_profile": "CODE_REPAIR_IMPLEMENTER_ACCOUNT_PROFILE",
     "code_repair_max_review_rounds": "CODE_REPAIR_MAX_REVIEW_ROUNDS",
 }
 

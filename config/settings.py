@@ -404,8 +404,12 @@ class Settings(BaseSettings):
     # worktree. Keep the legacy provider above for backward compatibility.
     code_repair_planner_provider: str = "auto"
     code_repair_planner_model: str = ""
+    code_repair_planner_account_source: str = "configured"
+    code_repair_planner_account_profile: str = ""
     code_repair_implementer_provider: str = "auto"
     code_repair_implementer_model: str = ""
+    code_repair_implementer_account_source: str = "configured"
+    code_repair_implementer_account_profile: str = ""
     code_repair_max_review_rounds: int = Field(default=2, ge=0, le=5)
     code_repair_test_command: str = (
         "PYTHONPATH=. .venv/bin/pytest -q "
