@@ -85,13 +85,33 @@ def test_summary_converts_cost_to_vnd_and_exposes_totals(dashboard_client, monke
 def test_summary_suggests_cheaper_reference_model(dashboard_client, monkeypatch):
     now = datetime(2026, 8, 28, 12, 0)
     with db.SessionLocal() as session:
-        session.add(AIInvocation(
-            id="optimization-priced", feature="runbook", provider="codex", model_id="gpt-5.6-sol",
-            status="SUCCESS", latency_ms=1, input_chars=400, output_chars=400, created_at=now,
-        ))
+        session.add_all([
+            AIInvocation(id="optimization-priced-1", feature="runbook", provider="codex", model_id="gpt-5.6-sol",
+                         status="SUCCESS", latency_ms=1, input_chars=400, output_chars=400, created_at=now),
+            AIInvocation(id="optimization-priced-2", feature="runbook", provider="codex", model_id="gpt-5.6-sol",
+                         status="SUCCESS", latency_ms=1, input_chars=400, output_chars=400, created_at=now),
+        ])
         session.commit()
     data = summary(24, now=now)
     item = next(item for item in data["optimization"]["recommendations"] if item["feature"] == "runbook")
     assert item["recommended_model_id"] == "gc/gemini-2.5-flash"
     assert item["estimated_savings_usd"] > 0
+    assert item["estimated_savings_usd"] == item["savings_per_call_usd"] * item["calls"]
     assert data["optimization"]["monthly_projection_usd"] > 0
+
+
+def test_summary_recommends_a_price_for_unpriced_model_without_fake_savings(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_input_usd_per_million_tokens", 0.0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_output_usd_per_million_tokens", 0.0)
+    with db.SessionLocal() as session:
+        session.add(AIInvocation(
+            id="optimization-unpriced", feature="unknown-feature", provider="unknown",
+            model_id="unknown-model", status="SUCCESS", latency_ms=1,
+            input_chars=400, output_chars=400, created_at=now,
+        ))
+        session.commit()
+    data = summary(24, now=now)
+    item = next(item for item in data["optimization"]["recommendations"] if item["feature"] == "unknown-feature")
+    assert item["recommended_model_id"] == "gc/gemini-2.5-flash"
+    assert item["estimated_savings_usd"] is None

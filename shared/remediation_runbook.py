@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import re
 
 import httpx
@@ -11,6 +12,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
+from shared import db
 from shared.ai_observability import observe_ai_call
 from shared.ai_redaction import default_redactor
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
@@ -25,6 +27,7 @@ TIMEOUT_SECONDS = 90
 MAX_TOKENS = 4096
 MAX_CASES = 50
 _SENSITIVE_KEY = re.compile(r"(?:password|secret|token|api.?key|keyring|credential)", re.I)
+logger = logging.getLogger(__name__)
 
 
 class RunbookError(Exception):
@@ -182,8 +185,16 @@ def store_cached(session, source: dict, report: dict) -> None:
     ))
     try:
         session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         session.rollback()
+        # Two simultaneous operators can generate the same fingerprint. The
+        # unique-index race is harmless, but other integrity failures must be
+        # not silently disable the cache and make every later request pay for
+        # AI again.
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "unique" not in message and "duplicate" not in message:
+            raise
+        logger.info("Remediation runbook cache already exists for this evidence")
 
 
 def _schema() -> dict:
@@ -292,6 +303,29 @@ def validate(result: dict, source: dict) -> dict:
 
 async def generate(source: dict) -> dict:
     return validate(await _call_model(source), source)
+
+
+async def generate_cached(source: dict, *, session=None) -> dict:
+    """Load a matching report or make exactly one model call and cache it.
+
+    ``session`` is injectable for callers/tests that already own a database
+    transaction. HTTP callers omit it so the DB session is never held open
+    while waiting on the model.
+    """
+    if session is None:
+        with db.SessionLocal() as lookup_session:
+            cached = get_cached(lookup_session, source)
+    else:
+        cached = get_cached(session, source)
+    if cached is not None:
+        return cached
+    report = await generate(source)
+    if session is None:
+        with db.SessionLocal() as store_session:
+            store_cached(store_session, source, report)
+    else:
+        store_cached(session, source, report)
+    return report
 
 
 def to_markdown(report: dict) -> str:

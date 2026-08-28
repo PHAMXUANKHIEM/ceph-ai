@@ -5,7 +5,8 @@ import pytest
 
 from shared.models import Action, Cluster, Incident, RemediationCase
 from shared.remediation_runbook import (
-    RunbookError, build_source, generate, get_cached, store_cached, to_markdown, validate,
+    RunbookError, build_source, generate, generate_cached, get_cached, store_cached,
+    to_markdown, validate,
 )
 
 
@@ -112,3 +113,27 @@ def test_validated_runbook_is_cached_by_evidence_fingerprint(db_session):
     cached = get_cached(db_session, source)
     assert cached["cached"] is True
     assert cached["title"] == validated["title"]
+
+
+def test_generate_cached_calls_model_only_once(db_session, monkeypatch):
+    _seed(db_session)
+    source = build_source(db_session, fault_family="OSD_DOWN", cluster_id="cluster-1")
+    result = {
+        "title": "OSD down recovery", "when_to_use": "When OSD is down",
+        "prechecks": ["Check evidence"], "steps": ["Restart the failed OSD"],
+        "verification": ["Confirm health is OK"], "rollback": ["Escalate"],
+        "prevention": ["Monitor OSD"], "limitations": "Limited sample.",
+        "citations": ["case:case-1"],
+    }
+    calls = 0
+
+    async def fake_model(_source):
+        nonlocal calls
+        calls += 1
+        return result
+
+    monkeypatch.setattr("shared.remediation_runbook._call_model", fake_model)
+    assert asyncio.run(generate_cached(source, session=db_session))["title"] == result["title"]
+    cached = asyncio.run(generate_cached(source, session=db_session))
+    assert cached["cached"] is True
+    assert calls == 1

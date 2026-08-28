@@ -133,10 +133,31 @@ def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd
         if not candidates:
             continue
         candidate_cost, price = min(candidates, key=lambda item: item[0])
-        baseline = current if current is not None else candidate_cost
-        if baseline <= 0 or candidate_cost >= baseline:
+        calls = max(1, int(row.get("calls") or 1))
+        if current is None:
+            # Without a current price there is no defensible savings number,
+            # but the cheapest reference model is still useful guidance.
+            recommendations.append({
+                "feature": row["feature"],
+                "current_provider": row["provider"],
+                "current_model_id": row["model_id"],
+                "recommended_provider": price.provider,
+                "recommended_model_id": price.model_id,
+                "recommended_label": price.label,
+                "current_cost_usd": None,
+                "recommended_cost_usd": round(candidate_cost, 6),
+                "estimated_savings_usd": None,
+                "estimated_savings_vnd": None,
+                "savings_per_call_usd": None,
+                "savings_per_call_vnd": None,
+                "savings_percent": None,
+                "calls": calls,
+            })
             continue
-        savings = baseline - candidate_cost
+        if current <= 0 or candidate_cost >= current:
+            continue
+        savings = current - candidate_cost
+        savings_per_call = savings / calls
         recommendations.append({
             "feature": row["feature"],
             "current_provider": row["provider"],
@@ -148,7 +169,10 @@ def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd
             "recommended_cost_usd": round(candidate_cost, 6),
             "estimated_savings_usd": round(savings, 6),
             "estimated_savings_vnd": round(savings * usd_to_vnd),
-            "savings_percent": round(savings / baseline * 100, 1),
+            "savings_per_call_usd": round(savings_per_call, 6),
+            "savings_per_call_vnd": round(savings_per_call * usd_to_vnd),
+            "savings_percent": round(savings / current * 100, 1),
+            "calls": calls,
         })
     recommendations.sort(key=lambda item: item["estimated_savings_usd"], reverse=True)
     monthly_cost = total_cost / hours * 730 if total_cost else 0.0
