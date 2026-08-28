@@ -64,3 +64,19 @@ def test_summary_uses_model_specific_price_table(dashboard_client, monkeypatch):
     assert row["output_usd_per_million_tokens"] == 20.0
     assert row["estimated_cost_usd"] == 0.000024
     assert data["pricing_complete"] is True
+
+
+def test_summary_converts_cost_to_vnd_and_exposes_totals(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_usd_to_vnd", 26290.0)
+    with db.SessionLocal() as session:
+        session.add(AIInvocation(
+            id="vnd-priced", feature="ceph_chat", provider="codex", model_id="gpt-5.6-sol",
+            status="SUCCESS", latency_ms=1, input_chars=4, output_chars=4, created_at=now,
+        ))
+        session.commit()
+    data = summary(24, now=now)
+    row = next(item for item in data["groups"] if item["model_id"] == "gpt-5.6-sol")
+    assert data["usd_to_vnd"] == 26290.0
+    assert row["estimated_cost_vnd"] == 1
+    assert data["estimated_cost_vnd"] == 1

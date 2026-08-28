@@ -101,6 +101,10 @@ def _configured_fallback() -> TokenPrice | None:
     )
 
 
+def _usd_to_vnd_rate() -> float:
+    return max(0.0, float(getattr(settings, "ai_cost_usd_to_vnd", 26290.0)))
+
+
 def _estimated_tokens(chars: int) -> int:
     return math.ceil(max(0, int(chars or 0)) / CHARS_PER_TOKEN)
 
@@ -117,6 +121,7 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
     for row in rows:
         groups[(row.feature, row.provider, row.model_id)].append(row)
     fallback = _configured_fallback()
+    usd_to_vnd = _usd_to_vnd_rate()
     result = []
     total_cost = 0.0
     priced_groups = 0
@@ -154,6 +159,7 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
             "pricing_source": source,
             "pricing_note": note,
             "estimated_cost_usd": round(cost, 6) if cost is not None else None,
+            "estimated_cost_vnd": round(cost * usd_to_vnd) if cost is not None else None,
         })
     common_rates = next(iter(rates)) if len(rates) == 1 else (None, None)
     return {
@@ -169,6 +175,8 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
         "input_tokens": sum(row["input_tokens"] for row in result),
         "output_tokens": sum(row["output_tokens"] for row in result),
         "estimated_cost_usd": round(total_cost, 6) if priced_groups else None,
+        "usd_to_vnd": usd_to_vnd,
+        "estimated_cost_vnd": round(total_cost * usd_to_vnd) if priced_groups else None,
         "pricing_table": pricing_table(),
         "groups": result,
     }

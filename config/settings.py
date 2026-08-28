@@ -211,6 +211,9 @@ class Settings(BaseSettings):
     # and USD values as estimates until providers expose usage metadata.
     ai_cost_input_usd_per_million_tokens: float = 0.0
     ai_cost_output_usd_per_million_tokens: float = 0.0
+    # Reference conversion for the read-only cost dashboard. Update when the
+    # chosen accounting exchange rate changes; it does not alter USD costs.
+    ai_cost_usd_to_vnd: float = Field(default=26290.0, gt=0)
 
     # Weekly read-only health digest. It is sent only through configured
     # alert channels and never creates or executes an Action.
