@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -73,12 +74,24 @@ def _rca_evidence(raw: str | None) -> dict | None:
             "bottleneck": bool(row.get("bottleneck")),
         })
     topology = evidence.get("topology") if isinstance(evidence.get("topology"), dict) else {}
+    def number(value):
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    confidence = number(evidence.get("confidence"))
+    if confidence is not None:
+        confidence = max(0.0, min(1.0, confidence))
     return {
         "hypothesis": evidence.get("hypothesis") or "—",
         "explanation": evidence.get("explanation") or "—",
-        "confidence": evidence.get("confidence"),
-        "current_latency_ms": evidence.get("current_latency_ms"),
-        "baseline_latency_ms": evidence.get("baseline_latency_ms"),
+        "confidence": confidence,
+        "current_latency_ms": number(evidence.get("current_latency_ms")),
+        "baseline_latency_ms": number(evidence.get("baseline_latency_ms")),
         "pool": evidence.get("pool"),
         "image": evidence.get("image"),
         "hosts": hosts,
@@ -90,26 +103,38 @@ def _rca_evidence(raw: str | None) -> dict | None:
 
 @router.get("/alerts", response_class=HTMLResponse)
 async def alert_center_page(request: Request, user: str = Depends(require_login)):
-    clusters, selected_cluster = _resolve_selected_cluster(
-        request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", "")
-    )
-    request.session["selected_cluster_id"] = selected_cluster.id
-    cluster_filter = (
-        or_(Incident.cluster_id == selected_cluster.id, Incident.cluster_id.is_(None))
-        if selected_cluster.is_default
-        else Incident.cluster_id == selected_cluster.id
-    )
-    with db.SessionLocal() as session:
-        incidents = session.query(Incident).filter(cluster_filter).order_by(
-            Incident.detected_at.desc(), Incident.id.desc()
-        ).all()
+    try:
+        clusters, selected_cluster = _resolve_selected_cluster(
+            request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", "")
+        )
+        request.session["selected_cluster_id"] = selected_cluster.id
+        cluster_filter = (
+            or_(Incident.cluster_id == selected_cluster.id, Incident.cluster_id.is_(None))
+            if selected_cluster.is_default
+            else Incident.cluster_id == selected_cluster.id
+        )
+        with db.SessionLocal() as session:
+            incidents = session.query(Incident).filter(cluster_filter).order_by(
+                Incident.detected_at.desc(), Incident.id.desc()
+            ).all()
+    except SQLAlchemyError:
+        logger.exception("alert_center: failed to query incidents from DB")
+        raise HTTPException(status_code=503, detail="Không kết nối được database")
     groups = alert_center.build_alert_groups(incidents)
+    try:
+        page = int(request.query_params.get("page", "1"))
+    except (TypeError, ValueError):
+        page = 1
+    page_data = alert_center.paginate_alert_groups(groups, page=page)
     return templates.TemplateResponse(request, "alerts.html", {
         "user": user,
         "is_admin": auth.is_admin_user(user),
         "clusters": clusters,
         "selected_cluster": selected_cluster,
-        "alert_groups": groups,
+        "alert_groups": page_data["items"],
+        "total_groups": page_data["total_groups"],
+        "total_pages": page_data["total_pages"],
+        "page": page_data["page"],
         "total_incidents": len(incidents),
         "active_groups": sum(1 for group in groups if group["is_active"]),
     })

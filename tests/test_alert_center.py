@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from dashboard.alert_center import build_alert_groups
+from dashboard.alert_center import build_alert_groups, paginate_alert_groups
 from dashboard.routes.incidents import _rca_evidence
 
 
@@ -46,3 +46,21 @@ def test_rca_evidence_is_compact_and_deduplicates_hosts():
     assert evidence["hypothesis"] == "latency_candidate"
     assert [row["host"] for row in evidence["hosts"]] == ["ceph1", "ceph2"]
     assert "api_token" not in evidence
+
+
+def test_alert_center_paginates_without_dropping_groups():
+    groups = [{"id": index} for index in range(41)]
+    first = paginate_alert_groups(groups, page=1, page_size=20)
+    last = paginate_alert_groups(groups, page=99, page_size=20)
+
+    assert first["total_groups"] == 41
+    assert first["total_pages"] == 3
+    assert [row["id"] for row in first["items"]] == list(range(20))
+    assert last["page"] == 3
+    assert [row["id"] for row in last["items"]] == list(range(40, 41))
+
+
+def test_rca_evidence_rejects_non_numeric_confidence():
+    evidence = _rca_evidence('{"source":"performance_rca", "confidence":"not-a-number"}')
+
+    assert evidence["confidence"] is None

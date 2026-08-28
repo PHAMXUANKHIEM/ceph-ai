@@ -749,6 +749,10 @@ code {
 .alert-center-table { min-width: 860px; }
 .alert-center-table td { vertical-align: top; }
 .alert-center-note { margin-top: 14px; }
+.alert-history-details { margin-top: 8px; }
+.alert-history-details summary { color: var(--accent-hover); cursor: pointer; font-size: .78rem; }
+.alert-history-details table { min-width: 360px; margin-top: 8px; font-size: .78rem; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; }
 .rca-evidence-panel { margin: 0 0 20px; padding: 16px; border: 1px solid rgba(var(--brand-primary-rgb), .32); border-radius: 10px; background: rgba(var(--brand-primary-rgb), .045); }
 .rca-evidence-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .rca-evidence-heading h2 { margin: 0 0 4px; }

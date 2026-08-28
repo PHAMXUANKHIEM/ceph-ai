@@ -19,8 +19,8 @@
       </div>
       <div class="card-body">
         <div class="alert-center-summary">
-          <span class="status-pill status-warn"><span class="dot"></span><strong>{{ alert_groups|length }} nhóm cảnh báo</strong></span>
-          <span class="hint">{{ total_incidents }} lần phát hiện · {{ active_groups }} nhóm đang mở</span>
+          <span class="status-pill status-warn"><span class="dot"></span><strong>{{ total_groups }} nhóm cảnh báo</strong></span>
+          <span class="hint">{{ total_incidents }} lần phát hiện · {{ active_groups }} nhóm đang mở · trang {{ page }}/{{ total_pages }}</span>
         </div>
         <div class="table-wrap">
           <table class="alert-center-table">
@@ -32,6 +32,11 @@
                 <td>
                   <a href="/incidents/{{ current.id }}/timeline"><code>{{ group.ceph_code }}</code></a>
                   {% if group.merged_count %}<div class="hint">Đã gom {{ group.merged_count }} lần lặp</div>{% endif %}
+                  <details class="alert-history-details"><summary>Xem lịch sử nhóm</summary>
+                    <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Trạng thái</th><th></th></tr></thead><tbody>
+                    {% for incident in group.incidents %}<tr><td><code>{{ incident.detected_at|vntime }}</code></td><td>{{ incident.status }}</td><td><a href="/incidents/{{ incident.id }}/timeline">Timeline</a></td></tr>{% endfor %}
+                    </tbody></table></div>
+                  </details>
                 </td>
                 <td>{% if group.is_active %}<span class="severity-badge severity-warn">ĐANG MỞ</span>{% else %}<span class="hint">ĐÃ ĐÓNG</span>{% endif %}</td>
                 <td><strong>{{ group.occurrence_count }}</strong>{% if group.active_count %}<div class="hint">{{ group.active_count }} đang mở</div>{% endif %}</td>
@@ -45,6 +50,11 @@
             </tbody>
           </table>
         </div>
+        {% if total_pages > 1 %}<nav class="pagination" aria-label="Phân trang cảnh báo">
+          {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page - 1 }}&cluster={{ selected_cluster.id }}">← Trước</a>{% endif %}
+          <span class="hint">Trang {{ page }} / {{ total_pages }}</span>
+          {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page + 1 }}&cluster={{ selected_cluster.id }}">Sau →</a>{% endif %}
+        </nav>{% endif %}
         <p class="hint alert-center-note">Gom nhóm chỉ thay đổi cách hiển thị. Incident gốc và toàn bộ bằng chứng vẫn được giữ trong timeline; hệ thống không tự xoá hay bỏ qua cảnh báo.</p>
       </div>
     </section>

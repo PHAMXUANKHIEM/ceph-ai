@@ -6,6 +6,7 @@ it never changes an Incident or suppresses an alert at the source.
 """
 
 from collections import OrderedDict
+from math import ceil
 
 
 OPEN_STATUSES = {
@@ -14,7 +15,7 @@ OPEN_STATUSES = {
 }
 
 
-def build_alert_groups(incidents, *, max_groups: int = 100) -> list[dict]:
+def build_alert_groups(incidents, *, max_groups: int | None = None) -> list[dict]:
     """Return one representative row per recurring alert group.
 
     A deterministic ``group_root_incident_id`` wins when available.  Legacy
@@ -54,4 +55,20 @@ def build_alert_groups(incidents, *, max_groups: int = 100) -> list[dict]:
     for group in result:
         group["is_active"] = group["active_count"] > 0
         group["merged_count"] = max(group["occurrence_count"] - 1, 0)
-    return result[:max_groups]
+    return result if max_groups is None else result[:max_groups]
+
+
+def paginate_alert_groups(groups: list[dict], *, page: int = 1, page_size: int = 20) -> dict:
+    """Return a bounded page without silently dropping any group."""
+    page_size = max(1, page_size)
+    total_groups = len(groups)
+    total_pages = max(1, ceil(total_groups / page_size))
+    page = min(max(1, page), total_pages)
+    start = (page - 1) * page_size
+    return {
+        "items": groups[start:start + page_size],
+        "page": page,
+        "page_size": page_size,
+        "total_groups": total_groups,
+        "total_pages": total_pages,
+    }
