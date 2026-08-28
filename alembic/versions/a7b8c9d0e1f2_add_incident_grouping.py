@@ -15,26 +15,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "incidents",
-        sa.Column("group_root_incident_id", sa.String(length=36), nullable=True),
-    )
-    op.create_index(
-        "ix_incidents_group_root_incident_id",
-        "incidents",
-        ["group_root_incident_id"],
-        unique=False,
-    )
-    op.create_foreign_key(
-        "fk_incidents_group_root_incident",
-        "incidents",
-        "incidents",
-        ["group_root_incident_id"],
-        ["id"],
-    )
+    # SQLite cannot ALTER TABLE to add a foreign key; batch mode rebuilds the
+    # table while preserving the existing incident rows.
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.add_column(
+            sa.Column("group_root_incident_id", sa.String(length=36), nullable=True),
+        )
+        batch_op.create_index(
+            "ix_incidents_group_root_incident_id",
+            ["group_root_incident_id"],
+            unique=False,
+        )
+        batch_op.create_foreign_key(
+            "fk_incidents_group_root_incident",
+            "incidents",
+            ["group_root_incident_id"],
+            ["id"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_incidents_group_root_incident", "incidents", type_="foreignkey")
-    op.drop_index("ix_incidents_group_root_incident_id", table_name="incidents")
-    op.drop_column("incidents", "group_root_incident_id")
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_constraint("fk_incidents_group_root_incident", type_="foreignkey")
+        batch_op.drop_index("ix_incidents_group_root_incident_id")
+        batch_op.drop_column("group_root_incident_id")

@@ -78,6 +78,34 @@ def test_alembic_upgrade_head_creates_actions_table_matching_model(tmp_path, mon
     assert columns == model_columns
 
 
+def test_alembic_upgrade_preserves_legacy_telegram_message_id(tmp_path, monkeypatch):
+    db_path = tmp_path / "migration_telegram.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{db_path}")
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    command.upgrade(cfg, "91d7e9723457")
+
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "INSERT INTO actions (id, incident_id, action_id, classification, status, created_at, updated_at, telegram_message_id) "
+        "VALUES ('legacy-action', 'legacy-incident', 'restart_osd_daemon', 'SAFE', 'PENDING_APPROVAL', "
+        "'2026-08-28', '2026-08-28', 12345)"
+    )
+    con.commit()
+    con.close()
+
+    command.upgrade(cfg, "head")
+
+    con = sqlite3.connect(db_path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(actions)")}
+    message_ids = con.execute(
+        "SELECT telegram_message_ids FROM actions WHERE id = 'legacy-action'"
+    ).fetchone()[0]
+    con.close()
+    assert "telegram_message_id" not in columns
+    assert message_ids == '{"incident":12345}'
+
+
 @pytest.mark.parametrize("model", [RemediationCase, PlaybookStat])
 def test_alembic_upgrade_head_creates_case_memory_tables_matching_models(
     tmp_path, monkeypatch, model,

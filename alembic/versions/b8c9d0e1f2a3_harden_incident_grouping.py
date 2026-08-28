@@ -14,38 +14,33 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "fk_incidents_group_root_incident",
-        "incidents",
-        type_="foreignkey",
-    )
-    op.create_foreign_key(
-        "fk_incidents_group_root_incident",
-        "incidents",
-        "incidents",
-        ["group_root_incident_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
-    op.create_index(
-        "ix_incidents_cluster_detected_at",
-        "incidents",
-        ["cluster_id", "detected_at"],
-        unique=False,
-    )
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_constraint(
+            "fk_incidents_group_root_incident", type_="foreignkey",
+        )
+        batch_op.create_foreign_key(
+            "fk_incidents_group_root_incident",
+            "incidents",
+            ["group_root_incident_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+        batch_op.create_index(
+            "ix_incidents_cluster_detected_at",
+            ["cluster_id", "detected_at"],
+            unique=False,
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_incidents_cluster_detected_at", table_name="incidents")
-    op.drop_constraint(
-        "fk_incidents_group_root_incident",
-        "incidents",
-        type_="foreignkey",
-    )
-    op.create_foreign_key(
-        "fk_incidents_group_root_incident",
-        "incidents",
-        "incidents",
-        ["group_root_incident_id"],
-        ["id"],
-    )
+    with op.batch_alter_table("incidents") as batch_op:
+        batch_op.drop_index("ix_incidents_cluster_detected_at")
+        batch_op.drop_constraint(
+            "fk_incidents_group_root_incident", type_="foreignkey",
+        )
+        batch_op.create_foreign_key(
+            "fk_incidents_group_root_incident",
+            "incidents",
+            ["group_root_incident_id"],
+            ["id"],
+        )

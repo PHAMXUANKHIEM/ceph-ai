@@ -15,10 +15,16 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("change_risk_assessments", sa.Column("assessment_hash", sa.String(length=64), nullable=True))
     op.add_column("change_risk_assessments", sa.Column("acknowledged_hash", sa.String(length=64), nullable=True))
-    op.execute("UPDATE change_risk_assessments SET assessment_hash = repeat('0', 64)")
-    op.alter_column("change_risk_assessments", "assessment_hash", nullable=False)
+    # Use a portable literal instead of PostgreSQL-only repeat().
+    op.execute("UPDATE change_risk_assessments SET assessment_hash = '0000000000000000000000000000000000000000000000000000000000000000'")
+    # SQLite applies NOT NULL changes by rebuilding the table.
+    with op.batch_alter_table("change_risk_assessments") as batch_op:
+        batch_op.alter_column(
+            "assessment_hash", existing_type=sa.String(length=64), nullable=False,
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("change_risk_assessments", "acknowledged_hash")
-    op.drop_column("change_risk_assessments", "assessment_hash")
+    with op.batch_alter_table("change_risk_assessments") as batch_op:
+        batch_op.drop_column("acknowledged_hash")
+        batch_op.drop_column("assessment_hash")
