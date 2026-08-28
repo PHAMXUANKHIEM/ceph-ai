@@ -745,6 +745,18 @@ code {
   display: inline-block; margin-left: 5px; padding: 1px 5px; border: 1px solid rgba(var(--brand-primary-rgb), .38);
   border-radius: 999px; color: var(--accent-hover); font-size: .68rem; font-weight: 700; vertical-align: 1px;
 }
+.alert-center-summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.alert-center-table { min-width: 860px; }
+.alert-center-table td { vertical-align: top; }
+.alert-center-note { margin-top: 14px; }
+.rca-evidence-panel { margin: 0 0 20px; padding: 16px; border: 1px solid rgba(var(--brand-primary-rgb), .32); border-radius: 10px; background: rgba(var(--brand-primary-rgb), .045); }
+.rca-evidence-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.rca-evidence-heading h2 { margin: 0 0 4px; }
+.rca-evidence-metrics { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin: 14px 0; }
+.rca-evidence-metrics span { display: flex; flex-direction: column; gap: 3px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.rca-evidence-metrics small { color: var(--text-muted); }
+.rca-host-table { min-width: 620px; }
+@media (max-width: 760px) { .rca-evidence-metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 
 /* ===== Tables ===== */
 .table-wrap { overflow-x: auto; }

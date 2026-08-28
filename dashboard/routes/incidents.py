@@ -22,6 +22,7 @@ from dashboard.vntime import format_vn
 from shared import audit, change_risk, db, heartbeat
 from shared import incident_postmortem, trust_engine
 from shared.ai_cost import summary as ai_cost_summary
+from dashboard import alert_center
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.models import (
@@ -48,6 +49,70 @@ CASE_VERDICTS = {
     "INEFFECTIVE": "Không khắc phục được",
     "INCONCLUSIVE": "Chưa đủ bằng chứng",
 }
+
+
+def _rca_evidence(raw: str | None) -> dict | None:
+    """Prepare the safe, compact RCA evidence shown above the raw timeline."""
+    evidence = incident_postmortem._safe_json(raw)
+    if not isinstance(evidence, dict) or evidence.get("source") != "performance_rca":
+        return None
+    hosts = []
+    seen_hosts = set()
+    for row in evidence.get("host_evidence", []):
+        if not isinstance(row, dict):
+            continue
+        host = str(row.get("host") or row.get("node_name") or "").strip()
+        if not host or host in seen_hosts:
+            continue
+        seen_hosts.add(host)
+        hosts.append({
+            "host": host,
+            "cpu_percent": row.get("cpu_percent"),
+            "mem_percent": row.get("mem_percent"),
+            "disk_latency_ms": row.get("disk_latency_ms"),
+            "bottleneck": bool(row.get("bottleneck")),
+        })
+    topology = evidence.get("topology") if isinstance(evidence.get("topology"), dict) else {}
+    return {
+        "hypothesis": evidence.get("hypothesis") or "—",
+        "explanation": evidence.get("explanation") or "—",
+        "confidence": evidence.get("confidence"),
+        "current_latency_ms": evidence.get("current_latency_ms"),
+        "baseline_latency_ms": evidence.get("baseline_latency_ms"),
+        "pool": evidence.get("pool"),
+        "image": evidence.get("image"),
+        "hosts": hosts,
+        "pgid": topology.get("pgid"),
+        "primary_osd": topology.get("primary_osd"),
+        "data_object_count": topology.get("data_object_count"),
+    }
+
+
+@router.get("/alerts", response_class=HTMLResponse)
+async def alert_center_page(request: Request, user: str = Depends(require_login)):
+    clusters, selected_cluster = _resolve_selected_cluster(
+        request.query_params.get("cluster", ""), request.session.get("selected_cluster_id", "")
+    )
+    request.session["selected_cluster_id"] = selected_cluster.id
+    cluster_filter = (
+        or_(Incident.cluster_id == selected_cluster.id, Incident.cluster_id.is_(None))
+        if selected_cluster.is_default
+        else Incident.cluster_id == selected_cluster.id
+    )
+    with db.SessionLocal() as session:
+        incidents = session.query(Incident).filter(cluster_filter).order_by(
+            Incident.detected_at.desc(), Incident.id.desc()
+        ).all()
+    groups = alert_center.build_alert_groups(incidents)
+    return templates.TemplateResponse(request, "alerts.html", {
+        "user": user,
+        "is_admin": auth.is_admin_user(user),
+        "clusters": clusters,
+        "selected_cluster": selected_cluster,
+        "alert_groups": groups,
+        "total_incidents": len(incidents),
+        "active_groups": sum(1 for group in groups if group["is_active"]),
+    })
 
 
 def _incident_in_selected_cluster(session, incident_id: str, selected_cluster: Cluster) -> Incident | None:
@@ -91,6 +156,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
                 Action.status == ActionStatus.GRACE_PENDING.value,
             ).all()
         }
+        rca_evidence = _rca_evidence(incident.signal_evidence_json)
     return templates.TemplateResponse(request, "incident_timeline.html", {
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": selected_cluster, "incident": incident, "timeline": timeline,
@@ -100,6 +166,7 @@ async def incident_timeline_page(request: Request, incident_id: str, user: str =
         "remediation_cases": remediation_cases, "case_verdicts": CASE_VERDICTS,
         "shadow_comparison": trust_engine.shadow_comparison,
         "grace_action_ids": grace_action_ids,
+        "rca_evidence": rca_evidence,
     })
 
 

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trung tâm cảnh báo — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page-shell">
+    <section class="card alert-center-card">
+      <div class="card-header">
+        <div>
+          <h1>Trung tâm cảnh báo</h1>
+          <p class="hint">Mỗi nhóm chỉ hiển thị một dòng đại diện; lịch sử lặp được gom lại để tránh đọc nhầm là nhiều lỗi mới.</p>
+        </div>
+        <a class="btn btn-ghost btn-sm" href="/">Dashboard</a>
+      </div>
+      <div class="card-body">
+        <div class="alert-center-summary">
+          <span class="status-pill status-warn"><span class="dot"></span><strong>{{ alert_groups|length }} nhóm cảnh báo</strong></span>
+          <span class="hint">{{ total_incidents }} lần phát hiện · {{ active_groups }} nhóm đang mở</span>
+        </div>
+        <div class="table-wrap">
+          <table class="alert-center-table">
+            <thead><tr><th>Nhóm cảnh báo</th><th>Trạng thái</th><th>Số lần</th><th>Lần đầu</th><th>Lần gần nhất</th><th></th></tr></thead>
+            <tbody>
+            {% for group in alert_groups %}
+              {% set current = group.representative %}
+              <tr>
+                <td>
+                  <a href="/incidents/{{ current.id }}/timeline"><code>{{ group.ceph_code }}</code></a>
+                  {% if group.merged_count %}<div class="hint">Đã gom {{ group.merged_count }} lần lặp</div>{% endif %}
+                </td>
+                <td>{% if group.is_active %}<span class="severity-badge severity-warn">ĐANG MỞ</span>{% else %}<span class="hint">ĐÃ ĐÓNG</span>{% endif %}</td>
+                <td><strong>{{ group.occurrence_count }}</strong>{% if group.active_count %}<div class="hint">{{ group.active_count }} đang mở</div>{% endif %}</td>
+                <td><code>{{ group.first_seen|vntime }}</code></td>
+                <td><code>{{ group.last_seen|vntime }}</code></td>
+                <td><a class="btn btn-ghost btn-sm" href="/incidents/{{ current.id }}/timeline">Xem timeline</a></td>
+              </tr>
+            {% else %}
+              <tr class="empty-row"><td colspan="6" class="empty-state">Chưa có cảnh báo nào.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint alert-center-note">Gom nhóm chỉ thay đổi cách hiển thị. Incident gốc và toàn bộ bằng chứng vẫn được giữ trong timeline; hệ thống không tự xoá hay bỏ qua cảnh báo.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

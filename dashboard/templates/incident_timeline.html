@@ -15,6 +15,22 @@
       </div>
       {% if postmortem_error %}<p class="error-message">{{ postmortem_error }}</p>{% endif %}
       <div class="card-body">
+        {% if rca_evidence %}
+        <section class="rca-evidence-panel">
+          <div class="rca-evidence-heading"><div><h2>RCA Evidence Chain</h2><p class="hint">Ứng viên tương quan từ telemetry; không tự thay đổi Ceph.</p></div><span class="severity-badge severity-warn">{{ "%.1f%%"|format((rca_evidence.confidence or 0) * 100) }} confidence</span></div>
+          <p><strong>Ứng viên:</strong> <code>{{ rca_evidence.hypothesis }}</code> · {{ rca_evidence.explanation }}</p>
+          <div class="rca-evidence-metrics">
+            <span><small>Latency hiện tại</small><strong>{{ rca_evidence.current_latency_ms or "—" }} ms</strong></span>
+            <span><small>Baseline</small><strong>{{ rca_evidence.baseline_latency_ms or "—" }} ms</strong></span>
+            <span><small>Pool / image</small><strong>{{ rca_evidence.pool or "—" }}{% if rca_evidence.image %} / {{ rca_evidence.image }}{% endif %}</strong></span>
+            <span><small>PG / primary OSD</small><strong>{{ rca_evidence.pgid or "—" }} / {{ rca_evidence.primary_osd if rca_evidence.primary_osd is not none else "—" }}</strong></span>
+          </div>
+          {% if rca_evidence.hosts %}<div class="table-wrap"><table class="rca-host-table"><thead><tr><th>Host</th><th>CPU</th><th>RAM</th><th>Disk latency</th></tr></thead><tbody>
+            {% for host in rca_evidence.hosts %}<tr><td><code>{{ host.host }}</code></td><td>{{ host.cpu_percent if host.cpu_percent is not none else "—" }}%</td><td>{{ host.mem_percent if host.mem_percent is not none else "—" }}%</td><td>{{ host.disk_latency_ms if host.disk_latency_ms is not none else "—" }} ms</td></tr>{% endfor %}
+          </tbody></table></div>{% endif %}
+          <p class="hint">Sample {{ rca_evidence.data_object_count or "—" }} data-object · chi tiết đầy đủ nằm trong mốc detected bên dưới.</p>
+        </section>
+        {% endif %}
         {% if timeline.diagnosis_context %}<p><strong>Diagnosis context:</strong> {{ timeline.diagnosis_context }}</p>{% endif %}
         <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Mốc</th><th>Actor</th><th>Nội dung / nguồn</th></tr></thead><tbody>
         {% for event in timeline.events %}<tr>
