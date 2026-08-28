@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from shared.models import Action, Cluster, Incident, RemediationCase
-from shared.remediation_runbook import RunbookError, build_source, generate, to_markdown, validate
+from shared.remediation_runbook import (
+    RunbookError, build_source, generate, get_cached, store_cached, to_markdown, validate,
+)
 
 
 def _seed(session):
@@ -93,3 +95,20 @@ def test_generate_calls_and_validates_model(db_session, monkeypatch):
 
     monkeypatch.setattr("shared.remediation_runbook._call_model", fake_model)
     assert asyncio.run(generate(source))["source_case_count"] == 1
+
+
+def test_validated_runbook_is_cached_by_evidence_fingerprint(db_session):
+    _seed(db_session)
+    source = build_source(db_session, fault_family="OSD_DOWN", cluster_id="cluster-1")
+    report = {
+        "title": "OSD down recovery", "when_to_use": "When OSD is down",
+        "prechecks": ["Check evidence"], "steps": ["Restart the failed OSD"],
+        "verification": ["Confirm health is OK"], "rollback": ["Escalate"],
+        "prevention": ["Monitor OSD"], "limitations": "Limited sample.",
+        "citations": ["case:case-1"],
+    }
+    validated = validate(report, source)
+    store_cached(db_session, source, validated)
+    cached = get_cached(db_session, source)
+    assert cached["cached"] is True
+    assert cached["title"] == validated["title"]

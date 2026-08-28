@@ -80,3 +80,18 @@ def test_summary_converts_cost_to_vnd_and_exposes_totals(dashboard_client, monke
     assert data["usd_to_vnd"] == 26290.0
     assert row["estimated_cost_vnd"] == 1
     assert data["estimated_cost_vnd"] == 1
+
+
+def test_summary_suggests_cheaper_reference_model(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    with db.SessionLocal() as session:
+        session.add(AIInvocation(
+            id="optimization-priced", feature="runbook", provider="codex", model_id="gpt-5.6-sol",
+            status="SUCCESS", latency_ms=1, input_chars=400, output_chars=400, created_at=now,
+        ))
+        session.commit()
+    data = summary(24, now=now)
+    item = next(item for item in data["optimization"]["recommendations"] if item["feature"] == "runbook")
+    assert item["recommended_model_id"] == "gc/gemini-2.5-flash"
+    assert item["estimated_savings_usd"] > 0
+    assert data["optimization"]["monthly_projection_usd"] > 0

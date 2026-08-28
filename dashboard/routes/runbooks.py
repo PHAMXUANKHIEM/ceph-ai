@@ -19,11 +19,12 @@ templates = make_templates()
 
 
 def _context(request: Request, user: str, *, clusters, selected_cluster, fault_family="",
-             families=None, source=None, report=None, error=""):
+             families=None, source=None, report=None, error="", cached=False):
     return {
         "user": user, "is_admin": auth.is_admin_user(user), "clusters": clusters,
         "selected_cluster": selected_cluster, "fault_family": fault_family,
-        "fault_families": families or [], "source": source, "report": report, "error": error,
+        "fault_families": families or [], "source": source, "report": report,
+        "report_cached": cached, "error": error,
     }
 
 
@@ -31,6 +32,8 @@ def _context(request: Request, user: str, *, clusters, selected_cluster, fault_f
 async def runbooks_page(request: Request, user: str = Depends(require_login)):
     clusters, selected = cluster_selection(request)
     family = request.query_params.get("fault_family", "").strip()
+    report = None
+    cached = False
     with db.SessionLocal() as session:
         families = remediation_runbook.list_fault_families(session, cluster_id=selected.id)
         source = None
@@ -40,12 +43,15 @@ async def runbooks_page(request: Request, user: str = Depends(require_login)):
                 source = remediation_runbook.build_source(
                     session, fault_family=family, cluster_id=selected.id,
                 )
+                report = remediation_runbook.get_cached(session, source)
+                cached = report is not None
             except remediation_runbook.RunbookError as exc:
                 error = str(exc)
     return templates.TemplateResponse(
         request, "runbooks.html",
         _context(request, user, clusters=clusters, selected_cluster=selected,
-                 fault_family=family, families=families, source=source, error=error),
+                 fault_family=family, families=families, source=source, report=report,
+                 cached=cached, error=error),
     )
 
 
@@ -68,12 +74,20 @@ async def generate_runbook(
             source = remediation_runbook.build_source(
                 session, fault_family=fault_family, cluster_id=selected.id,
             )
+            report = remediation_runbook.get_cached(session, source)
         except remediation_runbook.RunbookError as exc:
             return templates.TemplateResponse(
                 request, "runbooks.html",
                 _context(request, user, clusters=clusters, selected_cluster=selected,
                          fault_family=fault_family, families=families, error=str(exc)),
             )
+    if report is not None:
+        return templates.TemplateResponse(
+            request, "runbooks.html",
+            _context(request, user, clusters=clusters, selected_cluster=selected,
+                     fault_family=fault_family, families=families, source=source,
+                     report=report, cached=True),
+        )
     try:
         report = await remediation_runbook.generate(source)
     except remediation_runbook.RunbookError as exc:
@@ -82,6 +96,8 @@ async def generate_runbook(
             _context(request, user, clusters=clusters, selected_cluster=selected,
                      fault_family=fault_family, families=families, source=source, error=str(exc)),
         )
+    with db.SessionLocal() as session:
+        remediation_runbook.store_cached(session, source, report)
     return templates.TemplateResponse(
         request, "runbooks.html",
         _context(request, user, clusters=clusters, selected_cluster=selected,
@@ -96,7 +112,7 @@ async def runbook_markdown(
     fault_family: str = Form(...),
     user: str = Depends(require_login),
 ):
-    """Generate a fresh validated report and return a copyable Markdown file."""
+    """Return the cached validated report or generate it once as Markdown."""
     if not auth.is_admin_user(user):
         raise HTTPException(status_code=403, detail="Chỉ admin được tải runbook bằng AI")
     try:
@@ -105,7 +121,11 @@ async def runbook_markdown(
             if cluster is None or not cluster.is_active:
                 raise HTTPException(status_code=404, detail="Không tìm thấy cluster đang hoạt động")
             source = remediation_runbook.build_source(session, fault_family=fault_family, cluster_id=cluster_id)
-        report = await remediation_runbook.generate(source)
+            report = remediation_runbook.get_cached(session, source)
+        if report is None:
+            report = await remediation_runbook.generate(source)
+            with db.SessionLocal() as session:
+                remediation_runbook.store_cached(session, source, report)
     except remediation_runbook.RunbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", fault_family.strip()) or "runbook"

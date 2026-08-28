@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 
 import httpx
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared.ai_observability import observe_ai_call
 from shared.ai_redaction import default_redactor
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
-from shared.models import Action, Cluster, Incident, RemediationCase
+from shared.models import AIRunbook, Action, Cluster, Incident, RemediationCase
 from shared.router_client import build_router_client
 from shared.synthetic_incidents import is_synthetic_evidence
 
@@ -127,7 +129,61 @@ def build_source(session, *, fault_family: str, cluster_id: str | None = None,
         })
     if not rows:
         raise RunbookError("Chưa có RemediationCase VERIFIED_SUCCESS cho fault family này")
-    return {"fault_family": family, "cluster_id": cluster_id, "case_count": len(rows), "cases": rows}
+    source = {"fault_family": family, "cluster_id": cluster_id, "case_count": len(rows), "cases": rows}
+    source["source_fingerprint"] = source_fingerprint(source)
+    return source
+
+
+def source_fingerprint(source: dict) -> str:
+    """Return a stable identity for the exact evidence sent to the model."""
+    canonical = json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def get_cached(session, source: dict) -> dict | None:
+    """Return a previously validated report for this exact evidence set."""
+    if not source.get("cluster_id"):
+        return None
+    fingerprint = source.get("source_fingerprint") or source_fingerprint(source)
+    row = (
+        session.query(AIRunbook)
+        .filter(
+            AIRunbook.cluster_id == source.get("cluster_id"),
+            AIRunbook.fault_family == source["fault_family"],
+            AIRunbook.source_fingerprint == fingerprint,
+            AIRunbook.prompt_version == PROMPT_VERSION,
+        )
+        .order_by(AIRunbook.created_at.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    try:
+        report = validate(json.loads(row.report_json), source)
+    except (TypeError, ValueError, RunbookError):
+        return None
+    report["cached"] = True
+    report["cached_at"] = row.created_at.isoformat() if row.created_at else None
+    return report
+
+
+def store_cached(session, source: dict, report: dict) -> None:
+    """Persist a validated report; a concurrent duplicate is harmless."""
+    if not source.get("cluster_id"):
+        return
+    fingerprint = source.get("source_fingerprint") or source_fingerprint(source)
+    session.add(AIRunbook(
+        cluster_id=source["cluster_id"],
+        fault_family=source["fault_family"],
+        source_fingerprint=fingerprint,
+        prompt_version=PROMPT_VERSION,
+        source_case_count=source["case_count"],
+        report_json=json.dumps(report, ensure_ascii=False, sort_keys=True),
+    ))
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
 
 
 def _schema() -> dict:

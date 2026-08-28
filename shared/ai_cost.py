@@ -109,6 +109,56 @@ def _estimated_tokens(chars: int) -> int:
     return math.ceil(max(0, int(chars or 0)) / CHARS_PER_TOKEN)
 
 
+def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd_to_vnd: float) -> dict:
+    """Suggest cheaper priced models without changing the active provider.
+
+    Suggestions are advisory: providers may be unavailable or have different
+    quotas/markups. The calculation uses the same input/output token estimate
+    as the cost table, so an operator can audit every number on this page.
+    """
+    recommendations = []
+    for row in groups:
+        input_tokens = row["input_tokens"]
+        output_tokens = row["output_tokens"]
+        current = row["estimated_cost_usd"]
+        candidates = []
+        for price in TOKEN_PRICES:
+            if price.provider == row["provider"] and price.model_id.lower() == row["model_id"].lower():
+                continue
+            candidate_cost = (
+                input_tokens * price.input_usd_per_million_tokens
+                + output_tokens * price.output_usd_per_million_tokens
+            ) / 1_000_000
+            candidates.append((candidate_cost, price))
+        if not candidates:
+            continue
+        candidate_cost, price = min(candidates, key=lambda item: item[0])
+        baseline = current if current is not None else candidate_cost
+        if baseline <= 0 or candidate_cost >= baseline:
+            continue
+        savings = baseline - candidate_cost
+        recommendations.append({
+            "feature": row["feature"],
+            "current_provider": row["provider"],
+            "current_model_id": row["model_id"],
+            "recommended_provider": price.provider,
+            "recommended_model_id": price.model_id,
+            "recommended_label": price.label,
+            "current_cost_usd": round(current, 6) if current is not None else None,
+            "recommended_cost_usd": round(candidate_cost, 6),
+            "estimated_savings_usd": round(savings, 6),
+            "estimated_savings_vnd": round(savings * usd_to_vnd),
+            "savings_percent": round(savings / baseline * 100, 1),
+        })
+    recommendations.sort(key=lambda item: item["estimated_savings_usd"], reverse=True)
+    monthly_cost = total_cost / hours * 730 if total_cost else 0.0
+    return {
+        "monthly_projection_usd": round(monthly_cost, 6),
+        "monthly_projection_vnd": round(monthly_cost * usd_to_vnd),
+        "recommendations": recommendations[:10],
+    }
+
+
 def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
     """Aggregate content-free telemetry; never reads prompt/response content."""
     hours = max(1, min(int(hours), 8760))
@@ -162,6 +212,7 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
             "estimated_cost_vnd": round(cost * usd_to_vnd) if cost is not None else None,
         })
     common_rates = next(iter(rates)) if len(rates) == 1 else (None, None)
+    optimization = _optimization_summary(result, total_cost, hours, usd_to_vnd)
     return {
         "hours": hours,
         "observed_at": now.isoformat() + "Z",
@@ -177,6 +228,7 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
         "estimated_cost_usd": round(total_cost, 6) if priced_groups else None,
         "usd_to_vnd": usd_to_vnd,
         "estimated_cost_vnd": round(total_cost * usd_to_vnd) if priced_groups else None,
+        "optimization": optimization,
         "pricing_table": pricing_table(),
         "groups": result,
     }

@@ -2454,6 +2454,35 @@ class NodeResourceModelState(Base):
     )
 
 
+class NodeResourceForecastAlert(Base):
+    """Durable Telegram lifecycle for a risky CPU/RAM forecast."""
+
+    __tablename__ = "node_resource_forecast_alerts"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_name", "host", "metric",
+            name="uq_node_resource_forecast_alert_identity",
+        ),
+        Index("ix_node_resource_forecast_alert_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    hours_to_90: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class AIInvocation(Base):
     """Content-free operational telemetry for one logical AI call."""
 
@@ -2472,6 +2501,33 @@ class AIInvocation(Base):
     input_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AIRunbook(Base):
+    """Validated evidence-backed runbook cached by its source fingerprint.
+
+    A runbook is deterministic for a given verified-case set and prompt
+    version. Persisting that result avoids spending another AI call whenever
+    an operator reopens the same runbook or downloads it as Markdown.
+    """
+
+    __tablename__ = "ai_runbooks"
+    __table_args__ = (
+        Index(
+            "uq_ai_runbooks_source",
+            "cluster_id", "fault_family", "source_fingerprint", "prompt_version",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    fault_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_case_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    report_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
