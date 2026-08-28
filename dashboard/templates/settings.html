@@ -20,6 +20,7 @@
           <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">AI Action Policy</button>
           <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
           <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
+          <a href="/ai-cost" class="settings-nav-item {% if request.url.path == '/ai-cost' %}active{% endif %}">Chi phí</a>
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">

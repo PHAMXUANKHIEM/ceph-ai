@@ -32,7 +32,7 @@
   <main class="page">
     <div id="ceph-dashboard-root"></div>
     <section class="card" style="margin:1rem 0">
-      <div class="card-header"><div><h2>AI Cost · 24 giờ</h2><p class="hint">Tóm tắt token ước tính từ telemetry; <a href="/ai-cost">xem chi tiết</a>.</p></div></div>
+      <div class="card-header"><div><h2>Chi phí AI · 24 giờ</h2><p class="hint">Tóm tắt token ước tính từ telemetry; <a href="/ai-cost">xem Chi phí</a>.</p></div></div>
       <div class="card-body">
         <p><strong>{{ ai_cost_overview.calls }}</strong> lượt gọi · <strong>{{ ai_cost_overview.errors }}</strong> lỗi · <strong>{{ ai_cost_overview.input_tokens + ai_cost_overview.output_tokens }}</strong> tokens.</p>
         {% if ai_cost_overview.pricing_configured %}<p>Chi phí ước tính: <strong>${{ '%.6f'|format(ai_cost_overview.estimated_cost_usd or 0) }} USD</strong>.</p>{% else %}<p class="hint">Chưa cấu hình đơn giá USD / 1M tokens.</p>{% endif %}
