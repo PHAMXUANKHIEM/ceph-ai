@@ -571,31 +571,45 @@
     <section class="card settings-panel" data-panel="cost" {% if active_section != 'cost' %}hidden{% endif %}>
       <div class="card-header"><h2>Chi phí</h2></div>
       <div class="card-body">
-        {% if is_admin %}
-        {% if ai_budget_error %}<p class="error">{{ ai_budget_error }}</p>{% endif %}
-        {% if ai_budget_success %}<p class="success">{{ ai_budget_success }}</p>{% endif %}
-        <div class="login-box">
-          <h3>AI Budget Guard</h3>
-          <p class="hint">Giới hạn dùng chung cho các tiến trình AI. Để trống/0 để tắt giới hạn tương ứng. Chặn cứng sẽ từ chối model chưa có đơn giá và các lượt vượt ngân sách.</p>
-          <form method="post" action="/settings/ai-budget">
-            <div class="form-grid">
-              <label>Budget ngày (USD)
-                <input type="number" name="daily_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.daily }}">
-              </label>
-              <label>Budget tháng (USD)
-                <input type="number" name="monthly_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.monthly }}">
-              </label>
-              <label>Output dự phòng (tokens)
-                <input type="number" name="reserve_output_tokens" min="0" max="100000" step="1" value="{{ ai_budget_values.reserve_output }}">
-              </label>
-            </div>
-            <label class="settings-checkbox"><input type="checkbox" name="hard_limit" value="1" {% if ai_budget_values.hard_limit %}checked{% endif %}> Bật chặn cứng khi vượt budget</label>
-            <button class="btn btn-primary" type="submit">Lưu Budget Guard</button>
-          </form>
+        <div class="settings-cost-grid">
+          <div class="login-box settings-cost-card">
+            <h3>Tổng chi phí</h3>
+            {% if ai_cost_overview.pricing_configured %}
+              <strong class="settings-cost-total">${{ '%.6f'|format(ai_cost_overview.estimated_cost_usd or 0) }}</strong>
+              <p class="settings-cost-vnd">≈ {{ '%.0f'|format(ai_cost_overview.estimated_cost_vnd or 0) }} ₫</p>
+            {% else %}
+              <strong class="settings-cost-total">—</strong>
+              <p class="hint">Chưa có dữ liệu đủ để tính chi phí.</p>
+            {% endif %}
+            <p class="hint">24 giờ gần nhất · {{ ai_cost_overview.calls }} lượt gọi · {{ ai_cost_overview.errors }} lỗi</p>
+          </div>
+
+          <div class="login-box settings-cost-card">
+            <h3>Quản lý chi phí AI</h3>
+            {% if is_admin %}
+            {% if ai_budget_error %}<p class="error">{{ ai_budget_error }}</p>{% endif %}
+            {% if ai_budget_success %}<p class="success">{{ ai_budget_success }}</p>{% endif %}
+            <p class="hint">Giới hạn dùng chung cho các tiến trình AI. Để trống/0 để tắt giới hạn tương ứng. Chặn cứng sẽ từ chối model chưa có đơn giá và các lượt vượt ngân sách.</p>
+            <form method="post" action="/settings/ai-budget">
+              <div class="form-grid">
+                <label>Budget ngày (USD)
+                  <input type="number" name="daily_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.daily }}">
+                </label>
+                <label>Budget tháng (USD)
+                  <input type="number" name="monthly_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.monthly }}">
+                </label>
+                <label>Output dự phòng (tokens)
+                  <input type="number" name="reserve_output_tokens" min="0" max="100000" step="1" value="{{ ai_budget_values.reserve_output }}">
+                </label>
+              </div>
+              <label class="settings-checkbox"><input type="checkbox" name="hard_limit" value="1" {% if ai_budget_values.hard_limit %}checked{% endif %}> Bật chặn cứng khi vượt budget</label>
+              <button class="btn btn-primary" type="submit">Lưu Budget Guard</button>
+            </form>
+            {% else %}
+            <p class="hint">Chỉ tài khoản admin được thay đổi cấu hình chi phí AI.</p>
+            {% endif %}
+          </div>
         </div>
-        {% else %}
-        <p class="hint">Chỉ tài khoản admin được thay đổi cấu hình chi phí AI.</p>
-        {% endif %}
       </div>
     </section>
 

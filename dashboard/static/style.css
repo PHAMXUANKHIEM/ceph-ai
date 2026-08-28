@@ -2024,6 +2024,27 @@ a { transition: color 140ms ease; }
 .settings-page .settings-panel > .card-body {
   padding: 22px;
 }
+.settings-cost-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.settings-page .settings-cost-card {
+  max-width: none;
+  min-height: 220px;
+  margin-top: 0;
+}
+.settings-cost-total {
+  display: block;
+  margin-top: 10px;
+  color: #eaf1fb;
+  font: 750 clamp(1.6rem, 3vw, 2.25rem)/1.1 var(--font-mono);
+}
+.settings-cost-vnd {
+  margin: 8px 0 0;
+  color: #70d6a5;
+  font: 650 1rem/1.2 var(--font-mono);
+}
 .settings-page .settings-panel .login-box {
   width: 100%;
   max-width: 780px;
@@ -2281,6 +2302,7 @@ a { transition: color 140ms ease; }
   .control-nav a { justify-content: center; padding: 0; }.control-nav-icon { font-size: 1rem; }
   .control-nav-icon-text { font-size: .58rem; }.control-nav a.active::before { left: -10px; }
   .control-system-status > span, .control-user > span, .control-user form, .control-version { display: none; }.control-system-status, .control-user { justify-content: center; padding-inline: 0; }
+  .settings-cost-grid { grid-template-columns: 1fr; }
   .service-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {

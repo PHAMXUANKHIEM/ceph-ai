@@ -29,6 +29,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db, env_config, trust_engine
+from shared.ai_cost import summary as ai_cost_summary
 from shared.codex_app_server import (
     CodexAppServerError,
     codex_app_server,
@@ -174,6 +175,16 @@ WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-watcher.log")
 REMEDIATION_WATCHER_MODULE = "watcher.remediation_main"
 REMEDIATION_WATCHER_PGREP_PATTERN = r"(^|[[:space:]])-m[[:space:]]+watcher\.remediation_main([[:space:]]|$)"
 REMEDIATION_WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-remediation-watcher.log")
+
+# These processes are separate systemd units in production. Starting a
+# detached child from Dashboard and then discovering/killing matching PIDs
+# races systemd and leaves duplicate singleton services behind.
+MANAGED_SERVICE_UNITS = {
+    "worker": "ceph-ai-worker.service",
+    "watcher": "ceph-ai-watcher.service",
+    "remediation_watcher": "ceph-ai-remediation-watcher.service",
+}
+SYSTEMCTL_TIMEOUT_SECONDS = 10
 
 # Restarting the Dashboard itself — unlike Worker/Watcher, this is the very
 # process handling the HTTP request that triggers it, so it can't just spawn
@@ -460,6 +471,46 @@ def _start_remediation_watcher() -> int:
     )
 
 
+def _restart_managed_service(kind: str) -> dict | None:
+    """Restart a managed process through systemd when Dashboard is managed.
+
+    ``None`` means this is a development/no-systemd deployment and callers
+    should use the existing detached-process fallback.
+    """
+    owner = _current_systemd_service_unit()
+    if not owner or "dashboard" not in owner:
+        return None
+    unit = MANAGED_SERVICE_UNITS[kind]
+    try:
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", unit],
+            check=False, timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if active.returncode != 0:
+            return None
+        subprocess.run(
+            ["systemctl", "restart", unit],
+            check=True, timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
+        main_pid = subprocess.run(
+            ["systemctl", "show", "--property=MainPID", "--value", unit],
+            check=True, timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        if not main_pid.isdigit() or int(main_pid) <= 0:
+            raise RuntimeError(f"systemd restarted {unit} without a live MainPID")
+        return {"restarted": True, "new_pid": int(main_pid), "error": None}
+    except Exception:
+        logger.exception("systemd restart failed for %s", unit)
+        return {
+            "restarted": False, "new_pid": None,
+            "error": f"systemd không khởi động lại được {unit} — xem server log",
+        }
+
+
 # --- Database connection (Settings page's "Kết nối Database" section) ---
 # The app's storage backend — everything in shared/models.py (Incident,
 # Action, AuditEntry, chat history...). Postgres only (not Mongo/MySQL): the
@@ -634,6 +685,9 @@ def restart_worker() -> dict:
     {"restarted": bool, "new_pid": int | None, "error": str | None}.
     """
     try:
+        managed = _restart_managed_service("worker")
+        if managed is not None:
+            return managed
         old_pids = _find_worker_pids()
         new_pid = _start_worker()
         time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
@@ -661,6 +715,9 @@ def restart_watcher() -> dict:
     as-is (it's already generic over a pid list, nothing Worker-specific in
     its body)."""
     try:
+        managed = _restart_managed_service("watcher")
+        if managed is not None:
+            return managed
         old_pids = _find_watcher_pids()
         new_pid = _start_watcher()
         time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
@@ -684,6 +741,9 @@ def restart_watcher() -> dict:
 
 def restart_remediation_watcher() -> dict:
     try:
+        managed = _restart_managed_service("remediation_watcher")
+        if managed is not None:
+            return managed
         old_pids = _find_remediation_watcher_pids()
         new_pid = _start_remediation_watcher()
         time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
@@ -851,6 +911,22 @@ def _patch_pipeline_form_values() -> dict:
     }
 
 
+def _ai_cost_overview() -> dict:
+    """Return the compact 24-hour total shown in Settings → Chi phí."""
+    try:
+        return ai_cost_summary(24)
+    except Exception:
+        # Reporting must not make Settings unavailable; Budget Guard remains usable.
+        logger.exception("settings: failed to load AI cost overview")
+        return {
+            "calls": 0,
+            "errors": 0,
+            "pricing_configured": False,
+            "estimated_cost_usd": None,
+            "estimated_cost_vnd": None,
+        }
+
+
 def _settings_context(
     user: str,
     *,
@@ -994,6 +1070,7 @@ def _settings_context(
             "hard_limit": settings.ai_cost_budget_hard_limit,
             "reserve_output": settings.ai_cost_budget_reserve_output_tokens,
         },
+        "ai_cost_overview": _ai_cost_overview(),
         "playbook_registry": registry_status_rows(
             command_available=executor_commands.has_command,
         ),
