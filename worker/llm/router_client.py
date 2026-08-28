@@ -1227,7 +1227,10 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
     # The old Watcher alert was deliberately sent before AI ran, leaving
     # operators with a raw log-only warning.  This is now the primary alert;
     # SAFE execution outcomes and RISKY approval cards remain follow-ups.
-    if not alert_lifecycle.is_active_mute(incident):
+    with db.SessionLocal() as alert_session:
+        latest_incident = alert_session.get(Incident, incident_id)
+        notification_muted = latest_incident is not None and alert_lifecycle.is_active_mute(latest_incident)
+    if not notification_muted:
         send_ai_incident_alert(
             alert_ceph_code,
             alert_severity,
