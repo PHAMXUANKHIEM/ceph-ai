@@ -110,6 +110,13 @@ TELEGRAM_RGW_ENV_NAMES: dict[str, str] = {
     "telegram_rgw_chat_id": "TELEGRAM_RGW_CHAT_ID",
     "telegram_rgw_enabled": "TELEGRAM_RGW_ENABLED",
 }
+CODE_REPAIR_ENV_NAMES: dict[str, str] = {
+    "code_repair_planner_provider": "CODE_REPAIR_PLANNER_PROVIDER",
+    "code_repair_planner_model": "CODE_REPAIR_PLANNER_MODEL",
+    "code_repair_implementer_provider": "CODE_REPAIR_IMPLEMENTER_PROVIDER",
+    "code_repair_implementer_model": "CODE_REPAIR_IMPLEMENTER_MODEL",
+    "code_repair_max_review_rounds": "CODE_REPAIR_MAX_REVIEW_ROUNDS",
+}
 
 
 def apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:

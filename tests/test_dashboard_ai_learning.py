@@ -98,6 +98,21 @@ def test_ai_learning_empty_state_is_readable(dashboard_client):
     assert "AUDIT_ONLY" in response.text
 
 
+def test_ai_learning_reports_large_omap_readiness_without_mutating_state(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/ai-learning")
+
+    assert response.status_code == 200
+    readiness = response.json()["large_omap_readiness"]
+    assert readiness["fault_family"] == "LARGE_OMAP_OBJECTS"
+    assert readiness["ready_for_autonomy"] is False
+    assert "blockers" in readiness
+    page = dashboard_client.get("/ai-learning")
+    assert "Readiness LARGE_OMAP_OBJECTS" in page.text
+    assert "Commissioning report chỉ đọc" in page.text
+
+
 def test_ai_learning_shows_resource_quality_and_log_blockers(dashboard_client, monkeypatch):
     monkeypatch.setattr(settings, "node_resource_forecast_enabled", True)
     cluster_id = _seed_learning()

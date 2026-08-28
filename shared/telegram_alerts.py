@@ -317,6 +317,37 @@ def send_node_alert(host: str, message: str) -> None:
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Node {host}: {_compact(message, _MAX_EXCERPT_CHARS)}")
 
 
+def send_node_forecast_alert(
+    host: str,
+    metric: str,
+    current_percent: float,
+    predicted_percent: float,
+    hours_to_90: float,
+    confidence: float,
+    samples: int,
+    window_hours: int,
+    *,
+    cluster_name: str | None = None,
+) -> bool:
+    """Send an early CPU/RAM forecast warning through the hardware channel."""
+    label = "RAM" if metric.lower() == "ram" else "CPU"
+    text = "\n".join((
+        f"🟡 CẢNH BÁO DỰ BÁO {label}",
+        f"🖥 Node: {host}",
+        f"Hiện tại: {current_percent:.1f}% · Dự báo: {predicted_percent:.1f}% trong {window_hours}h",
+        f"⏱ Ước tính chạm 90%: {hours_to_90:.1f} giờ",
+        f"Độ tin cậy: {confidence:.2f} · Mẫu học: {samples}",
+        "Đây là cảnh báo sớm; chưa tự thay đổi cụm.",
+    ))
+    return _send(
+        settings.telegram_node_bot_token,
+        settings.telegram_node_chat_id,
+        settings.telegram_node_enabled,
+        text,
+        cluster_name,
+    )
+
+
 def send_trash_capacity_alert(trash_bytes: int, total_bytes: int, ratio: float, entry_count: int) -> None:
     """Send RBD Trash capacity warnings through the cluster Alert channel."""
     gib = 1024 ** 3

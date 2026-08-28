@@ -441,6 +441,13 @@ PATCH_PIPELINE_ENV_NAMES = {
     # separate one for this form to manage.
 }
 
+# AI Code Repair supervisor roles are separate from Chat-with-AI/provider
+# settings: Planner/Reviewer asks, plans and audits; Implementer edits the
+# isolated worktree.
+CODE_REPAIR_ENV_NAMES = env_config.CODE_REPAIR_ENV_NAMES
+CODE_REPAIR_PROVIDERS = ("auto", "codex", "claude")
+CODE_REPAIR_MAX_REVIEW_ROUNDS = 5
+
 
 def _start_watcher() -> int:
     # Explicit env= override — mirrors _start_worker()'s ROUTER_API_KEY
@@ -911,6 +918,13 @@ def _patch_pipeline_form_values() -> dict:
     }
 
 
+def _code_repair_form_values() -> dict:
+    return {
+        field: getattr(settings, field)
+        for field in CODE_REPAIR_ENV_NAMES
+    }
+
+
 def _ai_cost_overview() -> dict:
     """Return the compact 24-hour total shown in Settings → Chi phí."""
     try:
@@ -961,6 +975,9 @@ def _settings_context(
     patch_pipeline_error: str | None = None,
     patch_pipeline_success: str | None = None,
     patch_pipeline_values: dict | None = None,
+    code_repair_error: str | None = None,
+    code_repair_success: str | None = None,
+    code_repair_values: dict | None = None,
     log_intel_error: str | None = None,
     log_intel_success: str | None = None,
     log_intel_values: dict | None = None,
@@ -1047,6 +1064,12 @@ def _settings_context(
         "current_database_display": _current_database_display(),
         "patch_pipeline_error": patch_pipeline_error,
         "patch_pipeline_success": patch_pipeline_success,
+        "code_repair_error": code_repair_error,
+        "code_repair_success": code_repair_success,
+        "code_repair_providers": CODE_REPAIR_PROVIDERS,
+        "code_repair_values": (
+            code_repair_values if code_repair_values is not None else _code_repair_form_values()
+        ),
         "log_intel_error": log_intel_error,
         "log_intel_success": log_intel_success,
         "log_intel_values": (
@@ -1127,6 +1150,9 @@ def _settings_context(
         patch_pipeline_values if patch_pipeline_values is not None else _patch_pipeline_form_values()
     )
     context.update(
+        code_repair_values if code_repair_values is not None else _code_repair_form_values()
+    )
+    context.update(
         backup_target_values if backup_target_values is not None else _backup_target_form_values()
     )
     # ssh_key_path is no longer an editable field on the cluster form (see
@@ -1205,6 +1231,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "openstack"
     # Fresh GET /settings, nothing to react to yet — land on the first
     # section this account can actually see.
+    if any(context.get(k) for k in ("code_repair_error", "code_repair_success")):
+        return "code-repair"
     return "restart-controls" if is_admin else "router"
 
 
@@ -2570,6 +2598,65 @@ async def patch_pipeline_settings_submit(
         _settings_context(
             user,
             patch_pipeline_success="Đã lưu cấu hình — Worker đã khởi động lại để áp dụng ngay.",
+        ),
+    )
+
+
+@router.post("/settings/code-repair", response_class=HTMLResponse)
+async def code_repair_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    code_repair_planner_provider: str = Form("auto"),
+    code_repair_planner_model: str = Form(""),
+    code_repair_implementer_provider: str = Form("auto"),
+    code_repair_implementer_model: str = Form(""),
+    code_repair_max_review_rounds: str = Form("2"),
+):
+    """Persist the two AI roles used by the external repair supervisor."""
+    _require_admin_privilege(user)
+    values = {
+        "code_repair_planner_provider": code_repair_planner_provider.strip().lower(),
+        "code_repair_planner_model": code_repair_planner_model.strip(),
+        "code_repair_implementer_provider": code_repair_implementer_provider.strip().lower(),
+        "code_repair_implementer_model": code_repair_implementer_model.strip(),
+        "code_repair_max_review_rounds": code_repair_max_review_rounds.strip(),
+    }
+
+    def fail(message: str):
+        return templates.TemplateResponse(
+            request, "settings.html",
+            _settings_context(user, code_repair_error=message, code_repair_values=values),
+        )
+
+    for field in ("code_repair_planner_provider", "code_repair_implementer_provider"):
+        if values[field] not in CODE_REPAIR_PROVIDERS:
+            return fail(f"{field}: provider phải là auto, codex hoặc claude.")
+    try:
+        rounds = int(values["code_repair_max_review_rounds"])
+    except ValueError:
+        return fail("Số vòng review phải là số nguyên từ 0 đến 5.")
+    if not 0 <= rounds <= CODE_REPAIR_MAX_REVIEW_ROUNDS:
+        return fail("Số vòng review phải nằm trong khoảng 0 đến 5.")
+    values["code_repair_max_review_rounds"] = rounds
+
+    try:
+        _update_env_file_batch({
+            env_name: str(values[field])
+            for field, env_name in CODE_REPAIR_ENV_NAMES.items()
+        })
+        for field in CODE_REPAIR_ENV_NAMES:
+            setattr(settings, field, values[field])
+    except Exception:
+        logger.exception("code_repair_settings_submit: failed to persist config")
+        return fail("Không ghi được cấu hình — kiểm tra quyền ghi file .env")
+
+    return templates.TemplateResponse(
+        request, "settings.html",
+        _settings_context(
+            user,
+            code_repair_success=(
+                "Đã lưu cấu hình hai AI. Supervisor sẽ dùng cấu hình này ở lần chạy kế tiếp."
+            ),
         ),
     )
 

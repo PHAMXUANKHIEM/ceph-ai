@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -200,7 +200,7 @@ def _large_omap_diagnosis(envelope: dict) -> str:
 
 
 _LARGE_OMAP_EVIDENCE_PATTERN = re.compile(
-    r"LARGE_OMAP_EVIDENCE bucket=([^\s]+) object=([^\s]+) keys=(\d+) "
+    r"LARGE_OMAP_EVIDENCE observed_at=([^\s]+) bucket=([^\s]+) object=([^\s]+) keys=(\d+) "
     r"threshold=(\d+) shards=(\d+) pg=([0-9]+\.[0-9a-fA-F]+)"
 )
 
@@ -210,12 +210,25 @@ def _large_omap_evidence_records(envelope: dict) -> list[dict]:
     text = str(envelope.get("log_excerpt") or "")
     records = []
     seen_pgs: set[str] = set()
+    max_age_seconds = max(1, settings.large_omap_evidence_max_age_hours) * 3600
+    now = datetime.now(timezone.utc)
     for match in _LARGE_OMAP_EVIDENCE_PATTERN.finditer(text):
-        bucket, object_name, keys_raw, threshold_raw, shards_raw, pg_id = match.groups()
+        (observed_raw, bucket, object_name, keys_raw, threshold_raw,
+         shards_raw, pg_id) = match.groups()
+        try:
+            observed_at = datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            age_seconds = (now - observed_at.astimezone(timezone.utc)).total_seconds()
+        except ValueError:
+            continue
+        if age_seconds < -300 or age_seconds > max_age_seconds:
+            continue
         if pg_id in seen_pgs:
             continue
         seen_pgs.add(pg_id)
         records.append({
+            "observed_at": observed_at.astimezone(timezone.utc),
             "bucket_name": bucket,
             "object_name": object_name,
             "key_count": int(keys_raw),
@@ -226,10 +239,24 @@ def _large_omap_evidence_records(envelope: dict) -> list[dict]:
     return records
 
 
+def _large_omap_bucket_is_allowlisted(bucket: str) -> bool:
+    """Allow autonomous reshard only for lab or explicit production buckets."""
+    if not settings.large_omap_autoremediation_enabled:
+        return False
+    if bucket.startswith("test-"):
+        return True
+    allowed = {
+        value.strip()
+        for value in settings.large_omap_autoremediation_buckets.split(",")
+        if value.strip()
+    }
+    return bucket in allowed
+
+
 def _large_omap_reshard_params(envelope: dict) -> dict | None:
     """Return a bounded lab reshard plan only from collector-labelled evidence."""
     records = _large_omap_evidence_records(envelope)
-    if not records:
+    if len(records) != 1:
         return None
     record = records[0]
     bucket = record["bucket_name"]
@@ -242,7 +269,7 @@ def _large_omap_reshard_params(envelope: dict) -> dict | None:
     # Production bucket names remain approval-gated/manual until an operator
     # supplies the same evidence through a dedicated policy override.
     if (
-        not object_name.startswith(".dir.") or not bucket.startswith("test-")
+        not object_name.startswith(".dir.") or not _large_omap_bucket_is_allowlisted(bucket)
         or current_shards != 1 or threshold <= 0 or keys <= threshold
     ):
         return None
@@ -1350,6 +1377,24 @@ def _maybe_execute_safe_action(
         explicit_admin_safe = bool(
             policy_override is not None and policy_override.classification == "SAFE"
         )
+        # The first bounded RGW reshard is a commissioning action, not a
+        # silent production write. Require one explicit approval so the
+        # resulting post-check and operator verdict become auditable trust
+        # evidence. Later runs are still governed by the L3 trust gate.
+        if (
+            action_id == "reshard_rgw_bucket"
+            and settings.large_omap_bootstrap_requires_approval
+            and stat is None
+        ):
+            logger.info(
+                "_maybe_execute_safe_action: LARGE_OMAP bootstrap requires approval for %s",
+                incident_id,
+            )
+            _route_safe_to_approval(
+                incident_id, action_pk, action_id,
+                event_type=audit.EVENT_AUTOPILOT_BOOTSTRAP_APPROVAL_REQUIRED,
+            )
+            return
         trust_block_reason = None
         if stat is not None and not explicit_admin_safe:
             if stat.auto_disabled_reason:

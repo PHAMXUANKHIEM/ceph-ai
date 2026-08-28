@@ -446,13 +446,13 @@ def collect_relevant_logs(
             return [], "LARGE_OMAP_EVIDENCE unavailable: no MON node configured"
         host = mon_nodes[0]
         command = r'''threshold=$(ceph config get osd osd_deep_scrub_large_omap_object_key_threshold 2>/dev/null)
-metadata=$(radosgw-admin metadata list bucket.instance 2>/dev/null)
+metadata=$(radosgw-admin metadata list bucket.instance 2>/dev/null | sed -n 's/.*\"\([^\" ]*:[^\" ]*\)\".*/\1/p')
 detail_lines=$(
   {
     ceph log last 10000 2>/dev/null
     find /var/log/ceph -maxdepth 3 -type f -size -50M \( -name 'ceph.log' -o -name 'ceph.log-*' \) ! -name '*.gz' -exec grep -h 'Large omap object found\. Object:' {} + 2>/dev/null
     find /var/log/ceph -maxdepth 3 -type f -name 'ceph.log-*.gz' -size -50M -exec zgrep -h 'Large omap object found\. Object:' {} + 2>/dev/null
-  } | grep 'Large omap object found\. Object:' | awk '!seen[$0]++' | tail -4
+  } | grep 'Large omap object found\. Object:' | awk '!seen[$0]++' | sort -k1,1 | tail -4
 )
 if [ -z "$detail_lines" ]; then
   printf 'LARGE_OMAP_EVIDENCE bucket= object= keys= threshold=%s shards= pg=\n' "$threshold"
@@ -467,10 +467,11 @@ printf '%s\n' "$detail_lines" | while IFS= read -r line; do
   fi
   bucket=${entry%%:*}
   [ -n "$bucket" ] || bucket=unknown
-  shards=$(radosgw-admin bucket stats --bucket="$bucket" 2>/dev/null | sed -n 's/.*"num_shards": \([0-9]*\).*/\1/p' | head -1)
+  shards=$(radosgw-admin bucket stats --bucket="$bucket" 2>/dev/null | tr -d '\n' | sed -n 's/.*"num_shards"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' | head -1)
+  observed_at=$(printf '%s\n' "$line" | awk '{print $1}')
   keys=$(printf '%s\n' "$line" | sed -n 's/.*Key count: \([0-9]*\).*/\1/p')
   pg=$(printf '%s\n' "$line" | sed -n 's/.*PG: [^ ]* (\([^)]*\)).*/\1/p')
-  printf 'LARGE_OMAP_EVIDENCE bucket=%s object=%s keys=%s threshold=%s shards=%s pg=%s\n%s\n' "$bucket" "$obj" "$keys" "$threshold" "$shards" "$pg" "$line"
+  printf 'LARGE_OMAP_EVIDENCE observed_at=%s bucket=%s object=%s keys=%s threshold=%s shards=%s pg=%s\n%s\n' "$observed_at" "$bucket" "$obj" "$keys" "$threshold" "$shards" "$pg" "$line"
 done'''
         try:
             return [host], _run_on_host(host, command, cluster, OMAP_EVIDENCE_TIMEOUT_SECONDS)

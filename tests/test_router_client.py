@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -129,10 +129,12 @@ def test_large_omap_diagnosis_is_read_only_and_rgw_specific():
     assert "không được xoá" in diagnosis
 
 
-def test_large_omap_lab_evidence_calculates_safe_headroom_shards():
+def test_large_omap_lab_evidence_calculates_safe_headroom_shards(monkeypatch):
+    monkeypatch.setattr(settings, "large_omap_autoremediation_enabled", True)
+    observed_at = datetime.now(timezone.utc).isoformat()
     envelope = {
         "log_excerpt": (
-            "LARGE_OMAP_EVIDENCE bucket=test-large-omap "
+            f"LARGE_OMAP_EVIDENCE observed_at={observed_at} bucket=test-large-omap "
             "object=.dir.instance.3.0 keys=10922 threshold=5000 shards=1 pg=6.5"
         )
     }
@@ -144,10 +146,41 @@ def test_large_omap_lab_evidence_calculates_safe_headroom_shards():
     assert params["pg_id"] == "6.5"
 
 
+def test_large_omap_allowlisted_production_bucket_can_build_bounded_plan(monkeypatch):
+    monkeypatch.setattr(settings, "large_omap_autoremediation_enabled", True)
+    monkeypatch.setattr(settings, "large_omap_autoremediation_buckets", "customer-data")
+    observed_at = datetime.now(timezone.utc).isoformat()
+    envelope = {
+        "log_excerpt": (
+            f"LARGE_OMAP_EVIDENCE observed_at={observed_at} bucket=customer-data "
+            "object=.dir.instance.3.0 keys=250000 threshold=200000 shards=1 pg=6.a"
+        )
+    }
+
+    params = router_client._large_omap_reshard_params(envelope)
+
+    assert params["bucket_name"] == "customer-data"
+    assert params["num_shards"] == 3
+
+
+def test_large_omap_stale_evidence_cannot_build_auto_plan(monkeypatch):
+    monkeypatch.setattr(settings, "large_omap_autoremediation_enabled", True)
+    monkeypatch.setattr(settings, "large_omap_autoremediation_buckets", "customer-data")
+    observed_at = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    envelope = {
+        "log_excerpt": (
+            f"LARGE_OMAP_EVIDENCE observed_at={observed_at} bucket=customer-data "
+            "object=.dir.instance.3.0 keys=250000 threshold=200000 shards=1 pg=6.a"
+        )
+    }
+
+    assert router_client._large_omap_reshard_params(envelope) is None
+
+
 def test_large_omap_production_bucket_is_not_contextually_safe():
     envelope = {
         "log_excerpt": (
-            "LARGE_OMAP_EVIDENCE bucket=customer-data "
+            "LARGE_OMAP_EVIDENCE observed_at=2099-01-01T00:00:00+00:00 bucket=customer-data "
             "object=.dir.instance.3.0 keys=250000 threshold=200000 shards=1 pg=6.a"
         )
     }
@@ -158,7 +191,8 @@ def test_large_omap_production_bucket_is_not_contextually_safe():
 def test_large_omap_evidence_returns_all_pg_ids_for_stale_warning_cleanup():
     envelope = {
         "log_excerpt": "\n".join(
-            f"LARGE_OMAP_EVIDENCE bucket=test-s3 object=.dir.instance.{index} "
+            f"LARGE_OMAP_EVIDENCE observed_at={datetime.now(timezone.utc).isoformat()} "
+            f"bucket=test-s3 object=.dir.instance.{index} "
             f"keys=10922 threshold=200000 shards=11 pg=6.{pg}"
             for index, pg in enumerate(("c", "12", "10", "1a"))
         )
@@ -3553,6 +3587,36 @@ def test_maybe_execute_safe_action_refuses_destructive_hard_guard(isolated_db, m
     with db_module.SessionLocal() as session:
         action = session.get(Action, action_pk)
         assert action.status == ActionStatus.FAILED.value
+
+
+def test_large_omap_first_safe_run_requires_bootstrap_approval(isolated_db, monkeypatch):
+    monkeypatch.setattr(settings, "large_omap_bootstrap_requires_approval", True)
+    _create_incident("incident-large-omap-bootstrap")
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-large-omap-bootstrap")
+        incident.ceph_code = "LARGE_OMAP_OBJECTS"
+        action = Action(
+            incident_id=incident.id,
+            action_id="reshard_rgw_bucket",
+            classification=ActionClassification.SAFE.value,
+            status=ActionStatus.PENDING.value,
+        )
+        session.add(action)
+        session.commit()
+        action_pk = action.id
+
+    router_client._maybe_execute_safe_action(
+        "incident-large-omap-bootstrap", action_pk, "reshard_rgw_bucket",
+        dict(ENVELOPE, incident_id="incident-large-omap-bootstrap"),
+    )
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, "incident-large-omap-bootstrap")
+        events = session.query(AuditEntry.event_type).filter_by(action_id=action_pk).all()
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert events == [(audit.EVENT_AUTOPILOT_BOOTSTRAP_APPROVAL_REQUIRED,)]
 
 
 def test_playbook_contract_ceiling_routes_safe_candidate_to_approval_with_audit(isolated_db):

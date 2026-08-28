@@ -22,10 +22,18 @@ remote() { ssh -o BatchMode=yes -o ConnectTimeout=8 "root@$ADMIN_HOST" "$@"; }
 
 original_threshold="$(remote "ceph config get osd osd_deep_scrub_large_omap_object_key_threshold")"
 original_dynamic="$(remote "ceph config get client.rgw rgw_dynamic_resharding")"
+cleanup_test_bucket() {
+  # This harness is deliberately limited to test-* buckets. Leaving the
+  # injected bucket behind lets a later purge remove its index object while
+  # PG OMAP counters remain stale, recreating LARGE_OMAP_OBJECTS on a later
+  # scrub. Remove only this lab bucket, then deep-scrub the index pool.
+  remote "radosgw-admin bucket rm --bucket='$BUCKET' --purge-objects" >/dev/null 2>&1 || true
+  remote "pool='$POOL'; ceph pg ls-by-pool \"\$pool\" -f json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(\" \".join(x[\"pgid\"] for x in d.get(\"pg_stats\", [])))' | while read -r pg; do [ -z \"\$pg\" ] || ceph pg \"\$pg\" deep_scrub; done" >/dev/null 2>&1 || true
+}
 restore() {
   remote "ceph config set osd osd_deep_scrub_large_omap_object_key_threshold '$original_threshold'; ceph config set client.rgw rgw_dynamic_resharding '$original_dynamic'" >/dev/null || true
 }
-trap restore EXIT INT TERM
+trap 'cleanup_test_bucket; restore' EXIT INT TERM
 
 stats="$(remote "radosgw-admin bucket stats --bucket='$BUCKET'")"
 objects="$(printf '%s' "$stats" | sed -n 's/.*\"num_objects\": \([0-9]*\).*/\1/p' | head -1)"

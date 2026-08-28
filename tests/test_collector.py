@@ -177,7 +177,7 @@ def test_collect_relevant_logs_for_large_omap_uses_cluster_and_local_detail_sour
     assert "ceph log last 10000" in command
     assert "/var/log/ceph" in command
     assert "radosgw-admin metadata list bucket.instance" in command
-    assert "awk '!seen[$0]++' | tail -4" in command
+    assert "awk '!seen[$0]++' | sort -k1,1 | tail -4" in command
 
 
 def test_collect_relevant_logs_for_large_omap_does_not_use_osd_log_targets(fake_ssh):

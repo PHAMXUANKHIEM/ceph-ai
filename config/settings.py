@@ -393,6 +393,14 @@ class Settings(BaseSettings):
     code_repair_auto_enabled: bool = False
     code_repair_poll_interval_seconds: int = 30
     code_repair_provider: str = "auto"
+    # Two-agent supervisor roles. Planner/Reviewer is read-only and produces
+    # the plan plus independent review; Implementer edits the isolated repair
+    # worktree. Keep the legacy provider above for backward compatibility.
+    code_repair_planner_provider: str = "auto"
+    code_repair_planner_model: str = ""
+    code_repair_implementer_provider: str = "auto"
+    code_repair_implementer_model: str = ""
+    code_repair_max_review_rounds: int = Field(default=2, ge=0, le=5)
     code_repair_test_command: str = (
         "PYTHONPATH=. .venv/bin/pytest -q "
         "--ignore=tests/test_migrations.py --ignore=tests/test_mq.py "
@@ -472,6 +480,11 @@ class Settings(BaseSettings):
     # trend.  Disabled by default so an existing SSH-only deployment does
     # not unexpectedly start writing to Loki.
     node_resource_forecast_enabled: bool = False
+    # Optional self-contained ingestion path for deployments without Alloy:
+    # Watcher samples /proc over its existing read-only SSH path and pushes
+    # the fresh CPU/RAM sample to Loki before analysing the node. Keep this
+    # opt-in because Alloy remains the preferred lower-overhead source.
+    node_resource_live_ingest_enabled: bool = False
     node_resource_forecast_history_days: int = 30
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
@@ -482,6 +495,17 @@ class Settings(BaseSettings):
     node_resource_learning_evaluation_hours: int = 24
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
+
+    # LARGE_OMAP_OBJECTS auto-remediation is opt-in and bucket-scoped.
+    # test-* remains the built-in lab-only path; production buckets must be
+    # explicitly allowlisted after verified evidence and outcomes exist.
+    large_omap_autoremediation_enabled: bool = False
+    large_omap_autoremediation_buckets: str = ""
+    large_omap_evidence_max_age_hours: int = 24
+    # The first bounded RGW reshard must be operator-approved so its
+    # verified post-check can bootstrap trust without an unobserved write.
+    large_omap_bootstrap_requires_approval: bool = True
+    node_resource_forecast_alert_cooldown_seconds: int = 86400
 
     # Per-RBD-volume seasonal baseline learning. Predictions are audit-only:
     # they may change the selected baseline, never policy or action rights.

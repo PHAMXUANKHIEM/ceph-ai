@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func
@@ -12,11 +15,16 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db, remediation_feedback
 from shared.models import (
+    Action,
+    ChangeRiskAssessment,
+    Incident,
     LogFaultStat,
     LogFinding,
     LogLearningSample,
     NodeResourceForecastRun,
     NodeResourceModelState,
+    PlaybookStat,
+    RemediationCase,
     VolumeEarlyForecast,
     VolumeForecastRun,
     VolumeModelState,
@@ -24,6 +32,147 @@ from shared.models import (
 
 router = APIRouter()
 templates = make_templates()
+
+_LARGE_OMAP_ACTION = "reshard_rgw_bucket"
+_LARGE_OMAP_EVIDENCE_RE = re.compile(r"observed_at=([^\s]+)")
+
+
+def _parse_observed_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def large_omap_readiness(cluster_id: str) -> dict:
+    """Return a read-only commissioning report for LARGE_OMAP_OBJECTS.
+
+    This report deliberately reads persisted evidence/cases only. It never
+    changes policy, promotes a playbook, or creates a synthetic learning case.
+    """
+    now = datetime.utcnow()
+    allowlisted_buckets = sorted({
+        item.strip() for item in settings.large_omap_autoremediation_buckets.split(",")
+        if item.strip()
+    })
+    max_age_hours = max(1, int(settings.large_omap_evidence_max_age_hours))
+
+    with db.SessionLocal() as session:
+        incident = session.query(Incident).filter(
+            Incident.cluster_id == cluster_id,
+            Incident.ceph_code == "LARGE_OMAP_OBJECTS",
+        ).order_by(Incident.created_at.desc(), Incident.id.desc()).first()
+        action = None
+        case = None
+        assessment = None
+        if incident is not None:
+            action = session.query(Action).filter_by(incident_id=incident.id).order_by(
+                Action.created_at.desc(), Action.id.desc()
+            ).first()
+            if action is not None:
+                case = session.query(RemediationCase).filter_by(action_id=action.id).one_or_none()
+                assessment = session.query(ChangeRiskAssessment).filter_by(action_id=action.id).one_or_none()
+
+        stats = session.query(PlaybookStat).filter(
+            PlaybookStat.playbook_id == _LARGE_OMAP_ACTION,
+            PlaybookStat.scope_key.like(f"cluster={cluster_id}|%"),
+        ).order_by(PlaybookStat.updated_at.desc()).all()
+
+    evidence_text = "\n".join(filter(None, [
+        incident.log_excerpt if incident is not None else None,
+        incident.signal_evidence_json if incident is not None else None,
+    ]))
+    observed_values = [
+        parsed for parsed in (
+            _parse_observed_at(raw) for raw in _LARGE_OMAP_EVIDENCE_RE.findall(evidence_text)
+        ) if parsed is not None
+    ]
+    observed_at = max(observed_values) if observed_values else None
+    age_hours = round((now - observed_at).total_seconds() / 3600, 2) if observed_at else None
+    evidence_fresh = bool(
+        observed_at is not None and age_hours is not None
+        and age_hours >= -0.084  # tolerate at most five minutes of clock skew
+        and age_hours <= max_age_hours
+    )
+
+    blockers: list[str] = []
+    if not settings.large_omap_autoremediation_enabled:
+        blockers.append("LARGE_OMAP_AUTOREMEDIATION_ENABLED đang tắt")
+    if not allowlisted_buckets:
+        blockers.append("chưa allowlist bucket RGW cụ thể")
+    if observed_at is None:
+        blockers.append("chưa có evidence LARGE_OMAP có observed_at")
+    elif not evidence_fresh:
+        blockers.append(f"evidence đã quá {max_age_hours} giờ hoặc lệch thời gian")
+    if not stats:
+        blockers.append("chưa có RemediationCase đủ provenance để tạo trust scope")
+    elif not any(row.maturity_level == "L3" and not row.auto_disabled_reason for row in stats):
+        blockers.append("playbook chưa được admin duyệt lên L3")
+    if not settings.autopilot_enabled:
+        blockers.append("Autopilot toàn cục đang tắt")
+
+    latest_action = None
+    if action is not None:
+        latest_action = {
+            "id": action.id,
+            "action_id": action.action_id,
+            "classification": action.classification,
+            "status": action.status,
+            "created_at": action.created_at,
+            "case_outcome": case.outcome if case is not None else None,
+            "case_id": case.id if case is not None else None,
+            "risk_level": assessment.risk_level if assessment is not None else None,
+            "risk_samples": assessment.sample_count if assessment is not None else 0,
+        }
+
+    trust_scopes = [{
+        "id": row.id,
+        "scope_key": row.scope_key,
+        "playbook_version": row.playbook_version,
+        "maturity_level": row.maturity_level,
+        "proposed_count": row.proposed_count,
+        "executed_count": row.executed_count,
+        "verified_count": row.verified_count,
+        "success_count": row.success_count,
+        "failure_count": row.failure_count,
+        "trust_score": round(row.trust_score, 4),
+        "promotion_candidate_at": row.promotion_candidate_at,
+        "promotion_blocked_reason": row.promotion_blocked_reason,
+        "auto_disabled_reason": row.auto_disabled_reason,
+        "updated_at": row.updated_at,
+    } for row in stats]
+
+    return {
+        "fault_family": "LARGE_OMAP_OBJECTS",
+        "autopilot_enabled": settings.autopilot_enabled,
+        "autoremediation_enabled": settings.large_omap_autoremediation_enabled,
+        "bootstrap_requires_approval": settings.large_omap_bootstrap_requires_approval,
+        "allowlisted_buckets": allowlisted_buckets,
+        "evidence_max_age_hours": max_age_hours,
+        "latest_evidence": {
+            "observed_at": observed_at,
+            "age_hours": age_hours,
+            "fresh": evidence_fresh,
+            "incident_id": incident.id if incident is not None else None,
+            "incident_status": incident.status if incident is not None else None,
+        },
+        "latest_action": latest_action,
+        "trust_scopes": trust_scopes,
+        "blockers": blockers,
+        "ready_for_autonomy": not blockers,
+        "next_step": (
+            "Thu thập evidence mới có bucket/object/key count và PG trước khi allowlist production."
+            if not evidence_fresh
+            else "Duyệt Action bootstrap đầu tiên; sau đó chờ post-check và operator verdict VERIFIED_SUCCESS."
+            if stats and not any(row.maturity_level == "L3" for row in stats)
+            else "Xem các blocker ở trên; readiness report không tự thay đổi policy."
+        ),
+    }
 
 
 def _quality(mae: float | None, outcomes: int) -> tuple[str, str, float | None]:
@@ -301,7 +450,7 @@ def learning_status(cluster_id: str, cluster_name: str) -> dict:
 @router.get("/api/ai-learning")
 async def ai_learning_api(request: Request, _user: str = Depends(require_login)):
     _clusters, cluster = cluster_selection(request)
-    return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name)}
+    return {"cluster_id": cluster.id, "cluster_name": cluster.name, **learning_status(cluster.id, cluster.name), "large_omap_readiness": large_omap_readiness(cluster.id)}
 
 
 @router.get("/ai-learning", response_class=HTMLResponse)
@@ -312,4 +461,5 @@ async def ai_learning_page(request: Request, user: str = Depends(require_login))
         "clusters": clusters,
         "cluster": cluster,
         **learning_status(cluster.id, cluster.name),
+        "large_omap_readiness": large_omap_readiness(cluster.id),
     })

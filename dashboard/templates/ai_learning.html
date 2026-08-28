@@ -26,6 +26,26 @@
   </section>
 
   <section class="card">
+    <div class="card-header"><div><h2>Readiness LARGE_OMAP_OBJECTS</h2><p class="hint">Commissioning report chỉ đọc: không tự bật policy, không tự promotion, không tạo case giả.</p></div></div>
+    <div class="card-body">
+      <p><strong>Autoremediation:</strong> {% if large_omap_readiness.autoremediation_enabled %}<span class="badge badge-ok">Bật</span>{% else %}<span class="badge badge-warn">Tắt</span>{% endif %}
+        <strong>Bootstrap:</strong> {% if large_omap_readiness.bootstrap_requires_approval %}<span class="badge badge-warn">Bắt buộc duyệt lần đầu</span>{% else %}<span class="badge">Không</span>{% endif %}
+        <strong>Autopilot:</strong> {% if large_omap_readiness.autopilot_enabled %}<span class="badge badge-ok">Bật</span>{% else %}<span class="badge badge-warn">Tắt</span>{% endif %}</p>
+      <p><strong>Bucket allowlist:</strong> {% for bucket in large_omap_readiness.allowlisted_buckets %}<code>{{ bucket }}</code>{% else %}<span class="hint">chưa cấu hình</span>{% endfor %}</p>
+      <p><strong>Evidence gần nhất:</strong> {% if large_omap_readiness.latest_evidence.observed_at %}{{ large_omap_readiness.latest_evidence.observed_at|vntime }} · {{ large_omap_readiness.latest_evidence.age_hours }} giờ trước{% else %}<span class="hint">chưa có observed_at</span>{% endif %}
+        {% if large_omap_readiness.latest_evidence.fresh %}<span class="badge badge-ok">Fresh</span>{% else %}<span class="badge badge-err">Stale/thiếu</span>{% endif %}</p>
+      <p><strong>Kết luận:</strong> {% if large_omap_readiness.ready_for_autonomy %}<span class="badge badge-ok">Đủ điều kiện tự chạy</span>{% else %}<span class="badge badge-err">Chưa mở tự chạy</span>{% endif %}</p>
+      {% if large_omap_readiness.blockers %}<h3>Lý do đang chặn</h3><ul>{% for blocker in large_omap_readiness.blockers %}<li>{{ blocker }}</li>{% endfor %}</ul>{% endif %}
+      <p class="hint">Bước tiếp theo: {{ large_omap_readiness.next_step }}</p>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Trust scope</th><th>Maturity</th><th>Verified</th><th>Success / failure</th><th>Wilson trust</th><th>Blocker</th></tr></thead><tbody>
+    {% for stat in large_omap_readiness.trust_scopes %}<tr><td><code>{{ stat.playbook_version }}</code><br><span class="hint">{{ stat.scope_key }}</span></td><td>{{ stat.maturity_level }}</td><td>{{ stat.verified_count }}</td><td>{{ stat.success_count }} / {{ stat.failure_count }}</td><td>{{ (stat.trust_score * 100)|round(1) }}%</td><td>{{ stat.auto_disabled_reason or stat.promotion_blocked_reason or '—' }}</td></tr>
+    {% else %}<tr class="empty-row"><td colspan="6"><div class="empty-state">Chưa có trust scope cho reshard_rgw_bucket.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+    {% if large_omap_readiness.latest_action %}<div class="card-body"><strong>Action gần nhất:</strong> <code>{{ large_omap_readiness.latest_action.action_id }}</code> · {{ large_omap_readiness.latest_action.classification }} · {{ large_omap_readiness.latest_action.status }} · outcome {{ large_omap_readiness.latest_action.case_outcome or '—' }} · risk samples {{ large_omap_readiness.latest_action.risk_samples }}</div>{% endif %}
+  </section>
+
+  <section class="card">
     <div class="card-header"><div><h2>Phản hồi & precision AI remediation</h2><p class="hint">Precision = verdict đúng / tổng verdict đúng hoặc sai. INCONCLUSIVE được tính vào coverage nhưng không làm tăng hoặc giảm precision.</p></div></div>
     <div class="card-body">
       <p><span class="badge">Coverage {{ (remediation_feedback.coverage_percent|string + '%') if remediation_feedback.coverage_percent is not none else '—' }}</span>
