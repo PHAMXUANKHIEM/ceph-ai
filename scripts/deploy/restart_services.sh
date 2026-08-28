@@ -105,7 +105,13 @@ fi
 
 # Keep the RabbitMQ network restriction persistent across reboots. This is a
 # host-wide rule, so install it independently of which checkout is deployed.
+SYSTEMD_AVAILABLE=false
 if command -v systemctl >/dev/null 2>&1 && \
+   [ -d /run/systemd/system ] && \
+   systemctl show --property=Version --value >/dev/null 2>&1; then
+  SYSTEMD_AVAILABLE=true
+fi
+if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
    [ -f "$REPO_DIR/scripts/deploy/ceph-ai-firewall.sh" ] && \
    [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-firewall.service" ]; then
   install -m 0755 "$REPO_DIR/scripts/deploy/ceph-ai-firewall.sh" \
@@ -127,7 +133,7 @@ SYSTEMD_CORE_UNITS=(
 SYSTEMD_REPAIR_UNIT=ceph-ai-code-repair-supervisor.service
 INSTALLED_SYSTEMD_UNITS=()
 REPAIR_USES_SYSTEMD=false
-if [ "$REPO_DIR" = "/root/ceph-ai" ]; then
+if [ "$SYSTEMD_AVAILABLE" = "true" ] && [ "$REPO_DIR" = "/root/ceph-ai" ]; then
   for unit in "${SYSTEMD_CORE_UNITS[@]}" "$SYSTEMD_REPAIR_UNIT"; do
     if systemctl cat "$unit" >/dev/null 2>&1; then
       INSTALLED_SYSTEMD_UNITS+=("$unit")
