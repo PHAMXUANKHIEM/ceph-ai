@@ -52,6 +52,9 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert response.status_code == 200
     assert "API Key" in response.text
     assert "Đăng nhập bằng Codex" in response.text
+    assert "AI Code Repair" in response.text
+    assert 'name="code_repair_planner_provider"' in response.text
+    assert 'name="code_repair_implementer_provider"' in response.text
     assert "Shadow Autopilot Evaluation" not in response.text
     assert "L2 → L3 Promotion Candidates" not in response.text
     assert "Playbook Registry" not in response.text
@@ -64,6 +67,39 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert 'id="action-policy-pagination"' in response.text
     assert 'id="action-policy-page-previous"' in response.text
     assert 'id="action-policy-page-next"' in response.text
+
+
+def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
+    dashboard_client, monkeypatch, tmp_path,
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(
+        settings_route, "restart_code_repair",
+        lambda: {"restarted": True, "new_pid": 123, "error": None},
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/code-repair",
+        data={
+            "code_repair_planner_provider": "codex",
+            "code_repair_planner_model": "gpt-5-codex",
+            "code_repair_implementer_provider": "claude",
+            "code_repair_implementer_model": "claude-sonnet-4-6",
+            "code_repair_max_review_rounds": "3",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình hai AI" in response.text
+    saved = tmp_env.read_text()
+    assert "CODE_REPAIR_PLANNER_PROVIDER=codex" in saved
+    assert "CODE_REPAIR_PLANNER_MODEL=gpt-5-codex" in saved
+    assert "CODE_REPAIR_IMPLEMENTER_PROVIDER=claude" in saved
+    assert "CODE_REPAIR_IMPLEMENTER_MODEL=claude-sonnet-4-6" in saved
+    assert "CODE_REPAIR_MAX_REVIEW_ROUNDS=3" in saved
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):
@@ -1702,6 +1738,29 @@ def test_ai_cost_detail_page_is_available(dashboard_client):
 
     assert response.status_code == 200
     assert "Bảng giá token tham chiếu" in response.text
+
+
+def test_ai_cost_detail_page_paginates_groups_by_ten(dashboard_client, monkeypatch):
+    import dashboard.routes.ai_cost as ai_cost_route
+
+    base = ai_cost_route.summary(168)
+    groups = [{
+        "feature": f"feature-{index}", "provider": "test", "model_id": "model",
+        "calls": 1, "errors": 0, "input_tokens": 1, "output_tokens": 1,
+        "input_usd_per_million_tokens": 1.0, "output_usd_per_million_tokens": 1.0,
+        "estimated_cost_usd": 0.000002, "estimated_cost_vnd": 0,
+    } for index in range(25)]
+    base.update({"groups": groups, "calls": 25, "input_tokens": 25, "output_tokens": 25})
+    monkeypatch.setattr(ai_cost_route, "summary", lambda _hours: base)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/ai-cost?hours=168&page=2")
+
+    assert response.status_code == 200
+    assert response.text.count('feature-') == 10
+    assert "Trang 2 / 3" in response.text
+    assert 'hours=168&amp;page=1' in response.text
+    assert 'hours=168&amp;page=3' in response.text
 
 
 def test_cost_panel_has_period_selector_and_detail_link_without_hard_limit_checkbox(dashboard_client):
