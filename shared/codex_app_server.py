@@ -76,7 +76,7 @@ async def install_codex_cli() -> dict:
         return {"installed": True, "path": installed, "already_installed": False, "output": text}
 
 
-async def start_cli_device_login() -> dict:
+async def start_cli_device_login(codex_home: Path | None = None) -> dict:
     """Start the real server-side CLI device flow and return its URL/code.
 
     The child stays alive after this function returns; Codex CLI itself exits
@@ -92,7 +92,9 @@ async def start_cli_device_login() -> dict:
         if executable is None:
             raise CodexAppServerError("Chưa cài Codex CLI trên server")
         env = os.environ.copy()
-        env["CODEX_HOME"] = str(codex_app_server._codex_home())
+        target_home = codex_home or codex_app_server._codex_home()
+        target_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        env["CODEX_HOME"] = str(target_home)
         # Codex buffers this short prompt when stdout is a regular pipe. Give
         # it a pseudo-terminal so the URL/code are flushed immediately, just
         # as they are when the command is run in an interactive shell.

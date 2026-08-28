@@ -441,6 +441,13 @@
             <div>
               <h3>Planner / Reviewer — hỏi &amp; kiểm tra</h3>
               <p class="hint">Không được sửa file; dùng cùng role cho lần lập kế hoạch và các vòng review.</p>
+              <label>Nguồn tài khoản
+                <select id="code-repair-planner-account-source" name="code_repair_planner_account_source">
+                  <option value="configured" {% if code_repair_values.code_repair_planner_account_source == 'configured' %}selected{% endif %}>AI trong phần cấu hình API</option>
+                  <option value="separate" {% if code_repair_values.code_repair_planner_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác</option>
+                </select>
+              </label>
+              <div id="code-repair-planner-configured" class="code-repair-account-configured">
               <label>Provider
                 <select id="code-repair-planner-provider" name="code_repair_planner_provider">
                   {% for provider in code_repair_providers %}
@@ -459,20 +466,45 @@
                 </select>
                 <span id="code-repair-planner-model-status" class="hint">Chọn provider để tải danh sách model.</span>
               </label>
-              <label>Nguồn tài khoản
-                <select id="code-repair-planner-account-source" name="code_repair_planner_account_source">
-                  <option value="configured" {% if code_repair_values.code_repair_planner_account_source == 'configured' %}selected{% endif %}>Tài khoản AI đã cấu hình</option>
-                  <option value="separate" {% if code_repair_values.code_repair_planner_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác / profile riêng</option>
-                </select>
-              </label>
-              <label id="code-repair-planner-account-profile-wrap" hidden>Tên profile riêng
-                <input id="code-repair-planner-account-profile" name="code_repair_planner_account_profile" value="{{ code_repair_values.code_repair_planner_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: planner-1">
-              </label>
-              <p class="hint">Profile riêng dùng thư mục <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
+              </div>
+              <div id="code-repair-planner-separate" class="code-repair-account-separate" hidden>
+                <label>Provider tài khoản riêng
+                  <select id="code-repair-planner-separate-provider" name="code_repair_planner_separate_provider">
+                    <option value="codex" {% if code_repair_values.code_repair_planner_provider == 'codex' %}selected{% endif %}>Codex</option>
+                    <option value="claude" {% if code_repair_values.code_repair_planner_provider == 'claude' %}selected{% endif %}>Claude</option>
+                  </select>
+                </label>
+                <label>Model (tuỳ chọn)
+                  <input id="code-repair-planner-separate-model" name="code_repair_planner_separate_model" value="{{ code_repair_values.code_repair_planner_model }}" maxlength="128" placeholder="để trống = model mặc định">
+                </label>
+                <label>Tên profile tài khoản
+                  <input id="code-repair-planner-account-profile" name="code_repair_planner_account_profile" value="{{ code_repair_values.code_repair_planner_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: planner-1">
+                </label>
+                <p class="hint">Credential được lưu riêng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
+                <p id="code-repair-planner-separate-status" class="hint">Nhập profile để kiểm tra tài khoản.</p>
+                <div class="ai-test-row">
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-planner-separate-login">Đăng nhập tài khoản riêng</button>
+                  <button type="button" class="btn btn-sm btn-danger" id="code-repair-planner-separate-logout" hidden>Đăng xuất</button>
+                </div>
+                <div id="code-repair-planner-separate-flow" hidden>
+                  <p>Mở <a id="code-repair-planner-separate-link" href="#" target="_blank" rel="noopener">trang xác thực</a><span id="code-repair-planner-separate-code-wrap"> và nhập mã <code id="code-repair-planner-separate-code"></code></span>.</p>
+                  <label id="code-repair-planner-separate-auth-wrap" hidden>Authentication code
+                    <input id="code-repair-planner-separate-auth-code" autocomplete="one-time-code">
+                  </label>
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-planner-separate-complete" hidden>Nhập mã &amp; kết nối</button>
+                </div>
+              </div>
             </div>
             <div>
               <h3>Implementer — thực hiện</h3>
               <p class="hint">Được sửa trong worktree cô lập; bắt buộc giữ hoặc thêm regression test.</p>
+              <label>Nguồn tài khoản
+                <select id="code-repair-implementer-account-source" name="code_repair_implementer_account_source">
+                  <option value="configured" {% if code_repair_values.code_repair_implementer_account_source == 'configured' %}selected{% endif %}>AI trong phần cấu hình API</option>
+                  <option value="separate" {% if code_repair_values.code_repair_implementer_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác</option>
+                </select>
+              </label>
+              <div id="code-repair-implementer-configured" class="code-repair-account-configured">
               <label>Provider
                 <select id="code-repair-implementer-provider" name="code_repair_implementer_provider">
                   {% for provider in code_repair_providers %}
@@ -491,16 +523,34 @@
                 </select>
                 <span id="code-repair-implementer-model-status" class="hint">Chọn provider để tải danh sách model.</span>
               </label>
-              <label>Nguồn tài khoản
-                <select id="code-repair-implementer-account-source" name="code_repair_implementer_account_source">
-                  <option value="configured" {% if code_repair_values.code_repair_implementer_account_source == 'configured' %}selected{% endif %}>Tài khoản AI đã cấu hình</option>
-                  <option value="separate" {% if code_repair_values.code_repair_implementer_account_source == 'separate' %}selected{% endif %}>Tài khoản AI khác / profile riêng</option>
-                </select>
-              </label>
-              <label id="code-repair-implementer-account-profile-wrap" hidden>Tên profile riêng
-                <input id="code-repair-implementer-account-profile" name="code_repair_implementer_account_profile" value="{{ code_repair_values.code_repair_implementer_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: implementer-1">
-              </label>
-              <p class="hint">Profile riêng dùng thư mục <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
+              </div>
+              <div id="code-repair-implementer-separate" class="code-repair-account-separate" hidden>
+                <label>Provider tài khoản riêng
+                  <select id="code-repair-implementer-separate-provider" name="code_repair_implementer_separate_provider">
+                    <option value="codex" {% if code_repair_values.code_repair_implementer_provider == 'codex' %}selected{% endif %}>Codex</option>
+                    <option value="claude" {% if code_repair_values.code_repair_implementer_provider == 'claude' %}selected{% endif %}>Claude</option>
+                  </select>
+                </label>
+                <label>Model (tuỳ chọn)
+                  <input id="code-repair-implementer-separate-model" name="code_repair_implementer_separate_model" value="{{ code_repair_values.code_repair_implementer_model }}" maxlength="128" placeholder="để trống = model mặc định">
+                </label>
+                <label>Tên profile tài khoản
+                  <input id="code-repair-implementer-account-profile" name="code_repair_implementer_account_profile" value="{{ code_repair_values.code_repair_implementer_account_profile }}" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: implementer-1">
+                </label>
+                <p class="hint">Credential được lưu riêng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>.</p>
+                <p id="code-repair-implementer-separate-status" class="hint">Nhập profile để kiểm tra tài khoản.</p>
+                <div class="ai-test-row">
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-implementer-separate-login">Đăng nhập tài khoản riêng</button>
+                  <button type="button" class="btn btn-sm btn-danger" id="code-repair-implementer-separate-logout" hidden>Đăng xuất</button>
+                </div>
+                <div id="code-repair-implementer-separate-flow" hidden>
+                  <p>Mở <a id="code-repair-implementer-separate-link" href="#" target="_blank" rel="noopener">trang xác thực</a><span id="code-repair-implementer-separate-code-wrap"> và nhập mã <code id="code-repair-implementer-separate-code"></code></span>.</p>
+                  <label id="code-repair-implementer-separate-auth-wrap" hidden>Authentication code
+                    <input id="code-repair-implementer-separate-auth-code" autocomplete="one-time-code">
+                  </label>
+                  <button type="button" class="btn btn-primary btn-sm" id="code-repair-implementer-separate-complete" hidden>Nhập mã &amp; kết nối</button>
+                </div>
+              </div>
             </div>
           </div>
           <label>Số vòng review tối đa

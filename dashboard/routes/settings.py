@@ -452,6 +452,35 @@ CODE_REPAIR_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
 CODE_REPAIR_MAX_REVIEW_ROUNDS = 5
 
 
+def _code_repair_profile_dir(provider: str, profile: str) -> Path:
+    if provider not in {"codex", "claude"}:
+        raise HTTPException(status_code=400, detail="Provider tài khoản riêng phải là codex hoặc claude")
+    checked = profile.strip()
+    if not CODE_REPAIR_PROFILE_RE.fullmatch(checked):
+        raise HTTPException(status_code=400, detail="Tên profile không hợp lệ")
+    directory = PROJECT_ROOT / ".ai-accounts" / checked / provider
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory
+
+
+def _code_repair_codex_profile_status(directory: Path) -> dict:
+    executable = codex_executable()
+    result = {"provider": "codex", "installed": bool(executable), "authenticated": False}
+    if not executable:
+        return result
+    try:
+        completed = subprocess.run(
+            [executable, "login", "status"], cwd=PROJECT_ROOT,
+            env={**os.environ, "CODEX_HOME": str(directory)},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            check=False, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    result["authenticated"] = completed.returncode == 0
+    return result
+
+
 def _start_watcher() -> int:
     # Explicit env= override — mirrors _start_worker()'s ROUTER_API_KEY
     # handling exactly (Review Story 5.1: originally omitted here on the
@@ -1808,6 +1837,79 @@ async def settings_codex_logout(user: str = Depends(require_login)):
     return {"enabled": False}
 
 
+@router.get("/settings/code-repair/account/status")
+async def code_repair_account_status(
+    provider: str, profile: str, user: str = Depends(require_login),
+):
+    """Check the isolated Codex/Claude credential home selected by a repair role."""
+    _require_admin_privilege(user)
+    directory = _code_repair_profile_dir(provider, profile)
+    if provider == "codex":
+        return await asyncio.to_thread(_code_repair_codex_profile_status, directory)
+    try:
+        result = await claude_status(config_dir=directory)
+    except ClaudeCLIError as exc:
+        return {"provider": provider, "installed": claude_executable() is not None,
+                "authenticated": False, "error": str(exc)}
+    result["provider"] = provider
+    return result
+
+
+@router.post("/settings/code-repair/account/login/start")
+async def code_repair_account_login_start(
+    provider: str = Form(""), profile: str = Form(""), user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    directory = _code_repair_profile_dir(provider, profile)
+    try:
+        if provider == "codex":
+            result = await start_cli_device_login(codex_home=directory)
+            return {"provider": provider, "verification_url": result.get("verificationUrl"),
+                    "user_code": result.get("userCode")}
+        result = await start_claude_login(config_dir=directory)
+        return {"provider": provider, "verification_url": result.get("verification_url")}
+    except (CodexAppServerError, ClaudeCLIError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/settings/code-repair/account/login/complete")
+async def code_repair_account_login_complete(
+    provider: str = Form(""), profile: str = Form(""),
+    authentication_code: str = Form(""), user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    if provider != "claude":
+        raise HTTPException(status_code=400, detail="Chỉ Claude cần nhập Authentication code")
+    directory = _code_repair_profile_dir(provider, profile)
+    try:
+        return await submit_claude_authentication_code(authentication_code, config_dir=directory)
+    except ClaudeCLIError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/settings/code-repair/account/logout")
+async def code_repair_account_logout(
+    provider: str = Form(""), profile: str = Form(""), user: str = Depends(require_login),
+):
+    _require_admin_privilege(user)
+    directory = _code_repair_profile_dir(provider, profile)
+    try:
+        if provider == "codex":
+            executable = codex_executable()
+            if executable:
+                await asyncio.to_thread(
+                    subprocess.run, [executable, "logout"], cwd=PROJECT_ROOT,
+                    env={**os.environ, "CODEX_HOME": str(directory)},
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    check=True, timeout=15,
+                )
+        else:
+            await claude_logout(config_dir=directory)
+    except (OSError, subprocess.SubprocessError, CodexAppServerError, ClaudeCLIError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"authenticated": False}
+
+
 @router.get("/settings/claude/status")
 async def settings_claude_status(user: str = Depends(require_login)):
     try:
@@ -2652,22 +2754,28 @@ async def code_repair_settings_submit(
     code_repair_planner_model: str = Form(""),
     code_repair_planner_account_source: str = Form("configured"),
     code_repair_planner_account_profile: str = Form(""),
+    code_repair_planner_separate_provider: str = Form("codex"),
+    code_repair_planner_separate_model: str = Form(""),
     code_repair_implementer_provider: str = Form("auto"),
     code_repair_implementer_model: str = Form(""),
     code_repair_implementer_account_source: str = Form("configured"),
     code_repair_implementer_account_profile: str = Form(""),
+    code_repair_implementer_separate_provider: str = Form("codex"),
+    code_repair_implementer_separate_model: str = Form(""),
     code_repair_max_review_rounds: str = Form("2"),
 ):
     """Persist the two AI roles used by the external repair supervisor."""
     _require_admin_privilege(user)
+    planner_source = code_repair_planner_account_source.strip().lower()
+    implementer_source = code_repair_implementer_account_source.strip().lower()
     values = {
-        "code_repair_planner_provider": code_repair_planner_provider.strip().lower(),
-        "code_repair_planner_model": code_repair_planner_model.strip(),
-        "code_repair_planner_account_source": code_repair_planner_account_source.strip().lower(),
+        "code_repair_planner_provider": (code_repair_planner_separate_provider if planner_source == "separate" else code_repair_planner_provider).strip().lower(),
+        "code_repair_planner_model": ((code_repair_planner_separate_model or code_repair_planner_model) if planner_source == "separate" else code_repair_planner_model).strip(),
+        "code_repair_planner_account_source": planner_source,
         "code_repair_planner_account_profile": code_repair_planner_account_profile.strip(),
-        "code_repair_implementer_provider": code_repair_implementer_provider.strip().lower(),
-        "code_repair_implementer_model": code_repair_implementer_model.strip(),
-        "code_repair_implementer_account_source": code_repair_implementer_account_source.strip().lower(),
+        "code_repair_implementer_provider": (code_repair_implementer_separate_provider if implementer_source == "separate" else code_repair_implementer_provider).strip().lower(),
+        "code_repair_implementer_model": ((code_repair_implementer_separate_model or code_repair_implementer_model) if implementer_source == "separate" else code_repair_implementer_model).strip(),
+        "code_repair_implementer_account_source": implementer_source,
         "code_repair_implementer_account_profile": code_repair_implementer_account_profile.strip(),
         "code_repair_max_review_rounds": code_repair_max_review_rounds.strip(),
     }
@@ -2684,12 +2792,15 @@ async def code_repair_settings_submit(
     for role in ("planner", "implementer"):
         source_field = f"code_repair_{role}_account_source"
         profile_field = f"code_repair_{role}_account_profile"
+        provider_field = f"code_repair_{role}_provider"
         source = values[source_field]
         profile = values[profile_field]
         if source not in CODE_REPAIR_ACCOUNT_SOURCES:
             return fail(f"{source_field}: phải là configured hoặc separate.")
         if source == "separate" and not CODE_REPAIR_PROFILE_RE.fullmatch(profile):
             return fail(f"{profile_field}: nhập profile riêng hợp lệ (chữ, số, _ hoặc -, tối đa 48 ký tự).")
+        if source == "separate" and values[provider_field] not in {"codex", "claude"}:
+            return fail(f"{provider_field}: tài khoản riêng chỉ hỗ trợ Codex hoặc Claude.")
         if source == "configured":
             values[profile_field] = ""
     try:

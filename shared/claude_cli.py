@@ -22,6 +22,7 @@ _install_lock = asyncio.Lock()
 _login_lock = asyncio.Lock()
 _login_process: asyncio.subprocess.Process | None = None
 _login_url: str | None = None
+_login_config_dir: Path | None = None
 _login_drain_task: asyncio.Task[tuple[bytes, bytes | None]] | None = None
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _URL_RE = re.compile(r"https?://[^\s<>\]\[()]+")
@@ -35,8 +36,8 @@ def claude_executable() -> str | None:
     return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
 
 
-def _config_dir() -> Path:
-    value = Path(settings.claude_config_dir).expanduser()
+def _config_dir(config_dir: Path | None = None) -> Path:
+    value = config_dir or Path(settings.claude_config_dir).expanduser()
     if not value.is_absolute():
         value = Path(__file__).resolve().parent.parent / value
     value.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -47,9 +48,9 @@ def _config_dir() -> Path:
     return value
 
 
-def _env() -> dict[str, str]:
+def _env(config_dir: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    env["CLAUDE_CONFIG_DIR"] = str(_config_dir())
+    env["CLAUDE_CONFIG_DIR"] = str(_config_dir(config_dir))
     env["DISABLE_AUTOUPDATER"] = "1"
     return env
 
@@ -78,13 +79,13 @@ async def install_claude_cli() -> dict:
         return {"installed": True, "path": installed, "already_installed": False}
 
 
-async def claude_status() -> dict:
+async def claude_status(config_dir: Path | None = None) -> dict:
     executable = claude_executable()
     if not executable:
         return {"installed": False, "authenticated": False}
     process = await asyncio.create_subprocess_exec(
         executable, "auth", "status", "--json",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_env(),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=_env(config_dir),
     )
     try:
         output, _ = await asyncio.wait_for(process.communicate(), 12)
@@ -110,11 +111,14 @@ async def claude_status() -> dict:
     }
 
 
-async def start_claude_login() -> dict:
+async def start_claude_login(config_dir: Path | None = None) -> dict:
     """Start Claude's OAuth login and return the browser URL it prints."""
-    global _login_process, _login_url, _login_drain_task
+    global _login_process, _login_url, _login_config_dir, _login_drain_task
+    target_config_dir = _config_dir(config_dir)
     async with _login_lock:
         if _login_process and _login_process.returncode is None and _login_url:
+            if _login_config_dir != target_config_dir:
+                raise ClaudeCLIError("Đang có phiên đăng nhập Claude khác; hãy hoàn tất hoặc chờ phiên đó kết thúc")
             return {"verification_url": _login_url}
         executable = claude_executable()
         if not executable:
@@ -123,8 +127,9 @@ async def start_claude_login() -> dict:
             executable, "auth", "login",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            env={**_env(), "BROWSER": "true"},
+            env={**_env(target_config_dir), "BROWSER": "true"},
         )
+        _login_config_dir = target_config_dir
         output = ""
         assert _login_process.stdout
         try:
@@ -148,15 +153,16 @@ async def start_claude_login() -> dict:
         raise ClaudeCLIError(f"Không lấy được URL đăng nhập Claude (exit {rc}): {_ANSI_RE.sub('', output)[-2000:]}")
 
 
-async def submit_claude_authentication_code(authentication_code: str) -> dict:
+async def submit_claude_authentication_code(authentication_code: str, config_dir: Path | None = None) -> dict:
     """Submit the browser-issued code to the active ``claude auth login`` process."""
-    global _login_process, _login_url, _login_drain_task
+    global _login_process, _login_url, _login_config_dir, _login_drain_task
     code = authentication_code.strip()
     if not code:
         raise ClaudeCLIError("Vui lòng nhập Authentication code")
 
     async with _login_lock:
         process = _login_process
+        active_config_dir = _login_config_dir or _config_dir(config_dir)
         if process is None or process.returncode is not None or process.stdin is None:
             raise ClaudeCLIError("Phiên đăng nhập Claude không còn hiệu lực; hãy bắt đầu lại")
         try:
@@ -177,25 +183,26 @@ async def submit_claude_authentication_code(authentication_code: str) -> dict:
         finally:
             _login_process = None
             _login_url = None
+            _login_config_dir = None
             _login_drain_task = None
 
     if process.returncode:
         # Do not include CLI output here: some versions echo terminal input,
         # which could expose the one-time authentication code in the UI/logs.
         raise ClaudeCLIError("Authentication code không được Claude chấp nhận")
-    status = await claude_status()
+    status = await claude_status(config_dir=active_config_dir)
     if not status.get("authenticated"):
         raise ClaudeCLIError("Claude CLI chưa xác nhận đăng nhập; hãy thử tạo phiên mới")
     return status
 
 
-async def claude_logout() -> None:
+async def claude_logout(config_dir: Path | None = None) -> None:
     executable = claude_executable()
     if not executable:
         return
     process = await asyncio.create_subprocess_exec(
         executable, "auth", "logout", stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT, env=_env(),
+        stderr=asyncio.subprocess.STDOUT, env=_env(config_dir),
     )
     output, _ = await asyncio.wait_for(process.communicate(), 15)
     if process.returncode:

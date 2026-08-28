@@ -930,23 +930,109 @@
   bindRole(plannerProvider, "code-repair-planner-model", "code-repair-planner-model-status");
   bindRole(implementerProvider, "code-repair-implementer-model", "code-repair-implementer-model-status");
 
-  function bindAccountSource(sourceId, wrapId, profileId) {
-    var source = document.getElementById(sourceId);
-    var wrap = document.getElementById(wrapId);
-    var profile = document.getElementById(profileId);
-    if (!source || !wrap || !profile) return;
-    function render() {
-      var separate = source.value === "separate";
-      wrap.hidden = !separate;
-      profile.required = separate;
-      if (!separate) profile.value = "";
-    }
-    source.addEventListener("change", render);
-    render();
-  }
+})();
 
-  bindAccountSource("code-repair-planner-account-source", "code-repair-planner-account-profile-wrap", "code-repair-planner-account-profile");
-  bindAccountSource("code-repair-implementer-account-source", "code-repair-implementer-account-profile-wrap", "code-repair-implementer-account-profile");
+// --- AI Code Repair account source flow -----------------------------------
+// The operator chooses the account source first. Configured roles reuse the
+// AI API account; separate roles get their own Codex/Claude credential home.
+(function () {
+  function bindAccount(role) {
+    var source = document.getElementById("code-repair-" + role + "-account-source");
+    var configured = document.getElementById("code-repair-" + role + "-configured");
+    var separate = document.getElementById("code-repair-" + role + "-separate");
+    var provider = document.getElementById("code-repair-" + role + "-separate-provider");
+    var model = document.getElementById("code-repair-" + role + "-separate-model");
+    var profile = document.getElementById("code-repair-" + role + "-account-profile");
+    var status = document.getElementById("code-repair-" + role + "-separate-status");
+    var login = document.getElementById("code-repair-" + role + "-separate-login");
+    var logout = document.getElementById("code-repair-" + role + "-separate-logout");
+    var flow = document.getElementById("code-repair-" + role + "-separate-flow");
+    var link = document.getElementById("code-repair-" + role + "-separate-link");
+    var code = document.getElementById("code-repair-" + role + "-separate-code");
+    var codeWrap = document.getElementById("code-repair-" + role + "-separate-code-wrap");
+    var authWrap = document.getElementById("code-repair-" + role + "-separate-auth-wrap");
+    var authCode = document.getElementById("code-repair-" + role + "-separate-auth-code");
+    var complete = document.getElementById("code-repair-" + role + "-separate-complete");
+    var pollTimer = null;
+    if (!source || !configured || !separate) return;
+
+    function request(url, options) {
+      return fetch(url, Object.assign({ credentials: "same-origin" }, options || {})).then(function (response) {
+        if (!response.ok) return response.json().then(function (data) { throw new Error(data.detail || "HTTP " + response.status); });
+        return response.json();
+      });
+    }
+    function setStatus(text, className) {
+      if (status) { status.textContent = text; status.className = "hint" + (className ? " " + className : ""); }
+    }
+    function profileReady() { return provider && profile && provider.value && profile.value.trim(); }
+    function refresh() {
+      if (!profileReady()) { setStatus("Nhập profile để kiểm tra tài khoản."); if (logout) logout.hidden = true; return; }
+      setStatus("Đang kiểm tra tài khoản riêng...");
+      request("/settings/code-repair/account/status?provider=" + encodeURIComponent(provider.value) + "&profile=" + encodeURIComponent(profile.value.trim()))
+        .then(function (data) {
+          if (data.authenticated) {
+            setStatus("✅ Đã đăng nhập " + (data.email || "tài khoản " + provider.value), "success");
+            if (login) login.hidden = true;
+            if (logout) logout.hidden = false;
+          } else {
+            setStatus(data.installed === false ? "⚠️ Chưa cài " + provider.value + " CLI trên server." : "Chưa đăng nhập tài khoản riêng.");
+            if (login) login.hidden = false;
+            if (logout) logout.hidden = true;
+          }
+        }).catch(function (error) { setStatus("❌ " + error.message, "error"); });
+    }
+    function toggle() {
+      var isSeparate = source.value === "separate";
+      configured.hidden = isSeparate;
+      separate.hidden = !isSeparate;
+      configured.querySelectorAll("input, select").forEach(function (element) { element.disabled = isSeparate; });
+      separate.querySelectorAll("input, select").forEach(function (element) { element.disabled = !isSeparate; });
+      if (isSeparate) refresh();
+    }
+    function startLogin() {
+      if (!profileReady()) { setStatus("Cần nhập profile trước khi đăng nhập.", "error"); if (profile) profile.focus(); return; }
+      login.disabled = true;
+      setStatus("Đang tạo phiên đăng nhập...");
+      var body = new URLSearchParams(); body.set("provider", provider.value); body.set("profile", profile.value.trim());
+      request("/settings/code-repair/account/login/start", { method: "POST", body: body }).then(function (data) {
+        if (link) { link.href = data.verification_url; link.textContent = data.provider === "codex" ? "trang xác thực Codex" : "trang xác thực Claude"; }
+        if (code) code.textContent = data.user_code || "";
+        if (codeWrap) codeWrap.hidden = data.provider !== "codex";
+        if (authWrap) authWrap.hidden = data.provider !== "claude";
+        if (complete) complete.hidden = data.provider !== "claude";
+        if (flow) flow.hidden = false;
+        if (data.verification_url) window.open(data.verification_url, "_blank", "noopener");
+        setStatus("Đang chờ hoàn tất đăng nhập...");
+        if (data.provider === "codex") {
+          clearInterval(pollTimer);
+          pollTimer = setInterval(function () { refresh(); }, 2500);
+        }
+      }).catch(function (error) { setStatus("❌ " + error.message, "error"); login.disabled = false; });
+    }
+    function completeLogin() {
+      complete.disabled = true;
+      var body = new URLSearchParams(); body.set("provider", provider.value); body.set("profile", profile.value.trim()); body.set("authentication_code", (authCode.value || "").trim());
+      request("/settings/code-repair/account/login/complete", { method: "POST", body: body }).then(function () {
+        if (flow) flow.hidden = true; refresh();
+      }).catch(function (error) { setStatus("❌ " + error.message, "error"); }).then(function () { complete.disabled = false; });
+    }
+    function logoutAccount() {
+      var body = new URLSearchParams(); body.set("provider", provider.value); body.set("profile", profile.value.trim());
+      logout.disabled = true;
+      request("/settings/code-repair/account/logout", { method: "POST", body: body }).then(function () { if (flow) flow.hidden = true; refresh(); })
+        .catch(function (error) { setStatus("❌ " + error.message, "error"); }).then(function () { logout.disabled = false; });
+    }
+    source.addEventListener("change", toggle);
+    if (provider) provider.addEventListener("change", refresh);
+    if (profile) profile.addEventListener("blur", refresh);
+    if (login) login.addEventListener("click", startLogin);
+    if (complete) complete.addEventListener("click", completeLogin);
+    if (logout) logout.addEventListener("click", logoutAccount);
+    toggle();
+  }
+  bindAccount("planner");
+  bindAccount("implementer");
 })();
 
 // AI Action Policy: search and filters run locally so looking up an action
