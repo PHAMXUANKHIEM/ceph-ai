@@ -90,6 +90,9 @@ TELEGRAM_INCIDENT_ENV_NAMES: dict[str, str] = {
     "telegram_incident_chat_id": "TELEGRAM_INCIDENT_CHAT_ID",
     "telegram_incident_enabled": "TELEGRAM_INCIDENT_ENABLED",
 }
+# Performance RCA reuses the incident Bot Token/Chat ID but has an
+# independent on/off switch managed from the Alert Telegram page.
+TELEGRAM_PERFORMANCE_RCA_ENABLED_ENV_NAME = "TELEGRAM_PERFORMANCE_RCA_ENABLED"
 TELEGRAM_RBD_FORECAST_ENV_NAMES: dict[str, str] = {
     "telegram_rbd_forecast_bot_token": "TELEGRAM_RBD_FORECAST_BOT_TOKEN",
     "telegram_rbd_forecast_chat_id": "TELEGRAM_RBD_FORECAST_CHAT_ID",

@@ -20,6 +20,7 @@ def test_check_and_alert_is_deduplicated_and_resolves(monkeypatch):
     monkeypatch.setattr(settings, "telegram_incident_bot_token", "token")
     monkeypatch.setattr(settings, "telegram_incident_chat_id", "chat")
     monkeypatch.setattr(settings, "telegram_incident_enabled", True)
+    monkeypatch.setattr(settings, "telegram_performance_rca_enabled", True)
 
     cluster = Cluster(
         id="c1", name="cluster-1", ceph_mon_nodes="", ssh_user="test", ssh_key_path="test",
@@ -64,5 +65,10 @@ def test_check_and_alert_is_deduplicated_and_resolves(monkeypatch):
     assert performance_rca_monitor.check_and_alert("c1", cluster) == 0
     with factory() as session:
         assert session.query(Incident).one().status == IncidentStatus.RESOLVED.value
+
+    monkeypatch.setattr(settings, "telegram_performance_rca_enabled", False)
+    monkeypatch.setattr(performance_rca_monitor, "report", lambda _cluster, **_kwargs: {"analyses": [analysis]})
+    assert performance_rca_monitor.check_and_alert("c1", cluster) == 0
+    assert len(sent) == 1
 
     Base.metadata.drop_all(engine)

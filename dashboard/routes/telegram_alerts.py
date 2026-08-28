@@ -160,6 +160,8 @@ def _context(
     test_successes: dict[str, str] | None = None,
     cluster_name_error: str | None = None,
     cluster_name_success: str | None = None,
+    performance_rca_error: str | None = None,
+    performance_rca_success: str | None = None,
 ) -> dict:
     """Every one of the 3 channel forms renders from this single
     telegram_alerts.html — every response must carry every channel's
@@ -205,6 +207,9 @@ def _context(
         "cluster_name": settings.cluster_name,
         "cluster_name_error": cluster_name_error,
         "cluster_name_success": cluster_name_success,
+        "performance_rca_enabled": settings.telegram_performance_rca_enabled,
+        "performance_rca_error": performance_rca_error,
+        "performance_rca_success": performance_rca_success,
     }
 
 
@@ -321,6 +326,49 @@ async def telegram_channel_submit(
             if info["restart"] != "none" else
             "Đã lưu — lượt Code Repair kế tiếp sẽ dùng cấu hình này."
         )}),
+    )
+
+
+@router.post("/telegram-alerts/performance-rca/toggle", response_class=HTMLResponse)
+async def performance_rca_toggle(
+    request: Request,
+    user: str = Depends(require_login),
+    enabled: str = Form(...),
+):
+    """Toggle only Performance RCA candidate alerts.
+
+    RCA uses the incident channel's saved Bot Token/Chat ID, but its alert
+    lifecycle can be silenced independently from ordinary incident alerts.
+    """
+    _require_admin_privilege(user)
+    new_enabled = enabled.strip().lower() == "true"
+
+    try:
+        env_config.update_env_file(
+            env_config.TELEGRAM_PERFORMANCE_RCA_ENABLED_ENV_NAME,
+            "true" if new_enabled else "false",
+        )
+        settings.telegram_performance_rca_enabled = new_enabled
+    except Exception:
+        logger.exception("performance_rca_toggle: failed to persist setting to .env")
+        return templates.TemplateResponse(
+            request,
+            "telegram_alerts.html",
+            _context(
+                user,
+                performance_rca_error="Không ghi được file cấu hình — kiểm tra quyền ghi trên server",
+            ),
+        )
+
+    await asyncio.to_thread(restart_watcher)
+    state_label = "Đã bật" if new_enabled else "Đã tắt"
+    return templates.TemplateResponse(
+        request,
+        "telegram_alerts.html",
+        _context(
+            user,
+            performance_rca_success=f"{state_label} cảnh báo Performance RCA — Watcher đã khởi động lại để áp dụng ngay.",
+        ),
     )
 
 

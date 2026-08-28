@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from hashlib import sha1
 
+from config.settings import settings
 from shared import db, telegram_alerts
 from shared.models import Cluster, Incident, IncidentStatus
 from watcher.performance_rca import PERFORMANCE_RCA_PREFIX, report
@@ -37,7 +38,6 @@ def _channel(cluster) -> tuple[str, str, bool, bool]:
     cluster_configured = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
     if cluster_configured:
         return cluster.telegram_bot_token, cluster.telegram_chat_id, cluster.telegram_enabled, True
-    from config.settings import settings
     return settings.telegram_incident_bot_token, settings.telegram_incident_chat_id, settings.telegram_incident_enabled, False
 
 
@@ -65,6 +65,10 @@ def _log_excerpt(analysis: dict) -> str:
 
 def check_and_alert(cluster_id: str, cluster=None) -> int:
     """Create/resolve RCA alert state and deliver newly detected candidates."""
+    if not settings.telegram_performance_rca_enabled:
+        logger.info("performance RCA: alerting is disabled")
+        return 0
+
     if cluster is None:
         with db.SessionLocal() as lookup:
             cluster = lookup.get(Cluster, cluster_id)

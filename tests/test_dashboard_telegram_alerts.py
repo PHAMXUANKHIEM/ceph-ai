@@ -387,6 +387,25 @@ def test_toggle_incident_channel_on_restarts_only_watcher(dashboard_client, monk
     assert restart_calls == {"worker": 0, "watcher": 1}
 
 
+def test_toggle_performance_rca_off_persists_and_restarts_only_watcher(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    restart_calls = _mock_restarts(monkeypatch)
+    monkeypatch.setattr(settings, "telegram_performance_rca_enabled", True, raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/telegram-alerts/performance-rca/toggle", data={"enabled": "false"}
+    )
+
+    assert response.status_code == 200
+    assert "Đã tắt cảnh báo Performance RCA" in response.text
+    assert settings.telegram_performance_rca_enabled is False
+    assert "TELEGRAM_PERFORMANCE_RCA_ENABLED=false" in tmp_env.read_text()
+    assert restart_calls == {"worker": 0, "watcher": 1}
+
+
 def test_toggle_node_channel_restarts_only_watcher(dashboard_client, monkeypatch, tmp_path):
     monkeypatch.setattr(env_config, "ENV_PATH", tmp_path / ".env")
     restart_calls = _mock_restarts(monkeypatch)

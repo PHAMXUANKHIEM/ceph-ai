@@ -29,6 +29,32 @@
     </section>
 
     <section class="card">
+      <div class="card-header">
+        <h2>Cảnh báo Performance RCA — <span class="{% if performance_rca_enabled %}success{% else %}error{% endif %}">{{ "Đang bật" if performance_rca_enabled else "Đã tắt" }}</span></h2>
+        <form method="post" action="/telegram-alerts/performance-rca/toggle" style="display:inline">
+          <input type="hidden" name="enabled" value="{{ 'false' if performance_rca_enabled else 'true' }}">
+          {% if performance_rca_enabled %}
+            <button type="submit" class="btn btn-danger-outline">Tắt cảnh báo này</button>
+          {% else %}
+            <button type="submit" class="btn btn-danger">Bật cảnh báo này</button>
+          {% endif %}
+        </form>
+      </div>
+      <div class="card-body">
+        {% if performance_rca_error %}
+          <p class="error">{{ performance_rca_error }}</p>
+        {% endif %}
+        {% if performance_rca_success %}
+          <p class="success">{{ performance_rca_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Bật/tắt riêng cảnh báo Performance RCA; không ảnh hưởng các cảnh báo lỗi cụm thông thường.
+          Cảnh báo này dùng Bot Token và Chat ID của kênh <strong>Cảnh báo lỗi cụm</strong>.
+        </p>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>Tên cụm</h2></div>
       <div class="card-body">
         <p class="hint">

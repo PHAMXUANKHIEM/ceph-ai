@@ -377,6 +377,9 @@ class Settings(BaseSettings):
     telegram_incident_bot_token: str = ""
     telegram_incident_chat_id: str = ""
     telegram_incident_enabled: bool = True
+    # Performance RCA has its own alert switch while reusing the incident
+    # channel credentials. This does not affect ordinary incident alerts.
+    telegram_performance_rca_enabled: bool = True
     # Dedicated notification-only channel for early RBD forecasts.
     telegram_rbd_forecast_bot_token: str = ""
     telegram_rbd_forecast_chat_id: str = ""
