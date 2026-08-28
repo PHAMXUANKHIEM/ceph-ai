@@ -35,6 +35,9 @@
               </select>
               <span id="task-planner-model-status" class="hint">Chọn provider để tải catalog.</span>
             </label>
+            <label id="task-planner-custom-model-wrap" hidden>Model ID tùy chỉnh cho profile riêng
+              <input id="task-planner-custom-model" maxlength="128" placeholder="để trống = model mặc định">
+            </label>
             <label>Nguồn tài khoản
               <select id="task-planner-account-source" name="planner_account_source">
                 <option value="configured">Tài khoản đã cấu hình</option>
@@ -59,6 +62,9 @@
               </select>
               <span id="task-implementer-model-status" class="hint">Chọn provider để tải catalog.</span>
             </label>
+            <label id="task-implementer-custom-model-wrap" hidden>Model ID tùy chỉnh cho profile riêng
+              <input id="task-implementer-custom-model" maxlength="128" placeholder="để trống = model mặc định">
+            </label>
             <label>Nguồn tài khoản
               <select id="task-implementer-account-source" name="implementer_account_source">
                 <option value="configured">Tài khoản đã cấu hình</option>
@@ -68,7 +74,7 @@
             <label id="task-implementer-profile-wrap" hidden>Tên profile riêng
               <input id="task-implementer-profile" name="implementer_account_profile" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: implementer-1">
             </label>
-            <p class="hint">Profile riêng được dùng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>. Hãy đăng nhập CLI vào profile đó trước khi chạy.</p>
+            <p class="hint">Profile riêng được dùng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>. Trạng thái đăng nhập sẽ được kiểm tra khi nhập profile.</p>
           </div>
         </div>
         <label>Số vòng review tối đa

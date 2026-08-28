@@ -741,7 +741,7 @@ def main() -> int:
     parser.add_argument("--implementer-account-profile", default="configured")
     parser.add_argument("--max-review-rounds", type=int, default=None)
     parser.add_argument("--instructions-file", type=Path)
-    parser.add_argument("--test-command", default="PYTHONPATH=. .venv/bin/pytest -q")
+    parser.add_argument("--test-command", default=None)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--state-file", type=Path, default=Path("/var/lib/ceph-ai/code-repair-state.json"))
     parser.add_argument("--task-kind", default="application-repair")
@@ -767,7 +767,8 @@ def main() -> int:
                           max_review_rounds=(args.max_review_rounds if args.max_review_rounds is not None else app_settings.code_repair_max_review_rounds),
                           task_instructions=(args.instructions_file.read_text(errors="replace") if args.instructions_file else None),
                           task_kind=args.task_kind,
-                          test_command=args.test_command, timeout_seconds=args.timeout,
+                          test_command=args.test_command or app_settings.code_repair_test_command,
+                          timeout_seconds=args.timeout,
                           push=args.push, deploy_staging=args.deploy_staging,
                           promote_main=args.promote_main, state_file=args.state_file)
     result = run_repair(evidence, config, force=args.force)

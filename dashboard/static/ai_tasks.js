@@ -45,21 +45,53 @@
     status.textContent = models.length ? "Đã tải " + models.length + " model." : "Chưa có catalog; dùng model mặc định hoặc profile riêng.";
   }
 
-  function bindRole(providerId, modelId, statusId, sourceId, profileWrapId, profileId) {
+  function bindRole(providerId, modelId, statusId, sourceId, profileWrapId, profileId, customWrapId, customId) {
     var provider = document.getElementById(providerId);
     var model = document.getElementById(modelId);
     var status = document.getElementById(statusId);
     var source = document.getElementById(sourceId);
     var profileWrap = document.getElementById(profileWrapId);
     var profile = document.getElementById(profileId);
+    var customWrap = document.getElementById(customWrapId);
+    var custom = document.getElementById(customId);
     if (!provider || !model || !status || !source) return;
 
     function refreshProfile() {
       var separate = source.value === "separate";
       profileWrap.hidden = !separate;
       if (profile) profile.required = separate;
+      if (separate) refreshProfileStatus();
+    }
+    function refreshProfileStatus() {
+      if (!profile || !profile.value.trim() || provider.value === "auto") {
+        if (source.value === "separate") status.textContent = provider.value === "auto"
+          ? "Chọn Codex hoặc Claude để kiểm tra profile riêng."
+          : "Nhập tên profile để kiểm tra trạng thái đăng nhập.";
+        return;
+      }
+      status.textContent = "Đang kiểm tra đăng nhập profile riêng…";
+      fetch("/ai-tasks/account-profile-status?provider=" + encodeURIComponent(provider.value) + "&profile=" + encodeURIComponent(profile.value.trim()), { credentials: "same-origin" })
+        .then(function (response) { return response.json().then(function (data) { if (!response.ok) throw new Error(data.detail || "HTTP " + response.status); return data; }); })
+        .then(function (data) {
+          status.textContent = data.authenticated
+            ? "✓ Profile riêng đã đăng nhập" + (data.email ? " (" + data.email + ")" : "") + "."
+            : (data.installed ? "⚠ Profile riêng chưa đăng nhập." : "⚠ Chưa cài CLI " + provider.value + ".");
+        })
+        .catch(function (error) { status.textContent = "Không kiểm tra được profile: " + error.message; });
     }
     function refreshModels() {
+      if (source.value === "separate") {
+        model.innerHTML = "";
+        var automatic = document.createElement("option");
+        automatic.value = "";
+        automatic.textContent = "Tự động (model mặc định của profile)";
+        model.appendChild(automatic);
+        model.value = "";
+        customWrap.hidden = false;
+        status.textContent = "Profile riêng không dùng catalog tài khoản mặc định; nhập model ID nếu cần.";
+        return;
+      }
+      customWrap.hidden = true;
       if (provider.value === "auto") {
         status.textContent = "auto sẽ chọn provider khả dụng; chọn Codex hoặc Claude để xem catalog.";
         return;
@@ -72,13 +104,28 @@
       });
     }
     source.addEventListener("change", refreshProfile);
-    provider.addEventListener("change", refreshModels);
+    source.addEventListener("change", refreshModels);
+    provider.addEventListener("change", function () {
+      refreshModels();
+      if (source.value === "separate") refreshProfileStatus();
+    });
+    if (profile) profile.addEventListener("change", refreshProfileStatus);
+    model.closest("form").addEventListener("submit", function () {
+      var value = custom.value.trim();
+      if (!value) return;
+      var option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      option.selected = true;
+      model.appendChild(option);
+      model.value = value;
+    });
     refreshProfile();
     refreshModels();
   }
 
-  bindRole("task-planner-provider", "task-planner-model", "task-planner-model-status", "task-planner-account-source", "task-planner-profile-wrap", "task-planner-profile");
-  bindRole("task-implementer-provider", "task-implementer-model", "task-implementer-model-status", "task-implementer-account-source", "task-implementer-profile-wrap", "task-implementer-profile");
+  bindRole("task-planner-provider", "task-planner-model", "task-planner-model-status", "task-planner-account-source", "task-planner-profile-wrap", "task-planner-profile", "task-planner-custom-model-wrap", "task-planner-custom-model");
+  bindRole("task-implementer-provider", "task-implementer-model", "task-implementer-model-status", "task-implementer-account-source", "task-implementer-profile-wrap", "task-implementer-profile", "task-implementer-custom-model-wrap", "task-implementer-custom-model");
 
   var detail = document.getElementById("ai-task-detail");
   if (!detail) return;

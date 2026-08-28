@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
-import sys
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +33,7 @@ PROVIDERS = ("auto", "codex", "claude")
 ACCOUNT_SOURCES = ("configured", "separate")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
 TERMINAL_STATUSES = {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAILED", "SKIPPED_DUPLICATE"}
+MAX_ACTIVE_TASKS = 2
 
 
 def _require_admin(user: str) -> None:
@@ -99,6 +101,10 @@ def _list_tasks() -> list[dict]:
     return sorted(rows, key=lambda item: str(item.get("created_at", "")), reverse=True)[:30]
 
 
+def _active_task_count() -> int:
+    return sum(1 for task in _list_tasks() if task.get("status") not in TERMINAL_STATUSES)
+
+
 def _profile_value(source: str, profile: str) -> str:
     if source == "configured":
         return "configured"
@@ -118,6 +124,52 @@ def _validate_model(value: str, field: str) -> str:
     return value
 
 
+def _separate_profile_dir(provider: str, profile: str) -> Path:
+    if provider not in {"codex", "claude"}:
+        raise HTTPException(status_code=400, detail="Provider phải là codex hoặc claude")
+    checked = _profile_value("separate", profile)
+    return PROJECT_ROOT / ".ai-accounts" / checked / ("codex" if provider == "codex" else "claude")
+
+
+def _check_separate_profile(provider: str, profile: str) -> dict:
+    profile_dir = _separate_profile_dir(provider, profile)
+    executable = shutil.which(provider)
+    result = {
+        "provider": provider,
+        "profile": profile,
+        "profile_dir": str(profile_dir),
+        "installed": bool(executable),
+        "authenticated": False,
+    }
+    if not executable:
+        return result
+    env = os.environ.copy()
+    if provider == "codex":
+        env["CODEX_HOME"] = str(profile_dir)
+        command = [executable, "login", "status"]
+    else:
+        env["CLAUDE_CONFIG_DIR"] = str(profile_dir)
+        env["DISABLE_AUTOUPDATER"] = "1"
+        command = [executable, "auth", "status", "--json"]
+    try:
+        completed = subprocess.run(
+            command, check=False, timeout=15, cwd=PROJECT_ROOT,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    if provider == "codex":
+        result["authenticated"] = completed.returncode == 0
+    else:
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        result["authenticated"] = bool(payload.get("loggedIn") or payload.get("authenticated"))
+        result["email"] = payload.get("email")
+    return result
+
+
 @router.get("/ai-tasks", response_class=HTMLResponse)
 async def ai_tasks_page(request: Request, user: str = Depends(require_login)):
     _require_admin(user)
@@ -134,6 +186,18 @@ async def ai_tasks_page(request: Request, user: str = Depends(require_login)):
             "configured_claude_config_dir": settings.claude_config_dir,
         },
     )
+
+
+@router.get("/ai-tasks/account-profile-status")
+async def ai_task_account_profile_status(
+    provider: str,
+    profile: str,
+    user: str = Depends(require_login),
+):
+    _require_admin(user)
+    if provider == "auto":
+        raise HTTPException(status_code=400, detail="Hãy chọn Codex hoặc Claude để kiểm tra profile")
+    return await asyncio.to_thread(_check_separate_profile, provider, profile)
 
 
 @router.post("/ai-tasks", response_class=HTMLResponse)
@@ -166,6 +230,8 @@ async def create_ai_task(
         raise HTTPException(status_code=400, detail="Số vòng review phải là số nguyên từ 0 đến 5") from exc
     if not 0 <= rounds <= 5:
         raise HTTPException(status_code=400, detail="Số vòng review phải nằm trong khoảng 0 đến 5")
+    if _active_task_count() >= MAX_ACTIVE_TASKS:
+        raise HTTPException(status_code=409, detail="Đã đạt giới hạn 2 AI task đồng thời; hãy chờ task hiện tại hoàn tất")
     planner_profile = _profile_value(planner_account_source, planner_account_profile)
     implementer_profile = _profile_value(implementer_account_source, implementer_account_profile)
     planner_model = _validate_model(planner_model, "Planner model")
@@ -209,35 +275,18 @@ The Planner/Reviewer output is advisory; verify it against the source and tests 
     }
     _write_json(state_path, {"task_id": task_id, "attempts": {}})
     _write_json(directory / "task.json", metadata)
-    command = [
-        sys.executable, "-m", "worker.code_repair",
-        "--repo", str(PROJECT_ROOT),
-        "--evidence-file", str(prompt_path),
-        "--instructions-file", str(instructions_path),
-        "--task-kind", "user-request",
-        "--state-file", str(state_path),
-        "--planner-provider", planner_provider,
-        "--planner-model", planner_model,
-        "--planner-account-profile", planner_profile,
-        "--implementer-provider", implementer_provider,
-        "--implementer-model", implementer_model,
-        "--implementer-account-profile", implementer_profile,
-        "--max-review-rounds", str(rounds),
-        "--force",
-    ]
-    if push_branch:
-        command.append("--push")
     try:
-        with log_path.open("a") as log_file:
-            process = subprocess.Popen(
-                command,
-                cwd=str(PROJECT_ROOT),
-                env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT)},
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        metadata.update({"status": "RUNNING", "pid": process.pid})
+        unit = f"ceph-ai-ai-task@{task_id}.service"
+        await asyncio.to_thread(
+            subprocess.run,
+            ["systemctl", "start", unit],
+            check=True,
+            timeout=15,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        metadata.update({"status": "RUNNING", "unit": unit, "log_path": str(log_path)})
         _write_json(directory / "task.json", metadata)
     except Exception as exc:
         metadata.update({"status": "FAILED", "error": str(exc), "finished_at": _utc_now()})

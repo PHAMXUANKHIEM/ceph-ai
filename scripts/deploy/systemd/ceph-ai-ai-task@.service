@@ -1,0 +1,13 @@
+[Unit]
+Description=Ceph AI user development task %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+NoNewPrivileges=yes
+ExecStart=/root/ceph-ai/.venv/bin/python -m worker.ai_task_runner %i
+TimeoutStartSec=2h
+StandardOutput=append:/var/lib/ceph-ai/ai-tasks/%i/worker.log
+StandardError=append:/var/lib/ceph-ai/ai-tasks/%i/worker.log

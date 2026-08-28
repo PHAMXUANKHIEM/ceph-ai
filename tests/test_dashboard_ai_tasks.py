@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 import dashboard.routes.ai_tasks as ai_tasks
+import worker.ai_task_runner as runner
 
 
 def _login(client):
@@ -29,11 +31,9 @@ def test_ai_tasks_page_exposes_prompt_and_account_choices(dashboard_client):
 def test_create_ai_task_stores_profile_selection_and_spawns_worker(
     dashboard_client, monkeypatch, tmp_path,
 ):
-    class FakeProcess:
-        pid = 12345
-
+    calls = []
     monkeypatch.setattr(ai_tasks, "TASK_ROOT", tmp_path / "ai-tasks")
-    monkeypatch.setattr(ai_tasks.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(ai_tasks.subprocess, "run", lambda *args, **kwargs: calls.append(args) or None)
     _login(dashboard_client)
 
     response = dashboard_client.post(
@@ -58,7 +58,9 @@ def test_create_ai_task_stores_profile_selection_and_spawns_worker(
     assert metadata["status"] == "RUNNING"
     assert metadata["planner_account_profile"] == "planner-one"
     assert metadata["implementer_account_profile"] == "configured"
-    assert metadata["pid"] == 12345
+    assert metadata["push_branch"] is False
+    assert calls[0][0][:2] == ["systemctl", "start"]
+    assert calls[0][0][2].startswith("ceph-ai-ai-task@")
 
 
 def test_profile_name_rejects_path_traversal(dashboard_client, monkeypatch, tmp_path):
@@ -74,3 +76,52 @@ def test_profile_name_rejects_path_traversal(dashboard_client, monkeypatch, tmp_
         },
     )
     assert response.status_code == 400
+
+
+def test_separate_profile_status_is_admin_only(dashboard_client, monkeypatch, tmp_path):
+    _login(dashboard_client)
+    monkeypatch.setattr(ai_tasks, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(ai_tasks.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(
+        ai_tasks.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='{"loggedIn": true, "email": "separate@example.com"}'),
+    )
+    response = dashboard_client.get("/ai-tasks/account-profile-status?provider=claude&profile=planner-one")
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert response.json()["profile_dir"].endswith("/.ai-accounts/planner-one/claude")
+
+
+def test_systemd_runner_uses_server_test_command_and_disables_telegram(
+    monkeypatch, tmp_path,
+):
+    task_id = "12345678-1234-1234-1234-123456789abc"
+    directory = tmp_path / task_id
+    directory.mkdir()
+    (directory / "prompt.txt").write_text("Build the requested feature")
+    (directory / "instructions.txt").write_text("Implement and test it")
+    (directory / "state.json").write_text('{"attempts": {}}')
+    (directory / "task.json").write_text(json.dumps({
+        "task_id": task_id,
+        "planner_provider": "codex",
+        "planner_model": "",
+        "planner_account_profile": "configured",
+        "implementer_provider": "claude",
+        "implementer_model": "",
+        "implementer_account_profile": "separate-one",
+        "max_review_rounds": 2,
+        "push_branch": False,
+    }))
+    monkeypatch.setattr(runner, "TASK_ROOT", tmp_path)
+    seen = {}
+
+    def fake_run(prompt, config, *, force):
+        seen["prompt"] = prompt
+        seen["config"] = config
+        return SimpleNamespace(status="COMMITTED", branch="ai-repair/x", commit="abc", error=None)
+
+    monkeypatch.setattr(runner, "run_repair", fake_run)
+    assert runner.main(task_id) == 0
+    assert seen["config"].test_command == runner.settings.code_repair_test_command
+    assert seen["config"].notify_telegram is False
+    assert seen["config"].implementer_account_profile == "separate-one"
