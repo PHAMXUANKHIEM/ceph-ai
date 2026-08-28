@@ -1105,7 +1105,7 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
     if any(context.get(k) for k in ("error", "success", "worker_restart_error")):
         return "router"
     if any(context.get(k) for k in ("ai_budget_error", "ai_budget_success")):
-        return "router"
+        return "cost"
     if any(
         context.get(k)
         for k in (

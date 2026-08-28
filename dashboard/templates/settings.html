@@ -34,12 +34,12 @@
       </section>
       {% endif %}
       <section class="settings-nav-group" data-settings-group="connections">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cluster', 'openstack'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'openstack'] else 'false' }}">
           <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cluster', 'openstack'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'openstack'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">AI API</button>
-          <a href="/ai-cost" class="settings-nav-item">Chi phí</a>
+          <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Ceph Cluster</button>
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
         </div>
@@ -568,18 +568,9 @@
     </section>
     {% endif %}
 
-    <section class="card settings-panel" data-panel="router" {% if active_section != 'router' %}hidden{% endif %}>
-      <div class="card-header"><h2>Kết nối AI</h2></div>
+    <section class="card settings-panel" data-panel="cost" {% if active_section != 'cost' %}hidden{% endif %}>
+      <div class="card-header"><h2>Chi phí</h2></div>
       <div class="card-body">
-        {% if error %}
-          <p class="error">{{ error }}</p>
-        {% endif %}
-        {% if success %}
-          <p class="success">{{ success }}</p>
-        {% endif %}
-        {% if worker_restart_error %}
-          <p class="error">{{ worker_restart_error }}</p>
-        {% endif %}
         {% if is_admin %}
         {% if ai_budget_error %}<p class="error">{{ ai_budget_error }}</p>{% endif %}
         {% if ai_budget_success %}<p class="success">{{ ai_budget_success }}</p>{% endif %}
@@ -602,8 +593,24 @@
             <button class="btn btn-primary" type="submit">Lưu Budget Guard</button>
           </form>
         </div>
+        {% else %}
+        <p class="hint">Chỉ tài khoản admin được thay đổi cấu hình chi phí AI.</p>
         {% endif %}
+      </div>
+    </section>
 
+    <section class="card settings-panel" data-panel="router" {% if active_section != 'router' %}hidden{% endif %}>
+      <div class="card-header"><h2>Kết nối AI</h2></div>
+      <div class="card-body">
+        {% if error %}
+          <p class="error">{{ error }}</p>
+        {% endif %}
+        {% if success %}
+          <p class="success">{{ success }}</p>
+        {% endif %}
+        {% if worker_restart_error %}
+          <p class="error">{{ worker_restart_error }}</p>
+        {% endif %}
         <div class="login-box" id="codex-account-box">
           <h3>Tài khoản Codex</h3>
           <p class="hint">
