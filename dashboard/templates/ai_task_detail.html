@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Task {{ task.task_id }} — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+{% include "_nav.html" %}
+<main class="page">
+  <section class="card" id="ai-task-detail" data-task-id="{{ task.task_id }}">
+    <div class="card-header"><div><h2>AI Development Task</h2><p class="hint">{{ task.created_at }} · {{ task.created_by }}</p></div><a class="btn btn-sm" href="/ai-tasks">Task mới</a></div>
+    <div class="card-body">
+      <p><strong>Yêu cầu:</strong></p>
+      <pre class="cli-output-body" id="ai-task-prompt">{{ task.prompt }}</pre>
+      <p><strong>Planner/Reviewer:</strong> {{ task.planner_provider }} / {{ task.planner_account_profile }} · <strong>Implementer:</strong> {{ task.implementer_provider }} / {{ task.implementer_account_profile }}</p>
+      <p><strong>Trạng thái:</strong> <span class="badge" id="ai-task-status">{{ task.status }}</span></p>
+      <div id="ai-task-result" class="hint">Đang tải kết quả...</div>
+      <h3>Test output</h3>
+      <pre class="cli-output-body" id="ai-task-test-output">Chưa có kết quả.</pre>
+    </div>
+  </section>
+</main>
+<script src="/static/ai_tasks.js?v={{ static_version }}"></script>
+<script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

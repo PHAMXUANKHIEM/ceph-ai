@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Development Tasks — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+{% include "_nav.html" %}
+<main class="page">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>AI Development Task</h2>
+        <p class="hint">Nhập yêu cầu sản phẩm. Planner/Reviewer sẽ phân tích và trao đổi bằng kế hoạch; Implementer sẽ thực hiện trong branch/worktree cô lập.</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <form method="post" action="/ai-tasks" class="login-box ai-task-form">
+        <label>Yêu cầu / prompt
+          <textarea name="prompt" rows="8" maxlength="50000" required placeholder="Ví dụ: Thêm màn hình quản lý ... với test và validation đầy đủ."></textarea>
+        </label>
+        <div class="settings-field-grid">
+          <div class="login-box">
+            <h3>Planner / Reviewer</h3>
+            <label>Provider
+              <select id="task-planner-provider" name="planner_provider">
+                {% for provider in providers %}<option value="{{ provider }}">{{ provider }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Model
+              <select id="task-planner-model" name="planner_model" data-provider="task-planner-provider">
+                <option value="">Tự động (model mặc định)</option>
+              </select>
+              <span id="task-planner-model-status" class="hint">Chọn provider để tải catalog.</span>
+            </label>
+            <label>Nguồn tài khoản
+              <select id="task-planner-account-source" name="planner_account_source">
+                <option value="configured">Tài khoản đã cấu hình</option>
+                <option value="separate">Profile tài khoản riêng</option>
+              </select>
+            </label>
+            <label id="task-planner-profile-wrap" hidden>Tên profile riêng
+              <input id="task-planner-profile" name="planner_account_profile" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: planner-1">
+            </label>
+            <p class="hint">Configured: Codex <code>{{ configured_codex_home }}</code>; Claude <code>{{ configured_claude_config_dir }}</code>.</p>
+          </div>
+          <div class="login-box">
+            <h3>Implementer</h3>
+            <label>Provider
+              <select id="task-implementer-provider" name="implementer_provider">
+                {% for provider in providers %}<option value="{{ provider }}">{{ provider }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Model
+              <select id="task-implementer-model" name="implementer_model" data-provider="task-implementer-provider">
+                <option value="">Tự động (model mặc định)</option>
+              </select>
+              <span id="task-implementer-model-status" class="hint">Chọn provider để tải catalog.</span>
+            </label>
+            <label>Nguồn tài khoản
+              <select id="task-implementer-account-source" name="implementer_account_source">
+                <option value="configured">Tài khoản đã cấu hình</option>
+                <option value="separate">Profile tài khoản riêng</option>
+              </select>
+            </label>
+            <label id="task-implementer-profile-wrap" hidden>Tên profile riêng
+              <input id="task-implementer-profile" name="implementer_account_profile" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,47}" placeholder="ví dụ: implementer-1">
+            </label>
+            <p class="hint">Profile riêng được dùng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>. Hãy đăng nhập CLI vào profile đó trước khi chạy.</p>
+          </div>
+        </div>
+        <label>Số vòng review tối đa
+          <input type="number" name="max_review_rounds" min="0" max="5" value="2">
+        </label>
+        <label class="checkbox-label"><input type="checkbox" name="push_branch" value="true"> Push branch sau khi test đạt</label>
+        <p class="hint">Mặc định task chỉ tạo commit trong branch cô lập; không tự deploy/promote main. Với profile riêng, lệnh mẫu: <code>CODEX_HOME=/root/ceph-ai/.ai-accounts/&lt;profile&gt;/codex codex login</code> hoặc <code>CLAUDE_CONFIG_DIR=/root/ceph-ai/.ai-accounts/&lt;profile&gt;/claude claude auth login</code>.</p>
+        <button type="submit" class="btn btn-primary">Bắt đầu hai AI làm việc</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><div><h2>Task gần đây</h2><p class="hint">Theo dõi Planner/Reviewer, Implementer, test và commit của từng yêu cầu.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Yêu cầu</th><th>Account</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>
+      {% for item in tasks %}
+      <tr>
+        <td>{{ item.created_at }}</td>
+        <td>{{ item.prompt|truncate(180) }}</td>
+        <td>{{ item.planner_provider }} / {{ item.implementer_provider }}<br><span class="hint">{{ item.planner_account_profile }} / {{ item.implementer_account_profile }}</span></td>
+        <td><span class="badge">{{ item.status }}</span></td>
+        <td><a href="/ai-tasks/{{ item.task_id }}">Mở task</a></td>
+      </tr>
+      {% else %}<tr class="empty-row"><td colspan="5"><div class="empty-state">Chưa có AI Development Task.</div></td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+</main>
+<script src="/static/ai_tasks.js?v={{ static_version }}"></script>
+<script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>

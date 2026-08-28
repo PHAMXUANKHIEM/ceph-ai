@@ -80,8 +80,10 @@ class RepairConfig:
     provider: str = "auto"
     planner_provider: str | None = None
     planner_model: str = ""
+    planner_account_profile: str = "configured"
     implementer_provider: str | None = None
     implementer_model: str = ""
+    implementer_account_profile: str = "configured"
     max_review_rounds: int = 2
     test_command: str = "PYTHONPATH=. .venv/bin/pytest -q"
     timeout_seconds: int = 1800
@@ -360,6 +362,26 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
     raise RepairError(f"AI coding provider {provider!r} is unavailable or not authenticated")
 
 
+_ACCOUNT_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
+
+
+def _role_account_dirs(config: RepairConfig, profile: str) -> tuple[Path, Path]:
+    """Resolve the credential homes for one role without accepting arbitrary paths."""
+    selected = (profile or "configured").strip()
+    if selected == "configured":
+        codex_home = Path(app_settings.codex_home).expanduser()
+        claude_config_dir = Path(app_settings.claude_config_dir).expanduser()
+        if not codex_home.is_absolute():
+            codex_home = config.repo / codex_home
+        if not claude_config_dir.is_absolute():
+            claude_config_dir = config.repo / claude_config_dir
+        return codex_home, claude_config_dir
+    if not _ACCOUNT_PROFILE_RE.fullmatch(selected):
+        raise RepairError("account profile chỉ được chứa chữ, số, _ hoặc - (tối đa 48 ký tự)")
+    root = config.repo / ".ai-accounts" / selected
+    return root / "codex", root / "claude"
+
+
 def _validate_changes(worktree: Path) -> list[str]:
     output = _run(["git", "status", "--porcelain"], cwd=worktree).stdout
     # .venv is the supervisor-created symlink to the already provisioned
@@ -460,6 +482,12 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
         os.symlink(config.repo / ".venv", planner_worktree / ".venv", target_is_directory=True)
         planner_provider_spec = config.planner_provider or config.provider
         implementer_provider_spec = config.implementer_provider or config.provider
+        planner_codex_home, planner_claude_config_dir = _role_account_dirs(
+            config, config.planner_account_profile,
+        )
+        implementer_codex_home, implementer_claude_config_dir = _role_account_dirs(
+            config, config.implementer_account_profile,
+        )
         planner_prompt = f"""You are the Planner/Reviewer for a Ceph AIOps self-repair pipeline.
 
 Work read-only in this isolated worktree. Analyze the failure, inspect the relevant source and tests,
@@ -473,8 +501,8 @@ Observed failure (credentials already redacted):
 """
         planner_provider, planner_command = _provider_command(
             planner_provider_spec, planner_worktree, planner_prompt, config.timeout_seconds,
-            claude_config_dir=config.repo / ".claude-account",
-            codex_home=config.repo / ".codex-account",
+            claude_config_dir=planner_claude_config_dir,
+            codex_home=planner_codex_home,
             model=config.planner_model, mode="review",
         )
         result.planner_provider = planner_provider
@@ -518,8 +546,8 @@ Observed application failure (credentials already redacted):
             attempt_prompt = prompt + feedback
             provider, command = _provider_command(
                 implementer_provider_spec, worktree, attempt_prompt, config.timeout_seconds,
-                claude_config_dir=config.repo / ".claude-account",
-                codex_home=config.repo / ".codex-account",
+                claude_config_dir=implementer_claude_config_dir,
+                codex_home=implementer_codex_home,
                 model=config.implementer_model, mode="implement",
             )
             result.provider = provider
@@ -595,8 +623,8 @@ If changes are needed, list precise actionable corrections before that line.
 """
             reviewer_provider, reviewer_command = _provider_command(
                 planner_provider_spec, worktree, review_prompt, config.timeout_seconds,
-                claude_config_dir=config.repo / ".claude-account",
-                codex_home=config.repo / ".codex-account",
+                claude_config_dir=planner_claude_config_dir,
+                codex_home=planner_codex_home,
                 model=config.planner_model, mode="review",
             )
             result.planner_provider = result.planner_provider or reviewer_provider
@@ -621,8 +649,8 @@ If changes are needed, list precise actionable corrections before that line.
             )
             provider, command = _provider_command(
                 implementer_provider_spec, worktree, prompt + feedback, config.timeout_seconds,
-                claude_config_dir=config.repo / ".claude-account",
-                codex_home=config.repo / ".codex-account",
+                claude_config_dir=implementer_claude_config_dir,
+                codex_home=implementer_codex_home,
                 model=config.implementer_model, mode="implement",
             )
             result.provider = provider
@@ -695,12 +723,16 @@ def main() -> int:
     parser.add_argument("--provider", choices=("auto", "codex", "claude"))
     parser.add_argument("--planner-provider", choices=("auto", "codex", "claude"))
     parser.add_argument("--planner-model", default=None)
+    parser.add_argument("--planner-account-profile", default="configured")
     parser.add_argument("--implementer-provider", choices=("auto", "codex", "claude"))
     parser.add_argument("--implementer-model", default=None)
+    parser.add_argument("--implementer-account-profile", default="configured")
     parser.add_argument("--max-review-rounds", type=int, default=None)
+    parser.add_argument("--instructions-file", type=Path)
     parser.add_argument("--test-command", default="PYTHONPATH=. .venv/bin/pytest -q")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--state-file", type=Path, default=Path("/var/lib/ceph-ai/code-repair-state.json"))
+    parser.add_argument("--task-kind", default="application-repair")
     parser.add_argument("--push", action="store_true")
     parser.add_argument("--deploy-staging", action="store_true")
     parser.add_argument("--promote-main", action="store_true")
@@ -716,9 +748,13 @@ def main() -> int:
                           provider=args.provider or app_settings.code_repair_provider,
                           planner_provider=args.planner_provider or app_settings.code_repair_planner_provider,
                           planner_model=args.planner_model if args.planner_model is not None else app_settings.code_repair_planner_model,
+                          planner_account_profile=args.planner_account_profile,
                           implementer_provider=args.implementer_provider or app_settings.code_repair_implementer_provider,
                           implementer_model=args.implementer_model if args.implementer_model is not None else app_settings.code_repair_implementer_model,
+                          implementer_account_profile=args.implementer_account_profile,
                           max_review_rounds=(args.max_review_rounds if args.max_review_rounds is not None else app_settings.code_repair_max_review_rounds),
+                          task_instructions=(args.instructions_file.read_text(errors="replace") if args.instructions_file else None),
+                          task_kind=args.task_kind,
                           test_command=args.test_command, timeout_seconds=args.timeout,
                           push=args.push, deploy_staging=args.deploy_staging,
                           promote_main=args.promote_main, state_file=args.state_file)
