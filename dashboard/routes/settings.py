@@ -84,6 +84,10 @@ CLAUDE_CHAT_ENABLED_ENV_NAME = "CLAUDE_CHAT_ENABLED"
 CODEX_CHAT_MODEL_ENV_NAME = "CODEX_CHAT_MODEL"
 CLAUDE_CHAT_MODEL_ENV_NAME = "CLAUDE_CHAT_MODEL"
 CLAUDE_CHAT_EFFORT_ENV_NAME = "CLAUDE_CHAT_EFFORT"
+AI_COST_DAILY_BUDGET_ENV_NAME = "AI_COST_DAILY_BUDGET_USD"
+AI_COST_MONTHLY_BUDGET_ENV_NAME = "AI_COST_MONTHLY_BUDGET_USD"
+AI_COST_BUDGET_HARD_LIMIT_ENV_NAME = "AI_COST_BUDGET_HARD_LIMIT"
+AI_COST_BUDGET_RESERVE_OUTPUT_ENV_NAME = "AI_COST_BUDGET_RESERVE_OUTPUT_TOKENS"
 CLAUDE_MODELS = [
     {"id": "default", "label": "Mặc định tài khoản", "version": "Tự động"},
     {"id": "fable", "label": "Claude Fable", "version": "5 (mới nhất)"},
@@ -893,6 +897,9 @@ def _settings_context(
     autopilot_success: str | None = None,
     action_policy_error: str | None = None,
     action_policy_success: str | None = None,
+    ai_budget_error: str | None = None,
+    ai_budget_success: str | None = None,
+    ai_budget_values: dict | None = None,
 ) -> dict:
     """Every form on the Settings page (API AI connection, cluster
     connection, log/data cleanup) renders from this single settings.html —
@@ -978,6 +985,14 @@ def _settings_context(
         "autopilot_success": autopilot_success,
         "action_policy_error": action_policy_error,
         "action_policy_success": action_policy_success,
+        "ai_budget_error": ai_budget_error,
+        "ai_budget_success": ai_budget_success,
+        "ai_budget_values": ai_budget_values or {
+            "daily": settings.ai_cost_daily_budget_usd,
+            "monthly": settings.ai_cost_monthly_budget_usd,
+            "hard_limit": settings.ai_cost_budget_hard_limit,
+            "reserve_output": settings.ai_cost_budget_reserve_output_tokens,
+        },
         "playbook_registry": registry_status_rows(
             command_available=executor_commands.has_command,
         ),
@@ -1088,6 +1103,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "database"
     if any(context.get(k) for k in ("error", "success", "worker_restart_error")):
         return "router"
+    if any(context.get(k) for k in ("ai_budget_error", "ai_budget_success")):
+        return "router"
     if any(
         context.get(k)
         for k in (
@@ -1132,6 +1149,82 @@ async def settings_form(request: Request, user: str = Depends(require_login)):
     return templates.TemplateResponse(
         request, "settings.html",
         _settings_context(user, openstack_cluster_id=request.query_params.get("cluster")),
+    )
+
+
+@router.post("/settings/ai-budget", response_class=HTMLResponse)
+async def settings_ai_budget_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    daily_budget: str = Form("0"),
+    monthly_budget: str = Form("0"),
+    hard_limit: str = Form(""),
+    reserve_output_tokens: str = Form("2048"),
+):
+    """Persist Budget Guard settings and restart every AI worker process."""
+    _require_admin_privilege(user)
+    values = {
+        "daily": daily_budget.strip(), "monthly": monthly_budget.strip(),
+        "hard_limit": hard_limit == "1", "reserve_output": reserve_output_tokens.strip(),
+    }
+
+    def parse_budget(raw: str, label: str) -> float:
+        try:
+            value = float(raw or 0)
+        except ValueError as exc:
+            raise ValueError(f"{label} phải là số không âm") from exc
+        if not math.isfinite(value) or value < 0 or value > 1_000_000_000:
+            raise ValueError(f"{label} phải trong khoảng 0 đến 1.000.000.000 USD")
+        return value
+
+    try:
+        daily = parse_budget(values["daily"], "Budget ngày")
+        monthly = parse_budget(values["monthly"], "Budget tháng")
+        reserve = int(values["reserve_output"] or 0)
+        if reserve < 0 or reserve > 100000:
+            raise ValueError("Số token output dự phòng phải trong khoảng 0 đến 100000")
+        if values["hard_limit"] and not (daily or monthly):
+            raise ValueError("Chặn cứng cần ít nhất Budget ngày hoặc Budget tháng")
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request, "settings.html", _settings_context(user, ai_budget_error=str(exc), ai_budget_values=values),
+        )
+
+    try:
+        _update_env_file_batch({
+            AI_COST_DAILY_BUDGET_ENV_NAME: str(daily),
+            AI_COST_MONTHLY_BUDGET_ENV_NAME: str(monthly),
+            AI_COST_BUDGET_HARD_LIMIT_ENV_NAME: "true" if values["hard_limit"] else "false",
+            AI_COST_BUDGET_RESERVE_OUTPUT_ENV_NAME: str(reserve),
+        })
+        settings.ai_cost_daily_budget_usd = daily
+        settings.ai_cost_monthly_budget_usd = monthly
+        settings.ai_cost_budget_hard_limit = values["hard_limit"]
+        settings.ai_cost_budget_reserve_output_tokens = reserve
+    except Exception:
+        logger.exception("settings_ai_budget_submit: failed to persist budget settings")
+        return templates.TemplateResponse(
+            request, "settings.html",
+            _settings_context(user, ai_budget_error="Không ghi được cấu hình Budget Guard", ai_budget_values=values),
+        )
+
+    restart_errors = []
+    for label, restart in (
+        ("Worker", restart_worker), ("Watcher", restart_watcher),
+        ("AI Remediation Watcher", restart_remediation_watcher),
+    ):
+        try:
+            result = await asyncio.to_thread(restart)
+        except Exception as exc:
+            restart_errors.append(f"{label}: {exc}")
+            continue
+        if not result.get("restarted"):
+            restart_errors.append(f"{label}: {result.get('error') or 'không khởi động lại được'}")
+    success = "Đã lưu cấu hình Budget Guard và áp dụng cho các tiến trình AI."
+    if restart_errors:
+        success += " Cần kiểm tra/restart thủ công: " + "; ".join(restart_errors)
+    return templates.TemplateResponse(
+        request, "settings.html", _settings_context(user, ai_budget_success=success),
     )
 
 

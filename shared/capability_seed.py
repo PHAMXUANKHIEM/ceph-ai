@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from config.settings import settings
 from shared import capability_matrix, db
 from shared.ai_redaction import redact_text
+from shared.ai_observability import observe_ai_call
 from shared.models import CapabilityMatrixProposal
 from shared.router_client import build_router_client
 
@@ -28,6 +29,7 @@ def validate_doc_url(url: str) -> str:
     return value
 
 
+@observe_ai_call("capability_seed")
 async def generate(*, doc_url: str, release_notes: str, actor: str) -> list[CapabilityMatrixProposal]:
     doc_url = validate_doc_url(doc_url)
     text = release_notes.strip()

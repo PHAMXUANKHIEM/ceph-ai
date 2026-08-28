@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from shared.models import AIRunbook, Action, Cluster, Incident, RemediationCase
+from shared.models import AIRunbook, AIRunbookFeedback, Action, Cluster, Incident, RemediationCase
 from shared.remediation_runbook import (
     RunbookError, build_source, generate, generate_cached, get_cached, store_cached,
     to_markdown, validate,
@@ -127,10 +127,14 @@ def test_cached_runbook_exposes_operator_feedback(db_session):
     }
     store_cached(db_session, source, validate(report, source))
     row = db_session.query(AIRunbook).one()
-    row.feedback_rating = "NOT_HELPFUL"
-    row.feedback_note = "Cần thêm bước kiểm tra quorum"
-    row.feedback_by = "admin"
-    row.feedback_at = datetime(2026, 8, 28, 12, 0)
+    db_session.add(AIRunbookFeedback(
+        runbook_id=row.id, rating="HELPFUL", note="Ổn", submitted_by="operator-1",
+        created_at=datetime(2026, 8, 28, 11, 0),
+    ))
+    db_session.add(AIRunbookFeedback(
+        runbook_id=row.id, rating="NOT_HELPFUL", note="Cần thêm bước kiểm tra quorum",
+        submitted_by="admin", created_at=datetime(2026, 8, 28, 12, 0),
+    ))
     db_session.commit()
     cached = get_cached(db_session, source)
     assert cached["feedback_rating"] == "NOT_HELPFUL"

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -7,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from shared import db
 from shared.ai_observability import observe_ai_call
 from shared.db import Base
-from shared.models import AIInvocation
+from shared.models import AIBudgetLock, AIInvocation
 
 
 def _session_factory():
@@ -119,6 +120,9 @@ def test_hard_budget_blocks_call_and_records_block(monkeypatch):
     monkeypatch.setattr("shared.ai_observability.settings.ai_cost_daily_budget_usd", 0.000001)
     monkeypatch.setattr("shared.ai_observability.settings.ai_cost_monthly_budget_usd", 0.0)
     monkeypatch.setattr("shared.ai_observability.settings.ai_cost_budget_hard_limit", True)
+    with sessions() as session:
+        session.add(AIBudgetLock(period="daily", period_start=datetime(1970, 1, 1), updated_at=datetime.utcnow()))
+        session.commit()
 
     @observe_ai_call("budgeted")
     async def call():
@@ -131,3 +135,62 @@ def test_hard_budget_blocks_call_and_records_block(monkeypatch):
     with sessions() as session:
         row = session.query(AIInvocation).one()
         assert row.status == "ERROR" and row.error_type == "AIBudgetExceededError"
+
+
+def test_hard_budget_reservation_is_finalized_once(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+    monkeypatch.setattr("shared.ai_observability.settings.router_provider", "9router")
+    monkeypatch.setattr("shared.ai_observability.settings.router_model", "gc/gemini-2.5-flash")
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_daily_budget_usd", 1.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_monthly_budget_usd", 0.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_budget_hard_limit", True)
+    with sessions() as session:
+        session.add(AIBudgetLock(period="daily", period_start=datetime(1970, 1, 1), updated_at=datetime.utcnow()))
+        session.commit()
+
+    @observe_ai_call("budgeted_success")
+    async def call():
+        return "provider-result"
+
+    assert asyncio.run(call()) == "provider-result"
+    with sessions() as session:
+        rows = session.query(AIInvocation).all()
+        assert len(rows) == 1
+        assert rows[0].status == "SUCCESS"
+        assert rows[0].feature == "budgeted_success"
+
+
+def test_hard_budget_rejects_unpriced_model(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+    monkeypatch.setattr("shared.ai_observability.settings.router_provider", "unknown")
+    monkeypatch.setattr("shared.ai_observability.settings.router_model", "new-model")
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_daily_budget_usd", 1.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_monthly_budget_usd", 0.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_budget_hard_limit", True)
+    with sessions() as session:
+        session.add(AIBudgetLock(period="daily", period_start=datetime(1970, 1, 1), updated_at=datetime.utcnow()))
+        session.commit()
+
+    @observe_ai_call("unpriced")
+    async def call():
+        raise AssertionError("provider must not be called")
+
+    from shared.ai_budget import AIBudgetUnpricedError
+    import pytest
+    with pytest.raises(AIBudgetUnpricedError):
+        asyncio.run(call())
+
+
+def test_soft_budget_fails_open_when_telemetry_db_is_down(monkeypatch):
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_daily_budget_usd", 1.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_monthly_budget_usd", 0.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_budget_hard_limit", False)
+    monkeypatch.setattr(db, "SessionLocal", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+
+    @observe_ai_call("soft_budget")
+    async def call():
+        return "ok"
+
+    assert asyncio.run(call()) == "ok"

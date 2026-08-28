@@ -45,6 +45,7 @@ from shared import db
 from shared.models import ChatMessage, ChatPreference, VitastorCluster
 from shared.router_client import build_router_client, readable_exception_message
 from shared.ai_redaction import redact_text
+from shared.ai_observability import observe_ai_call
 from shared.codex_app_server import (
     CodexAppServerError, codex_app_server, codex_executable, install_codex_cli,
     refresh_app_server_after_cli_login, start_cli_device_login,
@@ -103,6 +104,26 @@ def _female_address(user: str) -> str:
     with db.SessionLocal() as session:
         pref = session.get(ChatPreference, _actor(user))
         return pref.female_address if pref else "Mình yêu ơi, em là"
+
+
+@observe_ai_call("vitastor_chat", scope="vitastor")
+async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: str) -> str:
+    """Send one Vitastor chat turn through the shared budget/telemetry guard."""
+    transcript = "\n".join(f"{m['role']}: {m['content']}" for m in history[-MAX_HISTORY_MESSAGES:])
+    prompt = f"{system_prompt}\n\nLịch sử:\n{transcript}\n\nuser: {user_text}\nassistant:"
+    if settings.vitastor_codex_chat_enabled:
+        async def no_tools(_name, _arguments):
+            return "Tool không khả dụng trong chat Vitastor", False
+        result = await codex_app_server.run_turn(prompt, [], no_tools)
+        return result.get("reply_text") or "Codex không trả về nội dung."
+    if settings.vitastor_claude_chat_enabled:
+        return await run_claude_prompt(prompt)
+    client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
+    response = await client.chat.completions.create(
+        model=settings.vitastor_router_model,
+        messages=[{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_text}],
+    )
+    return response.choices[0].message.content or "AI không trả về nội dung."
 
 
 def _require_admin(user: str) -> None:
@@ -527,18 +548,7 @@ async def post_message(request: Request, user: str = Depends(require_vitastor_lo
             )
             outbound_history = [{**m, "content": redact_text(str(m.get("content") or ""))} for m in history]
             outbound_text = redact_text(text)
-            transcript = "\n".join(f"{m['role']}: {m['content']}" for m in outbound_history[-MAX_HISTORY_MESSAGES:])
-            prompt = f"{system_prompt}\n\nLịch sử:\n{transcript}\n\nuser: {outbound_text}\nassistant:"
-            if settings.vitastor_codex_chat_enabled:
-                async def no_tools(_name, _arguments): return "Tool không khả dụng trong chat Vitastor", False
-                result = await codex_app_server.run_turn(prompt, [], no_tools)
-                answer = result.get("reply_text") or "Codex không trả về nội dung."
-            elif settings.vitastor_claude_chat_enabled:
-                answer = await run_claude_prompt(prompt)
-            else:
-                client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
-                response = await client.chat.completions.create(model=settings.vitastor_router_model, messages=[{"role": "system", "content": system_prompt}, *outbound_history, {"role": "user", "content": outbound_text}])
-                answer = response.choices[0].message.content or "AI không trả về nội dung."
+            answer = await _call_vitastor_ai(system_prompt, outbound_history, outbound_text)
         except Exception as exc:
             answer = f"Không thể gọi AI: {readable_exception_message(exc)}"
     answer = with_romantic_address(answer, ai_name, female_address)

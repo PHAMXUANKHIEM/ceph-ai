@@ -17,7 +17,7 @@ from shared.ai_observability import observe_ai_call
 from shared.ai_redaction import default_redactor
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
-from shared.models import AIRunbook, Action, Cluster, Incident, RemediationCase
+from shared.models import AIRunbook, AIRunbookFeedback, Action, Cluster, Incident, RemediationCase
 from shared.router_client import build_router_client
 from shared.synthetic_incidents import is_synthetic_evidence
 
@@ -167,10 +167,21 @@ def get_cached(session, source: dict) -> dict | None:
         return None
     report["cached"] = True
     report["cached_at"] = row.created_at.isoformat() if row.created_at else None
-    report["feedback_rating"] = row.feedback_rating
-    report["feedback_note"] = row.feedback_note
-    report["feedback_by"] = row.feedback_by
-    report["feedback_at"] = row.feedback_at.isoformat() if row.feedback_at else None
+    feedback = (
+        session.query(AIRunbookFeedback)
+        .filter(AIRunbookFeedback.runbook_id == row.id)
+        .order_by(AIRunbookFeedback.created_at.desc())
+        .first()
+    )
+    # The columns on AIRunbook are retained as a fallback for rows written by
+    # the first feedback release before the append-only history table existed.
+    report["feedback_rating"] = feedback.rating if feedback else row.feedback_rating
+    report["feedback_note"] = feedback.note if feedback else row.feedback_note
+    report["feedback_by"] = feedback.submitted_by if feedback else row.feedback_by
+    report["feedback_at"] = (
+        feedback.created_at.isoformat() if feedback else
+        (row.feedback_at.isoformat() if row.feedback_at else None)
+    )
     return report
 
 

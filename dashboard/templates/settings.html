@@ -580,6 +580,29 @@
         {% if worker_restart_error %}
           <p class="error">{{ worker_restart_error }}</p>
         {% endif %}
+        {% if is_admin %}
+        {% if ai_budget_error %}<p class="error">{{ ai_budget_error }}</p>{% endif %}
+        {% if ai_budget_success %}<p class="success">{{ ai_budget_success }}</p>{% endif %}
+        <div class="login-box">
+          <h3>AI Budget Guard</h3>
+          <p class="hint">Giới hạn dùng chung cho các tiến trình AI. Để trống/0 để tắt giới hạn tương ứng. Chặn cứng sẽ từ chối model chưa có đơn giá và các lượt vượt ngân sách.</p>
+          <form method="post" action="/settings/ai-budget">
+            <div class="form-grid">
+              <label>Budget ngày (USD)
+                <input type="number" name="daily_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.daily }}">
+              </label>
+              <label>Budget tháng (USD)
+                <input type="number" name="monthly_budget" min="0" max="1000000000" step="0.000001" value="{{ ai_budget_values.monthly }}">
+              </label>
+              <label>Output dự phòng (tokens)
+                <input type="number" name="reserve_output_tokens" min="0" max="100000" step="1" value="{{ ai_budget_values.reserve_output }}">
+              </label>
+            </div>
+            <label class="settings-checkbox"><input type="checkbox" name="hard_limit" value="1" {% if ai_budget_values.hard_limit %}checked{% endif %}> Bật chặn cứng khi vượt budget</label>
+            <button class="btn btn-primary" type="submit">Lưu Budget Guard</button>
+          </form>
+        </div>
+        {% endif %}
 
         <div class="login-box" id="codex-account-box">
           <h3>Tài khoản Codex</h3>

@@ -2564,6 +2564,16 @@ class AIInvocation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class AIBudgetLock(Base):
+    """Stable rows used to serialize hard-budget reservations."""
+
+    __tablename__ = "ai_budget_locks"
+
+    period: Mapped[str] = mapped_column(String(16), primary_key=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class AIRunbook(Base):
     """Validated evidence-backed runbook cached by its source fingerprint.
 
@@ -2593,6 +2603,22 @@ class AIRunbook(Base):
     feedback_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     feedback_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AIRunbookFeedback(Base):
+    """Append-only operator feedback for a cached runbook."""
+
+    __tablename__ = "ai_runbook_feedback"
+    __table_args__ = (
+        Index("ix_ai_runbook_feedback_runbook_created", "runbook_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    runbook_id: Mapped[str] = mapped_column(String(36), ForeignKey("ai_runbooks.id"), nullable=False)
+    rating: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class CapacityAlertState(Base):

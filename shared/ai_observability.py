@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from config.settings import settings
 from shared import db
-from shared.ai_budget import AIBudgetExceededError, check as check_ai_budget
+from shared.ai_budget import AIBudgetError, check as check_ai_budget
 from shared.models import AIInvocation
 
 logger = logging.getLogger(__name__)
@@ -48,10 +48,18 @@ def _provider_and_model(scope: str, backend: str) -> tuple[str, str]:
     )
 
 
-def _record(**values: Any) -> None:
+def _record(*, reservation_id: str | None = None, **values: Any) -> None:
     try:
         with db.SessionLocal() as session:
-            session.add(AIInvocation(id=str(uuid.uuid4()), created_at=datetime.utcnow(), **values))
+            if reservation_id:
+                row = session.get(AIInvocation, reservation_id)
+            else:
+                row = None
+            if row is None:
+                session.add(AIInvocation(id=str(uuid.uuid4()), created_at=datetime.utcnow(), **values))
+            else:
+                for key, value in values.items():
+                    setattr(row, key, value)
             session.commit()
     except Exception:
         # Telemetry must never change the result of an AI operation. No input,
@@ -75,22 +83,25 @@ def observe_ai_call(
             started = time.monotonic()
             input_chars = _content_size(args) + _content_size(kwargs)
             provider, model_id = _provider_and_model(scope, backend)
+            reservation_id = None
             try:
-                check_ai_budget(provider, model_id, input_chars)
+                reservation_id = check_ai_budget(provider, model_id, input_chars)
                 result = await function(*args, **kwargs)
             except Exception as exc:
                 await asyncio.to_thread(
                     _record,
+                    reservation_id=reservation_id,
                     feature=feature, provider=provider, model_id=model_id,
                     status="ERROR", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                     # A hard-budget rejection never reached a provider, so it
                     # must not look like billable input in the cost dashboard.
-                    input_chars=0 if isinstance(exc, AIBudgetExceededError) else input_chars,
+                    input_chars=0 if isinstance(exc, AIBudgetError) else input_chars,
                     output_chars=0, error_type=type(exc).__name__,
                 )
                 raise
             await asyncio.to_thread(
                 _record,
+                reservation_id=reservation_id,
                 feature=feature, provider=provider, model_id=model_id,
                 status="SUCCESS", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                 input_chars=input_chars, output_chars=_content_size(result), error_type=None,
