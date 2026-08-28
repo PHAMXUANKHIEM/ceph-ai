@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from shared.models import Action, Cluster, Incident, RemediationCase
+from shared.models import AIRunbook, Action, Cluster, Incident, RemediationCase
 from shared.remediation_runbook import (
     RunbookError, build_source, generate, generate_cached, get_cached, store_cached,
     to_markdown, validate,
@@ -113,6 +113,29 @@ def test_validated_runbook_is_cached_by_evidence_fingerprint(db_session):
     cached = get_cached(db_session, source)
     assert cached["cached"] is True
     assert cached["title"] == validated["title"]
+
+
+def test_cached_runbook_exposes_operator_feedback(db_session):
+    _seed(db_session)
+    source = build_source(db_session, fault_family="OSD_DOWN", cluster_id="cluster-1")
+    report = {
+        "title": "OSD down recovery", "when_to_use": "When OSD is down",
+        "prechecks": ["Check evidence"], "steps": ["Restart the failed OSD"],
+        "verification": ["Confirm health is OK"], "rollback": ["Escalate"],
+        "prevention": ["Monitor OSD"], "limitations": "Limited sample.",
+        "citations": ["case:case-1"],
+    }
+    store_cached(db_session, source, validate(report, source))
+    row = db_session.query(AIRunbook).one()
+    row.feedback_rating = "NOT_HELPFUL"
+    row.feedback_note = "Cần thêm bước kiểm tra quorum"
+    row.feedback_by = "admin"
+    row.feedback_at = datetime(2026, 8, 28, 12, 0)
+    db_session.commit()
+    cached = get_cached(db_session, source)
+    assert cached["feedback_rating"] == "NOT_HELPFUL"
+    assert cached["feedback_note"] == "Cần thêm bước kiểm tra quorum"
+    assert cached["feedback_by"] == "admin"
 
 
 def test_generate_cached_calls_model_only_once(db_session, monkeypatch):

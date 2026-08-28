@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from dashboard.cluster_scope import cluster_selection
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db, remediation_runbook
+from shared.ai_budget import AIBudgetExceededError
 from shared.models import Cluster
 
 router = APIRouter()
@@ -82,7 +84,7 @@ async def generate_runbook(
             )
     try:
         report = await remediation_runbook.generate_cached(source)
-    except remediation_runbook.RunbookError as exc:
+    except (remediation_runbook.RunbookError, AIBudgetExceededError) as exc:
         return templates.TemplateResponse(
             request, "runbooks.html",
             _context(request, user, clusters=clusters, selected_cluster=selected,
@@ -112,10 +114,47 @@ async def runbook_markdown(
                 raise HTTPException(status_code=404, detail="Không tìm thấy cluster đang hoạt động")
             source = remediation_runbook.build_source(session, fault_family=fault_family, cluster_id=cluster_id)
         report = await remediation_runbook.generate_cached(source)
-    except remediation_runbook.RunbookError as exc:
+    except (remediation_runbook.RunbookError, AIBudgetExceededError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", fault_family.strip()) or "runbook"
     return PlainTextResponse(
         remediation_runbook.to_markdown(report),
         headers={"Content-Disposition": f'attachment; filename="{filename}.md"'},
+    )
+
+
+@router.post("/runbooks/feedback", response_class=HTMLResponse)
+async def runbook_feedback(
+    request: Request,
+    cluster_id: str = Form(...),
+    fault_family: str = Form(...),
+    source_fingerprint: str = Form(...),
+    rating: str = Form(...),
+    note: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Store an operator's usefulness rating for the exact cached runbook."""
+    if rating not in {"HELPFUL", "NOT_HELPFUL"}:
+        raise HTTPException(status_code=400, detail="Đánh giá không hợp lệ")
+    with db.SessionLocal() as session:
+        row = (
+            session.query(remediation_runbook.AIRunbook)
+            .filter(
+                remediation_runbook.AIRunbook.cluster_id == cluster_id,
+                remediation_runbook.AIRunbook.fault_family == fault_family,
+                remediation_runbook.AIRunbook.source_fingerprint == source_fingerprint,
+                remediation_runbook.AIRunbook.prompt_version == remediation_runbook.PROMPT_VERSION,
+            )
+            .order_by(remediation_runbook.AIRunbook.created_at.desc())
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy runbook để đánh giá")
+        row.feedback_rating = rating
+        row.feedback_note = note.strip()[:2000] or None
+        row.feedback_by = user[:128]
+        row.feedback_at = datetime.utcnow()
+        session.commit()
+    return RedirectResponse(
+        f"/runbooks?cluster={cluster_id}&fault_family={fault_family}", status_code=303,
     )

@@ -21,5 +21,7 @@
     <h3>Khi nào áp dụng</h3><p>{{ report.when_to_use }}</p>
     {% for title, key in [("Pre-check", "prechecks"), ("Các bước xử lý", "steps"), ("Xác minh", "verification"), ("Rollback", "rollback"), ("Phòng ngừa", "prevention")] %}<h3>{{ title }}</h3><ol>{% for item in report[key] %}<li>{{ item }}</li>{% endfor %}</ol>{% endfor %}
     <h3>Giới hạn</h3><p>{{ report.limitations }}</p><h3>Evidence citations</h3><ul>{% for citation in report.citations %}<li><code>{{ citation }}</code></li>{% endfor %}</ul>
+    <hr><h3>Đánh giá runbook</h3>{% if report.feedback_rating %}<p class="hint">Đã đánh giá: <strong>{{ "Hữu ích" if report.feedback_rating == "HELPFUL" else "Chưa hữu ích" }}</strong>{% if report.feedback_by %} bởi {{ report.feedback_by }}{% endif %}.</p>{% endif %}
+    <form method="post" action="/runbooks/feedback" class="form-grid"><input type="hidden" name="cluster_id" value="{{ selected_cluster.id }}"><input type="hidden" name="fault_family" value="{{ report.fault_family }}"><input type="hidden" name="source_fingerprint" value="{{ source.source_fingerprint if source else "" }}"><label>Ghi chú (tuỳ chọn)<textarea name="note" maxlength="2000" rows="3" placeholder="Điều gì đúng hoặc cần cải thiện?"></textarea></label><div><button class="btn btn-secondary" type="submit" name="rating" value="HELPFUL">Hữu ích</button> <button class="btn btn-secondary" type="submit" name="rating" value="NOT_HELPFUL">Chưa hữu ích</button></div></form>
   </div></section>{% endif %}
 </main><script src="/static/app.js?v={{ static_version }}"></script></body></html>

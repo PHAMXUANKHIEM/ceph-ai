@@ -2562,6 +2562,10 @@ class AIRunbook(Base):
     source_case_count: Mapped[int] = mapped_column(Integer, nullable=False)
     report_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    feedback_rating: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    feedback_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feedback_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    feedback_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class CapacityAlertState(Base):

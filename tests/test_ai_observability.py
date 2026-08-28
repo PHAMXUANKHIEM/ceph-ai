@@ -109,3 +109,25 @@ def test_slow_telemetry_does_not_block_event_loop(monkeypatch):
         return await task
 
     assert asyncio.run(exercise()) == "ok"
+
+
+def test_hard_budget_blocks_call_and_records_block(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+    monkeypatch.setattr("shared.ai_observability.settings.router_provider", "9router")
+    monkeypatch.setattr("shared.ai_observability.settings.router_model", "gc/gemini-2.5-flash")
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_daily_budget_usd", 0.000001)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_monthly_budget_usd", 0.0)
+    monkeypatch.setattr("shared.ai_observability.settings.ai_cost_budget_hard_limit", True)
+
+    @observe_ai_call("budgeted")
+    async def call():
+        raise AssertionError("provider must not be called")
+
+    from shared.ai_budget import AIBudgetExceededError
+    import pytest
+    with pytest.raises(AIBudgetExceededError):
+        asyncio.run(call())
+    with sessions() as session:
+        row = session.query(AIInvocation).one()
+        assert row.status == "ERROR" and row.error_type == "AIBudgetExceededError"

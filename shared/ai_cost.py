@@ -237,6 +237,8 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
         })
     common_rates = next(iter(rates)) if len(rates) == 1 else (None, None)
     optimization = _optimization_summary(result, total_cost, hours, usd_to_vnd)
+    from shared.ai_budget import status as budget_status
+
     return {
         "hours": hours,
         "observed_at": now.isoformat() + "Z",
@@ -253,6 +255,7 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
         "usd_to_vnd": usd_to_vnd,
         "estimated_cost_vnd": round(total_cost * usd_to_vnd) if priced_groups else None,
         "optimization": optimization,
+        "budget": budget_status(now=now),
         "pricing_table": pricing_table(),
         "groups": result,
     }

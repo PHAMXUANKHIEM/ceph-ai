@@ -214,6 +214,14 @@ class Settings(BaseSettings):
     # Reference conversion for the read-only cost dashboard. Update when the
     # chosen accounting exchange rate changes; it does not alter USD costs.
     ai_cost_usd_to_vnd: float = Field(default=26290.0, gt=0)
+    # Optional AI Budget Guard. Zero disables the corresponding limit. Costs
+    # are estimates from content-free telemetry and are evaluated in UTC.
+    ai_cost_daily_budget_usd: float = Field(default=0.0, ge=0)
+    ai_cost_monthly_budget_usd: float = Field(default=0.0, ge=0)
+    ai_cost_budget_hard_limit: bool = False
+    # Reserved output tokens used before a call, since output usage is not
+    # known until the provider returns. This is deliberately conservative.
+    ai_cost_budget_reserve_output_tokens: int = Field(default=2048, ge=0, le=100000)
 
     # Weekly read-only health digest. It is sent only through configured
     # alert channels and never creates or executes an Action.

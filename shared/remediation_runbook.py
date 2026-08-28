@@ -167,6 +167,10 @@ def get_cached(session, source: dict) -> dict | None:
         return None
     report["cached"] = True
     report["cached_at"] = row.created_at.isoformat() if row.created_at else None
+    report["feedback_rating"] = row.feedback_rating
+    report["feedback_note"] = row.feedback_note
+    report["feedback_by"] = row.feedback_by
+    report["feedback_at"] = row.feedback_at.isoformat() if row.feedback_at else None
     return report
 
 

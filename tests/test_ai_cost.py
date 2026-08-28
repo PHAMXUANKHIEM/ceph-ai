@@ -115,3 +115,21 @@ def test_summary_recommends_a_price_for_unpriced_model_without_fake_savings(dash
     item = next(item for item in data["optimization"]["recommendations"] if item["feature"] == "unknown-feature")
     assert item["recommended_model_id"] == "gc/gemini-2.5-flash"
     assert item["estimated_savings_usd"] is None
+
+
+def test_summary_exposes_daily_and_monthly_budget_status(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_daily_budget_usd", 1.0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_monthly_budget_usd", 10.0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_budget_hard_limit", True)
+    with db.SessionLocal() as session:
+        session.add(AIInvocation(
+            id="budget-status", feature="chat", provider="codex", model_id="gpt-5.6-sol",
+            status="SUCCESS", latency_ms=1, input_chars=4000, output_chars=0, created_at=now,
+        ))
+        session.commit()
+    data = summary(24, now=now)
+    assert data["budget"]["enabled"] is True
+    assert data["budget"]["hard_limit"] is True
+    assert data["budget"]["daily"]["spent_usd"] == 0.004
+    assert data["budget"]["daily"]["percent"] == 0.4
