@@ -203,6 +203,12 @@ class Incident(Base):
     # Snapshot JSON của detector (latency/device health/metric...), không
     # chứa credential; dùng làm provenance cho correlation/postmortem.
     signal_evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Deterministic incident grouping: every grouped Incident points to the
+    # earliest/root Incident in the same cluster fault window. NULL is kept
+    # for legacy rows until they are next processed by the AI Worker.
+    group_root_incident_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("incidents.id"), nullable=True, index=True,
+    )
     diagnosis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     postmortem_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     postmortem_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

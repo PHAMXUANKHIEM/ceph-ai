@@ -87,8 +87,10 @@ def test_handle_message_success_acks_and_sets_diagnosing(isolated_db):
     _create_incident(db_module.SessionLocal, "incident-1")
     message = _make_message("incident-1")
     channel = FakeChannel()
+    received = {}
 
     async def ok_process(incident_id, envelope):
+        received.update(envelope)
         return None
 
     asyncio.run(worker_main._handle_message(message, channel, ok_process, max_retries=3))
@@ -96,6 +98,7 @@ def test_handle_message_success_acks_and_sets_diagnosing(isolated_db):
     assert message.ack_calls == 1
     assert message.reject_calls == []
     assert channel.default_exchange.published == []
+    assert received["incident_group"]["root_incident_id"] == "incident-1"
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-1")
         assert incident.status == IncidentStatus.DIAGNOSING.value

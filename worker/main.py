@@ -11,6 +11,7 @@ from shared import db, service_health
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Cluster, Incident, IncidentStatus
 from shared.telegram_alerts import send_ai_unavailable_alert
+from watcher import incident_grouping
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ async def _handle_message(
     # functions, worker/executor/ssh_executor.py::execute_command().
 
     retry_count = _safe_retry_count(message.headers)
+    envelope = dict(envelope)
 
     try:
         with db.SessionLocal() as session:
@@ -151,6 +153,21 @@ async def _handle_message(
                 logger.warning("_handle_message: no Incident row for id=%s — acking, discarding", incident_id)
                 await message.ack()
                 return
+            try:
+                incident_grouping.assign_incident_group(session, incident)
+                envelope["incident_group"] = incident_grouping.build_group_context(
+                    session, incident_id
+                )
+            except Exception:
+                # Grouping is enrichment, not a reason to lose a diagnosis.
+                # A missing/unmigrated grouping column must not dead-letter a
+                # valid Incident; the AI call can still run with its original
+                # envelope while the error remains visible in the Worker log.
+                session.rollback()
+                logger.exception(
+                    "_handle_message: incident grouping failed for %s; continuing without group context",
+                    incident_id,
+                )
             incident.status = IncidentStatus.DIAGNOSING.value
             session.commit()
     except Exception:

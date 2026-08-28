@@ -330,6 +330,9 @@ SYSTEM_PROMPT = (
     "never recommend manual investigation or a generic diagnostic check. "
     "For MON_CLOCK_SKEW choose resync_ntp; for MON_MSGR2_NOT_ENABLED choose "
     "enable_mon_msgr2. "
+    "Related incidents in the same deterministic group are context only: use "
+    "them to distinguish a shared root cause from symptoms, but do not claim "
+    "causation unless the supplied evidence supports it. "
     "Write diagnosis_text and rationale in concise, natural Vietnamese (at most "
     "two short sentences each). Keep Ceph error codes, daemon names, pool names, "
     "commands, paths, and technical identifiers unchanged instead of translating them."
@@ -483,9 +486,36 @@ def _verified_cases_block(payload: dict) -> str:
 
 def _build_user_content(payload: dict) -> str:
     nodes = payload.get("nodes") or []
+    group = payload.get("incident_group") or {}
+    related = group.get("related_incidents") if isinstance(group, dict) else []
+    group_lines = []
+    if isinstance(group, dict) and group.get("root_incident_id"):
+        group_lines.append(f"Deterministic incident group root: {group['root_incident_id']}")
+    if isinstance(related, list):
+        for item in related[:8]:
+            if not isinstance(item, dict):
+                continue
+            group_lines.append(
+                "- "
+                + " | ".join(
+                    f"{key}={item.get(key)}"
+                    for key in ("incident_id", "ceph_code", "status", "severity", "detected_at")
+                    if item.get(key) is not None
+                )
+                + (f" | diagnosis={item['diagnosis_text']}" if item.get("diagnosis_text") else "")
+                + (f" | log={item['log_excerpt']}" if item.get("log_excerpt") else "")
+            )
+    group_block = (
+        "Related incidents in this group (context, not proof of causation):\n"
+        + "\n".join(group_lines)
+        + "\n\n"
+        if group_lines
+        else ""
+    )
     return (
         f"{_previous_attempts_block(payload)}"
         f"{_verified_cases_block(payload)}"
+        f"{group_block}"
         f"Ceph error code: {payload.get('ceph_code')}\n"
         f"Detected at: {payload.get('detected_at')}\n"
         f"Affected nodes: {', '.join(nodes)}\n"
