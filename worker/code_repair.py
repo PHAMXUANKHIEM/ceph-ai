@@ -96,6 +96,7 @@ class RepairConfig:
     max_ai_attempts: int = 3
     max_pipeline_attempts: int = 3
     running_stale_seconds: int = 3600
+    notify_telegram: bool = True
 
 
 @dataclass
@@ -116,16 +117,22 @@ class RepairResult:
 class RepairProgressNotifier:
     """Telegram lifecycle reporter with a ten-minute in-progress heartbeat."""
 
-    def __init__(self, evidence: str, branch: str, *, interval_seconds: int = 3600) -> None:
+    def __init__(
+        self, evidence: str, branch: str, *, interval_seconds: int = 3600,
+        enabled: bool = True,
+    ) -> None:
         self.evidence = summarize_evidence(evidence)
         self.branch = branch
         self.interval_seconds = interval_seconds
+        self.enabled = enabled
         self.percent = 5
         self.stage = "Đang chuẩn bị worktree và branch sửa lỗi"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        if not self.enabled:
+            return
         send_code_repair_alert(
             "🚨 AI CODE REPAIR BẮT ĐẦU\n"
             f"Lỗi: {self.evidence}\n"
@@ -140,6 +147,8 @@ class RepairProgressNotifier:
         self.stage = stage
 
     def _heartbeat(self) -> None:
+        if not self.enabled:
+            return
         while not self._stop.wait(self.interval_seconds):
             send_code_repair_alert(
                 "⏳ AI CODE REPAIR ĐANG CHẠY\n"
@@ -150,6 +159,9 @@ class RepairProgressNotifier:
             )
 
     def finish(self, result: RepairResult) -> None:
+        if not self.enabled:
+            self._stop.set()
+            return
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=1)
@@ -462,7 +474,7 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     branch = f"{config.branch_prefix}{stamp}-{fp[:8]}"
     result = RepairResult(status="FAILED", fingerprint=fp, branch=branch)
-    notifier = RepairProgressNotifier(evidence, branch)
+    notifier = RepairProgressNotifier(evidence, branch, enabled=config.notify_telegram)
     notifier.start()
     state["attempts"][fp] = {
         "status": "RUNNING", "branch": branch,
