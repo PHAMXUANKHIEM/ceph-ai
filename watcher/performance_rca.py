@@ -9,13 +9,14 @@ never fills them with an invented causal story.
 
 from __future__ import annotations
 
+import json
 import logging
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta
 
 from shared import db
-from shared.models import CrushOsdDistribution, VolumeMetric
+from shared.models import CrushOsdDistribution, VolumeMetric, VolumeOsdMapping
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError
 from shared.cluster_nodes import resolve_ssh_creds
@@ -102,6 +103,7 @@ def _volume_analysis(
     pool_latest: list[VolumeMetric],
     cluster_latest: list[VolumeMetric],
     osd_summary: dict,
+    topology: dict | None = None,
 ) -> dict:
     values = [_latency(row) for row in rows]
     historical = values[:-1] if len(values) > 1 else values
@@ -129,7 +131,14 @@ def _volume_analysis(
     volume_score = _clamp((current / baseline) - 1.0) if baseline and baseline > 0 else 0.0
     pool_score = _clamp((pool_ratio or 1.0) - 1.0)
     osd_score = float(osd_summary.get("score", 0.0))
-    if volume_elevated and pool_contention:
+    mapped_osds = topology.get("acting_osds", []) if topology else []
+    outlier_ids = {item.get("osd_id") for item in osd_summary.get("outliers", [])}
+    mapped_outliers = [osd_id for osd_id in mapped_osds if osd_id in outlier_ids]
+    if volume_elevated and mapped_outliers:
+        hypothesis = "mapped_osd_latency_candidate"
+        explanation = "Volume đang tăng latency và acting set hiện tại chứa OSD latency outlier."
+        confidence = _clamp(0.55 + volume_score * 0.20 + osd_score * 0.20)
+    elif volume_elevated and pool_contention:
         hypothesis = "pool_contention_candidate"
         explanation = "Volume và các peer cùng pool cùng tăng latency so với median toàn cụm."
         confidence = _clamp(0.35 + volume_score * 0.25 + pool_score * 0.25)
@@ -171,10 +180,12 @@ def _volume_analysis(
                 "source": "volume_metrics",
             },
             "osd": osd_summary,
+            "mapped_outlier_osds": mapped_outliers,
         },
         "hypothesis": hypothesis,
         "explanation": explanation,
         "confidence": confidence,
+        "topology": topology,
     }
 
 
@@ -247,16 +258,48 @@ def build_report(
     latest_map = _latest_by_key(rows)
     cluster_latest = list(latest_map.values())
     osd_summary = _osd_summary(live_signals)
+    mapping_rows = session.query(VolumeOsdMapping).filter(
+        VolumeOsdMapping.cluster_id == cluster_id,
+    ).all()
+    mapping_latest_at = max((mapping.captured_at for mapping in mapping_rows), default=None)
+    topology_by_key = {}
+    for mapping in mapping_rows:
+        try:
+            acting_osds = json.loads(mapping.acting_osds_json)
+        except (TypeError, ValueError):
+            acting_osds = []
+        if not isinstance(acting_osds, list):
+            acting_osds = []
+        topology_by_key[(mapping.pool, mapping.image)] = {
+            "pgid": mapping.pgid,
+            "acting_osds": [item for item in acting_osds if isinstance(item, int)],
+            "primary_osd": mapping.primary_osd,
+            "object_name": mapping.object_name,
+            "captured_at": _iso(mapping.captured_at),
+            "freshness": _freshness(now, mapping.captured_at, FRESH_DISTRIBUTION_SECONDS),
+            "source": "volume_osd_mappings",
+        }
     analyses = []
     for key, history in grouped.items():
         latest = latest_map[key]
         pool_latest = [row for (row_pool, _), row in latest_map.items() if row_pool == latest.pool]
         if len(history) >= MIN_VOLUME_SAMPLES:
-            analyses.append(_volume_analysis(history, latest, pool_latest, cluster_latest, osd_summary))
+            analyses.append(_volume_analysis(
+                history, latest, pool_latest, cluster_latest, osd_summary,
+                topology_by_key.get(key),
+            ))
     analyses.sort(key=lambda item: (item["confidence"], item["current_latency_ms"]), reverse=True)
     analyses = analyses[:MAX_VOLUME_REPORTS]
 
     chain, distribution_citation = _distribution_chain(session, cluster_id, now)
+    if topology_by_key:
+        chain["pg"] = {
+            **chain["pg"],
+            "status": "mapped",
+            "detail": f"Đã map {len(topology_by_key)} volume tới PG/acting OSD; PG count distribution vẫn lấy từ CRUSH OSD data.",
+            "source": "volume_osd_mappings",
+            "freshness": _freshness(now, mapping_latest_at, FRESH_DISTRIBUTION_SECONDS),
+        }
     chain["volume"] = {
         "layer": "volume",
         "status": "observed" if analyses else "not_available",
@@ -309,10 +352,11 @@ def build_report(
     gaps = []
     if not analyses:
         gaps.append("Chưa đủ lịch sử VolumeMetric cho volume nào trong cửa sổ.")
-    gaps.extend([
-        "Chưa có volume→PG→OSD acting-set mapping trong dữ liệu hiện tại.",
-        "Chưa có host disk/SMART/network sample được lưu theo cùng time window.",
-    ])
+    if topology_by_key:
+        gaps.append("Mapping PG/OSD là latest snapshot; chưa có lịch sử acting-set để chứng minh thay đổi theo thời gian.")
+    else:
+        gaps.append("Chưa có volume→PG→OSD acting-set mapping trong dữ liệu hiện tại.")
+    gaps.append("Chưa có host disk/SMART/network sample được lưu theo cùng time window.")
     return {
         "status": "ready" if analyses else "insufficient_evidence",
         "conclusion": "correlation_only",

@@ -28,6 +28,7 @@ from watcher import (
     trash_capacity_monitor,
     verify,
     volume_monitor,
+    volume_topology,
     vitastor_monitor,
 )
 from watcher.bluestore_omap_monitor import BLUESTORE_OMAP_PREFIX
@@ -985,6 +986,16 @@ def run(
                 logger.exception("run: crush structure/distribution/skew scan failed")
             last_crush_scan_at = now
 
+            # Cross-layer RCA needs the current RBD header-object acting set.
+            # It is deliberately a background read-only scan: one rbd info +
+            # one ceph osd map per active image must never delay health polls.
+            if max_iterations is None:
+                _run_auxiliary_scan(
+                    f"volume-topology-{cluster_id or 'default'}",
+                    lambda: volume_topology.collect_and_store(cluster_id, None),
+                    background=True,
+                )
+
         if settings.capacity_forecast_enabled and cluster_id and (
             last_capacity_forecast_scan_at is None
             or (now - last_capacity_forecast_scan_at).total_seconds()
@@ -1280,6 +1291,11 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 try:
                     crush_structure_monitor.scan_and_store(cluster.id, cluster=cluster)
                     crush_distribution_monitor.sync_distribution(cluster.id, cluster=cluster)
+                    _run_auxiliary_scan(
+                        f"volume-topology-{cluster.id}",
+                        lambda: volume_topology.collect_and_store(cluster.id, cluster),
+                        background=True,
+                    )
                 except Exception:
                     logger.exception(
                         "run_observed_cluster_loop(%r): CRUSH scan failed", cluster.name

@@ -1326,6 +1326,34 @@ class VolumeMetric(Base):
     polled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class VolumeOsdMapping(Base):
+    """Latest read-only RBD header-object placement for one volume.
+
+    ``ceph osd map`` maps an object to its current PG and acting OSD set.
+    This is intentionally latest-known-only: the mapping is cheap to refresh
+    and keeping a full copy per volume every scan would create another high
+    volume history table. ``captured_at`` makes the freshness of the mapping
+    explicit in RCA output.
+    """
+
+    __tablename__ = "volume_osd_mappings"
+    __table_args__ = (
+        Index("ix_volume_osd_mappings_cluster_captured", "cluster_id", "captured_at"),
+    )
+
+    cluster_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("clusters.id"), primary_key=True
+    )
+    pool: Mapped[str] = mapped_column(String(64), primary_key=True)
+    image: Mapped[str] = mapped_column(String(128), primary_key=True)
+    image_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    object_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    pgid: Mapped[str] = mapped_column(String(64), nullable=False)
+    acting_osds_json: Mapped[str] = mapped_column(Text, nullable=False)
+    primary_osd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
 class VolumeForecastRun(Base):
     """One auditable candidate baseline and its later observed outcome."""
 

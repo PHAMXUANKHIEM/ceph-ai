@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
-from shared.models import Cluster, CrushOsdDistribution, VolumeMetric
+from shared import db
+from shared.models import Cluster, CrushOsdDistribution, VolumeMetric, VolumeOsdMapping
+from watcher import volume_topology
+from watcher.volume_topology import normalize_osd_map_payload
 from watcher.performance_rca import build_report
 
 
@@ -27,6 +31,11 @@ def test_report_ranks_pool_contention_and_marks_missing_layers(db_session):
         + _volume("c1", "cold", "vm-d", [5, 5, 5, 6], now - timedelta(minutes=3))
         + _volume("c1", "cold", "vm-e", [5, 5, 5, 6], now - timedelta(minutes=3))
         + [CrushOsdDistribution(cluster_id="c1", osd_id=1, host="osd-a", pgs=20, updated_at=now)]
+        + [VolumeOsdMapping(
+            cluster_id="c1", pool="rbd", image="vm-a", image_id="abc",
+            object_name="rbd_header.abc", pgid="1.2a", acting_osds_json="[3,4,5]",
+            primary_osd=3, captured_at=now,
+        )]
     )
     db_session.commit()
 
@@ -44,10 +53,12 @@ def test_report_ranks_pool_contention_and_marks_missing_layers(db_session):
     )
 
     assert result["status"] == "ready"
-    assert result["analyses"][0]["hypothesis"] == "pool_contention_candidate"
-    assert result["chain"][2]["status"] == "observed"  # PG distribution metadata
+    assert result["analyses"][0]["hypothesis"] == "mapped_osd_latency_candidate"
+    assert result["analyses"][0]["topology"]["pgid"] == "1.2a"
+    assert result["analyses"][0]["signals"]["mapped_outlier_osds"] == [3]
+    assert result["chain"][2]["status"] == "mapped"
     assert result["chain"][4]["status"] == "proxy_only"  # OSD latency proxy, not diskstats
-    assert "acting-set mapping" in " ".join(result["evidence_gaps"])
+    assert "latest snapshot" in " ".join(result["evidence_gaps"])
 
 
 def test_report_is_cluster_isolated_and_fails_closed_without_history(db_session):
@@ -62,6 +73,53 @@ def test_report_is_cluster_isolated_and_fails_closed_without_history(db_session)
     assert result["status"] == "insufficient_evidence"
     assert result["analyses"] == []
     assert all(item["cluster_id"] == "c1" for item in [result])
+
+
+def test_normalize_osd_map_requires_acting_set():
+    assert normalize_osd_map_payload({"pgid": "2.4", "acting": [4, 7]}) == {
+        "pgid": "2.4", "acting_osds": [4, 7], "primary_osd": 4,
+    }
+
+
+def test_map_volume_uses_rbd_header_object(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        command = args[-1]
+        calls.append(command)
+        if command.startswith("rbd info"):
+            return "mon", {"id": "abc123"}
+        return "mon", {"pgid": "1.2a", "acting": [3, 4, 5]}
+
+    monkeypatch.setattr(volume_topology, "_connection", lambda cluster: ([], "container", "user", "key", "docker"))
+    monkeypatch.setattr(volume_topology.ceph_client, "run_ceph_json_command_with", fake_run)
+    result = volume_topology.map_volume(SimpleNamespace(), "rbd", "vm-a")
+
+    assert result["object_name"] == "rbd_header.abc123"
+    assert result["acting_osds"] == [3, 4, 5]
+    assert calls == ["rbd info rbd/vm-a", "ceph osd map rbd rbd_header.abc123"]
+
+
+def test_collector_refreshes_only_recent_volume_mappings(dashboard_client, default_cluster_id, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    with db.SessionLocal() as session:
+        session.add(VolumeMetric(
+            cluster_id=default_cluster_id, pool="rbd", image="vm-a", iops=10,
+            read_latency_ms=2, write_latency_ms=3, saturated=False, polled_at=now,
+        ))
+        session.commit()
+
+    monkeypatch.setattr(volume_topology, "map_volume", lambda cluster, pool, image: {
+        "pool": pool, "image": image, "image_id": "abc", "object_name": "rbd_header.abc",
+        "pgid": "1.2a", "acting_osds": [1, 2, 3], "primary_osd": 1,
+    })
+    cluster = SimpleNamespace()
+    assert volume_topology.collect_and_store(default_cluster_id, cluster, now=now) == 1
+
+    with db.SessionLocal() as session:
+        row = session.get(VolumeOsdMapping, (default_cluster_id, "rbd", "vm-a"))
+        assert row.pgid == "1.2a"
+        assert row.acting_osds_json == "[1,2,3]"
 
 
 def test_dashboard_route_is_read_only_and_cluster_scoped(dashboard_client, default_cluster_id, monkeypatch):
