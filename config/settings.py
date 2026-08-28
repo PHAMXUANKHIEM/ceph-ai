@@ -509,6 +509,9 @@ class Settings(BaseSettings):
     # The lowest-MAE candidate with enough evaluated runs is selected per
     # cluster/host/metric; until then the longest available window wins.
     node_resource_learning_evaluation_hours: int = 24
+    # A late scan may only score a forecast against a sample close to its
+    # target time; otherwise an outage would corrupt MAE with a later value.
+    node_resource_learning_max_outcome_gap_hours: float = 3.0
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
 

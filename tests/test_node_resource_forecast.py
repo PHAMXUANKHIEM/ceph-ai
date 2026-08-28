@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
-from shared.models import NodeResourceForecastRun, NodeResourceModelState
+from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
 from watcher import node_resource_forecast as forecast
 
 
@@ -159,9 +159,81 @@ def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
         run = session.query(NodeResourceForecastRun).filter_by(idempotency_key="due").one()
         state = session.query(NodeResourceModelState).filter_by(metric="cpu", window_hours=24).one()
         assert run.status == "EVALUATED"
-        assert run.actual_percent == samples[-1][1]
+        assert run.actual_percent == samples[-2][1]
         assert state.evaluated_count == 1
         assert state.mean_absolute_error == run.absolute_error
+
+
+def test_adaptive_forecast_scores_sample_near_target_time(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_samples", 6)
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_candidate_hours", "24")
+    origin = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    samples = [(origin + timedelta(hours=index), 20 + index, 40 + index) for index in range(11)]
+    now = samples[-1][0]
+    with factory() as session:
+        session.add(NodeResourceForecastRun(
+            cluster_name="CS-LAB", host="node-1", metric="cpu", algorithm="linear",
+            window_hours=24, predicted_at=(now - timedelta(hours=7)).replace(tzinfo=None),
+            target_at=(now - timedelta(hours=5)).replace(tzinfo=None), current_percent=20,
+            predicted_percent=25, confidence=.8, status="PENDING", idempotency_key="target-time",
+        ))
+        session.commit()
+    monkeypatch.setattr(forecast, "fetch_samples", lambda cluster, host, now=None: samples)
+
+    forecast.adaptive_forecast("CS-LAB", "node-1", now=now)
+
+    with factory() as session:
+        run = session.query(NodeResourceForecastRun).filter_by(idempotency_key="target-time").one()
+        assert run.status == "EVALUATED"
+        assert run.actual_percent == 25  # sample at target, not latest value 30
+
+
+def test_late_outcome_is_marked_unmeasurable_not_scored(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_resource_learning_max_outcome_gap_hours", 3.0)
+    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(NodeResourceForecastRun(
+            cluster_name="CS-LAB", host="node-1", metric="cpu", algorithm="linear",
+            window_hours=24, predicted_at=(now - timedelta(hours=12)).replace(tzinfo=None),
+            target_at=(now - timedelta(hours=8)).replace(tzinfo=None), current_percent=20,
+            predicted_percent=25, confidence=.8, status="PENDING", idempotency_key="too-late",
+        ))
+        session.commit()
+
+    count = forecast.evaluate_due_outcomes("CS-LAB", "node-1", 80, 40, observed_at=now)
+
+    assert count == 1
+    with factory() as session:
+        run = session.query(NodeResourceForecastRun).filter_by(idempotency_key="too-late").one()
+        assert run.status == "UNMEASURABLE"
+        assert run.actual_percent is None
+        assert session.query(NodeResourceModelState).count() == 0
+
+
+def test_open_alert_becomes_data_quality_not_resolved(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_min_coverage", .8)
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_max_gap_hours", 6.0)
+    now = datetime(2026, 8, 24, 12, tzinfo=timezone.utc)
+    with factory() as session:
+        session.add(NodeResourceForecastAlert(
+            cluster_name="CS-LAB", host="node-1", metric="ram", status="OPEN",
+            first_detected_at=now.replace(tzinfo=None), last_detected_at=now.replace(tzinfo=None),
+            current_percent=80, predicted_percent=95, hours_to_90=10,
+            confidence=.9, samples=30, window_hours=24,
+        ))
+        session.commit()
+    poor = forecast.ResourceForecast(
+        "ram", 80, 1, 95, 10, .9, 30, 20,
+        training_window_hours=24, coverage_ratio=.5, max_gap_hours=1,
+    )
+    forecast.sync_forecast_alerts("CS-LAB", "node-1", {"ram": poor}, now=now)
+    with factory() as session:
+        alert = session.query(NodeResourceForecastAlert).one()
+        assert alert.status == "DATA_QUALITY"
+        assert alert.resolved_at is None
 
 
 def test_direct_observation_evaluates_due_cpu_and_ram(monkeypatch):

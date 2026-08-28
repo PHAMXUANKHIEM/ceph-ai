@@ -105,8 +105,13 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
             try:
                 raw = json.loads(line)
                 ts_int = int(ts_ns)
-                rows[ts_int] = (datetime.fromtimestamp(ts_int / 1e9, timezone.utc),
-                                float(raw["cpu_percent"]), float(raw["mem_percent"]))
+                cpu = float(raw["cpu_percent"])
+                mem = float(raw["mem_percent"])
+                if not (math.isfinite(cpu) and math.isfinite(mem)):
+                    continue
+                if not (0.0 <= cpu <= 100.0 and 0.0 <= mem <= 100.0):
+                    continue
+                rows[ts_int] = (datetime.fromtimestamp(ts_int / 1e9, timezone.utc), cpu, mem)
             except (TypeError, ValueError, KeyError, json.JSONDecodeError):
                 continue
     return [rows[key] for key in sorted(rows)]
@@ -131,6 +136,10 @@ def fetch_latest_metrics(
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     allowed_age = max_age_seconds or max(120, settings.node_health_scan_interval_seconds * 2)
     age_seconds = (reference - observed_at).total_seconds()
+    if age_seconds < -300:
+        raise NodeResourceLokiError(
+            f"{host}: latest Loki CPU/RAM sample is from the future ({int(-age_seconds)}s ahead)"
+        )
     if age_seconds > allowed_age:
         raise NodeResourceLokiError(
             f"{host}: latest Loki CPU/RAM sample is stale ({int(age_seconds)}s old)"
@@ -222,14 +231,38 @@ def _state_for(session, cluster: str, host: str, metric: str, window_hours: int)
     return state
 
 
-def _evaluate_due(session, cluster: str, host: str, metric: str,
-                  actual_percent: float, now_naive: datetime) -> None:
+def _evaluate_due(
+    session, cluster: str, host: str, metric: str,
+    actual_percent: float | None, now_naive: datetime,
+    points: list[tuple[datetime, float]] | None = None,
+) -> None:
     due = session.query(NodeResourceForecastRun).filter_by(
         cluster_name=cluster, host=host, metric=metric, status="PENDING"
     ).filter(NodeResourceForecastRun.target_at <= now_naive).all()
+    max_gap = max(0.25, float(settings.node_resource_learning_max_outcome_gap_hours))
     for run in due:
-        error = abs(run.predicted_percent - actual_percent)
-        run.actual_percent = actual_percent
+        actual = actual_percent
+        if points:
+            target = run.target_at.replace(tzinfo=timezone.utc)
+            nearest = min(points, key=lambda point: abs(point[0] - target))
+            if abs((nearest[0] - target).total_seconds()) <= max_gap * 3600:
+                actual = nearest[1]
+            else:
+                actual = None
+        elif actual is not None:
+            age_hours = (now_naive - run.target_at).total_seconds() / 3600
+            if age_hours > max_gap:
+                actual = None
+        if actual is None:
+            # Do not score a forecast against a much-later observation. The
+            # missing target-time sample is a data-quality outcome, not a
+            # model failure and must not affect MAE/window selection.
+            if (now_naive - run.target_at).total_seconds() > max_gap * 3600:
+                run.status = "UNMEASURABLE"
+                run.evaluated_at = now_naive
+            continue
+        error = abs(run.predicted_percent - actual)
+        run.actual_percent = actual
         run.absolute_error = error
         run.status = "EVALUATED"
         run.evaluated_at = now_naive
@@ -318,7 +351,7 @@ def adaptive_forecast(
     with db.SessionLocal() as session:
         for index, metric in ((1, "cpu"), (2, "ram")):
             points = [(row[0], row[index]) for row in samples]
-            _evaluate_due(session, cluster, host, metric, points[-1][1], now_naive)
+            _evaluate_due(session, cluster, host, metric, points[-1][1], now_naive, points)
             candidates: dict[int, ResourceForecast] = {}
             for window in _candidate_windows():
                 windowed = _window_points(points, window)
@@ -384,6 +417,12 @@ def sync_forecast_alerts(
     now_naive = reference.astimezone(timezone.utc).replace(tzinfo=None)
     risky = {value.metric: value for value in risky_forecasts(values)}
 
+    def quality_blocked(value: ResourceForecast | None) -> bool:
+        return value is None or (
+            value.coverage_ratio < settings.node_resource_forecast_min_coverage
+            or value.max_gap_hours > settings.node_resource_forecast_max_gap_hours
+        )
+
     with db.SessionLocal() as session:
         existing = {
             row.metric: row
@@ -395,7 +434,20 @@ def sync_forecast_alerts(
             prediction = risky.get(metric)
             alert = existing.get(metric)
             if prediction is None:
-                if alert is not None and alert.status == "OPEN":
+                candidate = values.get(metric)
+                if quality_blocked(candidate):
+                    if alert is not None and alert.status == "OPEN":
+                        alert.status = "DATA_QUALITY"
+                        alert.resolved_at = None
+                    if alert is not None:
+                        logger.warning(
+                            "node forecast: %s %s alert held as DATA_QUALITY (coverage=%.3f gap=%.2fh)",
+                            host, metric.upper(),
+                            candidate.coverage_ratio if candidate is not None else 0.0,
+                            candidate.max_gap_hours if candidate is not None else float("inf"),
+                        )
+                    continue
+                if alert is not None and alert.status in {"OPEN", "DATA_QUALITY"}:
                     alert.status = "RESOLVED"
                     alert.resolved_at = now_naive
                 continue
