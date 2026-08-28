@@ -46,3 +46,21 @@ def test_total_cost_is_not_lost_when_each_group_rounds_to_zero(dashboard_client,
     monkeypatch.setattr("shared.ai_cost.settings.ai_cost_output_usd_per_million_tokens", 0.5)
     data = summary(24, now=now)
     assert data["estimated_cost_usd"] == 0.000001
+
+
+def test_summary_uses_model_specific_price_table(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_input_usd_per_million_tokens", 0.0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_output_usd_per_million_tokens", 0.0)
+    with db.SessionLocal() as session:
+        session.add(AIInvocation(
+            id="model-priced", feature="log_rca", provider="codex", model_id="gpt-5.6-sol",
+            status="SUCCESS", latency_ms=1, input_chars=4, output_chars=4, created_at=now,
+        ))
+        session.commit()
+    data = summary(24, now=now)
+    row = next(item for item in data["groups"] if item["model_id"] == "gpt-5.6-sol")
+    assert row["input_usd_per_million_tokens"] == 4.0
+    assert row["output_usd_per_million_tokens"] == 20.0
+    assert row["estimated_cost_usd"] == 0.000024
+    assert data["pricing_complete"] is True
