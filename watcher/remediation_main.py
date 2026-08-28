@@ -7,8 +7,12 @@ in :mod:`watcher.main` and can no longer delay safety-critical detection.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional
 
 from config.settings import settings
@@ -27,7 +31,53 @@ from watcher.main import (
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _single_instance_lock():
+    """Hold the remediation-watcher singleton lock for the process lifetime.
+
+    A PID file alone is racy and becomes stale after an unclean exit.  An
+    advisory ``flock`` is released by the kernel even when the process is
+    killed, so a later systemd restart can safely acquire it.  Failure to
+    create or acquire the lock is fail-closed: running two remediation loops
+    could duplicate actions and Telegram polling.
+    """
+    lock_path = Path(settings.ai_remediation_lock_file)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock_handle:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                logger.error(
+                    "AI remediation watcher already running; refusing duplicate instance"
+                )
+                yield False
+                return
+
+            lock_handle.seek(0)
+            lock_handle.truncate()
+            lock_handle.write(f"{os.getpid()}\n")
+            lock_handle.flush()
+            try:
+                yield True
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        logger.exception(
+            "AI remediation watcher cannot create/acquire singleton lock at %s",
+            lock_path,
+        )
+        raise
+
+
 def run(max_iterations: Optional[int] = None) -> None:
+    with _single_instance_lock() as acquired:
+        if not acquired:
+            return
+        _run(max_iterations)
+
+
+def _run(max_iterations: Optional[int] = None) -> None:
     with db.SessionLocal() as session:
         cluster_id = get_default_cluster_id(session)
         cluster = session.get(Cluster, cluster_id)

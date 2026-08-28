@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/ceph-ai
+NoNewPrivileges=yes
 Environment=CEPH_AI_RUNTIME_DIR=/run/ceph-ai
 RuntimeDirectory=ceph-ai
 RuntimeDirectoryPreserve=yes

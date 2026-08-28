@@ -2,8 +2,8 @@
 # Redeploys this exact checkout: pulls latest main, installs any new
 # dependencies, applies pending DB migrations, and restarts the four
 # long-running services (watcher, AI remediation watcher, worker, dashboard)
-# using the systemd units when they are installed, with the legacy
-# `nohup ... & disown` path retained only for older hosts without units.
+# using the systemd units for the canonical checkout, with the legacy
+# `nohup ... & disown` path retained for older hosts and sibling checkouts.
 #
 # Run from the repo root, as the same user the services already run as
 # (root, matching this deployment's existing operational model — see the
@@ -81,31 +81,80 @@ echo "==> Applying DB migrations"
 # head.
 alembic upgrade heads
 
+# Optional server-local override (gitignored, never committed — this repo
+# may end up on a public remote and must not hardcode this box's real bind
+# address) — e.g. `echo 'DASHBOARD_HOST=103.69.193.220' >
+# scripts/deploy/deploy.local.env` once, on this server only. When running
+# a 2nd cluster's checkout on the SAME server, its own deploy.local.env
+# MUST set a different DASHBOARD_PORT — otherwise the two instances fight
+# over the same port.
+if [ -f "$REPO_DIR/scripts/deploy/deploy.local.env" ]; then
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/scripts/deploy/deploy.local.env"
+fi
+DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
+if ! [[ "$DASHBOARD_PORT" =~ ^[0-9]+$ ]] || [ "$DASHBOARD_PORT" -lt 1 ] || [ "$DASHBOARD_PORT" -gt 65535 ]; then
+  echo "ERROR: DASHBOARD_PORT must be an integer between 1 and 65535."
+  exit 2
+fi
+if ! [[ "$DASHBOARD_HOST" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+  echo "ERROR: DASHBOARD_HOST contains unsupported characters."
+  exit 2
+fi
+
 echo "==> Stopping existing services (if running)"
 USE_SYSTEMD=false
-INSTALLED_SYSTEMD_UNITS=()
-SYSTEMD_UNITS=(
+SYSTEMD_CORE_UNITS=(
   ceph-ai-watcher.service
   ceph-ai-remediation-watcher.service
   ceph-ai-worker.service
-  ceph-ai-code-repair-supervisor.service
   ceph-ai-dashboard.service
 )
-for unit in "${SYSTEMD_UNITS[@]}"; do
-  if systemctl cat "$unit" >/dev/null 2>&1; then
-    INSTALLED_SYSTEMD_UNITS+=("$unit")
-  fi
-done
-if [ "${#INSTALLED_SYSTEMD_UNITS[@]}" -eq "${#SYSTEMD_UNITS[@]}" ]; then
+SYSTEMD_REPAIR_UNIT=ceph-ai-code-repair-supervisor.service
+INSTALLED_SYSTEMD_UNITS=()
+REPAIR_USES_SYSTEMD=false
+if [ "$REPO_DIR" = "/root/ceph-ai" ]; then
+  for unit in "${SYSTEMD_CORE_UNITS[@]}" "$SYSTEMD_REPAIR_UNIT"; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      INSTALLED_SYSTEMD_UNITS+=("$unit")
+    fi
+  done
+fi
+if [ "${#INSTALLED_SYSTEMD_UNITS[@]}" -ge "${#SYSTEMD_CORE_UNITS[@]}" ] && \
+   systemctl cat "${SYSTEMD_CORE_UNITS[@]}" >/dev/null 2>&1; then
   USE_SYSTEMD=true
-  # Keep the source templates and installed units identical.  This makes
+  # Keep the source templates and installed units synchronized.  This makes
   # hardening changes (and the remediation singleton runtime directory)
   # survive the next deployment instead of being overwritten by an older
-  # /etc/systemd/system copy.
-  for unit in "${SYSTEMD_UNITS[@]}"; do
+  # /etc/systemd/system copy.  The dashboard's host/port override is applied
+  # separately through the drop-in below.
+  for unit in "${SYSTEMD_CORE_UNITS[@]}"; do
     install -m 0644 "$REPO_DIR/scripts/deploy/systemd/$unit" \
       "/etc/systemd/system/$unit"
   done
+  if [ -f "$REPO_DIR/scripts/deploy/systemd/$SYSTEMD_REPAIR_UNIT" ] || \
+     systemctl cat "$SYSTEMD_REPAIR_UNIT" >/dev/null 2>&1; then
+    if [ -f "$REPO_DIR/scripts/deploy/systemd/$SYSTEMD_REPAIR_UNIT" ]; then
+      install -m 0644 "$REPO_DIR/scripts/deploy/systemd/$SYSTEMD_REPAIR_UNIT" \
+        "/etc/systemd/system/$SYSTEMD_REPAIR_UNIT"
+    fi
+    REPAIR_USES_SYSTEMD=true
+  fi
+  # The checked-in unit keeps the safe default for static verification.  A
+  # drop-in applies this checkout's server-local dashboard override without
+  # mutating the tracked unit or leaving a stale port behind.
+  DASHBOARD_DROPIN_DIR=/etc/systemd/system/ceph-ai-dashboard.service.d
+  mkdir -p "$DASHBOARD_DROPIN_DIR"
+  DASHBOARD_DROPIN="$DASHBOARD_DROPIN_DIR/10-deploy.conf"
+  DASHBOARD_DROPIN_TMP="$(mktemp "$DASHBOARD_DROPIN_DIR/.10-deploy.conf.XXXXXX")"
+  {
+    printf '%s\n' '[Service]' 'ExecStart='
+    printf 'ExecStart=%s -m uvicorn dashboard.app:app --host %s --port %s\n' \
+      "$VENV_PYTHON" "$DASHBOARD_HOST" "$DASHBOARD_PORT"
+  } > "$DASHBOARD_DROPIN_TMP"
+  chmod 0644 "$DASHBOARD_DROPIN_TMP"
+  mv -f "$DASHBOARD_DROPIN_TMP" "$DASHBOARD_DROPIN"
   systemctl daemon-reload
   # The repair supervisor owns candidate promotion and must survive a
   # candidate deployment; the other four services are restarted below.
@@ -148,20 +197,6 @@ pkill -9 -f "$VENV_PYTHON -m uvicorn dashboard.app:app" || true
 stop_checkout_services KILL
 
 echo "==> Starting services"
-# Optional server-local override (gitignored, never committed — this repo
-# may end up on a public remote and must not hardcode this box's real bind
-# address) — e.g. `echo 'DASHBOARD_HOST=103.69.193.220' >
-# scripts/deploy/deploy.local.env` once, on this server only. When running
-# a 2nd cluster's checkout on the SAME server, its own deploy.local.env
-# MUST set a different DASHBOARD_PORT —
-# otherwise the two instances fight over the same port.
-if [ -f "$REPO_DIR/scripts/deploy/deploy.local.env" ]; then
-  # shellcheck disable=SC1091
-  source "$REPO_DIR/scripts/deploy/deploy.local.env"
-fi
-DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
-DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
-
 if [ "$USE_SYSTEMD" = "true" ]; then
   systemctl start ceph-ai-watcher ceph-ai-remediation-watcher ceph-ai-worker ceph-ai-dashboard
 else
@@ -179,7 +214,7 @@ fi
 # The repair supervisor must survive candidate deployments because it owns the
 # test/deploy/promote decision. Under systemd it is left running; on a legacy
 # host start it only if no matching process is present.
-if [ "$USE_SYSTEMD" = "true" ]; then
+if [ "$USE_SYSTEMD" = "true" ] && [ "$REPAIR_USES_SYSTEMD" = "true" ]; then
   systemctl is-active --quiet ceph-ai-code-repair-supervisor.service || \
     systemctl start ceph-ai-code-repair-supervisor.service
 else

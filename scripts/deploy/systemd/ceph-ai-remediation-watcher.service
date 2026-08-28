@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/ceph-ai
+NoNewPrivileges=yes
+RuntimeDirectory=ceph-ai
+RuntimeDirectoryPreserve=yes
 ExecStart=/root/ceph-ai/.venv/bin/python -m watcher.remediation_main
 Restart=always
 RestartSec=3

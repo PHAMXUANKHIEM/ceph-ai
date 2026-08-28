@@ -1,7 +1,9 @@
 from watcher import remediation_main
+from config.settings import settings
 
 
-def test_fast_watcher_polls_and_publishes_every_tick(monkeypatch):
+def test_fast_watcher_polls_and_publishes_every_tick(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ai_remediation_lock_file", str(tmp_path / "remediation.lock"))
     health = {"status": "HEALTH_WARN", "checks": {"OSD_DOWN": {}}}
     calls = []
     class FakeSession:
@@ -28,3 +30,17 @@ def test_fast_watcher_polls_and_publishes_every_tick(monkeypatch):
     assert [row[0] for row in calls] == ["resolve", "reconcile", "verify", "publish"] * 2
     assert calls[3][3]["cluster_id"] == "cluster-1"
     assert health_calls[0][0][0] == ["10.0.0.1", "10.0.0.2"]
+
+
+def test_second_watcher_instance_refuses_to_run(monkeypatch, tmp_path):
+    import fcntl
+
+    lock_path = tmp_path / "remediation.lock"
+    monkeypatch.setattr(settings, "ai_remediation_lock_file", str(lock_path))
+    calls = []
+    monkeypatch.setattr(remediation_main, "_run", lambda *_args, **_kwargs: calls.append("run"))
+    with lock_path.open("a+") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        remediation_main.run(max_iterations=1)
+    assert calls == []
+    assert lock_path.exists()

@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # Dedicated safety-critical watcher; intentionally independent from the
     # heavier inventory/RBD/Log Intelligence loop in watcher.main.
     ai_remediation_poll_interval_seconds: int = 10
+    # POSIX advisory lock for the dedicated remediation watcher.  The lock
+    # lives under the systemd runtime directory and is released by the
+    # kernel even when the process exits uncleanly.
+    ai_remediation_lock_file: str = "/run/ceph-ai/remediation-watcher.lock"
 
     # OSD/data node access — used by watcher/collector.py to fetch OSD daemon
     # logs (Story 1.4). Same cluster as ceph_mon_nodes above; also blank by
