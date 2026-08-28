@@ -1,9 +1,11 @@
+import asyncio
 import json
 import logging
+import threading
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import or_
 
 from config.settings import settings
@@ -14,7 +16,11 @@ from dashboard.chat_client import (
     run_chat_turn,
     with_romantic_address,
 )
-from dashboard.dual_ai_chat import DualAIChatError, run_dual_ai_chat
+from dashboard.dual_ai_chat import (
+    MAX_DUAL_PROMPT_CHARS,
+    DualAIChatError,
+    stream_dual_ai_chat,
+)
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.cluster_scope import selected_cluster
@@ -69,6 +75,8 @@ SESSION_PREVIEW_MAX_CHARS = 80
 CHAT_REQUEST_CEPH_CODE = "CHAT_REQUEST"
 MAX_AI_NAME_LENGTH = 64
 MAX_FEMALE_ADDRESS_LENGTH = 128
+MAX_ACTIVE_DUAL_JOBS = 2
+_DUAL_JOB_SLOTS = threading.BoundedSemaphore(MAX_ACTIVE_DUAL_JOBS)
 
 
 def _validated_ai_name(value) -> str:
@@ -164,6 +172,98 @@ def _message_to_dict(message: ChatMessage) -> dict:
         "tools_used": json.loads(message.tools_used) if message.tools_used else None,
         "created_at": to_utc_iso(message.created_at),
     }
+
+
+def _dual_event_content(event: dict) -> str:
+    return (
+        f"[Dual AI: {event.get('speaker', 'AI')} · {event.get('provider', '—')}]\n"
+        f"{event.get('content', '')}"
+    )
+
+
+def _persist_dual_event(event: dict, *, session_id: str, cluster_id: int, actor: str) -> None:
+    """Persist one dual-AI event so the widget's existing poller can display it."""
+    with db.SessionLocal() as session:
+        message = ChatMessage(
+            session_id=session_id,
+            cluster_id=cluster_id,
+            role="assistant",
+            content=_dual_event_content(event),
+            actor=actor,
+        )
+        session.add(message)
+        session.commit()
+
+
+async def _run_dual_chat_background(
+    prompt: str,
+    history: list[dict],
+    session_id: str,
+    cluster_id: int,
+    actor: str,
+) -> None:
+    """Run the exchange after the HTTP response and persist every turn."""
+    acquired = await asyncio.to_thread(_DUAL_JOB_SLOTS.acquire, True, 0)
+    if not acquired:
+        try:
+            await asyncio.to_thread(
+                _persist_dual_event,
+                {
+                    "speaker": "Hệ thống",
+                    "provider": "—",
+                    "content": "Đang có quá nhiều phiên Hai AI chạy đồng thời; vui lòng thử lại sau.",
+                },
+                session_id=session_id,
+                cluster_id=cluster_id,
+                actor=actor,
+            )
+        except Exception:
+            logger.exception("dual AI background job could not persist capacity error")
+        return
+    try:
+        async for event in stream_dual_ai_chat(prompt, history):
+            await asyncio.to_thread(
+                _persist_dual_event,
+                event,
+                session_id=session_id,
+                cluster_id=cluster_id,
+                actor=actor,
+            )
+    except DualAIChatError as exc:
+        logger.warning("dual AI background job failed: %s", exc)
+        error_event = {
+            "speaker": "Hệ thống",
+            "provider": "—",
+            "content": f"Không thể tiếp tục chế độ hai AI: {exc}",
+        }
+        try:
+            await asyncio.to_thread(
+                _persist_dual_event,
+                error_event,
+                session_id=session_id,
+                cluster_id=cluster_id,
+                actor=actor,
+            )
+        except Exception:
+            logger.exception("dual AI background job could not persist its error")
+    except Exception:
+        logger.exception("dual AI background job crashed")
+        try:
+            await asyncio.to_thread(
+                _persist_dual_event,
+                {
+                    "speaker": "Hệ thống",
+                    "provider": "—",
+                    "content": "Chế độ hai AI gặp lỗi nội bộ; kiểm tra log Dashboard.",
+                },
+                session_id=session_id,
+                cluster_id=cluster_id,
+                actor=actor,
+            )
+        except Exception:
+            logger.exception("dual AI background job could not persist internal error")
+    finally:
+        _DUAL_JOB_SLOTS.release()
 
 
 _NO_MESSAGES_YET = object()  # sentinel — distinct from "the latest row's session_id happens to be None"
@@ -324,7 +424,11 @@ async def get_chat_messages(request: Request, user: str = Depends(require_login)
 
 
 @router.post("/api/chat/messages")
-async def post_chat_message(request: Request, user: str = Depends(require_login)):
+async def post_chat_message(
+    request: Request,
+    background: BackgroundTasks,
+    user: str = Depends(require_login),
+):
     cluster = selected_cluster(request)
     body = await request.json()
     text = (body.get("content") or "").strip()
@@ -333,6 +437,11 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
     mode = (body.get("mode") or "single").strip().lower()
     if mode not in {"single", "dual"}:
         raise HTTPException(status_code=400, detail="Chế độ chat không hợp lệ")
+    if mode == "dual" and len(text) > MAX_DUAL_PROMPT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Yêu cầu quá dài; chế độ hai AI chỉ nhận tối đa {MAX_DUAL_PROMPT_CHARS} ký tự",
+        )
     # Falls back to a fresh id rather than 400ing — a stale/cached frontend
     # bundle that never learned about sessions at all should still work,
     # same "degrade gracefully" posture as open_mcp_tools() elsewhere in
@@ -380,36 +489,24 @@ async def post_chat_message(request: Request, user: str = Depends(require_login)
         session.refresh(user_message)
         user_message_dict = _message_to_dict(user_message)
 
-    if mode == "dual":
-        try:
-            events = await run_dual_ai_chat(text, history)
-        except DualAIChatError as exc:
-            logger.warning("post_chat_message dual mode: %s", exc)
-            events = [{
-                "speaker": "Hệ thống",
-                "provider": "—",
-                "model": "",
-                "content": f"Không thể chạy chế độ hai AI: {exc}",
-            }]
-        assistant_messages = []
-        with db.SessionLocal() as session:
-            for event in events:
-                content = (
-                    f"[Dual AI: {event.get('speaker', 'AI')} · {event.get('provider', '—')}]\n"
-                    f"{event.get('content', '')}"
-                )
-                assistant_message = ChatMessage(
-                    session_id=session_id, cluster_id=cluster.id, role="assistant",
-                    content=content, actor=user,
-                )
-                session.add(assistant_message)
-                session.flush()
-                assistant_messages.append(_message_to_dict(assistant_message))
-            session.commit()
+    if mode == "dual" and pending_node_command_id is None:
+        # Return immediately. The background task persists each AI turn as it
+        # finishes; the widget already polls /messages every 2.5 seconds, so
+        # the operator sees the conversation incrementally instead of waiting
+        # for all CLI calls to complete inside one HTTP request.
+        background.add_task(
+            _run_dual_chat_background,
+            text,
+            history,
+            session_id,
+            cluster.id,
+            user,
+        )
         return {
             "mode": "dual",
             "user_message": user_message_dict,
-            "assistant_messages": assistant_messages,
+            "assistant_messages": [],
+            "processing": True,
         }
 
     if pending_node_command_id is not None:

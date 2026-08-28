@@ -2,6 +2,7 @@ import json
 
 import bcrypt
 import dashboard.routes.chat as chat_module
+import dashboard.dual_ai_chat as dual_module
 from shared import audit
 from shared import db as db_module
 from shared.models import (
@@ -60,14 +61,12 @@ def test_chat_uses_selected_secondary_cluster_and_scopes_history(dashboard_clien
 
 
 def test_dual_chat_mode_persists_each_ai_reply(dashboard_client, monkeypatch):
-    async def fake_dual_chat(prompt, history):
+    async def fake_dual_chat_stream(prompt, history):
         assert prompt == "Thiết kế cảnh báo OSD"
-        return [
-            {"speaker": "Planner/Reviewer", "provider": "codex", "content": "Kế hoạch"},
-            {"speaker": "Implementer", "provider": "claude", "content": "Đề xuất thực hiện"},
-        ]
+        yield {"speaker": "Planner/Reviewer", "provider": "codex", "content": "Kế hoạch"}
+        yield {"speaker": "Implementer", "provider": "claude", "content": "Đề xuất thực hiện"}
 
-    monkeypatch.setattr(chat_module, "run_dual_ai_chat", fake_dual_chat)
+    monkeypatch.setattr(chat_module, "stream_dual_ai_chat", fake_dual_chat_stream)
     _login(dashboard_client)
 
     response = dashboard_client.post(
@@ -78,10 +77,50 @@ def test_dual_chat_mode_persists_each_ai_reply(dashboard_client, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["mode"] == "dual"
-    assert [item["content"] for item in payload["assistant_messages"]] == [
-        "[Dual AI: Planner/Reviewer · codex]\nKế hoạch",
-        "[Dual AI: Implementer · claude]\nĐề xuất thực hiện",
-    ]
+    assert payload["processing"] is True
+    assert payload["assistant_messages"] == []
+    with db_module.SessionLocal() as session:
+        replies = (
+            session.query(ChatMessage)
+            .filter_by(session_id="dual-chat", actor="admin", role="assistant")
+            .order_by(ChatMessage.created_at.asc())
+            .all()
+        )
+        assert [reply.content for reply in replies] == [
+            "[Dual AI: Planner/Reviewer · codex]\nKế hoạch",
+            "[Dual AI: Implementer · claude]\nĐề xuất thực hiện",
+        ]
+
+
+def test_dual_chat_saves_provider_error_without_http_500(dashboard_client, monkeypatch):
+    async def failing_stream(prompt, history):
+        raise dual_module.DualAIChatError("provider chưa đăng nhập")
+        yield  # Keep this an async generator for the route's streaming contract.
+
+    monkeypatch.setattr(chat_module, "stream_dual_ai_chat", failing_stream)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/chat/messages",
+        json={"session_id": "dual-error", "content": "Kiểm tra provider", "mode": "dual"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["processing"] is True
+    with db_module.SessionLocal() as session:
+        reply = session.query(ChatMessage).filter_by(
+            session_id="dual-error", actor="admin", role="assistant"
+        ).one()
+        assert "provider chưa đăng nhập" in reply.content
+
+
+def test_dual_chat_rejects_oversized_prompt(dashboard_client):
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/api/chat/messages",
+        json={"content": "x" * 12_001, "mode": "dual"},
+    )
+    assert response.status_code == 400
 
 
 def test_confirmed_secondary_chat_action_keeps_original_cluster(dashboard_client):

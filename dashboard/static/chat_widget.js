@@ -435,11 +435,14 @@
       .then(function (response) { return response.json(); })
       .then(function (data) {
         if (data.session_id !== currentSessionId) return;
+        var addedAny = false;
         (data.messages || []).forEach(function (message) {
           if (!messagesEl.querySelector('[data-message-id="' + message.id + '"]')) {
             appendMessage(message);
+            addedAny = true;
           }
         });
+        if (addedAny) removeTypingIndicator();
       })
       .catch(function () {});
   }, 2500);
@@ -810,7 +813,9 @@
         return response.json();
       })
       .then(function (data) {
-        removeTypingIndicator();
+        // In dual mode the server returns immediately and the poller below
+        // removes this indicator when the first AI event is persisted.
+        if (!(data.mode === "dual" && data.processing)) removeTypingIndicator();
         // Syncs currentSessionId even on a very first message (sent with
         // currentSessionId still null) — the backend generates one in that
         // case, and every message from here on must carry it.
