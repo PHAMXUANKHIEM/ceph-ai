@@ -207,6 +207,100 @@ def _save_state(path: Path, state: dict) -> None:
     os.replace(temporary, path)
 
 
+def reconcile_stale_attempts(
+    state: dict,
+    *,
+    now: datetime | None = None,
+    stale_seconds: int = 3600,
+) -> list[str]:
+    """Mark interrupted repair attempts terminal before they block retries.
+
+    The supervisor can be restarted or killed while ``run_repair`` is between
+    writing RUNNING and writing its final result. Keep the branch name so a
+    caller can clean its isolated worktree, but never treat that old attempt
+    as active again.
+    """
+    now = now or datetime.now(timezone.utc)
+    stale_branches: list[str] = []
+    for value in state.setdefault("attempts", {}).values():
+        if not isinstance(value, dict) or value.get("status") != "RUNNING":
+            continue
+        try:
+            started = datetime.fromisoformat(str(value.get("started_at")))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            age = (now - started).total_seconds()
+        except (TypeError, ValueError):
+            age = stale_seconds + 1
+        if age <= max(0, int(stale_seconds)):
+            continue
+        value["status"] = "FAILED_STALE"
+        value["error"] = "repair attempt became stale without a completion record"
+        value["finished_at"] = now.isoformat()
+        branch = value.get("branch")
+        if isinstance(branch, str) and branch:
+            stale_branches.append(branch)
+    return stale_branches
+
+
+def reconcile_stale_attempts_file(path: Path, *, stale_seconds: int = 3600) -> list[str]:
+    """Persist stale-attempt reconciliation and return branches to clean."""
+    state = _load_state(path)
+    stale_branches = reconcile_stale_attempts(state, stale_seconds=stale_seconds)
+    if stale_branches:
+        _save_state(path, state)
+    return stale_branches
+
+
+def cleanup_stale_worktrees(repo: Path, branches: list[str]) -> list[str]:
+    """Remove only matching temporary repair worktrees; keep their branches.
+
+    Worktrees are intentionally restricted to ``/tmp/ceph-ai-repair-*/repo``
+    so stale-state cleanup cannot remove a normal checkout or user worktree.
+    """
+    wanted = {
+        branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+        for branch in branches
+    }
+    if not wanted:
+        return []
+    listing = _run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return []
+    records: list[tuple[str, str]] = []
+    path: str | None = None
+    branch: str | None = None
+    for line in listing.stdout.splitlines() + [""]:
+        if line.startswith("worktree "):
+            path = line.removeprefix("worktree ")
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch ")
+        elif not line and path and branch:
+            records.append((path, branch))
+            path = branch = None
+    removed: list[str] = []
+    for worktree, branch in records:
+        candidate = Path(worktree)
+        if (
+            branch in wanted
+            and candidate.name == "repo"
+            and candidate.parent.name.startswith("ceph-ai-repair-")
+            and candidate.parent.parent == Path("/tmp")
+        ):
+            result = _run(
+                ["git", "worktree", "remove", "--force", str(candidate)],
+                cwd=repo,
+                check=False,
+            )
+            if result.returncode == 0:
+                removed.append(str(candidate))
+    return removed
+
+
 def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
                       *, claude_config_dir: Path | None = None,
                       codex_home: Path | None = None) -> tuple[str, list[str]]:

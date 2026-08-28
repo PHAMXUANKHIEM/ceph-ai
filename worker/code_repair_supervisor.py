@@ -18,7 +18,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config.settings import settings
-from worker.code_repair import ERROR_RE, SECRET_RE, RepairConfig, clean_evidence, run_repair
+from worker.code_repair import (
+    ERROR_RE,
+    SECRET_RE,
+    RepairConfig,
+    cleanup_stale_worktrees,
+    clean_evidence,
+    reconcile_stale_attempts_file,
+    run_repair,
+)
 from worker import ceph_capability_learning as ceph_learning
 from shared.telegram_alerts import send_code_repair_alert
 
@@ -102,6 +110,17 @@ def run_forever(*, max_iterations: int | None = None) -> None:
     # a bounded run still start immediately.
     last_repair_at: float | None = time.monotonic() if max_iterations is None else None
     while settings.code_repair_auto_enabled:
+        state_file = RepairConfig(repo=repo).state_file
+        stale_branches = reconcile_stale_attempts_file(
+            state_file,
+            stale_seconds=settings.code_repair_running_stale_seconds,
+        )
+        if stale_branches:
+            removed = cleanup_stale_worktrees(repo, stale_branches)
+            logger.warning(
+                "reconciled %d stale Code Repair attempt(s); removed %d orphan worktree(s)",
+                len(stale_branches), len(removed),
+            )
         candidate = None
         if settings.ceph_capability_learning_enabled:
             base_revision = subprocess.run(

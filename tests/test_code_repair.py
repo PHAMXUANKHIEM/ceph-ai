@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,52 @@ def test_duplicate_error_is_not_sent_to_ai(monkeypatch, tmp_path):
     result = code_repair.run_repair(evidence, config)
     assert result.status == "SKIPPED_DUPLICATE"
     assert result.branch == "ai-repair/existing"
+
+
+def test_reconcile_stale_attempts_marks_old_running_only():
+    now = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    state = {"attempts": {
+        "old": {
+            "status": "RUNNING", "branch": "ai-repair/old",
+            "started_at": (now - timedelta(hours=2)).isoformat(),
+        },
+        "fresh": {
+            "status": "RUNNING", "branch": "ai-repair/fresh",
+            "started_at": (now - timedelta(minutes=5)).isoformat(),
+        },
+    }}
+
+    stale = code_repair.reconcile_stale_attempts(state, now=now, stale_seconds=3600)
+
+    assert stale == ["ai-repair/old"]
+    assert state["attempts"]["old"]["status"] == "FAILED_STALE"
+    assert state["attempts"]["old"]["finished_at"] == now.isoformat()
+    assert state["attempts"]["fresh"]["status"] == "RUNNING"
+
+
+def test_cleanup_stale_worktrees_is_strictly_scoped(monkeypatch, tmp_path):
+    listing = "\n".join((
+        "worktree /tmp/ceph-ai-repair-old/repo",
+        "HEAD abc",
+        "branch refs/heads/ai-repair/old",
+        "",
+        "worktree /home/vc/other/repo",
+        "HEAD def",
+        "branch refs/heads/ai-repair/old",
+        "",
+    ))
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return type("Result", (), {"stdout": listing, "returncode": 0})()
+
+    monkeypatch.setattr(code_repair, "_run", fake_run)
+
+    removed = code_repair.cleanup_stale_worktrees(tmp_path, ["ai-repair/old"])
+
+    assert removed == ["/tmp/ceph-ai-repair-old/repo"]
+    assert calls[-1] == ["git", "worktree", "remove", "--force", "/tmp/ceph-ai-repair-old/repo"]
 
 
 def test_focused_test_command_uses_only_changed_test_files():
