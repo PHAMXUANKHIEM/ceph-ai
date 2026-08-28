@@ -66,6 +66,27 @@ def test_summary_uses_model_specific_price_table(dashboard_client, monkeypatch):
     assert data["pricing_complete"] is True
 
 
+def test_summary_prefers_provider_usage_over_character_estimate(dashboard_client, monkeypatch):
+    now = datetime(2026, 8, 28, 12, 0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_input_usd_per_million_tokens", 0.0)
+    monkeypatch.setattr("shared.ai_cost.settings.ai_cost_output_usd_per_million_tokens", 0.0)
+    with db.SessionLocal() as session:
+        session.add(AIInvocation(
+            id="actual-usage", feature="chat", provider="codex", model_id="gpt-5.6-sol",
+            status="SUCCESS", latency_ms=1, input_chars=4000, output_chars=4000,
+            input_tokens=2, output_tokens=3, created_at=now,
+        ))
+        session.commit()
+    data = summary(24, now=now)
+    row = next(item for item in data["groups"] if item["feature"] == "chat")
+    assert row["input_tokens"] == 2
+    assert row["output_tokens"] == 3
+    assert row["token_usage_source"] == "provider"
+    assert data["actual_token_calls"] == 1
+    assert data["estimated_token_calls"] == 0
+    assert row["estimated_cost_usd"] == 0.000068
+
+
 def test_summary_converts_cost_to_vnd_and_exposes_totals(dashboard_client, monkeypatch):
     now = datetime(2026, 8, 28, 12, 0)
     monkeypatch.setattr("shared.ai_cost.settings.ai_cost_usd_to_vnd", 26290.0)

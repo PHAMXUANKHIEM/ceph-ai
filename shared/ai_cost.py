@@ -115,6 +115,13 @@ def _estimated_tokens(chars: int) -> int:
     return math.ceil(max(0, int(chars or 0)) / CHARS_PER_TOKEN)
 
 
+def _tokens_for(row: AIInvocation, field: str, chars_field: str) -> tuple[int, bool]:
+    actual = getattr(row, field, None)
+    if actual is not None:
+        return max(0, int(actual)), True
+    return _estimated_tokens(getattr(row, chars_field, 0)), False
+
+
 def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd_to_vnd: float) -> dict:
     """Suggest cheaper priced models without changing the active provider.
 
@@ -207,10 +214,20 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
     total_cost = 0.0
     priced_groups = 0
     unpriced_groups = 0
+    actual_token_calls = 0
+    estimated_token_calls = 0
     rates: set[tuple[float, float]] = set()
     for (feature, provider, model_id), items in sorted(groups.items()):
-        input_tokens = sum(_estimated_tokens(row.input_chars) for row in items)
-        output_tokens = sum(_estimated_tokens(row.output_chars) for row in items)
+        input_counts = [_tokens_for(row, "input_tokens", "input_chars") for row in items]
+        output_counts = [_tokens_for(row, "output_tokens", "output_chars") for row in items]
+        input_tokens = sum(count for count, _actual in input_counts)
+        output_tokens = sum(count for count, _actual in output_counts)
+        provider_usage = sum(
+            1 for input_item, output_item in zip(input_counts, output_counts)
+            if input_item[1] and output_item[1]
+        )
+        actual_token_calls += provider_usage
+        estimated_token_calls += len(items) - provider_usage
         price = _resolve_price(provider, model_id) or fallback
         if price is None:
             cost = None
@@ -235,6 +252,7 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
             "errors": sum(row.status == "ERROR" for row in items),
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "token_usage_source": "provider" if provider_usage == len(items) else "estimated",
             "input_usd_per_million_tokens": input_rate,
             "output_usd_per_million_tokens": output_rate,
             "pricing_source": source,
@@ -258,6 +276,8 @@ def summary(hours: int = 24, *, now: datetime | None = None) -> dict:
         "errors": sum(row.status == "ERROR" for row in rows),
         "input_tokens": sum(row["input_tokens"] for row in result),
         "output_tokens": sum(row["output_tokens"] for row in result),
+        "actual_token_calls": actual_token_calls,
+        "estimated_token_calls": estimated_token_calls,
         "estimated_cost_usd": round(total_cost, 6) if priced_groups else None,
         "usd_to_vnd": usd_to_vnd,
         "estimated_cost_vnd": round(total_cost * usd_to_vnd) if priced_groups else None,

@@ -39,7 +39,7 @@ from shared.models import (
 from shared.node_upgrade_gate import claim_node_upgrade_gate_lock
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from watcher.ceph_client import (
     CephQueryError,
     get_upgrade_status,
@@ -334,6 +334,7 @@ async def _summarize_upgrade_procedure(raw_text: str) -> str:
             timeout=httpx.Timeout(PROCEDURE_SUMMARY_ROUTER_TIMEOUT_SECONDS),
         ) as stream:
             completion = await stream.get_final_completion()
+        record_ai_usage(completion)
     except AuthenticationError as exc:
         raise UpgradeProcedureSummaryError(
             f"Model {settings.router_model!r} hoặc API key không hợp lệ trên 9router: "

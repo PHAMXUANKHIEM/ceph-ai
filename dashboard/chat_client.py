@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
 
 from config.settings import settings
@@ -884,6 +884,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
             ) as stream:
                 completion = await stream.get_final_completion()
+            record_ai_usage(completion)
         except AuthenticationError as exc:
             raise ChatTurnError(f"Model {settings.router_model!r} hoặc API key không hợp lệ trên 9router: {readable_exception_message(exc)}") from exc
         except APIConnectionError as exc:

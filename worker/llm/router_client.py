@@ -16,7 +16,7 @@ from config.settings import settings
 from shared import audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from shared.models import (
     Action,
     ActionClassification,
@@ -635,6 +635,7 @@ async def _call_router(user_content: str) -> dict:
             timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
         ) as stream:
             completion = await stream.get_final_completion()
+        record_ai_usage(completion)
     except Exception as exc:
         raise RouterDiagnosisError(f"Router call failed: {exc}") from exc
 

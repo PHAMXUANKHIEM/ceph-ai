@@ -19,7 +19,7 @@ import httpx
 
 from config.settings import settings
 from shared import db
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from shared.models import BackupAnomaly, BackupJob
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
@@ -157,6 +157,7 @@ async def _call_router(user_content: str) -> dict:
             timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
         ) as stream:
             completion = await stream.get_final_completion()
+        record_ai_usage(completion)
     except Exception as exc:
         raise AIAnalysisError(f"Router call failed: {exc}") from exc
 
@@ -240,6 +241,7 @@ async def _call_digest_router(user_content: str) -> str:
             timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
         ) as stream:
             completion = await stream.get_final_completion()
+        record_ai_usage(completion)
     except Exception as exc:
         raise AIAnalysisError(f"Digest router call failed: {exc}") from exc
     content = (completion.choices[0].message.content or "").strip()

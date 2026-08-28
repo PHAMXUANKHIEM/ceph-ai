@@ -65,6 +65,25 @@ def _estimate_cost(provider: str, model_id: str, input_chars: int, output_chars:
             + output_tokens * price.output_usd_per_million_tokens) / 1_000_000
 
 
+def _record_cost(row: AIInvocation) -> float | None:
+    """Price a completed row using real usage when the provider supplied it."""
+    from shared.ai_cost import CHARS_PER_TOKEN, _configured_fallback, _resolve_price
+
+    price = _resolve_price(row.provider, row.model_id) or _configured_fallback()
+    if price is None:
+        return None
+    input_tokens = (
+        max(0, int(row.input_tokens)) if row.input_tokens is not None
+        else math.ceil(max(0, int(row.input_chars or 0)) / CHARS_PER_TOKEN)
+    )
+    output_tokens = (
+        max(0, int(row.output_tokens)) if row.output_tokens is not None
+        else math.ceil(max(0, int(row.output_chars or 0)) / CHARS_PER_TOKEN)
+    )
+    return (input_tokens * price.input_usd_per_million_tokens
+            + output_tokens * price.output_usd_per_million_tokens) / 1_000_000
+
+
 def _period_start(now: datetime, period: str) -> datetime:
     if period == "daily":
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -80,7 +99,7 @@ def _spent_since(session, start: datetime) -> tuple[float, int]:
         # hard-budget checks as an unknown-priced historical invocation.
         if row.error_type in {"AIBudgetUnpricedError", "AIBudgetConfigurationError"}:
             continue
-        cost = _estimate_cost(row.provider, row.model_id, row.input_chars, row.output_chars)
+        cost = _record_cost(row)
         if cost is None:
             unpriced += 1
         else:

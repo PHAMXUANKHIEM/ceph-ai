@@ -2560,6 +2560,10 @@ class AIInvocation(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     input_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     output_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Provider-reported token counts when available; NULL means the provider
+    # did not expose usage and cost calculation falls back to chars / 4.
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 

@@ -42,7 +42,7 @@ import httpx
 from config.settings import settings
 from shared import db, log_learning
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from shared.incident_actions import cancel_pending_actions
 from shared.cluster_nodes import configured_nodes
 from shared import audit
@@ -429,6 +429,7 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
         ) as stream:
             completion = await stream.get_final_completion()
+        record_ai_usage(completion)
     except Exception as exc:
         raise LogAnalysisError(f"Router call failed: {exc}") from exc
 

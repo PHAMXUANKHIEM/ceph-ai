@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from config.settings import settings
+from shared.ai_observability import record_ai_usage
 
 
 class CodexAppServerError(RuntimeError):
@@ -383,6 +384,7 @@ class CodexAppServer:
                         turn = params.get("turn") or {}
                         if turn.get("status") == "failed":
                             raise CodexAppServerError((turn.get("error") or {}).get("message", "Codex turn thất bại"))
+                        record_ai_usage(turn)
                         return {"reply_text": final_text.strip() or "Codex không trả về nội dung"}
             finally:
                 self._tool_handler = None

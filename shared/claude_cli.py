@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 
 from config.settings import settings
+from shared.ai_observability import record_ai_usage
 
 
 class ClaudeCLIError(RuntimeError):
@@ -229,6 +230,7 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
     raw = stdout.decode(errors="replace").strip()
     try:
         data = json.loads(raw)
+        record_ai_usage(data)
         return str(data.get("result") or data.get("text") or "").strip()
     except json.JSONDecodeError:
         return _ANSI_RE.sub("", raw).strip()

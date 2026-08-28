@@ -36,6 +36,21 @@ def test_records_success_without_content(monkeypatch):
         assert "DO-NOT-STORE" not in repr(row.__dict__)
 
 
+def test_records_provider_reported_usage_when_available(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+
+    @observe_ai_call("usage_feature")
+    async def call():
+        return {"usage": {"prompt_tokens": 17, "completion_tokens": 5}, "answer": "ok"}
+
+    assert asyncio.run(call())["answer"] == "ok"
+    with sessions() as session:
+        row = session.query(AIInvocation).one()
+        assert row.input_tokens == 17
+        assert row.output_tokens == 5
+
+
 def test_records_only_exception_class(monkeypatch):
     sessions = _session_factory()
     monkeypatch.setattr(db, "SessionLocal", sessions)
