@@ -20,7 +20,6 @@
           <button type="button" class="settings-nav-item {% if active_section == 'action-policy' %}active{% endif %}" data-section="action-policy">AI Action Policy</button>
           <button type="button" class="settings-nav-item {% if active_section == 'database' %}active{% endif %}" data-section="database">Database Connection</button>
           <button type="button" class="settings-nav-item {% if active_section == 'server-log' %}active{% endif %}" data-section="server-log">Server Logs</button>
-          <a href="/ai-cost" class="settings-nav-item {% if request.url.path == '/ai-cost' %}active{% endif %}">Chi phí</a>
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">
@@ -40,6 +39,7 @@
         </button>
         <div class="settings-nav-group-items" {% if active_section not in ['router', 'cluster', 'openstack'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">AI API</button>
+          <a href="/ai-cost" class="settings-nav-item">Chi phí</a>
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Ceph Cluster</button>
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
         </div>

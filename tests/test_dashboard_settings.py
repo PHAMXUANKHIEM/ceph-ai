@@ -1689,6 +1689,8 @@ def test_get_settings_hides_restart_controls_for_non_admin(dashboard_client):
     assert "Playbook Registry" not in response.text
     assert "Phân loại hành động AI" not in response.text
     assert 'action="/settings/autopilot/action-policy"' not in response.text
+    assert 'href="/ai-cost"' in response.text
+    assert "Chi phí" in response.text
 
 
 def test_restart_worker_route_rejects_non_admin(dashboard_client):
