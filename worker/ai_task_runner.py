@@ -35,6 +35,8 @@ def main(task_id: str) -> int:
         metadata = json.loads(metadata_path.read_text())
         prompt = (directory / "prompt.txt").read_text(errors="replace")
         instructions = (directory / "instructions.txt").read_text(errors="replace")
+        transcript_path = directory / "transcript.jsonl"
+        transcript_path.touch(mode=0o600, exist_ok=True)
         config = RepairConfig(
             repo=PROJECT_ROOT,
             provider="auto",
@@ -52,6 +54,7 @@ def main(task_id: str) -> int:
             task_kind="user-request",
             task_instructions=instructions,
             notify_telegram=False,
+            transcript_file=transcript_path,
         )
         result = run_repair(prompt, config, force=True)
         metadata.update({

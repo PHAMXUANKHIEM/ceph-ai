@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -158,6 +159,24 @@ def test_focused_test_command_uses_only_changed_test_files():
     assert command == (
         "PYTHONPATH=. .venv/bin/pytest -q tests/test_code_repair.py tests/test_commands.py"
     )
+
+
+def test_transcript_records_bounded_jsonl_event(tmp_path):
+    transcript = tmp_path / "transcript.jsonl"
+    config = code_repair.RepairConfig(repo=tmp_path, transcript_file=transcript)
+    code_repair._record_transcript(
+        config,
+        speaker="Implementer",
+        event="implementation",
+        direction="from_ai",
+        content="x" * (code_repair.TRANSCRIPT_CONTENT_LIMIT + 100),
+        provider="codex",
+        model="test-model",
+    )
+    record = json.loads(transcript.read_text())
+    assert record["speaker"] == "Implementer"
+    assert record["provider"] == "codex"
+    assert len(record["content"]) <= code_repair.TRANSCRIPT_CONTENT_LIMIT
 
 
 def test_test_failure_kind_separates_infrastructure_from_candidate():

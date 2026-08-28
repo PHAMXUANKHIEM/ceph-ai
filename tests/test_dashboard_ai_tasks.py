@@ -29,6 +29,25 @@ def test_ai_tasks_page_exposes_prompt_and_account_choices(dashboard_client):
     assert 'name="implementer_account_source"' in response.text
 
 
+def test_task_conversation_endpoint_returns_jsonl_events(dashboard_client, monkeypatch, tmp_path):
+    task_id = "12345678-1234-1234-1234-123456789abc"
+    directory = tmp_path / task_id
+    directory.mkdir()
+    (directory / "task.json").write_text(json.dumps({
+        "task_id": task_id, "status": "RUNNING", "created_at": "2026-08-28T00:00:00+00:00",
+    }))
+    (directory / "transcript.jsonl").write_text(json.dumps({
+        "speaker": "Planner/Reviewer", "event": "plan", "direction": "from_ai",
+        "content": "Đề xuất triển khai và viết test.",
+    }) + "\n")
+    monkeypatch.setattr(ai_tasks, "TASK_ROOT", tmp_path)
+    _login(dashboard_client)
+    response = dashboard_client.get(f"/ai-tasks/{task_id}/conversation")
+    assert response.status_code == 200
+    assert response.json()["events"][0]["speaker"] == "Planner/Reviewer"
+    assert response.json()["events"][0]["content"] == "Đề xuất triển khai và viết test."
+
+
 def test_create_ai_task_stores_profile_selection_and_spawns_worker(
     dashboard_client, monkeypatch, tmp_path,
 ):
@@ -126,6 +145,7 @@ def test_systemd_runner_uses_server_test_command_and_disables_telegram(
     assert seen["config"].test_command == runner.settings.code_repair_test_command
     assert seen["config"].notify_telegram is False
     assert seen["config"].implementer_account_profile == "separate-one"
+    assert seen["config"].transcript_file == directory / "transcript.jsonl"
 
 
 def test_task_cleanup_removes_only_old_terminal_tasks(tmp_path):

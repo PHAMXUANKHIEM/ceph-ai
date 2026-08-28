@@ -37,6 +37,7 @@ TERMINAL_STATUSES = {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAI
 MAX_ACTIVE_TASKS = 2
 TASK_MAX_RUNTIME_SECONDS = 2 * 60 * 60 + 5 * 60
 STALE_TASK_ERROR = "AI task không có completion record sau thời gian chạy tối đa; đã giải phóng slot."
+TRANSCRIPT_CONTENT_LIMIT = 20_000
 
 
 def _require_admin(user: str) -> None:
@@ -67,6 +68,31 @@ def _read_json(path: Path) -> dict:
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def _read_conversation(task_id: str) -> list[dict]:
+    path = _task_dir(task_id) / "transcript.jsonl"
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            stream.seek(max(0, size - 512 * 1024))
+            raw = stream.read()
+    except (FileNotFoundError, OSError):
+        return []
+    lines = raw.decode(errors="replace").splitlines()
+    if size > 512 * 1024 and lines:
+        lines = lines[1:]
+    events = []
+    for line in lines[-200:]:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or not isinstance(event.get("content"), str):
+            continue
+        event["content"] = event["content"][:TRANSCRIPT_CONTENT_LIMIT]
+        events.append(event)
+    return events
 
 
 def _task_view(task_id: str) -> dict:
@@ -384,3 +410,10 @@ async def ai_task_status(task_id: str, user: str = Depends(require_login)):
         "error": result.get("error") or task.get("error"),
         "test_output": result.get("test_output") or "",
     }
+
+
+@router.get("/ai-tasks/{task_id}/conversation")
+async def ai_task_conversation(task_id: str, user: str = Depends(require_login)):
+    _require_admin(user)
+    _task_view(task_id)
+    return {"task_id": task_id, "events": _read_conversation(task_id)}

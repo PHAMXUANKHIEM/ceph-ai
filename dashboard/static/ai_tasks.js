@@ -133,7 +133,45 @@
   var statusEl = document.getElementById("ai-task-status");
   var resultEl = document.getElementById("ai-task-result");
   var outputEl = document.getElementById("ai-task-test-output");
+  var conversationEl = document.getElementById("ai-task-conversation");
+  function refreshConversation() {
+    if (!conversationEl) return;
+    fetch("/ai-tasks/" + encodeURIComponent(taskId) + "/conversation", { credentials: "same-origin" })
+      .then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); })
+      .then(function (data) {
+        var events = Array.isArray(data.events) ? data.events : [];
+        conversationEl.innerHTML = "";
+        if (!events.length) {
+          var empty = document.createElement("div");
+          empty.className = "ai-task-conversation-empty";
+          empty.textContent = "Chưa có trao đổi hoặc worker chưa gọi AI.";
+          conversationEl.appendChild(empty);
+          return;
+        }
+        events.forEach(function (event) {
+          var message = document.createElement("article");
+          message.className = "ai-task-message " + (event.direction === "to_ai" ? "is-request" : "is-response");
+          var header = document.createElement("div");
+          header.className = "ai-task-message-header";
+          var speaker = document.createElement("strong");
+          speaker.textContent = event.speaker || "AI";
+          var meta = document.createElement("span");
+          meta.textContent = [event.event, event.provider, event.model, event.timestamp].filter(Boolean).join(" · ");
+          header.appendChild(speaker);
+          header.appendChild(meta);
+          var body = document.createElement("pre");
+          body.className = "ai-task-message-body";
+          body.textContent = event.content || "";
+          message.appendChild(header);
+          message.appendChild(body);
+          conversationEl.appendChild(message);
+        });
+        conversationEl.scrollTop = conversationEl.scrollHeight;
+      })
+      .catch(function (error) { conversationEl.textContent = "Không đọc được kênh trao đổi: " + error.message; });
+  }
   function refreshTask() {
+    refreshConversation();
     fetch("/ai-tasks/" + encodeURIComponent(taskId) + "/status", { credentials: "same-origin" })
       .then(function (response) { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); })
       .then(function (data) {

@@ -38,6 +38,7 @@ _TELEGRAM_NOISE_RE = re.compile(
     r"(?i)(paramiko\.transport:)?(?:connected \(version|authentication \(publickey\) successful)"
 )
 _SOURCE_LOG_RE = re.compile(r"^Source (?:application )?log:\s*(?P<name>\S+)", re.MULTILINE)
+TRANSCRIPT_CONTENT_LIMIT = 20_000
 
 
 class RepairError(RuntimeError):
@@ -97,6 +98,7 @@ class RepairConfig:
     max_pipeline_attempts: int = 3
     running_stale_seconds: int = 3600
     notify_telegram: bool = True
+    transcript_file: Path | None = None
 
 
 @dataclass
@@ -228,6 +230,40 @@ def _save_state(path: Path, state: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2, default=str))
     os.replace(temporary, path)
+
+
+def _transcript_text(value: str, *, limit: int = TRANSCRIPT_CONTENT_LIMIT) -> str:
+    value = value or ""
+    if len(value) <= limit:
+        return value
+    half = max(1, (limit - 80) // 2)
+    return value[:half] + "\n...[nội dung đã rút gọn]...\n" + value[-half:]
+
+
+def _record_transcript(
+    config: RepairConfig, *, speaker: str, event: str, direction: str,
+    content: str, provider: str | None = None, model: str | None = None,
+) -> None:
+    """Append a bounded, admin-readable conversation event for user tasks."""
+    if config.transcript_file is None:
+        return
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "speaker": speaker,
+        "event": event,
+        "direction": direction,
+        "provider": provider,
+        "model": model or "",
+        "content": _transcript_text(content),
+    }
+    try:
+        config.transcript_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not config.transcript_file.exists():
+            config.transcript_file.touch(mode=0o600)
+        with config.transcript_file.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        return
 
 
 def reconcile_stale_attempts(
@@ -524,10 +560,18 @@ Observed failure (credentials already redacted):
             model=config.planner_model, mode="review",
         )
         result.planner_provider = planner_provider
+        _record_transcript(
+            config, speaker="Planner/Reviewer", event="plan", direction="to_ai",
+            content=planner_prompt, provider=planner_provider, model=config.planner_model,
+        )
         notifier.update(15, f"{planner_provider} đang phân tích và lập kế hoạch (Planner/Reviewer)")
         planner = _run(
             planner_command, cwd=planner_worktree, timeout=config.timeout_seconds,
             input_text=planner_prompt if planner_provider == "codex" else None, check=False,
+        )
+        _record_transcript(
+            config, speaker="Planner/Reviewer", event="plan", direction="from_ai",
+            content=planner.stdout, provider=planner_provider, model=config.planner_model,
         )
         if planner.returncode != 0:
             raise RepairError(f"{planner_provider} planner failed ({planner.returncode}):\n{planner.stdout[-6000:]}")
@@ -570,9 +614,17 @@ Observed application failure (credentials already redacted):
             )
             result.provider = provider
             result.implementer_provider = provider
+            _record_transcript(
+                config, speaker="Implementer", event="implementation", direction="to_ai",
+                content=attempt_prompt, provider=provider, model=config.implementer_model,
+            )
             notifier.update(15 + ai_attempt * 10, f"{provider} đang sửa code, vòng {ai_attempt}/{config.max_ai_attempts}")
             ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
                       input_text=attempt_prompt if provider == "codex" else None, check=False)
+            _record_transcript(
+                config, speaker="Implementer", event="implementation", direction="from_ai",
+                content=ai.stdout, provider=provider, model=config.implementer_model,
+            )
             if ai.returncode != 0:
                 raise RepairError(f"{provider} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
             result.changed_files = _validate_changes(worktree)
@@ -646,10 +698,18 @@ If changes are needed, list precise actionable corrections before that line.
                 model=config.planner_model, mode="review",
             )
             result.planner_provider = result.planner_provider or reviewer_provider
+            _record_transcript(
+                config, speaker="Planner/Reviewer", event="review", direction="to_ai",
+                content=review_prompt, provider=reviewer_provider, model=config.planner_model,
+            )
             notifier.update(58, f"{reviewer_provider} đang review candidate ({review_round}/{config.max_review_rounds})")
             review = _run(
                 reviewer_command, cwd=worktree, timeout=config.timeout_seconds,
                 input_text=review_prompt if reviewer_provider == "codex" else None, check=False,
+            )
+            _record_transcript(
+                config, speaker="Planner/Reviewer", event="review", direction="from_ai",
+                content=review.stdout, provider=reviewer_provider, model=config.planner_model,
             )
             if review.returncode != 0:
                 raise RepairError(f"{reviewer_provider} reviewer failed ({review.returncode}):\n{review.stdout[-6000:]}")
@@ -673,9 +733,17 @@ If changes are needed, list precise actionable corrections before that line.
             )
             result.provider = provider
             result.implementer_provider = provider
+            _record_transcript(
+                config, speaker="Implementer", event="review-fix", direction="to_ai",
+                content=prompt + feedback, provider=provider, model=config.implementer_model,
+            )
             fix = _run(
                 command, cwd=worktree, timeout=config.timeout_seconds,
                 input_text=prompt + feedback if provider == "codex" else None, check=False,
+            )
+            _record_transcript(
+                config, speaker="Implementer", event="review-fix", direction="from_ai",
+                content=fix.stdout, provider=provider, model=config.implementer_model,
             )
             if fix.returncode != 0:
                 raise RepairError(f"{provider} reviewer-fix failed ({fix.returncode}):\n{fix.stdout[-6000:]}")
