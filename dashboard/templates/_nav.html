@@ -64,7 +64,6 @@
         </div>
       </div>
       <a href="/settings" class="nav-link{{ ' active' if nav_path in ('/settings', '/ai-cost') else '' }}">Settings</a>
-      {% if is_admin %}<a href="/ai-tasks" class="nav-link{{ ' active' if nav_path.startswith('/ai-tasks') else '' }}">AI Development</a>{% endif %}
       {% if is_admin %}<a href="/telegram-alerts" class="nav-link{{ ' active' if nav_path.startswith('/telegram-alerts') else '' }}">Alert Telegram</a>{% endif %}
       {% if is_admin %}<a href="/users" class="nav-link{{ ' active' if nav_path == '/users' else '' }}">Users</a>{% endif %}
       {% if is_admin %}<a href="/clusters" class="nav-link{{ ' active' if nav_path == '/clusters' else '' }}">Clusters</a>{% endif %}
