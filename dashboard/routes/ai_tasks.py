@@ -34,6 +34,7 @@ ACCOUNT_SOURCES = ("configured", "separate")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
 TERMINAL_STATUSES = {"PUSHED", "COMMITTED", "STAGING_VERIFIED", "PROMOTED", "FAILED", "SKIPPED_DUPLICATE"}
 MAX_ACTIVE_TASKS = 2
+_task_create_lock = asyncio.Lock()
 
 
 def _require_admin(user: str) -> None:
@@ -102,7 +103,17 @@ def _list_tasks() -> list[dict]:
 
 
 def _active_task_count() -> int:
-    return sum(1 for task in _list_tasks() if task.get("status") not in TERMINAL_STATUSES)
+    count = 0
+    if not TASK_ROOT.is_dir():
+        return count
+    for path in TASK_ROOT.glob("*/task.json"):
+        try:
+            task = _task_view(path.parent.name)
+        except HTTPException:
+            continue
+        if task.get("status") not in TERMINAL_STATUSES:
+            count += 1
+    return count
 
 
 def _profile_value(source: str, profile: str) -> str:
@@ -124,6 +135,16 @@ def _validate_model(value: str, field: str) -> str:
     return value
 
 
+def _cli_executable(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = Path.home() / ".local" / "bin" / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
 def _separate_profile_dir(provider: str, profile: str) -> Path:
     if provider not in {"codex", "claude"}:
         raise HTTPException(status_code=400, detail="Provider phải là codex hoặc claude")
@@ -133,7 +154,7 @@ def _separate_profile_dir(provider: str, profile: str) -> Path:
 
 def _check_separate_profile(provider: str, profile: str) -> dict:
     profile_dir = _separate_profile_dir(provider, profile)
-    executable = shutil.which(provider)
+    executable = _cli_executable(provider)
     result = {
         "provider": provider,
         "profile": profile,
@@ -230,16 +251,25 @@ async def create_ai_task(
         raise HTTPException(status_code=400, detail="Số vòng review phải là số nguyên từ 0 đến 5") from exc
     if not 0 <= rounds <= 5:
         raise HTTPException(status_code=400, detail="Số vòng review phải nằm trong khoảng 0 đến 5")
-    if _active_task_count() >= MAX_ACTIVE_TASKS:
-        raise HTTPException(status_code=409, detail="Đã đạt giới hạn 2 AI task đồng thời; hãy chờ task hiện tại hoàn tất")
     planner_profile = _profile_value(planner_account_source, planner_account_profile)
     implementer_profile = _profile_value(implementer_account_source, implementer_account_profile)
     planner_model = _validate_model(planner_model, "Planner model")
     implementer_model = _validate_model(implementer_model, "Implementer model")
 
-    task_id = str(uuid.uuid4())
-    directory = TASK_ROOT / task_id
-    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    async with _task_create_lock:
+        if _active_task_count() >= MAX_ACTIVE_TASKS:
+            raise HTTPException(status_code=409, detail="Đã đạt giới hạn 2 AI task đồng thời; hãy chờ task hiện tại hoàn tất")
+        task_id = str(uuid.uuid4())
+        directory = TASK_ROOT / task_id
+        directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+        # Reserve the slot before releasing the lock. Otherwise a concurrent
+        # request can observe the new directory before task.json exists and
+        # bypass the active-task limit.
+        _write_json(directory / "task.json", {
+            "task_id": task_id,
+            "status": "QUEUED",
+            "created_at": _utc_now(),
+        })
     prompt_path = directory / "prompt.txt"
     instructions_path = directory / "instructions.txt"
     state_path = directory / "state.json"
@@ -279,7 +309,7 @@ The Planner/Reviewer output is advisory; verify it against the source and tests 
         unit = f"ceph-ai-ai-task@{task_id}.service"
         await asyncio.to_thread(
             subprocess.run,
-            ["systemctl", "start", unit],
+            ["systemctl", "start", "--no-block", unit],
             check=True,
             timeout=15,
             stdout=subprocess.DEVNULL,

@@ -59,8 +59,8 @@ def test_create_ai_task_stores_profile_selection_and_spawns_worker(
     assert metadata["planner_account_profile"] == "planner-one"
     assert metadata["implementer_account_profile"] == "configured"
     assert metadata["push_branch"] is False
-    assert calls[0][0][:2] == ["systemctl", "start"]
-    assert calls[0][0][2].startswith("ceph-ai-ai-task@")
+    assert calls[0][0][:3] == ["systemctl", "start", "--no-block"]
+    assert calls[0][0][3].startswith("ceph-ai-ai-task@")
 
 
 def test_profile_name_rejects_path_traversal(dashboard_client, monkeypatch, tmp_path):

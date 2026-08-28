@@ -331,7 +331,13 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
     if mode not in {"implement", "review"}:
         raise RepairError(f"unsupported AI role mode: {mode!r}")
     codex = shutil.which("codex")
+    if not codex:
+        candidate = Path.home() / ".local" / "bin" / "codex"
+        codex = str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
     claude = shutil.which("claude")
+    if not claude:
+        candidate = Path.home() / ".local" / "bin" / "claude"
+        claude = str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
     if provider == "auto":
         # Claude is the configured production backend on the current staging
         # host. Prefer Codex only when its CLI account is actually usable.
