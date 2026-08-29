@@ -18,9 +18,18 @@ from worker.code_repair import RepairConfig, RepairError, _provider_command, _ro
 
 
 MAX_DISCUSSION_CONTEXT = 24_000
-MAX_AGENT_OUTPUT = 20_000
+# The widget is an operator status surface, not a transcript of model
+# thinking. Keep each turn compact even when a provider ignores the prompt.
+MAX_AGENT_OUTPUT = 1_800
+MAX_AGENT_LINES = 6
 DISCUSSION_TIMEOUT_SECONDS = 600
 MAX_DUAL_PROMPT_CHARS = 12_000
+
+SHORT_REPLY_INSTRUCTIONS = """Chỉ trả lời các ý chính đang làm:
+- tối đa 5 gạch đầu dòng, tối đa 600 ký tự;
+- nêu kết luận/việc đang làm, blocker hoặc rủi ro (nếu có), và bước tiếp theo;
+- không chào hỏi, không nhắc lại yêu cầu, không giải thích dài, không độc thoại.
+"""
 
 
 class DualAIChatError(RuntimeError):
@@ -41,6 +50,24 @@ def _context(history: list[dict] | None) -> str:
         role = "Người dùng" if item.get("role") == "user" else "AI"
         lines.append(f"{role}: {str(item.get('content') or '')[-4000:]}")
     return "\n".join(lines)[-MAX_DISCUSSION_CONTEXT:]
+
+
+def _compact_agent_output(output: str) -> str:
+    """Keep the operator-facing exchange to a few useful points."""
+    lines = [" ".join(line.split()) for line in (output or "").splitlines() if line.strip()]
+    lines = [line for line in lines if not line.startswith("```")]
+    if len(lines) > MAX_AGENT_LINES:
+        lines = lines[: MAX_AGENT_LINES - 1] + [lines[-1]]
+    compact = "\n".join(lines).strip()
+    if len(compact) <= MAX_AGENT_OUTPUT:
+        return compact
+    tail_chars = 420
+    head_chars = MAX_AGENT_OUTPUT - tail_chars - len("\n…\n")
+    tail = lines[-1]
+    if len(tail) > tail_chars:
+        half = (tail_chars - len(" … ")) // 2
+        tail = tail[:half].rstrip() + " … " + tail[-half:].lstrip()
+    return compact[:head_chars].rstrip() + "\n…\n" + tail
 
 
 async def _ask(role: str, prompt: str) -> dict:
@@ -83,7 +110,7 @@ async def _ask(role: str, prompt: str) -> dict:
         "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
         "provider": provider,
         "model": model,
-        "content": output[-MAX_AGENT_OUTPUT:],
+        "content": _compact_agent_output(output),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -111,6 +138,8 @@ Phân tích yêu cầu của người dùng, làm rõ giả định, rủi ro v�
 cụ thể cho Implementer. Chỉ đọc và suy luận; không sửa file, không chạy lệnh,
 không commit/deploy. Trả lời bằng tiếng Việt.
 
+%s
+
 Yêu cầu người dùng:
 ---
 %s
@@ -118,7 +147,7 @@ Yêu cầu người dùng:
 Lịch sử liên quan:
 ---
 %s
----""" % (request, prior or "(mới)"),
+---""" % (SHORT_REPLY_INSTRUCTIONS, request, prior or "(mới)"),
     )
     events.append(planner)
     yield planner
@@ -130,6 +159,8 @@ Lịch sử liên quan:
 thực hiện cụ thể. Trong chế độ này không sửa file, không chạy lệnh,
 không commit/deploy; chỉ trả lời để hai AI thống nhất. Trả lời bằng tiếng Việt.
 
+%s
+
 Yêu cầu:
 ---
 %s
@@ -137,7 +168,7 @@ Yêu cầu:
 Planner/Reviewer:
 ---
 %s
----""" % (request, planner["content"]),
+---""" % (SHORT_REPLY_INSTRUCTIONS, request, planner["content"]),
     )
     events.append(implementer)
     yield implementer
@@ -150,6 +181,8 @@ Implementer dưới đây, kiểm tra tính khả thi, phạm vi, an toàn và t
 Đưa ra các chỉnh sửa bắt buộc hoặc kết luận rõ ràng. Chỉ đọc và suy luận.
 Trả lời bằng tiếng Việt.
 
+%s
+
 Yêu cầu ban đầu:
 ---
 %s
@@ -157,7 +190,7 @@ Yêu cầu ban đầu:
 Implementer:
 ---
 %s
----""" % (request, implementer["content"]),
+---""" % (SHORT_REPLY_INSTRUCTIONS, request, implementer["content"]),
         )
         events.append(reviewer)
         yield reviewer
@@ -168,6 +201,8 @@ Planner/Reviewer: chốt phương án, các bước thực hiện và điều ki
 Không sửa file hay thực hiện hành động thật trong chế độ trao đổi này.
 Trả lời bằng tiếng Việt.
 
+%s
+
 Yêu cầu:
 ---
 %s
@@ -175,7 +210,7 @@ Yêu cầu:
 Phản biện:
 ---
 %s
----""" % (request, reviewer["content"]),
+---""" % (SHORT_REPLY_INSTRUCTIONS, request, reviewer["content"]),
         )
         events.append(final)
         yield final

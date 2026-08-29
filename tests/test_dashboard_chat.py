@@ -18,6 +18,21 @@ from shared.models import (
     User,
 )
 
+
+def test_dual_ai_output_is_compact_and_keeps_final_point():
+    output = "\n".join([f"Ý {index}: " + ("chi tiết " * 80) for index in range(8)])
+
+    compact = dual_module._compact_agent_output(output)
+
+    assert len(compact) <= dual_module.MAX_AGENT_OUTPUT
+    assert "Ý 0:" in compact
+    assert "Ý 7:" in compact
+
+
+def test_dual_ai_reply_instructions_require_key_points_only():
+    assert "tối đa 5 gạch đầu dòng" in dual_module.SHORT_REPLY_INSTRUCTIONS
+    assert "không giải thích dài" in dual_module.SHORT_REPLY_INSTRUCTIONS
+
 # Matches tests/conftest.py's TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES.
 A_MON_HOST = "10.20.1.150"
 UNCONFIGURED_HOST = "9.9.9.9"
