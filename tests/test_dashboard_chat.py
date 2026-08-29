@@ -77,6 +77,37 @@ def test_dual_ai_uses_read_only_planner_and_writable_implementer(monkeypatch):
     assert modes == ["review", "implement"]
 
 
+def test_dual_ai_does_not_treat_codex_token_footer_as_quota_error(monkeypatch):
+    class FailedProcess:
+        returncode = 1
+
+        async def communicate(self, _input=None):
+            return b"tokens used 1,099\ncommand failed", None
+
+    async def scenario():
+        monkeypatch.setattr(
+            dual_module,
+            "_provider_command",
+            lambda *args, **kwargs: ("codex", ["codex"]),
+        )
+        monkeypatch.setattr(
+            dual_module.asyncio,
+            "create_subprocess_exec",
+            lambda *args, **kwargs: _completed_process(FailedProcess()),
+        )
+        with pytest.raises(dual_module.DualAIChatError) as error:
+            await dual_module._ask("planner", "test")
+        assert not isinstance(error.value, dual_module.DualAIChatExhausted)
+        assert "command failed" in str(error.value)
+
+    def _completed_process(process):
+        async def create():
+            return process
+        return create()
+
+    asyncio.run(scenario())
+
+
 def test_dual_ai_continues_until_provider_exhaustion(monkeypatch):
     calls = []
 

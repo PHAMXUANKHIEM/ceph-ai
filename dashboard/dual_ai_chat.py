@@ -25,7 +25,19 @@ MAX_AGENT_LINES = 6
 DISCUSSION_TIMEOUT_SECONDS = 600
 MAX_DUAL_PROMPT_CHARS = 12_000
 MAX_EXCHANGE_CONTEXT_EVENTS = 8
-TOKEN_STOP_RE = re.compile(r"(?i)(?:token|quota|rate\s*limit|context\s*length|usage\s*limit)")
+# Do not match a generic ``token`` word: Codex prints a normal ``tokens used``
+# footer, and a different non-zero provider error would otherwise be reported
+# incorrectly as quota exhaustion.
+TOKEN_STOP_RE = re.compile(
+    r"(?i)(?:"
+    r"quota"
+    r"|rate\s*limit"
+    r"|usage\s*limit"
+    r"|context\s*length"
+    r"|tokens?\s*(?:limit|exhausted|depleted)"
+    r"|(?:out|ran)\s+of\s+(?:available\s+)?tokens?"
+    r")"
+)
 PROCESS_STOP_TIMEOUT_SECONDS = 3
 
 SHORT_REPLY_INSTRUCTIONS = """Chỉ trả lời các ý chính đang làm:
