@@ -221,6 +221,7 @@ def test_index_shows_empty_state_when_no_incidents(dashboard_client):
 
     assert response.status_code == 200
     assert "Chưa có Incident" in response.text
+    assert "Chi phí AI · 24 giờ" not in response.text
 
 
 def test_index_handles_db_error_gracefully(dashboard_client, monkeypatch):
