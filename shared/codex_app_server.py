@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import pty
 import re
@@ -19,6 +20,9 @@ from config.settings import settings
 from shared.ai_observability import record_ai_usage
 
 
+logger = logging.getLogger(__name__)
+
+
 class CodexAppServerError(RuntimeError):
     pass
 
@@ -26,6 +30,10 @@ class CodexAppServerError(RuntimeError):
 ToolHandler = Callable[[str, dict], Awaitable[tuple[str, bool]]]
 
 CODEX_INSTALL_COMMAND = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+# Codex emits one JSON object per line. Account/model metadata and tool results
+# can exceed asyncio's default 64 KiB StreamReader limit; a bounded larger
+# limit prevents the reader task from dying and leaving the app-server stuck.
+CODEX_APP_SERVER_STREAM_LIMIT = 4 * 1024 * 1024
 _install_lock = asyncio.Lock()
 _device_login_lock = asyncio.Lock()
 _device_login_process: asyncio.subprocess.Process | None = None
@@ -201,8 +209,18 @@ class CodexAppServer:
 
     async def _ensure_started(self) -> None:
         async with self._start_lock:
-            if self._process and self._process.returncode is None:
+            if (
+                self._process
+                and self._process.returncode is None
+                and self._reader_task
+                and not self._reader_task.done()
+            ):
                 return
+            if self._process or self._reader_task:
+                # A failed reader can leave the child process alive. Do not
+                # reuse that half-dead pair; the next request must get a clean
+                # JSONL connection.
+                await self.close()
             env = os.environ.copy()
             env["CODEX_HOME"] = str(self._codex_home())
             try:
@@ -215,6 +233,7 @@ class CodexAppServer:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                     env=env,
+                    limit=CODEX_APP_SERVER_STREAM_LIMIT,
                 )
             except FileNotFoundError as exc:
                 raise CodexAppServerError("Chưa cài Codex CLI trên server") from exc
@@ -256,32 +275,45 @@ class CodexAppServer:
 
     async def _read_loop(self) -> None:
         assert self._process and self._process.stdout
-        while line := await self._process.stdout.readline():
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            request_id = message.get("id")
-            if request_id in self._pending and ("result" in message or "error" in message):
-                future = self._pending.pop(request_id)
-                if "error" in message:
-                    future.set_exception(CodexAppServerError(message["error"].get("message", "Codex error")))
-                else:
-                    future.set_result(message.get("result") or {})
-                continue
-            if request_id is not None and message.get("method") == "item/tool/call":
-                asyncio.create_task(self._handle_tool_request(request_id, message.get("params") or {}))
-                continue
-            # Never permit Codex built-ins to escape the restricted sandbox.
-            if request_id is not None and message.get("method", "").endswith("requestApproval"):
-                await self._send({"id": request_id, "result": {"decision": "decline"}})
-                continue
-            await self._notifications.put(message)
         error = CodexAppServerError("Codex App Server đã dừng")
-        for future in self._pending.values():
-            if not future.done():
-                future.set_exception(error)
-        self._pending.clear()
+        reader_failed = False
+        try:
+            while line := await self._process.stdout.readline():
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                request_id = message.get("id")
+                if request_id in self._pending and ("result" in message or "error" in message):
+                    future = self._pending.pop(request_id)
+                    if "error" in message:
+                        future.set_exception(CodexAppServerError(message["error"].get("message", "Codex error")))
+                    else:
+                        future.set_result(message.get("result") or {})
+                    continue
+                if request_id is not None and message.get("method") == "item/tool/call":
+                    asyncio.create_task(self._handle_tool_request(request_id, message.get("params") or {}))
+                    continue
+                # Never permit Codex built-ins to escape the restricted sandbox.
+                if request_id is not None and message.get("method", "").endswith("requestApproval"):
+                    await self._send({"id": request_id, "result": {"decision": "decline"}})
+                    continue
+                await self._notifications.put(message)
+        except Exception as exc:
+            # readline() raises ValueError when a JSONL frame exceeds its
+            # StreamReader limit. Convert all reader failures into a normal
+            # app-server error so callers do not hang until their timeout.
+            error = CodexAppServerError(f"Codex App Server reader lỗi: {exc}")
+            reader_failed = True
+            logger.exception("Codex app-server reader stopped")
+        finally:
+            process = self._process
+            if process and process.returncode is None and reader_failed:
+                process.terminate()
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(error)
+            self._pending.clear()
 
     async def _handle_tool_request(self, request_id: int, params: dict) -> None:
         if self._tool_handler is None:
