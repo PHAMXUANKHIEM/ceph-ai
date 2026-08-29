@@ -49,6 +49,26 @@ session id: abc
     assert dual_module._compact_agent_output(output) == "- Đã đọc repo và chọn task đầu tiên."
 
 
+def test_dual_ai_extracts_final_answer_from_codex_transcript():
+    output = """OpenAI Codex v0.147.0
+--------
+approval: never
+sandbox: read-only
+session id: abc
+--------
+user
+đọc repo
+exec
+grep -R token .
+codex
+- Đã chọn task nhỏ.
+tokens used
+34,360
+- Đã chọn task nhỏ.
+"""
+    assert dual_module._compact_agent_output(output) == "- Đã chọn task nhỏ."
+
+
 def test_dual_ai_reply_instructions_require_key_points_only():
     assert "tối đa 5 gạch đầu dòng" in dual_module.SHORT_REPLY_INSTRUCTIONS
     assert "không giải thích dài" in dual_module.SHORT_REPLY_INSTRUCTIONS

@@ -32,8 +32,6 @@ TOKEN_STOP_RE = re.compile(
     r"(?i)(?:"
     r"quota"
     r"|rate\s*limit"
-    r"|usage\s*limit"
-    r"|context\s*length"
     r"|tokens?\s*(?:limit|exhausted|depleted)"
     r"|(?:out|ran)\s+of\s+(?:available\s+)?tokens?"
     r")"
@@ -102,18 +100,26 @@ def _exchange_context(events: list[dict]) -> str:
 def _compact_agent_output(output: str) -> str:
     """Keep the operator-facing exchange to a few useful points."""
     lines = [" ".join(line.split()) for line in (output or "").splitlines() if line.strip()]
-    # Codex writes its own startup banner to stdout before the actual answer.
-    # Keeping it consumed the whole six-line display budget and hid the work.
+    # Codex writes a complete execution transcript to stdout. Prefer the last
+    # assistant block and discard the usage footer before applying the display
+    # limit; otherwise tool output and metadata hide the actual answer.
     if lines and lines[0].startswith("OpenAI Codex "):
-        while lines and (
-            lines[0] == "--------"
-            or lines[0].startswith((
-                "workdir:", "model:", "provider:", "approval:", "sandbox:",
-                "reasoning effort:", "reasoning summaries:", "session id:",
-            ))
-            or lines[0].startswith("OpenAI Codex ")
-        ):
-            lines.pop(0)
+        response_markers = [index for index, line in enumerate(lines) if line == "codex"]
+        if response_markers:
+            lines = lines[response_markers[-1] + 1 :]
+            usage_marker = next((index for index, line in enumerate(lines) if line == "tokens used"), None)
+            if usage_marker is not None:
+                lines = lines[:usage_marker]
+        else:
+            while lines and (
+                lines[0] == "--------"
+                or lines[0].startswith((
+                    "workdir:", "model:", "provider:", "approval:", "sandbox:",
+                    "reasoning effort:", "reasoning summaries:", "session id:",
+                ))
+                or lines[0].startswith("OpenAI Codex ")
+            ):
+                lines.pop(0)
     lines = [line for line in lines if not line.startswith("```")]
     if len(lines) > MAX_AGENT_LINES:
         lines = lines[: MAX_AGENT_LINES - 1] + [lines[-1]]
