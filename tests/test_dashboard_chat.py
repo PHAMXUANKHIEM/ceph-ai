@@ -33,9 +33,48 @@ def test_dual_ai_output_is_compact_and_keeps_final_point():
     assert "Ý 7:" in compact
 
 
+def test_dual_ai_removes_codex_banner_from_operator_output():
+    output = """OpenAI Codex v0.147.0
+--------
+workdir: /root/ceph-ai
+model: gpt-5.5
+provider: openai
+- Đã đọc repo và chọn task đầu tiên.
+"""
+    assert dual_module._compact_agent_output(output) == "- Đã đọc repo và chọn task đầu tiên."
+
+
 def test_dual_ai_reply_instructions_require_key_points_only():
     assert "tối đa 5 gạch đầu dòng" in dual_module.SHORT_REPLY_INSTRUCTIONS
     assert "không giải thích dài" in dual_module.SHORT_REPLY_INSTRUCTIONS
+    assert "Không hỏi" in dual_module.PLANNER_INSTRUCTIONS
+    assert "thực hiện ngay task" in dual_module.IMPLEMENTER_INSTRUCTIONS
+
+
+def test_dual_ai_uses_read_only_planner_and_writable_implementer(monkeypatch):
+    modes = []
+
+    def fake_provider_command(*args, **kwargs):
+        modes.append(kwargs["mode"])
+        return "codex", ["codex"]
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, _input=None):
+            return b"- Da xu ly task.", None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    async def scenario():
+        monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+        monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        await dual_module._ask("planner", "doc repo")
+        await dual_module._ask("implementer", "sua task")
+
+    asyncio.run(scenario())
+    assert modes == ["review", "implement"]
 
 
 def test_dual_ai_continues_until_provider_exhaustion(monkeypatch):

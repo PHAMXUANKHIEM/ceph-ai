@@ -1,9 +1,9 @@
-"""Continuous two-agent discussion used by the Dashboard chat widget.
+"""Continuous two-agent implementation loop used by the Dashboard chat widget.
 
-Both agents run in read-only mode. This mode discusses a request and makes a
-reviewable plan; it does not edit, commit, push, deploy, or execute Ceph
-commands. The account/model pair is the one configured for each Code Repair
-role, so the same configured or separate Codex/Claude accounts are reused.
+The planner/reviewer inspects the repository in read-only mode. The
+implementer can edit application source and run focused tests in the same
+worktree, but cannot commit, push, deploy, or execute Ceph/SSH commands. The
+account/model pair is the one configured for each Code Repair role.
 """
 
 from __future__ import annotations
@@ -32,6 +32,25 @@ SHORT_REPLY_INSTRUCTIONS = """Chỉ trả lời các ý chính đang làm:
 - tối đa 5 gạch đầu dòng, tối đa 600 ký tự;
 - nêu kết luận/việc đang làm, blocker hoặc rủi ro (nếu có), và bước tiếp theo;
 - không chào hỏi, không nhắc lại yêu cầu, không giải thích dài, không độc thoại.
+"""
+
+PLANNER_INSTRUCTIONS = """Bạn là Planner/Reviewer của repo Ceph-AI.
+Bạn được phép tự đọc repository bằng các tool có sẵn trong workdir. Không hỏi
+người dùng cung cấp cây thư mục, file hay quyền đọc. Ngay lượt đầu hãy tự xem
+git status, cây file và entrypoint/module liên quan rồi chọn đúng một task nhỏ
+để cải thiện tính năng AI. Ở các lượt sau, đọc diff và test hiện tại để review
+task trước hoặc chọn task nhỏ kế tiếp. Chỉ đọc/suy luận, không sửa file.
+"""
+
+IMPLEMENTER_INSTRUCTIONS = """Bạn là Implementer của repo Ceph-AI.
+Bạn được phép tự đọc và sửa source/test trong workdir. Không hỏi người dùng
+cung cấp context. Đọc repo và diff hiện tại, thực hiện ngay task cụ thể mà
+Planner vừa nêu; không chỉ mô tả kế hoạch. Nếu task đã làm rồi, review kết quả
+và sửa phần còn thiếu. Chạy focused test phù hợp sau khi sửa.
+Giữ nguyên mọi thay đổi có sẵn không thuộc task; không reset hoặc xoá diff của
+người dùng.
+Không sửa credentials/.env, workflow, migration, deployment script hoặc file
+generated; không chạy lệnh Ceph/SSH/destructive; không commit, push hay deploy.
 """
 
 
@@ -71,6 +90,15 @@ def _exchange_context(events: list[dict]) -> str:
 def _compact_agent_output(output: str) -> str:
     """Keep the operator-facing exchange to a few useful points."""
     lines = [" ".join(line.split()) for line in (output or "").splitlines() if line.strip()]
+    # Codex writes its own startup banner to stdout before the actual answer.
+    # Keeping it consumed the whole six-line display budget and hid the work.
+    if lines and lines[0].startswith("OpenAI Codex "):
+        while lines and (
+            lines[0] == "--------"
+            or lines[0].startswith(("workdir:", "model:", "provider:"))
+            or lines[0].startswith("OpenAI Codex ")
+        ):
+            lines.pop(0)
     lines = [line for line in lines if not line.startswith("```")]
     if len(lines) > MAX_AGENT_LINES:
         lines = lines[: MAX_AGENT_LINES - 1] + [lines[-1]]
@@ -99,10 +127,11 @@ async def _ask(role: str, prompt: str) -> dict:
         )
         profile = _profile(role)
         codex_home, claude_config_dir = _role_account_dirs(config, profile)
+        mode = "review" if role == "planner" else "implement"
         provider, command = _provider_command(
             provider_spec, repo, prompt, DISCUSSION_TIMEOUT_SECONDS,
             claude_config_dir=claude_config_dir, codex_home=codex_home,
-            model=model, mode="review",
+            model=model, mode=mode,
         )
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -179,10 +208,8 @@ async def stream_dual_ai_chat(prompt: str, history: list[dict] | None = None):
 
     planner = await ask_and_track(
         "planner",
-        """Bạn là Planner/Reviewer trong cuộc trao đổi liên tục giữa hai AI.
-Phân tích yêu cầu của người dùng, làm rõ giả định, rủi ro và đề xuất kế hoạch
-cụ thể cho Implementer. Chỉ đọc và suy luận; không sửa file, không chạy lệnh,
-không commit/deploy. Trả lời bằng tiếng Việt.
+        f"""{PLANNER_INSTRUCTIONS}
+Trả lời bằng tiếng Việt.
 
 %s
 
@@ -201,11 +228,11 @@ Lịch sử liên quan:
     role = "implementer"
     while True:
         speaker = "Implementer" if role == "implementer" else "Planner/Reviewer"
-        prompt_text = f"""Bạn là {speaker}, đang tiếp tục trao đổi liên tục với AI còn lại.
-Đọc các lượt gần nhất bên dưới, phản hồi trực tiếp ý trước, chỉ ra điểm cần
-làm rõ hoặc điều chỉnh, rồi nêu việc đang làm tiếp. Chỉ đọc và suy luận;
-không sửa file, không chạy lệnh, không commit/deploy. Không tuyên bố kết thúc
-cuộc trao đổi; tiếp tục thảo luận cho đến khi provider hết token hoặc dừng.
+        prompt_text = f"""{IMPLEMENTER_INSTRUCTIONS if role == 'implementer' else PLANNER_INSTRUCTIONS}
+Bạn là {speaker}, đang tiếp tục trao đổi liên tục với AI còn lại. Đọc các lượt
+gần nhất, phản hồi trực tiếp ý trước, rồi làm/đề xuất đúng một task nhỏ tiếp
+theo. Không tuyên bố kết thúc; tiếp tục cho đến khi provider hết token hoặc
+người dùng bấm Dừng.
 Trả lời bằng tiếng Việt.
 
 {SHORT_REPLY_INSTRUCTIONS}
