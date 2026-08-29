@@ -5,7 +5,7 @@ import threading
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import or_
 
 from config.settings import settings
@@ -78,6 +78,16 @@ MAX_AI_NAME_LENGTH = 64
 MAX_FEMALE_ADDRESS_LENGTH = 128
 MAX_ACTIVE_DUAL_JOBS = 2
 _DUAL_JOB_SLOTS = threading.BoundedSemaphore(MAX_ACTIVE_DUAL_JOBS)
+_DUAL_JOBS: dict[tuple[str, int, str], asyncio.Task] = {}
+
+
+def _dual_job_key(actor: str, cluster_id: int, session_id: str) -> tuple[str, int, str]:
+    return actor, cluster_id, session_id
+
+
+def _forget_dual_job(key: tuple[str, int, str], task: asyncio.Task) -> None:
+    if _DUAL_JOBS.get(key) is task:
+        _DUAL_JOBS.pop(key, None)
 
 
 def _validated_ai_name(value) -> str:
@@ -204,7 +214,10 @@ async def _run_dual_chat_background(
     actor: str,
 ) -> None:
     """Run the exchange after the HTTP response and persist every turn."""
-    acquired = await asyncio.to_thread(_DUAL_JOB_SLOTS.acquire, True, 0)
+    # This is a non-blocking check; calling the threading semaphore directly
+    # avoids leaving a background acquire in a worker thread if the task is
+    # cancelled by the Stop button at exactly this point.
+    acquired = _DUAL_JOB_SLOTS.acquire(blocking=False)
     if not acquired:
         try:
             await asyncio.to_thread(
@@ -246,6 +259,23 @@ async def _run_dual_chat_background(
             )
         except Exception:
             logger.exception("dual AI background job could not persist token-limit status")
+    except asyncio.CancelledError:
+        logger.info("dual AI background job stopped by operator")
+        try:
+            await asyncio.to_thread(
+                _persist_dual_event,
+                {
+                    "speaker": "Hệ thống",
+                    "provider": "—",
+                    "content": "Đã dừng trao đổi theo yêu cầu.",
+                },
+                session_id=session_id,
+                cluster_id=cluster_id,
+                actor=actor,
+            )
+        except Exception:
+            logger.exception("dual AI background job could not persist cancellation status")
+        raise
     except DualAIChatError as exc:
         logger.warning("dual AI background job failed: %s", exc)
         error_event = {
@@ -443,7 +473,6 @@ async def get_chat_messages(request: Request, user: str = Depends(require_login)
 @router.post("/api/chat/messages")
 async def post_chat_message(
     request: Request,
-    background: BackgroundTasks,
     user: str = Depends(require_login),
 ):
     cluster = selected_cluster(request)
@@ -511,20 +540,19 @@ async def post_chat_message(
         # finishes; the widget already polls /messages every 2.5 seconds, so
         # the operator sees the conversation incrementally instead of waiting
         # for all CLI calls to complete inside one HTTP request.
-        background.add_task(
-            _run_dual_chat_background,
-            text,
-            history,
-            session_id,
-            cluster.id,
-            user,
+        key = _dual_job_key(user, cluster.id, session_id)
+        task = asyncio.create_task(
+            _run_dual_chat_background(text, history, session_id, cluster.id, user)
         )
+        _DUAL_JOBS[key] = task
+        task.add_done_callback(lambda done: _forget_dual_job(key, done))
         return {
             "mode": "dual",
             "user_message": user_message_dict,
             "assistant_messages": [],
             "processing": True,
         }
+
 
     if pending_node_command_id is not None:
         ai_name = auth.chat_ai_name(user)
@@ -641,6 +669,34 @@ async def post_chat_message(
         assistant_message_dict = _message_to_dict(assistant_message)
 
     return {"user_message": user_message_dict, "assistant_message": assistant_message_dict}
+
+
+@router.get("/api/chat/dual/status")
+async def get_dual_chat_status(
+    request: Request,
+    session_id: str = "",
+    user: str = Depends(require_login),
+):
+    cluster = selected_cluster(request)
+    key = _dual_job_key(user, cluster.id, session_id.strip()) if session_id.strip() else None
+    task = _DUAL_JOBS.get(key) if key else None
+    return {"session_id": session_id, "running": bool(task and not task.done())}
+
+
+@router.post("/api/chat/dual/stop")
+async def stop_dual_chat(request: Request, user: str = Depends(require_login)):
+    cluster = selected_cluster(request)
+    body = await request.json()
+    session_id = str(body.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Thiếu session_id của phiên Hai AI")
+    key = _dual_job_key(user, cluster.id, session_id)
+    task = _DUAL_JOBS.get(key)
+    if task is None or task.done():
+        _DUAL_JOBS.pop(key, None)
+        return {"session_id": session_id, "stopped": False, "running": False}
+    task.cancel()
+    return {"session_id": session_id, "stopped": True, "running": False}
 
 
 async def _confirm_chat_action_core(

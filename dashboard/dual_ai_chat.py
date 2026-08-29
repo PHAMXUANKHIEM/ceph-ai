@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +26,7 @@ DISCUSSION_TIMEOUT_SECONDS = 600
 MAX_DUAL_PROMPT_CHARS = 12_000
 MAX_EXCHANGE_CONTEXT_EVENTS = 8
 TOKEN_STOP_RE = re.compile(r"(?i)(?:token|quota|rate\s*limit|context\s*length|usage\s*limit)")
+PROCESS_STOP_TIMEOUT_SECONDS = 3
 
 SHORT_REPLY_INSTRUCTIONS = """Chỉ trả lời các ý chính đang làm:
 - tối đa 5 gạch đầu dòng, tối đa 600 ký tự;
@@ -90,6 +90,7 @@ async def _ask(role: str, prompt: str) -> dict:
     repo = Path(__file__).resolve().parents[1]
     provider_spec = getattr(settings, f"code_repair_{role}_provider")
     model = getattr(settings, f"code_repair_{role}_model") or ""
+    process = None
     try:
         config = RepairConfig(
             repo=repo,
@@ -103,13 +104,34 @@ async def _ask(role: str, prompt: str) -> dict:
             claude_config_dir=claude_config_dir, codex_home=codex_home,
             model=model, mode="review",
         )
-        completed = await asyncio.to_thread(
-            subprocess.run, command, cwd=repo,
-            input=prompt if provider == "codex" else None,
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            check=False, timeout=DISCUSSION_TIMEOUT_SECONDS,
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=repo,
+            stdin=asyncio.subprocess.PIPE if provider == "codex" else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-    except subprocess.TimeoutExpired as exc:
+        output_bytes, _ = await asyncio.wait_for(
+            process.communicate(prompt.encode() if provider == "codex" else None),
+            DISCUSSION_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        if process and process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), PROCESS_STOP_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        raise
+    except asyncio.TimeoutError as exc:
+        if process and process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), PROCESS_STOP_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
         raise DualAIChatError(
             f"AI không phản hồi trong thời gian cho phép ({DISCUSSION_TIMEOUT_SECONDS} giây)"
         ) from exc
@@ -117,11 +139,11 @@ async def _ask(role: str, prompt: str) -> dict:
         raise DualAIChatError(f"Không khởi chạy được AI: {exc}") from exc
     except RepairError as exc:
         raise DualAIChatError(f"Cấu hình tài khoản/provider AI không hợp lệ: {exc}") from exc
-    output = (completed.stdout or "").strip()
-    if completed.returncode != 0:
+    output = output_bytes.decode(errors="replace").strip()
+    if process.returncode != 0:
         if TOKEN_STOP_RE.search(output):
             raise DualAIChatExhausted("Provider đã hết token hoặc quota")
-        raise DualAIChatError(f"{provider} trả về lỗi ({completed.returncode}): {output[-3000:]}")
+        raise DualAIChatError(f"{provider} trả về lỗi ({process.returncode}): {output[-3000:]}")
     if not output:
         raise DualAIChatError(f"{provider} không trả về nội dung")
     return {

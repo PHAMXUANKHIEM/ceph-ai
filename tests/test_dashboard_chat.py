@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+import time
 
 import bcrypt
 import pytest
@@ -63,6 +65,41 @@ def test_dual_ai_continues_until_provider_exhaustion(monkeypatch):
     assert len(events) == 4
     assert [role for role, _ in calls] == ["planner", "implementer", "planner", "implementer", "planner"]
 
+
+def test_dual_ai_cancellation_terminates_provider_process(monkeypatch):
+    started = asyncio.Event()
+
+    class FakeProcess:
+        returncode = None
+
+        async def communicate(self, _input=None):
+            started.set()
+            await asyncio.Event().wait()
+
+        def terminate(self):
+            self.returncode = 0
+
+        async def wait(self):
+            return self.returncode
+
+    process = FakeProcess()
+    monkeypatch.setattr(dual_module, "_provider_command", lambda *args, **kwargs: ("codex", ["codex"]))
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    async def scenario():
+        task = asyncio.create_task(dual_module._ask("planner", "test"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert process.returncode == 0
+
 # Matches tests/conftest.py's TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES.
 A_MON_HOST = "10.20.1.150"
 UNCONFIGURED_HOST = "9.9.9.9"
@@ -124,17 +161,57 @@ def test_dual_chat_mode_persists_each_ai_reply(dashboard_client, monkeypatch):
     assert payload["mode"] == "dual"
     assert payload["processing"] is True
     assert payload["assistant_messages"] == []
-    with db_module.SessionLocal() as session:
-        replies = (
-            session.query(ChatMessage)
-            .filter_by(session_id="dual-chat", actor="admin", role="assistant")
-            .order_by(ChatMessage.created_at.asc())
-            .all()
-        )
-        assert [reply.content for reply in replies] == [
-            "[Dual AI: Planner/Reviewer · codex]\nKế hoạch",
-            "[Dual AI: Implementer · claude]\nĐề xuất thực hiện",
-        ]
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        dashboard_client.get("/api/chat/dual/status?session_id=dual-chat")
+        with db_module.SessionLocal() as session:
+            replies = (
+                session.query(ChatMessage)
+                .filter_by(session_id="dual-chat", actor="admin", role="assistant")
+                .order_by(ChatMessage.created_at.asc())
+                .all()
+            )
+        if len(replies) == 2:
+            break
+        time.sleep(0.01)
+    assert [reply.content for reply in replies] == [
+        "[Dual AI: Planner/Reviewer · codex]\nKế hoạch",
+        "[Dual AI: Implementer · claude]\nĐề xuất thực hiện",
+    ]
+
+
+def test_dual_chat_can_be_stopped(dashboard_client, monkeypatch):
+    started = threading.Event()
+
+    async def blocking_dual_chat_stream(prompt, history):
+        started.set()
+        await asyncio.Event().wait()
+        yield {"speaker": "Planner/Reviewer", "provider": "codex", "content": "never reached"}
+
+    monkeypatch.setattr(chat_module, "stream_dual_ai_chat", blocking_dual_chat_stream)
+    _login(dashboard_client)
+    response = dashboard_client.post(
+        "/api/chat/messages",
+        json={"session_id": "dual-stop", "content": "Dừng thử", "mode": "dual"},
+    )
+    assert response.status_code == 200
+    assert started.wait(2)
+
+    stop = dashboard_client.post("/api/chat/dual/stop", json={"session_id": "dual-stop"})
+
+    assert stop.status_code == 200
+    assert stop.json() == {"session_id": "dual-stop", "stopped": True, "running": False}
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        with db_module.SessionLocal() as session:
+            messages = session.query(ChatMessage).filter_by(
+                session_id="dual-stop", actor="admin", role="assistant"
+            ).all()
+        if any("Đã dừng trao đổi theo yêu cầu." in (message.content or "") for message in messages):
+            break
+        time.sleep(0.01)
+    assert any("Đã dừng trao đổi theo yêu cầu." in (message.content or "") for message in messages)
+    assert dashboard_client.get("/api/chat/dual/status?session_id=dual-stop").json()["running"] is False
 
 
 def test_dual_chat_saves_provider_error_without_http_500(dashboard_client, monkeypatch):

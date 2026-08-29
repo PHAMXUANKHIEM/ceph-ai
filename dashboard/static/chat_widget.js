@@ -36,6 +36,7 @@
 
   var inputEl = document.getElementById("chat-input");
   var sendBtn = document.getElementById("chat-send-btn");
+  var stopBtn = document.getElementById("chat-stop-btn");
   var errorEl = document.getElementById("chat-error");
 
   var MINIMIZED_STORAGE_KEY = "chatPanelMinimized";
@@ -49,6 +50,9 @@
   var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API, Codex hoặc Claude.";
   var NETWORK_ERROR_MESSAGE = "Không thể kết nối server. Thử lại sau.";
   var LIMIT_WARNING_THRESHOLDS = [5, 10, 15];
+  var dualProcessing = false;
+  var activeDualSessionId = null;
+  var dualStopRequestedSessionId = null;
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
   // own OS timezone — deliberately NOT getHours()/getMinutes() etc. (those
@@ -375,6 +379,78 @@
     if (el) el.remove();
   }
 
+  function setDualProcessing(running, sessionId) {
+    if (running && dualStopRequestedSessionId === sessionId) return;
+    dualProcessing = running;
+    if (running && sessionId) {
+      activeDualSessionId = sessionId;
+      dualStopRequestedSessionId = null;
+    }
+    if (!running) {
+      activeDualSessionId = null;
+      dualStopRequestedSessionId = null;
+    }
+    if (!stopBtn) return;
+    stopBtn.hidden = !running;
+    stopBtn.disabled = !running;
+    stopBtn.textContent = running ? "Dừng" : "Đã dừng";
+  }
+
+  function syncDualStatus() {
+    if (!currentSessionId) {
+      setDualProcessing(false);
+      return Promise.resolve();
+    }
+    return fetch(apiPrefix + "/dual/status?session_id=" + encodeURIComponent(currentSessionId), {
+      credentials: "same-origin",
+    })
+      .then(handleAuthRedirect)
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (data && data.running) setDualProcessing(true, data.session_id || currentSessionId);
+        else if (!activeDualSessionId || activeDualSessionId === currentSessionId) setDualProcessing(false);
+      })
+      .catch(function () {});
+  }
+
+  function stopDualChat(sessionId) {
+    if (!sessionId) return Promise.resolve();
+    dualStopRequestedSessionId = sessionId;
+    if (stopBtn) {
+      stopBtn.disabled = true;
+      stopBtn.textContent = "Đang dừng…";
+    }
+    return fetch(apiPrefix + "/dual/stop", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+          return data;
+        });
+      })
+      .then(function () {
+        setDualProcessing(false);
+        removeTypingIndicator();
+      })
+      .catch(function (err) {
+        dualStopRequestedSessionId = null;
+        if (err.message !== "unauthenticated") showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
+        if (dualProcessing && stopBtn) {
+          stopBtn.disabled = false;
+          stopBtn.textContent = "Dừng";
+        }
+      });
+  }
+
+  if (stopBtn) {
+    stopBtn.addEventListener("click", function () { stopDualChat(activeDualSessionId); });
+  }
+
   // --- error line -----------------------------------------------------------
 
   function showError(text) {
@@ -396,10 +472,14 @@
       .then(function (data) {
         currentSessionId = data.session_id || null;
         var messages = data.messages || [];
-        if (!messages.length) return;
+        if (!messages.length) {
+          setDualProcessing(false);
+          return;
+        }
         clearEmptyState();
         messages.forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
         scrollToBottom();
+        return syncDualStatus();
       })
       .catch(function (err) {
         if (err.message === "unauthenticated") return;
@@ -436,13 +516,19 @@
       .then(function (data) {
         if (data.session_id !== currentSessionId) return;
         var addedAny = false;
-        (data.messages || []).forEach(function (message) {
+        var messages = data.messages || [];
+        messages.forEach(function (message) {
           if (!messagesEl.querySelector('[data-message-id="' + message.id + '"]')) {
             appendMessage(message);
             addedAny = true;
           }
         });
         if (addedAny) removeTypingIndicator();
+        if (messages.some(function (message) {
+          return message.role === "assistant" && /^\[Dual AI: Hệ thống/.test(message.content || "") &&
+            ((message.content || "").indexOf("Đã dừng") !== -1 || (message.content || "").indexOf("Không thể") !== -1 || (message.content || "").indexOf("gặp lỗi") !== -1);
+        })) setDualProcessing(false);
+        return syncDualStatus();
       })
       .catch(function () {});
   }, 2500);
@@ -463,7 +549,8 @@
 
   function startNewSession() {
     clearError();
-    fetch(apiPrefix + "/sessions", { method: "POST", credentials: "same-origin" })
+    var stopFirst = dualProcessing ? stopDualChat(activeDualSessionId) : Promise.resolve();
+    stopFirst.then(function () { return fetch(apiPrefix + "/sessions", { method: "POST", credentials: "same-origin" }); })
       .then(handleAuthRedirect)
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
@@ -820,6 +907,8 @@
         // currentSessionId still null) — the backend generates one in that
         // case, and every message from here on must carry it.
         currentSessionId = data.user_message.session_id || currentSessionId;
+        if (data.mode === "dual" && data.processing) setDualProcessing(true, currentSessionId);
+        else setDualProcessing(false);
         appendMessage(data.user_message);
         if (data.assistant_messages && data.assistant_messages.length) {
           data.assistant_messages.forEach(function (message) { appendMessage(message); });
