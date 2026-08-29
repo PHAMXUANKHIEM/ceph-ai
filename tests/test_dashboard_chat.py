@@ -39,6 +39,11 @@ def test_dual_ai_removes_codex_banner_from_operator_output():
 workdir: /root/ceph-ai
 model: gpt-5.5
 provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: abc
 - Đã đọc repo và chọn task đầu tiên.
 """
     assert dual_module._compact_agent_output(output) == "- Đã đọc repo và chọn task đầu tiên."

@@ -107,7 +107,10 @@ def _compact_agent_output(output: str) -> str:
     if lines and lines[0].startswith("OpenAI Codex "):
         while lines and (
             lines[0] == "--------"
-            or lines[0].startswith(("workdir:", "model:", "provider:"))
+            or lines[0].startswith((
+                "workdir:", "model:", "provider:", "approval:", "sandbox:",
+                "reasoning effort:", "reasoning summaries:", "session id:",
+            ))
             or lines[0].startswith("OpenAI Codex ")
         ):
             lines.pop(0)
