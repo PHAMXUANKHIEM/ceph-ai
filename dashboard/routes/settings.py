@@ -449,7 +449,6 @@ CODE_REPAIR_ENV_NAMES = env_config.CODE_REPAIR_ENV_NAMES
 CODE_REPAIR_PROVIDERS = ("auto", "codex", "claude")
 CODE_REPAIR_ACCOUNT_SOURCES = ("configured", "separate")
 CODE_REPAIR_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
-CODE_REPAIR_MAX_REVIEW_ROUNDS = 5
 
 
 def _code_repair_profile_dir(provider: str, profile: str) -> Path:
@@ -2762,7 +2761,6 @@ async def code_repair_settings_submit(
     code_repair_implementer_account_profile: str = Form(""),
     code_repair_implementer_separate_provider: str = Form("codex"),
     code_repair_implementer_separate_model: str = Form(""),
-    code_repair_max_review_rounds: str = Form("2"),
 ):
     """Persist the two AI roles used by the external repair supervisor."""
     _require_admin_privilege(user)
@@ -2777,7 +2775,6 @@ async def code_repair_settings_submit(
         "code_repair_implementer_model": ((code_repair_implementer_separate_model or code_repair_implementer_model) if implementer_source == "separate" else code_repair_implementer_model).strip(),
         "code_repair_implementer_account_source": implementer_source,
         "code_repair_implementer_account_profile": code_repair_implementer_account_profile.strip(),
-        "code_repair_max_review_rounds": code_repair_max_review_rounds.strip(),
     }
 
     def fail(message: str):
@@ -2803,14 +2800,6 @@ async def code_repair_settings_submit(
             return fail(f"{provider_field}: tài khoản riêng chỉ hỗ trợ Codex hoặc Claude.")
         if source == "configured":
             values[profile_field] = ""
-    try:
-        rounds = int(values["code_repair_max_review_rounds"])
-    except ValueError:
-        return fail("Số vòng review phải là số nguyên từ 0 đến 5.")
-    if not 0 <= rounds <= CODE_REPAIR_MAX_REVIEW_ROUNDS:
-        return fail("Số vòng review phải nằm trong khoảng 0 đến 5.")
-    values["code_repair_max_review_rounds"] = rounds
-
     try:
         _update_env_file_batch({
             env_name: str(values[field])

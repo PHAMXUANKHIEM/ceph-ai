@@ -303,7 +303,6 @@ async def create_ai_task(
     implementer_model: str = Form(""),
     implementer_account_source: str = Form("configured"),
     implementer_account_profile: str = Form(""),
-    max_review_rounds: str = Form("2"),
     push_branch: bool = Form(False),
     user: str = Depends(require_login),
 ):
@@ -315,12 +314,6 @@ async def create_ai_task(
         raise HTTPException(status_code=400, detail="Provider không hợp lệ")
     if planner_account_source not in ACCOUNT_SOURCES or implementer_account_source not in ACCOUNT_SOURCES:
         raise HTTPException(status_code=400, detail="Nguồn tài khoản không hợp lệ")
-    try:
-        rounds = int(max_review_rounds)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Số vòng review phải là số nguyên từ 0 đến 5") from exc
-    if not 0 <= rounds <= 5:
-        raise HTTPException(status_code=400, detail="Số vòng review phải nằm trong khoảng 0 đến 5")
     planner_profile = _profile_value(planner_account_source, planner_account_profile)
     implementer_profile = _profile_value(implementer_account_source, implementer_account_profile)
     planner_model = _validate_model(planner_model, "Planner model")
@@ -357,7 +350,6 @@ The Planner/Reviewer output is advisory; verify it against the source and tests 
         "implementer_model": implementer_model,
         "implementer_account_source": implementer_account_source,
         "implementer_account_profile": implementer_profile,
-        "max_review_rounds": rounds,
         "push_branch": bool(push_branch),
     }
     _write_json(state_path, {"task_id": task_id, "attempts": {}})

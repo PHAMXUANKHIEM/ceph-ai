@@ -1,4 +1,4 @@
-"""Bounded two-agent discussion used by the Dashboard chat widget.
+"""Continuous two-agent discussion used by the Dashboard chat widget.
 
 Both agents run in read-only mode. This mode discusses a request and makes a
 reviewable plan; it does not edit, commit, push, deploy, or execute Ceph
@@ -9,6 +9,7 @@ role, so the same configured or separate Codex/Claude accounts are reused.
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,8 @@ MAX_AGENT_OUTPUT = 1_800
 MAX_AGENT_LINES = 6
 DISCUSSION_TIMEOUT_SECONDS = 600
 MAX_DUAL_PROMPT_CHARS = 12_000
+MAX_EXCHANGE_CONTEXT_EVENTS = 8
+TOKEN_STOP_RE = re.compile(r"(?i)(?:token|quota|rate\s*limit|context\s*length|usage\s*limit)")
 
 SHORT_REPLY_INSTRUCTIONS = """Chỉ trả lời các ý chính đang làm:
 - tối đa 5 gạch đầu dòng, tối đa 600 ký tự;
@@ -38,6 +41,10 @@ class DualAIChatError(RuntimeError):
         self.events = list(events or [])
 
 
+class DualAIChatExhausted(DualAIChatError):
+    """Provider stopped because its token/quota limit was reached."""
+
+
 def _profile(role: str) -> str:
     source = getattr(settings, f"code_repair_{role}_account_source", "configured")
     profile = getattr(settings, f"code_repair_{role}_account_profile", "")
@@ -49,6 +56,15 @@ def _context(history: list[dict] | None) -> str:
     for item in (history or [])[-8:]:
         role = "Người dùng" if item.get("role") == "user" else "AI"
         lines.append(f"{role}: {str(item.get('content') or '')[-4000:]}")
+    return "\n".join(lines)[-MAX_DISCUSSION_CONTEXT:]
+
+
+def _exchange_context(events: list[dict]) -> str:
+    """Return only the latest compact turns for the next AI prompt."""
+    lines = [
+        f"{event.get('speaker', 'AI')}: {event.get('content', '')}"
+        for event in events[-MAX_EXCHANGE_CONTEXT_EVENTS:]
+    ]
     return "\n".join(lines)[-MAX_DISCUSSION_CONTEXT:]
 
 
@@ -103,6 +119,8 @@ async def _ask(role: str, prompt: str) -> dict:
         raise DualAIChatError(f"Cấu hình tài khoản/provider AI không hợp lệ: {exc}") from exc
     output = (completed.stdout or "").strip()
     if completed.returncode != 0:
+        if TOKEN_STOP_RE.search(output):
+            raise DualAIChatExhausted("Provider đã hết token hoặc quota")
         raise DualAIChatError(f"{provider} trả về lỗi ({completed.returncode}): {output[-3000:]}")
     if not output:
         raise DualAIChatError(f"{provider} không trả về nội dung")
@@ -116,7 +134,12 @@ async def _ask(role: str, prompt: str) -> dict:
 
 
 async def stream_dual_ai_chat(prompt: str, history: list[dict] | None = None):
-    """Yield each Planner/Implementer reply as soon as it is available."""
+    """Yield alternating replies until a provider stops responding.
+
+    There is intentionally no review-round stop condition here. Provider quota,
+    token/context exhaustion, timeout, or another provider error ends the
+    background exchange.
+    """
     request = prompt.strip()
     if len(request) > MAX_DUAL_PROMPT_CHARS:
         raise DualAIChatError(
@@ -129,11 +152,12 @@ async def stream_dual_ai_chat(prompt: str, history: list[dict] | None = None):
         try:
             return await _ask(role, prompt_text)
         except DualAIChatError as exc:
-            raise DualAIChatError(str(exc), events=events) from exc
+            error_type = DualAIChatExhausted if isinstance(exc, DualAIChatExhausted) else DualAIChatError
+            raise error_type(str(exc), events=events) from exc
 
     planner = await ask_and_track(
         "planner",
-        """Bạn là Planner/Reviewer trong cuộc trao đổi giữa hai AI.
+        """Bạn là Planner/Reviewer trong cuộc trao đổi liên tục giữa hai AI.
 Phân tích yêu cầu của người dùng, làm rõ giả định, rủi ro và đề xuất kế hoạch
 cụ thể cho Implementer. Chỉ đọc và suy luận; không sửa file, không chạy lệnh,
 không commit/deploy. Trả lời bằng tiếng Việt.
@@ -152,68 +176,30 @@ Lịch sử liên quan:
     events.append(planner)
     yield planner
 
-    implementer = await ask_and_track(
-        "implementer",
-        """Bạn là Implementer đang trao đổi với Planner/Reviewer.
-Đánh giá yêu cầu và kế hoạch bên dưới, chỉ ra điểm đúng/sai và mô tả cách
-thực hiện cụ thể. Trong chế độ này không sửa file, không chạy lệnh,
-không commit/deploy; chỉ trả lời để hai AI thống nhất. Trả lời bằng tiếng Việt.
-
-%s
-
-Yêu cầu:
----
-%s
----
-Planner/Reviewer:
----
-%s
----""" % (SHORT_REPLY_INSTRUCTIONS, request, planner["content"]),
-    )
-    events.append(implementer)
-    yield implementer
-    rounds = max(0, min(int(settings.code_repair_max_review_rounds), 2))
-    if rounds:
-        reviewer = await ask_and_track(
-            "planner",
-            """Tiếp tục vai trò Planner/Reviewer. Hãy phản biện câu trả lời của
-Implementer dưới đây, kiểm tra tính khả thi, phạm vi, an toàn và test plan.
-Đưa ra các chỉnh sửa bắt buộc hoặc kết luận rõ ràng. Chỉ đọc và suy luận.
+    role = "implementer"
+    while True:
+        speaker = "Implementer" if role == "implementer" else "Planner/Reviewer"
+        prompt_text = f"""Bạn là {speaker}, đang tiếp tục trao đổi liên tục với AI còn lại.
+Đọc các lượt gần nhất bên dưới, phản hồi trực tiếp ý trước, chỉ ra điểm cần
+làm rõ hoặc điều chỉnh, rồi nêu việc đang làm tiếp. Chỉ đọc và suy luận;
+không sửa file, không chạy lệnh, không commit/deploy. Không tuyên bố kết thúc
+cuộc trao đổi; tiếp tục thảo luận cho đến khi provider hết token hoặc dừng.
 Trả lời bằng tiếng Việt.
 
-%s
+{SHORT_REPLY_INSTRUCTIONS}
 
 Yêu cầu ban đầu:
 ---
-%s
+{request}
 ---
-Implementer:
+Các lượt gần nhất:
 ---
-%s
----""" % (SHORT_REPLY_INSTRUCTIONS, request, implementer["content"]),
-        )
-        events.append(reviewer)
-        yield reviewer
-        final = await ask_and_track(
-            "implementer",
-            """Bạn là Implementer. Hãy trả lời cuối cùng sau phản biện của
-Planner/Reviewer: chốt phương án, các bước thực hiện và điều kiện kiểm thử.
-Không sửa file hay thực hiện hành động thật trong chế độ trao đổi này.
-Trả lời bằng tiếng Việt.
-
-%s
-
-Yêu cầu:
----
-%s
----
-Phản biện:
----
-%s
----""" % (SHORT_REPLY_INSTRUCTIONS, request, reviewer["content"]),
-        )
-        events.append(final)
-        yield final
+{_exchange_context(events)}
+---"""
+        event = await ask_and_track(role, prompt_text)
+        events.append(event)
+        yield event
+        role = "planner" if role == "implementer" else "implementer"
 
 
 async def run_dual_ai_chat(prompt: str, history: list[dict] | None = None) -> list[dict]:

@@ -1,6 +1,8 @@
+import asyncio
 import json
 
 import bcrypt
+import pytest
 import dashboard.routes.chat as chat_module
 import dashboard.dual_ai_chat as dual_module
 from shared import audit
@@ -32,6 +34,34 @@ def test_dual_ai_output_is_compact_and_keeps_final_point():
 def test_dual_ai_reply_instructions_require_key_points_only():
     assert "tối đa 5 gạch đầu dòng" in dual_module.SHORT_REPLY_INSTRUCTIONS
     assert "không giải thích dài" in dual_module.SHORT_REPLY_INSTRUCTIONS
+
+
+def test_dual_ai_continues_until_provider_exhaustion(monkeypatch):
+    calls = []
+
+    async def fake_ask(role, prompt):
+        calls.append((role, prompt))
+        if len(calls) == 5:
+            raise dual_module.DualAIChatExhausted("Provider đã hết token")
+        return {
+            "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
+            "provider": "codex",
+            "content": f"Lượt {len(calls)}",
+        }
+
+    monkeypatch.setattr(dual_module, "_ask", fake_ask)
+
+    async def collect():
+        events = []
+        with pytest.raises(dual_module.DualAIChatExhausted):
+            async for event in dual_module.stream_dual_ai_chat("Kiểm tra hệ thống"):
+                events.append(event)
+        return events
+
+    events = asyncio.run(collect())
+
+    assert len(events) == 4
+    assert [role for role, _ in calls] == ["planner", "implementer", "planner", "implementer", "planner"]
 
 # Matches tests/conftest.py's TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES.
 A_MON_HOST = "10.20.1.150"

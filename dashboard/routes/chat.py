@@ -19,6 +19,7 @@ from dashboard.chat_client import (
 from dashboard.dual_ai_chat import (
     MAX_DUAL_PROMPT_CHARS,
     DualAIChatError,
+    DualAIChatExhausted,
     stream_dual_ai_chat,
 )
 from dashboard.routes import auth
@@ -229,6 +230,22 @@ async def _run_dual_chat_background(
                 cluster_id=cluster_id,
                 actor=actor,
             )
+    except DualAIChatExhausted as exc:
+        logger.info("dual AI background job stopped at provider token/quota limit: %s", exc)
+        try:
+            await asyncio.to_thread(
+                _persist_dual_event,
+                {
+                    "speaker": "Hệ thống",
+                    "provider": "—",
+                    "content": "Đã dừng trao đổi: provider hết token hoặc quota.",
+                },
+                session_id=session_id,
+                cluster_id=cluster_id,
+                actor=actor,
+            )
+        except Exception:
+            logger.exception("dual AI background job could not persist token-limit status")
     except DualAIChatError as exc:
         logger.warning("dual AI background job failed: %s", exc)
         error_event = {

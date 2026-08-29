@@ -46,7 +46,6 @@ def main(task_id: str) -> int:
             implementer_provider=metadata["implementer_provider"],
             implementer_model=metadata["implementer_model"],
             implementer_account_profile=metadata["implementer_account_profile"],
-            max_review_rounds=int(metadata["max_review_rounds"]),
             test_command=settings.code_repair_test_command,
             timeout_seconds=settings.code_repair_timeout_seconds,
             push=bool(metadata.get("push_branch")),

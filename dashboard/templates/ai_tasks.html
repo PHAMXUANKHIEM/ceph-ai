@@ -77,9 +77,6 @@
             <p class="hint">Profile riêng được dùng tại <code>.ai-accounts/&lt;profile&gt;/&lt;provider&gt;</code>. Trạng thái đăng nhập sẽ được kiểm tra khi nhập profile.</p>
           </div>
         </div>
-        <label>Số vòng review tối đa
-          <input type="number" name="max_review_rounds" min="0" max="5" value="2">
-        </label>
         <label class="checkbox-label"><input type="checkbox" name="push_branch" value="true"> Push branch sau khi test đạt</label>
         <p class="hint">Mặc định task chỉ tạo commit trong branch cô lập; không tự deploy/promote main. Với profile riêng, lệnh mẫu: <code>CODEX_HOME=/root/ceph-ai/.ai-accounts/&lt;profile&gt;/codex codex login</code> hoặc <code>CLAUDE_CONFIG_DIR=/root/ceph-ai/.ai-accounts/&lt;profile&gt;/claude claude auth login</code>.</p>
         <button type="submit" class="btn btn-primary">Bắt đầu hai AI làm việc</button>

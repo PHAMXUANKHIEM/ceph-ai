@@ -62,6 +62,7 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert 'id="code-repair-planner-model"' in response.text
     assert 'id="code-repair-implementer-model"' in response.text
     assert 'data-model-provider="code-repair-planner-provider"' in response.text
+    assert "Số vòng review tối đa" not in response.text
     assert "Shadow Autopilot Evaluation" not in response.text
     assert "L2 → L3 Promotion Candidates" not in response.text
     assert "Playbook Registry" not in response.text
@@ -99,7 +100,6 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
             "code_repair_implementer_model": "claude-sonnet-4-6",
             "code_repair_implementer_account_source": "configured",
             "code_repair_implementer_account_profile": "ignored-profile",
-            "code_repair_max_review_rounds": "3",
         },
     )
 
@@ -114,7 +114,7 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
     assert "CODE_REPAIR_IMPLEMENTER_MODEL=claude-sonnet-4-6" in saved
     assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_SOURCE=configured" in saved
     assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_PROFILE=" in saved
-    assert "CODE_REPAIR_MAX_REVIEW_ROUNDS=3" in saved
+    assert "CODE_REPAIR_MAX_REVIEW_ROUNDS" not in saved
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):

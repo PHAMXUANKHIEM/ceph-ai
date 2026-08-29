@@ -45,6 +45,9 @@ class RepairError(RuntimeError):
     pass
 
 
+DEFAULT_REPAIR_REVIEW_ROUNDS = 2
+
+
 def summarize_evidence(evidence: str, *, max_chars: int = 360) -> str:
     """Return one useful error line for Telegram; AI still receives full evidence."""
     source = _SOURCE_LOG_RE.search(evidence)
@@ -85,7 +88,9 @@ class RepairConfig:
     implementer_provider: str | None = None
     implementer_model: str = ""
     implementer_account_profile: str = "configured"
-    max_review_rounds: int = 2
+    # Internal safety default for source-repair jobs. The operator-facing
+    # setting was removed; Dashboard dual chat has its own continuous loop.
+    max_review_rounds: int = DEFAULT_REPAIR_REVIEW_ROUNDS
     test_command: str = "PYTHONPATH=. .venv/bin/pytest -q"
     timeout_seconds: int = 1800
     push: bool = False
@@ -838,7 +843,7 @@ def main() -> int:
                           implementer_provider=args.implementer_provider or app_settings.code_repair_implementer_provider,
                           implementer_model=args.implementer_model if args.implementer_model is not None else app_settings.code_repair_implementer_model,
                           implementer_account_profile=args.implementer_account_profile,
-                          max_review_rounds=(args.max_review_rounds if args.max_review_rounds is not None else app_settings.code_repair_max_review_rounds),
+                          max_review_rounds=(args.max_review_rounds if args.max_review_rounds is not None else DEFAULT_REPAIR_REVIEW_ROUNDS),
                           task_instructions=(args.instructions_file.read_text(errors="replace") if args.instructions_file else None),
                           task_kind=args.task_kind,
                           test_command=args.test_command or app_settings.code_repair_test_command,
