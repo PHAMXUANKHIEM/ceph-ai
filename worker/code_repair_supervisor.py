@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,14 +55,21 @@ def _configured_account_profile(source: str, profile: str) -> str:
     return profile.strip() if source == "separate" else "configured"
 
 
-def run_repair_exclusively(
-    evidence: str, config: RepairConfig, *, force: bool = False,
-):
-    """Run exactly one repair pipeline at a time across supervisor and timer jobs."""
+@contextmanager
+def _repair_run_lock():
+    """Hold the cross-process lock for one complete repair pipeline."""
     lock_path = Path(settings.code_repair_run_lock_file)
     lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with lock_path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def run_repair_exclusively(
+    evidence: str, config: RepairConfig, *, force: bool = False,
+):
+    """Run exactly one repair pipeline at a time across supervisor and timer jobs."""
+    with _repair_run_lock():
         if force:
             return run_repair(evidence, config, force=True)
         return run_repair(evidence, config)
@@ -91,6 +99,41 @@ def _nightly_due(state: dict, now: datetime) -> bool:
 
 def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | None = None) -> bool:
     """Run one bounded proactive two-agent AI review and persist its outcome."""
+    try:
+        # Wait for an active repair before deciding this day's state. A killed
+        # timer process can therefore never consume the daily run merely while
+        # it is blocked behind the supervisor.
+        with _repair_run_lock():
+            return _run_nightly_ai_improvement_locked(repo, state_path, now=now)
+    except Exception as exc:
+        current = now or datetime.now(timezone.utc)
+        local = current.astimezone(NIGHTLY_TIMEZONE)
+        state = _load_nightly_state(state_path)
+        state.update({
+            "last_run_date": local.date().isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "status": "FAILED",
+            "error": str(exc),
+        })
+        try:
+            _save_nightly_state(state_path, state)
+        except OSError:
+            logger.exception("could not persist failed nightly AI improvement state")
+        logger.exception("nightly AI improvement failed")
+        try:
+            send_code_repair_alert(
+                "⚠️ AI NIGHTLY IMPROVEMENT KHÔNG TRIỂN KHAI\n"
+                f"Lỗi runtime: {str(exc)[:900]}"
+            )
+        except Exception:
+            logger.exception("could not send nightly AI improvement failure alert")
+        return True
+
+
+def _run_nightly_ai_improvement_locked(
+    repo: Path, state_path: Path, *, now: datetime | None = None,
+) -> bool:
+    """Run the nightly pipeline while the cross-process repair lock is held."""
     current = now or datetime.now(timezone.utc)
     state = _load_nightly_state(state_path)
     if not _nightly_due(state, current):
@@ -111,7 +154,7 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
         "Phạm vi: AI/chat/router/giới hạn/quan sát/học; chỉ worktree + test, không đụng tài khoản hay cấu hình bí mật."
     )
     repair_state = state_path.with_name("nightly-ai-improvement-repairs.json")
-    result = run_repair_exclusively(
+    result = run_repair(
         NIGHTLY_IMPROVEMENT_EVIDENCE,
         RepairConfig(
             repo=repo,

@@ -74,15 +74,11 @@ def ensure_default_cluster(session: Session) -> Cluster:
             raise
         logger.info("ensure_default_cluster: lost startup race to another process, reusing its row")
         return existing
-    # Do not refresh the object created above. TestClient lifespans can
-    # overlap startup work and SQLAlchemy may detach that identity after the
-    # transaction commits. Reading the uniquely constrained default row gives
-    # the caller the same canonical object without relying on the old
-    # instance remaining persistent.
-    existing = session.scalar(select(Cluster).where(Cluster.is_default.is_(True)))
-    if existing is None:
-        raise RuntimeError("default Cluster row disappeared after commit")
-    return existing
+    # The committed identity already has the generated primary key and all
+    # values supplied above. Avoid a second query/refresh here: TestClient
+    # lifespans may replace the in-memory SQLite binding while startup is
+    # still unwinding, which made a healthy committed row appear to vanish.
+    return cluster
 
 
 def sync_default_cluster_from_settings(session: Session) -> Cluster:
@@ -98,7 +94,6 @@ def sync_default_cluster_from_settings(session: Session) -> Cluster:
     for field in _DEFAULT_CLUSTER_SETTING_FIELDS:
         setattr(cluster, field, getattr(settings, field))
     session.commit()
-    session.refresh(cluster)
     return cluster
 
 

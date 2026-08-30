@@ -138,3 +138,19 @@ def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_
 
     assert supervisor.run_repair_exclusively("evidence", object(), force=True) == "ok"
     assert calls == [("evidence", True)]
+
+
+def test_nightly_failure_is_persisted_and_notified(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    notifications = []
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
+    monkeypatch.setattr(supervisor, "run_repair", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+
+    state = json.loads(state_path.read_text())
+    assert state["last_run_date"] == "2026-08-31"
+    assert state["status"] == "FAILED"
+    assert "boom" in state["error"]
+    assert len(notifications) == 2
