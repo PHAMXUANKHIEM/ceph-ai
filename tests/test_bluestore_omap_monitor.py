@@ -193,6 +193,26 @@ def test_create_or_resolve_creates_incident_and_action(isolated_db, monkeypatch)
         assert audit_entry.actor == "system"
 
 
+def test_create_or_resolve_stages_osd_1_on_requested_node_for_approval(isolated_db, monkeypatch):
+    monkeypatch.setattr(bom, "resolve_osd_hosts", lambda ids: {1: "10.3.53.1"})
+    current = {"BLUESTORE_NO_PER_POOL_OMAP:1": _detail(osd_id=1)}
+
+    bom.create_or_resolve_bluestore_incidents(current)
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="BLUESTORE_NO_PER_POOL_OMAP:1").one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert "osd.1" in incident.log_excerpt
+        assert "10.3.53.1" in incident.log_excerpt
+
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert action.action_id == "bluestore_omap_quick_fix"
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert action.target_nodes == '["10.3.53.1"]'
+        assert action.action_params == '{"osd_id": 1}'
+
+
 def test_create_or_resolve_skips_when_host_cannot_be_resolved(isolated_db, monkeypatch):
     monkeypatch.setattr(bom, "resolve_osd_hosts", lambda ids: {})  # can't find it anywhere
     current = {"BLUESTORE_NO_PER_POOL_OMAP:5": _detail()}

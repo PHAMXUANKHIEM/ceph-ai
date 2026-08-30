@@ -1,7 +1,5 @@
-import asyncio
 import json
-import threading
-import time
+from pathlib import Path
 
 import bcrypt
 import pytest
@@ -21,179 +19,6 @@ from shared.models import (
     IncidentStatus,
     User,
 )
-
-
-def test_dual_ai_output_is_compact_and_keeps_final_point():
-    output = "\n".join([f"Ý {index}: " + ("chi tiết " * 80) for index in range(8)])
-
-    compact = dual_module._compact_agent_output(output)
-
-    assert len(compact) <= dual_module.MAX_AGENT_OUTPUT
-    assert "Ý 0:" in compact
-    assert "Ý 7:" in compact
-
-
-def test_dual_ai_removes_codex_banner_from_operator_output():
-    output = """OpenAI Codex v0.147.0
---------
-workdir: /root/ceph-ai
-model: gpt-5.5
-provider: openai
-approval: never
-sandbox: read-only
-reasoning effort: none
-reasoning summaries: none
-session id: abc
-- Đã đọc repo và chọn task đầu tiên.
-"""
-    assert dual_module._compact_agent_output(output) == "- Đã đọc repo và chọn task đầu tiên."
-
-
-def test_dual_ai_extracts_final_answer_from_codex_transcript():
-    output = """OpenAI Codex v0.147.0
---------
-approval: never
-sandbox: read-only
-session id: abc
---------
-user
-đọc repo
-exec
-grep -R token .
-codex
-- Đã chọn task nhỏ.
-tokens used
-34,360
-- Đã chọn task nhỏ.
-"""
-    assert dual_module._compact_agent_output(output) == "- Đã chọn task nhỏ."
-
-
-def test_dual_ai_reply_instructions_require_key_points_only():
-    assert "tối đa 5 gạch đầu dòng" in dual_module.SHORT_REPLY_INSTRUCTIONS
-    assert "không giải thích dài" in dual_module.SHORT_REPLY_INSTRUCTIONS
-    assert "Không hỏi" in dual_module.PLANNER_INSTRUCTIONS
-    assert "thực hiện ngay task" in dual_module.IMPLEMENTER_INSTRUCTIONS
-
-
-def test_dual_ai_uses_read_only_planner_and_writable_implementer(monkeypatch):
-    modes = []
-
-    def fake_provider_command(*args, **kwargs):
-        modes.append(kwargs["mode"])
-        return "codex", ["codex"]
-
-    class FakeProcess:
-        returncode = 0
-
-        async def communicate(self, _input=None):
-            return b"- Da xu ly task.", None
-
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        return FakeProcess()
-
-    async def scenario():
-        monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
-        monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-        await dual_module._ask("planner", "doc repo")
-        await dual_module._ask("implementer", "sua task")
-
-    asyncio.run(scenario())
-    assert modes == ["review", "implement"]
-
-
-def test_dual_ai_does_not_treat_codex_token_footer_as_quota_error(monkeypatch):
-    class FailedProcess:
-        returncode = 1
-
-        async def communicate(self, _input=None):
-            return b"tokens used 1,099\ncommand failed", None
-
-    async def scenario():
-        monkeypatch.setattr(
-            dual_module,
-            "_provider_command",
-            lambda *args, **kwargs: ("codex", ["codex"]),
-        )
-        monkeypatch.setattr(
-            dual_module.asyncio,
-            "create_subprocess_exec",
-            lambda *args, **kwargs: _completed_process(FailedProcess()),
-        )
-        with pytest.raises(dual_module.DualAIChatError) as error:
-            await dual_module._ask("planner", "test")
-        assert not isinstance(error.value, dual_module.DualAIChatExhausted)
-        assert "command failed" in str(error.value)
-
-    def _completed_process(process):
-        async def create():
-            return process
-        return create()
-
-    asyncio.run(scenario())
-
-
-def test_dual_ai_continues_until_provider_exhaustion(monkeypatch):
-    calls = []
-
-    async def fake_ask(role, prompt):
-        calls.append((role, prompt))
-        if len(calls) == 5:
-            raise dual_module.DualAIChatExhausted("Provider đã hết token")
-        return {
-            "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
-            "provider": "codex",
-            "content": f"Lượt {len(calls)}",
-        }
-
-    monkeypatch.setattr(dual_module, "_ask", fake_ask)
-
-    async def collect():
-        events = []
-        with pytest.raises(dual_module.DualAIChatExhausted):
-            async for event in dual_module.stream_dual_ai_chat("Kiểm tra hệ thống"):
-                events.append(event)
-        return events
-
-    events = asyncio.run(collect())
-
-    assert len(events) == 4
-    assert [role for role, _ in calls] == ["planner", "implementer", "planner", "implementer", "planner"]
-
-
-def test_dual_ai_cancellation_terminates_provider_process(monkeypatch):
-    started = asyncio.Event()
-
-    class FakeProcess:
-        returncode = None
-
-        async def communicate(self, _input=None):
-            started.set()
-            await asyncio.Event().wait()
-
-        def terminate(self):
-            self.returncode = 0
-
-        async def wait(self):
-            return self.returncode
-
-    process = FakeProcess()
-    monkeypatch.setattr(dual_module, "_provider_command", lambda *args, **kwargs: ("codex", ["codex"]))
-
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        return process
-
-    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-
-    async def scenario():
-        task = asyncio.create_task(dual_module._ask("planner", "test"))
-        await started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(scenario())
-    assert process.returncode == 0
 
 # Matches tests/conftest.py's TEST_CEPH_MON_NODES/TEST_CEPH_OSD_NODES.
 A_MON_HOST = "10.20.1.150"
@@ -237,98 +62,23 @@ def test_chat_uses_selected_secondary_cluster_and_scopes_history(dashboard_clien
         assert session.query(ChatMessage).filter_by(cluster_id=cluster_id).count() == 2
 
 
-def test_dual_chat_mode_persists_each_ai_reply(dashboard_client, monkeypatch):
-    async def fake_dual_chat_stream(prompt, history):
-        assert prompt == "Thiết kế cảnh báo OSD"
-        yield {"speaker": "Planner/Reviewer", "provider": "codex", "content": "Kế hoạch"}
-        yield {"speaker": "Implementer", "provider": "claude", "content": "Đề xuất thực hiện"}
-
-    monkeypatch.setattr(chat_module, "stream_dual_ai_chat", fake_dual_chat_stream)
+def test_web_chat_rejects_dual_mode_and_keeps_it_telegram_only(dashboard_client):
     _login(dashboard_client)
-
     response = dashboard_client.post(
         "/api/chat/messages",
         json={"session_id": "dual-chat", "content": "Thiết kế cảnh báo OSD", "mode": "dual"},
     )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["mode"] == "dual"
-    assert payload["processing"] is True
-    assert payload["assistant_messages"] == []
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        dashboard_client.get("/api/chat/dual/status?session_id=dual-chat")
-        with db_module.SessionLocal() as session:
-            replies = (
-                session.query(ChatMessage)
-                .filter_by(session_id="dual-chat", actor="admin", role="assistant")
-                .order_by(ChatMessage.created_at.asc())
-                .all()
-            )
-        if len(replies) == 2:
-            break
-        time.sleep(0.01)
-    assert [reply.content for reply in replies] == [
-        "[Dual AI: Planner/Reviewer · codex]\nKế hoạch",
-        "[Dual AI: Implementer · claude]\nĐề xuất thực hiện",
-    ]
+    assert response.status_code == 400
+    assert "Telegram" in response.json()["detail"]
 
 
-def test_dual_chat_can_be_stopped(dashboard_client, monkeypatch):
-    started = threading.Event()
-
-    async def blocking_dual_chat_stream(prompt, history):
-        started.set()
-        await asyncio.Event().wait()
-        yield {"speaker": "Planner/Reviewer", "provider": "codex", "content": "never reached"}
-
-    monkeypatch.setattr(chat_module, "stream_dual_ai_chat", blocking_dual_chat_stream)
+def test_web_chat_rejects_dual_even_when_provider_is_configured(dashboard_client):
     _login(dashboard_client)
-    response = dashboard_client.post(
-        "/api/chat/messages",
-        json={"session_id": "dual-stop", "content": "Dừng thử", "mode": "dual"},
-    )
-    assert response.status_code == 200
-    assert started.wait(2)
-
-    stop = dashboard_client.post("/api/chat/dual/stop", json={"session_id": "dual-stop"})
-
-    assert stop.status_code == 200
-    assert stop.json() == {"session_id": "dual-stop", "stopped": True, "running": False}
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        with db_module.SessionLocal() as session:
-            messages = session.query(ChatMessage).filter_by(
-                session_id="dual-stop", actor="admin", role="assistant"
-            ).all()
-        if any("Đã dừng trao đổi theo yêu cầu." in (message.content or "") for message in messages):
-            break
-        time.sleep(0.01)
-    assert any("Đã dừng trao đổi theo yêu cầu." in (message.content or "") for message in messages)
-    assert dashboard_client.get("/api/chat/dual/status?session_id=dual-stop").json()["running"] is False
-
-
-def test_dual_chat_saves_provider_error_without_http_500(dashboard_client, monkeypatch):
-    async def failing_stream(prompt, history):
-        raise dual_module.DualAIChatError("provider chưa đăng nhập")
-        yield  # Keep this an async generator for the route's streaming contract.
-
-    monkeypatch.setattr(chat_module, "stream_dual_ai_chat", failing_stream)
-    _login(dashboard_client)
-
     response = dashboard_client.post(
         "/api/chat/messages",
         json={"session_id": "dual-error", "content": "Kiểm tra provider", "mode": "dual"},
     )
-
-    assert response.status_code == 200
-    assert response.json()["processing"] is True
-    with db_module.SessionLocal() as session:
-        reply = session.query(ChatMessage).filter_by(
-            session_id="dual-error", actor="admin", role="assistant"
-        ).one()
-        assert "provider chưa đăng nhập" in reply.content
+    assert response.status_code == 400
 
 
 def test_dual_chat_rejects_oversized_prompt(dashboard_client):
@@ -338,6 +88,437 @@ def test_dual_chat_rejects_oversized_prompt(dashboard_client):
         json={"content": "x" * 12_001, "mode": "dual"},
     )
     assert response.status_code == 400
+
+
+def test_compact_agent_output_keeps_codex_answer_before_tokens_used():
+    output = """
+OpenAI Codex v0.99.0
+--------
+workdir: /root/ceph-ai
+model: gpt-5-codex
+approval: never
+codex
+- Đã đọc diff hiện tại.
+- Bước tiếp theo là thêm test hồi quy focused.
+tokens used
+1,234
+"""
+
+    assert dual_module._compact_agent_output(output) == (
+        "- Đã đọc diff hiện tại.\n"
+        "- Bước tiếp theo là thêm test hồi quy focused."
+    )
+
+
+def test_compact_agent_output_handles_empty_output():
+    assert dual_module._compact_agent_output("") == ""
+    assert dual_module._compact_agent_output("\n \t\n") == ""
+
+
+def test_compact_agent_output_strips_codex_metadata_from_error_output():
+    output = """
+OpenAI Codex v0.99.0
+--------
+workdir: /root/ceph-ai
+model: gpt-5-codex
+provider: openai
+sandbox: workspace-write
+Error: provider authentication failed
+"""
+
+    assert dual_module._compact_agent_output(output) == "Error: provider authentication failed"
+
+
+def test_compact_agent_output_keeps_last_codex_block_with_multiple_metadata_blocks():
+    output = """
+OpenAI Codex v0.99.0
+--------
+workdir: /root/ceph-ai
+model: gpt-5-codex
+codex
+- Nháp cũ không nên hiển thị.
+tokens used
+321
+--------
+workdir: /root/ceph-ai
+model: gpt-5-codex
+codex
+- Kết luận cuối cùng.
+- Bước tiếp theo là chạy focused test.
+tokens used
+654
+"""
+
+    assert dual_module._compact_agent_output(output) == (
+        "- Kết luận cuối cùng.\n"
+        "- Bước tiếp theo là chạy focused test."
+    )
+
+
+def test_compact_agent_output_drops_test_fixture_code_leaks():
+    output = """
+- Đã thêm kiểm tra context.
+captured = {}
+def fake_provider_command():
+    return b"ok"
+monkeypatch.setattr(module, "name", fake_provider_command)
+assert captured == {"provider": "codex"}
+- Bước tiếp theo là chạy focused test.
+"""
+
+    compact = dual_module._compact_agent_output(output)
+
+    assert "captured = {}" not in compact
+    assert "fake_provider_command" not in compact
+    assert "monkeypatch.setattr" not in compact
+    assert "assert captured" not in compact
+    assert compact == (
+        "- Đã thêm kiểm tra context.\n"
+        "- Bước tiếp theo là chạy focused test."
+    )
+
+
+def test_dual_ai_context_dedupes_history_and_drops_fixture_code():
+    history = [
+        {"role": "user", "content": "Kiểm tra dual AI"},
+        {"role": "assistant", "content": "captured = {}\n- Đã đọc diff"},
+        {"role": "assistant", "content": "captured = {}\n- Đã đọc diff"},
+        {"role": "user", "content": "Kiểm tra dual AI"},
+        {"role": "assistant", "content": "- Chạy focused test"},
+    ]
+
+    context = dual_module._context(history)
+
+    assert "captured = {}" not in context
+    assert context.count("Kiểm tra dual AI") == 1
+    assert context.count("- Đã đọc diff") == 1
+    assert "- Chạy focused test" in context
+
+
+def test_dual_ai_exchange_context_dedupes_events_and_drops_fixture_code():
+    events = [
+        {"speaker": "Planner/Reviewer", "content": "- Chọn task context\ncaptured = {}"},
+        {"speaker": "Planner/Reviewer", "content": "- Chọn task context\ncaptured = {}"},
+        {"speaker": "Implementer", "content": "- Đã vá helper"},
+    ]
+
+    context = dual_module._exchange_context(events)
+
+    assert "captured = {}" not in context
+    assert context.count("- Chọn task context") == 1
+    assert "Implementer: - Đã vá helper" in context
+
+
+def test_dual_ai_ask_uses_dual_ai_provider_model_not_code_repair(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            captured["stdin"] = input
+            return b"ok", None
+
+    def fake_provider_command(
+        provider, repo, prompt, timeout, *, claude_config_dir=None, codex_home=None, model="", mode="implement"
+    ):
+        captured.update({"provider": provider, "model": model, "mode": mode})
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(dual_module.settings, "code_repair_planner_provider", "claude", raising=False)
+    monkeypatch.setattr(dual_module.settings, "code_repair_planner_model", "wrong-model", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "right-model", raising=False)
+    monkeypatch.setattr(dual_module, "_profile", lambda role: "configured")
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    import asyncio
+
+    result = asyncio.run(dual_module._ask("planner", "prompt"))
+
+    assert captured["provider"] == "codex"
+    assert captured["model"] == "right-model"
+    assert captured["mode"] == "review"
+    assert captured["stdin"] == b"prompt"
+    assert result["provider"] == "codex"
+    assert result["model"] == "right-model"
+
+
+def test_dual_ai_ask_compacts_stdout_before_returning_content(monkeypatch):
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"captured = {}\n- ok", None
+
+    def fake_provider_command(
+        provider, repo, prompt, timeout, *, claude_config_dir=None, codex_home=None, model="", mode="review"
+    ):
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*command, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "stdout-model", raising=False)
+    monkeypatch.setattr(dual_module, "_profile", lambda role: "configured")
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    import asyncio
+
+    result = asyncio.run(dual_module._ask("planner", "prompt"))
+
+    assert result["content"] == "- ok"
+    assert "captured = {}" not in result["content"]
+
+
+def test_dual_ai_ask_implementer_uses_dual_ai_provider_model_in_read_only_mode(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            captured["stdin"] = input
+            return b"done", None
+
+    def fake_provider_command(
+        provider, repo, prompt, timeout, *, claude_config_dir=None, codex_home=None, model="", mode="review"
+    ):
+        captured.update({"provider": provider, "model": model, "mode": mode})
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*command, **kwargs):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(dual_module.settings, "code_repair_implementer_provider", "claude", raising=False)
+    monkeypatch.setattr(dual_module.settings, "code_repair_implementer_model", "wrong-model", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_model", "right-implementer-model", raising=False)
+    monkeypatch.setattr(dual_module, "_profile", lambda role: "configured")
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    import asyncio
+
+    result = asyncio.run(dual_module._ask("implementer", "prompt"))
+
+    assert captured["provider"] == "codex"
+    assert captured["model"] == "right-implementer-model"
+    assert captured["mode"] == "review"
+    assert captured["stdin"] == b"prompt"
+    assert result["speaker"] == "Implementer"
+    assert result["provider"] == "codex"
+    assert result["model"] == "right-implementer-model"
+
+
+def test_telegram_dual_implementer_explicitly_enables_write_mode(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"done", None
+
+    def fake_provider_command(provider, repo, prompt, timeout, **kwargs):
+        captured["mode"] = kwargs["mode"]
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    import asyncio
+
+    asyncio.run(dual_module._ask("implementer", "prompt", allow_writes=True))
+    assert captured["mode"] == "implement"
+
+
+def test_dual_ai_ask_nonzero_quota_error_raises_exhausted_not_tokens_footer(monkeypatch):
+    class FakeProcess:
+        returncode = 1
+
+        async def communicate(self, input=None):
+            return b"Error: quota exceeded for this account\ntokens used\n1,234", None
+
+    def fake_provider_command(
+        provider, repo, prompt, timeout, *, claude_config_dir=None, codex_home=None, model="", mode="review"
+    ):
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*command, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "quota-model", raising=False)
+    monkeypatch.setattr(dual_module, "_profile", lambda role: "configured")
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    import asyncio
+
+    with pytest.raises(dual_module.DualAIChatExhausted) as exc_info:
+        asyncio.run(dual_module._ask("planner", "prompt"))
+
+    assert str(exc_info.value) == "Provider đã hết token hoặc quota"
+    assert "tokens used" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "You've hit your usage limit",
+        "429 Too Many Requests",
+        "maximum context length exceeded",
+        "insufficient_quota",
+    ],
+)
+def test_token_stop_regex_covers_common_provider_limit_messages(message):
+    assert dual_module.TOKEN_STOP_RE.search(message)
+
+
+def test_dual_ai_fallback_moves_from_auto_to_next_provider(monkeypatch):
+    calls = []
+
+    async def fake_ask(role, prompt, *, provider_spec=None, model_override=None, allow_writes=False):
+        calls.append((role, provider_spec, model_override))
+        if provider_spec == "auto":
+            raise dual_module.DualAIChatExhausted(
+                "quota", provider="claude",
+            )
+        return {
+            "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
+            "provider": provider_spec,
+            "model": model_override or "default",
+            "content": "ok",
+        }
+
+    monkeypatch.setattr(dual_module, "_ask", fake_ask)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "auto", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", True, raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_fallbacks", "codex:gpt-5.4", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_model", "gpt-5.4", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_fallbacks", "", raising=False)
+    monkeypatch.setattr(dual_module, "MAX_IMPLEMENTER_TURNS", 1)
+
+    async def collect():
+        return [event async for event in dual_module._stream_dual_ai_chat_unlocked("prompt")]
+
+    import asyncio
+
+    events = asyncio.run(collect())
+    assert len(events) == 2
+    assert calls[:2] == [
+        ("planner", "auto", ""),
+        ("planner", "codex", "gpt-5.4"),
+    ]
+
+
+def test_dual_ai_does_not_retry_same_provider_after_auto_quota(monkeypatch):
+    calls = []
+
+    async def fake_ask(role, prompt, *, provider_spec=None, model_override=None, allow_writes=False):
+        calls.append(provider_spec)
+        raise dual_module.DualAIChatExhausted("quota", provider="claude")
+
+    monkeypatch.setattr(dual_module, "_ask", fake_ask)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "auto", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", True, raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_fallbacks", "claude:claude-sonnet-4-6", raising=False)
+
+    import asyncio
+
+    with pytest.raises(dual_module.DualAIChatExhausted):
+        asyncio.run(dual_module._stream_dual_ai_chat_unlocked("prompt").__anext__())
+    assert calls == ["auto"]
+
+
+def test_dual_ai_fallback_is_disabled_by_default(monkeypatch):
+    monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", False, raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "gpt-5.4", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_fallbacks", "claude:claude-sonnet-4-6", raising=False)
+
+    assert dual_module._provider_candidates("planner") == [("codex", "gpt-5.4")]
+
+
+def test_dual_ai_fallback_keeps_provider_account_profile_and_model(monkeypatch):
+    monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", True, raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "gpt-5.5", raising=False)
+    monkeypatch.setattr(
+        dual_module.settings,
+        "dual_ai_planner_fallbacks",
+        "codex@Codex-2:gpt-5.4,claude@claude-1:claude-sonnet-4-6",
+        raising=False,
+    )
+
+    assert dual_module._provider_candidates("planner") == [
+        ("codex", "gpt-5.5"),
+        ("codex@Codex-2", "gpt-5.4"),
+        ("claude@claude-1", "claude-sonnet-4-6"),
+    ]
+
+
+def test_dual_ai_ask_uses_fallback_account_profile(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"ok", None
+
+    def fake_provider_command(provider, repo, prompt, timeout, **kwargs):
+        captured["provider"] = provider
+        captured["model"] = kwargs["model"]
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*command, **kwargs):
+        return FakeProcess()
+
+    def fake_account_dirs(config, profile):
+        captured["profile"] = profile
+        return Path("/tmp/codex"), Path("/tmp/claude")
+
+    monkeypatch.setattr(dual_module, "_role_account_dirs", fake_account_dirs)
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+    import asyncio
+
+    asyncio.run(
+        dual_module._ask(
+            "planner",
+            "prompt",
+            provider_spec="codex@Codex-2",
+            model_override="gpt-5.4",
+        )
+    )
+
+    assert captured == {
+        "provider": "codex",
+        "model": "gpt-5.4",
+        "profile": "Codex-2",
+    }
 
 
 def test_confirmed_secondary_chat_action_keeps_original_cluster(dashboard_client):
@@ -1126,11 +1307,11 @@ def test_confirm_action_management_action_rejects_more_than_one_target_node(dash
 def test_confirm_bluestore_quick_fix_is_revalidated_and_waits_for_approval(
     dashboard_client, monkeypatch
 ):
-    monkeypatch.setattr(chat_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(chat_module.settings, "ceph_exec_mode", "cephadm")
     message_id = _stage_proposal(
         action_id="bluestore_omap_quick_fix",
         target_nodes=[A_MON_HOST],
-        params={"osd_id": 3},
+        params={"osd_id": 1},
     )
     _login(dashboard_client)
 
@@ -1144,9 +1325,10 @@ def test_confirm_bluestore_quick_fix_is_revalidated_and_waits_for_approval(
         assert action.classification == ActionClassification.RISKY.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
         assert action.proposed_command == (
-            "systemctl stop ceph-osd@3.service && "
-            "ceph-bluestore-tool quick-fix --path /var/lib/ceph/osd/ceph-3 && "
-            "systemctl start ceph-osd@3.service"
+            "cephadm unit --name osd.1 stop && "
+            "cephadm shell --name osd.1 -- ceph-bluestore-tool quick-fix "
+            "--path /var/lib/ceph/osd/ceph-1 && "
+            "cephadm unit --name osd.1 start"
         )
 
 

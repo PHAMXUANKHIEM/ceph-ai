@@ -114,6 +114,10 @@ _FOLLOW_UP_RE = re.compile(
     r"(?i)^\s*(?:tại sao|vì sao|giải thích|chi tiết|tiếp tục|làm đi|thực hiện đi|"
     r"sửa đi|khắc phục đi|còn gì nữa|như thế nào|kiểm tra thêm|đúng không|ok|ừ|có)\b"
 )
+_OSD_REF_RE = re.compile(r"\bosd\.(\d+)\b", re.IGNORECASE)
+_BLUESTORE_HISTORY_RE = re.compile(
+    r"(?i)(?:BLUESTORE_NO_PER_POOL_OMAP|legacy\s+\(not per-pool\)|bluestore.*omap|omap.*bluestore)"
+)
 
 
 def is_ceph_scoped(user_text: str, history: list[dict] | None = None) -> bool:
@@ -237,6 +241,117 @@ def with_romantic_address(
     """Deterministically enforce the configured persona even if a model
     overlooks the prompt. This wrapper also covers server-side refusals."""
     return f"{female_address} {ai_name}. {reply_text}"
+
+
+def _json_from_history_text(text: str):
+    try:
+        return json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        return json.loads(text[start:end + 1])
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def _osd_host_map_from_tree(payload, allowed_hosts: set[str]) -> dict[int, str]:
+    if not isinstance(payload, dict):
+        return {}
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        nodes = []
+
+        def collect_tree_nodes(node) -> None:
+            if not isinstance(node, dict):
+                return
+            nodes.append(node)
+            for child in node.get("children") or []:
+                collect_tree_nodes(child)
+
+        for root in payload.get("roots") or []:
+            collect_tree_nodes(root)
+
+    by_id = {node.get("id"): node for node in nodes if isinstance(node, dict)}
+    result: dict[int, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "host":
+            continue
+        host = str(node.get("name") or "")
+        if host not in allowed_hosts:
+            continue
+        for child_ref in node.get("children") or []:
+            child = by_id.get(child_ref) if not isinstance(child_ref, dict) else child_ref
+            if isinstance(child, dict) and child.get("type") == "osd":
+                osd_name = str(child.get("name") or "")
+                match = _OSD_REF_RE.search(osd_name)
+                if match:
+                    result[int(match.group(1))] = host
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "osd":
+            continue
+        match = _OSD_REF_RE.search(str(node.get("name") or ""))
+        if not match:
+            continue
+        location = node.get("crush_location")
+        host = location.get("host") if isinstance(location, dict) else None
+        if isinstance(host, str) and host in allowed_hosts:
+            result[int(match.group(1))] = host
+    return result
+
+
+def _osd_host_map_from_envelope(payload, allowed_hosts: set[str]) -> dict[int, str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("osd_hosts"), dict):
+        return {}
+    result: dict[int, str] = {}
+    for raw_osd_id, raw_host in payload["osd_hosts"].items():
+        try:
+            osd_id = int(raw_osd_id)
+        except (TypeError, ValueError):
+            continue
+        host = str(raw_host or "")
+        if host in allowed_hosts:
+            result[osd_id] = host
+    return result
+
+
+def _osd_host_map_from_messages(messages: list, cluster=None) -> dict[int, str]:
+    allowed_hosts = {n["host"] for n in configured_nodes(cluster)}
+    direct_hosts: dict[int, str] = {}
+    tree_hosts: dict[int, str] = {}
+    for message in messages[-MAX_HISTORY_MESSAGES:]:
+        text = str(message.get("content") if isinstance(message, dict) else message or "")
+        payload = _json_from_history_text(text)
+        direct_hosts.update(_osd_host_map_from_envelope(payload, allowed_hosts))
+        for osd_id, host in _osd_host_map_from_tree(payload, allowed_hosts).items():
+            if osd_id not in direct_hosts:
+                tree_hosts[osd_id] = host
+    return {**tree_hosts, **direct_hosts}
+
+
+
+def _bluestore_history_hint(history: list[dict], cluster=None) -> str:
+    affected_osds: set[int] = set()
+    osd_hosts = _osd_host_map_from_messages(history, cluster)
+    for message in history[-MAX_HISTORY_MESSAGES:]:
+        text = str(message.get("content") or "")
+        if _BLUESTORE_HISTORY_RE.search(text):
+            affected_osds.update(int(value) for value in _OSD_REF_RE.findall(text))
+    lines = [
+        f"- osd.{osd_id} đang có BLUESTORE_NO_PER_POOL_OMAP; host chứa OSD: {osd_hosts[osd_id]}"
+        for osd_id in sorted(affected_osds)
+        if osd_id in osd_hosts
+    ]
+    if not lines:
+        return ""
+    return (
+        "Từ history đã có đủ osd_id và host cho BlueStore quick-fix:\n"
+        + "\n".join(lines[:5])
+        + "\nNếu người dùng yêu cầu sửa lỗi BlueStore/omap, hãy gọi propose_action "
+          "bluestore_omap_quick_fix cho đúng một OSD mỗi lượt; không hỏi lại OSD/host đã có ở trên."
+    )
 
 
 # Restricted by default for callers that use the constant directly. Chat turns
@@ -669,7 +784,20 @@ _MANAGEMENT_PARAM_IS_INT: dict[str, bool] = {
 }
 
 
-def _validate_proposal(args: dict, cluster=None) -> dict:
+def _validate_bluestore_osd_host(osd_id: int, target_host: str, context_messages: list, cluster=None) -> None:
+    osd_hosts = _osd_host_map_from_messages(context_messages, cluster)
+    expected_host = osd_hosts.get(osd_id)
+    if expected_host is None:
+        raise ChatToolError(
+            f"không xác minh được host chứa osd.{osd_id} từ get_osd_tree; cần tra cứu lại trước khi đề xuất"
+        )
+    if expected_host != target_host:
+        raise ChatToolError(
+            f"osd.{osd_id} nằm trên {expected_host}, không phải {target_host}; từ chối đề xuất BlueStore"
+        )
+
+
+def _validate_proposal(args: dict, cluster=None, context_messages: list | None = None) -> dict:
     action_id = (args.get("action_id") or "").strip()
     target_nodes = args.get("target_nodes")
     rationale = (args.get("rationale") or "").strip()
@@ -714,6 +842,8 @@ def _validate_proposal(args: dict, cluster=None) -> dict:
                         f"tham số {key!r} không được để trống cho action_id={action_id!r}"
                     )
             params[key] = value
+        if action_id == "bluestore_omap_quick_fix":
+            _validate_bluestore_osd_host(params["osd_id"], target_nodes[0], context_messages or [], cluster)
 
     return {
         "action_id": action_id,
@@ -822,6 +952,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address,
         cluster_name=getattr(cluster, "name", None),
     )
+    bluestore_hint = _bluestore_history_hint(history, cluster)
+    if bluestore_hint:
+        actor_system_prompt += "\n\n" + bluestore_hint
     outbound_history = [
         {**message, "content": redact_text(str(message.get("content") or ""))}
         for message in history
@@ -925,7 +1058,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 if propose_call.function.name == TOOL_PROPOSE_NODE_COMMAND:
                     proposal = _validate_node_command_proposal(args, actor, cluster)
                 else:
-                    proposal = _validate_proposal(args, cluster)
+                    proposal = _validate_proposal(args, cluster, messages)
                     proposal["command_preview"] = resolve_command_preview(
                         proposal["action_id"], proposal["target_nodes"], proposal["params"]
                     )
@@ -982,6 +1115,7 @@ async def _run_codex_chat_turn(
     proposal: dict | None = None
     tools_used: list[str] = []
     citations: list[dict] = []
+    tool_context: list[dict] = []
 
     async def handle_tool(name: str, args: dict) -> tuple[str, bool]:
         nonlocal proposal
@@ -990,7 +1124,7 @@ async def _run_codex_chat_turn(
                 if name == TOOL_PROPOSE_NODE_COMMAND:
                     proposal = _validate_node_command_proposal(args, actor, cluster)
                     return "Đề xuất đã tạo. Admin phải nhập chính xác OK ở tin nhắn kế tiếp.", True
-                proposal = _validate_proposal(args, cluster)
+                proposal = _validate_proposal(args, cluster, history + tool_context)
                 proposal["command_preview"] = resolve_command_preview(
                     proposal["action_id"], proposal["target_nodes"], proposal["params"]
                 )
@@ -1001,6 +1135,7 @@ async def _run_codex_chat_turn(
         if not is_error:
             tools_used.append(name)
             citations.extend(_citations_from_result(text))
+            tool_context.append({"role": "tool", "content": redact_text(text)})
         return text, not is_error
 
     try:
@@ -1103,7 +1238,11 @@ async def _run_claude_chat_turn(
                     proposal = _validate_node_command_proposal(args, actor, cluster)
                     reply = "Đã tạo đề xuất lệnh trên node. Hãy nhập chính xác `OK` ở tin nhắn kế tiếp để thực hiện."
                 else:
-                    proposal = _validate_proposal(args, cluster)
+                    proposal = _validate_proposal(
+                        args,
+                        cluster,
+                        history + [{"role": "tool", "content": item} for item in exchange],
+                    )
                     proposal["command_preview"] = resolve_command_preview(
                         proposal["action_id"], proposal["target_nodes"], proposal["params"]
                     )

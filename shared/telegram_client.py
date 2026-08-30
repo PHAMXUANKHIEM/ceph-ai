@@ -19,7 +19,9 @@ Two families of calls here, split by direction:
   (`get_telegram_updates`, Bot API long-polling `getUpdates`) — a
   deliberate, scoped exception to this module's own former "send-only"
   posture, added only because the operator explicitly asked for it.
-  Even so, an incoming update here can only ever trigger the SAME
+  The Dashboard listener also enables `message` updates for the separate
+  Chatbox AI Telegram channel; those are allow-listed and queued outside the
+  polling thread. Even so, an incoming approval update can only ever trigger the SAME
   approve/reject logic the Dashboard's own buttons already call
   (worker/action_approval.py) — nothing new becomes executable that
   wasn't already one click away on the Dashboard.
@@ -140,6 +142,18 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
     )
 
 
+def set_telegram_commands(bot_token: str, commands: list[dict[str, str]]) -> None:
+    """Register the slash-command menu shown by Telegram for this bot."""
+    if not bot_token:
+        raise TelegramSendError("Chưa cấu hình Telegram bot token")
+    _call_telegram_api(
+        bot_token,
+        "setMyCommands",
+        {"commands": commands},
+        timeout=TELEGRAM_TIMEOUT_SECONDS,
+    )
+
+
 def send_telegram_message_with_keyboard(
     bot_token: str, chat_id: str, text: str, buttons: list[tuple[str, str]]
 ) -> int:
@@ -185,13 +199,19 @@ def edit_telegram_message(bot_token: str, chat_id: str, message_id: int, text: s
     _call_telegram_api(bot_token, "editMessageText", payload, timeout=TELEGRAM_TIMEOUT_SECONDS)
 
 
-def get_telegram_updates(bot_token: str, offset: int | None, timeout_seconds: int) -> list[dict]:
+def get_telegram_updates(
+    bot_token: str,
+    offset: int | None,
+    timeout_seconds: int,
+    allowed_updates: list[str] | None = None,
+) -> list[dict]:
     """Long-polls Telegram's own `getUpdates` for up to `timeout_seconds`
     (Bot API holds the HTTP connection open until an update arrives or the
     timeout elapses — NOT a busy-poll) — the only inbound Telegram call in
     this codebase, scoped to `allowed_updates=["callback_query"]` only
     (this feature never needs to read plain chat messages, only inline-
-    button presses). `offset` should be the highest `update_id` already
+    button presses by default; callers that also own a two-way chat may pass
+    `['callback_query', 'message']`). `offset` should be the highest `update_id` already
     processed + 1 (Telegram's own documented ack mechanism — passing it
     tells the server it can stop re-delivering everything up to and
     including that id); `None` on the very first call.
@@ -203,7 +223,10 @@ def get_telegram_updates(bot_token: str, offset: int | None, timeout_seconds: in
     about to succeed."""
     if not bot_token:
         raise TelegramSendError("Chưa cấu hình Telegram bot token")
-    payload: dict = {"timeout": timeout_seconds, "allowed_updates": ["callback_query"]}
+    payload: dict = {
+        "timeout": timeout_seconds,
+        "allowed_updates": allowed_updates or ["callback_query"],
+    }
     if offset is not None:
         payload["offset"] = offset
     try:

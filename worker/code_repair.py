@@ -26,7 +26,7 @@ from config.settings import settings as app_settings
 from shared.telegram_alerts import send_code_repair_alert
 
 
-ALLOWED_PREFIXES = ("config/", "dashboard/", "scripts/", "shared/", "tests/", "watcher/", "worker/")
+ALLOWED_PREFIXES = ("config/", "dashboard/", "shared/", "tests/", "watcher/", "worker/")
 FORBIDDEN_PREFIXES = (".env", ".git", ".github/", ".codex", "alembic/versions/", "scripts/deploy/")
 ERROR_RE = re.compile(r"(Traceback \(most recent call last\):|\b(?:CRITICAL|ERROR)\b)")
 SECRET_RE = re.compile(r"(?i)(api[_-]?key|secret|password|token)\s*[=:]\s*\S+")
@@ -104,6 +104,10 @@ class RepairConfig:
     running_stale_seconds: int = 3600
     notify_telegram: bool = True
     transcript_file: Path | None = None
+    # A proactive improvement task may correctly conclude that no small,
+    # testable upgrade is warranted.  Normal repair tasks must still fail
+    # closed when no patch is produced.
+    allow_no_change: bool = False
 
 
 @dataclass
@@ -369,7 +373,7 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
                       *, claude_config_dir: Path | None = None,
                       codex_home: Path | None = None,
                       model: str = "", mode: str = "implement") -> tuple[str, list[str]]:
-    if mode not in {"implement", "review"}:
+    if mode not in {"implement", "review", "full-access"}:
         raise RepairError(f"unsupported AI role mode: {mode!r}")
     codex = shutil.which("codex")
     if not codex:
@@ -396,6 +400,14 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
     if provider == "codex" and codex:
         if mode == "review":
             command = [codex, "exec", "--ephemeral", "--sandbox", "read-only", "-C", str(worktree)]
+        elif mode == "full-access":
+            # This is deliberately reserved for Telegram's separately
+            # allow-listed /single-full operator mode. It runs as the service
+            # user with no Codex sandbox or approval boundary.
+            command = [
+                codex, "exec", "--ephemeral",
+                "--dangerously-bypass-approvals-and-sandbox", "-C", str(worktree),
+            ]
         else:
             # Current Codex CLI makes --approve-for-me mutually exclusive with
             # --sandbox; approve-for-me itself routes commands through its
@@ -408,8 +420,14 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
             command = ["env", f"CODEX_HOME={codex_home}", *command]
         return provider, command
     if provider == "claude" and claude:
-        permission_mode = "plan" if mode == "review" else "acceptEdits"
+        permission_mode = (
+            "plan" if mode == "review"
+            else "bypassPermissions" if mode == "full-access"
+            else "acceptEdits"
+        )
         command = [claude, "-p", "--permission-mode", permission_mode, "--no-session-persistence"]
+        if mode == "full-access":
+            command.append("--dangerously-skip-permissions")
         if model.strip():
             command.extend(["--model", model.strip()])
         command.append(prompt)
@@ -558,6 +576,13 @@ Observed failure (credentials already redacted):
 {evidence}
 ---
 """
+        if config.task_instructions:
+            planner_prompt += f"""
+Additional task constraints:
+---
+{config.task_instructions}
+---
+"""
         planner_provider, planner_command = _provider_command(
             planner_provider_spec, planner_worktree, planner_prompt, config.timeout_seconds,
             claude_config_dir=planner_claude_config_dir,
@@ -585,6 +610,10 @@ Observed failure (credentials already redacted):
         plan = planner.stdout[-16_000:].strip()
         if not plan:
             raise RepairError("Planner/Reviewer không trả về kế hoạch")
+        if config.allow_no_change and "VERDICT: NO_CHANGE_NEEDED" in plan:
+            result.status = "NO_CHANGE"
+            result.error = None
+            return result
 
         notifier.update(25, "Đã có kế hoạch; đang tạo worktree Implementer")
         _run(["git", "worktree", "add", "-b", branch, str(worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)

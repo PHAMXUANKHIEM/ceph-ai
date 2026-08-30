@@ -36,9 +36,12 @@ CODEX_INSTALL_COMMAND = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
 CODEX_APP_SERVER_STREAM_LIMIT = 4 * 1024 * 1024
 _install_lock = asyncio.Lock()
 _device_login_lock = asyncio.Lock()
-_device_login_process: asyncio.subprocess.Process | None = None
-_device_login_result: dict | None = None
-_device_login_drain_task: asyncio.Task | None = None
+# Device authentication is scoped to CODEX_HOME. A default Chatbox account
+# and an isolated Code Repair profile may authenticate at the same time; they
+# must never reuse one another's device code or completion state.
+_device_login_processes: dict[str, asyncio.subprocess.Process] = {}
+_device_login_results: dict[str, dict] = {}
+_device_login_drain_tasks: dict[str, asyncio.Task] = {}
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _URL_RE = re.compile(r"https?://[^\s<>\]\[()]+")
@@ -55,6 +58,16 @@ def codex_executable() -> str | None:
         return found
     candidate = Path.home() / ".local" / "bin" / "codex"
     return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+def _device_login_home(codex_home: Path | None = None) -> tuple[Path, str]:
+    target_home = (codex_home or codex_app_server._codex_home()).expanduser()
+    target_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        target_home.chmod(0o700)
+    except OSError:
+        pass
+    return target_home, str(target_home.resolve())
 
 
 async def install_codex_cli() -> dict:
@@ -91,17 +104,17 @@ async def start_cli_device_login(codex_home: Path | None = None) -> dict:
     once the operator grants access. Repeated clicks reuse the still-valid
     flow instead of spawning competing login processes for the same home.
     """
-    global _device_login_process, _device_login_result, _device_login_drain_task
+    target_home, home_key = _device_login_home(codex_home)
     async with _device_login_lock:
-        if _device_login_process and _device_login_process.returncode is None and _device_login_result:
-            return _device_login_result
+        existing_process = _device_login_processes.get(home_key)
+        existing_result = _device_login_results.get(home_key)
+        if existing_process and existing_process.returncode is None and existing_result:
+            return existing_result
 
         executable = codex_executable()
         if executable is None:
             raise CodexAppServerError("Chưa cài Codex CLI trên server")
         env = os.environ.copy()
-        target_home = codex_home or codex_app_server._codex_home()
-        target_home.mkdir(mode=0o700, parents=True, exist_ok=True)
         env["CODEX_HOME"] = str(target_home)
         # Codex buffers this short prompt when stdout is a regular pipe. Give
         # it a pseudo-terminal so the URL/code are flushed immediately, just
@@ -109,12 +122,13 @@ async def start_cli_device_login(codex_home: Path | None = None) -> dict:
         master_fd, slave_fd = pty.openpty()
         try:
             try:
-                _device_login_process = await asyncio.create_subprocess_exec(
+                process = await asyncio.create_subprocess_exec(
                     executable, "login", "--device-auth",
                     stdout=slave_fd,
                     stderr=slave_fd,
                     env=env,
                 )
+                _device_login_processes[home_key] = process
             except BaseException:
                 os.close(master_fd)
                 raise
@@ -137,11 +151,12 @@ async def start_cli_device_login(codex_home: Path | None = None) -> dict:
                 urls = _URL_RE.findall(clean)
                 codes = _DEVICE_CODE_RE.findall(clean.upper())
                 if urls and codes:
-                    _device_login_result = {
-                        "loginId": f"cli-{_device_login_process.pid}",
+                    result = {
+                        "loginId": f"cli-{process.pid}",
                         "verificationUrl": urls[-1].rstrip(".,;"),
                         "userCode": codes[-1].upper(),
                     }
+                    _device_login_results[home_key] = result
                     # Continue draining output while the CLI waits, otherwise
                     # a full pipe could prevent it from completing login.
                     async def drain_login_output() -> None:
@@ -152,37 +167,53 @@ async def start_cli_device_login(codex_home: Path | None = None) -> dict:
                             # Linux PTYs report EIO when the slave closes.
                             pass
 
-                    _device_login_drain_task = asyncio.create_task(drain_login_output())
-                    return _device_login_result
+                    _device_login_drain_tasks[home_key] = asyncio.create_task(drain_login_output())
+                    return result
         except asyncio.TimeoutError as exc:
-            _device_login_process.terminate()
-            await _device_login_process.wait()
+            process.terminate()
+            await process.wait()
             master_pipe.close()
-            _device_login_process = None
+            _device_login_processes.pop(home_key, None)
+            _device_login_results.pop(home_key, None)
             raise CodexAppServerError("Codex CLI không in device code trong 15 giây") from exc
 
-        return_code = await _device_login_process.wait()
+        return_code = await process.wait()
         master_pipe.close()
-        _device_login_process = None
+        _device_login_processes.pop(home_key, None)
+        _device_login_results.pop(home_key, None)
         detail = _ANSI_ESCAPE_RE.sub("", output).strip()[-3000:]
         raise CodexAppServerError(
             f"Không đọc được device code từ Codex CLI (exit {return_code}): {detail or 'không có output'}"
         )
 
 
-async def refresh_app_server_after_cli_login() -> None:
-    """Restart app-server once the external CLI login has completed."""
-    global _device_login_process, _device_login_result
+async def refresh_app_server_after_cli_login(codex_home: Path | None = None) -> str:
+    """Restart app-server once the external CLI login has completed.
+
+    Returns ``pending``, ``completed``, ``failed`` or ``none``.  Callers can
+    therefore poll this safely without reporting an account switch before the
+    browser authentication has actually succeeded.
+    """
+    _target_home, home_key = _device_login_home(codex_home)
+    default_home_key = _device_login_home()[1]
     async with _device_login_lock:
-        process = _device_login_process
-        if process is None or process.returncode is None:
-            return
+        process = _device_login_processes.get(home_key)
+        if process is None:
+            return "none"
+        if process.returncode is None:
+            return "pending"
         await process.wait()
-        _device_login_process = None
-        _device_login_result = None
+        _device_login_processes.pop(home_key, None)
+        _device_login_results.pop(home_key, None)
+        _device_login_drain_tasks.pop(home_key, None)
+        if process.returncode != 0:
+            return "failed"
         # account/read may otherwise retain the pre-login auth state from the
-        # app-server process started when the Settings page first loaded.
-        await codex_app_server.close()
+        # app-server process started when the Settings page first loaded. An
+        # isolated Code Repair profile has no shared app-server to reset.
+        if home_key == default_home_key:
+            await codex_app_server.close()
+        return "completed"
 
 
 class CodexAppServer:

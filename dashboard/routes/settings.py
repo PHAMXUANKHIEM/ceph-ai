@@ -449,6 +449,9 @@ CODE_REPAIR_ENV_NAMES = env_config.CODE_REPAIR_ENV_NAMES
 CODE_REPAIR_PROVIDERS = ("auto", "codex", "claude")
 CODE_REPAIR_ACCOUNT_SOURCES = ("configured", "separate")
 CODE_REPAIR_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
+CODE_REPAIR_MAX_REVIEW_ROUNDS = 5
+DUAL_AI_ENV_NAMES = env_config.DUAL_AI_ENV_NAMES
+DUAL_AI_PROVIDERS = ("auto", "codex", "claude")
 
 
 def _code_repair_profile_dir(provider: str, profile: str) -> Path:
@@ -974,6 +977,13 @@ def _code_repair_form_values() -> dict:
     }
 
 
+def _dual_ai_form_values() -> dict:
+    return {
+        field: getattr(settings, field)
+        for field in DUAL_AI_ENV_NAMES
+    }
+
+
 def _cost_hours(raw: str | None) -> int:
     try:
         return max(1, min(int(raw or 24), 8760))
@@ -1035,6 +1045,9 @@ def _settings_context(
     code_repair_error: str | None = None,
     code_repair_success: str | None = None,
     code_repair_values: dict | None = None,
+    dual_ai_error: str | None = None,
+    dual_ai_success: str | None = None,
+    dual_ai_values: dict | None = None,
     log_intel_error: str | None = None,
     log_intel_success: str | None = None,
     log_intel_values: dict | None = None,
@@ -1129,6 +1142,12 @@ def _settings_context(
         "code_repair_values": (
             code_repair_values if code_repair_values is not None else _code_repair_form_values()
         ),
+        "dual_ai_error": dual_ai_error,
+        "dual_ai_success": dual_ai_success,
+        "dual_ai_providers": DUAL_AI_PROVIDERS,
+        "dual_ai_values": (
+            dual_ai_values if dual_ai_values is not None else _dual_ai_form_values()
+        ),
         "log_intel_error": log_intel_error,
         "log_intel_success": log_intel_success,
         "log_intel_values": (
@@ -1212,6 +1231,9 @@ def _settings_context(
         code_repair_values if code_repair_values is not None else _code_repair_form_values()
     )
     context.update(
+        dual_ai_values if dual_ai_values is not None else _dual_ai_form_values()
+    )
+    context.update(
         backup_target_values if backup_target_values is not None else _backup_target_form_values()
     )
     # ssh_key_path is no longer an editable field on the cluster form (see
@@ -1282,6 +1304,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "cleanup"
     if any(context.get(k) for k in ("log_intel_error", "log_intel_success")):
         return "log-intel"
+    if any(context.get(k) for k in ("dual_ai_error", "dual_ai_success")):
+        return "dual-ai"
     if any(context.get(k) for k in ("patch_pipeline_error", "patch_pipeline_success")):
         return "patch-pipeline"
     if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
@@ -2745,6 +2769,74 @@ async def patch_pipeline_settings_submit(
     )
 
 
+@router.post("/settings/dual-ai", response_class=HTMLResponse)
+async def dual_ai_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    dual_ai_fallback_enabled: str = Form("false"),
+    dual_ai_planner_provider: str = Form("auto"),
+    dual_ai_planner_model: str = Form(""),
+    dual_ai_planner_fallbacks: str = Form(""),
+    dual_ai_implementer_provider: str = Form("auto"),
+    dual_ai_implementer_model: str = Form(""),
+    dual_ai_implementer_fallbacks: str = Form(""),
+):
+    """Persist provider/model settings used only by Dashboard dual-AI chat."""
+    _require_admin_privilege(user)
+    values = {
+        "dual_ai_fallback_enabled": dual_ai_fallback_enabled.strip().lower() in {"1", "true", "yes", "on"},
+        "dual_ai_planner_provider": dual_ai_planner_provider.strip().lower(),
+        "dual_ai_planner_model": dual_ai_planner_model.strip(),
+        "dual_ai_planner_fallbacks": dual_ai_planner_fallbacks.strip(),
+        "dual_ai_implementer_provider": dual_ai_implementer_provider.strip().lower(),
+        "dual_ai_implementer_model": dual_ai_implementer_model.strip(),
+        "dual_ai_implementer_fallbacks": dual_ai_implementer_fallbacks.strip(),
+    }
+
+    def fail(message: str):
+        return templates.TemplateResponse(
+            request, "settings.html",
+            _settings_context(user, dual_ai_error=message, dual_ai_values=values),
+        )
+
+    for field in ("dual_ai_planner_provider", "dual_ai_implementer_provider"):
+        if values[field] not in DUAL_AI_PROVIDERS:
+            return fail(f"{field}: provider phải là auto, codex hoặc claude.")
+    for field in ("dual_ai_planner_fallbacks", "dual_ai_implementer_fallbacks"):
+        for entry in filter(None, (part.strip() for part in values[field].split(","))):
+            provider_spec, separator, model = entry.partition(":")
+            provider, profile_separator, profile = provider_spec.partition("@")
+            if provider.strip().lower() not in DUAL_AI_PROVIDERS:
+                return fail(f"{field}: provider fallback phải là auto, codex hoặc claude.")
+            if profile_separator and not CODE_REPAIR_PROFILE_RE.fullmatch(profile.strip()):
+                return fail(f"{field}: tên account profile không hợp lệ.")
+            if separator and not model.strip():
+                return fail(f"{field}: model sau dấu ':' không được để trống.")
+        values[field] = ",".join(
+            part.strip() for part in values[field].split(",") if part.strip()
+        )
+    try:
+        def env_value(field: str) -> str:
+            if field == "dual_ai_fallback_enabled":
+                return "true" if values[field] else "false"
+            return str(values[field])
+
+        _update_env_file_batch({
+            env_name: env_value(field)
+            for field, env_name in DUAL_AI_ENV_NAMES.items()
+        })
+        for field in DUAL_AI_ENV_NAMES:
+            setattr(settings, field, values[field])
+    except Exception:
+        logger.exception("dual_ai_settings_submit: failed to persist config")
+        return fail("Không ghi được cấu hình — kiểm tra quyền ghi file .env")
+
+    return templates.TemplateResponse(
+        request, "settings.html",
+        _settings_context(user, dual_ai_success="Đã lưu cấu hình riêng cho hai AI trao đổi."),
+    )
+
+
 @router.post("/settings/code-repair", response_class=HTMLResponse)
 async def code_repair_settings_submit(
     request: Request,
@@ -2761,12 +2853,19 @@ async def code_repair_settings_submit(
     code_repair_implementer_account_profile: str = Form(""),
     code_repair_implementer_separate_provider: str = Form("codex"),
     code_repair_implementer_separate_model: str = Form(""),
+    code_repair_max_review_rounds: str = Form("2"),
+    code_repair_auto_enabled: str = Form("false"),
+    code_repair_push: str = Form("false"),
+    code_repair_deploy_staging: str = Form("false"),
+    code_repair_promote_main: str = Form("false"),
 ):
     """Persist the two AI roles used by the external repair supervisor."""
     _require_admin_privilege(user)
     planner_source = code_repair_planner_account_source.strip().lower()
     implementer_source = code_repair_implementer_account_source.strip().lower()
+    auto_enabled = code_repair_auto_enabled.strip().lower()
     values = {
+        "code_repair_auto_enabled": auto_enabled,
         "code_repair_planner_provider": (code_repair_planner_separate_provider if planner_source == "separate" else code_repair_planner_provider).strip().lower(),
         "code_repair_planner_model": ((code_repair_planner_separate_model or code_repair_planner_model) if planner_source == "separate" else code_repair_planner_model).strip(),
         "code_repair_planner_account_source": planner_source,
@@ -2775,6 +2874,10 @@ async def code_repair_settings_submit(
         "code_repair_implementer_model": ((code_repair_implementer_separate_model or code_repair_implementer_model) if implementer_source == "separate" else code_repair_implementer_model).strip(),
         "code_repair_implementer_account_source": implementer_source,
         "code_repair_implementer_account_profile": code_repair_implementer_account_profile.strip(),
+        "code_repair_max_review_rounds": code_repair_max_review_rounds.strip(),
+        "code_repair_push": code_repair_push.strip().lower(),
+        "code_repair_deploy_staging": code_repair_deploy_staging.strip().lower(),
+        "code_repair_promote_main": code_repair_promote_main.strip().lower(),
     }
 
     def fail(message: str):
@@ -2782,6 +2885,19 @@ async def code_repair_settings_submit(
             request, "settings.html",
             _settings_context(user, code_repair_error=message, code_repair_values=values),
         )
+
+    if auto_enabled not in {"true", "false"}:
+        return fail("code_repair_auto_enabled: giá trị phải là true hoặc false.")
+    values["code_repair_auto_enabled"] = auto_enabled == "true"
+
+    for field in ("code_repair_push", "code_repair_deploy_staging", "code_repair_promote_main"):
+        if values[field] not in {"true", "false"}:
+            return fail(f"{field}: giá trị phải là true hoặc false.")
+        values[field] = values[field] == "true"
+    if values["code_repair_deploy_staging"] and not values["code_repair_push"]:
+        return fail("code_repair_deploy_staging: phải bật push branch trước.")
+    if values["code_repair_promote_main"] and not values["code_repair_deploy_staging"]:
+        return fail("code_repair_promote_main: phải bật deploy staging trước.")
 
     for field in ("code_repair_planner_provider", "code_repair_implementer_provider"):
         if values[field] not in CODE_REPAIR_PROVIDERS:
@@ -2800,6 +2916,14 @@ async def code_repair_settings_submit(
             return fail(f"{provider_field}: tài khoản riêng chỉ hỗ trợ Codex hoặc Claude.")
         if source == "configured":
             values[profile_field] = ""
+    try:
+        rounds = int(values["code_repair_max_review_rounds"])
+    except ValueError:
+        return fail("Số vòng review phải là số nguyên từ 0 đến 5.")
+    if not 0 <= rounds <= CODE_REPAIR_MAX_REVIEW_ROUNDS:
+        return fail("Số vòng review phải nằm trong khoảng 0 đến 5.")
+    values["code_repair_max_review_rounds"] = rounds
+
     try:
         _update_env_file_batch({
             env_name: str(values[field])
@@ -2822,7 +2946,7 @@ async def code_repair_settings_submit(
         _settings_context(
             user,
             code_repair_success=(
-                "Đã lưu cấu hình hai AI." + restart_message
+                "Đã lưu cấu hình tự động sửa code từ log." + restart_message
             ),
         ),
     )

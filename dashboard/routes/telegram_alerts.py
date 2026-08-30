@@ -11,6 +11,7 @@ Settings trước đây (trang chứa Bot Token — bí mật).
 
 import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -96,6 +97,16 @@ _CHANNELS: dict[str, dict] = {
         "env_names": env_config.TELEGRAM_RGW_ENV_NAMES,
         "restart": "watcher",
         "approval_enabled": False,
+    },
+    "chatbox-ai": {
+        "label": "Chatbox AI — Telegram hai chiều",
+        "bot_token_field": "telegram_chatbox_bot_token",
+        "chat_id_field": "telegram_chatbox_chat_id",
+        "enabled_field": "telegram_chatbox_enabled",
+        "env_names": env_config.TELEGRAM_CHATBOX_ENV_NAMES,
+        "restart": "none",
+        "approval_enabled": False,
+        "chatbox": True,
     },
 }
 
@@ -183,6 +194,8 @@ def _context(
             "key": key,
             "label": info["label"],
             "chat_id": getattr(settings, info["chat_id_field"]),
+            "allowed_user_ids": getattr(settings, "telegram_chatbox_allowed_user_ids", "") if info.get("chatbox") else "",
+            "full_access_user_ids": getattr(settings, "telegram_chatbox_full_access_user_ids", "") if info.get("chatbox") else "",
             "masked_bot_token": _mask_key(bot_token) if bot_token else None,
             "enabled": enabled,
             "approval_enabled": info["approval_enabled"],
@@ -273,6 +286,8 @@ async def telegram_channel_submit(
     user: str = Depends(require_login),
     bot_token: str = Form(""),
     chat_id: str = Form(""),
+    allowed_user_ids: str = Form(""),
+    full_access_user_ids: str = Form(""),
 ):
     """Lưu Bot Token/Chat ID cho ĐÚNG 1 kênh. `bot_token` bỏ trống khi Lưu
     nghĩa là GIỮ NGUYÊN token đã lưu (cùng posture "blank submit = keep
@@ -289,16 +304,43 @@ async def telegram_channel_submit(
     chat_field = info["chat_id_field"]
     new_bot_token = bot_token.strip() or getattr(settings, token_field)
     new_chat_id = chat_id.strip()
+    new_allowed_user_ids = allowed_user_ids.strip()
+    new_full_access_user_ids = full_access_user_ids.strip()
+    if info.get("chatbox") and new_allowed_user_ids:
+        values = [item.strip() for item in new_allowed_user_ids.split(",") if item.strip()]
+        if not values or any(not re.fullmatch(r"[0-9]{1,20}", item) for item in values):
+            return templates.TemplateResponse(
+                request,
+                "telegram_alerts.html",
+                _context(user, errors={channel: "Allowed User ID phải là các số Telegram, ngăn cách bằng dấu phẩy"}),
+            )
+        new_allowed_user_ids = ",".join(dict.fromkeys(values))
+    if info.get("chatbox") and new_full_access_user_ids:
+        values = [item.strip() for item in new_full_access_user_ids.split(",") if item.strip()]
+        if not values or any(not re.fullmatch(r"[0-9]{1,20}", item) for item in values):
+            return templates.TemplateResponse(
+                request,
+                "telegram_alerts.html",
+                _context(user, errors={channel: "Full Access User ID phải là các số Telegram, ngăn cách bằng dấu phẩy"}),
+            )
+        new_full_access_user_ids = ",".join(dict.fromkeys(values))
 
     try:
+        env_fields = {
+            info["env_names"][token_field]: new_bot_token,
+            info["env_names"][chat_field]: new_chat_id,
+        }
+        if info.get("chatbox"):
+            env_fields[info["env_names"]["telegram_chatbox_allowed_user_ids"]] = new_allowed_user_ids
+            env_fields[info["env_names"]["telegram_chatbox_full_access_user_ids"]] = new_full_access_user_ids
         env_config.update_env_file_batch(
-            {
-                info["env_names"][token_field]: new_bot_token,
-                info["env_names"][chat_field]: new_chat_id,
-            }
+            env_fields
         )
         setattr(settings, token_field, new_bot_token)
         setattr(settings, chat_field, new_chat_id)
+        if info.get("chatbox"):
+            settings.telegram_chatbox_allowed_user_ids = new_allowed_user_ids
+            settings.telegram_chatbox_full_access_user_ids = new_full_access_user_ids
     except Exception:
         logger.exception("telegram_channel_submit: failed to persist config to .env for channel %s", channel)
         return templates.TemplateResponse(

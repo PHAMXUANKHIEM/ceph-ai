@@ -78,7 +78,7 @@ def test_alert_center_paginates_without_dropping_groups():
 
 
 def test_alert_center_lifecycle_state_is_derived_from_latest_representative():
-    now = datetime(2026, 8, 28, 10, 0)
+    now = datetime.utcnow()
     acknowledged = _incident("OSD_DOWN", "NEW", now, ident="new")
     acknowledged.acknowledged_at = now
     acknowledged.acknowledged_by = "admin"

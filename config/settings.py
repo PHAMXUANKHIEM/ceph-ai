@@ -394,6 +394,16 @@ class Settings(BaseSettings):
     telegram_code_repair_bot_token: str = ""
     telegram_code_repair_chat_id: str = ""
     telegram_code_repair_enabled: bool = True
+    # Dashboard two-agent chat. Independent from log-triggered repair.
+    dual_ai_fallback_enabled: bool = False
+    dual_ai_planner_provider: str = "auto"
+    dual_ai_planner_model: str = ""
+    # Comma-separated fallback entries: provider[:model], tried only after
+    # quota/rate-limit/token exhaustion (for example claude:claude-sonnet-4-6).
+    dual_ai_planner_fallbacks: str = ""
+    dual_ai_implementer_provider: str = "auto"
+    dual_ai_implementer_model: str = ""
+    dual_ai_implementer_fallbacks: str = ""
     # External supervisor for application self-repair. Disabled by default;
     # staging may explicitly enable the full test/deploy/promote pipeline.
     code_repair_auto_enabled: bool = False
@@ -410,6 +420,7 @@ class Settings(BaseSettings):
     code_repair_implementer_model: str = ""
     code_repair_implementer_account_source: str = "configured"
     code_repair_implementer_account_profile: str = ""
+    code_repair_max_review_rounds: int = Field(default=2, ge=0, le=5)
     code_repair_test_command: str = (
         "PYTHONPATH=. .venv/bin/pytest -q "
         "--ignore=tests/test_migrations.py --ignore=tests/test_mq.py "
@@ -424,6 +435,15 @@ class Settings(BaseSettings):
     code_repair_promote_main: bool = False
     code_repair_cursor_file: str = "/var/lib/ceph-ai/code-repair-cursors.json"
     code_repair_lock_file: str = "/var/lib/ceph-ai/code-repair.lock"
+    # Serializes every repair pipeline, including the independent nightly
+    # systemd job, while the supervisor lock remains process-scoped.
+    code_repair_run_lock_file: str = "/var/lib/ceph-ai/code-repair-run.lock"
+    # One proactive, bounded two-agent review per Asia/Ho_Chi_Minh day.
+    # The systemd timer owns the clock; the state file makes retries idempotent.
+    ai_nightly_improvement_enabled: bool = False
+    ai_nightly_improvement_hour: int = Field(default=0, ge=0, le=23)
+    ai_nightly_improvement_minute: int = Field(default=0, ge=0, le=59)
+    ai_nightly_improvement_state_file: str = "/var/lib/ceph-ai/nightly-ai-improvement.json"
     ai_task_retention_days: int = Field(default=30, ge=1, le=3650)
     ai_task_max_records: int = Field(default=500, ge=10, le=10000)
     ceph_capability_learning_enabled: bool = False
@@ -434,6 +454,19 @@ class Settings(BaseSettings):
     telegram_rgw_bot_token: str = ""
     telegram_rgw_chat_id: str = ""
     telegram_rgw_enabled: bool = True
+    # Dedicated two-way Telegram channel for the Dashboard Chatbox AI.
+    # This channel is intentionally separate from alert/approval channels;
+    # its chat id is the allow-list for incoming operator messages.
+    telegram_chatbox_bot_token: str = ""
+    telegram_chatbox_chat_id: str = ""
+    telegram_chatbox_enabled: bool = True
+    # Required for dual execution from a group chat. Private chats are already
+    # single-user by Telegram's chat model; group chats must explicitly list
+    # the sender IDs allowed to invoke the full-permission Implementer.
+    telegram_chatbox_allowed_user_ids: str = ""
+    # Separate, mandatory allow-list for the unrestricted Telegram
+    # /single-full mode. Empty means the mode is disabled for everyone.
+    telegram_chatbox_full_access_user_ids: str = ""
     # Per-request RGW audit collector.  It is deliberately independent of
     # Log Intelligence: CRUD access events are facts, not AI findings, and
     # must not be suppressed or grouped by the anomaly/noise pipeline.

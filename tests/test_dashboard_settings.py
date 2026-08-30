@@ -53,6 +53,12 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "API Key" in response.text
     assert "Đăng nhập bằng Codex" in response.text
     assert "AI Code Repair" in response.text
+    assert "Hai AI trao đổi" in response.text
+    assert 'name="dual_ai_fallback_enabled"' in response.text
+    assert 'name="dual_ai_planner_fallbacks"' in response.text
+    assert 'name="dual_ai_implementer_fallbacks"' in response.text
+    assert 'name="dual_ai_planner_provider"' in response.text
+    assert 'name="dual_ai_implementer_provider"' in response.text
     assert 'name="code_repair_planner_provider"' in response.text
     assert 'name="code_repair_implementer_provider"' in response.text
     assert 'name="code_repair_planner_account_source"' in response.text
@@ -104,7 +110,7 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
     )
 
     assert response.status_code == 200
-    assert "Đã lưu cấu hình hai AI" in response.text
+    assert "Đã lưu cấu hình tự động sửa code từ log" in response.text
     saved = tmp_env.read_text()
     assert "CODE_REPAIR_PLANNER_PROVIDER=codex" in saved
     assert "CODE_REPAIR_PLANNER_MODEL=gpt-5-codex" in saved
@@ -115,6 +121,41 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
     assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_SOURCE=configured" in saved
     assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_PROFILE=" in saved
     assert "CODE_REPAIR_MAX_REVIEW_ROUNDS" not in saved
+
+
+def test_dual_ai_settings_are_persisted_separately_from_code_repair(
+    dashboard_client, monkeypatch, tmp_path,
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\nCODE_REPAIR_PLANNER_PROVIDER=claude\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    original_repair_provider = settings.code_repair_planner_provider
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/dual-ai",
+        data={
+            "dual_ai_fallback_enabled": "true",
+            "dual_ai_planner_provider": "codex",
+            "dual_ai_planner_model": "gpt-5-codex",
+            "dual_ai_planner_fallbacks": "codex@planner-2:gpt-5.4,claude@claude-1:claude-sonnet-4-6",
+            "dual_ai_implementer_provider": "claude",
+            "dual_ai_implementer_model": "claude-sonnet-4-6",
+            "dual_ai_implementer_fallbacks": "codex@implementer-2:gpt-5.4",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình riêng cho hai AI trao đổi" in response.text
+    saved = tmp_env.read_text()
+    assert "DUAL_AI_PLANNER_PROVIDER=codex" in saved
+    assert "DUAL_AI_FALLBACK_ENABLED=true" in saved
+    assert "DUAL_AI_PLANNER_FALLBACKS=codex@planner-2:gpt-5.4,claude@claude-1:claude-sonnet-4-6" in saved
+    assert "DUAL_AI_PLANNER_MODEL=gpt-5-codex" in saved
+    assert "DUAL_AI_IMPLEMENTER_PROVIDER=claude" in saved
+    assert "DUAL_AI_IMPLEMENTER_MODEL=claude-sonnet-4-6" in saved
+    assert settings.code_repair_planner_provider == original_repair_provider
+    assert "CODE_REPAIR_PLANNER_PROVIDER=claude" in saved
 
 
 def test_codex_device_login_and_activate(dashboard_client, monkeypatch):

@@ -49,7 +49,7 @@ handler, must survive the whole process lifetime):
    seconds — starting one for a newly-configured token, stopping one whose
    token is no longer used by any channel. Each listener thread is the one
    place in this whole codebase that reads INCOMING Telegram updates
-   (`get_telegram_updates`); a `callback_query` (a button press) is
+   (`get_telegram_updates`); an approval `callback_query` (a button press) is
    verified against the set of ALL currently-configured chat ids (see
    TRUST MODEL below), then calls the EXACT SAME `approve_action_core`/
    `reject_action_core` (`dashboard/routes/actions.py`) the Dashboard's own
@@ -85,14 +85,18 @@ long-poll response never stalls a single Dashboard HTTP request.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from config.settings import settings
+from dashboard import telegram_chat
 from dashboard.routes.actions import (
     ActionConflictError,
     ActionNotFoundError,
@@ -110,6 +114,7 @@ from shared.telegram_client import (
     answer_telegram_callback,
     edit_telegram_message,
     get_telegram_updates,
+    set_telegram_commands,
     send_telegram_message_with_keyboard,
 )
 
@@ -298,7 +303,11 @@ def _all_configured_tokens() -> set[str]:
     grouping is by token, not by channel). `_configured_channels()` is a
     pure `settings` read (never fails, always fresh); the cluster half is
     `_cluster_tokens_cached()` above."""
-    return {token for _, token, _ in _configured_channels()} | _cluster_tokens_cached()
+    tokens = {token for _, token, _ in _configured_channels()} | _cluster_tokens_cached()
+    chatbox_token = telegram_chat.configured_token()
+    if chatbox_token:
+        tokens.add(chatbox_token)
+    return tokens
 
 
 def _compact_text(value: str | None, limit: int) -> str:
@@ -312,6 +321,11 @@ def _compact_text(value: str | None, limit: int) -> str:
 def _action_message_text(action: Action, incident: Incident | None, session) -> str:
     from shared import change_risk
 
+    # `attach_summary` persists the change-risk result by appending it to the
+    # Action rationale. Keep the original operator/AI recommendation for the
+    # phone-facing "Giải pháp đề xuất" line; an internal risk summary is
+    # useful for audit but is not a replacement for what the action does.
+    original_rationale = action.rationale
     risk = change_risk.assess_and_record(session, action=action, incident=incident)
     change_risk.attach_summary(action, risk)
     session.flush()
@@ -350,7 +364,7 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
     diagnosis = _compact_text(incident.diagnosis_text if incident else None, _MAX_DIAGNOSIS_CHARS)
     if diagnosis:
         lines.append(f"⚠️ Chẩn đoán: {diagnosis}")
-    solution = _compact_text(action.rationale, _MAX_SOLUTION_CHARS)
+    solution = _compact_text(original_rationale, _MAX_SOLUTION_CHARS)
     if not solution:
         solution = _ACTION_SOLUTION_LABELS.get(
             action.action_id, f"Thực hiện hành động {action.action_id}."
@@ -670,27 +684,135 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
             logger.exception("telegram_approval_bot: failed to edit message %s after decision", message_id)
 
 
+_UPDATE_OFFSET_FILE = Path("/var/lib/ceph-ai/telegram-update-offsets.json")
+_update_offset_lock = threading.Lock()
+
+
+def _offset_key(bot_token: str) -> str:
+    """A stable key without putting a Bot Token on disk or in logs."""
+    return hashlib.sha256(bot_token.encode()).hexdigest()
+
+
+def _load_update_offset(bot_token: str) -> int | None:
+    with _update_offset_lock:
+        try:
+            payload = json.loads(_UPDATE_OFFSET_FILE.read_text())
+            value = payload.get(_offset_key(bot_token)) if isinstance(payload, dict) else None
+            return int(value) if isinstance(value, int) and value >= 0 else None
+        except FileNotFoundError:
+            return None
+        except Exception:
+            logger.exception("telegram_approval_bot: failed to load persisted update offsets")
+            return None
+
+
+def _save_update_offset(bot_token: str, offset: int) -> None:
+    """Durably acknowledge an update after its handler has run.
+
+    Telegram redelivers updates until a later offset is supplied. Persisting
+    this cursor eliminates duplicate AI turns after a Dashboard restart while
+    retaining at-least-once delivery if the process dies during a handler.
+    """
+    if offset < 0:
+        return
+    with _update_offset_lock:
+        try:
+            payload: dict[str, int] = {}
+            try:
+                loaded = json.loads(_UPDATE_OFFSET_FILE.read_text())
+                if isinstance(loaded, dict):
+                    payload = {str(key): value for key, value in loaded.items() if isinstance(value, int) and value >= 0}
+            except FileNotFoundError:
+                pass
+            _UPDATE_OFFSET_FILE.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+            payload[_offset_key(bot_token)] = offset
+            temporary = _UPDATE_OFFSET_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, sort_keys=True))
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, _UPDATE_OFFSET_FILE)
+        except Exception:
+            logger.exception("telegram_approval_bot: failed to persist update offset")
+
+
 def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
     """One long-polling loop for a single bot token — see this module's own
     docstring for why this is grouped by TOKEN rather than by channel."""
-    offset: int | None = None
+    offset = _load_update_offset(bot_token)
+    if bot_token == telegram_chat.configured_token():
+        try:
+            set_telegram_commands(
+                bot_token,
+                [
+                    {"command": "start", "description": "Mở Chatbox AI"},
+                    {"command": "model", "description": "Chọn 1 AI hoặc 2 AI"},
+                    {"command": "single", "description": "Chế độ 1 AI"},
+                    {"command": "dual", "description": "Hai AI trao đổi và sửa code"},
+                    {"command": "single_full", "description": "1 AI toàn quyền (cần cấp riêng)"},
+                    {"command": "stop", "description": "Dừng phiên AI đang chạy"},
+                    {"command": "status", "description": "Xem trạng thái phiên AI"},
+                    {"command": "ask", "description": "Gửi câu hỏi cho AI"},
+                    {"command": "new", "description": "Bắt đầu chat mới"},
+                    {"command": "help", "description": "Xem trợ giúp"},
+                ],
+            )
+        except TelegramSendError:
+            logger.exception("telegram_approval_bot: failed to register Chatbox slash commands")
+        try:
+            telegram_chat.report_interrupted_full_runs(bot_token)
+        except Exception:
+            logger.exception("telegram_approval_bot: failed to report interrupted Single Full run")
     while not stop_event.is_set():
         try:
-            updates = get_telegram_updates(bot_token, offset, _LONG_POLL_TIMEOUT_SECONDS)
+            updates = get_telegram_updates(
+                bot_token,
+                offset,
+                _LONG_POLL_TIMEOUT_SECONDS,
+                allowed_updates=["callback_query", "message"],
+            )
         except TelegramSendError:
-            logger.exception("telegram_approval_bot: getUpdates failed for a configured bot")
+            logger.exception(
+                "telegram_approval_bot: getUpdates failed for bot token suffix=%s",
+                bot_token[-6:],
+            )
             stop_event.wait(_IDLE_BACKOFF_SECONDS)
             continue
 
         for update in updates:
-            offset = max(offset or 0, update.get("update_id", 0) + 1)
+            update_id = update.get("update_id")
+            next_offset = (int(update_id) + 1) if isinstance(update_id, int) else None
             callback_query = update.get("callback_query")
-            if not callback_query:
-                continue
-            try:
-                _handle_callback_query(callback_query, bot_token)
-            except Exception:
-                logger.exception("telegram_approval_bot: unexpected error handling callback_query")
+            if callback_query:
+                callback_data = str(callback_query.get("data") or "")
+                if callback_data.startswith((
+                    telegram_chat.CHAT_CONFIRM_PREFIX,
+                    telegram_chat.CHAT_APPROVE_PREFIX,
+                    telegram_chat.DUAL_STOP_PREFIX,
+                    telegram_chat.QUOTA_LOGIN_PREFIX,
+                )):
+                    try:
+                        result = telegram_chat.run_callback_sync(callback_query, bot_token)
+                        if result is not None:
+                            callback_id = callback_query.get("id")
+                            if callback_id:
+                                answer_telegram_callback(bot_token, callback_id, result)
+                    except Exception:
+                        logger.exception("telegram_approval_bot: unexpected error handling chat callback")
+                else:
+                    try:
+                        _handle_callback_query(callback_query, bot_token)
+                    except Exception:
+                        logger.exception("telegram_approval_bot: unexpected error handling callback_query")
+            message = update.get("message")
+            if message:
+                try:
+                    if not telegram_chat.handle_stop_message(message, bot_token):
+                        if not telegram_chat.handle_status_message(message, bot_token):
+                            telegram_chat.enqueue_message(message, bot_token)
+                except Exception:
+                    logger.exception("telegram_approval_bot: unexpected error handling chat message")
+            if next_offset is not None and next_offset > (offset or 0):
+                offset = next_offset
+                _save_update_offset(bot_token, offset)
 
 
 def _listen_supervisor_loop(stop_event: threading.Event) -> None:

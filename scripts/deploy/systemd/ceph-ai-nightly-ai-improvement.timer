@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Ceph AI nightly self-improvement at midnight Vietnam time
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Ho_Chi_Minh
+Persistent=true
+AccuracySec=1min
+Unit=ceph-ai-nightly-ai-improvement.service
+
+[Install]
+WantedBy=timers.target

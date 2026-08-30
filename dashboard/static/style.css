@@ -1417,6 +1417,19 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   gap: 12px;
   background: var(--bg);
 }
+.chat-messages.has-dual-messages {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-content: start;
+  align-items: start;
+}
+.chat-messages.has-dual-messages .chat-msg-dual {
+  width: 100%;
+  max-width: none;
+}
+.chat-messages.has-dual-messages .chat-msg-dual-left { grid-column: 1; }
+.chat-messages.has-dual-messages .chat-msg-dual-right { grid-column: 2; }
+.chat-messages.has-dual-messages .chat-msg-user { grid-column: 1 / -1; }
 .chat-messages::-webkit-scrollbar { width: 4px; }
 .chat-messages::-webkit-scrollbar-track { background: transparent; }
 .chat-messages::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
@@ -1434,6 +1447,9 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .chat-msg { display: flex; flex-direction: column; }
 .chat-msg-user { align-self: flex-end; align-items: flex-end; max-width: 80%; }
 .chat-msg-assistant { align-self: flex-start; align-items: flex-start; max-width: 85%; }
+.chat-msg-dual-right { justify-self: stretch; align-items: flex-end; }
+.chat-msg-dual-right .chat-msg-meta { text-align: right; }
+.chat-msg-dual-right .chat-msg-bubble { border-radius: 12px 12px 2px 12px; }
 
 .chat-msg-meta { font-size: 10px; color: var(--text-faint); margin-bottom: 4px; }
 
@@ -1585,6 +1601,12 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .chat-mode-bar label { color: var(--text); font-weight: 600; }
 .chat-mode-bar select { max-width: 180px; padding: 5px 7px; border: 1px solid #34445a; border-radius: 6px; background: #0d1623; color: var(--text); font-size: 11px; }
 .chat-mode-bar span { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 620px) {
+  .chat-messages.has-dual-messages { display: flex; }
+  .chat-messages.has-dual-messages .chat-msg-dual { width: 92%; }
+  .chat-messages.has-dual-messages .chat-msg-dual-left { align-self: flex-start; }
+  .chat-messages.has-dual-messages .chat-msg-dual-right { align-self: flex-end; }
+}
 .chat-input-bar { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 8px; padding: 12px 16px; background: #151e2b; border-top: 1px solid #273244; }
 .chat-stop-btn {
   flex: 0 0 auto;

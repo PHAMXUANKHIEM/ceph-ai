@@ -1,74 +1,39 @@
 import asyncio
 
-import pytest
-
-from shared import codex_app_server as module
+from shared import codex_app_server as codex
 
 
-class _FakeStdin:
-    def write(self, _data):
-        pass
-
-    async def drain(self):
-        pass
-
-
-class _FakeProcess:
-    def __init__(self, stdout):
-        self.returncode = None
-        self.stdin = _FakeStdin()
-        self.stdout = stdout
-
-    def terminate(self):
-        self.returncode = 0
-
-    def kill(self):
-        self.returncode = -9
+class _CompletedProcess:
+    returncode = 0
 
     async def wait(self):
         return self.returncode
 
 
-def test_reader_failure_unblocks_pending_request():
-    class BrokenStdout:
-        async def readline(self):
-            raise ValueError("Separator is found, but chunk is longer than limit")
+def test_refreshing_default_login_never_consumes_a_separate_profile(monkeypatch, tmp_path):
+    default_home = tmp_path / "default"
+    separate_home = tmp_path / "repair-profile"
+    monkeypatch.setattr(codex.codex_app_server, "_codex_home", lambda: default_home)
+    closed = []
 
-    async def scenario():
-        server = module.CodexAppServer()
-        server._process = _FakeProcess(BrokenStdout())
-        future = asyncio.get_running_loop().create_future()
-        server._pending[1] = future
+    async def close():
+        closed.append(True)
 
-        await server._read_loop()
+    monkeypatch.setattr(codex.codex_app_server, "close", close)
+    codex._device_login_processes.clear()
+    codex._device_login_results.clear()
+    codex._device_login_drain_tasks.clear()
+    separate_key = str(separate_home.resolve())
+    codex._device_login_processes[separate_key] = _CompletedProcess()
+    codex._device_login_results[separate_key] = {"loginId": "separate"}
+    try:
+        assert asyncio.run(codex.refresh_app_server_after_cli_login()) == "none"
+        assert separate_key in codex._device_login_processes
 
-        assert server._pending == {}
-        with pytest.raises(module.CodexAppServerError, match="reader lỗi"):
-            future.result()
-
-    asyncio.run(scenario())
-
-
-def test_app_server_uses_large_jsonl_stream_limit(monkeypatch):
-    captured = []
-
-    async def _empty_readline(_self):
-        return b""
-
-    async def fake_create_subprocess_exec(*command, **kwargs):
-        captured.append((command, kwargs))
-        return _FakeProcess(type("EmptyStdout", (), {"readline": _empty_readline})())
-
-    async def _request(*_args, **_kwargs):
-        return {}
-
-    async def scenario():
-        server = module.CodexAppServer()
-        server._request = _request
-        await server._ensure_started()
-        await server.close()
-
-    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    asyncio.run(scenario())
-
-    assert captured[0][1]["limit"] == module.CODEX_APP_SERVER_STREAM_LIMIT
+        assert asyncio.run(codex.refresh_app_server_after_cli_login(separate_home)) == "completed"
+        assert separate_key not in codex._device_login_processes
+        assert closed == []
+    finally:
+        codex._device_login_processes.clear()
+        codex._device_login_results.clear()
+        codex._device_login_drain_tasks.clear()

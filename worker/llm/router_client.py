@@ -1074,23 +1074,61 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 for item in bluestore_details if isinstance(item, dict)
                 for value in re.findall(r"osd\.(\d+)", str(item.get("message", "")))
             })
+            # `nodes` is a collector hint, not proof of where an OSD runs.
+            # It may contain a stale/unrelated host, so both cephadm and
+            # package paths require a complete independently-resolved map.
+            resolved_bluestore_hosts: dict[int, str] = {}
+            if isinstance(bluestore_osd_hosts, dict):
+                for osd_id in bluestore_osd_ids:
+                    host = bluestore_osd_hosts.get(str(osd_id), bluestore_osd_hosts.get(osd_id))
+                    if isinstance(host, str) and host.strip():
+                        resolved_bluestore_hosts[osd_id] = host.strip()
+            has_verified_bluestore_targets = (
+                bool(bluestore_osd_ids)
+                and len(resolved_bluestore_hosts) == len(bluestore_osd_ids)
+            )
             cephadm_verified = (
                 envelope.get("ceph_exec_mode") == "cephadm"
-                and bool(bluestore_osd_ids)
+                and has_verified_bluestore_targets
             )
             verified_bluestore_restart = (
                 incident.ceph_code == "BLUESTORE_SLOW_OP_ALERT"
                 and action_id == "restart_osd_daemon"
-                and (
-                    cephadm_verified
-                    or (
-                        isinstance(bluestore_osd_hosts, dict)
-                        and bool(bluestore_osd_hosts)
-                        and all(str(osd_id).isdigit() and isinstance(host, str) and host
-                                for osd_id, host in bluestore_osd_hosts.items())
-                    )
-                )
+                and has_verified_bluestore_targets
             )
+            if (
+                incident.ceph_code == "BLUESTORE_SLOW_OP_ALERT"
+                and action_id == "restart_osd_daemon"
+                and not has_verified_bluestore_targets
+            ):
+                # Fail closed: a pending action with an invented target can
+                # still be approved later. Preserve and alert the diagnosis,
+                # but create no executable action until topology is known.
+                safety_reason = (
+                    "Không tạo action restart_osd_daemon vì chưa xác minh được "
+                    "host cho tất cả OSD trong BLUESTORE_SLOW_OP_ALERT."
+                )
+                incident.diagnosis_text = f"{diagnosis_text}\\n\\n[Safety] {safety_reason}"
+                incident.status = IncidentStatus.FAILED.value
+                audit.record(
+                    session,
+                    incident_id=incident_id,
+                    action_id=None,
+                    event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_UNVERIFIED_OSD_TARGET,
+                    actor=audit.ACTOR_SYSTEM,
+                )
+                session.commit()
+                logger.warning(
+                    "diagnose_incident: blocked restart_osd_daemon for %s: %s",
+                    incident_id, safety_reason,
+                )
+                if not alert_lifecycle.is_active_mute(incident):
+                    send_ai_incident_alert(
+                        alert_ceph_code, alert_severity, incident.diagnosis_text, rationale,
+                        cluster_name=alert_cluster_name, bot_token=alert_bot_token,
+                        chat_id=alert_chat_id, enabled=alert_enabled,
+                    )
+                return
             if verified_bluestore_restart:
                 classification = ActionClassification.SAFE
             verified_osd_down_restart = (
@@ -1157,14 +1195,19 @@ async def diagnose_incident(incident_id: str, envelope: dict) -> None:
                 action_params = {"pool_name": pool_name}
             elif verified_bluestore_restart or verified_osd_down_restart:
                 if cephadm_verified:
-                    # ceph orch runs through one reachable MON and asks the
-                    # orchestrator to restart the exact remote daemon.  It
-                    # does not require direct SSH access to the OSD host.
-                    nodes = nodes[:1]
+                    # Run cephadm from a host whose relationship to the
+                    # affected OSDs was independently verified, never from
+                    # the first arbitrary envelope node.
+                    nodes = list(dict.fromkeys(resolved_bluestore_hosts.values()))
                     action_params = {"cephadm_osd_ids": bluestore_osd_ids}
                 else:
                     by_host: dict[str, list[int]] = {}
-                    for osd_id, host in bluestore_osd_hosts.items():
+                    source_hosts = (
+                        resolved_bluestore_hosts
+                        if verified_bluestore_restart
+                        else {int(osd_id): host for osd_id, host in bluestore_osd_hosts.items()}
+                    )
+                    for osd_id, host in source_hosts.items():
                         by_host.setdefault(host, []).append(int(osd_id))
                     nodes = list(by_host)
                     action_params = {"osd_ids_by_host": by_host}

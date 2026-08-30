@@ -103,6 +103,15 @@ TELEGRAM_NODE_ENV_NAMES: dict[str, str] = {
     "telegram_node_chat_id": "TELEGRAM_NODE_CHAT_ID",
     "telegram_node_enabled": "TELEGRAM_NODE_ENABLED",
 }
+DUAL_AI_ENV_NAMES: dict[str, str] = {
+    "dual_ai_fallback_enabled": "DUAL_AI_FALLBACK_ENABLED",
+    "dual_ai_planner_provider": "DUAL_AI_PLANNER_PROVIDER",
+    "dual_ai_planner_model": "DUAL_AI_PLANNER_MODEL",
+    "dual_ai_planner_fallbacks": "DUAL_AI_PLANNER_FALLBACKS",
+    "dual_ai_implementer_provider": "DUAL_AI_IMPLEMENTER_PROVIDER",
+    "dual_ai_implementer_model": "DUAL_AI_IMPLEMENTER_MODEL",
+    "dual_ai_implementer_fallbacks": "DUAL_AI_IMPLEMENTER_FALLBACKS",
+}
 TELEGRAM_CODE_REPAIR_ENV_NAMES: dict[str, str] = {
     "telegram_code_repair_bot_token": "TELEGRAM_CODE_REPAIR_BOT_TOKEN",
     "telegram_code_repair_chat_id": "TELEGRAM_CODE_REPAIR_CHAT_ID",
@@ -113,7 +122,15 @@ TELEGRAM_RGW_ENV_NAMES: dict[str, str] = {
     "telegram_rgw_chat_id": "TELEGRAM_RGW_CHAT_ID",
     "telegram_rgw_enabled": "TELEGRAM_RGW_ENABLED",
 }
+TELEGRAM_CHATBOX_ENV_NAMES: dict[str, str] = {
+    "telegram_chatbox_bot_token": "TELEGRAM_CHATBOX_BOT_TOKEN",
+    "telegram_chatbox_chat_id": "TELEGRAM_CHATBOX_CHAT_ID",
+    "telegram_chatbox_allowed_user_ids": "TELEGRAM_CHATBOX_ALLOWED_USER_IDS",
+    "telegram_chatbox_full_access_user_ids": "TELEGRAM_CHATBOX_FULL_ACCESS_USER_IDS",
+    "telegram_chatbox_enabled": "TELEGRAM_CHATBOX_ENABLED",
+}
 CODE_REPAIR_ENV_NAMES: dict[str, str] = {
+    "code_repair_auto_enabled": "CODE_REPAIR_AUTO_ENABLED",
     "code_repair_planner_provider": "CODE_REPAIR_PLANNER_PROVIDER",
     "code_repair_planner_model": "CODE_REPAIR_PLANNER_MODEL",
     "code_repair_planner_account_source": "CODE_REPAIR_PLANNER_ACCOUNT_SOURCE",
@@ -122,6 +139,10 @@ CODE_REPAIR_ENV_NAMES: dict[str, str] = {
     "code_repair_implementer_model": "CODE_REPAIR_IMPLEMENTER_MODEL",
     "code_repair_implementer_account_source": "CODE_REPAIR_IMPLEMENTER_ACCOUNT_SOURCE",
     "code_repair_implementer_account_profile": "CODE_REPAIR_IMPLEMENTER_ACCOUNT_PROFILE",
+    "code_repair_max_review_rounds": "CODE_REPAIR_MAX_REVIEW_ROUNDS",
+    "code_repair_push": "CODE_REPAIR_PUSH",
+    "code_repair_deploy_staging": "CODE_REPAIR_DEPLOY_STAGING",
+    "code_repair_promote_main": "CODE_REPAIR_PROMOTE_MAIN",
 }
 
 

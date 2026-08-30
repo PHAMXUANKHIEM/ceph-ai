@@ -77,6 +77,11 @@ EVENT_BACKUP_MANUAL_REQUESTED = "backup_manual_requested"
 # EVENT_RISKY_ACTION_AUTO_REJECTED_CLUSTER_OPERATION_IN_PROGRESS above,
 # not a real Action row to attach to).
 EVENT_PROPOSAL_BLOCKED_BY_PREFLIGHT = "proposal_blocked_by_preflight"
+# A model may recommend an OSD restart, but no executable action is safe
+# until Watcher has independently resolved every named osd.N to a host.
+EVENT_PROPOSAL_BLOCKED_BY_UNVERIFIED_OSD_TARGET = (
+    "proposal_blocked_by_unverified_osd_target"
+)
 EVENT_PROPOSAL_BLOCKED_BY_LOW_CONFIDENCE = "proposal_blocked_by_low_confidence"
 EVENT_AUTOPILOT_KILL_SWITCH_BLOCKED = "autopilot_kill_switch_blocked"
 EVENT_AUTOPILOT_CLUSTER_GATE_BLOCKED = "autopilot_cluster_gate_blocked"

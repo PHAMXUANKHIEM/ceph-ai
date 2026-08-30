@@ -5,6 +5,13 @@ __pycache__/
 *.db-*
 *.db.bak-*
 .env
+# Local recovery copies may contain credentials or stale source. Keep them
+# outside version control; use the managed backup process instead.
+.env.before-*
+.env.example.pre-*
+.deploy-backups/
+*.pre-*
+*.before-*
 .ai-pricing.json
 *.egg-info/
 .pytest_cache/

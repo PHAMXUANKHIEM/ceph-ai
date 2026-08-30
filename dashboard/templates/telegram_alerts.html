@@ -15,7 +15,7 @@
       <div class="card-body">
         <p class="hint">Các kênh ở đây là cấu hình toàn hệ thống và fallback của cụm mặc định. Kênh riêng của cluster phụ được cấu hình tại <a href="/clusters">Clusters</a>.</p>
         <p class="hint">
-          6 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
+          7 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
           bằng chính việc điền hay để trống Chat ID (không có công tắc riêng). <strong>Yêu cầu phê duyệt
           (Duyệt/Từ chối)</strong> áp dụng cho ba kênh vận hành Backup/Lỗi cụm/Phần cứng. Kênh Dự báo RBD,
           RGW và Code Repair chỉ nhận thông báo, không cấp quyền phê duyệt. Với ba kênh vận hành, hễ một kênh
@@ -25,6 +25,9 @@
           Chưa có Bot Token/Chat ID? Xem
           <a href="/telegram-alerts/help" target="_blank" rel="noopener">hướng dẫn kết nối Telegram từng bước →</a>
         </p>
+        <p class="hint"><strong>Chatbox AI Telegram:</strong> cấu hình ở card riêng bên dưới. Đây là kênh hai chiều,
+          chỉ chat ID đã cấu hình mới được bot nhận tin. Hỗ trợ <strong>Chat với một AI</strong> và
+          <strong>Hai AI trao đổi</strong>; dùng lệnh <code>/single</code>, <code>/dual</code>, <code>/single_full</code>, <code>/new</code>.</p>
       </div>
     </section>
 
@@ -123,6 +126,30 @@
             lấy Chat ID âm (thường bắt đầu bằng <code>-100</code>) rồi điền tại đây.
             <a href="/telegram-alerts/help#code-repair-private-chat" target="_blank" rel="noopener">Xem hướng dẫn chi tiết →</a>
           </p>
+          {% endif %}
+          {% if ch.key == 'chatbox-ai' %}
+          <p class="hint">
+            Kênh này nhận tin nhắn từ đúng Chat ID đã lưu và trả lời bằng Chatbox AI của Dashboard.
+            Gõ <code>/help</code> trong Telegram để xem lệnh; <code>/single</code> dùng một AI,
+            <code>/dual</code> cho Planner/Reviewer trao đổi với Implementer và có thể sửa source/test trên server.
+            <code>/single_full</code> là một AI có toàn quyền source và server; chỉ các User ID trong danh sách
+            Full Access bên dưới mới bật được chế độ này. Mỗi yêu cầu sẽ luôn dừng ở bước xác nhận bằng
+            <code>/confirm_full &lt;mã&gt;</code> trước khi AI được phép chạy lệnh toàn quyền.
+            Chỉ dùng trong chat riêng hoặc group có người vận hành tin cậy. Không dùng chung với
+            các kênh cảnh báo nếu muốn tách luồng vận hành. Vì Chatbox có quyền dùng các tool Ceph
+            theo tài khoản admin, mặc định chỉ cho phép private chat. Nếu dùng group, hãy điền rõ
+            Telegram User ID được phép; mọi User ID trong danh sách đều có quyền tương đương admin.
+          </p>
+          <label>Allowed Telegram User ID (tuỳ chọn, ngăn cách bằng dấu phẩy)
+            <input type="text" name="allowed_user_ids" value="{{ ch.allowed_user_ids }}" placeholder="Để trống = chỉ private chat">
+          </label>
+          <p class="hint">Lấy User ID bằng bot chuyên dụng như <code>@userinfobot</code>. Không điền tên tài khoản
+            (@username), và không dùng group công khai.</p>
+          <label>Full Access Telegram User ID (chỉ dùng <code>/single_full</code>, ngăn cách bằng dấu phẩy)
+            <input type="text" name="full_access_user_ids" value="{{ ch.full_access_user_ids }}" placeholder="Để trống = tắt Single Full cho tất cả">
+          </label>
+          <p class="hint"><strong>CỰC KỲ NGUY HIỂM:</strong> các User ID này cho phép một AI chạy lệnh với quyền
+            service trên server, sửa mọi source và quản lý dịch vụ. Chỉ cấp cho tài khoản vận hành cá nhân tin cậy.</p>
           {% endif %}
           <button type="submit" class="btn btn-primary">Lưu</button>
         </form>

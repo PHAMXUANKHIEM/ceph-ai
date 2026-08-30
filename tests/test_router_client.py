@@ -558,6 +558,9 @@ def test_verified_bluestore_slow_osd_restart_is_contextually_safe(isolated_db, m
         ceph_code="BLUESTORE_SLOW_OP_ALERT",
         nodes=["10.20.1.83"],
         osd_hosts={"4": "10.20.1.83"},
+        cluster_snapshot={"status": "HEALTH_WARN", "checks": {"BLUESTORE_SLOW_OP_ALERT": {
+            "detail": [{"message": "osd.4 observed slow operation indications in BlueStore"}],
+        }}},
     )
 
     asyncio.run(router_client.diagnose_incident("incident-blue-safe", envelope))
@@ -572,6 +575,43 @@ def test_verified_bluestore_slow_osd_restart_is_contextually_safe(isolated_db, m
         }
 
 
+
+
+def test_bluestore_restart_without_verified_osd_hosts_creates_no_action(isolated_db, monkeypatch):
+    alerts = []
+    monkeypatch.setattr(router_client, "_call_router", _fake_call_router_risky)
+    monkeypatch.setattr(router_client, "send_ai_incident_alert", lambda *args, **kwargs: alerts.append(args))
+    _create_incident("incident-blue-unverified")
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "incident-blue-unverified").ceph_code = "BLUESTORE_SLOW_OP_ALERT"
+        session.commit()
+    envelope = dict(
+        ENVELOPE,
+        incident_id="incident-blue-unverified",
+        ceph_code="BLUESTORE_SLOW_OP_ALERT",
+        nodes=["10.9.9.3"],
+        osd_hosts={},
+        ceph_exec_mode="cephadm",
+        cluster_snapshot={"status": "HEALTH_WARN", "checks": {"BLUESTORE_SLOW_OP_ALERT": {
+            "detail": [
+                {"message": "osd.1 observed slow operation indications in BlueStore"},
+                {"message": "osd.5 observed slow operation indications in BlueStore"},
+            ],
+        }}},
+    )
+
+    asyncio.run(router_client.diagnose_incident("incident-blue-unverified", envelope))
+
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, "incident-blue-unverified")
+        assert incident.status == IncidentStatus.FAILED.value
+        assert "chưa xác minh" in incident.diagnosis_text
+        assert session.query(Action).filter_by(incident_id=incident.id).count() == 0
+        assert session.query(AuditEntry).filter_by(
+            incident_id=incident.id,
+            event_type=audit.EVENT_PROPOSAL_BLOCKED_BY_UNVERIFIED_OSD_TARGET,
+        ).count() == 1
+    assert len(alerts) == 1
 def test_osd_upgrade_finished_always_proposes_release_command(isolated_db, monkeypatch):
     async def fake_call_router(user_content):
         return {

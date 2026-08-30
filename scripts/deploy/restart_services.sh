@@ -41,6 +41,11 @@ LOG_TAG="$(basename "$REPO_DIR")"
 
 DEPLOY_REF="${DEPLOY_REF:-origin/main}"
 echo "==> Deploying $DEPLOY_REF"
+if [ "${ALLOW_DIRTY_DEPLOY:-false}" != "true" ] && [ -n "$(git status --porcelain)" ]; then
+  echo "ERROR: refusing to reset a checkout with uncommitted changes."
+  echo "Create a commit/snapshot and clean the checkout, or set ALLOW_DIRTY_DEPLOY=true for a deliberate manual override."
+  exit 3
+fi
 if [[ "$DEPLOY_REF" == origin/* ]]; then
   git fetch origin "${DEPLOY_REF#origin/}"
 elif [[ ! "$DEPLOY_REF" =~ ^[0-9a-f]{40}$ ]]; then
@@ -151,6 +156,18 @@ if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
     /etc/systemd/system/ceph-ai-ai-pricing.timer
   systemctl daemon-reload
   systemctl enable --now ceph-ai-ai-pricing.timer
+fi
+
+# Systemd owns the midnight schedule; the job state file makes retries idempotent.
+if [ "$SYSTEMD_AVAILABLE" = "true" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement.service" ] && \
+   [ -f "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement.timer" ]; then
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement.service" \
+    /etc/systemd/system/ceph-ai-nightly-ai-improvement.service
+  install -m 0644 "$REPO_DIR/scripts/deploy/systemd/ceph-ai-nightly-ai-improvement.timer" \
+    /etc/systemd/system/ceph-ai-nightly-ai-improvement.timer
+  systemctl daemon-reload
+  systemctl enable --now ceph-ai-nightly-ai-improvement.timer
 fi
 
 echo "==> Stopping existing services (if running)"

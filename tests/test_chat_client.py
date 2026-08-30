@@ -211,15 +211,125 @@ def test_validate_proposal_accepts_finalize_pacific_release_without_params():
 
 
 def test_validate_proposal_accepts_bluestore_quick_fix_with_osd_id():
+    context = [
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "nodes": [
+                        {"id": -3, "name": AN_OSD_HOST, "type": "host", "children": [3]},
+                        {"id": 3, "name": "osd.3", "type": "osd"},
+                    ]
+                }
+            ),
+        }
+    ]
     result = chat_client._validate_proposal(
         {
             "action_id": "bluestore_omap_quick_fix",
             "target_nodes": [AN_OSD_HOST],
             "rationale": "legacy omap stats on osd.3",
             "osd_id": 3,
-        }
+        },
+        context_messages=context,
     )
     assert result["params"] == {"osd_id": 3}
+
+
+def test_validate_proposal_accepts_bluestore_quick_fix_with_nested_tree():
+    context = [
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "roots": [
+                        {
+                            "id": -1,
+                            "name": "default",
+                            "type": "root",
+                            "children": [
+                                {
+                                    "id": -3,
+                                    "name": AN_OSD_HOST,
+                                    "type": "host",
+                                    "children": [
+                                        {"id": 3, "name": "osd.3", "type": "osd"},
+                                        {"id": 5, "name": "osd.5", "type": "osd"},
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+        }
+    ]
+    result = chat_client._validate_proposal(
+        {
+            "action_id": "bluestore_omap_quick_fix",
+            "target_nodes": [AN_OSD_HOST],
+            "rationale": "legacy omap stats on osd.5",
+            "osd_id": 5,
+        },
+        context_messages=context,
+    )
+    assert result["params"] == {"osd_id": 5}
+
+
+def test_validate_proposal_prefers_bluestore_osd_hosts_envelope_over_crush_hostname():
+    context = [
+        {
+            "role": "assistant",
+            "content": json.dumps({"osd_hosts": {"5": AN_OSD_HOST}}),
+        },
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "nodes": [
+                        {"id": -3, "name": "ceph-osd-a", "type": "host", "children": [5]},
+                        {"id": 5, "name": "osd.5", "type": "osd"},
+                    ]
+                }
+            ),
+        },
+    ]
+    result = chat_client._validate_proposal(
+        {
+            "action_id": "bluestore_omap_quick_fix",
+            "target_nodes": [AN_OSD_HOST],
+            "rationale": "legacy omap stats on osd.5",
+            "osd_id": 5,
+        },
+        context_messages=context,
+    )
+    assert result["params"] == {"osd_id": 5}
+
+
+def test_validate_proposal_rejects_bluestore_quick_fix_with_wrong_host():
+    context = [
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "nodes": [
+                        {"id": -3, "name": AN_OSD_HOST, "type": "host", "children": [3]},
+                        {"id": 3, "name": "osd.3", "type": "osd"},
+                    ]
+                }
+            ),
+        }
+    ]
+    with pytest.raises(chat_client.ChatToolError, match="không phải"):
+        chat_client._validate_proposal(
+            {
+                "action_id": "bluestore_omap_quick_fix",
+                "target_nodes": [A_MON_HOST],
+                "rationale": "legacy omap stats on osd.3",
+                "osd_id": 3,
+            },
+            context_messages=context,
+        )
 
 
 def test_validate_proposal_rejects_bluestore_quick_fix_without_osd_id():
@@ -700,6 +810,136 @@ def test_run_chat_turn_stages_valid_proposal_with_command_preview(monkeypatch):
     assert result["proposal"]["target_nodes"] == [A_MON_HOST]
     assert result["proposal"]["rationale"] == "clock skew detected"
     assert result["proposal"]["command_preview"]  # resolved, non-empty
+
+
+def test_run_chat_turn_uses_bluestore_osd_host_from_history_for_one_proposal(monkeypatch):
+    captured = {}
+    history = [
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "checks": {
+                        "BLUESTORE_NO_PER_POOL_OMAP": {
+                            "detail": [
+                                {
+                                    "message": (
+                                        "osd.1 osd.5 have legacy (not per-pool) "
+                                        "BlueStore omap detected"
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "nodes": [
+                        {"id": -3, "name": AN_OSD_HOST, "type": "host", "children": [1, 5]},
+                        {"id": 1, "name": "osd.1", "type": "osd"},
+                        {"id": 5, "name": "osd.5", "type": "osd"},
+                    ]
+                }
+            ),
+        },
+    ]
+    response = _tool_call_completion(
+        (
+            "propose_action",
+            {
+                "action_id": "bluestore_omap_quick_fix",
+                "target_nodes": [AN_OSD_HOST],
+                "rationale": "osd.1 has legacy BlueStore omap accounting",
+                "pool_name": None,
+                "pg_num": None,
+                "size": None,
+                "osd_id": 1,
+                "app_name": None,
+            },
+        ),
+        content="Đã tạo đề xuất quick-fix cho osd.1.",
+    )
+
+    class FakeCompletions:
+        def stream(self, **kwargs):
+            captured["messages"] = kwargs["messages"]
+            return _FakeStream(response)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(chat_client, "_get_client", lambda: FakeClient())
+
+    result = asyncio.run(chat_client.run_chat_turn(history, "sửa lỗi bluestore", "admin"))
+
+    system_text = captured["messages"][0]["content"]
+    assert "osd.1 đang có BLUESTORE_NO_PER_POOL_OMAP" in system_text
+    assert f"host chứa OSD: {AN_OSD_HOST}" in system_text
+    assert "không hỏi lại OSD/host" in system_text
+    assert result["proposal"]["action_id"] == "bluestore_omap_quick_fix"
+    assert result["proposal"]["target_nodes"] == [AN_OSD_HOST]
+    assert result["proposal"]["params"] == {"osd_id": 1}
+
+
+def test_run_chat_turn_drops_bluestore_proposal_with_wrong_osd_host(monkeypatch):
+    history = [
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "checks": {
+                        "BLUESTORE_NO_PER_POOL_OMAP": {
+                            "detail": [{"message": "osd.1 legacy (not per-pool) BlueStore omap detected"}]
+                        }
+                    }
+                }
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "nodes": [
+                        {"id": -3, "name": AN_OSD_HOST, "type": "host", "children": [1]},
+                        {"id": 1, "name": "osd.1", "type": "osd"},
+                    ]
+                }
+            ),
+        },
+    ]
+    _install_fake_client(
+        monkeypatch,
+        [
+            _tool_call_completion(
+                (
+                    "propose_action",
+                    {
+                        "action_id": "bluestore_omap_quick_fix",
+                        "target_nodes": [A_MON_HOST],
+                        "rationale": "osd.1 has legacy BlueStore omap accounting",
+                        "pool_name": None,
+                        "pg_num": None,
+                        "size": None,
+                        "osd_id": 1,
+                        "app_name": None,
+                    },
+                ),
+                content="Đã tạo đề xuất quick-fix cho osd.1.",
+            )
+        ],
+    )
+
+    result = asyncio.run(chat_client.run_chat_turn(history, "sửa lỗi bluestore", "admin"))
+
+    assert result["proposal"] is None
+    assert "không phải" in result["reply_text"]
 
 
 def test_run_chat_turn_drops_proposal_with_invalid_host(monkeypatch):

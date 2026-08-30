@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -77,3 +79,62 @@ def test_ceph_learning_uses_same_test_deploy_pipeline(monkeypatch, tmp_path):
     assert captured["config"].deploy_staging is True
     assert captured["config"].promote_main is True
     assert captured["statuses"] == ["RUNNING", "LEARNED"]
+
+
+def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    notifications = []
+    captured = {}
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_hour", 0, raising=False)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_minute", 0, raising=False)
+    monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
+    monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
+
+    def fake_run(evidence, config, *, force):
+        captured.update({"evidence": evidence, "config": config, "force": force})
+        return SimpleNamespace(
+            status="PROMOTED", fingerprint="fp", branch="ai-repair/nightly", commit="abc",
+            changed_files=["shared/ai.py"], review_rounds=1, error=None,
+        )
+
+    monkeypatch.setattr(supervisor, "run_repair", fake_run)
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)  # 00:00 Asia/Ho_Chi_Minh
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is False
+    assert captured["evidence"] == supervisor.NIGHTLY_IMPROVEMENT_EVIDENCE
+    assert captured["force"] is True
+    assert captured["config"].task_kind == "nightly-ai-improvement"
+    assert captured["config"].allow_no_change is True
+    assert captured["config"].push is True
+    assert captured["config"].deploy_staging is True
+    assert captured["config"].promote_main is True
+    assert json.loads(state_path.read_text())["status"] == "PROMOTED"
+    assert len(notifications) == 2
+
+
+def test_nightly_due_is_idempotent_when_systemd_starts_late():
+    now = datetime(2026, 8, 30, 20, 15, tzinfo=timezone.utc)
+
+    assert supervisor._nightly_due({}, now) is True
+    assert supervisor._nightly_due({"last_run_date": "2026-08-31"}, now) is False
+
+
+def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        supervisor.settings,
+        "code_repair_run_lock_file",
+        str(tmp_path / "repair-run.lock"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "run_repair",
+        lambda evidence, config, *, force=False: calls.append((evidence, force)) or "ok",
+    )
+
+    assert supervisor.run_repair_exclusively("evidence", object(), force=True) == "ok"
+    assert calls == [("evidence", True)]

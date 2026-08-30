@@ -263,16 +263,22 @@
       dualSpeaker = dualMatch[1].trim();
       dualProvider = dualMatch[2].trim();
       displayContent = displayContent.slice(dualMatch[0].length);
+      messagesEl.classList.add("has-dual-messages");
     }
     var container = document.createElement("div");
     container.className = "chat-msg " + (isUser ? "chat-msg-user" : "chat-msg-assistant");
+    if (dualSpeaker) {
+      container.classList.add("chat-msg-dual");
+      container.classList.add(dualSpeaker === "Implementer" ? "chat-msg-dual-right" : "chat-msg-dual-left");
+    }
     container.dataset.messageId = message.id;
 
     var meta = document.createElement("div");
     meta.className = "chat-msg-meta";
+    var dualRole = dualSpeaker === "Implementer" ? "Trả lời" : "Hỏi";
     meta.textContent = isUser
       ? "Bạn · " + (message.actor || "?") + " · " + formatTimestamp(message.created_at)
-      : (dualSpeaker ? "🤖 " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + formatTimestamp(message.created_at);
+      : (dualSpeaker ? "🤖 " + dualRole + " · " + dualSpeaker + " · " + dualProvider : "🤖 " + aiName) + " · " + formatTimestamp(message.created_at);
     container.appendChild(meta);
 
     var bubble;
@@ -537,6 +543,7 @@
 
   function resetToEmptyState() {
     while (messagesEl.firstChild) messagesEl.removeChild(messagesEl.firstChild);
+    messagesEl.classList.remove("has-dual-messages");
     var empty = document.createElement("div");
     empty.className = "chat-empty-state";
     empty.id = "chat-empty-state";
@@ -851,7 +858,7 @@
     if (!modeSelectEl) return;
     var dual = modeSelectEl.value === "dual";
     if (modeHintEl) modeHintEl.textContent = dual
-      ? "Planner/Reviewer và Implementer sẽ lần lượt phân tích, phản biện và chốt phương án."
+      ? "Hỏi / Planner bên trái · Trả lời / Implementer bên phải · chỉ hiển thị ý chính."
       : "Dùng AI đang cấu hình trong hệ thống.";
     inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : "Nhập câu hỏi về cụm Ceph...";
   }

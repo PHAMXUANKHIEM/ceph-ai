@@ -1,0 +1,12 @@
+[Unit]
+Description=Ceph AI nightly self-improvement review
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ceph-ai
+ExecStart=/root/ceph-ai/.venv/bin/python -m worker.nightly_ai_improvement
+TimeoutStartSec=4h
+StandardOutput=append:/var/log/ceph-ai-nightly-ai-improvement.log
+StandardError=append:/var/log/ceph-ai-nightly-ai-improvement.log

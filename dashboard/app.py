@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,7 +13,7 @@ from config.settings import (
     DEFAULT_SESSION_SECRET_KEY,
     settings,
 )
-from dashboard import telegram_approval_bot
+from dashboard import telegram_approval_bot, telegram_chat
 from dashboard.routes import (
     actions,
     ai_cost as ai_cost_routes,
@@ -104,6 +105,8 @@ async def _lifespan(_app: FastAPI):
     # matters because FastAPI's TestClient re-enters this lifespan on
     # every `with TestClient(app) as client:` block across this project's
     # whole test suite, all sharing the same cached `app` singleton.
+    dashboard_loop = asyncio.get_running_loop()
+    telegram_chat.set_dashboard_loop(dashboard_loop)
     telegram_approval_bot.start()
     # Seed the default row and repair stale mirrors left by older versions.
     # The .env-backed Settings form is the source of truth for this row.
@@ -112,6 +115,7 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        telegram_chat.clear_dashboard_loop(dashboard_loop)
         await codex_app_server.close()
 
 

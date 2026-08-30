@@ -693,3 +693,14 @@ def test_handle_callback_accepts_the_clusters_own_chat_id(dashboard_client, monk
     assert answer_calls == ["Đã duyệt"]
     with db_module.SessionLocal() as session:
         assert session.get(Action, action_id).status == ActionStatus.APPROVED.value
+
+
+def test_telegram_update_offset_is_persisted_without_storing_the_token(monkeypatch, tmp_path):
+    offset_file = tmp_path / "telegram-update-offsets.json"
+    monkeypatch.setattr(bot, "_UPDATE_OFFSET_FILE", offset_file)
+
+    bot._save_update_offset("123:super-secret-token", 42)
+
+    assert bot._load_update_offset("123:super-secret-token") == 42
+    assert "super-secret-token" not in offset_file.read_text()
+    assert bot._load_update_offset("different-token") is None

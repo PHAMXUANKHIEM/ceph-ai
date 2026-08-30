@@ -77,6 +77,21 @@ def test_validate_changes_rejects_deployment_script(monkeypatch, tmp_path):
         code_repair._validate_changes(tmp_path)
 
 
+def test_validate_changes_rejects_non_deploy_script(monkeypatch, tmp_path):
+    outputs = iter([
+        " M scripts/update_ai_pricing.py\n",
+        "diff --git a/scripts/update_ai_pricing.py b/scripts/update_ai_pricing.py\n",
+    ])
+    monkeypatch.setattr(
+        code_repair,
+        "_run",
+        lambda *args, **kwargs: type("R", (), {"stdout": next(outputs), "returncode": 0})(),
+    )
+
+    with pytest.raises(code_repair.RepairError, match="outside the repair allowlist"):
+        code_repair._validate_changes(tmp_path)
+
+
 def test_validate_changes_ignores_supervisor_venv_symlink(monkeypatch, tmp_path):
     outputs = iter([
         "?? .venv\n M worker/example.py\n",
@@ -218,6 +233,19 @@ def test_codex_reviewer_is_read_only_and_accepts_model(monkeypatch, tmp_path):
     assert "read-only" in command
     assert command[command.index("--model") + 1] == "gpt-5-codex"
     assert command[-1] == "-"
+
+
+def test_full_access_provider_commands_bypass_the_cli_sandbox(monkeypatch, tmp_path):
+    monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
+    _provider, codex_command = code_repair._provider_command(
+        "codex", tmp_path, "do it", 30, mode="full-access",
+    )
+    _provider, claude_command = code_repair._provider_command(
+        "claude", tmp_path, "do it", 30, mode="full-access",
+    )
+    assert "--dangerously-bypass-approvals-and-sandbox" in codex_command
+    assert "--dangerously-skip-permissions" in claude_command
+    assert claude_command[claude_command.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 def test_reviewer_verdict_requires_one_explicit_decision():

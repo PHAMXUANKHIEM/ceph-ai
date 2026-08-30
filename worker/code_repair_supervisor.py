@@ -16,6 +16,7 @@ import subprocess
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from config.settings import settings
 from worker.code_repair import (
@@ -32,11 +33,144 @@ from shared.telegram_alerts import send_code_repair_alert
 
 logger = logging.getLogger(__name__)
 REPAIR_COOLDOWN_SECONDS = 3600
+NIGHTLY_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
+NIGHTLY_IMPROVEMENT_EVIDENCE = (
+    "Scheduled nightly review: Cần nâng cấp gì cho phần AI của tool này?"
+)
+NIGHTLY_IMPROVEMENT_INSTRUCTIONS = """This is a proactive nightly AI improvement task, not an incident repair.
+
+Review only the ceph-ai AI product surface: provider routing, Codex/Claude integration, Chat-with-AI,
+two-agent workflows, rate-limit/budget safeguards, AI observability, learning, and regression tests.
+Identify at most ONE smallest useful, testable improvement. Do not modify credentials, OAuth/account handling,
+.env, Telegram configuration, deployment scripts, database migrations, Ceph commands, or safety policy.
+Never create a cosmetic-only change. If no bounded improvement is justified, finish the plan with exactly:
+VERDICT: NO_CHANGE_NEEDED
+Otherwise give the Implementer an exact, low-risk plan and tests. The Implementer must keep the same scope.
+"""
 
 
 def _configured_account_profile(source: str, profile: str) -> str:
     """Map Settings' source/profile pair to the pipeline's safe profile value."""
     return profile.strip() if source == "separate" else "configured"
+
+
+def run_repair_exclusively(
+    evidence: str, config: RepairConfig, *, force: bool = False,
+):
+    """Run exactly one repair pipeline at a time across supervisor and timer jobs."""
+    lock_path = Path(settings.code_repair_run_lock_file)
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if force:
+            return run_repair(evidence, config, force=True)
+        return run_repair(evidence, config)
+
+
+def _load_nightly_state(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_nightly_state(path: Path, value: dict) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2))
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def _nightly_due(state: dict, now: datetime) -> bool:
+    """Run once per local calendar day; systemd owns the scheduled time."""
+    local = now.astimezone(NIGHTLY_TIMEZONE)
+    return state.get("last_run_date") != local.date().isoformat()
+
+
+def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | None = None) -> bool:
+    """Run one bounded proactive two-agent AI review and persist its outcome."""
+    current = now or datetime.now(timezone.utc)
+    state = _load_nightly_state(state_path)
+    if not _nightly_due(state, current):
+        return False
+
+    local = current.astimezone(NIGHTLY_TIMEZONE)
+    # Record before invoking AI so a crash cannot launch a second expensive
+    # development cycle on restart the same night.
+    state.update({
+        "last_run_date": local.date().isoformat(),
+        "started_at": current.isoformat(),
+        "status": "RUNNING",
+    })
+    _save_nightly_state(state_path, state)
+    send_code_repair_alert(
+        "🌙 AI NIGHTLY IMPROVEMENT BẮT ĐẦU\n"
+        "Hai AI đang rà soát: ‘Cần nâng cấp gì cho phần AI của tool này?’\n"
+        "Phạm vi: AI/chat/router/giới hạn/quan sát/học; chỉ worktree + test, không đụng tài khoản hay cấu hình bí mật."
+    )
+    repair_state = state_path.with_name("nightly-ai-improvement-repairs.json")
+    result = run_repair_exclusively(
+        NIGHTLY_IMPROVEMENT_EVIDENCE,
+        RepairConfig(
+            repo=repo,
+            provider=settings.code_repair_provider,
+            planner_provider=settings.code_repair_planner_provider,
+            planner_model=settings.code_repair_planner_model,
+            planner_account_profile=_configured_account_profile(
+                settings.code_repair_planner_account_source,
+                settings.code_repair_planner_account_profile,
+            ),
+            implementer_provider=settings.code_repair_implementer_provider,
+            implementer_model=settings.code_repair_implementer_model,
+            implementer_account_profile=_configured_account_profile(
+                settings.code_repair_implementer_account_source,
+                settings.code_repair_implementer_account_profile,
+            ),
+            max_review_rounds=settings.code_repair_max_review_rounds,
+            test_command=settings.code_repair_test_command,
+            timeout_seconds=settings.code_repair_timeout_seconds,
+            push=settings.code_repair_push,
+            deploy_staging=settings.code_repair_deploy_staging,
+            promote_main=settings.code_repair_promote_main,
+            state_file=repair_state,
+            task_kind="nightly-ai-improvement",
+            task_instructions=NIGHTLY_IMPROVEMENT_INSTRUCTIONS,
+            max_ai_attempts=settings.code_repair_max_attempts,
+            max_pipeline_attempts=1,
+            running_stale_seconds=settings.code_repair_running_stale_seconds,
+            notify_telegram=False,
+            allow_no_change=True,
+        ),
+        force=True,
+    )
+    state.update({
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "status": result.status,
+        "branch": result.branch,
+        "commit": result.commit,
+        "changed_files": result.changed_files or [],
+        "error": result.error,
+    })
+    _save_nightly_state(state_path, state)
+    if result.status == "NO_CHANGE":
+        message = "🌙 AI NIGHTLY IMPROVEMENT\nKết quả: chưa có nâng cấp AI nào đủ nhỏ và an toàn để triển khai hôm nay."
+    elif result.status in {"PUSHED", "STAGING_VERIFIED", "PROMOTED", "COMMITTED"}:
+        files = ", ".join(result.changed_files or []) or "—"
+        message = (
+            "✅ AI NIGHTLY IMPROVEMENT HOÀN TẤT\n"
+            f"Kết quả: {result.status}\nBranch: {result.branch or '—'}\n"
+            f"Files: {files}\nReview rounds: {result.review_rounds}"
+        )
+    else:
+        message = (
+            "⚠️ AI NIGHTLY IMPROVEMENT KHÔNG TRIỂN KHAI\n"
+            f"Kết quả: {result.status}\nLý do: {(result.error or 'không rõ')[:900]}"
+        )
+    send_code_repair_alert(message)
+    logger.info("nightly AI improvement completed: %s (%s)", result.status, result.fingerprint)
+    return True
 
 
 @dataclass
@@ -182,7 +316,7 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                 increment_attempt=True,
             )
             ceph_learning.save_state(learning_state_file, learning_state)
-            result = run_repair(
+            result = run_repair_exclusively(
                 candidate.evidence,
                 RepairConfig(
                     repo=repo,
@@ -232,7 +366,7 @@ def run_forever(*, max_iterations: int | None = None) -> None:
                 # attempt and must not recursively trigger dozens of new
                 # repairs from logs emitted by its own staging smoke test.
                 last_repair_at = time.monotonic()
-                result = run_repair(
+                result = run_repair_exclusively(
                     max(errors, key=len),
                     RepairConfig(
                         repo=repo,

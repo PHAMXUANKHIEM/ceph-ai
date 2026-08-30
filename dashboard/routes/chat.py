@@ -481,12 +481,10 @@ async def post_chat_message(
     if not text:
         raise HTTPException(status_code=400, detail="Nội dung tin nhắn không được để trống")
     mode = (body.get("mode") or "single").strip().lower()
-    if mode not in {"single", "dual"}:
-        raise HTTPException(status_code=400, detail="Chế độ chat không hợp lệ")
-    if mode == "dual" and len(text) > MAX_DUAL_PROMPT_CHARS:
+    if mode != "single":
         raise HTTPException(
             status_code=400,
-            detail=f"Yêu cầu quá dài; chế độ hai AI chỉ nhận tối đa {MAX_DUAL_PROMPT_CHARS} ký tự",
+            detail="Chế độ Hai AI chỉ khả dụng qua Telegram Chatbox.",
         )
     # Falls back to a fresh id rather than 400ing — a stale/cached frontend
     # bundle that never learned about sessions at all should still work,
@@ -677,6 +675,7 @@ async def get_dual_chat_status(
     session_id: str = "",
     user: str = Depends(require_login),
 ):
+    raise HTTPException(status_code=404, detail="Chế độ Hai AI chỉ khả dụng qua Telegram Chatbox.")
     cluster = selected_cluster(request)
     key = _dual_job_key(user, cluster.id, session_id.strip()) if session_id.strip() else None
     task = _DUAL_JOBS.get(key) if key else None
@@ -685,6 +684,7 @@ async def get_dual_chat_status(
 
 @router.post("/api/chat/dual/stop")
 async def stop_dual_chat(request: Request, user: str = Depends(require_login)):
+    raise HTTPException(status_code=404, detail="Chế độ Hai AI chỉ khả dụng qua Telegram Chatbox.")
     cluster = selected_cluster(request)
     body = await request.json()
     session_id = str(body.get("session_id") or "").strip()

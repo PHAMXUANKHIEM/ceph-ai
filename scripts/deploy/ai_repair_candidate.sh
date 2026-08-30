@@ -13,9 +13,21 @@ if [[ ! "$CANDIDATE_BRANCH" =~ ^ai-repair/[A-Za-z0-9._/-]+$ ]]; then
 fi
 
 PREVIOUS_SHA="$(git rev-parse HEAD)"
+if [ -n "$(git status --porcelain)" ]; then
+  echo "ERROR: refusing candidate deployment because $REPO_DIR has uncommitted changes."
+  echo "Create a commit or explicitly preserve/remove the local changes before deploying."
+  exit 3
+fi
 ROLLED_BACK=false
+REPAIR_TEST_DIR=""
+cleanup_worktree() {
+  if [ -n "$REPAIR_TEST_DIR" ] && [ -d "$REPAIR_TEST_DIR" ]; then
+    git worktree remove --force "$REPAIR_TEST_DIR" >/dev/null 2>&1 || true
+  fi
+}
 rollback() {
   local exit_code=$?
+  cleanup_worktree
   if [ "$ROLLED_BACK" = false ]; then
     ROLLED_BACK=true
     echo "==> Candidate failed; rolling back to $PREVIOUS_SHA"
@@ -39,12 +51,14 @@ ln -s "$REPO_DIR/.venv" "$REPAIR_TEST_DIR/.venv"
 # settings cases share the migration test's process-global SQLite engine and
 # are run in CI instead. Candidate-specific tests already ran before push;
 # this gate still executes the remaining ~2.5k application tests.
-(cd "$REPAIR_TEST_DIR" && PYTHONPATH=. .venv/bin/pytest -q \
+(cd "$REPAIR_TEST_DIR" && timeout "${AI_REPAIR_CANDIDATE_TEST_TIMEOUT_SECONDS:-900}" \
+  env PYTHONPATH=. .venv/bin/pytest -q \
   --ignore=tests/test_migrations.py \
   --ignore=tests/test_mq.py \
   --deselect=tests/test_dashboard_settings.py::test_require_admin_privilege_rejects_unknown_username \
   --deselect=tests/test_dashboard_settings.py::test_migrate_database_route_adds_missing_table)
-git worktree remove --force "$REPAIR_TEST_DIR"
+cleanup_worktree
+REPAIR_TEST_DIR=""
 
 echo "==> Deploying candidate"
 DEPLOY_REF="origin/$CANDIDATE_BRANCH" bash scripts/deploy/restart_services.sh
