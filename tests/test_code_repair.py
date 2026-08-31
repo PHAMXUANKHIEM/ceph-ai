@@ -109,6 +109,43 @@ def test_proactive_change_requires_a_regression_test():
         code_repair._require_changed_tests(["worker/code_repair.py"])
 
 
+def test_proactive_test_change_requires_a_new_test_and_no_weakened_assertion(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        code_repair,
+        "_candidate_diff",
+        lambda *args, **kwargs: "-    assert old_value\n+    assert new_value\n",
+    )
+    with pytest.raises(code_repair.RepairError, match="xóa test hoặc assertion"):
+        code_repair._validate_proactive_test_changes(tmp_path, ["tests/test_ai.py"])
+
+    monkeypatch.setattr(
+        code_repair,
+        "_candidate_diff",
+        lambda *args, **kwargs: "+def test_new_regression():\n+    assert True\n",
+    )
+    code_repair._validate_proactive_test_changes(tmp_path, ["tests/test_ai.py"])
+
+
+def test_candidate_diff_includes_an_untracked_file(monkeypatch, tmp_path):
+    candidate = tmp_path / "tests" / "test_new.py"
+    candidate.parent.mkdir()
+    candidate.write_text("TOKEN='abcdefghijklmnop'\n")
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["git", "diff", "--no-index"]:
+            return type("Result", (), {"stdout": "+TOKEN='abcdefghijklmnop'\n", "returncode": 1})()
+        return type("Result", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(code_repair, "_run", fake_run)
+
+    assert "TOKEN='abcdefghijklmnop'" in code_repair._candidate_diff(
+        tmp_path, ["tests/test_new.py"], status_output="?? tests/test_new.py\n",
+    )
+    assert any(args[:3] == ["git", "diff", "--no-index"] for args in calls)
+
+
 def test_validate_changes_ignores_supervisor_venv_symlink(monkeypatch, tmp_path):
     outputs = iter([
         "?? .venv\n M worker/example.py\n",

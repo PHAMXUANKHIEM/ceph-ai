@@ -476,10 +476,30 @@ def _validate_changes(worktree: Path) -> list[str]:
     invalid = [p for p in files if not p.startswith(ALLOWED_PREFIXES) or p.startswith(FORBIDDEN_PREFIXES)]
     if invalid:
         raise RepairError(f"AI changed paths outside the repair allowlist: {invalid}")
-    diff = _run(["git", "diff", "--", *files], cwd=worktree).stdout
+    diff = _candidate_diff(worktree, files, status_output=output)
     if DIFF_SECRET_RE.search(diff):
         raise RepairError("candidate diff appears to contain a credential")
     return files
+
+
+def _candidate_diff(worktree: Path, files: list[str], *, status_output: str | None = None) -> str:
+    """Return candidate diff, including untracked files Git diff normally hides."""
+    diff = _run(["git", "diff", "--", *files], cwd=worktree).stdout
+    status = status_output if status_output is not None else _run(
+        ["git", "status", "--porcelain"], cwd=worktree,
+    ).stdout
+    untracked = {
+        line[3:] for line in status.splitlines()
+        if line.startswith("?? ") and line[3:] in files
+    }
+    for path in sorted(untracked):
+        # --no-index returns 1 for a difference, which is the expected
+        # outcome for a new candidate file.
+        diff += _run(
+            ["git", "diff", "--no-index", "--", "/dev/null", str(worktree / path)],
+            cwd=worktree, check=False,
+        ).stdout
+    return diff
 
 
 def _worktree_status(worktree: Path) -> str:
@@ -501,6 +521,23 @@ def _changed_test_files(files: list[str]) -> list[str]:
 def _require_changed_tests(files: list[str]) -> None:
     if not _changed_test_files(files):
         raise RepairError("proactive improvement phải thêm hoặc cập nhật ít nhất một regression test trong tests/")
+
+
+def _validate_proactive_test_changes(worktree: Path, files: list[str]) -> None:
+    """Require additive regression coverage and reject direct test weakening."""
+    tests = _changed_test_files(files)
+    _require_changed_tests(files)
+    diff = _candidate_diff(worktree, tests)
+    added_test = re.search(r"(?m)^\+\s*(?:async\s+)?def\s+test_[A-Za-z0-9_]+", diff)
+    weakened_test = re.search(
+        r"(?m)^-\s*(?:(?:async\s+)?def\s+test_[A-Za-z0-9_]+|"
+        r"(?:self\.)?assert(?:[A-Z][A-Za-z0-9_]*)?\b)",
+        diff,
+    )
+    if weakened_test:
+        raise RepairError("proactive improvement không được xóa test hoặc assertion hiện có")
+    if not added_test:
+        raise RepairError("proactive improvement phải bổ sung ít nhất một test_* regression mới")
 
 
 def _focused_test_command(files: list[str]) -> str | None:
@@ -679,7 +716,7 @@ Observed application failure (credentials already redacted):
                 raise RepairError(f"{provider} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
             result.changed_files = _validate_changes(worktree)
             if config.require_changed_tests:
-                _require_changed_tests(result.changed_files)
+                _validate_proactive_test_changes(worktree, result.changed_files)
             focused_command = _focused_test_command(result.changed_files)
             if focused_command:
                 notifier.update(40, "Patch hợp lệ; đang chạy test theo phạm vi thay đổi")
@@ -801,8 +838,25 @@ If changes are needed, list precise actionable corrections before that line.
                 raise RepairError(f"{provider} reviewer-fix failed ({fix.returncode}):\n{fix.stdout[-6000:]}")
             result.changed_files = _validate_changes(worktree)
             if config.require_changed_tests:
-                _require_changed_tests(result.changed_files)
-            notifier.update(60, "Implementer đã sửa theo review; đang chạy lại regression gate")
+                _validate_proactive_test_changes(worktree, result.changed_files)
+            correction_focused_command = _focused_test_command(result.changed_files)
+            if correction_focused_command:
+                notifier.update(60, "Implementer đã sửa theo review; đang chạy lại test theo phạm vi thay đổi")
+                correction_focused = _run(
+                    ["bash", "-lc", correction_focused_command], cwd=worktree,
+                    timeout=config.timeout_seconds, check=False,
+                )
+                if correction_focused.returncode != 0:
+                    result.test_output = correction_focused.stdout[-12_000:]
+                    if _test_failure_kind(correction_focused.stdout) == "INFRASTRUCTURE":
+                        raise RepairError(
+                            f"test infrastructure failed after review fix:\n{correction_focused.stdout[-6000:]}"
+                        )
+                    raise RepairError(
+                        f"focused test gate failed after review fix ({correction_focused.returncode}):\n"
+                        f"{correction_focused.stdout[-6000:]}"
+                    )
+            notifier.update(62, "Test phạm vi đã đạt; đang chạy lại regression gate")
             correction_tests = _run(
                 ["bash", "-lc", config.test_command], cwd=worktree,
                 timeout=config.timeout_seconds, check=False,
