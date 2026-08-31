@@ -90,6 +90,7 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     monkeypatch.setattr(supervisor.settings, "code_repair_push", True)
     monkeypatch.setattr(supervisor.settings, "code_repair_deploy_staging", True)
     monkeypatch.setattr(supervisor.settings, "code_repair_promote_main", True)
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
 
     def fake_run(evidence, config, *, force):
@@ -108,6 +109,8 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     assert captured["force"] is True
     assert captured["config"].task_kind == "nightly-ai-improvement"
     assert captured["config"].allow_no_change is True
+    assert captured["config"].test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
+    assert captured["config"].candidate_test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
     assert captured["config"].push is True
     assert captured["config"].deploy_staging is True
     assert captured["config"].promote_main is True
@@ -143,6 +146,7 @@ def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_
 def test_nightly_failure_is_persisted_and_notified(monkeypatch, tmp_path):
     state_path = tmp_path / "nightly.json"
     notifications = []
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
     monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
     monkeypatch.setattr(supervisor, "run_repair", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
@@ -154,3 +158,19 @@ def test_nightly_failure_is_persisted_and_notified(monkeypatch, tmp_path):
     assert state["status"] == "FAILED"
     assert "boom" in state["error"]
     assert len(notifications) == 2
+
+
+def test_nightly_dirty_checkout_stops_before_ai(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    notifications = []
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: " M compose.yaml")
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
+    monkeypatch.setattr(supervisor, "run_repair", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+
+    state = json.loads(state_path.read_text())
+    assert state["status"] == "BLOCKED_DIRTY_CHECKOUT"
+    assert state["last_run_date"] == "2026-08-31"
+    assert notifications and "chưa commit" in notifications[0]

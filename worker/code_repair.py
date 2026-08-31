@@ -92,6 +92,9 @@ class RepairConfig:
     # setting was removed; Dashboard dual chat has its own continuous loop.
     max_review_rounds: int = DEFAULT_REPAIR_REVIEW_ROUNDS
     test_command: str = "PYTHONPATH=. .venv/bin/pytest -q"
+    # Optional bounded command for the second, host-level candidate gate.
+    # Empty retains that script's default regression command.
+    candidate_test_command: str = ""
     timeout_seconds: int = 1800
     push: bool = False
     deploy_staging: bool = False
@@ -195,10 +198,10 @@ class RepairProgressNotifier:
 
 
 def _run(args: list[str], *, cwd: Path, timeout: int = 300, input_text: str | None = None,
-         check: bool = True) -> subprocess.CompletedProcess[str]:
+         check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         args, cwd=cwd, text=True, input=input_text, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, timeout=timeout, env=os.environ.copy(),
+        stderr=subprocess.STDOUT, timeout=timeout, env=env or os.environ.copy(),
     )
     if check and result.returncode != 0:
         raise RepairError(f"{shlex.join(args)} failed ({result.returncode}):\n{result.stdout[-6000:]}")
@@ -807,7 +810,11 @@ If changes are needed, list precise actionable corrections before that line.
                 raise RepairError("staging deployment requires --push")
             notifier.update(85, "Đang deploy candidate và smoke test staging")
             deploy = config.repo / "scripts/deploy/ai_repair_candidate.sh"
+            deploy_env = os.environ.copy()
+            if config.candidate_test_command:
+                deploy_env["AI_REPAIR_CANDIDATE_TEST_COMMAND"] = config.candidate_test_command
             _run(["bash", str(deploy), branch], cwd=config.repo,
+                 env=deploy_env,
                  timeout=config.timeout_seconds, check=True)
             result.status = "STAGING_VERIFIED"
         if config.promote_main:

@@ -45,6 +45,8 @@ echo "==> Running candidate test gate at $CANDIDATE_SHA"
 REPAIR_TEST_DIR="$(mktemp -d)"
 git worktree add --detach "$REPAIR_TEST_DIR" "$CANDIDATE_SHA"
 ln -s "$REPO_DIR/.venv" "$REPAIR_TEST_DIR/.venv"
+DEFAULT_CANDIDATE_TEST_COMMAND="PYTHONPATH=. .venv/bin/pytest -q --ignore=tests/test_migrations.py --ignore=tests/test_mq.py --deselect=tests/test_dashboard_settings.py::test_require_admin_privilege_rejects_unknown_username --deselect=tests/test_dashboard_settings.py::test_migrate_database_route_adds_missing_table"
+CANDIDATE_TEST_COMMAND="${AI_REPAIR_CANDIDATE_TEST_COMMAND:-$DEFAULT_CANDIDATE_TEST_COMMAND}"
 # These suites are CI-only on this host: migration tests require a newer
 # SQLite than CentOS' Python 3.11 provides, while MQ topology tests require
 # exclusive ownership of queues consumed by the live staging Worker. Two
@@ -52,11 +54,7 @@ ln -s "$REPO_DIR/.venv" "$REPAIR_TEST_DIR/.venv"
 # are run in CI instead. Candidate-specific tests already ran before push;
 # this gate still executes the remaining ~2.5k application tests.
 (cd "$REPAIR_TEST_DIR" && timeout "${AI_REPAIR_CANDIDATE_TEST_TIMEOUT_SECONDS:-900}" \
-  env PYTHONPATH=. .venv/bin/pytest -q \
-  --ignore=tests/test_migrations.py \
-  --ignore=tests/test_mq.py \
-  --deselect=tests/test_dashboard_settings.py::test_require_admin_privilege_rejects_unknown_username \
-  --deselect=tests/test_dashboard_settings.py::test_migrate_database_route_adds_missing_table)
+  bash -lc "$CANDIDATE_TEST_COMMAND")
 cleanup_worktree
 REPAIR_TEST_DIR=""
 

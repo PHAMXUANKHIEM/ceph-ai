@@ -92,6 +92,12 @@ def test_validate_changes_rejects_non_deploy_script(monkeypatch, tmp_path):
         code_repair._validate_changes(tmp_path)
 
 
+def test_repair_config_has_separate_candidate_test_gate():
+    config = code_repair.RepairConfig(repo=Path("/tmp/repo"), candidate_test_command="pytest tests/test_ai.py")
+
+    assert config.candidate_test_command == "pytest tests/test_ai.py"
+
+
 def test_validate_changes_ignores_supervisor_venv_symlink(monkeypatch, tmp_path):
     outputs = iter([
         "?? .venv\n M worker/example.py\n",

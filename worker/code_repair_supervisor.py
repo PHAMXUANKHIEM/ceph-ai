@@ -38,6 +38,11 @@ NIGHTLY_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 NIGHTLY_IMPROVEMENT_EVIDENCE = (
     "Scheduled nightly review: Cần nâng cấp gì cho phần AI của tool này?"
 )
+NIGHTLY_REGRESSION_TEST_COMMAND = (
+    "PYTHONPATH=. .venv/bin/pytest -q "
+    "tests/test_code_repair.py "
+    "tests/test_code_repair_supervisor.py"
+)
 NIGHTLY_IMPROVEMENT_INSTRUCTIONS = """This is a proactive nightly AI improvement task, not an incident repair.
 
 Review only the ceph-ai AI product surface: provider routing, Codex/Claude integration, Chat-with-AI,
@@ -97,6 +102,20 @@ def _nightly_due(state: dict, now: datetime) -> bool:
     return state.get("last_run_date") != local.date().isoformat()
 
 
+def _dirty_checkout(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        return "không thể kiểm tra Git checkout"
+    return "\n".join(result.stdout.splitlines()[:12])
+
+
 def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | None = None) -> bool:
     """Run one bounded proactive two-agent AI review and persist its outcome."""
     try:
@@ -140,6 +159,22 @@ def _run_nightly_ai_improvement_locked(
         return False
 
     local = current.astimezone(NIGHTLY_TIMEZONE)
+    dirty_checkout = _dirty_checkout(repo)
+    if dirty_checkout:
+        state.update({
+            "last_run_date": local.date().isoformat(),
+            "finished_at": current.isoformat(),
+            "status": "BLOCKED_DIRTY_CHECKOUT",
+            "error": dirty_checkout,
+        })
+        _save_nightly_state(state_path, state)
+        send_code_repair_alert(
+            "⚠️ AI NIGHTLY IMPROVEMENT CHƯA CHẠY\n"
+            "Checkout ceph-ai đang có thay đổi chưa commit nên job dừng trước khi gọi AI.\n"
+            f"Files: {dirty_checkout[:900]}"
+        )
+        return True
+
     # Record before invoking AI so a crash cannot launch a second expensive
     # development cycle on restart the same night.
     state.update({
@@ -172,7 +207,8 @@ def _run_nightly_ai_improvement_locked(
                 settings.code_repair_implementer_account_profile,
             ),
             max_review_rounds=settings.code_repair_max_review_rounds,
-            test_command=settings.code_repair_test_command,
+            test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
+            candidate_test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
             timeout_seconds=settings.code_repair_timeout_seconds,
             push=settings.code_repair_push,
             deploy_staging=settings.code_repair_deploy_staging,
