@@ -131,7 +131,24 @@ def test_approve_action_sets_approved_and_audits_operator_as_actor(dashboard_cli
         assert entries[0].event_type == "risky_action_approved"
 
 
+def test_approve_destructive_action_rejects_non_admin(dashboard_client, monkeypatch):
+    action_id = _pending_action("inc-destructive")
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        action.action_id = "rbd_trash_remove"
+        action.classification = ActionClassification.DESTRUCTIVE.value
+        session.commit()
+    monkeypatch.setattr(actions_route.auth, "is_admin_user", lambda _user: False)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/actions/{action_id}/approve", follow_redirects=False)
+
+    assert response.status_code == 403
+    with db_module.SessionLocal() as session:
+        assert session.get(Action, action_id).status == ActionStatus.PENDING_APPROVAL.value
+
 def test_approve_expired_action_is_refused(dashboard_client):
+
     # AI roadmap Pha 0.4 (section 3.3): stale-evidence check.
     from datetime import timedelta
 

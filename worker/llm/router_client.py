@@ -53,7 +53,7 @@ from worker.operational_gate import evaluate as evaluate_operational_gate
 from worker.autonomy_runtime import (
     acquire_lease, check_limits, reconcile_expired_executions, release_lease,
 )
-from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
+from watcher.ceph_client import CephQueryError, query_rbd_trash, run_ceph_json_command_with
 from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
@@ -2830,6 +2830,97 @@ def _reconcile_stuck_rbd_actions_once(
     return resolved
 
 
+def _rbd_trash_purge_eligibility(pool: str, trash_ids: list[str]) -> dict[str, str | None]:
+    """Return a refusal reason for each requested ID, or ``None`` if safe.
+
+    This live check closes the proposal-to-execution window.  A missing item
+    was restored or already removed; an unexpired item must never be purged.
+    """
+    entries = query_rbd_trash(pool)
+    by_id = {str(entry.get("id")): entry for entry in entries}
+    now = datetime.utcnow()
+    ttl_days = max(1, min(int(settings.rbd_trash_retention_days), 3650))
+    result: dict[str, str | None] = {}
+    for trash_id in trash_ids:
+        entry = by_id.get(trash_id)
+        if entry is None:
+            result[trash_id] = "Trash ID không còn tồn tại (đã khôi phục hoặc đã bị xoá)"
+            continue
+        status = str(entry.get("status") or "").strip().lower()
+        if status.startswith("expired at") or status == "expired":
+            result[trash_id] = None
+            continue
+        if status.startswith("protected until"):
+            result[trash_id] = "Ceph vẫn đang bảo vệ image theo deferment time"
+            continue
+        raw = str(entry.get("deletion_time") or entry.get("deleted_at") or "").strip()
+        try:
+            deleted_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if deleted_at.tzinfo is not None:
+                deleted_at = deleted_at.astimezone(timezone.utc).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            result[trash_id] = "Không xác định được deferment time từ Ceph"
+            continue
+        if deleted_at + timedelta(days=ttl_days) > now:
+            result[trash_id] = "Volume chưa hết TTL tại thời điểm thực thi"
+        else:
+            result[trash_id] = None
+    return result
+
+
+def _execute_rbd_trash_purge_all_action(
+    action_pk: str,
+    params: dict,
+    host: str,
+    ssh_user: str | None,
+    ssh_key_path: str | None,
+) -> bool:
+    """Purge the approved snapshot one ID at a time, without force.
+
+    The per-ID progress makes a partial result auditable and leaves later
+    IDs attempted even when an earlier one is blocked by an RBD watcher.
+    """
+    pool = params.get("pool_name")
+    trash_ids = params.get("trash_ids")
+    if not isinstance(pool, str) or not isinstance(trash_ids, list) or not trash_ids:
+        return False
+    try:
+        ids = [str(value) for value in trash_ids]
+        if len(ids) != len(set(ids)):
+            return False
+        for trash_id in ids:
+            commands.get_command("rbd_trash_remove", host, {"pool_name": pool, "trash_id": trash_id})
+        eligibility = _rbd_trash_purge_eligibility(pool, ids)
+    except (CephQueryError, ExecutorError) as exc:
+        logger.warning("rbd trash bulk purge preflight failed for action %s: %s", action_pk, exc)
+        return False
+
+    progress = [{"trash_id": trash_id, "status": "pending"} for trash_id in ids]
+    _write_action_progress(action_pk, progress)
+    all_succeeded = True
+    for index, trash_id in enumerate(ids):
+        reason = eligibility[trash_id]
+        if reason is not None:
+            progress[index].update(status="skipped", error=reason, finished_at=datetime.utcnow().isoformat())
+            _write_action_progress(action_pk, progress)
+            all_succeeded = False
+            continue
+        command = commands.get_command(
+            "rbd_trash_remove", host, {"pool_name": pool, "trash_id": trash_id}
+        )
+        progress[index].update(status="running", command=command, started_at=datetime.utcnow().isoformat())
+        _write_action_progress(action_pk, progress)
+        try:
+            execute_command(host, command, user=ssh_user, key_path=ssh_key_path)
+        except ExecutorError as exc:
+            progress[index].update(status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
+            all_succeeded = False
+        else:
+            progress[index].update(status="done", finished_at=datetime.utcnow().isoformat())
+        _write_action_progress(action_pk, progress)
+    return all_succeeded
+
+
 def _execute_approved_action(action_pk: str) -> None:
     """Run the command for an operator-approved action.
 
@@ -2952,6 +3043,39 @@ def _execute_approved_action(action_pk: str) -> None:
         action_params = json.loads(action_params_raw) if action_params_raw else None
     except (TypeError, ValueError):
         action_params = None
+    # RBD trash actions are destructive: re-read their live state after the
+    # approval wait, then use the dedicated per-ID executor for bulk purges.
+    if action_id_str == "rbd_trash_remove":
+        if not isinstance(action_params, dict):
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        pool = action_params.get("pool_name")
+        trash_id = action_params.get("trash_id")
+        if not isinstance(pool, str) or not isinstance(trash_id, str):
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        try:
+            commands.get_command(action_id_str, nodes[0], action_params)
+            refusal = _rbd_trash_purge_eligibility(pool, [trash_id])[trash_id]
+        except (CephQueryError, ExecutorError) as exc:
+            logger.warning("rbd trash remove preflight failed for action %s: %s", action_pk, exc)
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        if refusal is not None:
+            _write_action_progress(action_pk, [{"trash_id": trash_id, "status": "skipped", "error": refusal}])
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+
+    if action_id_str == "rbd_trash_purge_all":
+        if not isinstance(action_params, dict):
+            _record_approved_execution_result(action_pk, command=None, succeeded=False)
+            return
+        succeeded = _execute_rbd_trash_purge_all_action(
+            action_pk, action_params, nodes[0], ssh_user, ssh_key_path
+        )
+        _record_approved_execution_result(action_pk, command=None, succeeded=succeeded)
+        return
+
 
     # 2026-07-25 (Story 8.1): Dựng cụm Ceph tự động's 3 action_ids delegate
     # entirely to worker/executor/cluster_deploy.py's own multi-phase

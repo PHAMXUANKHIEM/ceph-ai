@@ -1,3 +1,5 @@
+import os
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,7 +11,7 @@ DEFAULT_SESSION_SECRET_KEY = "dev-only-insecure-secret-change-me"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
+    model_config = SettingsConfigDict(env_file=os.environ.get("CEPH_AI_ENV_FILE", ".env"), extra="forbid")
 
     database_url: str = "sqlite:///./ceph_aiops.db"
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
@@ -464,6 +466,10 @@ class Settings(BaseSettings):
     telegram_chatbox_bot_token: str = ""
     telegram_chatbox_chat_id: str = ""
     telegram_chatbox_enabled: bool = True
+    # The legacy all-in-one Dashboard starts the Telegram polling threads in
+    # its lifespan. Container deployments run those threads in the dedicated
+    # `telegram-ai` service instead, so exactly one process owns getUpdates.
+    telegram_listener_enabled: bool = True
     # Required for dual execution from a group chat. Private chats are already
     # single-user by Telegram's chat model; group chats must explicitly list
     # the sender IDs allowed to invoke the full-permission Implementer.
@@ -471,6 +477,10 @@ class Settings(BaseSettings):
     # Separate, mandatory allow-list for the unrestricted Telegram
     # /single-full mode. Empty means the mode is disabled for everyone.
     telegram_chatbox_full_access_user_ids: str = ""
+    # Container deployments route Single Full to a separate privileged
+    # executor. Empty keeps the legacy in-process behavior for systemd/dev.
+    single_full_executor_url: str = ""
+    single_full_executor_token: str = ""
     # Per-request RGW audit collector.  It is deliberately independent of
     # Log Intelligence: CRUD access events are facts, not AI findings, and
     # must not be suppressed or grouped by the anomaly/noise pipeline.

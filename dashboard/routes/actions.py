@@ -11,12 +11,14 @@ from fastapi.responses import RedirectResponse
 
 from dashboard.routes import patch as patch_routes
 from dashboard.routes import upgrade as upgrade_routes
+from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
 from shared import audit, change_risk, db
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending
+from worker.policy import gate
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,28 @@ router = APIRouter()
 _POOL_APP_CODE = "POOL_APP_NOT_ENABLED"
 _POOL_NAME_RE = re.compile(r"pool\s+['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _ALLOWED_POOL_APPS = {"rbd", "cephfs", "rgw"}
+
+
+def _require_admin_for_destructive_approval(action_id: str, user: str) -> None:
+    """Keep destructive Action approval admin-only on the Dashboard.
+
+    ``approve_action_core`` is also used by a separately trusted Telegram
+    approval channel. Its callback handler authorizes the chat before calling
+    the core, so this Dashboard-only check must not interpret its audit actor.
+    """
+    with db.SessionLocal() as session:
+        action = session.get(Action, action_id)
+        if action is None:
+            raise ActionNotFoundError(action_id)
+        is_destructive = (
+            action.action_id in {"rbd_trash_remove", "rbd_trash_purge_all"}
+            or gate.classify_action(action.action_id, session=session).value == "DESTRUCTIVE"
+        )
+    if is_destructive and not auth.is_admin_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ tài khoản admin mới được phép duyệt thao tác xoá dữ liệu",
+        )
 
 
 def _prepare_pool_application_choice(action_id: str, app_name: str) -> None:
@@ -304,6 +328,7 @@ async def approve_action(
     pool_app: str = Form(""),
 ):
     try:
+        await asyncio.to_thread(_require_admin_for_destructive_approval, action_id, user)
         if pool_app:
             await asyncio.to_thread(_prepare_pool_application_choice, action_id, pool_app)
         result = await asyncio.to_thread(approve_action_core, action_id, user)

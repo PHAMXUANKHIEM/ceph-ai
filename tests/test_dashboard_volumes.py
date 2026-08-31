@@ -1224,6 +1224,18 @@ def test_unauthenticated_propose_trash_remove_redirects_to_login(dashboard_clien
     assert response.headers["location"] == "/login"
 
 
+def test_propose_trash_remove_rejects_non_admin(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _create_user("trash-operator", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "trash-operator", "s3cret-pw")
+
+    response = dashboard_client.post("/volumes/vms/trash/1234567890ab/propose")
+
+    assert response.status_code == 403
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).filter_by(action_id="rbd_trash_remove").count() == 0
+
+
 def test_propose_trash_remove_creates_pending_approval_action(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     _login(dashboard_client)
@@ -1351,11 +1363,12 @@ def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
             .filter_by(action_id="rbd_trash_purge_all", status=ActionStatus.PENDING_APPROVAL.value)
             .one()
         )
-        assert action.classification == "RISKY"
+        assert action.classification == "DESTRUCTIVE"
         params = json.loads(action.action_params)
         assert set(params["trash_ids"]) == {"id-1", "id-2"}
         assert json.loads(action.target_nodes) == ["10.20.1.150"]
-        assert "--force" in action.proposed_command
+        assert "--force" not in action.proposed_command
+        assert action.proposed_command.splitlines() == ["rbd trash rm vms/id-1", "rbd trash rm vms/id-2"]
 
         incident = session.get(Incident, action.incident_id)
         assert incident.ceph_code == "RBD_TRASH_PURGE_ALL"

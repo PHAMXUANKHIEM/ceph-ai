@@ -57,6 +57,12 @@
       </section>
     </nav>
     <div class="settings-content">
+    {% if containerized_deployment %}
+    <div class="settings-toast is-error">
+      Chế độ container: cấu hình đã lưu chỉ được các dịch vụ nền nhận sau khi operator chạy
+      <code>systemctl restart ceph-ai-containers</code>. Các nút restart từng service bị vô hiệu trong chế độ này.
+    </div>
+    {% endif %}
     {% if is_admin %}
     <section class="settings-panel process-panel" data-panel="restart-controls" {% if active_section != 'restart-controls' %}hidden{% endif %}>
       <div class="settings-content-header">

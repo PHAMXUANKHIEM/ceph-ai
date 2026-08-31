@@ -106,8 +106,10 @@ async def _lifespan(_app: FastAPI):
     # every `with TestClient(app) as client:` block across this project's
     # whole test suite, all sharing the same cached `app` singleton.
     dashboard_loop = asyncio.get_running_loop()
-    telegram_chat.set_dashboard_loop(dashboard_loop)
-    telegram_approval_bot.start()
+    telegram_listener_enabled = settings.telegram_listener_enabled
+    if telegram_listener_enabled:
+        telegram_chat.set_dashboard_loop(dashboard_loop)
+        telegram_approval_bot.start()
     # Seed the default row and repair stale mirrors left by older versions.
     # The .env-backed Settings form is the source of truth for this row.
     with db.SessionLocal() as session:
@@ -115,7 +117,8 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        telegram_chat.clear_dashboard_loop(dashboard_loop)
+        if telegram_listener_enabled:
+            telegram_chat.clear_dashboard_loop(dashboard_loop)
         await codex_app_server.close()
 
 

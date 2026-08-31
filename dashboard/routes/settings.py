@@ -458,6 +458,10 @@ DUAL_AI_ENV_NAMES = env_config.DUAL_AI_ENV_NAMES
 DUAL_AI_PROVIDERS = ("auto", "codex", "claude")
 
 
+def _containerized_deployment() -> bool:
+    return os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
+
+
 def _code_repair_profile_dir(provider: str, profile: str) -> Path:
     if provider not in {"codex", "claude"}:
         raise HTTPException(status_code=400, detail="Provider tài khoản riêng phải là codex hoặc claude")
@@ -522,6 +526,11 @@ def _restart_managed_service(kind: str) -> dict | None:
     ``None`` means this is a development/no-systemd deployment and callers
     should use the existing detached-process fallback.
     """
+    if _containerized_deployment():
+        return {
+            "restarted": False, "new_pid": None,
+            "error": "Container stack phải được restart bởi operator sau khi đổi cấu hình.",
+        }
     owner = _current_systemd_service_unit()
     if not owner or "dashboard" not in owner:
         return None
@@ -900,6 +909,8 @@ def restart_dashboard_process(host: str, port: int) -> None:
     caller's response has to look different in each case (this one drops
     the current connection, those don't).
     """
+    if _containerized_deployment():
+        raise RuntimeError("Dashboard container phải được restart bởi container control-plane")
     pid = os.getpid()
     systemd_unit = _current_systemd_service_unit()
     if systemd_unit:
@@ -1125,6 +1136,7 @@ def _settings_context(
         "claude_chat_enabled": settings.claude_chat_enabled,
         "error": error,
         "success": success,
+        "containerized_deployment": _containerized_deployment(),
         "worker_restart_error": worker_restart_error,
         "cluster_error": cluster_error,
         "cluster_success": cluster_success,
@@ -2603,6 +2615,19 @@ async def settings_save_database(
             ),
         )
 
+    if _containerized_deployment():
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(
+                user,
+                database_success=(
+                    "Đã lưu và migrate database mới. Chưa dịch vụ nào được restart; "
+                    "operator cần chạy systemctl restart ceph-ai-containers để áp dụng."
+                ),
+            ),
+        )
+
     await asyncio.to_thread(restart_worker)
     await asyncio.to_thread(restart_watcher)
     await asyncio.to_thread(restart_remediation_watcher)
@@ -2771,14 +2796,19 @@ async def patch_pipeline_settings_submit(
             ),
         )
 
-    await asyncio.to_thread(restart_worker)
+    worker_restart = await asyncio.to_thread(restart_worker)
+    restart_suffix = (
+        " Worker đã khởi động lại để áp dụng ngay."
+        if worker_restart.get("restarted")
+        else " Chưa áp dụng vào Worker; operator cần chạy systemctl restart ceph-ai-containers."
+    )
 
     return templates.TemplateResponse(
         request,
         "settings.html",
         _settings_context(
             user,
-            patch_pipeline_success="Đã lưu cấu hình — Worker đã khởi động lại để áp dụng ngay.",
+            patch_pipeline_success="Đã lưu cấu hình —" + restart_suffix,
         ),
     )
 
@@ -3150,14 +3180,19 @@ async def backup_targets_settings_submit(
             ),
         )
 
-    await asyncio.to_thread(restart_worker)
+    worker_restart = await asyncio.to_thread(restart_worker)
+    restart_suffix = (
+        " Worker đã khởi động lại để áp dụng ngay."
+        if worker_restart.get("restarted")
+        else " Chưa áp dụng vào Worker; operator cần chạy systemctl restart ceph-ai-containers."
+    )
 
     return templates.TemplateResponse(
         request,
         "settings.html",
         _settings_context(
             user,
-            backup_target_success="Đã lưu cấu hình lưu trữ Backup — Worker đã khởi động lại để áp dụng ngay.",
+            backup_target_success="Đã lưu cấu hình lưu trữ Backup —" + restart_suffix,
         ),
     )
 

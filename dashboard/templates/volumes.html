@@ -287,11 +287,13 @@
             <td>{{ entry.deletion_time or "—" }}</td><td>{{ entry.retention_label }}</td><td>{{ entry.status or "—" }}</td>
             <td>
               {% set pending_action = trash_pending.get(entry.pool ~ '/' ~ entry.id) %}
-              {% if pending_action and pending_action.status == "PENDING_APPROVAL" %}
+              {% if pending_action and pending_action.status == "PENDING_APPROVAL" and is_admin %}
               <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form"><button class="btn btn-approve btn-sm">Duyệt xoá</button></form>
               <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
+              {% elif pending_action and pending_action.status == "PENDING_APPROVAL" %}<span class="hint">Chờ admin duyệt</span>
               {% elif pending_action %}<span class="hint">Đang chờ Worker</span>
-              {% elif entry.purge_eligible %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>
+              {% elif entry.purge_eligible and is_admin %}<form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/propose" class="inline-form"><button class="btn btn-reject btn-sm">Đề xuất xoá</button></form>
+              {% elif entry.purge_eligible %}<span class="hint">Chỉ admin được xoá</span>
               {% else %}<span class="hint">Chưa hết TTL</span>{% endif %}
               {% if is_admin %}
               <form class="inline-form trash-restore-form" data-pool="{{ entry.pool }}" data-trash-id="{{ entry.id }}">

@@ -831,10 +831,7 @@ def test_rbd_trash_purge_all_snapshots_validated_ids_and_post_checks():
         "rbd_trash_purge_all", params={"pool_name": "vms", "trash_ids": ["id-1", "id-2"]}
     )
 
-    assert command == (
-        "rbd trash rm vms/id-1 --force && rbd trash rm vms/id-2 --force && "
-        "rbd trash ls vms --format json"
-    )
+    assert command == "rbd trash rm vms/id-1\nrbd trash rm vms/id-2"
     with pytest.raises(ExecutorError):
         commands_module.get_command("rbd_trash_purge_all", params={"pool_name": "vms", "trash_ids": []})
     with pytest.raises(ExecutorError):

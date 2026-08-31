@@ -16,6 +16,7 @@ from watcher import incident_grouping
 logger = logging.getLogger(__name__)
 
 RETRY_HEADER = "x-retry-count"
+_worker_broker_connection = None
 
 ProcessIncident = Callable[[str, dict], Awaitable[None]]
 
@@ -239,19 +240,25 @@ async def run(
 
     max_retries = _effective_max_retries(settings.worker_max_retries)
 
+    global _worker_broker_connection
     connection = await get_connection()
-    async with connection:
-        channel = await connection.channel()
-        await channel.set_qos(prefetch_count=1)
-        queue, _dlx, _dlq = await declare_topology(channel)
+    _worker_broker_connection = connection
+    try:
+        async with connection:
+            channel = await connection.channel()
+            await channel.set_qos(prefetch_count=1)
+            queue, _dlx, _dlq = await declare_topology(channel)
 
-        processed = 0
-        async with queue.iterator() as queue_iter:
-            async for message in queue_iter:
-                await _handle_message(message, channel, process_incident, max_retries)
-                processed += 1
-                if max_messages is not None and processed >= max_messages:
-                    break
+            processed = 0
+            async with queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    await _handle_message(message, channel, process_incident, max_retries)
+                    processed += 1
+                    if max_messages is not None and processed >= max_messages:
+                        break
+    finally:
+        if _worker_broker_connection is connection:
+            _worker_broker_connection = None
 
 
 async def _main() -> None:
@@ -269,7 +276,9 @@ async def _main() -> None:
     # poll loop of its own (see worker/backup/scheduler.py's docstring).
     async def service_heartbeat() -> None:
         while True:
-            service_health.record("worker")
+            connection = _worker_broker_connection
+            if connection is not None and not connection.is_closed:
+                service_health.record("worker")
             await asyncio.sleep(15)
 
     await asyncio.gather(

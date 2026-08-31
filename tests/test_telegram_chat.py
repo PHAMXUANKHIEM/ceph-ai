@@ -111,11 +111,14 @@ def test_single_and_dual_dispatch_reuse_chatbox_engines(monkeypatch):
     assert len(saved) == 5  # two user rows + one single + two dual assistant rows
 
 
-def test_single_full_requires_exact_short_lived_confirmation(monkeypatch):
+def test_single_full_requires_exact_short_lived_confirmation(monkeypatch, tmp_path):
     _settings(monkeypatch)
     monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
+    monkeypatch.setattr(chat, "_CONFIRM_STATE_PATH", tmp_path / "confirmations.json")
+    monkeypatch.setattr(chat, "_FULL_RUN_STATE_PATH", tmp_path / "single-full-runs.json")
     chat._mode_by_chat.clear()
     chat._session_by_chat.clear()
+    chat._full_runs.clear()
     monkeypatch.setattr(chat, "_cluster", lambda: SimpleNamespace(id="cluster-1", is_active=True))
     monkeypatch.setattr(chat, "_session_and_history", lambda *_args: ("session-1", []))
     monkeypatch.setattr(chat, "_save_message", lambda **_kwargs: SimpleNamespace(id="message"))
@@ -164,11 +167,11 @@ def test_single_full_requires_exact_short_lived_confirmation(monkeypatch):
     assert any("đã restart" in text for text in sent)
 
 
-def test_single_full_rejects_wrong_confirmation_without_executing(monkeypatch):
+def test_single_full_rejects_wrong_confirmation_without_executing(monkeypatch, tmp_path):
     _settings(monkeypatch)
     monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
+    monkeypatch.setattr(chat, "_CONFIRM_STATE_PATH", tmp_path / "confirmations.json")
     chat._mode_by_chat.clear()
-    chat._full_confirmations.clear()
     chat._mode_by_chat["telegram-chat:77"] = "single-full"
     monkeypatch.setattr(chat, "_cluster", lambda: SimpleNamespace(id="cluster-1", is_active=True))
     monkeypatch.setattr(chat, "_session_and_history", lambda *_args: ("session-1", []))
@@ -424,12 +427,11 @@ def test_risky_chat_proposal_requires_a_second_bound_approval(monkeypatch):
     assert sent[0][3] == [("✅ Duyệt cuối", "chatapprove:message-1")]
 
 
-def test_single_full_blocks_direct_data_destruction(monkeypatch):
+def test_single_full_blocks_direct_data_destruction(monkeypatch, tmp_path):
     _settings(monkeypatch)
     monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)
+    monkeypatch.setattr(chat, "_CONFIRM_STATE_PATH", tmp_path / "confirmations.json")
     chat._mode_by_chat.clear()
-    chat._full_confirmations.clear()
-    chat._destructive_confirmations.clear()
     chat._mode_by_chat["telegram-chat:77"] = "single-full"
     monkeypatch.setattr(chat, "_cluster", lambda: SimpleNamespace(id="cluster-1", is_active=True))
     monkeypatch.setattr(chat, "_session_and_history", lambda *_args: ("session-1", []))
@@ -452,17 +454,16 @@ def test_single_full_blocks_direct_data_destruction(monkeypatch):
 
     assert calls == []
     assert any(text.startswith("⛔ Single Full") for text in sent)
-    assert "telegram-chat:77" not in chat._full_confirmations
+    assert "telegram-chat:77" not in chat._load_confirmations()["full"]
     assert chat._is_direct_data_destruction("xóa pool production")
 
 
-def test_status_bypasses_ai_queue_and_is_scoped_to_telegram_actor(monkeypatch):
+def test_status_bypasses_ai_queue_and_is_scoped_to_telegram_actor(monkeypatch, tmp_path):
     _settings(monkeypatch)
+    monkeypatch.setattr(chat, "_CONFIRM_STATE_PATH", tmp_path / "confirmations.json")
     chat._mode_by_chat.clear()
     chat._full_runs.clear()
     chat._dual_runs.clear()
-    chat._full_confirmations.clear()
-    chat._destructive_confirmations.clear()
     actor = "telegram-chat:77"
     chat._mode_by_chat[actor] = "single-full"
     chat._full_runs["mine"] = {

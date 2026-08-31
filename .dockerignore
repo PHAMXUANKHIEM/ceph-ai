@@ -1,0 +1,14 @@
+.git
+.venv
+.pytest_cache
+__pycache__
+*.py[cod]
+.env
+.codex-account
+.claude-account
+.ai-accounts
+*.db
+*.log
+.deploy-backups
+docs
+Plan

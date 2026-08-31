@@ -497,6 +497,12 @@ def _rbd_trash_restore_volume_command(params: dict) -> str:
 
 
 def _rbd_trash_purge_all_command(params: dict) -> str:
+    """Build a display-only per-item plan for the dedicated bulk executor.
+
+    The Worker executes these commands one at a time, so every failure is
+    attributed to its trash ID.  Never add ``--force``: an active RBD watcher
+    must make Ceph refuse deletion instead of harming a running consumer.
+    """
     pool = _require_pool_name(params)
     trash_ids = params.get("trash_ids")
     if not isinstance(trash_ids, list) or not trash_ids or len(trash_ids) > 500:
@@ -506,11 +512,8 @@ def _rbd_trash_purge_all_command(params: dict) -> str:
         validated.append(_require_trash_id({"trash_id": trash_id}))
     if len(set(validated)) != len(validated):
         raise ExecutorError("trash_ids must not contain duplicates")
-    removals = [
-        f"rbd trash rm {shlex.quote(pool)}/{shlex.quote(trash_id)} --force"
-        for trash_id in validated
-    ]
-    return " && ".join([*removals, f"rbd trash ls {shlex.quote(pool)} --format json"])
+    removals = [f"rbd trash rm {shlex.quote(pool)}/{shlex.quote(trash_id)}" for trash_id in validated]
+    return "\n".join(removals)
 
 
 _OPENSTACK_UUID_RE = re.compile(

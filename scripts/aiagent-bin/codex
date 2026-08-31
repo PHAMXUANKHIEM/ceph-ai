@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+binary=$(find /opt/codex-packages/standalone/releases -path '*/bin/codex' -type f -perm -111 | sort | tail -n 1)
+test -n "$binary"
+exec "$binary" "$@"

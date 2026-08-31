@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import httpx
 import json
 import logging
 import queue
@@ -33,6 +34,7 @@ from dashboard.routes.actions import ApprovalOutcome, approve_action_core
 from dashboard.routes.chat import _confirm_chat_action_core
 from shared import db
 from shared.clusters import get_default_cluster_id
+from shared.full_executor_auth import executor_token
 from shared.codex_app_server import (
     CodexAppServerError,
     refresh_app_server_after_cli_login,
@@ -72,6 +74,7 @@ _DIRECT_DATA_DESTRUCTION_RE = re.compile(
 )
 _FULL_RUN_STATE_PATH = Path("/var/lib/ceph-ai/telegram-single-full-runs.json")
 _MODE_STATE_PATH = Path("/var/lib/ceph-ai/telegram-chat-modes.json")
+_CONFIRM_STATE_PATH = Path("/var/lib/ceph-ai/telegram-single-full-confirmations.json")
 _HELP_TEXT = (
     "Chatbox AI Telegram đã sẵn sàng.\n\n"
     "/model — Chọn 1 AI hoặc 2 AI\n"
@@ -98,12 +101,9 @@ _dual_runs_lock = threading.Lock()
 _dual_runs: dict[str, dict] = {}
 _full_runs_lock = threading.Lock()
 _full_runs: dict[str, dict] = {}
-_full_confirmations_lock = threading.Lock()
-_full_confirmations: dict[str, dict] = {}
-_destructive_confirmations_lock = threading.Lock()
-_destructive_confirmations: dict[str, dict] = {}
 _full_run_state_file_lock = threading.Lock()
 _mode_state_file_lock = threading.Lock()
+_confirm_state_file_lock = threading.Lock()
 _codex_login_watchers: dict[str, asyncio.Task] = {}
 
 
@@ -222,15 +222,15 @@ def _status_text(chat_id: str, actor: str) -> str:
         lines.append(f"• Hai AI: {run.get('stage', 'đang chạy')} · {_duration_text(run.get('started_at'))}")
     if not full_runs and not dual_runs:
         lines.append("• Không có phiên AI đang chạy.")
-    with _full_confirmations_lock:
-        full_pending = _full_confirmations.get(actor)
-    with _destructive_confirmations_lock:
-        destructive_pending = _destructive_confirmations.get(actor)
+    with _confirm_state_file_lock:
+        confirmations = _load_confirmations()
+    full_pending = confirmations["full"].get(actor)
+    destructive_pending = confirmations["destructive"].get(actor)
     if full_pending and full_pending.get("chat_id") == chat_id:
-        remaining = max(0, int(full_pending.get("expires_at", 0) - time.monotonic()))
+        remaining = max(0, int(full_pending.get("expires_at", 0) - time.time()))
         lines.append(f"• Chờ /confirm_full · còn {remaining // 60}m {remaining % 60:02d}s.")
     if destructive_pending and destructive_pending.get("chat_id") == chat_id:
-        remaining = max(0, int(destructive_pending.get("expires_at", 0) - time.monotonic()))
+        remaining = max(0, int(destructive_pending.get("expires_at", 0) - time.time()))
         lines.append(f"• Chờ /confirm_destructive · còn {remaining // 60}m {remaining % 60:02d}s.")
     lines.append(f"• Chế độ đã chọn: {_mode(actor)}.")
     return "\n".join(lines)
@@ -412,23 +412,61 @@ def report_interrupted_full_runs(bot_token: str) -> None:
             logger.exception("telegram_chat: failed to report interrupted Single Full run")
 
 
+def _load_confirmations() -> dict[str, dict]:
+    """Read pending Single Full / destructive confirmations from disk.
+
+    These used to live only in a module-level dict, so a Dashboard restart
+    between issuing a confirmation code and the user's ``/confirm_full``
+    reply silently dropped an otherwise-valid, unexpired code (the user saw
+    "không hợp lệ hoặc đã hết hạn" despite replying immediately with the
+    right code). Persisting them the same way ``_FULL_RUN_STATE_PATH`` and
+    ``_MODE_STATE_PATH`` already do fixes that.
+    """
+    try:
+        payload = json.loads(_CONFIRM_STATE_PATH.read_text())
+    except FileNotFoundError:
+        payload = None
+    except Exception:
+        logger.exception("telegram_chat: failed to read persisted Single Full confirmations")
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {}
+    full = payload.get("full")
+    destructive = payload.get("destructive")
+    return {
+        "full": full if isinstance(full, dict) else {},
+        "destructive": destructive if isinstance(destructive, dict) else {},
+    }
+
+
+def _write_confirmations(confirmations: dict[str, dict]) -> None:
+    _CONFIRM_STATE_PATH.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    temporary = _CONFIRM_STATE_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(confirmations, sort_keys=True))
+    temporary.chmod(0o600)
+    temporary.replace(_CONFIRM_STATE_PATH)
+
+
 def _clear_full_confirmation(actor: str) -> None:
-    with _full_confirmations_lock:
-        _full_confirmations.pop(actor, None)
-    with _destructive_confirmations_lock:
-        _destructive_confirmations.pop(actor, None)
+    with _confirm_state_file_lock:
+        confirmations = _load_confirmations()
+        confirmations["full"].pop(actor, None)
+        confirmations["destructive"].pop(actor, None)
+        _write_confirmations(confirmations)
 
 
 def _issue_full_confirmation(actor: str, chat_id: str, prompt: str) -> str:
     """Store one short-lived, exact-task confirmation for a full run."""
     confirmation = secrets.token_urlsafe(8)
-    with _full_confirmations_lock:
-        _full_confirmations[actor] = {
+    with _confirm_state_file_lock:
+        confirmations = _load_confirmations()
+        confirmations["full"][actor] = {
             "token": confirmation,
             "chat_id": chat_id,
             "prompt": prompt,
-            "expires_at": time.monotonic() + _FULL_CONFIRM_TTL_SECONDS,
+            "expires_at": time.time() + _FULL_CONFIRM_TTL_SECONDS,
         }
+        _write_confirmations(confirmations)
     return confirmation
 
 
@@ -444,18 +482,18 @@ async def _consume_full_confirmation(
         await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
         return True, None
     supplied = parts[1] if len(parts) == 2 else ""
-    with _full_confirmations_lock:
-        pending = _full_confirmations.get(actor)
+    with _confirm_state_file_lock:
+        confirmations = _load_confirmations()
+        pending = confirmations["full"].get(actor)
         if (
             pending is None
             or pending.get("chat_id") != chat_id
-            or time.monotonic() > pending.get("expires_at", 0)
+            or time.time() > pending.get("expires_at", 0)
             or not secrets.compare_digest(supplied, str(pending.get("token") or ""))
         ):
-            _full_confirmations.pop(actor, None)
             pending = None
-        else:
-            _full_confirmations.pop(actor, None)
+        confirmations["full"].pop(actor, None)
+        _write_confirmations(confirmations)
     if pending is None:
         await _send(token, chat_id, "Mã xác nhận Single Full không hợp lệ hoặc đã hết hạn. Hãy gửi lại yêu cầu.")
         return True, None
@@ -474,13 +512,15 @@ def _is_direct_data_destruction(prompt: str) -> bool:
 
 def _issue_destructive_confirmation(actor: str, chat_id: str, prompt: str) -> str:
     confirmation = secrets.token_urlsafe(8)
-    with _destructive_confirmations_lock:
-        _destructive_confirmations[actor] = {
+    with _confirm_state_file_lock:
+        confirmations = _load_confirmations()
+        confirmations["destructive"][actor] = {
             "token": confirmation,
             "chat_id": chat_id,
             "prompt": prompt,
-            "expires_at": time.monotonic() + _DESTRUCTIVE_CONFIRM_TTL_SECONDS,
+            "expires_at": time.time() + _DESTRUCTIVE_CONFIRM_TTL_SECONDS,
         }
+        _write_confirmations(confirmations)
     return confirmation
 
 
@@ -495,18 +535,18 @@ async def _consume_destructive_confirmation(
         await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
         return True, None
     supplied = parts[1] if len(parts) == 2 else ""
-    with _destructive_confirmations_lock:
-        pending = _destructive_confirmations.get(actor)
+    with _confirm_state_file_lock:
+        confirmations = _load_confirmations()
+        pending = confirmations["destructive"].get(actor)
         if (
             pending is None
             or pending.get("chat_id") != chat_id
-            or time.monotonic() > pending.get("expires_at", 0)
+            or time.time() > pending.get("expires_at", 0)
             or not secrets.compare_digest(supplied, str(pending.get("token") or ""))
         ):
-            _destructive_confirmations.pop(actor, None)
             pending = None
-        else:
-            _destructive_confirmations.pop(actor, None)
+        confirmations["destructive"].pop(actor, None)
+        _write_confirmations(confirmations)
     if pending is None:
         await _send(token, chat_id, "Mã xác nhận lệnh nguy hiểm không hợp lệ hoặc đã hết hạn.")
         return True, None
@@ -863,7 +903,7 @@ async def _run_single_full_in_background(
                 "Không thể tạo audit recovery cho Single Full; phiên toàn quyền không được khởi chạy.",
             )
             return
-        event = await run_single_full_access_chat(text, history)
+        event = await _run_single_full_turn(run_id, text, history)
         content = f"[Single Full · {event.get('provider', '—')}]\n{event.get('content', '')}"
         _save_message(
             session_id=session_id, cluster_id=cluster_id, actor=actor,
@@ -871,7 +911,7 @@ async def _run_single_full_in_background(
         )
         await _send(bot_token, chat_id, content)
     except asyncio.CancelledError:
-        await _send(bot_token, chat_id, "⏹ Đã dừng phiên Single Full theo yêu cầu.")
+        await _send(bot_token, chat_id, "⏹ Đã gửi yêu cầu dừng phiên Single Full và đã chờ executor kết thúc.")
         return
     except DualAIChatExhausted as exc:
         await _send_quota_alert(bot_token, chat_id, "Single Full", exc)
@@ -887,6 +927,50 @@ async def _run_single_full_in_background(
             logger.exception("telegram_chat: failed to clear Single Full recovery marker")
         with _full_runs_lock:
             _full_runs.pop(run_id, None)
+
+
+async def _run_single_full_turn(run_id: str, text: str, history: list[dict]) -> dict:
+    """Execute Full mode in its dedicated container when configured."""
+    endpoint = str(getattr(settings, "single_full_executor_url", "") or "").rstrip("/")
+    token = executor_token()
+    if not endpoint:
+        return await run_single_full_access_chat(text, history)
+    if not token:
+        raise DualAIChatError("Single Full executor chưa có token xác thực")
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            response = await client.post(
+                f"{endpoint}/v1/runs/{run_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"prompt": text, "history": history},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except asyncio.CancelledError:
+        # The HTTP request is shielded inside the executor; explicitly cancel
+        # its process tree before reporting `/stop` as complete.
+        try:
+            # Executor waits up to 10 seconds for the agent process tree, so
+            # the caller timeout must be longer than that contract.
+            async with httpx.AsyncClient(timeout=12) as client:
+                response = await asyncio.shield(client.delete(
+                    f"{endpoint}/v1/runs/{run_id}", headers={"Authorization": f"Bearer {token}"},
+                ))
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            logger.exception("telegram_chat: could not cancel remote Single Full run")
+            raise DualAIChatError("Không thể xác nhận executor đã dừng; kiểm tra /status và log.")
+        if not isinstance(payload, dict) or payload.get("cancelled") is not True:
+            raise DualAIChatError(
+                "Executor chưa xác nhận đã dừng; gửi /status để theo dõi trước khi gửi yêu cầu mới."
+            )
+        raise
+    except httpx.HTTPError as exc:
+        raise DualAIChatError(f"Single Full executor không phản hồi: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("event"), dict):
+        raise DualAIChatError("Single Full executor trả dữ liệu không hợp lệ")
+    return payload["event"]
 
 
 async def handle_message(message: dict, bot_token: str) -> None:

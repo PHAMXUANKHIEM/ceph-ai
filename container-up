@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$script_dir"
+
+# Image creation is an explicit deploy step (`podman-compose build`).  Do not
+# rebuild automatically on every systemd restart: the source tree is mounted
+# for the controlled Telegram code-edit workflow, while a boot must be fast
+# and deterministic.
+python3 scripts/bootstrap_container_config.py
+exec podman-compose up -d "$@"

@@ -4,7 +4,7 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -237,7 +237,6 @@ def _volumes_page_context(
     trash_pool_summaries: list[dict] = []
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
-    perf_sweep_action: Action | None = None
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
@@ -316,7 +315,6 @@ def _volumes_page_context(
                     trash_pending[f"{trash_pool}/{trash_id}"] = action
     elif pool:
         if _cluster_for_request(request).is_default:
-            perf_sweep_action = _latest_perf_sweep_action(pool)
             vm_perf_action = _latest_vm_perf_action()
 
     return {
@@ -329,7 +327,6 @@ def _volumes_page_context(
         "trash_pool_summaries": trash_pool_summaries,
         "trash_error": trash_error,
         "trash_pending": trash_pending,
-        "perf_sweep_action": perf_sweep_action,
         "vm_perf_action": vm_perf_action,
         "purge_error": purge_error,
         "purge_success": purge_success,
@@ -351,13 +348,31 @@ def _format_bytes(value: int | float) -> str:
 
 def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:
     ttl_days = max(1, min(int(settings.rbd_trash_retention_days), 3650))
+    # Ceph status is authoritative for RBD trash deferment; its timestamp
+    # text is not ISO 8601, so do not derive eligibility from deleted_at alone.
+    status = str(entry.get("status") or "").strip()
+    status_lower = status.lower()
+    if status_lower.startswith("expired at") or status_lower == "expired":
+        return {
+            "purge_eligible": True, "expires_at": None,
+            "retention_label": "Đã hết TTL", "retention_days": ttl_days,
+        }
+    if status_lower.startswith("protected until"):
+        return {
+            "purge_eligible": False, "expires_at": None,
+            "retention_label": "Ceph còn bảo vệ: " + status[len("protected until"):].strip(),
+            "retention_days": ttl_days,
+        }
     raw = str(entry.get("deletion_time") or entry.get("deleted_at") or "").strip()
     try:
-        deleted_at = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        deleted_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # Normalize offset-bearing timestamps to UTC before calculating TTL.
+        if deleted_at.tzinfo is not None:
+            deleted_at = deleted_at.astimezone(timezone.utc).replace(tzinfo=None)
     except (TypeError, ValueError):
         return {
             "purge_eligible": False, "expires_at": None,
-            "retention_label": "Không xác định thời điểm xoá", "retention_days": ttl_days,
+            "retention_label": "Không xác định TTL từ Ceph", "retention_days": ttl_days,
         }
     expires_at = deleted_at + timedelta(days=ttl_days)
     remaining_seconds = (expires_at - (now or datetime.utcnow())).total_seconds()
@@ -1666,11 +1681,12 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
     already-generic POST /actions/{id}/approve — no new approval logic
     needed), same propose-then-approve pattern as dashboard/routes/
     delete_cluster.py/upgrade.py/deploy_cluster.py. Always PENDING_APPROVAL
-    regardless of rbd_trash_remove's own SAFE/RISKY classification (RISKY,
-    see action_policy.yaml) — same as those other dedicated-route features,
+    regardless of rbd_trash_remove's DESTRUCTIVE classification
+    (see action_policy.yaml) — same as those other dedicated-route features,
     none of which auto-execute even a SAFE action_id; only Chat-with-AI's
     confirm flow does that.
     """
+    _require_admin_privilege(user)
     _require_default_cluster_operation(request)
     allowed_pools = set(ceph_client.configured_rbd_pools())
     if pool not in allowed_pools:
@@ -1763,7 +1779,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
 
 @router.post("/volumes/{pool}/trash/purge-all", response_class=HTMLResponse)
 async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(require_login)):
-    """Snapshot current trash IDs into one RISKY action; never purge inline."""
+    """Snapshot eligible trash IDs into one DESTRUCTIVE action; never purge inline."""
     _require_admin_privilege(user)
     _require_default_cluster_operation(request)
     pools = await asyncio.to_thread(_rbd_pools_for_request, request)
@@ -1812,7 +1828,7 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         action = Action(
             incident_id=incident.id,
             action_id=RBD_TRASH_PURGE_ALL_ACTION_ID,
-            classification=ActionClassification.RISKY.value,
+            classification=gate.classify_action(RBD_TRASH_PURGE_ALL_ACTION_ID).value,
             status=ActionStatus.PENDING_APPROVAL.value,
             rationale=f"Xoá vĩnh viễn {len(trash_ids)} Trash item trong pool {pool}; không thể hoàn tác",
             target_nodes=json.dumps([mon_nodes[0]]),
@@ -1831,4 +1847,4 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         )
         session.commit()
 
-    return RedirectResponse(url=f"/trash?pool={pool}", status_code=303)
+    return RedirectResponse(url="/", status_code=303)

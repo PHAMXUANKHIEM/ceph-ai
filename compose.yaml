@@ -1,0 +1,135 @@
+name: ceph-ai
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: ceph-ai:local
+  working_dir: /app
+  env_file: /var/lib/ceph-ai/config/.env
+  environment:
+    CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+    CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+    CEPH_AI_CONTAINERIZED: "true"
+  init: true
+  stop_grace_period: 45s
+  restart: unless-stopped
+  volumes:
+    - ./:/app:ro
+    - /run/ceph-ai:/run/ceph-ai:rw
+    - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+
+services:
+  dashboard-web:
+    <<: *app
+    command: ["python", "-m", "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    volumes:
+      - ./:/app:ro
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_CONTAINERIZED: "true"
+      TELEGRAM_LISTENER_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/login"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+  telegram-ai:
+    <<: *app
+    command: ["python", "-m", "worker.telegram_gateway"]
+    volumes:
+      - ./:/app:rw
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_CONTAINERIZED: "true"
+      TELEGRAM_LISTENER_ENABLED: "true"
+      CEPH_AI_DROP_DUAL_PRIVILEGES: "true"
+      PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SINGLE_FULL_EXECUTOR_URL: http://full-executor:8787
+      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/secrets/single-full-executor.token
+    depends_on: [full-executor]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('telegram-ai', stale_after_seconds=30)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  full-executor:
+    <<: *app
+    command: ["python", "-m", "uvicorn", "worker.full_executor:app", "--host", "0.0.0.0", "--port", "8787"]
+    privileged: true
+    volumes:
+      - ./:/app:rw
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      - /root/.local:/root/.local:ro
+      - /root/.codex/packages:/root/.codex/packages:ro
+      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_CONTAINERIZED: "true"
+      SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/secrets/single-full-executor.token
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('full-executor', stale_after_seconds=30)['healthy'])\" && curl -fsS http://127.0.0.1:8787/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+  watcher:
+    <<: *app
+    command: ["python", "-m", "watcher.main"]
+    volumes:
+      - ./:/app:ro
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('watcher', stale_after_seconds=45)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "worker.main"]
+    volumes:
+      - ./:/app:ro
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('worker', stale_after_seconds=45)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  code-repair:
+    <<: *app
+    command: ["python", "-m", "worker.code_repair_supervisor"]
+    volumes:
+      - ./:/app:rw
+      - /run/ceph-ai:/run/ceph-ai:rw
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /root/.local:/root/.local:ro
+      - /root/.codex/packages:/root/.codex/packages:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('code-repair', stale_after_seconds=45)['healthy'])\""]
+      interval: 20s
+      timeout: 5s
+      retries: 3
