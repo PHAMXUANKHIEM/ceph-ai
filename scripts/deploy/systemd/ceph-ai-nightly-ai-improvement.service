@@ -2,13 +2,20 @@
 Description=Ceph AI nightly self-improvement review
 After=network-online.target
 Wants=network-online.target
+After=ceph-ai-containers.service
+Wants=ceph-ai-containers.service
+RequiresMountsFor=/var/lib/ceph-ai
 StartLimitIntervalSec=12h
 StartLimitBurst=3
 
 [Service]
 Type=oneshot
 WorkingDirectory=/root/ceph-ai
-EnvironmentFile=-/root/ceph-ai/.env
+# Dashboard/Podman services persist operator settings here.  The nightly
+# host service must load the identical file so its one-day override and AI
+# accounts match the Dashboard rather than an obsolete checkout .env.
+EnvironmentFile=-/var/lib/ceph-ai/config/.env
+Environment=CEPH_AI_ENV_FILE=/var/lib/ceph-ai/config/.env
 ExecStart=/root/ceph-ai/.venv/bin/python -m worker.nightly_ai_improvement
 TimeoutStartSec=12h
 Restart=on-failure

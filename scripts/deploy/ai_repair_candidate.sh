@@ -20,6 +20,56 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 ROLLED_BACK=false
 REPAIR_TEST_DIR=""
+CONTAINER_RUNTIME=false
+if [ "${CEPH_AI_CONTAINERIZED:-false}" != "true" ] && \
+   systemctl is-active --quiet ceph-ai-containers.service && \
+   command -v podman-compose >/dev/null 2>&1; then
+  CONTAINER_RUNTIME=true
+fi
+
+deploy_container_services() {
+  local ref="$1"
+  echo "==> Deploying $ref through the Podman stack"
+  git checkout -B main "$ref"
+  git reset --hard "$ref"
+  # The calling nightly supervisor intentionally stays alive in its host
+  # process.  Recreating code-repair here would kill the process that owns
+  # promotion/rollback; it continues using its already imported code.
+  podman-compose up -d --no-deps dashboard-web telegram-ai full-executor watcher worker
+}
+
+wait_for_container_health() {
+  local service status attempt
+  for service in dashboard-web telegram-ai full-executor watcher worker; do
+    for attempt in $(seq 1 30); do
+      status="$(podman inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "ceph-ai_${service}_1" 2>/dev/null || true)"
+      if [ "$status" = "healthy" ]; then
+        break
+      fi
+      sleep 2
+    done
+    if [ "$status" != "healthy" ]; then
+      echo "ERROR: container ceph-ai_${service}_1 is not healthy (status=${status:-missing})"
+      return 1
+    fi
+  done
+}
+
+deploy_candidate() {
+  if [ "$CONTAINER_RUNTIME" = true ]; then
+    deploy_container_services "origin/$CANDIDATE_BRANCH"
+  else
+    DEPLOY_REF="origin/$CANDIDATE_BRANCH" bash scripts/deploy/restart_services.sh
+  fi
+}
+
+rollback_deployment() {
+  if [ "$CONTAINER_RUNTIME" = true ]; then
+    deploy_container_services "$PREVIOUS_SHA"
+  else
+    DEPLOY_REF="$PREVIOUS_SHA" bash scripts/deploy/restart_services.sh
+  fi
+}
 cleanup_worktree() {
   if [ -n "$REPAIR_TEST_DIR" ] && [ -d "$REPAIR_TEST_DIR" ]; then
     git worktree remove --force "$REPAIR_TEST_DIR" >/dev/null 2>&1 || true
@@ -31,7 +81,7 @@ rollback() {
   if [ "$ROLLED_BACK" = false ]; then
     ROLLED_BACK=true
     echo "==> Candidate failed; rolling back to $PREVIOUS_SHA"
-    DEPLOY_REF="$PREVIOUS_SHA" bash scripts/deploy/restart_services.sh || true
+    rollback_deployment || true
   fi
   exit "$exit_code"
 }
@@ -59,13 +109,18 @@ cleanup_worktree
 REPAIR_TEST_DIR=""
 
 echo "==> Deploying candidate"
-DEPLOY_REF="origin/$CANDIDATE_BRANCH" bash scripts/deploy/restart_services.sh
+deploy_candidate
 
 echo "==> Verifying service processes"
-VENV_PYTHON="$REPO_DIR/.venv/bin/python"
-pgrep -f "$VENV_PYTHON -m watcher.main" >/dev/null
-pgrep -f "$VENV_PYTHON -m worker.main" >/dev/null
-pgrep -f "$VENV_PYTHON -m uvicorn dashboard.app:app" >/dev/null
+if [ "$CONTAINER_RUNTIME" = true ]; then
+  wait_for_container_health
+  curl -fsS http://127.0.0.1:8000/login >/dev/null
+else
+  VENV_PYTHON="$REPO_DIR/.venv/bin/python"
+  pgrep -f "$VENV_PYTHON -m watcher.main" >/dev/null
+  pgrep -f "$VENV_PYTHON -m worker.main" >/dev/null
+  pgrep -f "$VENV_PYTHON -m uvicorn dashboard.app:app" >/dev/null
+fi
 
 echo "==> Verifying fresh Watcher heartbeat"
 PYTHONPATH=. .venv/bin/python - <<'PY'
