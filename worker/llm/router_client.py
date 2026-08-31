@@ -32,6 +32,7 @@ from shared.models import (
 )
 from shared.ceph_releases import RELEASES, codename_for_version
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared.rbd_trash_retention import trash_entry_ttl_status
 # ceph_code do monitor tự đặt không có mặt trong `ceph health detail` nên
 # không thể xác minh bằng cách đối chiếu ở đó — xem module ấy.
 from watcher.ceph_code_families import is_monitor_owned
@@ -2846,25 +2847,15 @@ def _rbd_trash_purge_eligibility(pool: str, trash_ids: list[str]) -> dict[str, s
         if entry is None:
             result[trash_id] = "Trash ID không còn tồn tại (đã khôi phục hoặc đã bị xoá)"
             continue
-        status = str(entry.get("status") or "").strip().lower()
-        if status.startswith("expired at") or status == "expired":
-            result[trash_id] = None
-            continue
-        if status.startswith("protected until"):
+        ttl_status = trash_entry_ttl_status(entry, ttl_days=ttl_days, now=now)
+        if ttl_status["kind"] == "ceph_protected":
             result[trash_id] = "Ceph vẫn đang bảo vệ image theo deferment time"
-            continue
-        raw = str(entry.get("deletion_time") or entry.get("deleted_at") or "").strip()
-        try:
-            deleted_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if deleted_at.tzinfo is not None:
-                deleted_at = deleted_at.astimezone(timezone.utc).replace(tzinfo=None)
-        except (TypeError, ValueError):
+        elif ttl_status["kind"] == "unknown":
             result[trash_id] = "Không xác định được deferment time từ Ceph"
-            continue
-        if deleted_at + timedelta(days=ttl_days) > now:
-            result[trash_id] = "Volume chưa hết TTL tại thời điểm thực thi"
-        else:
+        elif ttl_status["purge_eligible"]:
             result[trash_id] = None
+        else:
+            result[trash_id] = "Volume chưa hết TTL tại thời điểm thực thi"
     return result
 
 

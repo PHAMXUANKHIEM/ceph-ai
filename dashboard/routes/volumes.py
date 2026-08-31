@@ -4,7 +4,7 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -25,6 +25,7 @@ from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db
 from shared.cluster_nodes import resolve_ssh_creds
+from shared.rbd_trash_retention import trash_entry_ttl_status
 from shared.models import (
     Action,
     ActionClassification,
@@ -348,37 +349,28 @@ def _format_bytes(value: int | float) -> str:
 
 def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:
     ttl_days = max(1, min(int(settings.rbd_trash_retention_days), 3650))
-    # Ceph status is authoritative for RBD trash deferment; its timestamp
-    # text is not ISO 8601, so do not derive eligibility from deleted_at alone.
-    status = str(entry.get("status") or "").strip()
-    status_lower = status.lower()
-    if status_lower.startswith("expired at") or status_lower == "expired":
+    ttl_status = trash_entry_ttl_status(entry, ttl_days=ttl_days, now=now)
+    if ttl_status["kind"] == "ceph_expired":
         return {
             "purge_eligible": True, "expires_at": None,
             "retention_label": "Đã hết TTL", "retention_days": ttl_days,
         }
-    if status_lower.startswith("protected until"):
+    if ttl_status["kind"] == "ceph_protected":
         return {
             "purge_eligible": False, "expires_at": None,
-            "retention_label": "Ceph còn bảo vệ: " + status[len("protected until"):].strip(),
+            "retention_label": "Ceph còn bảo vệ: " + ttl_status["detail"],
             "retention_days": ttl_days,
         }
-    raw = str(entry.get("deletion_time") or entry.get("deleted_at") or "").strip()
-    try:
-        deleted_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        # Normalize offset-bearing timestamps to UTC before calculating TTL.
-        if deleted_at.tzinfo is not None:
-            deleted_at = deleted_at.astimezone(timezone.utc).replace(tzinfo=None)
-    except (TypeError, ValueError):
+    if ttl_status["kind"] == "unknown":
         return {
             "purge_eligible": False, "expires_at": None,
             "retention_label": "Không xác định TTL từ Ceph", "retention_days": ttl_days,
         }
-    expires_at = deleted_at + timedelta(days=ttl_days)
-    remaining_seconds = (expires_at - (now or datetime.utcnow())).total_seconds()
+    expires_at = ttl_status["expires_at"]
+    remaining_seconds = ttl_status["remaining_seconds"]
     remaining_days = max(0, int((remaining_seconds + 86399) // 86400))
     return {
-        "purge_eligible": remaining_seconds <= 0,
+        "purge_eligible": ttl_status["purge_eligible"],
         "expires_at": expires_at.isoformat() + "Z",
         "retention_label": "Đã hết TTL" if remaining_seconds <= 0 else f"Còn {remaining_days} ngày",
         "retention_days": ttl_days,
