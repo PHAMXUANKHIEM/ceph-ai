@@ -123,6 +123,31 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
     assert "CODE_REPAIR_MAX_REVIEW_ROUNDS" not in saved
 
 
+def test_dashboard_can_override_nightly_job_for_today(dashboard_client, monkeypatch, tmp_path):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    monkeypatch.setattr(settings, "ai_nightly_improvement_override_date", "", raising=False)
+    monkeypatch.setattr(settings, "ai_nightly_improvement_override_enabled", False, raising=False)
+    _login(dashboard_client)
+
+    enabled = dashboard_client.post("/settings/nightly-ai/today", data={"enabled": "true"})
+
+    assert enabled.status_code == 200
+    assert "Đã bật nightly AI job hôm nay" in enabled.text
+    assert 'id="nightly-ai-today-control"' in enabled.text
+    assert "Tắt nightly job hôm nay" in enabled.text
+    saved = tmp_env.read_text()
+    assert "AI_NIGHTLY_IMPROVEMENT_OVERRIDE_DATE=" in saved
+    assert "AI_NIGHTLY_IMPROVEMENT_OVERRIDE_ENABLED=true" in saved
+
+    disabled = dashboard_client.post("/settings/nightly-ai/today", data={"enabled": "false"})
+
+    assert disabled.status_code == 200
+    assert "Đã tắt nightly AI job cho hôm nay" in disabled.text
+    assert "AI_NIGHTLY_IMPROVEMENT_OVERRIDE_ENABLED=false" in tmp_env.read_text()
+
+
 def test_dual_ai_settings_are_persisted_separately_from_code_repair(
     dashboard_client, monkeypatch, tmp_path,
 ):

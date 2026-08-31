@@ -134,6 +134,17 @@ def test_nightly_due_retries_an_interrupted_or_failed_run():
         assert supervisor._nightly_due({"last_run_date": "2026-08-31", "status": status}, now) is True
 
 
+def test_nightly_dashboard_override_is_scoped_to_today(monkeypatch):
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_date", "2026-08-31", raising=False)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_enabled", True, raising=False)
+    assert supervisor.nightly_override_for_today(now) is True
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_enabled", False, raising=False)
+    assert supervisor.nightly_override_for_today(now) is False
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_date", "2026-08-30", raising=False)
+    assert supervisor.nightly_override_for_today(now) is None
+
+
 def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(
@@ -204,3 +215,25 @@ def test_nightly_dirty_checkout_stops_before_ai(monkeypatch, tmp_path):
     assert state["status"] == "BLOCKED_DIRTY_CHECKOUT"
     assert state["last_run_date"] == "2026-08-31"
     assert notifications and "chưa commit" in notifications[0]
+
+
+def test_nightly_dashboard_override_allows_dirty_checkout(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    notifications = []
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: " M dashboard/app.py")
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", notifications.append)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_date", "2026-08-31", raising=False)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_enabled", True, raising=False)
+    monkeypatch.setattr(
+        supervisor,
+        "run_repair",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="NO_CHANGE", fingerprint="fp", branch=None, commit=None,
+            changed_files=[], review_rounds=0, error=None,
+        ),
+    )
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+    assert json.loads(state_path.read_text())["status"] == "NO_CHANGE"
+    assert "cho phép chạy hôm nay" in notifications[0]

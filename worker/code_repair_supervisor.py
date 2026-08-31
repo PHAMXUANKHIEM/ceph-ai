@@ -110,6 +110,15 @@ def _nightly_due(state: dict, now: datetime) -> bool:
     return state.get("status") in {"RUNNING", "FAILED"}
 
 
+def nightly_override_for_today(now: datetime | None = None) -> bool | None:
+    """Return today's Dashboard override, or None when the normal schedule applies."""
+    current = now or datetime.now(timezone.utc)
+    local_date = current.astimezone(NIGHTLY_TIMEZONE).date().isoformat()
+    if settings.ai_nightly_improvement_override_date != local_date:
+        return None
+    return settings.ai_nightly_improvement_override_enabled
+
+
 def _dirty_checkout(repo: Path) -> str:
     result = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -169,7 +178,8 @@ def _run_nightly_ai_improvement_locked(
 
     local = current.astimezone(NIGHTLY_TIMEZONE)
     dirty_checkout = _dirty_checkout(repo)
-    if dirty_checkout:
+    override = nightly_override_for_today(current)
+    if dirty_checkout and override is not True:
         state.update({
             "last_run_date": local.date().isoformat(),
             "finished_at": current.isoformat(),
@@ -197,6 +207,7 @@ def _run_nightly_ai_improvement_locked(
         "🌙 AI NIGHTLY IMPROVEMENT BẮT ĐẦU\n"
         "Hai AI đang rà soát: ‘Cần nâng cấp gì cho phần AI của tool này?’\n"
         "Phạm vi: AI/chat/router/giới hạn/quan sát/học; chỉ worktree + test, không đụng tài khoản hay cấu hình bí mật."
+        + ("\n⚠️ Dashboard đã cho phép chạy hôm nay dù checkout có thay đổi chưa commit." if dirty_checkout else "")
     )
     repair_state = state_path.with_name("nightly-ai-improvement-repairs.json")
     result = run_repair(

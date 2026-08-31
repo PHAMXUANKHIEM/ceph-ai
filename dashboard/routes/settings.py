@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import ipaddress
 import logging
 import math
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import openai
 from alembic import command as alembic_command
@@ -446,6 +448,8 @@ PATCH_PIPELINE_ENV_NAMES = {
 # settings: Planner/Reviewer asks, plans and audits; Implementer edits the
 # isolated worktree.
 CODE_REPAIR_ENV_NAMES = env_config.CODE_REPAIR_ENV_NAMES
+NIGHTLY_AI_IMPROVEMENT_ENV_NAMES = env_config.NIGHTLY_AI_IMPROVEMENT_ENV_NAMES
+NIGHTLY_DASHBOARD_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 CODE_REPAIR_PROVIDERS = ("auto", "codex", "claude")
 CODE_REPAIR_ACCOUNT_SOURCES = ("configured", "separate")
 CODE_REPAIR_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
@@ -977,6 +981,15 @@ def _code_repair_form_values() -> dict:
     }
 
 
+def _nightly_ai_today_values() -> dict[str, str]:
+    today = datetime.now(NIGHTLY_DASHBOARD_TIMEZONE).date().isoformat()
+    if settings.ai_nightly_improvement_override_date != today:
+        mode = "DEFAULT"
+    else:
+        mode = "RUN" if settings.ai_nightly_improvement_override_enabled else "SKIP"
+    return {"date": today, "mode": mode}
+
+
 def _dual_ai_form_values() -> dict:
     return {
         field: getattr(settings, field)
@@ -1142,6 +1155,7 @@ def _settings_context(
         "code_repair_values": (
             code_repair_values if code_repair_values is not None else _code_repair_form_values()
         ),
+        "nightly_ai_today": _nightly_ai_today_values(),
         "dual_ai_error": dual_ai_error,
         "dual_ai_success": dual_ai_success,
         "dual_ai_providers": DUAL_AI_PROVIDERS,
@@ -2949,6 +2963,45 @@ async def code_repair_settings_submit(
                 "Đã lưu cấu hình tự động sửa code từ log." + restart_message
             ),
         ),
+    )
+
+
+@router.post("/settings/nightly-ai/today", response_class=HTMLResponse)
+async def nightly_ai_today_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    enabled: str = Form("false"),
+):
+    """Set a self-expiring Dashboard override for tonight's AI improvement job."""
+    _require_admin_privilege(user)
+    requested = enabled.strip().lower()
+    if requested not in {"true", "false"}:
+        raise HTTPException(status_code=422, detail="enabled phải là true hoặc false")
+    values = {
+        "ai_nightly_improvement_override_date": datetime.now(
+            NIGHTLY_DASHBOARD_TIMEZONE,
+        ).date().isoformat(),
+        "ai_nightly_improvement_override_enabled": requested,
+    }
+    try:
+        _update_env_file_batch({
+            env_name: values[field]
+            for field, env_name in NIGHTLY_AI_IMPROVEMENT_ENV_NAMES.items()
+        })
+        settings.ai_nightly_improvement_override_date = values["ai_nightly_improvement_override_date"]
+        settings.ai_nightly_improvement_override_enabled = requested == "true"
+    except Exception:
+        logger.exception("nightly_ai_today_submit: failed to persist config")
+        return templates.TemplateResponse(
+            request, "settings.html",
+            _settings_context(user, code_repair_error="Không ghi được lựa chọn nightly job hôm nay."),
+        )
+    if requested == "true":
+        message = "Đã bật nightly AI job hôm nay; job được phép chạy dù checkout có thay đổi chưa commit."
+    else:
+        message = "Đã tắt nightly AI job cho hôm nay. Sang ngày mai lịch mặc định tự trở lại."
+    return templates.TemplateResponse(
+        request, "settings.html", _settings_context(user, code_repair_success=message),
     )
 
 

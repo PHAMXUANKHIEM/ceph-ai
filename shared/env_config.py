@@ -144,6 +144,10 @@ CODE_REPAIR_ENV_NAMES: dict[str, str] = {
     "code_repair_deploy_staging": "CODE_REPAIR_DEPLOY_STAGING",
     "code_repair_promote_main": "CODE_REPAIR_PROMOTE_MAIN",
 }
+NIGHTLY_AI_IMPROVEMENT_ENV_NAMES: dict[str, str] = {
+    "ai_nightly_improvement_override_date": "AI_NIGHTLY_IMPROVEMENT_OVERRIDE_DATE",
+    "ai_nightly_improvement_override_enabled": "AI_NIGHTLY_IMPROVEMENT_OVERRIDE_ENABLED",
+}
 
 
 def apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:

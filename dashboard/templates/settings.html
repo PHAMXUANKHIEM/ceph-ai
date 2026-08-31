@@ -631,6 +631,24 @@
           <p class="hint">0 = bỏ review; khuyến nghị 2; tối đa 5 vòng.</p>
           <button type="submit" class="btn btn-primary">Lưu cấu hình tự động sửa code</button>
         </form>
+        <hr>
+        <section id="nightly-ai-today-control" class="code-repair-execution-policy">
+          <h3>AI Nightly Job — {{ nightly_ai_today.date }}</h3>
+          {% if nightly_ai_today.mode == 'RUN' %}
+            <p class="success">Đang bật cho hôm nay: job sẽ chạy và được phép bỏ qua checkout bẩn.</p>
+          {% elif nightly_ai_today.mode == 'SKIP' %}
+            <p class="hint">Đang tắt cho hôm nay: timer sẽ bỏ qua job. Sang ngày mai tự về lịch mặc định.</p>
+          {% else %}
+            <p class="hint">Đang theo lịch mặc định. Checkout bẩn sẽ khiến job dừng trước khi gọi AI.</p>
+          {% endif %}
+          <form method="post" action="/settings/nightly-ai/today">
+            <input type="hidden" name="enabled" value="{% if nightly_ai_today.mode == 'RUN' %}false{% else %}true{% endif %}">
+            <button type="submit" class="btn {% if nightly_ai_today.mode == 'RUN' %}btn-danger{% else %}btn-primary{% endif %}">
+              {% if nightly_ai_today.mode == 'RUN' %}Tắt nightly job hôm nay{% else %}Bật nightly job hôm nay{% endif %}
+            </button>
+          </form>
+          <p class="hint">Bật hôm nay sẽ override lịch chung và cho phép chạy dù checkout có thay đổi chưa commit; override tự hết hạn sau 00:00.</p>
+        </section>
       </div>
     </section>
 

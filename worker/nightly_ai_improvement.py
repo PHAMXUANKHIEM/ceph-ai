@@ -34,9 +34,13 @@ def main() -> int:
     )
     try:
         from config.settings import settings
-        from worker.code_repair_supervisor import run_nightly_ai_improvement
+        from worker.code_repair_supervisor import nightly_override_for_today, run_nightly_ai_improvement
 
-        if not settings.ai_nightly_improvement_enabled:
+        override = nightly_override_for_today()
+        if override is False:
+            logging.getLogger(__name__).info("nightly AI improvement is disabled for today by Dashboard override")
+            return 0
+        if override is None and not settings.ai_nightly_improvement_enabled:
             logging.getLogger(__name__).info("nightly AI improvement is disabled")
             return 0
         completed = run_nightly_ai_improvement(
