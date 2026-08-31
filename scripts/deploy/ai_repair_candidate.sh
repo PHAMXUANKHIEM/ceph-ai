@@ -27,11 +27,42 @@ if [ "${CEPH_AI_CONTAINERIZED:-false}" != "true" ] && \
   CONTAINER_RUNTIME=true
 fi
 
+# Written by dashboard/telegram_chat.py::_mark_full_run_started /
+# _mark_full_run_finished, bind-mounted into every container at
+# /var/lib/ceph-ai (see compose.yaml) — the same recovery marker that lets
+# a restart notify the user their Single Full run was interrupted. Reading
+# it from the host lets this deploy avoid causing that interruption in the
+# first place, instead of only reporting it after the fact.
+SINGLE_FULL_RUN_STATE_FILE="/var/lib/ceph-ai/telegram-single-full-runs.json"
+SINGLE_FULL_DEPLOY_WAIT_TIMEOUT_SECONDS="${AI_REPAIR_SINGLE_FULL_WAIT_TIMEOUT_SECONDS:-600}"
+SINGLE_FULL_DEPLOY_POLL_SECONDS=5
+
+wait_for_single_full_idle() {
+  if [ ! -f "$SINGLE_FULL_RUN_STATE_FILE" ] || ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  local waited=0 in_flight
+  while true; do
+    in_flight="$(jq 'length' "$SINGLE_FULL_RUN_STATE_FILE" 2>/dev/null || echo 0)"
+    if ! [[ "$in_flight" =~ ^[0-9]+$ ]] || [ "$in_flight" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$waited" -ge "$SINGLE_FULL_DEPLOY_WAIT_TIMEOUT_SECONDS" ]; then
+      echo "WARNING: Telegram Single Full still running after ${SINGLE_FULL_DEPLOY_WAIT_TIMEOUT_SECONDS}s wait; deploying anyway (the running session will be interrupted and its owner notified on restart)."
+      return 0
+    fi
+    echo "==> Waiting for $in_flight in-flight Telegram Single Full run(s) to finish before recreating containers (${waited}s/${SINGLE_FULL_DEPLOY_WAIT_TIMEOUT_SECONDS}s)..."
+    sleep "$SINGLE_FULL_DEPLOY_POLL_SECONDS"
+    waited=$((waited + SINGLE_FULL_DEPLOY_POLL_SECONDS))
+  done
+}
+
 deploy_container_services() {
   local ref="$1"
   echo "==> Deploying $ref through the Podman stack"
   git checkout -B main "$ref"
   git reset --hard "$ref"
+  wait_for_single_full_idle
   # The calling nightly supervisor intentionally stays alive in its host
   # process.  Recreating code-repair here would kill the process that owns
   # promotion/rollback; it continues using its already imported code.
