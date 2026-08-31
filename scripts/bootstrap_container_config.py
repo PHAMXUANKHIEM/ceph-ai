@@ -129,7 +129,7 @@ def _ensure_dual_workspace() -> None:
         )
     result = subprocess.run(
         ["git", "-C", str(DUAL_WORKSPACE), "rev-parse", "--is-inside-work-tree"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
     )
     if result.returncode != 0 or result.stdout.strip() != "true":
         raise RuntimeError(f"Dual workspace is not a valid Git repository: {DUAL_WORKSPACE}")
