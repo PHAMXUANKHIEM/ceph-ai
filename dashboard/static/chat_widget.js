@@ -402,23 +402,6 @@
     stopBtn.textContent = running ? "Dừng" : "Đã dừng";
   }
 
-  function syncDualStatus() {
-    if (!currentSessionId) {
-      setDualProcessing(false);
-      return Promise.resolve();
-    }
-    return fetch(apiPrefix + "/dual/status?session_id=" + encodeURIComponent(currentSessionId), {
-      credentials: "same-origin",
-    })
-      .then(handleAuthRedirect)
-      .then(function (response) { return response.ok ? response.json() : null; })
-      .then(function (data) {
-        if (data && data.running) setDualProcessing(true, data.session_id || currentSessionId);
-        else if (!activeDualSessionId || activeDualSessionId === currentSessionId) setDualProcessing(false);
-      })
-      .catch(function () {});
-  }
-
   function stopDualChat(sessionId) {
     if (!sessionId) return Promise.resolve();
     dualStopRequestedSessionId = sessionId;
@@ -485,7 +468,7 @@
         clearEmptyState();
         messages.forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
         scrollToBottom();
-        return syncDualStatus();
+        setDualProcessing(false);
       })
       .catch(function (err) {
         if (err.message === "unauthenticated") return;
@@ -534,7 +517,6 @@
           return message.role === "assistant" && /^\[Dual AI: Hệ thống/.test(message.content || "") &&
             ((message.content || "").indexOf("Đã dừng") !== -1 || (message.content || "").indexOf("Không thể") !== -1 || (message.content || "").indexOf("gặp lỗi") !== -1);
         })) setDualProcessing(false);
-        return syncDualStatus();
       })
       .catch(function () {});
   }, 2500);

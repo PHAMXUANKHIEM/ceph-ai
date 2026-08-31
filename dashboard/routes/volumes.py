@@ -24,6 +24,7 @@ from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db
+from shared.ceph_query_cache import get_or_load as get_cached_ceph_query
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
 from shared.models import (
@@ -55,6 +56,8 @@ logger = logging.getLogger(__name__)
 # plotted time-series is bounded.
 _DEFAULT_HISTORY_HOURS = 6
 _MAX_HISTORY_HOURS = 168
+_CEPH_PAGE_CACHE_TTL_SECONDS = 45
+_CEPH_IOSTAT_CACHE_TTL_SECONDS = 15
 
 
 def _pool_names_from_detail(payload: dict | list) -> list[str]:
@@ -80,17 +83,61 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
     )
     mon_nodes = [node.strip() for node in cluster.ceph_mon_nodes.split(",") if node.strip()]
     ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(cluster)
-    try:
+    def load_pools() -> list[str]:
         _host, payload = run_ceph_json_command_with(
             mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode,
             "ceph osd pool ls detail",
         )
         return _pool_names_from_detail(payload)
+
+    try:
+        return get_cached_ceph_query(
+            "rbd-pools", str(cluster.id), load_pools, ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+        )
     except CephQueryError as exc:
         logger.warning("_rbd_pools_for_request: cluster %s discovery failed: %s", cluster.id, exc)
         # The live cluster is authoritative. The configured list is only a
         # continuity fallback for the default cluster during an SSH outage.
         return ceph_client.configured_rbd_pools() if cluster.is_default else []
+
+
+def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
+    def load_trash() -> list[dict]:
+        return (
+            ceph_client.query_rbd_trash(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_trash_with(pool, *cluster_connection(cluster))
+        )
+
+    return get_cached_ceph_query(
+        "rbd-trash", f"{cluster.id}:{pool}", load_trash, ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+    )
+
+
+def _cached_rbd_iostat(cluster, pool: str) -> list[dict]:
+    def load_iostat() -> list[dict]:
+        return (
+            ceph_client.query_rbd_iostat(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_iostat_with(pool, *cluster_connection(cluster), cluster.ceph_keyring_path)
+        )
+
+    return get_cached_ceph_query(
+        "rbd-iostat", f"{cluster.id}:{pool}", load_iostat, ttl_seconds=_CEPH_IOSTAT_CACHE_TTL_SECONDS,
+    )
+
+
+def _cached_rbd_inventory(cluster, pool: str) -> list[dict]:
+    def load_inventory() -> list[dict]:
+        return (
+            ceph_client.query_rbd_inventory(pool)
+            if cluster.is_default
+            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
+        )
+
+    return get_cached_ceph_query(
+        "rbd-inventory", f"{cluster.id}:{pool}", load_inventory, ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+    )
 
 
 def _cluster_for_request(request: Request):
@@ -242,11 +289,7 @@ def _volumes_page_context(
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
         def fetch_trash(trash_pool: str):
-            return (
-                ceph_client.query_rbd_trash(trash_pool)
-                if cluster.is_default
-                else ceph_client.query_rbd_trash_with(trash_pool, *cluster_connection(cluster))
-            )
+            return _cached_rbd_trash(cluster, trash_pool)
 
         # A trash listing is one independent RBD command per pool. Bound the
         # fan-out so large installations do not create an unbounded number
@@ -441,9 +484,7 @@ async def volume_iostat_api(request: Request, pool: str, user: str = Depends(req
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
     try:
-        samples = ceph_client.query_rbd_iostat(pool) if cluster.is_default else ceph_client.query_rbd_iostat_with(
-            pool, *cluster_connection(cluster), cluster.ceph_keyring_path
-        )
+        samples = _cached_rbd_iostat(cluster, pool)
     except CephQueryError as exc:
         logger.warning("volume_iostat_api: %s", exc)
         raise HTTPException(status_code=502, detail=f"Không lấy được iostat từ cụm: {exc}")
@@ -503,9 +544,7 @@ async def volume_known_images_api(request: Request, pool: str, user: str = Depen
         images.update(row[0] for row in rows)
 
     try:
-        samples = ceph_client.query_rbd_iostat(pool) if cluster.is_default else ceph_client.query_rbd_iostat_with(
-            pool, *cluster_connection(cluster), cluster.ceph_keyring_path
-        )
+        samples = _cached_rbd_iostat(cluster, pool)
     except CephQueryError as exc:
         logger.warning("volume_known_images_api: live iostat failed, using history only: %s", exc)
     else:
@@ -534,11 +573,7 @@ async def volume_inventory_api(
     if order not in {"asc", "desc"}:
         raise HTTPException(status_code=400, detail="Thứ tự sắp xếp không hợp lệ")
     try:
-        rows = (
-            ceph_client.query_rbd_inventory(pool)
-            if cluster.is_default
-            else ceph_client.query_rbd_inventory_with(pool, *cluster_connection(cluster))
-        )
+        rows = _cached_rbd_inventory(cluster, pool)
     except CephQueryError as exc:
         logger.warning("volume_inventory_api: cluster=%s pool=%s: %s", cluster.id, pool, exc)
         raise HTTPException(status_code=502, detail=f"Không đọc được inventory RBD: {exc}")

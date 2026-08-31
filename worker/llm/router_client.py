@@ -31,6 +31,7 @@ from shared.models import (
     PlaybookStat,
 )
 from shared.ceph_releases import RELEASES, codename_for_version
+from shared.ceph_query_cache import invalidate as invalidate_ceph_query_cache
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
 # ceph_code do monitor tự đặt không có mặt trong `ceph health detail` nên
@@ -3360,6 +3361,7 @@ def _record_approved_execution_result(
     action_pk: str, command: str | None, succeeded: bool
 ) -> None:
     notify: dict | None = None
+    cache_invalidation: tuple[str, str] | None = None
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
         if action is None:
@@ -3483,7 +3485,27 @@ def _record_approved_execution_result(
                         proposed_incident_id=incident_id,
                     )
                 )
+        if succeeded and action.action_id in {
+            "rbd_create_volume", "rbd_resize_volume", "rbd_rename_volume",
+            "rbd_trash_move_volume", "rbd_trash_restore_volume",
+            "rbd_trash_remove", "rbd_trash_purge_all",
+        }:
+            try:
+                params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError):
+                params = {}
+            pool = params.get("pool_name") if isinstance(params, dict) else None
+            if isinstance(pool, str) and pool:
+                cluster_id = incident.cluster_id if incident is not None else None
+                if cluster_id is None:
+                    cluster_id = session.query(Cluster.id).filter(Cluster.is_default.is_(True)).scalar()
+                if cluster_id is not None:
+                    cache_invalidation = (str(cluster_id), pool)
         session.commit()
+    if cache_invalidation is not None:
+        cluster_id, pool = cache_invalidation
+        for namespace in ("rbd-trash", "rbd-inventory", "rbd-iostat"):
+            invalidate_ceph_query_cache(namespace, f"{cluster_id}:{pool}")
     if notify is not None:
         send_auto_remediation_alert(**notify)
 
