@@ -28,12 +28,26 @@ services:
       - ./:/app:ro
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      # codex_home/claude_config_dir (config/settings.py) resolve under the
+      # repo checkout itself — a bare-metal-era choice. The whole checkout is
+      # :ro here, so these two subtrees need their own :rw mount (shadowing
+      # the :ro parent) or the Settings page's own account login/switch can
+      # never write auth.json, even though the CLI itself is now reachable.
+      - ./.codex-account:/app/.codex-account:rw
+      - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
       TELEGRAM_LISTENER_ENABLED: "false"
+      # The Dashboard's own Settings page (Codex/Claude account login,
+      # rate-limit lookup) and web Chatbox spawn these CLIs directly, same
+      # as telegram-ai below — without this mount+PATH pair, codex/claude
+      # are simply not found in this container.
+      PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/login"]
       interval: 15s
@@ -49,6 +63,11 @@ services:
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
       - /root/.local:/opt/ai-tools:ro
       - /root/.codex/packages:/opt/codex-packages:ro
+      # See dashboard-web's identical mount above: Telegram's own
+      # quota-login retry flow (start_cli_device_login) writes into these
+      # same two subtrees and needs them writable despite /app being :ro.
+      - ./.codex-account:/app/.codex-account:rw
+      - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
       - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
     environment:

@@ -127,8 +127,14 @@ def _ensure_dual_workspace() -> None:
         subprocess.run(
             ["git", "clone", "--no-local", str(ROOT), str(DUAL_WORKSPACE)], check=True,
         )
+    # This script runs as root, but the clone is chown'd to DUAL_AGENT_UID
+    # below on every run (including this check on the *next* run) — so from
+    # the second bootstrap onward, root's git sees an owner mismatch and
+    # refuses as "dubious ownership" unless explicitly told this exact path
+    # is expected to be owned by someone else.
     result = subprocess.run(
-        ["git", "-C", str(DUAL_WORKSPACE), "rev-parse", "--is-inside-work-tree"],
+        ["git", "-c", f"safe.directory={DUAL_WORKSPACE}", "-C", str(DUAL_WORKSPACE),
+         "rev-parse", "--is-inside-work-tree"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
     )
     if result.returncode != 0 or result.stdout.strip() != "true":
