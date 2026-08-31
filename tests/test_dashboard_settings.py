@@ -68,7 +68,7 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert 'id="code-repair-planner-model"' in response.text
     assert 'id="code-repair-implementer-model"' in response.text
     assert 'data-model-provider="code-repair-planner-provider"' in response.text
-    assert "Số vòng review tối đa" not in response.text
+    assert "Số vòng review tối đa" in response.text
     assert "Shadow Autopilot Evaluation" not in response.text
     assert "L2 → L3 Promotion Candidates" not in response.text
     assert "Playbook Registry" not in response.text
@@ -120,7 +120,7 @@ def test_code_repair_settings_persist_two_roles_and_reload_supervisor(
     assert "CODE_REPAIR_IMPLEMENTER_MODEL=claude-sonnet-4-6" in saved
     assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_SOURCE=configured" in saved
     assert "CODE_REPAIR_IMPLEMENTER_ACCOUNT_PROFILE=" in saved
-    assert "CODE_REPAIR_MAX_REVIEW_ROUNDS" not in saved
+    assert "CODE_REPAIR_MAX_REVIEW_ROUNDS=2" in saved
 
 
 def test_dashboard_can_override_nightly_job_for_today(dashboard_client, monkeypatch, tmp_path):

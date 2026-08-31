@@ -145,6 +145,15 @@ def test_nightly_dashboard_override_is_scoped_to_today(monkeypatch):
     assert supervisor.nightly_override_for_today(now) is None
 
 
+def test_direct_nightly_call_honors_dashboard_skip_override(monkeypatch, tmp_path):
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_date", "2026-08-31", raising=False)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_improvement_override_enabled", False, raising=False)
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: (_ for _ in ()).throw(AssertionError("must not run")))
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, tmp_path / "nightly.json", now=now) is False
+
+
 def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(

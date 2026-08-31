@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import subprocess
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from worker.code_repair import (
     run_repair,
 )
 from worker import ceph_capability_learning as ceph_learning
+from shared import service_health
 from shared.telegram_alerts import send_code_repair_alert
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,12 @@ def _dirty_checkout(repo: Path) -> str:
 
 def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | None = None) -> bool:
     """Run one bounded proactive two-agent AI review and persist its outcome."""
+    # Keep this rule at the public function boundary as well as the systemd
+    # entrypoint: manual callers and future schedulers must honour the same
+    # Dashboard choice for the current local day.
+    if nightly_override_for_today(now) is False:
+        logger.info("nightly AI improvement is disabled for today by Dashboard override")
+        return False
     try:
         # Wait for an active repair before deciding this day's state. A killed
         # timer process can therefore never consume the daily run merely while
@@ -356,6 +364,7 @@ def run_forever(*, max_iterations: int | None = None) -> None:
     # a bounded run still start immediately.
     last_repair_at: float | None = time.monotonic() if max_iterations is None else None
     while settings.code_repair_auto_enabled:
+        service_health.record_safe("code-repair")
         state_file = RepairConfig(repo=repo).state_file
         stale_branches = reconcile_stale_attempts_file(
             state_file,
@@ -525,7 +534,20 @@ def main() -> int:
         except BlockingIOError:
             logger.info("another Code Repair supervisor already holds the lock")
             return 0
-        run_forever()
+        heartbeat_stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(10):
+                service_health.record_safe("code-repair")
+
+        service_health.record_safe("code-repair")
+        heartbeat_thread = threading.Thread(target=heartbeat, name="code-repair-heartbeat", daemon=True)
+        heartbeat_thread.start()
+        try:
+            run_forever()
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=2)
     return 0
 
 
