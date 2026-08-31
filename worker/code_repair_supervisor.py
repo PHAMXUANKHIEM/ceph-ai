@@ -43,6 +43,8 @@ NIGHTLY_REGRESSION_TEST_COMMAND = (
     "tests/test_code_repair.py "
     "tests/test_code_repair_supervisor.py"
 )
+NIGHTLY_AI_STEP_TIMEOUT_SECONDS = 1200
+NIGHTLY_MAX_REVIEW_ROUNDS = 2
 NIGHTLY_IMPROVEMENT_INSTRUCTIONS = """This is a proactive nightly AI improvement task, not an incident repair.
 
 Review only the ceph-ai AI product surface: provider routing, Codex/Claude integration, Chat-with-AI,
@@ -51,7 +53,8 @@ Identify at most ONE smallest useful, testable improvement. Do not modify creden
 .env, Telegram configuration, deployment scripts, database migrations, Ceph commands, or safety policy.
 Never create a cosmetic-only change. If no bounded improvement is justified, finish the plan with exactly:
 VERDICT: NO_CHANGE_NEEDED
-Otherwise give the Implementer an exact, low-risk plan and tests. The Implementer must keep the same scope.
+Otherwise give the Implementer an exact, low-risk plan and tests. The Implementer must keep the same scope
+and add or update at least one regression test under tests/ in the candidate diff.
 """
 
 
@@ -97,9 +100,14 @@ def _save_nightly_state(path: Path, value: dict) -> None:
 
 
 def _nightly_due(state: dict, now: datetime) -> bool:
-    """Run once per local calendar day; systemd owns the scheduled time."""
+    """Run once per day, except a process killed mid-run is retried."""
     local = now.astimezone(NIGHTLY_TIMEZONE)
-    return state.get("last_run_date") != local.date().isoformat()
+    if state.get("last_run_date") != local.date().isoformat():
+        return True
+    # A RUNNING state only remains after an abnormal process death: a live
+    # pipeline still owns _repair_run_lock, and normal completion writes a
+    # terminal status.  FAILED is intentionally retried by systemd.
+    return state.get("status") in {"RUNNING", "FAILED"}
 
 
 def _dirty_checkout(repo: Path) -> str:
@@ -126,10 +134,11 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
             return _run_nightly_ai_improvement_locked(repo, state_path, now=now)
     except Exception as exc:
         current = now or datetime.now(timezone.utc)
-        local = current.astimezone(NIGHTLY_TIMEZONE)
         state = _load_nightly_state(state_path)
+        # A runtime failure is retryable.  Do not consume this calendar day;
+        # the systemd failure exit will invoke this job again after backoff.
+        state.pop("last_run_date", None)
         state.update({
-            "last_run_date": local.date().isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "status": "FAILED",
             "error": str(exc),
@@ -146,7 +155,7 @@ def run_nightly_ai_improvement(repo: Path, state_path: Path, *, now: datetime | 
             )
         except Exception:
             logger.exception("could not send nightly AI improvement failure alert")
-        return True
+        return False
 
 
 def _run_nightly_ai_improvement_locked(
@@ -175,8 +184,9 @@ def _run_nightly_ai_improvement_locked(
         )
         return True
 
-    # Record before invoking AI so a crash cannot launch a second expensive
-    # development cycle on restart the same night.
+    # The state records an in-progress run before invoking AI.  If this
+    # process is killed, _nightly_due will retry only after it can reacquire
+    # the process lock, so no two pipelines run concurrently.
     state.update({
         "last_run_date": local.date().isoformat(),
         "started_at": current.isoformat(),
@@ -206,17 +216,18 @@ def _run_nightly_ai_improvement_locked(
                 settings.code_repair_implementer_account_source,
                 settings.code_repair_implementer_account_profile,
             ),
-            max_review_rounds=settings.code_repair_max_review_rounds,
+            max_review_rounds=min(settings.code_repair_max_review_rounds, NIGHTLY_MAX_REVIEW_ROUNDS),
             test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
             candidate_test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
-            timeout_seconds=settings.code_repair_timeout_seconds,
+            require_changed_tests=True,
+            timeout_seconds=min(settings.code_repair_timeout_seconds, NIGHTLY_AI_STEP_TIMEOUT_SECONDS),
             push=settings.code_repair_push,
             deploy_staging=settings.code_repair_deploy_staging,
             promote_main=settings.code_repair_promote_main,
             state_file=repair_state,
             task_kind="nightly-ai-improvement",
             task_instructions=NIGHTLY_IMPROVEMENT_INSTRUCTIONS,
-            max_ai_attempts=settings.code_repair_max_attempts,
+            max_ai_attempts=1,
             max_pipeline_attempts=1,
             running_stale_seconds=settings.code_repair_running_stale_seconds,
             notify_telegram=False,
@@ -249,6 +260,12 @@ def _run_nightly_ai_improvement_locked(
         )
     send_code_repair_alert(message)
     logger.info("nightly AI improvement completed: %s (%s)", result.status, result.fingerprint)
+    # Let systemd retry only real pipeline failures.  A clean NO_CHANGE or
+    # an intentionally blocked dirty checkout remains one completed run.
+    if result.status == "FAILED":
+        state.pop("last_run_date", None)
+        _save_nightly_state(state_path, state)
+        return False
     return True
 
 

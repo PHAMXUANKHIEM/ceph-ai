@@ -111,6 +111,9 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     assert captured["config"].allow_no_change is True
     assert captured["config"].test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
     assert captured["config"].candidate_test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
+    assert captured["config"].require_changed_tests is True
+    assert captured["config"].max_ai_attempts == 1
+    assert captured["config"].timeout_seconds == supervisor.NIGHTLY_AI_STEP_TIMEOUT_SECONDS
     assert captured["config"].push is True
     assert captured["config"].deploy_staging is True
     assert captured["config"].promote_main is True
@@ -123,6 +126,12 @@ def test_nightly_due_is_idempotent_when_systemd_starts_late():
 
     assert supervisor._nightly_due({}, now) is True
     assert supervisor._nightly_due({"last_run_date": "2026-08-31"}, now) is False
+
+
+def test_nightly_due_retries_an_interrupted_or_failed_run():
+    now = datetime(2026, 8, 30, 20, 15, tzinfo=timezone.utc)
+    for status in ("RUNNING", "FAILED"):
+        assert supervisor._nightly_due({"last_run_date": "2026-08-31", "status": status}, now) is True
 
 
 def test_repair_execution_lock_serializes_timer_and_supervisor(monkeypatch, tmp_path):
@@ -151,13 +160,34 @@ def test_nightly_failure_is_persisted_and_notified(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor, "run_repair", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
     now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
 
-    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is False
 
     state = json.loads(state_path.read_text())
-    assert state["last_run_date"] == "2026-08-31"
+    assert "last_run_date" not in state
     assert state["status"] == "FAILED"
     assert "boom" in state["error"]
     assert len(notifications) == 2
+
+
+def test_nightly_failed_pipeline_is_left_retryable(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", lambda message: None)
+    monkeypatch.setattr(
+        supervisor,
+        "run_repair",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="FAILED", fingerprint="fp", branch="ai-repair/nightly", commit=None,
+            changed_files=[], review_rounds=0, error="candidate gate failed",
+        ),
+    )
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is False
+
+    state = json.loads(state_path.read_text())
+    assert state["status"] == "FAILED"
+    assert "last_run_date" not in state
 
 
 def test_nightly_dirty_checkout_stops_before_ai(monkeypatch, tmp_path):

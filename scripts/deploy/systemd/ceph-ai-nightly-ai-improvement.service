@@ -8,6 +8,7 @@ StartLimitBurst=3
 [Service]
 Type=oneshot
 WorkingDirectory=/root/ceph-ai
+EnvironmentFile=-/root/ceph-ai/.env
 ExecStart=/root/ceph-ai/.venv/bin/python -m worker.nightly_ai_improvement
 TimeoutStartSec=12h
 Restart=on-failure

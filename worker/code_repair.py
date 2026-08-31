@@ -95,6 +95,10 @@ class RepairConfig:
     # Optional bounded command for the second, host-level candidate gate.
     # Empty retains that script's default regression command.
     candidate_test_command: str = ""
+    # Proactive changes must demonstrate coverage in the candidate diff.
+    # Incident repair retains the historical permissive behaviour because a
+    # focused test can be impractical for an infrastructure-only correction.
+    require_changed_tests: bool = False
     timeout_seconds: int = 1800
     push: bool = False
     deploy_staging: bool = False
@@ -490,8 +494,17 @@ def _review_verdict(output: str) -> str:
     return verdicts[0]
 
 
+def _changed_test_files(files: list[str]) -> list[str]:
+    return sorted({path for path in files if path.startswith("tests/") and path.endswith(".py")})
+
+
+def _require_changed_tests(files: list[str]) -> None:
+    if not _changed_test_files(files):
+        raise RepairError("proactive improvement phải thêm hoặc cập nhật ít nhất một regression test trong tests/")
+
+
 def _focused_test_command(files: list[str]) -> str | None:
-    tests = sorted({path for path in files if path.startswith("tests/") and path.endswith(".py")})
+    tests = _changed_test_files(files)
     if not tests:
         return None
     return "PYTHONPATH=. .venv/bin/pytest -q " + " ".join(shlex.quote(path) for path in tests)
@@ -665,6 +678,8 @@ Observed application failure (credentials already redacted):
             if ai.returncode != 0:
                 raise RepairError(f"{provider} failed ({ai.returncode}):\n{ai.stdout[-6000:]}")
             result.changed_files = _validate_changes(worktree)
+            if config.require_changed_tests:
+                _require_changed_tests(result.changed_files)
             focused_command = _focused_test_command(result.changed_files)
             if focused_command:
                 notifier.update(40, "Patch hợp lệ; đang chạy test theo phạm vi thay đổi")
@@ -785,6 +800,8 @@ If changes are needed, list precise actionable corrections before that line.
             if fix.returncode != 0:
                 raise RepairError(f"{provider} reviewer-fix failed ({fix.returncode}):\n{fix.stdout[-6000:]}")
             result.changed_files = _validate_changes(worktree)
+            if config.require_changed_tests:
+                _require_changed_tests(result.changed_files)
             notifier.update(60, "Implementer đã sửa theo review; đang chạy lại regression gate")
             correction_tests = _run(
                 ["bash", "-lc", config.test_command], cwd=worktree,

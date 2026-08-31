@@ -98,6 +98,17 @@ def test_repair_config_has_separate_candidate_test_gate():
     assert config.candidate_test_command == "pytest tests/test_ai.py"
 
 
+def test_changed_test_files_returns_only_python_tests():
+    assert code_repair._changed_test_files([
+        "worker/code_repair.py", "tests/test_code_repair.py", "tests/notes.txt",
+    ]) == ["tests/test_code_repair.py"]
+
+
+def test_proactive_change_requires_a_regression_test():
+    with pytest.raises(code_repair.RepairError, match="regression test"):
+        code_repair._require_changed_tests(["worker/code_repair.py"])
+
+
 def test_validate_changes_ignores_supervisor_venv_symlink(monkeypatch, tmp_path):
     outputs = iter([
         "?? .venv\n M worker/example.py\n",
