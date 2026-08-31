@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 RETRY_HEADER = "x-retry-count"
 _worker_broker_connection = None
 
+
+def _worker_broker_is_ready(connection) -> bool:
+    """Return true only while aio-pika's robust connection is connected.
+
+    A RobustConnection remains open while it is retrying a lost broker, so
+    checking ``is_closed`` alone lets the container look healthy while it is
+    unable to consume incidents.
+    """
+    connected = getattr(connection, "connected", None)
+    return bool(
+        connection is not None
+        and not connection.is_closed
+        and connected is not None
+        and connected.is_set()
+    )
+
 ProcessIncident = Callable[[str, dict], Awaitable[None]]
 
 
@@ -277,7 +293,7 @@ async def _main() -> None:
     async def service_heartbeat() -> None:
         while True:
             connection = _worker_broker_connection
-            if connection is not None and not connection.is_closed:
+            if _worker_broker_is_ready(connection):
                 service_health.record("worker")
             await asyncio.sleep(15)
 

@@ -44,7 +44,7 @@ services:
     <<: *app
     command: ["python", "-m", "worker.telegram_gateway"]
     volumes:
-      - ./:/app:rw
+      - ./:/app:ro
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
       - /root/.local:/opt/ai-tools:ro
@@ -57,6 +57,7 @@ services:
       CEPH_AI_CONTAINERIZED: "true"
       TELEGRAM_LISTENER_ENABLED: "true"
       CEPH_AI_DROP_DUAL_PRIVILEGES: "true"
+      CEPH_AI_DUAL_WORKSPACE: /var/lib/ceph-ai/dual-workspace
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       SINGLE_FULL_EXECUTOR_URL: http://full-executor:8787
       SINGLE_FULL_EXECUTOR_TOKEN_FILE: /run/secrets/single-full-executor.token

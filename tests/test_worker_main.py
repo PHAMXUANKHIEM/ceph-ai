@@ -7,6 +7,27 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import worker.main as worker_main
+
+
+class _Connected:
+    def __init__(self, ready: bool):
+        self._ready = ready
+
+    def is_set(self) -> bool:
+        return self._ready
+
+
+class _Connection:
+    def __init__(self, *, closed: bool, ready: bool):
+        self.is_closed = closed
+        self.connected = _Connected(ready)
+
+
+def test_worker_broker_is_ready_requires_an_active_broker_connection():
+    assert not worker_main._worker_broker_is_ready(None)
+    assert not worker_main._worker_broker_is_ready(_Connection(closed=True, ready=True))
+    assert not worker_main._worker_broker_is_ready(_Connection(closed=False, ready=False))
+    assert worker_main._worker_broker_is_ready(_Connection(closed=False, ready=True))
 from shared import db as db_module
 from shared.db import Base
 from shared.models import Incident, IncidentStatus
@@ -290,8 +311,8 @@ def test_handle_message_processes_non_default_cluster_envelope_too(isolated_db):
 
     _create_incident(db_module.SessionLocal, "incident-other-cluster")
     with db_module.SessionLocal() as session:
-        default_cluster = ensure_default_cluster(session)
-    other_cluster_id = "not-" + default_cluster.id  # guaranteed not to match
+        default_cluster_id = ensure_default_cluster(session).id
+    other_cluster_id = "not-" + default_cluster_id  # guaranteed not to match
 
     message = _make_message_for_cluster("incident-other-cluster", other_cluster_id)
     channel = FakeChannel()
@@ -315,9 +336,9 @@ def test_handle_message_processes_default_cluster_envelope_normally(isolated_db)
 
     _create_incident(db_module.SessionLocal, "incident-default-cluster")
     with db_module.SessionLocal() as session:
-        default_cluster = ensure_default_cluster(session)
+        default_cluster_id = ensure_default_cluster(session).id
 
-    message = _make_message_for_cluster("incident-default-cluster", default_cluster.id)
+    message = _make_message_for_cluster("incident-default-cluster", default_cluster_id)
     channel = FakeChannel()
 
     calls = []
