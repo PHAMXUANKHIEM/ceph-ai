@@ -340,6 +340,34 @@ def test_build_scheduler_removes_stale_persisted_backup_jobs(isolated_db, monkey
     assert second.get_job("backup_metadata_run") is None
 
 
+def test_running_scheduler_removes_stale_persisted_backup_jobs(isolated_db, monkeypatch):
+    policy = {
+        "backup_targets": [{"slot": "a", "immutable": False}],
+        "tracked_images": [],
+        "required_copy_count": 1,
+        "retention": {"keep_full_count": 3, "keep_incremental_count": 7},
+        "schedule": {"metadata_cron": {"hour": "*/6", "minute": 0}},
+    }
+    monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: True)
+    async def _exercise():
+        first = scheduler.build_scheduler()
+        first.start()
+        assert first.get_job("backup_metadata_run") is not None
+        first.shutdown(wait=False)
+
+        monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: False)
+        second = scheduler.build_scheduler()
+        second.start()
+        try:
+            scheduler._reconcile_backup_jobs(second, second._desired_backup_job_ids)
+            assert second.get_job("backup_metadata_run") is None
+        finally:
+            second.shutdown(wait=False)
+
+    asyncio.run(_exercise())
+
+
 def test_create_scheduled_action_stamps_cluster_id(isolated_db):
     cluster_id = _make_additional_cluster()
 

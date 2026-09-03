@@ -359,6 +359,11 @@ def build_scheduler() -> AsyncIOScheduler:
             replace_existing=True,
         )
         desired_job_ids.add("ai_ops_weekly_digest")
+    # Keep the desired set on the scheduler so ``run()`` can reconcile jobs
+    # loaded from the persistent job store after APScheduler starts.  Before
+    # start(), ``get_jobs()`` only exposes jobs queued during construction;
+    # persisted jobs are loaded lazily by the job store at startup.
+    scheduler._desired_backup_job_ids = desired_job_ids
     _reconcile_backup_jobs(scheduler, desired_job_ids)
     return scheduler
 
@@ -371,6 +376,7 @@ async def run() -> None:
     shape `run()`/`poll_approved_actions()` already have."""
     scheduler = build_scheduler()
     scheduler.start()
+    _reconcile_backup_jobs(scheduler, scheduler._desired_backup_job_ids)
     try:
         while True:
             await asyncio.sleep(IDLE_SLEEP_SECONDS)
