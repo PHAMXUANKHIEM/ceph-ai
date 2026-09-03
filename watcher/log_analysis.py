@@ -63,6 +63,7 @@ from shared.models import (
 from shared import telegram_alerts
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.router_client import build_router_client
 from watcher.capability_inventory import latest_snapshot
 from watcher.log_triage import TriageResult
@@ -370,8 +371,10 @@ def _cluster_context(cluster_id: str) -> str:
 
 @observe_ai_call("log_rca")
 async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict:
+    refresh_chat_provider_flags()
     user_content = redact_text(user_content)
     schema = _tool_schema(allowed_action_ids)
+    provider_errors: list[str] = []
 
     # Match the backend selection already used by Incident diagnosis.  Log
     # Intelligence previously ignored the configured Claude/Codex backend
@@ -396,8 +399,10 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
                 prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS
             )
         except CodexAppServerError as exc:
-            raise LogAnalysisError(f"Codex call failed: {exc}") from exc
-        return captured
+            provider_errors.append(f"Codex call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            return captured
 
     if settings.claude_chat_enabled:
         expected = schema["function"]["parameters"]
@@ -411,9 +416,14 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
         try:
             raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
-            return json.loads(clean)
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise LogAnalysisError(f"Claude call failed: {exc}") from exc
+            provider_errors.append(f"Claude call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            return json.loads(clean)
+
+    if provider_errors and not settings.router_api_key:
+        raise LogAnalysisError("; ".join(provider_errors))
 
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:

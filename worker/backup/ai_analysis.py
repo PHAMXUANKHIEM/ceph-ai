@@ -23,6 +23,7 @@ from shared.ai_observability import observe_ai_call, record_ai_usage
 from shared.models import BackupAnomaly, BackupJob
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.router_client import build_router_client
 from worker.backup import alerting
 from worker.redaction import default_redactor
@@ -107,7 +108,9 @@ async def _call_router(user_content: str) -> dict:
     structured-output pattern `worker/llm/router_client.py::_call_router`
     already uses (forced `tool_choice`, `strict` schema — verified there
     against a real running router that otherwise answers in plain text)."""
+    refresh_chat_provider_flags()
     schema = _tool_schema()
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured: dict = {}
 
@@ -125,8 +128,10 @@ async def _call_router(user_content: str) -> dict:
         try:
             await codex_app_server.run_turn(prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS)
         except CodexAppServerError as exc:
-            raise AIAnalysisError(f"Codex call failed: {exc}") from exc
-        return captured
+            provider_errors.append(f"Codex call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            return captured
 
     if settings.claude_chat_enabled:
         prompt = (
@@ -139,9 +144,14 @@ async def _call_router(user_content: str) -> dict:
         try:
             raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
-            return json.loads(clean)
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise AIAnalysisError(f"Claude call failed: {exc}") from exc
+            provider_errors.append(f"Claude call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            return json.loads(clean)
+
+    if provider_errors and not settings.router_api_key:
+        raise AIAnalysisError("; ".join(provider_errors))
 
     client = _get_client()
     try:
@@ -205,7 +215,9 @@ async def _call_digest_router(user_content: str) -> str:
     `create()` call, matching `worker/llm/router_client.py::_call_router`'s
     own verified workaround for this project's router always responding
     via SSE regardless of whether streaming was requested."""
+    refresh_chat_provider_flags()
     prompt = DIGEST_SYSTEM_PROMPT + "\n\n" + user_content
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         async def reject_tools(tool_name: str, arguments: dict) -> tuple[str, bool]:
             return f"Digest không cho phép tool: {tool_name}", False
@@ -215,20 +227,25 @@ async def _call_digest_router(user_content: str) -> str:
                 prompt, [], reject_tools, timeout=ROUTER_TIMEOUT_SECONDS
             )
         except CodexAppServerError as exc:
-            raise AIAnalysisError(f"Digest Codex call failed: {exc}") from exc
-        content = str(result.get("reply_text") or "").strip()
-        if not content:
-            raise AIAnalysisError("Digest Codex response had no content")
-        return content
+            provider_errors.append(f"Digest Codex call failed: {exc}")
+        else:
+            content = str(result.get("reply_text") or "").strip()
+            if content:
+                return content
+            provider_errors.append("Digest Codex response had no content")
 
     if settings.claude_chat_enabled:
         try:
             content = (await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)).strip()
         except ClaudeCLIError as exc:
-            raise AIAnalysisError(f"Digest Claude call failed: {exc}") from exc
-        if not content:
-            raise AIAnalysisError("Digest Claude response had no content")
-        return content
+            provider_errors.append(f"Digest Claude call failed: {exc}")
+        else:
+            if content:
+                return content
+            provider_errors.append("Digest Claude response had no content")
+
+    if provider_errors and not settings.router_api_key:
+        raise AIAnalysisError("; ".join(provider_errors))
 
     client = _get_client()
     try:

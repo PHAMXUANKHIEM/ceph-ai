@@ -1860,9 +1860,7 @@ async def settings_codex_activate(user: str = Depends(require_login)):
         if not account:
             raise HTTPException(status_code=409, detail="Đăng nhập Codex chưa hoàn tất")
         _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "true")
-        _update_env_file(CLAUDE_CHAT_ENABLED_ENV_NAME, "false")
         settings.codex_chat_enabled = True
-        settings.claude_chat_enabled = False
         restart_result = await asyncio.to_thread(restart_worker)
     except HTTPException:
         raise
@@ -2026,9 +2024,7 @@ async def settings_claude_activate(user: str = Depends(require_login)):
         if not status.get("authenticated"):
             raise HTTPException(status_code=409, detail="Đăng nhập Claude chưa hoàn tất")
         _update_env_file(CLAUDE_CHAT_ENABLED_ENV_NAME, "true")
-        _update_env_file(CODEX_CHAT_ENABLED_ENV_NAME, "false")
         settings.claude_chat_enabled = True
-        settings.codex_chat_enabled = False
         restart_result = await asyncio.to_thread(restart_worker)
     except HTTPException:
         raise

@@ -111,13 +111,26 @@ async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: 
     """Send one Vitastor chat turn through the shared budget/telemetry guard."""
     transcript = "\n".join(f"{m['role']}: {m['content']}" for m in history[-MAX_HISTORY_MESSAGES:])
     prompt = f"{system_prompt}\n\nLịch sử:\n{transcript}\n\nuser: {user_text}\nassistant:"
+    provider_errors: list[str] = []
     if settings.vitastor_codex_chat_enabled:
         async def no_tools(_name, _arguments):
             return "Tool không khả dụng trong chat Vitastor", False
-        result = await codex_app_server.run_turn(prompt, [], no_tools)
-        return result.get("reply_text") or "Codex không trả về nội dung."
+        try:
+            result = await codex_app_server.run_turn(prompt, [], no_tools)
+        except CodexAppServerError as exc:
+            provider_errors.append(f"Codex call failed: {exc}")
+        else:
+            content = str(result.get("reply_text") or "").strip()
+            if content:
+                return content
+            provider_errors.append("Codex không trả về nội dung")
     if settings.vitastor_claude_chat_enabled:
-        return await run_claude_prompt(prompt)
+        try:
+            return await run_claude_prompt(prompt)
+        except ClaudeCLIError as exc:
+            provider_errors.append(f"Claude call failed: {exc}")
+    if provider_errors and not settings.vitastor_router_api_key:
+        raise HTTPException(status_code=503, detail="; ".join(provider_errors))
     client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
     response = await client.chat.completions.create(
         model=settings.vitastor_router_model,

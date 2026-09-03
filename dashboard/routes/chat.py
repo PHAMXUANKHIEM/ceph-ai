@@ -129,17 +129,29 @@ async def get_chat_preferences(user: str = Depends(require_login)):
 @router.get("/api/chat/limits")
 async def get_chat_ai_limits(user: str = Depends(require_login)):
     """Current subscription quota for the provider serving this chatbox."""
+    codex_error = None
     if settings.codex_chat_enabled:
         try:
             return {"provider": "codex", "limits": normalize_rate_limits(await codex_app_server.rate_limits())}
         except CodexAppServerError as exc:
-            return {"provider": "codex", "limits": [], "error": str(exc)}
+            # Keep the quota widget aligned with the chat call order: a
+            # broken Codex session should display the configured Claude
+            # fallback instead of making the UI look like no AI is usable.
+            codex_error = str(exc)
+        else:
+            codex_error = None
     if settings.claude_chat_enabled:
         try:
             status = await claude_status()
-            return {"provider": "claude", "limits": normalize_rate_limits(status.get("rate_limits"))}
+            payload = {"provider": "claude", "limits": normalize_rate_limits(status.get("rate_limits"))}
+            if codex_error:
+                payload["fallback_from"] = "codex"
+            return payload
         except ClaudeCLIError as exc:
-            return {"provider": "claude", "limits": [], "error": str(exc)}
+            return {"provider": "claude", "limits": [], "error": str(exc),
+                    **({"codex_error": codex_error} if codex_error else {})}
+    if settings.codex_chat_enabled:
+        return {"provider": "codex", "limits": [], "error": codex_error}
     return {"provider": None, "limits": []}
 
 

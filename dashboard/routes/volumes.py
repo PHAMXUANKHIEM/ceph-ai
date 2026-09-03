@@ -254,6 +254,26 @@ def _in_flight_trash_actions(pool: str) -> dict[str, Action]:
     return result
 
 
+def _in_flight_trash_purge_all_action(pool: str) -> Action | None:
+    """Latest in-flight bulk Trash purge proposal for one pool."""
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(Action)
+            .filter(Action.action_id == RBD_TRASH_PURGE_ALL_ACTION_ID)
+            .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
+            .order_by(Action.created_at.desc())
+            .all()
+        )
+        for action in rows:
+            try:
+                params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError):
+                continue
+            if params.get("pool_name") == pool:
+                return action
+    return None
+
+
 def _latest_vm_perf_action() -> Action | None:
     with db.SessionLocal() as session:
         return (
@@ -285,6 +305,7 @@ def _volumes_page_context(
     trash_pool_summaries: list[dict] = []
     trash_error: str | None = None
     trash_pending: dict[str, Action] = {}
+    trash_bulk_pending: Action | None = None
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
@@ -354,6 +375,8 @@ def _volumes_page_context(
                 logger.warning("_volumes_page_context: invalid trash response for pool %r: %s", trash_pool, exc)
                 trash_error = f"{trash_pool}: dữ liệu trash không hợp lệ"
         if cluster.is_default:
+            if pool:
+                trash_bulk_pending = _in_flight_trash_purge_all_action(pool)
             for trash_pool in ([pool] if pool else []):
                 for trash_id, action in _in_flight_trash_actions(trash_pool).items():
                     trash_pending[f"{trash_pool}/{trash_id}"] = action
@@ -371,6 +394,7 @@ def _volumes_page_context(
         "trash_pool_summaries": trash_pool_summaries,
         "trash_error": trash_error,
         "trash_pending": trash_pending,
+        "trash_bulk_pending": trash_bulk_pending,
         "vm_perf_action": vm_perf_action,
         "purge_error": purge_error,
         "purge_success": purge_success,
@@ -1874,4 +1898,4 @@ async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(r
         )
         session.commit()
 
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url=f"/trash?pool={pool}", status_code=303)

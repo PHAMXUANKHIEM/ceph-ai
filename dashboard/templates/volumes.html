@@ -250,7 +250,13 @@
           <div>
             <a href="/trash" class="btn btn-ghost btn-sm">Chọn pool khác</a>
             {% set purge_eligible_count = trash_entries|selectattr('purge_eligible')|list|length %}
-            {% if is_admin and selected_cluster.is_default and purge_eligible_count %}
+            {% if trash_bulk_pending and trash_bulk_pending.status == "PENDING_APPROVAL" and is_admin %}
+            <span class="hint">Đề xuất xoá tất cả đang chờ duyệt.</span>
+            <form method="post" action="/actions/{{ trash_bulk_pending.id }}/approve" class="inline-form"><button class="btn btn-approve btn-sm">Duyệt xoá tất cả</button></form>
+            <form method="post" action="/actions/{{ trash_bulk_pending.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
+            {% elif trash_bulk_pending %}
+            <span class="hint">Đề xuất xoá tất cả đang chờ Worker thực thi.</span>
+            {% elif is_admin and selected_cluster.is_default and purge_eligible_count %}
             <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form"
               onsubmit="return confirm('XOÁ VĨNH VIỄN tất cả {{ purge_eligible_count }} volume đã hết TTL trong Trash của pool {{ selected_pool }}? Action cần được duyệt trước khi Worker thực thi.');">
               <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ purge_eligible_count }})</button>

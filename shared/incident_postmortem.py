@@ -11,6 +11,7 @@ import httpx
 from config.settings import settings
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared import db
 from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent
 from shared.router_client import build_router_client
@@ -106,6 +107,7 @@ def _schema() -> dict:
 
 @observe_ai_call("incident_postmortem")
 async def _call_model(payload: dict) -> dict:
+    refresh_chat_provider_flags()
     payload = default_redactor.redact(payload)
     schema = _schema()
     system = (
@@ -114,6 +116,7 @@ async def _call_model(payload: dict) -> dict:
         "be supported by citations containing exact event IDs. State uncertainty in limitations."
     )
     user = "SOURCE_TIMELINE_JSON:\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured = {}
         async def capture(name, arguments):
@@ -125,8 +128,9 @@ async def _call_model(payload: dict) -> dict:
             await codex_app_server.run_turn(system + "\nCall the tool exactly once.\n" + user, [schema], capture,
                                             timeout=TIMEOUT_SECONDS)
         except CodexAppServerError as exc:
-            raise PostmortemError(f"Codex call failed: {exc}") from exc
-        return captured
+            provider_errors.append(f"Codex call failed: {exc}")
+        else:
+            return captured
     if settings.claude_chat_enabled:
         try:
             raw = await run_claude_prompt(
@@ -134,9 +138,12 @@ async def _call_model(payload: dict) -> dict:
                 json.dumps(schema["function"]["parameters"], ensure_ascii=False) + "\n" + user,
                 timeout=TIMEOUT_SECONDS,
             )
-            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise PostmortemError(f"Claude call failed: {exc}") from exc
+            provider_errors.append(f"Claude call failed: {exc}")
+        else:
+            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
+    if provider_errors and not settings.router_api_key:
+        raise PostmortemError("; ".join(provider_errors))
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
         completion = await client.chat.completions.create(

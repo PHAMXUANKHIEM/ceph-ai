@@ -947,6 +947,26 @@ def test_call_router_uses_claude_when_enabled(monkeypatch):
     assert result == {"diagnosis_text": "d", "action_id": "resync_ntp", "rationale": "r"}
 
 
+def test_call_router_falls_back_to_claude_when_codex_fails(monkeypatch):
+    monkeypatch.setattr(router_client.settings, "codex_chat_enabled", True)
+    monkeypatch.setattr(router_client.settings, "claude_chat_enabled", True)
+    monkeypatch.setattr(router_client.settings, "router_api_key", "")
+
+    async def unavailable_codex(*_args, **_kwargs):
+        raise router_client.CodexAppServerError("OAuth session expired")
+
+    async def working_claude(prompt, timeout):
+        return '{"diagnosis_text":"d","action_id":"resync_ntp","rationale":"r"}'
+
+    monkeypatch.setattr(router_client.codex_app_server, "run_turn", unavailable_codex)
+    monkeypatch.setattr(router_client, "run_claude_prompt", working_claude)
+    monkeypatch.setattr(router_client, "_get_client", lambda: pytest.fail("router must not be used"))
+
+    result = asyncio.run(router_client._call_router("some content"))
+
+    assert result == {"diagnosis_text": "d", "action_id": "resync_ntp", "rationale": "r"}
+
+
 def test_call_router_ignores_tool_call_with_wrong_name(monkeypatch):
     _install_fake_client(monkeypatch, _completion(("some_other_tool", {"x": 1})))
 

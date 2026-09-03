@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 RETRY_HEADER = "x-retry-count"
 _worker_broker_connection = None
 
+# A message can be redelivered after its original consumer lost the broker
+# connection.  It must never reopen an Incident that another worker/watcher
+# has already closed, otherwise a stale delivery can turn RESOLVED back into
+# DIAGNOSING and trigger another recovery notification on the next health
+# poll.  A FAILED Incident is also not processable by this message again:
+# Watcher creates a fresh Incident for a still-present Ceph check.
+_NON_PROCESSABLE_INCIDENT_STATUSES = {
+    IncidentStatus.AUTO_FIXED.value,
+    IncidentStatus.VERIFYING.value,
+    IncidentStatus.RESOLVED.value,
+    IncidentStatus.REJECTED.value,
+    IncidentStatus.FAILED.value,
+}
+
 
 def _worker_broker_is_ready(connection) -> bool:
     """Return true only while aio-pika's robust connection is connected.
@@ -170,6 +184,14 @@ async def _handle_message(
                 logger.warning("_handle_message: no Incident row for id=%s — acking, discarding", incident_id)
                 await message.ack()
                 return
+            if incident.status in _NON_PROCESSABLE_INCIDENT_STATUSES:
+                logger.info(
+                    "_handle_message: stale message for incident %s in terminal/non-processable status %s — acking",
+                    incident_id,
+                    incident.status,
+                )
+                await message.ack()
+                return
             try:
                 incident_grouping.assign_incident_group(session, incident)
                 envelope["incident_group"] = incident_grouping.build_group_context(
@@ -215,10 +237,26 @@ async def _handle_message(
         except Exception:
             logger.exception(
                 "_handle_message: failure-recovery path itself failed for incident %s — "
-                "dead-lettering as last resort",
+                "marking FAILED and dead-lettering as last resort",
                 incident_id,
             )
-            await message.reject(requeue=False)
+            # A failed retry-publish used to dead-letter a message while the
+            # Incident stayed DIAGNOSING forever.  The message will not be
+            # retried after this point, so preserve that terminal outcome
+            # even when the normal recovery path itself breaks.
+            try:
+                await _set_incident_status(incident_id, IncidentStatus.FAILED)
+                _notify_ai_diagnosis_failed(incident_id)
+            except Exception:
+                logger.exception(
+                    "_handle_message: fallback FAILED update failed for incident %s", incident_id
+                )
+            try:
+                await message.reject(requeue=False)
+            except Exception:
+                logger.exception(
+                    "_handle_message: final dead-letter reject failed for incident %s", incident_id
+                )
         return
 
     # Deliberately outside the try/except above: if ack() itself raises

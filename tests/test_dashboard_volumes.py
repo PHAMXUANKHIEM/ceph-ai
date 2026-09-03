@@ -1356,6 +1356,7 @@ def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
     response = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
 
     assert response.status_code == 303
+    assert response.headers["location"] == "/trash?pool=vms"
 
     with db_module.SessionLocal() as session:
         action = (
@@ -1373,6 +1374,13 @@ def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
         incident = session.get(Incident, action.incident_id)
         assert incident.ceph_code == "RBD_TRASH_PURGE_ALL"
         assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        action_pk = action.id
+
+    page = dashboard_client.get("/trash?pool=vms")
+    assert page.status_code == 200
+    assert "Đề xuất xoá tất cả đang chờ duyệt." in page.text
+    assert f'action="/actions/{action_pk}/approve"' in page.text
+    assert "Duyệt xoá tất cả" in page.text
 
 
 def test_purge_all_trash_rejects_duplicate_in_flight_proposal(dashboard_client, monkeypatch):

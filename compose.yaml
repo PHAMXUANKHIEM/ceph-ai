@@ -118,7 +118,19 @@ services:
       - ./:/app:ro
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      # Diagnosis/remediation runs in this service too.  It must see the
+      # exact same CLI binaries and account homes as the interactive AI
+      # services, otherwise a valid Dashboard/Telegram login is unusable.
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      - ./.codex-account:/app/.codex-account:rw
+      - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_CONTAINERIZED: "true"
+      PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('watcher', stale_after_seconds=45)['healthy'])\""]
       interval: 20s
@@ -132,7 +144,18 @@ services:
       - ./:/app:ro
       - /run/ceph-ai:/run/ceph-ai:rw
       - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      # Incident diagnosis executes here, so it needs the same shared
+      # Codex/Claude CLI installation and OAuth homes as Dashboard/Telegram.
+      - /root/.local:/opt/ai-tools:ro
+      - /root/.codex/packages:/opt/codex-packages:ro
+      - ./.codex-account:/app/.codex-account:rw
+      - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      CEPH_AI_RUNTIME_DIR: /run/ceph-ai
+      CEPH_AI_CONTAINERIZED: "true"
+      PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from shared.service_health import status; raise SystemExit(not status('worker', stale_after_seconds=45)['healthy'])\""]
       interval: 20s

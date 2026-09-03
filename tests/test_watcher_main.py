@@ -10,7 +10,7 @@ import watcher.main as watcher_main
 from shared import db as db_module
 from shared import heartbeat
 from shared.db import Base
-from shared.models import WatcherHeartbeat
+from shared.models import Incident, IncidentStatus, WatcherHeartbeat
 
 
 def test_auxiliary_scan_runs_in_background_and_prevents_overlap():
@@ -652,6 +652,30 @@ def test_run_resolves_recovered_incidents_on_every_poll_not_just_on_transition(m
     assert calls == [set(), set(), set()]  # resolve step still ran all 3 times
 
 
+def test_recovery_alert_is_emitted_once_after_incident_becomes_resolved(monkeypatch):
+    with db_module.SessionLocal() as session:
+        session.add(
+            Incident(
+                ceph_code="OSD_DOWN",
+                status=IncidentStatus.FAILED.value,
+                detected_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    sent = []
+    monkeypatch.setattr(
+        watcher_main.telegram_alerts,
+        "send_incident_verified_alert",
+        lambda ceph_code, **kwargs: sent.append((ceph_code, kwargs)),
+    )
+
+    watcher_main._resolve_recovered_incidents(set())
+    watcher_main._resolve_recovered_incidents(set())
+
+    assert [ceph_code for ceph_code, _kwargs in sent] == ["OSD_DOWN"]
+
+
 def test_run_records_failed_heartbeat_when_query_raises_unexpected_exception(monkeypatch):
     # Not a CephQueryError — some other bug/failure inside query_cluster_health()
     # itself. AC #1: every poll iteration gets a heartbeat, success or not.
@@ -724,6 +748,26 @@ def _make_observed_cluster(session) -> "Cluster":
     session.commit()
     session.refresh(cluster)
     return cluster
+
+
+def test_refresh_active_observed_cluster_reads_current_connection_fields(isolated_db):
+    with db_module.SessionLocal() as session:
+        cluster = _make_observed_cluster(session)
+        cluster_id = cluster.id
+        cluster.ceph_osd_nodes = "10.30.1.99"
+        cluster.ceph_exec_mode = "cephadm"
+        session.commit()
+
+    refreshed = watcher_main._refresh_active_observed_cluster(cluster_id)
+
+    assert refreshed is not None
+    assert refreshed.ceph_osd_nodes == "10.30.1.99"
+    assert refreshed.ceph_exec_mode == "cephadm"
+
+    with db_module.SessionLocal() as session:
+        session.get(watcher_main.Cluster, cluster_id).is_active = False
+        session.commit()
+    assert watcher_main._refresh_active_observed_cluster(cluster_id) is None
 
 
 def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(monkeypatch):

@@ -17,6 +17,7 @@ from shared.ai_observability import observe_ai_call
 from shared.ai_redaction import default_redactor
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.models import AIRunbook, AIRunbookFeedback, Action, Cluster, Incident, RemediationCase
 from shared.router_client import build_router_client
 from shared.synthetic_incidents import is_synthetic_evidence
@@ -234,6 +235,7 @@ def _schema() -> dict:
 
 @observe_ai_call("remediation_runbook")
 async def _call_model(source: dict) -> dict:
+    refresh_chat_provider_flags()
     source = default_redactor.redact(source)
     schema = _schema()
     system = (
@@ -243,6 +245,7 @@ async def _call_model(source: dict) -> dict:
         "or more exact evidence_ids from the source. Include uncertainty in limitations."
     )
     user = "SOURCE_CASES_JSON:\n" + json.dumps(source, ensure_ascii=False, sort_keys=True)
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured = {}
 
@@ -258,10 +261,11 @@ async def _call_model(source: dict) -> dict:
                 [schema], capture, timeout=TIMEOUT_SECONDS,
             )
         except CodexAppServerError as exc:
-            raise RunbookError(f"Codex call failed: {exc}") from exc
-        if captured:
-            return captured
-        raise RunbookError("Codex không trả về runbook")
+            provider_errors.append(f"Codex call failed: {exc}")
+        else:
+            if captured:
+                return captured
+            provider_errors.append("Codex không trả về runbook")
     if settings.claude_chat_enabled:
         try:
             raw = await run_claude_prompt(
@@ -269,9 +273,12 @@ async def _call_model(source: dict) -> dict:
                 json.dumps(schema["function"]["parameters"], ensure_ascii=False) + "\n" + user,
                 timeout=TIMEOUT_SECONDS,
             )
-            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise RunbookError(f"Claude call failed: {exc}") from exc
+            provider_errors.append(f"Claude call failed: {exc}")
+        else:
+            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
+    if provider_errors and not settings.router_api_key:
+        raise RunbookError("; ".join(provider_errors))
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
         completion = await client.chat.completions.create(

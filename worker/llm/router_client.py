@@ -40,6 +40,7 @@ from watcher.ceph_code_families import is_monitor_owned
 from shared.router_client import build_router_client
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.telegram_alerts import (
     send_ai_incident_alert,
     send_auto_remediation_alert,
@@ -580,6 +581,8 @@ async def _call_router(user_content: str) -> dict:
     unchanged against a real non-streaming-only OpenAI-compatible endpoint
     too.
     """
+    refresh_chat_provider_flags()
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured: dict = {}
 
@@ -597,8 +600,13 @@ async def _call_router(user_content: str) -> dict:
         try:
             await codex_app_server.run_turn(prompt, [_tool_schema()], capture, timeout=ROUTER_TIMEOUT_SECONDS)
         except CodexAppServerError as exc:
-            raise RouterDiagnosisError(f"Codex call failed: {exc}") from exc
-        return captured
+            # Codex can temporarily lose its OAuth session or quota.  Do not
+            # make a separately authenticated Claude account unavailable in
+            # that case; try the next configured provider below.
+            provider_errors.append(f"Codex call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            return captured
 
     if settings.claude_chat_enabled:
         prompt = (
@@ -615,8 +623,16 @@ async def _call_router(user_content: str) -> dict:
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
             result = json.loads(clean)
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise RouterDiagnosisError(f"Claude call failed: {exc}") from exc
-        return result
+            provider_errors.append(f"Claude call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            return result
+
+    # Avoid turning a useful CLI error into an opaque RouterNotConfiguredError
+    # when no 9router credential exists.  The order is Codex -> Claude ->
+    # 9router, and every configured provider gets exactly one chance.
+    if provider_errors and not settings.router_api_key:
+        raise RouterDiagnosisError("; ".join(provider_errors))
 
     client = _get_client()
     try:

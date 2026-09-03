@@ -1,8 +1,10 @@
+import asyncio
 import json
 from pathlib import Path
 
 import bcrypt
 import pytest
+import dashboard.chat_client as chat_client
 import dashboard.routes.chat as chat_module
 import dashboard.dual_ai_chat as dual_module
 from shared import audit
@@ -113,6 +115,28 @@ tokens used
 def test_compact_agent_output_handles_empty_output():
     assert dual_module._compact_agent_output("") == ""
     assert dual_module._compact_agent_output("\n \t\n") == ""
+
+
+def test_chat_turn_falls_back_to_claude_when_codex_fails(monkeypatch):
+    monkeypatch.setattr(chat_client.settings, "codex_chat_enabled", True)
+    monkeypatch.setattr(chat_client.settings, "claude_chat_enabled", True)
+    monkeypatch.setattr(chat_client.settings, "router_api_key", "")
+    monkeypatch.setattr(chat_client.auth, "is_ceph_chat_restricted", lambda _actor: False)
+    monkeypatch.setattr(chat_client.auth, "chat_ai_name", lambda _actor: "AI")
+    monkeypatch.setattr(chat_client.auth, "chat_female_address", lambda _actor: "Mình yêu ơi, em là")
+
+    async def unavailable_codex(*_args, **_kwargs):
+        raise chat_client.ChatTurnError("OAuth session expired")
+
+    async def working_claude(*_args, **_kwargs):
+        return {"reply_text": "Claude đang hoạt động", "proposal": None, "tools_used": []}
+
+    monkeypatch.setattr(chat_client, "_run_codex_chat_turn", unavailable_codex)
+    monkeypatch.setattr(chat_client, "_run_claude_chat_turn", working_claude)
+
+    result = asyncio.run(chat_client.run_chat_turn([], "health?", "admin"))
+
+    assert result["reply_text"].endswith("Claude đang hoạt động")
 
 
 def test_compact_agent_output_strips_codex_metadata_from_error_output():

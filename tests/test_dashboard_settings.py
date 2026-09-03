@@ -284,7 +284,7 @@ def test_non_admin_cannot_install_codex(dashboard_client, monkeypatch):
     assert called["value"] is False
 
 
-def test_claude_login_and_activate_disables_codex(dashboard_client, monkeypatch):
+def test_claude_login_and_activate_keeps_codex_as_fallback(dashboard_client, monkeypatch):
     async def fake_start():
         return {"verification_url": "https://claude.example.test/oauth"}
 
@@ -305,10 +305,9 @@ def test_claude_login_and_activate_disables_codex(dashboard_client, monkeypatch)
     activate = dashboard_client.post("/settings/claude/activate")
     assert activate.status_code == 200
     assert settings.claude_chat_enabled is True
-    assert settings.codex_chat_enabled is False
+    assert settings.codex_chat_enabled is True
     env_text = env_config.ENV_PATH.read_text()
     assert "CLAUDE_CHAT_ENABLED=true" in env_text
-    assert "CODEX_CHAT_ENABLED=false" in env_text
 
 
 def test_claude_status_and_model_selection(dashboard_client, monkeypatch):

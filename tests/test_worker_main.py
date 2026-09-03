@@ -125,6 +125,28 @@ def test_handle_message_success_acks_and_sets_diagnosing(isolated_db):
         assert incident.status == IncidentStatus.DIAGNOSING.value
 
 
+def test_handle_message_for_resolved_incident_acks_without_reopening_or_processing(isolated_db):
+    _create_incident(db_module.SessionLocal, "incident-resolved")
+    with db_module.SessionLocal() as session:
+        session.get(Incident, "incident-resolved").status = IncidentStatus.RESOLVED.value
+        session.commit()
+
+    message = _make_message("incident-resolved")
+    channel = FakeChannel()
+    processed = []
+
+    async def should_not_run(*_args):
+        processed.append(True)
+
+    asyncio.run(worker_main._handle_message(message, channel, should_not_run, max_retries=3))
+
+    assert message.ack_calls == 1
+    assert message.reject_calls == []
+    assert processed == []
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, "incident-resolved").status == IncidentStatus.RESOLVED.value
+
+
 def test_handle_message_failure_below_threshold_republishes_with_incremented_retry(isolated_db):
     _create_incident(db_module.SessionLocal, "incident-2")
     message = _make_message("incident-2", retry_count=0)
@@ -145,6 +167,29 @@ def test_handle_message_failure_below_threshold_republishes_with_incremented_ret
     with db_module.SessionLocal() as session:
         incident = session.get(Incident, "incident-2")
         assert incident.status == IncidentStatus.DIAGNOSING.value  # not FAILED yet
+
+
+def test_handle_message_republish_failure_marks_incident_failed_before_dead_letter(isolated_db, monkeypatch):
+    _create_incident(db_module.SessionLocal, "incident-republish-failure")
+    message = _make_message("incident-republish-failure", retry_count=0)
+    channel = FakeChannel()
+    alerts = []
+    monkeypatch.setattr(worker_main, "_notify_ai_diagnosis_failed", alerts.append)
+
+    async def failed_publish(*_args, **_kwargs):
+        raise RuntimeError("broker unavailable")
+
+    channel.default_exchange.publish = failed_publish
+
+    async def failing_process(_incident_id, _envelope):
+        raise RuntimeError("router unavailable")
+
+    asyncio.run(worker_main._handle_message(message, channel, failing_process, max_retries=3))
+
+    assert message.reject_calls == [False]
+    assert alerts == ["incident-republish-failure"]
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, "incident-republish-failure").status == IncidentStatus.FAILED.value
 
 
 def test_handle_message_failure_at_threshold_marks_failed_alerts_and_dead_letters(isolated_db, monkeypatch):

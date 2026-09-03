@@ -13,6 +13,7 @@ from dashboard.routes import auth
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared import db
 from shared.incident_postmortem import build_timeline
 from shared.models import CephCapacitySample, Incident
@@ -938,6 +939,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
     tools only — a staged propose_action isn't a "query"), for the
     frontend's "🔧 Đã dùng: ..." badge.
     """
+    refresh_chat_provider_flags()
     ceph_restricted = auth.is_ceph_chat_restricted(actor)
     ai_name = auth.chat_ai_name(actor)
     female_address = auth.chat_female_address(actor)
@@ -961,20 +963,40 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
     ]
     outbound_user_text = redact_text(user_text)
 
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
-        result = await _run_codex_chat_turn(outbound_history, outbound_user_text, actor_system_prompt, actor, cluster)
-        result["reply_text"] = with_romantic_address(
-            _append_citation_footer(result["reply_text"], result.pop("citations", [])),
-            ai_name, female_address,
-        )
-        return result
+        try:
+            result = await _run_codex_chat_turn(
+                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster
+            )
+        except ChatTurnError as exc:
+            # Codex auth/quota failures must not block a configured Claude
+            # fallback (the worker and Telegram share this same chat path).
+            provider_errors.append(f"Codex call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            result["reply_text"] = with_romantic_address(
+                _append_citation_footer(result["reply_text"], result.pop("citations", [])),
+                ai_name, female_address,
+            )
+            return result
     if settings.claude_chat_enabled:
-        result = await _run_claude_chat_turn(outbound_history, outbound_user_text, actor_system_prompt, actor, cluster)
-        result["reply_text"] = with_romantic_address(
-            _append_citation_footer(result["reply_text"], result.pop("citations", [])),
-            ai_name, female_address,
-        )
-        return result
+        try:
+            result = await _run_claude_chat_turn(
+                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster
+            )
+        except ChatTurnError as exc:
+            provider_errors.append(f"Claude call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            result["reply_text"] = with_romantic_address(
+                _append_citation_footer(result["reply_text"], result.pop("citations", [])),
+                ai_name, female_address,
+            )
+            return result
+
+    if provider_errors and not settings.router_api_key:
+        raise ChatTurnError("; ".join(provider_errors))
 
     try:
         client = _get_client()

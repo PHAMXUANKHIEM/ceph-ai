@@ -28,6 +28,7 @@ import httpx
 from config.settings import settings
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from shared.ai_redaction import default_redactor
 from shared.ai_observability import observe_ai_call, record_ai_usage
@@ -136,9 +137,11 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
     from a VolumePerfSweep row: {"pool", "scratch_image", "steps", "knee",
     "qos_notes", "bottleneck_notes"}. Returns the tool-call arguments dict
     unchanged (already validated against _REQUIRED_FIELDS)."""
+    refresh_chat_provider_flags()
     if not sweep.get("steps"):
         raise VolumePerfAnalysisError("Không có dữ liệu bước đo nào để phân tích.")
     sweep = default_redactor.redact(sweep)
+    provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         captured: dict = {}
 
@@ -159,10 +162,12 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
                 prompt, [_tool_schema()], capture_conclusion, timeout=ROUTER_TIMEOUT_SECONDS
             )
         except CodexAppServerError as exc:
-            raise VolumePerfAnalysisError(f"Codex: {exc}") from exc
-        if not _REQUIRED_FIELDS.issubset(captured):
-            raise VolumePerfAnalysisError(f"Codex thiếu trường bắt buộc: {captured!r}")
-        return captured
+            provider_errors.append(f"Codex: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            if _REQUIRED_FIELDS.issubset(captured):
+                return captured
+            provider_errors.append(f"Codex thiếu trường bắt buộc: {captured!r}")
 
     if settings.claude_chat_enabled:
         prompt = (
@@ -180,10 +185,15 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
                 clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.IGNORECASE)
             result = json.loads(clean)
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
-            raise VolumePerfAnalysisError(f"Claude: {exc}") from exc
-        if not _REQUIRED_FIELDS.issubset(result):
-            raise VolumePerfAnalysisError(f"Claude thiếu trường bắt buộc: {result!r}")
-        return result
+            provider_errors.append(f"Claude: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            if _REQUIRED_FIELDS.issubset(result):
+                return result
+            provider_errors.append(f"Claude thiếu trường bắt buộc: {result!r}")
+
+    if provider_errors and not settings.router_api_key:
+        raise VolumePerfAnalysisError("; ".join(provider_errors))
 
     try:
         client = _get_client()

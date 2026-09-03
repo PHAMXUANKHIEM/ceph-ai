@@ -281,6 +281,11 @@ def _resolve_recovered_incidents(
                 Incident.status.in_(_RECOVERABLE_STATUSES - {IncidentStatus.VERIFYING.value}),
                 cluster_filter,
             )
+            # Watcher and remediation_main may overlap during a rollout.  A
+            # row lock makes this RESOLVED transition the single ownership
+            # point for the recovery alert, rather than letting both loops
+            # read the same open row and send the same Telegram message.
+            .with_for_update(skip_locked=True)
             .all()
         )
         for incident in open_incidents:
@@ -1218,6 +1223,21 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
         )
 
 
+def _refresh_active_observed_cluster(cluster_id: str) -> Cluster | None:
+    """Load the latest observed-cluster configuration for each poll.
+
+    Cluster connection fields are editable in the Dashboard.  Observed-cluster
+    threads are long-lived, so retaining the detached object passed at startup
+    would keep polling/logging old node IPs until the Watcher was restarted.
+    """
+    with db.SessionLocal() as session:
+        current = session.get(Cluster, cluster_id)
+        if current is None or not current.is_active:
+            return None
+        session.expunge(current)
+        return current
+
+
 def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = None) -> None:
     """Multi-cluster observability Phase 1: the loop for any cluster OTHER
     than the default one — core health poll + Incident creation + heartbeat,
@@ -1243,9 +1263,14 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
-    mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        refreshed_cluster = _refresh_active_observed_cluster(cluster.id)
+        if refreshed_cluster is None:
+            logger.info("run_observed_cluster_loop: cluster id=%s is inactive or removed; stopping thread", cluster.id)
+            return
+        cluster = refreshed_cluster
+        mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
         try:
             health = query_cluster_health_with(
                 mon_nodes,
