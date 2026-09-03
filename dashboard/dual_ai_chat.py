@@ -192,9 +192,18 @@ def _exchange_context(events: list[dict]) -> str:
 
 
 def _agent_status(content: str) -> str | None:
-    """Read the final bounded completion signal from an agent response."""
-    matches = AGENT_STATUS_RE.findall(content or "")
-    return matches[-1].upper() if matches else None
+    """Read a completion signal only when it is the response's final line."""
+    lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    match = AGENT_STATUS_RE.fullmatch(lines[-1])
+    return match.group(1).upper() if match else None
+
+
+def _remember_exchange_event(events: list[dict], event: dict) -> None:
+    """Keep only the context window; callers still receive each yielded event."""
+    events.append(event)
+    del events[:-MAX_EXCHANGE_CONTEXT_EVENTS]
 
 
 def _dedupe_key(text: str) -> str:
@@ -572,7 +581,7 @@ async def _stop_process_tree(process) -> None:
 async def _stream_dual_ai_chat_unlocked(
     prompt: str, history: list[dict] | None = None, *, allow_writes: bool = False
 ):
-    """Yield a bounded Planner -> Implementer/Reviewer exchange.
+    """Yield a continuous Planner -> Implementer/Reviewer exchange.
 
     Provider quota, token/context exhaustion, timeout, or another provider
     error can still end the exchange earlier.
@@ -583,19 +592,24 @@ async def _stream_dual_ai_chat_unlocked(
             f"Yêu cầu quá dài; chế độ hai AI chỉ nhận tối đa {MAX_DUAL_PROMPT_CHARS} ký tự"
         )
     prior = _context(history)
+    # The yielded stream remains unbounded by design, but the internal prompt
+    # context must not retain every turn for the lifetime of a long session.
     events: list[dict] = []
+    exhausted_candidates: set[tuple[str, str]] = set()
+    exhausted_accounts: set[tuple[str, str]] = set()
 
     async def ask_and_track(role: str, prompt_text: str) -> dict:
         exhausted: list[str] = []
-        auto_exhausted_accounts: set[tuple[str, str]] = set()
         for provider_spec, model in _provider_candidates(role):
             provider_name = _provider_name(provider_spec)
             account_profile = _provider_account_profile(role, provider_spec)
-            # `auto` is resolved deterministically by _provider_command. If it
-            # exhausted one account, an explicit fallback pointing to that
-            # same account would only retry the same quota. A different
-            # profile remains eligible, which is the account-pool behavior.
-            if (provider_name, account_profile) in auto_exhausted_accounts:
+            # Do not retry a provider/account that already exhausted during
+            # this session. A different explicitly configured account remains
+            # eligible as the account-pool fallback.
+            if (
+                (provider_name, account_profile) in exhausted_candidates
+                or (provider_name, account_profile) in exhausted_accounts
+            ):
                 continue
             try:
                 return await _ask(
@@ -607,10 +621,10 @@ async def _stream_dual_ai_chat_unlocked(
                 )
             except DualAIChatExhausted as exc:
                 exhausted.append(f"{provider_spec}{':' + model if model else ''}")
-                if provider_name == "auto" and exc.provider:
-                    auto_exhausted_accounts.add(
-                        (exc.provider, exc.account_profile or account_profile)
-                    )
+                exhausted_candidates.add((provider_name, account_profile))
+                exhausted_accounts.add(
+                    (exc.provider or provider_name, exc.account_profile or account_profile)
+                )
                 continue
             except DualAIChatError as exc:
                 raise DualAIChatError(str(exc), events=events) from exc
@@ -635,7 +649,7 @@ Lịch sử liên quan:
 %s
 ---""" % (SHORT_REPLY_INSTRUCTIONS, request, prior or "(mới)"),
     )
-    events.append(planner)
+    _remember_exchange_event(events, planner)
     yield planner
     if _agent_status(planner.get("content", "")) == "DONE":
         return
@@ -661,7 +675,7 @@ Các lượt gần nhất:
 {_exchange_context(events)}
 ---"""
         event = await ask_and_track(role, prompt_text)
-        events.append(event)
+        _remember_exchange_event(events, event)
         yield event
         if _agent_status(event.get("content", "")) == "DONE":
             return
@@ -689,7 +703,7 @@ def _release_execution_lock(handle) -> None:
 async def stream_dual_ai_chat(
     prompt: str, history: list[dict] | None = None, *, allow_writes: bool = False
 ):
-    """Serialize bounded dual-AI sessions; only Telegram may opt into writes."""
+    """Serialize continuous dual-AI sessions; only Telegram may opt into writes."""
     try:
         lock_handle = await asyncio.to_thread(_acquire_execution_lock)
     except BlockingIOError as exc:
