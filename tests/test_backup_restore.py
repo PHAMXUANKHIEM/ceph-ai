@@ -292,6 +292,25 @@ def test_restore_as_new_cleans_partial_destination_when_verify_fails(isolated_db
     assert FakeSSHClient.imported_calls[-1][0] == "rbd rm restored/web01-copy"
 
 
+def test_restore_as_new_cleans_destination_when_import_fails_after_creation(isolated_db):
+    storage = FakeStorageBackend()
+    storage.put("full/vms/web01/backup-1.bin", FULL_CONTENT)
+    _make_full_job()
+    FakeSSHClient.exit_status_by_cmd["rbd import - restored/web01-copy"] = 1
+    FakeSSHClient.stderr_by_cmd["rbd import - restored/web01-copy"] = "import failed after image creation"
+
+    result = restore.restore_image(
+        "vms", "web01", storage, "restored", "web01-copy",
+        cleanup_new_destination_on_failure=True,
+    )
+
+    assert result.success is False
+    assert [cmd for cmd, _sink in FakeSSHClient.imported_calls] == [
+        "rbd import - restored/web01-copy",
+        "rbd rm restored/web01-copy",
+    ]
+
+
 def test_restore_image_fails_when_no_successful_full_backup_exists(isolated_db):
     storage = FakeStorageBackend()
 

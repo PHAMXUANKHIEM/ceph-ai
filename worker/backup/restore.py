@@ -283,6 +283,10 @@ def restore_image(
         full_path, full_size = _download_and_verify(storage, full_job)
         tmp_paths.append(full_path)
         total_size += full_size
+        # `rbd import` can create the destination before returning a non-zero
+        # status. Mark it as potentially created before streaming so a failed
+        # import cannot leave a partial image behind.
+        destination_created = cleanup_new_destination_on_failure
         _stream_file_to_rbd(mon_ip, full_path, f"rbd import - {destination_spec}", cluster)
         destination_created = True
 
