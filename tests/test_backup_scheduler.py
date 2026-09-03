@@ -262,6 +262,22 @@ def test_build_scheduler_registers_jobs_for_backup_enabled_additional_cluster(is
     assert tuple(job.args) == ("rbd", "vm1", cluster_id)
 
 
+def test_build_scheduler_does_not_add_additional_metadata_job_without_metadata_cron(isolated_db, monkeypatch):
+    policy = {
+        "backup_targets": [],
+        "tracked_images": [],
+        "retention": {"keep_full_count": 3, "keep_incremental_count": 7},
+        "schedule": {"cron": {"hour": 2, "minute": 0}},
+    }
+    monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    cluster_id = _make_additional_cluster()
+
+    built = scheduler.build_scheduler()
+
+    job_ids = {job.id for job in built.get_jobs()}
+    assert f"backup_metadata_run_{cluster_id}" not in job_ids
+
+
 def test_build_scheduler_skips_disabled_additional_cluster(isolated_db, monkeypatch):
     policy = {
         "backup_targets": [],
@@ -324,6 +340,21 @@ def test_default_target_readiness_requires_policy_copy_count(monkeypatch):
     monkeypatch.setattr(scheduler.settings, "backup_target_b_transport", "s3", raising=False)
     for suffix in ("endpoint", "access_key", "secret_key", "bucket"):
         monkeypatch.setattr(scheduler.settings, f"backup_target_b_s3_{suffix}", suffix, raising=False)
+    assert scheduler._default_backup_target_ready(policy) is True
+
+
+def test_default_target_readiness_allows_aws_s3_without_endpoint(monkeypatch):
+    policy = {"backup_targets": [{"slot": "a"}], "required_copy_count": 1}
+    fields = {
+        "backup_target_a_transport": "s3",
+        "backup_target_a_s3_endpoint": "",
+        "backup_target_a_s3_access_key": "access",
+        "backup_target_a_s3_secret_key": "secret",
+        "backup_target_a_s3_bucket": "bucket",
+    }
+    for name, value in fields.items():
+        monkeypatch.setattr(scheduler.settings, name, value, raising=False)
+
     assert scheduler._default_backup_target_ready(policy) is True
 
 

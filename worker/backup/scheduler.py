@@ -53,7 +53,10 @@ def _target_fields_ready(source, prefix: str) -> bool:
     if transport == "ssh":
         fields = ("ssh_host", "ssh_user", "ssh_key_path", "ssh_landing_dir")
     elif transport == "s3":
-        fields = ("s3_endpoint", "s3_access_key", "s3_secret_key", "s3_bucket")
+        # An empty endpoint selects the real AWS S3 endpoint in
+        # storage/s3_backend.py; only S3-compatible services such as MinIO
+        # need this field populated.
+        fields = ("s3_access_key", "s3_secret_key", "s3_bucket")
     else:
         return False
     return all(getattr(source, f"{prefix}_{field}", None) for field in fields)
@@ -216,15 +219,18 @@ def _register_cluster_backup_jobs(
                 replace_existing=True,
             )
             desired_job_ids.add(job_id)
-        metadata_job_id = f"backup_metadata_run_{cluster.id}"
-        scheduler.add_job(
-            trigger_metadata_backup,
-            trigger=CronTrigger(hour=metadata_cron.get("hour", "*/6"), minute=metadata_cron.get("minute", 0)),
-            args=[cluster.id],
-            id=metadata_job_id,
-            replace_existing=True,
-        )
-        desired_job_ids.add(metadata_job_id)
+        if metadata_cron:
+            metadata_job_id = f"backup_metadata_run_{cluster.id}"
+            scheduler.add_job(
+                trigger_metadata_backup,
+                trigger=CronTrigger(
+                    hour=metadata_cron.get("hour", "*/6"), minute=metadata_cron.get("minute", 0)
+                ),
+                args=[cluster.id],
+                id=metadata_job_id,
+                replace_existing=True,
+            )
+            desired_job_ids.add(metadata_job_id)
         digest_job_id = f"backup_digest_run_{cluster.id}"
         scheduler.add_job(
             digest.run_digest,
