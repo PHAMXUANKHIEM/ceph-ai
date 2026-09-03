@@ -62,7 +62,7 @@ from shared.models import (
 )
 from shared import telegram_alerts
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
-from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.codex_app_server import CodexAppServer, CodexAppServerError
 from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.router_client import build_router_client
 from watcher.capability_inventory import latest_snapshot
@@ -381,6 +381,7 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
     # and always required ROUTER_*, so enabling AI on a Claude deployment
     # could never analyze even one finding.
     if settings.codex_chat_enabled:
+        codex_client = CodexAppServer()
         captured: dict = {}
 
         async def capture(tool_name: str, arguments: dict) -> tuple[str, bool]:
@@ -395,7 +396,7 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             + user_content
         )
         try:
-            await codex_app_server.run_turn(
+            await codex_client.run_turn(
                 prompt, [schema], capture, timeout=ROUTER_TIMEOUT_SECONDS
             )
         except CodexAppServerError as exc:
@@ -403,6 +404,11 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             logger.warning("%s; trying configured fallback", provider_errors[-1])
         else:
             return captured
+        finally:
+            # Watcher invokes this synchronous analysis through a fresh
+            # asyncio.run() for each window. Never leave an async Codex
+            # process/queue attached to a loop that is about to close.
+            await codex_client.close()
 
     if settings.claude_chat_enabled:
         expected = schema["function"]["parameters"]
