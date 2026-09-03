@@ -69,6 +69,23 @@ def test_business_message_formats_upload_size_and_event_name(db_session):
     assert "Giờ VN: 15:31:14 - 26/03/2026" in message
 
 
+def test_business_message_uses_list_buckets_action_for_absolute_uri_row(db_session):
+    cluster = Cluster(name="audit", ceph_mon_nodes="", ceph_rgw_nodes="", is_default=False,
+                      is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")
+    db_session.add(cluster)
+    db_session.flush()
+    event = RgwAccessAuditEvent(
+        cluster_id=cluster.id, rgw_host="rgw1", fingerprint="absolute-uri".ljust(64, "0"),
+        transaction_id="tx-ipify", method="GET", action="Liệt kê Bucket",
+        bucket=None, object_key="/api.ipify.org/", requester="anonymous",
+        remote_addr="216.218.206.125", http_status=200, bytes_sent=51,
+        event_at=datetime(2026, 9, 3, 7, 24, 3),
+    )
+    message = audit._message(event, "ceph")
+    assert "Hành động: BucketAccessed:List" in message
+    assert "Bucket: -" in message
+
+
 def test_delete_message_uses_previous_object_size_not_empty_response(db_session, monkeypatch):
     cluster = Cluster(name="audit", ceph_mon_nodes="", ceph_rgw_nodes="", is_default=False,
                       is_active=True, ssh_user="root", ssh_key_path="/key", ceph_exec_mode="none")

@@ -21,6 +21,21 @@ def test_parse_native_ops_log_uses_received_bytes_for_put_size():
     assert ral.parse_rgw_ops_log(raw)[0]["bytes_sent"] == 12
 
 
+def test_parse_absolute_service_uri_as_bucket_list_not_object_get():
+    raw = (
+        '{"bucket":"","time":"2026-09-03T07:24:03.119584Z",'
+        '"remote_addr":"216.218.206.125","user":"anonymous",'
+        '"operation":"list_buckets",'
+        '"uri":"GET http://api.ipify.org/?format=json HTTP/1.1",'
+        '"http_status":"200","bytes_sent":51,"trans_id":"tx-ipify"}'
+    )
+    row = ral.parse_rgw_ops_log(raw)[0]
+    assert row["bucket"] is None
+    assert row["object"] is None
+    assert row["action"] == "Liệt kê Bucket"
+    assert row["path"] == "/"
+
+
 def test_parse_native_ops_log_detects_sse_variants_and_plaintext():
     base = '"bucket":"b","time":"2026-08-24T05:13:01Z","operation":"put_obj","uri":"PUT /b/x HTTP/1.1","http_status":"200"'
     s3 = ral.parse_rgw_ops_log("{" + base + ',"http_x_headers":[{"HTTP_X_AMZ_SERVER_SIDE_ENCRYPTION":"AES256"}]}')[0]

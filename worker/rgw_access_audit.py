@@ -148,6 +148,8 @@ def _naive_utc(value: object) -> datetime:
 
 
 def _event_name(event: RgwAccessAuditEvent) -> str:
+    if (event.action or "").strip() in {"Liệt kê Bucket", "list_buckets", "BucketAccessed:List"}:
+        return "BucketAccessed:List"
     has_object = bool(event.object_key)
     if event.method == "PUT":
         return "ObjectCreated:Put" if has_object else "BucketCreated:Put"

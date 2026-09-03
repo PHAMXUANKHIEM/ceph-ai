@@ -33,6 +33,7 @@ import json
 import re
 import shlex
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from config.settings import settings
 from watcher import ceph_client
@@ -120,8 +121,15 @@ def _action_label(method: str, has_object: bool) -> str:
     return _ACTION_VI.get((method, has_object), method)
 
 
+def _request_path(path: str) -> str:
+    """Return the path component for origin-form or absolute-form targets."""
+    if "://" not in path:
+        return path
+    return urlsplit(path).path or "/"
+
+
 def _parse_bucket_and_object(path: str) -> tuple[str | None, str | None]:
-    stripped = path.split("?", 1)[0].lstrip("/")
+    stripped = _request_path(path).split("?", 1)[0].lstrip("/")
     if not stripped:
         return None, None
     parts = stripped.split("/", 1)
@@ -164,6 +172,7 @@ def parse_beast_access_log(raw_text: str) -> list[dict]:
             continue
         method = match.group("method")
         path = match.group("path")
+        path = _request_path(path)
         bucket, obj = _parse_bucket_and_object(path)
         tail = match.group("tail") or ""
         latency_match = re.search(r"\blatency=([0-9.]+)s\b", tail)
@@ -206,6 +215,7 @@ def parse_rgw_ops_log(raw_text: str) -> list[dict]:
         if not match:
             continue
         method, path = match.group("method"), match.group("path")
+        path = _request_path(path)
         bucket = str(payload.get("bucket") or "").strip() or None
         _path_bucket, obj = _parse_bucket_and_object(path)
         if bucket and obj is None:
