@@ -59,7 +59,7 @@ TOKEN_STOP_RE = re.compile(
     r")"
 )
 PROCESS_STOP_TIMEOUT_SECONDS = 3
-MAX_IMPLEMENTER_TURNS = 2
+AGENT_STATUS_RE = re.compile(r"(?im)^\s*STATUS\s*:\s*(DONE|CONTINUE)\s*$")
 DUAL_EXECUTION_LOCK_PATH = Path("/var/lib/ceph-ai/dual-ai-execution.lock")
 DUAL_AGENT_UID = "10001"
 DUAL_WORKSPACE_ENV = "CEPH_AI_DUAL_WORKSPACE"
@@ -78,6 +78,9 @@ SHORT_REPLY_INSTRUCTIONS = """Chỉ trả lời các ý chính đang làm:
 - tối đa 5 gạch đầu dòng, tối đa 600 ký tự;
 - nêu kết luận/việc đang làm, blocker hoặc rủi ro (nếu có), và bước tiếp theo;
 - không chào hỏi, không nhắc lại yêu cầu, không giải thích dài, không độc thoại.
+- luôn kết thúc bằng đúng một dòng `STATUS: CONTINUE` nếu còn việc cần làm,
+  hoặc `STATUS: DONE` nếu vấn đề đã được xử lý/xác minh xong; chỉ dùng DONE khi
+  không còn task thực tế nào cần AI còn lại tiếp tục.
 """
 
 PLANNER_INSTRUCTIONS = """Bạn là Planner/Reviewer của repo Ceph-AI.
@@ -186,6 +189,12 @@ def _exchange_context(events: list[dict]) -> str:
             break
     lines.reverse()
     return "\n".join(lines)[-MAX_DISCUSSION_CONTEXT:]
+
+
+def _agent_status(content: str) -> str | None:
+    """Read the final bounded completion signal from an agent response."""
+    matches = AGENT_STATUS_RE.findall(content or "")
+    return matches[-1].upper() if matches else None
 
 
 def _dedupe_key(text: str) -> str:
@@ -628,14 +637,17 @@ Lịch sử liên quan:
     )
     events.append(planner)
     yield planner
+    if _agent_status(planner.get("content", "")) == "DONE":
+        return
 
     role = "implementer"
-    for _ in range(MAX_IMPLEMENTER_TURNS * 2 - 1):
+    while True:
         speaker = "Implementer" if role == "implementer" else "Planner/Reviewer"
         prompt_text = f"""{(TELEGRAM_IMPLEMENTER_INSTRUCTIONS if allow_writes else IMPLEMENTER_INSTRUCTIONS) if role == 'implementer' else PLANNER_INSTRUCTIONS}
 Bạn là {speaker}, đang tiếp tục trao đổi liên tục với AI còn lại. Đọc các lượt
-gần nhất, phản hồi trực tiếp ý trước, rồi làm/đề xuất đúng một task nhỏ tiếp
-theo trong số lượt còn lại. Người dùng có thể bấm Dừng bất cứ lúc nào.
+gần nhất, phản hồi trực tiếp ý trước, rồi làm/đề xuất đúng task nhỏ tiếp theo.
+Nếu vấn đề đã được xử lý và xác minh đầy đủ, không tạo task mới và trả STATUS: DONE.
+Người dùng có thể bấm Dừng bất cứ lúc nào.
 Trả lời bằng tiếng Việt.
 
 {SHORT_REPLY_INSTRUCTIONS}
@@ -651,6 +663,8 @@ Các lượt gần nhất:
         event = await ask_and_track(role, prompt_text)
         events.append(event)
         yield event
+        if _agent_status(event.get("content", "")) == "DONE":
+            return
         role = "planner" if role == "implementer" else "implementer"
 
 

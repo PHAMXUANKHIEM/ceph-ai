@@ -429,7 +429,7 @@ def test_dual_ai_fallback_moves_from_auto_to_next_provider(monkeypatch):
             "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
             "provider": provider_spec,
             "model": model_override or "default",
-            "content": "ok",
+            "content": "ok\nSTATUS: DONE" if role == "implementer" else "ok\nSTATUS: CONTINUE",
         }
 
     monkeypatch.setattr(dual_module, "_ask", fake_ask)
@@ -440,7 +440,6 @@ def test_dual_ai_fallback_moves_from_auto_to_next_provider(monkeypatch):
     monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_provider", "codex", raising=False)
     monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_model", "gpt-5.4", raising=False)
     monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_fallbacks", "", raising=False)
-    monkeypatch.setattr(dual_module, "MAX_IMPLEMENTER_TURNS", 1)
 
     async def collect():
         return [event async for event in dual_module._stream_dual_ai_chat_unlocked("prompt")]
@@ -453,6 +452,33 @@ def test_dual_ai_fallback_moves_from_auto_to_next_provider(monkeypatch):
         ("planner", "auto", ""),
         ("planner", "codex", "gpt-5.4"),
     ]
+
+
+def test_dual_ai_continues_until_done_marker(monkeypatch):
+    calls = []
+
+    async def fake_ask(role, prompt, *, provider_spec=None, model_override=None, allow_writes=False):
+        calls.append(role)
+        status = "DONE" if len(calls) == 6 else "CONTINUE"
+        return {
+            "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
+            "provider": provider_spec,
+            "model": model_override or "default",
+            "content": f"round {len(calls)}\nSTATUS: {status}",
+        }
+
+    monkeypatch.setattr(dual_module, "_ask", fake_ask)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", False, raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "planner", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_model", "implementer", raising=False)
+
+    import asyncio
+    events = asyncio.run(dual_module.run_dual_ai_chat("prompt"))
+
+    assert len(events) == 6
+    assert calls == ["planner", "implementer", "planner", "implementer", "planner", "implementer"]
 
 
 def test_dual_ai_does_not_retry_same_provider_after_auto_quota(monkeypatch):

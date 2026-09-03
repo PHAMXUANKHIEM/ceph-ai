@@ -23,7 +23,7 @@ Các luồng này cũng ưu tiên Codex, fallback Claude rồi mới Router. K�
 
 ### Dual AI và Single Full
 
-- Dual AI dùng Planner → Implementer/Reviewer.
+- Dual AI dùng Planner ↔ Implementer/Reviewer liên tục, không giới hạn số lượt cố định; mỗi AI phải kết thúc bằng `STATUS: CONTINUE` hoặc `STATUS: DONE`. Phiên dừng khi có `STATUS: DONE`, hết quota/budget, provider lỗi, hoặc người dùng bấm Dừng. Cửa sổ ngữ cảnh vẫn giới hạn để tránh prompt phình vô hạn.
 - Web Dashboard chỉ đọc.
 - Telegram Dual được phép ghi vào workspace cô lập và chạy unprivileged.
 - Single Full chạy trong executor riêng, có token, lock và xác nhận Telegram; đây là đường dẫn có quyền cao.
