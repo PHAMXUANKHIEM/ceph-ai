@@ -393,6 +393,9 @@ def _start_worker() -> int:
         ROUTER_ENABLED_ENV_NAME: "true" if settings.router_enabled else "false",
         CODEX_CHAT_ENABLED_ENV_NAME: "true" if settings.codex_chat_enabled else "false",
         CLAUDE_CHAT_ENABLED_ENV_NAME: "true" if settings.claude_chat_enabled else "false",
+        CODEX_CHAT_MODEL_ENV_NAME: settings.codex_chat_model,
+        CLAUDE_CHAT_MODEL_ENV_NAME: settings.claude_chat_model,
+        CLAUDE_CHAT_EFFORT_ENV_NAME: settings.claude_chat_effort,
         **{env_name: getattr(settings, field) for field, env_name in PATCH_PIPELINE_ENV_NAMES.items()},
         **{env_name: getattr(settings, field) for field, env_name in CLUSTER_ENV_NAMES.items()},
     }

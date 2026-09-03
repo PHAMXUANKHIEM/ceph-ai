@@ -7,7 +7,7 @@ import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dashboard.dual_ai_chat import (
     DualAIChatBusy,
@@ -25,7 +25,22 @@ _runs_lock = asyncio.Lock()
 
 class FullRunRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
-    history: list[dict] = Field(default_factory=list)
+    history: list[dict] = Field(default_factory=list, max_length=20)
+
+    @field_validator("history")
+    @classmethod
+    def validate_history(cls, value: list[dict]) -> list[dict]:
+        total_chars = 0
+        for item in value:
+            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+                raise ValueError("history chỉ nhận message user/assistant")
+            content = item.get("content")
+            if not isinstance(content, str) or len(content) > 4000:
+                raise ValueError("mỗi message history tối đa 4000 ký tự")
+            total_chars += len(content)
+        if total_chars > 24000:
+            raise ValueError("tổng history tối đa 24000 ký tự")
+        return value
 
 
 def _authorize(authorization: str | None) -> None:

@@ -434,9 +434,15 @@ class CodexAppServer:
                 {"threadId": thread_id, "input": [{"type": "text", "text": prompt}]},
             )
             final_text = ""
+            deadline = asyncio.get_running_loop().time() + timeout
             try:
                 while True:
-                    message = await asyncio.wait_for(self._notifications.get(), timeout)
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise CodexAppServerError(
+                            f"Codex turn vượt thời gian cho phép ({timeout:g} giây)"
+                        )
+                    message = await asyncio.wait_for(self._notifications.get(), remaining)
                     method = message.get("method")
                     params = message.get("params") or {}
                     if method == "item/completed":

@@ -213,7 +213,10 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
     executable = claude_executable()
     if not executable:
         raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")
-    command = [executable, "-p", prompt, "--output-format", "json", "--tools", ""]
+    # Keep the prompt out of argv: it can contain operator data and can exceed
+    # the OS argument-size limit. Claude accepts the prompt on stdin when -p
+    # is supplied without a positional prompt argument.
+    command = [executable, "-p", "--output-format", "json", "--tools", ""]
     model = settings.claude_chat_model.strip()
     if model and model != "default":
         command.extend(["--model", model])
@@ -222,11 +225,12 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
         command.extend(["--effort", effort])
     process = await asyncio.create_subprocess_exec(
         *command,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         env=_env(), cwd="/tmp",
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+        stdout, stderr = await asyncio.wait_for(process.communicate(prompt.encode()), timeout)
     except asyncio.TimeoutError as exc:
         process.kill()
         await process.wait()

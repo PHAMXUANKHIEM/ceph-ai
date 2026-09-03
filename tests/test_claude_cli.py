@@ -8,7 +8,7 @@ from shared import claude_cli
 class _Process:
     returncode = 0
 
-    async def communicate(self):
+    async def communicate(self, input=None):
         return json.dumps({"result": "ok"}).encode(), b""
 
 
@@ -26,7 +26,7 @@ def test_run_claude_prompt_passes_model_and_effort(monkeypatch):
 
     assert asyncio.run(claude_cli.run_claude_prompt("hello")) == "ok"
     assert captured[0][0] == (
-        "/usr/bin/claude", "-p", "hello", "--output-format", "json", "--tools", "",
+        "/usr/bin/claude", "-p", "--output-format", "json", "--tools", "",
         "--model", "claude-opus-4-8", "--effort", "xhigh",
     )
 

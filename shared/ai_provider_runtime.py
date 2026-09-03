@@ -15,13 +15,16 @@ from config.settings import settings
 _NAMES = {
     "CODEX_CHAT_ENABLED": "codex_chat_enabled",
     "CLAUDE_CHAT_ENABLED": "claude_chat_enabled",
+    "CODEX_CHAT_MODEL": "codex_chat_model",
+    "CLAUDE_CHAT_MODEL": "claude_chat_model",
+    "CLAUDE_CHAT_EFFORT": "claude_chat_effort",
 }
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
 
 def refresh_chat_provider_flags() -> None:
-    """Apply only persisted non-secret provider booleans in containers."""
+    """Apply persisted non-secret provider flags and model choices in containers."""
     if os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() != "true":
         return
     path = Path(os.environ.get("CEPH_AI_ENV_FILE", "/var/lib/ceph-ai/config/.env"))

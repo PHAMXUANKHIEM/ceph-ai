@@ -437,7 +437,6 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
             command.append("--dangerously-skip-permissions")
         if model.strip():
             command.extend(["--model", model.strip()])
-        command.append(prompt)
         if claude_config_dir:
             # The dashboard stores its CLI session in a repo-local, gitignored
             # directory rather than root's default ~/.claude account.
@@ -707,7 +706,7 @@ Observed application failure (credentials already redacted):
             )
             notifier.update(15 + ai_attempt * 10, f"{provider} đang sửa code, vòng {ai_attempt}/{config.max_ai_attempts}")
             ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
-                      input_text=attempt_prompt if provider == "codex" else None, check=False)
+                      input_text=attempt_prompt, check=False)
             _record_transcript(
                 config, speaker="Implementer", event="implementation", direction="from_ai",
                 content=ai.stdout, provider=provider, model=config.implementer_model,
@@ -794,7 +793,7 @@ If changes are needed, list precise actionable corrections before that line.
             notifier.update(58, f"{reviewer_provider} đang review candidate ({review_round}/{config.max_review_rounds})")
             review = _run(
                 reviewer_command, cwd=worktree, timeout=config.timeout_seconds,
-                input_text=review_prompt if reviewer_provider == "codex" else None, check=False,
+                input_text=review_prompt, check=False,
             )
             _record_transcript(
                 config, speaker="Planner/Reviewer", event="review", direction="from_ai",
@@ -828,7 +827,7 @@ If changes are needed, list precise actionable corrections before that line.
             )
             fix = _run(
                 command, cwd=worktree, timeout=config.timeout_seconds,
-                input_text=prompt + feedback if provider == "codex" else None, check=False,
+                input_text=prompt + feedback, check=False,
             )
             _record_transcript(
                 config, speaker="Implementer", event="review-fix", direction="from_ai",

@@ -261,7 +261,7 @@ def test_claude_provider_uses_dashboard_account_directory(monkeypatch, tmp_path)
     )
     assert provider == "claude"
     assert f"CLAUDE_CONFIG_DIR={tmp_path / '.claude-account'}" in command
-    assert command[-1] == "repair it"
+    assert "repair it" not in command
 
 
 def test_codex_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):

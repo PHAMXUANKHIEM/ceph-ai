@@ -385,7 +385,7 @@ async def _ask(
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=repo,
-            stdin=asyncio.subprocess.PIPE if provider == "codex" else asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             # Full-access AI may start a service command or test subprocess.
@@ -394,7 +394,7 @@ async def _ask(
             start_new_session=(os.name == "posix"),
         )
         output_bytes, _ = await asyncio.wait_for(
-            process.communicate(prompt.encode() if provider == "codex" else None),
+            process.communicate(prompt.encode()),
             DISCUSSION_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError:
