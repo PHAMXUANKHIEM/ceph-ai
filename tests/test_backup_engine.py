@@ -272,13 +272,11 @@ def test_second_backup_is_incremental_and_links_base_job(isolated_db):
     engine.run(action_pk, "rbd_backup_run", {"pool": "vms", "image": "web01"}, incident_id, None, _write_progress, _allow_execution)
 
     with db_module.SessionLocal() as session:
-        # Both slots' full rows come from the SAME run — one query result
-        # for "the base this run's incremental should link to", not
-        # necessarily row-insertion order, so gather the whole set rather
-        # than assuming which one a plain, unordered .first() returns.
-        first_full_ids = {
-            j.id
-            for j in session.query(BackupJob).filter(BackupJob.pool == "vms", BackupJob.job_type == "full").all()
+        first_full_by_slot = {
+            j.backup_target_slot: j.id
+            for j in session.query(BackupJob)
+            .filter(BackupJob.pool == "vms", BackupJob.job_type == "full")
+            .all()
         }
 
     incident_id2, action_pk2 = _make_incident_and_action()
@@ -296,12 +294,14 @@ def test_second_backup_is_incremental_and_links_base_job(isolated_db):
             .all()
         )
     assert len(incrementals) == 2  # one per target slot
-    # both slots' incremental rows from this run must share the SAME base
-    # (the engine resolves "the" full to diff against once, then uploads to
-    # each slot), and that base must be one of the first run's full rows.
-    bases = {j.base_job_id for j in incrementals}
-    assert bases <= first_full_ids
-    assert len(bases) == 1
+    # Each target's incremental must point to that target's full. A single
+    # export-diff stream is valid for both only because both full rows refer
+    # to the same Ceph snapshot, but the restore chain is target-specific.
+    assert {j.backup_target_slot for j in incrementals} == {"a", "b"}
+    assert {
+        j.base_job_id == first_full_by_slot[j.backup_target_slot]
+        for j in incrementals
+    } == {True}
 
 
 def test_idempotent_skip_when_fresh_running_job_exists(isolated_db):

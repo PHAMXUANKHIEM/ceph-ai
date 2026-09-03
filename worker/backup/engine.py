@@ -163,6 +163,31 @@ def _latest_backup_job(
         return query.order_by(BackupJob.created_at.desc()).first()
 
 
+def _latest_successful_full_jobs_by_slot(
+    pool: str, image: str, cluster_id: str | None, target_slots: list[str]
+) -> dict[str, BackupJob]:
+    if not target_slots:
+        return {}
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(BackupJob)
+            .filter(
+                BackupJob.pool == pool,
+                BackupJob.image == image,
+                BackupJob.cluster_id == cluster_id,
+                BackupJob.job_type == "full",
+                BackupJob.status == "SUCCESS",
+                BackupJob.backup_target_slot.in_(target_slots),
+            )
+            .order_by(BackupJob.created_at.desc())
+            .all()
+        )
+        latest: dict[str, BackupJob] = {}
+        for row in rows:
+            latest.setdefault(row.backup_target_slot, row)
+        return latest
+
+
 def _protected_keys(pool: str, image: str, cluster_id: str | None = None) -> frozenset[str]:
     """Full-export keys that a currently-kept incremental still depends
     on — retention (FR-2) must never delete these even if they'd
@@ -291,6 +316,24 @@ def _run_rbd_backup(
 
     cluster = get_cluster(cluster_id)
 
+    try:
+        target_bindings = resolve_targets(cluster)
+    except Exception as exc:
+        logger.exception(
+            "backup_engine._run_rbd_backup: backup target resolution failed for %s/%s",
+            pool,
+            image,
+        )
+        return False
+    target_slots = [slot for slot, _backend in target_bindings]
+    if not target_slots:
+        logger.error(
+            "backup_engine._run_rbd_backup: no backup targets configured for %s/%s",
+            pool,
+            image,
+        )
+        return False
+
     stale_cutoff = datetime.utcnow().timestamp() - STALE_RUNNING_TIMEOUT_SECONDS
     running = _latest_backup_job(pool, image, job_type=None, cluster_id=cluster_id)
     if running is not None and running.status == "RUNNING":
@@ -317,8 +360,7 @@ def _run_rbd_backup(
                 row.finished_at = datetime.utcnow()
                 session.commit()
 
-    last_full = _latest_backup_job(pool, image, job_type="full", cluster_id=cluster_id)
-    last_success = _latest_backup_job(pool, image, job_type=None, cluster_id=cluster_id)
+    previous_full_jobs = _latest_successful_full_jobs_by_slot(pool, image, cluster_id, target_slots)
     if cluster is not None:
         # Additional cluster (Phase 3): backup_policy.yaml's tracked_images
         # list only ever describes the default cluster's own pools/images —
@@ -332,12 +374,24 @@ def _run_rbd_backup(
         )
         full_refresh_days = tracked.get("full_refresh_every_n_days")
 
-    is_full = last_full is None or last_full.status != "SUCCESS"
+    is_full = any(slot not in previous_full_jobs for slot in target_slots)
     if not is_full and full_refresh_days:
-        age_days = (datetime.utcnow() - last_full.created_at).days
-        is_full = age_days >= full_refresh_days
+        is_full = any(
+            (datetime.utcnow() - job.created_at).days >= full_refresh_days
+            for job in previous_full_jobs.values()
+        )
+    base_jobs_by_slot = {} if is_full else previous_full_jobs
+    if not is_full and len({_snap_name_of(job) for job in base_jobs_by_slot.values()}) != 1:
+        logger.warning(
+            "backup_engine._run_rbd_backup: full bases for %s/%s do not share one "
+            "snapshot; forcing a full export for all targets",
+            pool,
+            image,
+        )
+        is_full = True
+        base_jobs_by_slot = {}
     job_type = "full" if is_full else "incremental"
-    base_job = None if is_full else last_full
+    base_job = None if is_full else base_jobs_by_slot[target_slots[0]]
 
     run_id = str(uuid.uuid4())
     mon_ip = _first_mon_node(cluster)
@@ -431,7 +485,7 @@ def _run_rbd_backup(
         size_bytes = tracked_stream._bytes_read
 
         uploaded_targets: list[tuple[str, str, object]] = []
-        for slot, backend in resolve_targets(cluster):
+        for slot, backend in target_bindings:
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
                 result = backend.upload(f, remote_key)
@@ -471,7 +525,11 @@ def _run_rbd_backup(
                     image=image,
                     job_type=job_type,
                     status="SUCCESS",
-                    base_job_id=base_job.id if base_job is not None else None,
+                    base_job_id=(
+                        base_jobs_by_slot[slot].id
+                        if not is_full
+                        else None
+                    ),
                     backup_target_slot=slot,
                     remote_key=remote_key,
                     size_bytes=size_bytes,
@@ -534,8 +592,9 @@ def _run_rbd_backup(
     # A successful replacement full becomes the new incremental base.  Its
     # predecessor can now be removed; cleanup failure must not invalidate a
     # backup that has already uploaded and verified successfully.
-    if job_type == "full" and last_full is not None and last_full.status == "SUCCESS":
-        _remove_snapshot_best_effort(mon_ip, pool, image, _snap_name_of(last_full))
+    if job_type == "full":
+        for previous_full in {job.id: job for job in previous_full_jobs.values()}.values():
+            _remove_snapshot_best_effort(mon_ip, pool, image, _snap_name_of(previous_full))
 
     _sweep_retention_after_success(pool, image, incident_id, action_pk, cluster_id)
     return True
