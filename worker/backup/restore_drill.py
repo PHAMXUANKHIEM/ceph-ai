@@ -203,6 +203,22 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
                     break
                 digest.update(chunk)
         source_sha256 = digest.hexdigest()
+        expected_sha256 = backup_job.sha256
+        if not expected_sha256:
+            raise RestoreDrillError(
+                f"BackupJob {backup_job.id} has no persisted source checksum; refusing restore drill"
+            )
+        expected_size = backup_job.size_bytes
+        if expected_size is None or expected_size != os.path.getsize(tmp_path) or source_sha256 != expected_sha256:
+            raise RestoreDrillError(
+                f"backup checksum/size mismatch before restore: "
+                f"expected(size={expected_size}, sha256={expected_sha256}) vs "
+                f"download(size={os.path.getsize(tmp_path)}, sha256={source_sha256})"
+            )
+        if not backend.verify(backup_job.remote_key, expected_size, expected_sha256):
+            raise RestoreDrillError(
+                f"backend verification failed for BackupJob {backup_job.id}"
+            )
 
         _import_backup_to_scratch(mon_ip, tmp_path, scratch_pool, scratch_image)
         restored_sha256 = _export_scratch_sha256(mon_ip, scratch_pool, scratch_image)

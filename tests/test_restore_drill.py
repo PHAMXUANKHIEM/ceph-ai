@@ -115,6 +115,9 @@ class FakeBackend:
     def download(self, remote_key, dest):
         dest.write(self.content)
 
+    def verify(self, remote_key, expected_size, expected_sha256):
+        return len(self.content) == expected_size and hashlib.sha256(self.content).hexdigest() == expected_sha256
+
 
 DEFAULT_DRILL_POLICY = {
     "restore_drill": {"pool": "vms", "image": "web01", "scratch_pool": "scratch", "scratch_image": "drill01"}
@@ -126,6 +129,7 @@ def fakes(monkeypatch):
     FakeSSHClient.import_exit_status = 0
     FakeSSHClient.export_exit_status = 0
     FakeSSHClient.export_payload = BACKUP_CONTENT
+    FakeSSHClient.imported_bytes = bytearray()
     monkeypatch.setattr(restore_drill.paramiko, "SSHClient", FakeSSHClient)
     monkeypatch.setattr(restore_drill, "load_backup_policy", lambda: DEFAULT_DRILL_POLICY)
     monkeypatch.setattr(restore_drill.settings, "ceph_mon_nodes", "10.20.1.112,10.20.1.95,10.20.1.21", raising=False)
@@ -164,6 +168,7 @@ def _make_success_full_backup_job():
             backup_target_slot="a",
             remote_key="full/vms/web01/backup-20260101T000000Z.bin",
             size_bytes=len(BACKUP_CONTENT),
+            sha256=hashlib.sha256(BACKUP_CONTENT).hexdigest(),
             created_at=datetime.utcnow(),
             finished_at=datetime.utcnow(),
         )
@@ -205,6 +210,31 @@ def test_restore_drill_fails_on_checksum_mismatch_and_alerts_critical(isolated_d
     assert any("rbd rm scratch/drill01" == c for c in fakes.cleanup_calls)  # cleanup still happens
     assert len(fakes.alerts) == 1
     assert fakes.alerts[0][0] == "critical"
+
+
+def test_restore_drill_refuses_backup_without_persisted_checksum(isolated_db, fakes):
+    with db_module.SessionLocal() as session:
+        session.add(
+            BackupJob(
+                run_id="legacy-run",
+                pool="vms",
+                image="web01",
+                job_type="full",
+                status="SUCCESS",
+                backup_target_slot="a",
+                remote_key="full/vms/web01/legacy.bin",
+                size_bytes=len(BACKUP_CONTENT),
+                created_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+    succeeded = restore_drill.run("action-1", {}, "incident-1", _write_progress, _allow_execution)
+
+    assert succeeded is False
+    assert FakeSSHClient.imported_bytes == bytearray()
+    assert "no persisted source checksum" in fakes.alerts[0][1]
 
 
 def test_restore_drill_fails_when_rbd_import_exits_nonzero(isolated_db, fakes):
