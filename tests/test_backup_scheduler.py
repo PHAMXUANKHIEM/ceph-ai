@@ -256,6 +256,7 @@ def test_build_scheduler_registers_jobs_for_backup_enabled_additional_cluster(is
     assert f"rbd_backup_{cluster_id}_rbd_vm1" in job_ids
     assert f"rbd_backup_{cluster_id}_rbd_vm2" in job_ids
     assert f"backup_metadata_run_{cluster_id}" in job_ids
+    assert f"backup_digest_run_{cluster_id}" in job_ids
 
     job = built.get_job(f"rbd_backup_{cluster_id}_rbd_vm1")
     assert tuple(job.args) == ("rbd", "vm1", cluster_id)

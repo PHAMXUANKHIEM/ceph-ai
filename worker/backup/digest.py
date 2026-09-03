@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from shared import db
 from shared.models import BackupAnomaly, BackupDigestLog, BackupJob
 from worker.backup import ai_analysis, alerting
+from worker.backup.cluster_scope import get_cluster
 from worker.backup.policy_config import load_backup_policy
 
 logger = logging.getLogger(__name__)
@@ -25,21 +26,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_PERIOD_HOURS = 24
 
 
-def _gather_stats(period_start: datetime, period_end: datetime) -> dict:
+def _gather_stats(period_start: datetime, period_end: datetime, cluster_id: str | None = None) -> dict:
     with db.SessionLocal() as session:
         jobs = (
             session.query(BackupJob)
-            .filter(BackupJob.created_at >= period_start, BackupJob.created_at < period_end)
+            .filter(
+                BackupJob.cluster_id == cluster_id,
+                BackupJob.created_at >= period_start,
+                BackupJob.created_at < period_end,
+            )
             .all()
         )
         anomalies = (
             session.query(BackupAnomaly)
-            .filter(BackupAnomaly.created_at >= period_start, BackupAnomaly.created_at < period_end)
+            .join(BackupJob, BackupAnomaly.backup_job_id == BackupJob.id)
+            .filter(
+                BackupJob.cluster_id == cluster_id,
+                BackupAnomaly.created_at >= period_start,
+                BackupAnomaly.created_at < period_end,
+            )
             .all()
         )
         latest_drill = (
             session.query(BackupJob)
-            .filter(BackupJob.job_type == "restore_drill")
+            .filter(BackupJob.cluster_id == cluster_id, BackupJob.job_type == "restore_drill")
             .order_by(BackupJob.created_at.desc())
             .first()
         )
@@ -65,7 +75,7 @@ def _fallback_summary(stats: dict, period_hours: int) -> str:
     )
 
 
-def run_digest() -> None:
+def run_digest(cluster_id: str | None = None) -> None:
     """The APScheduler job callable — plain sync (APScheduler runs it in
     its own thread-pool executor automatically, same as
     `alerting.check_overdue_and_failed_backups`)."""
@@ -75,7 +85,7 @@ def run_digest() -> None:
     period_end = datetime.utcnow()
     period_start = period_end - timedelta(hours=period_hours)
 
-    stats = _gather_stats(period_start, period_end)
+    stats = _gather_stats(period_start, period_end, cluster_id=cluster_id)
     try:
         summary = asyncio.run(ai_analysis.summarize_digest(stats))
     except ai_analysis.AIAnalysisError:
@@ -87,6 +97,7 @@ def run_digest() -> None:
             BackupDigestLog(
                 period_start=period_start,
                 period_end=period_end,
+                cluster_id=cluster_id,
                 succeeded_count=stats["succeeded_count"],
                 failed_count=stats["failed_count"],
                 anomaly_count=stats["anomaly_count"],
@@ -96,4 +107,7 @@ def run_digest() -> None:
         session.commit()
 
     logger.info("BackupDigest: %s", summary)
-    alerting.send_alert("info", summary)
+    if cluster_id is None:
+        alerting.send_alert("info", summary)
+    else:
+        alerting.send_alert("info", summary, cluster=get_cluster(cluster_id))

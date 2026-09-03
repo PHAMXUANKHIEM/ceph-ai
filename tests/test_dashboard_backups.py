@@ -376,6 +376,42 @@ def test_backups_page_lists_digests(dashboard_client, monkeypatch):
     assert "Trong 24h qua: 5 job thành công, 1 job thất bại." in response.text
 
 
+def test_digests_are_scoped_to_selected_cluster(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [])
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        cluster = _create_additional_cluster(session)
+        session.add_all([
+            BackupDigestLog(
+                cluster_id=None,
+                period_start=datetime.utcnow() - timedelta(hours=24),
+                period_end=datetime.utcnow(),
+                succeeded_count=1,
+                failed_count=0,
+                anomaly_count=0,
+                summary_text="default digest",
+                created_at=datetime.utcnow(),
+            ),
+            BackupDigestLog(
+                cluster_id=cluster.id,
+                period_start=datetime.utcnow() - timedelta(hours=24),
+                period_end=datetime.utcnow(),
+                succeeded_count=2,
+                failed_count=0,
+                anomaly_count=0,
+                summary_text="secondary digest",
+                created_at=datetime.utcnow(),
+            ),
+        ])
+        session.commit()
+
+    response = dashboard_client.get(f"/backups?cluster={cluster.id}")
+
+    assert response.status_code == 200
+    assert "secondary digest" in response.text
+    assert "default digest" not in response.text
+
+
 def test_progress_api_no_running_action_returns_null(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.get("/api/backups/progress")

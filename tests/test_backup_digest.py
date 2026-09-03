@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 import worker.backup.digest as digest
 from shared import db as db_module
 from shared.db import Base
-from shared.models import BackupAnomaly, BackupDigestLog, BackupJob
+from shared.models import BackupAnomaly, BackupDigestLog, BackupJob, Cluster
 
 
 @pytest.fixture()
@@ -49,6 +49,24 @@ def test_gather_stats_excludes_jobs_outside_period(isolated_db):
     stats = digest._gather_stats(now - timedelta(hours=24), now)
 
     assert stats["succeeded_count"] == 0
+    assert stats["failed_count"] == 0
+
+
+def test_gather_stats_is_scoped_to_cluster(isolated_db):
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        cluster_a = Cluster(name="a", ceph_mon_nodes="10.0.0.1", ssh_user="root", ssh_key_path="/tmp/a")
+        cluster_b = Cluster(name="b", ceph_mon_nodes="10.0.0.2", ssh_user="root", ssh_key_path="/tmp/b")
+        session.add_all([cluster_a, cluster_b])
+        session.flush()
+        session.add(BackupJob(run_id="a", cluster_id=cluster_a.id, job_type="full", status="SUCCESS", created_at=now))
+        session.add(BackupJob(run_id="b", cluster_id=cluster_b.id, job_type="full", status="FAILED", created_at=now))
+        cluster_a_id = cluster_a.id
+        session.commit()
+
+    stats = digest._gather_stats(now - timedelta(hours=1), now + timedelta(hours=1), cluster_id=cluster_a_id)
+
+    assert stats["succeeded_count"] == 1
     assert stats["failed_count"] == 0
 
 

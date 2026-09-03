@@ -514,9 +514,10 @@ def _digests(cluster=None) -> list[dict]:
     first — read-only, same as `_history` (route never imports
     `worker/backup/digest.py`, only the model it wrote to, per AD-3)."""
     with db.SessionLocal() as session:
-        if cluster is not None and not cluster.is_default:
-            return []
-        rows = session.query(BackupDigestLog).order_by(BackupDigestLog.created_at.desc()).limit(DIGEST_LIMIT).all()
+        query = session.query(BackupDigestLog)
+        if cluster is not None:
+            query = query.filter(_job_scope(BackupDigestLog.cluster_id, cluster))
+        rows = query.order_by(BackupDigestLog.created_at.desc()).limit(DIGEST_LIMIT).all()
         return [
             {
                 "period_start": row.period_start,

@@ -186,15 +186,18 @@ async def trigger_restore_drill() -> None:
 
 
 def _register_cluster_backup_jobs(
-    scheduler: AsyncIOScheduler, cron: dict, metadata_cron: dict, desired_job_ids: set[str]
+    scheduler: AsyncIOScheduler,
+    cron: dict,
+    metadata_cron: dict,
+    digest_cron: dict,
+    desired_job_ids: set[str],
 ) -> None:
     """Multi-tenant remediation Phase 3 — registers `trigger_backup`/
     `trigger_metadata_backup` jobs for every ADDITIONAL cluster that has
     opted in (`Cluster.backup_enabled`), on the SAME shared global cron as
     the default cluster's own jobs above (Phase 3 does not give each
     cluster its own cron config — explicit narrowing, see this session's
-    plan). RestoreDrill/BackupDigest stay default-cluster-only, so neither
-    is registered here."""
+    plan). RestoreDrill stays default-cluster-only."""
     with db.SessionLocal() as session:
         clusters = [
             c for c in list_active_clusters(session)
@@ -222,6 +225,15 @@ def _register_cluster_backup_jobs(
             replace_existing=True,
         )
         desired_job_ids.add(metadata_job_id)
+        digest_job_id = f"backup_digest_run_{cluster.id}"
+        scheduler.add_job(
+            digest.run_digest,
+            trigger=CronTrigger(hour=digest_cron.get("hour", 7), minute=digest_cron.get("minute", 0)),
+            args=[cluster.id],
+            id=digest_job_id,
+            replace_existing=True,
+        )
+        desired_job_ids.add(digest_job_id)
 
 
 def _reconcile_backup_jobs(scheduler: AsyncIOScheduler, desired_job_ids: set[str]) -> None:
@@ -284,10 +296,11 @@ def build_scheduler() -> AsyncIOScheduler:
         desired_job_ids.add("backup_metadata_run")
 
     # Multi-tenant remediation Phase 3 — every ADDITIONAL cluster with
-    # backup_enabled gets its own rbd_backup_run/backup_metadata_run jobs
+    # backup_enabled gets its own rbd_backup_run/backup_metadata_run/backup_digest_run jobs
     # on this SAME shared cron/metadata_cron, registered alongside (never
     # replacing) the default cluster's jobs above.
-    _register_cluster_backup_jobs(scheduler, cron, metadata_cron, desired_job_ids)
+    digest_cron = schedule.get("digest_cron") or {}
+    _register_cluster_backup_jobs(scheduler, cron, metadata_cron, digest_cron, desired_job_ids)
 
     # Story 9.4 (AC #3): only register if restore_drill is actually
     # configured (pool/image + scratch_pool/scratch_image) — same "blank
@@ -323,7 +336,6 @@ def build_scheduler() -> AsyncIOScheduler:
 
     # Story 9.5 (AC #6): BackupDigest — also a plain sync callable, same
     # thread-pool-executor posture as backup_alert_check above.
-    digest_cron = schedule.get("digest_cron") or {}
     scheduler.add_job(
         digest.run_digest,
         trigger=CronTrigger(hour=digest_cron.get("hour", 7), minute=digest_cron.get("minute", 0)),

@@ -26,6 +26,7 @@ from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.router_client import build_router_client
 from worker.backup import alerting
+from worker.backup.cluster_scope import get_cluster
 from worker.redaction import default_redactor
 
 logger = logging.getLogger(__name__)
@@ -379,9 +380,19 @@ def analyze_backup_job(job: BackupJob, anomaly: dict | None = None) -> None:
         # Every failed job needs one actionable notification immediately.
         # Previously a failure classified WARNING was only logged, then the
         # periodic checker sent a separate raw traceback with no AI result.
-        alerting.send_alert(severity, message, backup_job_id=job.id)
+        if job.cluster_id is None:
+            alerting.send_alert(severity, message, backup_job_id=job.id)
+        else:
+            alerting.send_alert(
+                severity, message, backup_job_id=job.id, cluster=get_cluster(job.cluster_id)
+            )
     elif severity == "critical":
-        alerting.send_alert("critical", message, backup_job_id=job.id)
+        if job.cluster_id is None:
+            alerting.send_alert("critical", message, backup_job_id=job.id)
+        else:
+            alerting.send_alert(
+                "critical", message, backup_job_id=job.id, cluster=get_cluster(job.cluster_id)
+            )
     else:
         # Non-critical anomalies on successful jobs stay digest-only.
         logger.log(

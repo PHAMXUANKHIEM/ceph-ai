@@ -1675,8 +1675,11 @@ class BackupDigestLog(Base):
     the one that queries and renders it, not this one."""
 
     __tablename__ = "backup_digest_logs"
+    __table_args__ = (Index("ix_backup_digest_logs_cluster_created_at", "cluster_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # NULL is the default cluster, matching BackupJob/Incident legacy rows.
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
     period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     succeeded_count: Mapped[int] = mapped_column(Integer, nullable=False)
