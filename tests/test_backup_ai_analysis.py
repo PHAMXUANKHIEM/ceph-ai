@@ -139,6 +139,28 @@ def test_call_router_uses_claude_without_router_config(monkeypatch):
     assert result["severity"] == "critical"
 
 
+def test_call_router_falls_back_when_claude_returns_invalid_json(monkeypatch):
+    monkeypatch.setattr(ai_analysis.settings, "codex_chat_enabled", False)
+    monkeypatch.setattr(ai_analysis.settings, "claude_chat_enabled", True)
+    monkeypatch.setattr(ai_analysis.settings, "router_api_key", "configured")
+
+    async def fake_prompt(prompt, timeout):
+        return "{not valid json"
+
+    monkeypatch.setattr(ai_analysis, "run_claude_prompt", fake_prompt)
+    _install_fake_client(
+        monkeypatch,
+        _tool_completion(
+            ai_analysis.TOOL_NAME,
+            {"root_cause_summary_vi": "fallback", "severity": "warning", "suggested_action_vi": "retry"},
+        ),
+    )
+
+    result = asyncio.run(ai_analysis._call_router("backup failed"))
+
+    assert result["root_cause_summary_vi"] == "fallback"
+
+
 def test_digest_uses_claude_without_router_config(monkeypatch):
     monkeypatch.setattr(ai_analysis.settings, "codex_chat_enabled", False)
     monkeypatch.setattr(ai_analysis.settings, "claude_chat_enabled", True)

@@ -149,7 +149,11 @@ async def _call_router(user_content: str) -> dict:
             provider_errors.append(f"Claude call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
         else:
-            return json.loads(clean)
+            try:
+                return json.loads(clean)
+            except (TypeError, ValueError) as exc:
+                provider_errors.append(f"Claude response was not valid JSON: {exc}")
+                logger.warning("%s; trying configured fallback", provider_errors[-1])
 
     if provider_errors and not settings.router_api_key:
         raise AIAnalysisError("; ".join(provider_errors))
