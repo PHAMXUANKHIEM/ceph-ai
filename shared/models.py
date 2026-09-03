@@ -1585,6 +1585,18 @@ class BackupJob(Base):
     __table_args__ = (
         Index("ix_backup_jobs_pool_image_created_at", "pool", "image", "created_at"),
         Index("ix_backup_jobs_cluster_id", "cluster_id"),
+        # There may be only one active RBD export for a logical image. The
+        # COALESCE keeps the default cluster (NULL cluster_id) covered by the
+        # same uniqueness rule as explicitly identified clusters.
+        Index(
+            "uq_backup_jobs_active_rbd_run",
+            text("coalesce(cluster_id, '')"),
+            "pool",
+            "image",
+            unique=True,
+            sqlite_where=text("status = 'RUNNING'"),
+            postgresql_where=text("status = 'RUNNING'"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

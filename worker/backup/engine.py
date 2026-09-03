@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 import paramiko
+from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import audit, db
@@ -187,6 +188,53 @@ def _protected_keys(pool: str, image: str, cluster_id: str | None = None) -> fro
         return frozenset(protected)
 
 
+def _claim_running_backup(
+    run_id: str,
+    cluster_id: str | None,
+    pool: str,
+    image: str,
+    job_type: str,
+    base_job_id: str | None,
+) -> str | None:
+    """Atomically claim the image for one RBD export.
+
+    The partial unique index on ``backup_jobs`` is the race-safe guard. The
+    pre-flight query in ``_run_rbd_backup`` is useful for the normal path and
+    for the stale-job policy, but it cannot protect two workers that read at
+    the same time; the insert below closes that gap.
+    """
+    with db.SessionLocal() as session:
+        row = BackupJob(
+            run_id=run_id,
+            cluster_id=cluster_id,
+            pool=pool,
+            image=image,
+            job_type=job_type,
+            status="RUNNING",
+            base_job_id=base_job_id,
+        )
+        session.add(row)
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            if "uq_backup_jobs_active_rbd_run" not in str(exc.orig):
+                raise
+            return None
+        return row.id
+
+
+def _mark_running_failed(running_job_id: str, error_message: str) -> None:
+    with db.SessionLocal() as session:
+        row = session.get(BackupJob, running_job_id)
+        if row is None or row.status != "RUNNING":
+            return
+        row.status = "FAILED"
+        row.error_message = error_message
+        row.finished_at = datetime.utcnow()
+        session.commit()
+
+
 def run(
     action_pk: str,
     action_id: str,
@@ -293,6 +341,22 @@ def _run_rbd_backup(
 
     run_id = str(uuid.uuid4())
     mon_ip = _first_mon_node(cluster)
+    running_job_id = _claim_running_backup(
+        run_id,
+        cluster_id,
+        pool,
+        image,
+        job_type,
+        base_job.id if base_job is not None else None,
+    )
+    if running_job_id is None:
+        logger.info(
+            "backup_engine._run_rbd_backup: another worker claimed %s/%s — "
+            "skipping this trigger (idempotent)",
+            pool,
+            image,
+        )
+        return True
     snap_name = f"backup-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
 
     progress = _make_progress(total_bytes=0)
@@ -302,6 +366,7 @@ def _run_rbd_backup(
         execute_command(mon_ip, f"rbd snap create {pool}/{image}@{snap_name}")
     except Exception as exc:
         logger.exception("backup_engine._run_rbd_backup: rbd snap create failed for %s/%s", pool, image)
+        _mark_running_failed(running_job_id, str(exc))
         progress[0]["status"] = "failed"
         progress[0]["message"] = str(exc)
         write_progress(action_pk, progress)
@@ -365,14 +430,33 @@ def _run_rbd_backup(
         sha256 = tracked_stream.sha256.hexdigest()
         size_bytes = tracked_stream._bytes_read
 
+        uploaded_targets: list[tuple[str, str, object]] = []
         for slot, backend in resolve_targets(cluster):
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
                 result = backend.upload(f, remote_key)
             if not backend.verify(remote_key, result.size, result.sha256):
                 raise BackupEngineError(f"verify() failed after upload to slot {slot} for {remote_key}")
+            uploaded_targets.append((slot, remote_key, result))
 
-            with db.SessionLocal() as session:
+        with db.SessionLocal() as session:
+            running_job = session.get(BackupJob, running_job_id)
+            if running_job is None or running_job.status != "RUNNING":
+                raise BackupEngineError(
+                    f"active BackupJob claim {running_job_id} disappeared before commit"
+                )
+            finished_at = datetime.utcnow()
+            duration_seconds = time.monotonic() - tracked_stream._started_at
+            first_slot, first_key, _first_result = uploaded_targets[0]
+            running_job.status = "SUCCESS"
+            running_job.backup_target_slot = first_slot
+            running_job.remote_key = first_key
+            running_job.size_bytes = size_bytes
+            running_job.duration_seconds = duration_seconds
+            running_job.finished_at = finished_at
+            session.flush()
+            job_ids.append(running_job.id)
+            for slot, remote_key, _result in uploaded_targets[1:]:
                 job = BackupJob(
                     run_id=run_id,
                     cluster_id=cluster_id,
@@ -384,12 +468,13 @@ def _run_rbd_backup(
                     backup_target_slot=slot,
                     remote_key=remote_key,
                     size_bytes=size_bytes,
-                    duration_seconds=time.monotonic() - tracked_stream._started_at,
-                    finished_at=datetime.utcnow(),
+                    duration_seconds=duration_seconds,
+                    finished_at=finished_at,
                 )
                 session.add(job)
-                session.commit()
+                session.flush()
                 job_ids.append(job.id)
+            session.commit()
 
         progress[0]["status"] = "done"
         progress[0]["finished_at"] = datetime.utcnow().isoformat()
@@ -414,20 +499,15 @@ def _run_rbd_backup(
         progress[0]["status"] = "failed"
         progress[0]["message"] = str(exc)
         write_progress(action_pk, progress)
+        _mark_running_failed(running_job_id, str(exc))
         with db.SessionLocal() as session:
-            failed_job = BackupJob(
-                run_id=run_id,
-                cluster_id=cluster_id,
-                pool=pool,
-                image=image,
-                job_type=job_type,
-                status="FAILED",
-                base_job_id=base_job.id if base_job is not None else None,
-                error_message=str(exc),
-                finished_at=datetime.utcnow(),
-            )
-            session.add(failed_job)
-            session.commit()
+            failed_job = session.get(BackupJob, running_job_id)
+            if failed_job is None:
+                logger.error(
+                    "backup_engine._run_rbd_backup: failed to persist failed job %s",
+                    running_job_id,
+                )
+                return False
             # Story 9.5 (AC #1, #2, #5): AI analysis for every failure —
             # still inside this session so `failed_job`'s attributes are
             # readable (not yet expired/detached).
