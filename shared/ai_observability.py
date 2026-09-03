@@ -18,6 +18,12 @@ from shared.models import AIInvocation
 logger = logging.getLogger(__name__)
 
 _USAGE_CONTEXT: ContextVar[dict | None] = ContextVar("ai_usage_context", default=None)
+_PROVIDER_CONTEXT: ContextVar[tuple[str, str] | None] = ContextVar("ai_provider_context", default=None)
+
+
+def mark_ai_provider(provider: str, model_id: str) -> None:
+    """Mark the provider adapter that actually handled the current call."""
+    _PROVIDER_CONTEXT.set((provider or "unknown", model_id or "default"))
 
 
 def _token_count(value: Any) -> int | None:
@@ -165,6 +171,7 @@ def observe_ai_call(
             provider, model_id = _provider_and_model(scope, backend)
             reservation_id = None
             usage_token = _USAGE_CONTEXT.set({"input_tokens": None, "output_tokens": None})
+            provider_token = _PROVIDER_CONTEXT.set(None)
             try:
                 try:
                     reservation_id = check_ai_budget(provider, model_id, input_chars)
@@ -175,10 +182,12 @@ def observe_ai_call(
                     record_ai_usage(result)
                 except Exception as exc:
                     actual_input_tokens, actual_output_tokens = _recorded_usage()
+                    actual_provider = _PROVIDER_CONTEXT.get()
+                    recorded_provider, recorded_model = actual_provider or (provider, model_id)
                     await asyncio.to_thread(
                         _record,
                         reservation_id=reservation_id,
-                        feature=feature, provider=provider, model_id=model_id,
+                        feature=feature, provider=recorded_provider, model_id=recorded_model,
                         status="ERROR", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                         # A hard-budget rejection never reached a provider, so it
                         # must not look like billable input in the cost dashboard.
@@ -188,10 +197,12 @@ def observe_ai_call(
                     )
                     raise
                 actual_input_tokens, actual_output_tokens = _recorded_usage()
+                actual_provider = _PROVIDER_CONTEXT.get()
+                recorded_provider, recorded_model = actual_provider or (provider, model_id)
                 await asyncio.to_thread(
                     _record,
                     reservation_id=reservation_id,
-                    feature=feature, provider=provider, model_id=model_id,
+                    feature=feature, provider=recorded_provider, model_id=recorded_model,
                     status="SUCCESS", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                     input_chars=input_chars, output_chars=_content_size(result),
                     input_tokens=actual_input_tokens, output_tokens=actual_output_tokens, error_type=None,
@@ -199,5 +210,6 @@ def observe_ai_call(
                 return result
             finally:
                 _USAGE_CONTEXT.reset(usage_token)
+                _PROVIDER_CONTEXT.reset(provider_token)
         return wrapped
     return decorate

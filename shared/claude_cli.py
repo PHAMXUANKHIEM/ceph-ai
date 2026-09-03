@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 from config.settings import settings
-from shared.ai_observability import record_ai_usage
+from shared.ai_observability import mark_ai_provider, record_ai_usage
 
 
 class ClaudeCLIError(RuntimeError):
@@ -210,6 +210,7 @@ async def claude_logout(config_dir: Path | None = None) -> None:
 
 
 async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
+    mark_ai_provider("claude", settings.claude_chat_model.strip() or "default")
     executable = claude_executable()
     if not executable:
         raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")

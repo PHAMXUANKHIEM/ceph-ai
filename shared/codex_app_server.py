@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from config.settings import settings
-from shared.ai_observability import record_ai_usage
+from shared.ai_observability import mark_ai_provider, record_ai_usage
 
 
 logger = logging.getLogger(__name__)
@@ -398,6 +398,7 @@ class CodexAppServer:
     async def run_turn(
         self, prompt: str, dynamic_tools: list[dict], tool_handler: ToolHandler, timeout: float = 120
     ) -> dict:
+        mark_ai_provider("codex", settings.codex_chat_model.strip() or "default")
         async with self._turn_lock:
             await self._ensure_started()
             while not self._notifications.empty():
