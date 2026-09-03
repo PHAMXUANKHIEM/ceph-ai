@@ -745,7 +745,8 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
                 bot_token,
                 [
                     {"command": "start", "description": "Mở Chatbox AI"},
-                    {"command": "model", "description": "Chọn 1 AI hoặc 2 AI"},
+                    {"command": "model", "description": "Chọn chế độ AI"},
+                    {"command": "cluster", "description": "Chọn cụm Ceph"},
                     {"command": "single", "description": "Chế độ 1 AI"},
                     {"command": "dual", "description": "Hai AI sửa trong workspace cô lập"},
                     {"command": "single_full", "description": "1 AI toàn quyền (cần cấp riêng)"},
@@ -789,6 +790,8 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
                     telegram_chat.CHAT_APPROVE_PREFIX,
                     telegram_chat.DUAL_STOP_PREFIX,
                     telegram_chat.QUOTA_LOGIN_PREFIX,
+                    telegram_chat.AI_MODE_PREFIX,
+                    telegram_chat.CLUSTER_SELECT_PREFIX,
                 )):
                     try:
                         result = telegram_chat.run_callback_sync(callback_query, bot_token)

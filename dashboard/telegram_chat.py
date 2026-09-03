@@ -34,7 +34,7 @@ from dashboard.dual_ai_chat import (
 from dashboard.routes.actions import ApprovalOutcome, approve_action_core
 from dashboard.routes.chat import _confirm_chat_action_core
 from shared import db
-from shared.clusters import get_default_cluster_id
+from shared.clusters import get_default_cluster_id, list_active_clusters
 from shared.full_executor_auth import executor_token
 from shared.codex_app_server import (
     CodexAppServerError,
@@ -50,6 +50,8 @@ CHAT_CONFIRM_PREFIX = "chatconfirm:"
 CHAT_APPROVE_PREFIX = "chatapprove:"
 DUAL_STOP_PREFIX = "dualstop:"
 QUOTA_LOGIN_PREFIX = "quotalogin:"
+AI_MODE_PREFIX = "aimode:"
+CLUSTER_SELECT_PREFIX = "clusterselect:"
 _TELEGRAM_ACTOR_PREFIX = "telegram-chat:"
 _MAX_MESSAGE_CHARS = 12000
 _MESSAGE_QUEUE_SIZE = 4
@@ -75,6 +77,7 @@ _DIRECT_DATA_DESTRUCTION_RE = re.compile(
 )
 _FULL_RUN_STATE_PATH = Path("/var/lib/ceph-ai/telegram-single-full-runs.json")
 _MODE_STATE_PATH = Path("/var/lib/ceph-ai/telegram-chat-modes.json")
+_CLUSTER_STATE_PATH = Path("/var/lib/ceph-ai/telegram-chat-clusters.json")
 _CONFIRM_STATE_PATH = Path("/var/lib/ceph-ai/telegram-single-full-confirmations.json")
 _HELP_TEXT = (
     "Chatbox AI Telegram đã sẵn sàng.\n\n"
@@ -86,6 +89,7 @@ _HELP_TEXT = (
     "/confirm_destructive <mã> — Xác nhận yêu cầu có thể tác động service/dữ liệu\n"
     "/stop — Dừng phiên Hai AI đang chạy\n"
     "/status — Xem phiên AI và xác nhận đang chờ\n"
+    "/cluster — Chọn cụm Ceph cho phiên chat\n"
     "/ask <nội dung> — Gửi câu hỏi trong group khi Privacy Mode đang bật\n"
     "/new — Bắt đầu đoạn chat mới\n"
     "/help — Xem trợ giúp\n\n"
@@ -93,6 +97,7 @@ _HELP_TEXT = (
 )
 _mode_by_chat: dict[str, str] = {}
 _session_by_chat: dict[str, str] = {}
+_cluster_by_chat: dict[str, str] = {}
 _message_queue: queue.Queue[tuple[dict, str]] = queue.Queue(maxsize=_MESSAGE_QUEUE_SIZE)
 _message_worker_lock = threading.Lock()
 _message_worker_started = False
@@ -104,6 +109,7 @@ _full_runs_lock = threading.Lock()
 _full_runs: dict[str, dict] = {}
 _full_run_state_file_lock = threading.Lock()
 _mode_state_file_lock = threading.Lock()
+_cluster_state_file_lock = threading.Lock()
 _confirm_state_file_lock = threading.Lock()
 _codex_login_watchers: dict[str, asyncio.Task] = {}
 
@@ -618,6 +624,148 @@ def _cluster() -> Cluster | None:
         return cluster
 
 
+def _active_clusters() -> list[dict[str, str | bool]]:
+    """Return active Ceph clusters in a callback-safe, detached form."""
+    with db.SessionLocal() as session:
+        clusters = list(list_active_clusters(session))
+        clusters.sort(key=lambda item: (not bool(item.is_default), item.name.casefold()))
+        return [
+            {"id": str(item.id), "name": str(item.name), "is_default": bool(item.is_default)}
+            for item in clusters
+        ]
+
+
+def _load_persisted_cluster_choices() -> dict[str, str]:
+    try:
+        payload = json.loads(_CLUSTER_STATE_PATH.read_text())
+        if not isinstance(payload, dict):
+            return {}
+        return {str(actor): str(cluster_id) for actor, cluster_id in payload.items() if str(cluster_id)}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logger.exception("telegram_chat: failed to read persisted chat clusters")
+        return {}
+
+
+def _selected_cluster_id(actor: str) -> str | None:
+    current = _cluster_by_chat.get(actor)
+    if current:
+        return current
+    with _cluster_state_file_lock:
+        current = _load_persisted_cluster_choices().get(actor)
+        if current:
+            _cluster_by_chat[actor] = current
+        return current
+
+
+def _set_cluster(actor: str, cluster_id: str) -> None:
+    """Persist a Telegram user's cluster and start a fresh cluster-scoped session."""
+    cluster_id = str(cluster_id).strip()
+    if not cluster_id:
+        raise ValueError("cluster_id must not be empty")
+    with _cluster_state_file_lock:
+        choices = _load_persisted_cluster_choices()
+        choices[actor] = cluster_id
+        _CLUSTER_STATE_PATH.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        temporary = _CLUSTER_STATE_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(choices, sort_keys=True))
+        temporary.chmod(0o600)
+        temporary.replace(_CLUSTER_STATE_PATH)
+        _cluster_by_chat[actor] = cluster_id
+    # Never mix history or pending node-command confirmations between clusters.
+    _session_by_chat.pop(actor, None)
+
+
+def _cluster_for_actor(actor: str) -> Cluster | None:
+    selected_id = _selected_cluster_id(actor)
+    if selected_id:
+        with db.SessionLocal() as session:
+            selected = session.get(Cluster, selected_id)
+            if selected is not None and selected.is_active:
+                return selected
+    # Backward compatibility: users who have not selected a cluster continue
+    # to use the configured default cluster.
+    return _cluster()
+
+
+_MODE_LABELS = {
+    "single": "Chat với một AI",
+    "dual": "Hai AI trao đổi và sửa code trong workspace cô lập",
+    "single-full": "Single Full — toàn quyền source và server",
+}
+
+
+def _cluster_selection_buttons(clusters: list[dict[str, str | bool]]) -> list[tuple[str, str]]:
+    buttons = []
+    for item in clusters:
+        marker = " ⭐" if item["is_default"] else ""
+        label = f"{item['name']}{marker}"[:48]
+        buttons.append((label, f"{CLUSTER_SELECT_PREFIX}{item['id']}"))
+    return buttons
+
+
+async def _send_cluster_selector(token: str, chat_id: str, mode: str | None = None) -> bool:
+    try:
+        clusters = _active_clusters()
+    except Exception:
+        logger.exception("telegram_chat: failed to load active clusters")
+        await _send(token, chat_id, "Không tải được danh sách cụm Ceph; kiểm tra kết nối database.")
+        return False
+    if not clusters:
+        await _send(token, chat_id, "Chưa có cụm Ceph active để chọn.")
+        return False
+    mode_text = f"\nChế độ: {_MODE_LABELS.get(mode or '', mode or _mode(''))}" if mode else ""
+    await asyncio.to_thread(
+        send_telegram_message_with_keyboard,
+        token,
+        chat_id,
+        f"🔌 Chọn cụm Ceph để AI kết nối{mode_text}:",
+        _cluster_selection_buttons(clusters),
+    )
+    return True
+
+
+async def _send_mode_selector(token: str, chat_id: str) -> None:
+    await asyncio.to_thread(
+        send_telegram_message_with_keyboard,
+        token,
+        chat_id,
+        "🤖 Chọn chế độ AI:",
+        [
+            ("1️⃣ Một AI", f"{AI_MODE_PREFIX}single"),
+            ("2️⃣ Hai AI", f"{AI_MODE_PREFIX}dual"),
+            ("🔐 Single Full", f"{AI_MODE_PREFIX}single-full"),
+        ],
+    )
+
+
+async def _select_mode(
+    token: str,
+    chat_id: str,
+    actor: str,
+    mode: str,
+    *,
+    full_access_allowed: bool,
+) -> str | None:
+    if mode not in _MODE_LABELS:
+        return None
+    if mode == "single-full" and not full_access_allowed:
+        await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
+        return None
+    if mode != "single-full":
+        _clear_full_confirmation(actor)
+    try:
+        _set_mode(actor, mode)
+    except Exception:
+        logger.exception("telegram_chat: failed to persist selected mode")
+        await _send(token, chat_id, "Không lưu được chế độ AI; chưa chuyển chế độ.")
+        return None
+    await _send(token, chat_id, f"Đã chuyển sang chế độ {_MODE_LABELS[mode]}.")
+    await _send_cluster_selector(token, chat_id, mode)
+    return _MODE_LABELS[mode]
+
+
 def _history(actor: str, session_id: str, cluster_id: str) -> list[dict]:
     with db.SessionLocal() as session:
         rows = (
@@ -797,58 +945,31 @@ async def _handle_command(
         await _send(token, chat_id, _HELP_TEXT)
     elif name == "/status":
         await _send(token, chat_id, _status_text(chat_id, actor))
+    elif name in {"/cluster", "/clusters"}:
+        await _send_cluster_selector(token, chat_id)
     elif name in {"/single", "/dual", "/single_full", "/single-full"}:
         mode = {
             "/single": "single", "/dual": "dual",
             "/single_full": "single-full", "/single-full": "single-full",
         }[name]
-        if mode == "single-full" and not full_access_allowed:
-            await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
-            return True
-        if mode != "single-full":
-            _clear_full_confirmation(actor)
-        try:
-            _set_mode(actor, mode)
-        except Exception:
-            logger.exception("telegram_chat: failed to persist selected mode")
-            await _send(token, chat_id, "Không lưu được chế độ AI; chưa chuyển chế độ.")
-            return True
-        label = {
-            "single": "Chat với một AI",
-            "dual": "Hai AI trao đổi và sửa code trong workspace cô lập",
-            "single-full": "Single Full — toàn quyền source và server",
-        }[mode]
-        await _send(token, chat_id, f"Đã chuyển sang chế độ {label}.")
+        await _select_mode(
+            token, chat_id, actor, mode,
+            full_access_allowed=full_access_allowed,
+        )
     elif name in {"/model", "/mode"} and len(command) == 2:
         selected = {"1": "single", "2": "dual", "3": "single-full", "single_full": "single-full"}.get(
             command[1], command[1]
         )
-        if selected in {"single", "dual", "single-full"}:
-            if selected == "single-full" and not full_access_allowed:
-                await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
-                return True
-            if selected != "single-full":
-                _clear_full_confirmation(actor)
-            try:
-                _set_mode(actor, selected)
-            except Exception:
-                logger.exception("telegram_chat: failed to persist selected mode")
-                await _send(token, chat_id, "Không lưu được chế độ AI; chưa chuyển chế độ.")
-                return True
-            label = {
-                "single": "Chat với một AI",
-                "dual": "Hai AI trao đổi và sửa code trong workspace cô lập",
-                "single-full": "Single Full — toàn quyền source và server",
-            }[selected]
-            await _send(token, chat_id, f"Đã chuyển sang chế độ {label}.")
+        if selected in _MODE_LABELS:
+            await _select_mode(
+                token, chat_id, actor, selected,
+                full_access_allowed=full_access_allowed,
+            )
         else:
             await _send(token, chat_id, "Dùng /model single, /model dual hoặc /model single_full.")
     elif name in {"/model", "/mode"}:
-        await _send(
-            token,
-            chat_id,
-            "Chọn model bằng lệnh:\n/model single — 1 AI\n/model dual — 2 AI trao đổi và sửa code trong workspace cô lập\n/model single_full — 1 AI toàn quyền source và server (cần cấp riêng)\n\nHoặc dùng /single, /dual và /single_full.",
-        )
+        await _send_mode_selector(token, chat_id)
+        await _send(token, chat_id, "Hoặc dùng /single, /dual và /single_full.")
     elif name == "/stop":
         state = _request_stop(chat_id, actor)
         mode = "Hai AI"
@@ -1045,7 +1166,7 @@ async def handle_message(message: dict, bot_token: str) -> None:
         await _send(bot_token, chat_id, f"Tin nhắn quá dài; giới hạn {_MAX_MESSAGE_CHARS} ký tự.")
         return
 
-    cluster = _cluster()
+    cluster = _cluster_for_actor(actor)
     if cluster is None:
         await _send(bot_token, chat_id, "Cụm Ceph mặc định chưa sẵn sàng hoặc đang tắt.")
         return
@@ -1333,6 +1454,35 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
     data = str(callback_query.get("data") or "")
     chat_id = str(((callback_query.get("message") or {}).get("chat") or {}).get("id", ""))
     actor = _actor(callback_query)
+    if data.startswith(AI_MODE_PREFIX):
+        selected = data[len(AI_MODE_PREFIX):]
+        label = await _select_mode(
+            bot_token, chat_id, actor, selected,
+            full_access_allowed=_sender_can_use_full_access(callback_query),
+        )
+        return f"Đã chọn {label}." if label else "Không thể chọn chế độ này."
+    if data.startswith(CLUSTER_SELECT_PREFIX):
+        selected_id = data[len(CLUSTER_SELECT_PREFIX):].strip()
+        try:
+            clusters = _active_clusters()
+        except Exception:
+            logger.exception("telegram_chat: failed to validate Telegram cluster selection")
+            return "Không tải được danh sách cụm Ceph."
+        selected = next((item for item in clusters if item["id"] == selected_id), None)
+        if selected is None:
+            return "Cụm không tồn tại hoặc đã tắt."
+        _set_cluster(actor, selected_id)
+        message = callback_query.get("message") or {}
+        original = str(message.get("text") or "🔌 Chọn cụm Ceph")
+        try:
+            await asyncio.to_thread(
+                edit_telegram_message,
+                bot_token, chat_id, message.get("message_id"),
+                f"{original}\n\n✅ Đã chọn cụm: {selected['name']}",
+            )
+        except Exception:
+            logger.exception("telegram_chat: failed to close cluster selector message")
+        return f"Đã chọn cụm {selected['name']}."
     if data == f"{QUOTA_LOGIN_PREFIX}codex":
         if not _sender_can_use_full_access(callback_query):
             return "Bạn không có quyền đổi tài khoản Codex của Single Full."
