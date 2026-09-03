@@ -1559,6 +1559,34 @@ class VolumePerfSweep(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class BackupMetadataArtifact(Base):
+    """Integrity manifest for one artifact in a successful metadata backup.
+
+    A metadata backup is stored under one prefix but consists of several
+    independent objects. ``BackupJob.sha256`` can represent an RBD export,
+    not that multi-object set, so restore needs one durable digest per
+    artifact.
+    """
+
+    __tablename__ = "backup_metadata_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "backup_job_id",
+            "artifact_name",
+            name="uq_backup_metadata_artifacts_job_name",
+        ),
+        Index("ix_backup_metadata_artifacts_backup_job_id", "backup_job_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    backup_job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("backup_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class BackupJob(Base):
     """Durable, after-the-fact record of one RBD backup/metadata/restore-drill
     run (Epic 9, Story 9.1) — worker/backup/engine.py. Same relationship to

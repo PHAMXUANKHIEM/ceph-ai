@@ -13,7 +13,7 @@ import worker.backup.metadata as metadata
 from config.settings import settings
 from shared import db as db_module
 from shared.db import Base
-from shared.models import BackupJob
+from shared.models import BackupJob, BackupMetadataArtifact
 
 
 @pytest.fixture()
@@ -45,6 +45,10 @@ class FakeBackend:
             return False
         data = self.uploaded.get(remote_key)
         return data is not None and len(data) == expected_size
+
+    def download(self, remote_key, dest):
+        data = self.uploaded[remote_key]
+        dest.write(data)
 
 
 DEFAULT_POLICY_TARGETS = [{"slot": "a", "immutable": False}, {"slot": "b", "immutable": True}]
@@ -106,6 +110,35 @@ def test_metadata_backup_uploads_all_artifacts_and_verifies(isolated_db, fakes):
     assert len(jobs) == 2  # one per target slot
     assert all(j.status == "SUCCESS" for j in jobs)
     assert all(j.pool is None and j.image is None for j in jobs)
+
+    with db_module.SessionLocal() as session:
+        manifests = session.query(BackupMetadataArtifact).all()
+    assert len(manifests) == 10
+    assert all(item.size_bytes > 0 and len(item.sha256) == 64 for item in manifests)
+
+
+def test_metadata_artifact_download_requires_persisted_manifest(fakes):
+    content = b"metadata-content"
+    fakes.uploaded["metadata/run/auth_export.txt"] = content
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+
+    downloaded = metadata.download_artifact(
+        fakes,
+        "metadata/run",
+        "auth_export.txt",
+        len(content),
+        expected_sha256,
+    )
+
+    assert downloaded == content
+    with pytest.raises(RuntimeError, match="metadata artifact mismatch"):
+        metadata.download_artifact(
+            fakes,
+            "metadata/run",
+            "auth_export.txt",
+            len(content),
+            "0" * 64,
+        )
 
 
 def test_command_failure_marks_job_failed(isolated_db, fakes, monkeypatch):

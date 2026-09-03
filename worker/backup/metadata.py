@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from shared import db
 from shared.cluster_nodes import resolve_ssh_creds
-from shared.models import BackupJob
+from shared.models import BackupJob, BackupMetadataArtifact
 from worker.backup import ai_analysis
 from worker.backup.cluster_scope import first_mon_node, get_cluster, resolve_targets
 from worker.executor.ssh_executor import execute_command, execute_command_bytes
@@ -40,6 +40,7 @@ _ARTIFACTS = [
     ("auth_export.txt", "ceph auth export", False),
     ("config_dump.json", "ceph config dump", False),
 ]
+_RESTORE_ARTIFACTS = ("auth_export.txt", "crushmap.bin", "monmap.bin")
 
 
 def latest_successful_metadata_job(cluster_id: str | None = None) -> BackupJob | None:
@@ -64,12 +65,40 @@ def latest_successful_metadata_job(cluster_id: str | None = None) -> BackupJob |
         )
 
 
-def download_artifact(backend, remote_key_prefix: str, artifact_name: str) -> bytes:
-    """Downloads one named artifact (see `_ARTIFACTS` above for the valid
-    names) from under a metadata BackupJob's `remote_key` prefix."""
+def download_artifact(
+    backend,
+    remote_key_prefix: str,
+    artifact_name: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> bytes:
+    """Download one metadata artifact and verify both bytes and backend state."""
     buf = io.BytesIO()
-    backend.download(f"{remote_key_prefix}/{artifact_name}", buf)
-    return buf.getvalue()
+    remote_key = f"{remote_key_prefix}/{artifact_name}"
+    backend.download(remote_key, buf)
+    content = buf.getvalue()
+    actual_size = len(content)
+    actual_sha256 = hashlib.sha256(content).hexdigest()
+    if actual_size != expected_size or actual_sha256 != expected_sha256:
+        raise RuntimeError(
+            f"metadata artifact mismatch for {remote_key}: "
+            f"expected(size={expected_size}, sha256={expected_sha256}) vs "
+            f"download(size={actual_size}, sha256={actual_sha256})"
+        )
+    if not backend.verify(remote_key, expected_size, expected_sha256):
+        raise RuntimeError(f"backend verification failed for metadata artifact {remote_key}")
+    return content
+
+
+def artifact_manifest(backup_job_id: str) -> dict[str, tuple[int, str]]:
+    """Return the persisted ``artifact_name -> (size, sha256)`` manifest."""
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(BackupMetadataArtifact)
+            .filter(BackupMetadataArtifact.backup_job_id == backup_job_id)
+            .all()
+        )
+    return {row.artifact_name: (row.size_bytes, row.sha256) for row in rows}
 
 
 def _first_mon_node(cluster: "Cluster | None" = None) -> str:
@@ -144,16 +173,25 @@ def run(
                 return False
 
         with db.SessionLocal() as session:
-            session.add(
-                BackupJob(
-                    run_id=run_id_base,
-                    cluster_id=cluster_id,
-                    job_type="metadata",
-                    status="SUCCESS",
-                    backup_target_slot=slot,
-                    remote_key=prefix,
-                    finished_at=datetime.utcnow(),
+            job = BackupJob(
+                run_id=run_id_base,
+                cluster_id=cluster_id,
+                job_type="metadata",
+                status="SUCCESS",
+                backup_target_slot=slot,
+                remote_key=prefix,
+                finished_at=datetime.utcnow(),
+            )
+            session.add(job)
+            session.flush()
+            session.add_all(
+                BackupMetadataArtifact(
+                    backup_job_id=job.id,
+                    artifact_name=name,
+                    size_bytes=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
                 )
+                for name, content in collected.items()
             )
             session.commit()
 

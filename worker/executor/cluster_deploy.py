@@ -2433,10 +2433,25 @@ def _phase_restore_metadata(nodes: list[dict], action_params: dict, on_host_upda
         raise DeployPhaseError("Không có bản backup metadata thành công nào để khôi phục")
 
     try:
+        manifest = backup_metadata.artifact_manifest(latest.id)
+        missing = [name for name in backup_metadata._RESTORE_ARTIFACTS if name not in manifest]
+        if missing:
+            raise DeployPhaseError(
+                f"Backup metadata {latest.id} thiếu manifest cho: {', '.join(missing)}"
+            )
         backend = get_backend(latest.backup_target_slot, settings)
-        auth_bytes = backup_metadata.download_artifact(backend, latest.remote_key, "auth_export.txt")
-        crushmap_bytes = backup_metadata.download_artifact(backend, latest.remote_key, "crushmap.bin")
-        monmap_bytes = backup_metadata.download_artifact(backend, latest.remote_key, "monmap.bin")
+        auth_size, auth_sha256 = manifest["auth_export.txt"]
+        crushmap_size, crushmap_sha256 = manifest["crushmap.bin"]
+        monmap_size, monmap_sha256 = manifest["monmap.bin"]
+        auth_bytes = backup_metadata.download_artifact(
+            backend, latest.remote_key, "auth_export.txt", auth_size, auth_sha256
+        )
+        crushmap_bytes = backup_metadata.download_artifact(
+            backend, latest.remote_key, "crushmap.bin", crushmap_size, crushmap_sha256
+        )
+        monmap_bytes = backup_metadata.download_artifact(
+            backend, latest.remote_key, "monmap.bin", monmap_size, monmap_sha256
+        )
     except Exception as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
