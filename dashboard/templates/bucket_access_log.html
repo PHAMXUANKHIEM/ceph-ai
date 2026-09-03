@@ -10,42 +10,6 @@
   {% include "_nav.html" %}
 
   <main class="page">
-    <section class="card"><div class="card-header"><h2>Bucket Logging</h2></div><div class="card-body">
-      {% if not logging_capability or not logging_capability.known %}
-      <p class="error"><strong>Không xác định được capability:</strong> {{ logging_capability.reason if logging_capability else "Chưa kiểm tra được phiên bản Ceph." }}</p>
-      {% elif logging_capability.native_supported %}
-      <p><span class="status-badge healthy">Ceph {{ logging_capability.ceph_version }} hỗ trợ native S3 Bucket Logging</span></p>
-      <p class="hint">Native Bucket Logging có từ Ceph Tentacle 20. Trang xem log bên dưới hiện vẫn đọc HTTP access log của RGW Beast; cấu hình target bucket/prefix native chưa được triển khai tại đây.</p>
-      {% elif logging_capability.fallback_supported %}
-      <p><span class="status-badge warning">Ceph {{ logging_capability.ceph_version }} chưa hỗ trợ native S3 Bucket Logging</span></p>
-      <p class="hint">{{ logging_capability.reason }}</p>
-      {% else %}
-      <p class="error"><strong>Không hỗ trợ:</strong> {{ logging_capability.reason }}</p>
-      {% endif %}
-      <p><strong>Nguồn dữ liệu hiện tại:</strong> HTTP access log gần nhất của tiến trình RGW Beast, không phải object log trong bucket đích.</p>
-      <p><strong>Kiểm toán:</strong> Dùng để xem ai đã truy cập, vào lúc nào và đã thực hiện thao tác gì trong phần log RGW còn khả dụng.</p>
-      <h3>📊 Dữ liệu thu thập</h3><ul><li><strong>Định danh:</strong> IP nguồn, Requester và User-Agent.</li><li><strong>Thao tác:</strong> Action, timestamp chính xác và tài nguyên bị tác động.</li><li><strong>Kết quả:</strong> HTTP status, kích thước phản hồi và độ trễ hệ thống.</li></ul>
-      <h3>⚙️ Giới hạn của chế độ hiện tại</h3><ul><li>Không cấu hình target bucket hoặc prefix.</li><li>Không cam kết lưu toàn bộ lịch sử; phụ thuộc retention/rotation của daemon log.</li><li>Bucket của virtual-hosted-style request có thể không suy ra được nếu log không chứa Host header.</li></ul>
-      <p class="hint">Cấu hình node/container RGW được quản lý tập trung tại <a href="/settings">Settings</a>. Native target bucket/prefix chỉ hợp lệ từ Ceph Tentacle 20.</p>
-    </div></section>
-
-    {% if is_admin and logging_capability and logging_capability.fallback_supported %}
-    <section class="card"><div class="card-header"><div><h2>Cấu hình ghi log vào bucket</h2><p class="hint">Hệ thống tự chọn native trên Ceph 20+, compatibility collector trên Ceph 14–19.</p></div></div><div class="card-body">
-      <form id="bucket-logging-config-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
-        <label>Thao tác<select id="bl-action"><option value="enable">Bật / cập nhật</option><option value="disable">Tắt</option></select></label>
-        <label>Source bucket<input id="bl-source" maxlength="255" required></label>
-        <label>Target bucket<input id="bl-target" maxlength="255"></label>
-        <label>Prefix<input id="bl-prefix" maxlength="1024" value="logs/"></label>
-        <label>Owner<input id="bl-owner" maxlength="255"></label>
-        <label>S3 endpoint<input id="bl-endpoint" type="url" placeholder="https://rgw.example.com"></label>
-        <button class="btn btn-primary btn-sm" type="submit">Preview</button>
-      </form>
-      <pre id="bl-preview" class="command-preview" hidden></pre>
-      <div id="bl-confirm-wrap" hidden><label>Xác nhận source bucket<input id="bl-confirm"></label><button id="bl-execute" class="btn btn-danger btn-sm" type="button">Áp dụng</button></div>
-      <p id="bl-config-status" class="hint"></p>
-    </div></section>
-    {% endif %}
-
     <section class="card">
       <div class="card-header"><h2>Xem log</h2></div>
       <div class="card-body">

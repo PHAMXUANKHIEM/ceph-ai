@@ -160,8 +160,12 @@ def test_page_uses_bucket_logging_name_without_duplicate_rgw_config(dashboard_cl
     assert "<h2>Cấu hình RGW</h2>" not in response.text
     assert "Requester" in response.text
     assert "User-Agent" in response.text
-    assert "chưa hỗ trợ native S3 Bucket Logging" in response.text
-    assert "HTTP access log của RGW Beast" in response.text
+    assert "chưa hỗ trợ native S3 Bucket Logging" not in response.text
+    assert "HTTP access log của RGW Beast" not in response.text
+    assert "Dữ liệu thu thập" not in response.text
+    assert "Giới hạn của chế độ hiện tại" not in response.text
+    assert "Cấu hình ghi log vào bucket" not in response.text
+    assert "bucket-logging-config-form" not in response.text
     assert "log nên được đẩy sang bucket đích" not in response.text
 
 
