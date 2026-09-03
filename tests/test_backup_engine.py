@@ -371,6 +371,35 @@ def test_verify_failure_marks_job_failed(isolated_db, fake_backend_and_ssh):
     assert jobs[0].status == "FAILED"
 
 
+def test_source_checksum_mismatch_marks_job_failed(isolated_db, fake_backend_and_ssh, monkeypatch):
+    backend = fake_backend_and_ssh
+    original_upload = backend.upload
+
+    def upload_with_wrong_checksum(stream, remote_key):
+        result = original_upload(stream, remote_key)
+        result.sha256 = "0" * 64
+        return result
+
+    monkeypatch.setattr(backend, "upload", upload_with_wrong_checksum)
+    incident_id, action_pk = _make_incident_and_action()
+
+    succeeded = engine.run(
+        action_pk,
+        "rbd_backup_run",
+        {"pool": "vms", "image": "web01"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is False
+    with db_module.SessionLocal() as session:
+        jobs = session.query(BackupJob).filter(BackupJob.pool == "vms", BackupJob.image == "web01").all()
+    assert len(jobs) == 1
+    assert jobs[0].status == "FAILED"
+
+
 def test_incremental_snapshot_is_removed_after_verified_backup(isolated_db, monkeypatch):
     commands = []
 

@@ -435,7 +435,13 @@ def _run_rbd_backup(
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
                 result = backend.upload(f, remote_key)
-            if not backend.verify(remote_key, result.size, result.sha256):
+            if result.size != size_bytes or result.sha256 != sha256:
+                raise BackupEngineError(
+                    f"backend upload result does not match source for {remote_key}: "
+                    f"source(size={size_bytes}, sha256={sha256}) vs "
+                    f"backend(size={result.size}, sha256={result.sha256})"
+                )
+            if not backend.verify(remote_key, size_bytes, sha256):
                 raise BackupEngineError(f"verify() failed after upload to slot {slot} for {remote_key}")
             uploaded_targets.append((slot, remote_key, result))
 
@@ -452,6 +458,7 @@ def _run_rbd_backup(
             running_job.backup_target_slot = first_slot
             running_job.remote_key = first_key
             running_job.size_bytes = size_bytes
+            running_job.sha256 = sha256
             running_job.duration_seconds = duration_seconds
             running_job.finished_at = finished_at
             session.flush()
@@ -468,6 +475,7 @@ def _run_rbd_backup(
                     backup_target_slot=slot,
                     remote_key=remote_key,
                     size_bytes=size_bytes,
+                    sha256=sha256,
                     duration_seconds=duration_seconds,
                     finished_at=finished_at,
                 )
