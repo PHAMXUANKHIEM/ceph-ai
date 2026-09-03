@@ -192,8 +192,16 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
                 return result
             provider_errors.append(f"Claude thiếu trường bắt buộc: {result!r}")
 
-    if provider_errors and not settings.router_api_key:
-        raise VolumePerfAnalysisError("; ".join(provider_errors))
+    router_ready = bool(
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    )
+    if not router_ready:
+        if provider_errors:
+            raise VolumePerfAnalysisError("; ".join(provider_errors))
+        raise VolumePerfAnalysisError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     try:
         client = _get_client()

@@ -631,8 +631,16 @@ async def _call_router(user_content: str) -> dict:
     # Avoid turning a useful CLI error into an opaque RouterNotConfiguredError
     # when no 9router credential exists.  The order is Codex -> Claude ->
     # 9router, and every configured provider gets exactly one chance.
-    if provider_errors and not settings.router_api_key:
-        raise RouterDiagnosisError("; ".join(provider_errors))
+    router_ready = bool(
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    )
+    if not router_ready:
+        if provider_errors:
+            raise RouterDiagnosisError("; ".join(provider_errors))
+        raise RouterDiagnosisError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     client = _get_client()
     try:

@@ -995,8 +995,16 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
             )
             return result
 
-    if provider_errors and not settings.router_api_key:
-        raise ChatTurnError("; ".join(provider_errors))
+    router_ready = bool(
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    )
+    if not router_ready:
+        if provider_errors:
+            raise ChatTurnError("; ".join(provider_errors))
+        raise ChatTurnError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     try:
         client = _get_client()

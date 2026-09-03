@@ -142,8 +142,16 @@ async def _call_model(payload: dict) -> dict:
             provider_errors.append(f"Claude call failed: {exc}")
         else:
             return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
-    if provider_errors and not settings.router_api_key:
-        raise PostmortemError("; ".join(provider_errors))
+    router_ready = bool(
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    )
+    if not router_ready:
+        if provider_errors:
+            raise PostmortemError("; ".join(provider_errors))
+        raise PostmortemError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
         completion = await client.chat.completions.create(

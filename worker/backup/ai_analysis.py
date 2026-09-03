@@ -155,8 +155,16 @@ async def _call_router(user_content: str) -> dict:
                 provider_errors.append(f"Claude response was not valid JSON: {exc}")
                 logger.warning("%s; trying configured fallback", provider_errors[-1])
 
-    if provider_errors and not settings.router_api_key:
-        raise AIAnalysisError("; ".join(provider_errors))
+    router_ready = bool(
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    )
+    if not router_ready:
+        if provider_errors:
+            raise AIAnalysisError("; ".join(provider_errors))
+        raise AIAnalysisError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     client = _get_client()
     try:

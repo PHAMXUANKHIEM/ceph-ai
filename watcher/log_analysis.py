@@ -428,8 +428,16 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
         else:
             return json.loads(clean)
 
-    if provider_errors and not settings.router_api_key:
-        raise LogAnalysisError("; ".join(provider_errors))
+    router_ready = bool(
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    )
+    if not router_ready:
+        if provider_errors:
+            raise LogAnalysisError("; ".join(provider_errors))
+        raise LogAnalysisError("Router đang tắt hoặc chưa cấu hình đầy đủ")
 
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:

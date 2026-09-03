@@ -129,8 +129,17 @@ async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: 
             return await run_claude_prompt(prompt)
         except ClaudeCLIError as exc:
             provider_errors.append(f"Claude call failed: {exc}")
-    if provider_errors and not settings.vitastor_router_api_key:
-        raise HTTPException(status_code=503, detail="; ".join(provider_errors))
+    router_ready = bool(
+        settings.vitastor_router_enabled
+        and settings.vitastor_router_api_key
+        and settings.vitastor_router_base_url
+        and settings.vitastor_router_model
+    )
+    if not router_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="; ".join(provider_errors) or "Router Vitastor đang tắt hoặc chưa cấu hình đầy đủ",
+        )
     client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
     response = await client.chat.completions.create(
         model=settings.vitastor_router_model,
