@@ -183,14 +183,25 @@
   var confirmation = document.getElementById("bucket-create-confirmation");
   var execute = document.getElementById("bucket-create-execute");
   var status = document.getElementById("bucket-create-status");
+  var objectLockInput = document.getElementById("bucket-create-object-lock");
+  var objectLockSetting = document.getElementById("bucket-create-object-lock-label");
+  var objectLockState = document.getElementById("bucket-create-object-lock-hint");
   var approved = null;
+  function objectLockEnabled() { return objectLockInput.value.trim() === "OK"; }
+  function updateObjectLockState() {
+    var enabled = objectLockEnabled();
+    objectLockSetting.classList.toggle("is-enabled", enabled);
+    objectLockState.textContent = enabled ? "Object Lock sẽ được bật" : (objectLockInput.value.trim() ? "Cần nhập chính xác OK" : "Chưa bật");
+  }
+  objectLockInput.addEventListener("input", updateObjectLockState);
+  updateObjectLockState();
   function payload() { return {
     name: document.getElementById("bucket-create-name").value.trim(),
     owner: document.getElementById("bucket-create-owner").value.trim(),
     endpoint: document.getElementById("bucket-create-endpoint").value.trim(),
     api_name: document.getElementById("bucket-create-api-name").value.trim(),
     placement: document.getElementById("bucket-create-placement").value.trim(),
-    object_lock: document.getElementById("bucket-create-object-lock").checked
+    object_lock: objectLockEnabled()
   }; }
   function endpoint(kind) { return "/api/object-storage/buckets/actions/" + kind + "?cluster=" + encodeURIComponent(form.dataset.cluster); }
   function parse(response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Thao tác thất bại"); }); }
