@@ -51,7 +51,7 @@ Kết quả: lỗi quota, auth, busy, policy 403, lỗi provider và lỗi nội
 
 ### AI-03 — Fallback ghi sai provider/budget — P1
 
-`shared/ai_observability.py` chọn provider trước khi gọi. Nếu Codex lỗi rồi Claude thành công, invocation vẫn có thể được ghi là Codex. Cách xử lý: reservation/telemetry phải gắn với provider thực tế; mỗi attempt cần metadata riêng hoặc chỉ reserve sau khi provider đã được chọn.
+`shared/ai_observability.py` chọn provider trước khi gọi. Nếu Codex lỗi rồi Claude thành công, invocation có thể bị ghi là Codex; với hard budget, reservation cũng phải được hiểu là ước tính trước lượt gọi. Cách xử lý đã triển khai: adapter Codex/Claude đánh dấu provider/model thực tế qua `ContextVar`, decorator cập nhật invocation theo provider cuối cùng đã chạy; budget guard vẫn reserve trước theo provider ưu tiên để fail-closed và bảo thủ.
 
 ### AI-04 — Router flag bị bỏ qua trong fallback — P1
 
@@ -129,7 +129,8 @@ Runtime có lỗi `getUpdates Conflict: terminated by other getUpdates request`.
 
 - AI-01: đã triển khai, commit `e5fc7e30`; Watcher healthy sau restart.
 - AI-02: đã triển khai, commit `0588cdd5`; Full Executor và Telegram healthy sau restart.
-- AI-03/AI-04: đã triển khai, commit `357305ad`; Dashboard/Worker/Watcher healthy sau restart.
+- AI-03: đã triển khai đầy đủ phần telemetry provider thực tế, commit `f38698db`; adapter Codex/Claude đánh dấu provider/model thật trong cả đường fallback. Hard budget vẫn reserve trước theo provider ưu tiên (ước tính bảo thủ), còn Dual/Single Full đã kiểm tra theo provider thực tế ở từng attempt trong commit `8aecd322`.
+- AI-04: đã triển khai, commit `357305ad`; Dashboard/Worker/Watcher healthy sau restart.
 - AI-05/AI-06: đã triển khai, commit `3f639475`; các test adapter/structured fallback liên quan đạt.
 - AI-07: đã triển khai, commit `8aecd322`; Dual/Single Full có Budget Guard và audit invocation.
 - AI-08 đến AI-11: đã triển khai, commit `d8f04c1d`; model reload, stdin, deadline và history limits đã được áp dụng.
