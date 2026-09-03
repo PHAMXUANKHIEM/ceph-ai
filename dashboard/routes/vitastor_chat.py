@@ -45,7 +45,7 @@ from shared import db
 from shared.models import ChatMessage, ChatPreference, VitastorCluster
 from shared.router_client import build_router_client, readable_exception_message
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from shared.codex_app_server import (
     CodexAppServerError, codex_app_server, codex_executable, install_codex_cli,
     refresh_app_server_after_cli_login, start_cli_device_login,
@@ -141,10 +141,13 @@ async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: 
             detail="; ".join(provider_errors) or "Router Vitastor đang tắt hoặc chưa cấu hình đầy đủ",
         )
     client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
-    response = await client.chat.completions.create(
+    async with client.chat.completions.stream(
         model=settings.vitastor_router_model,
         messages=[{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_text}],
-    )
+        stream_options={"include_usage": True},
+    ) as stream:
+        response = await stream.get_final_completion()
+    record_ai_usage(response)
     return response.choices[0].message.content or "AI không trả về nội dung."
 
 

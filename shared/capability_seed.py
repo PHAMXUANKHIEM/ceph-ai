@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import httpx
 from datetime import datetime
 from urllib.parse import urlparse
 
 from config.settings import settings
 from shared import capability_matrix, db
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 from shared.models import CapabilityMatrixProposal
 from shared.router_client import build_router_client
 
@@ -37,8 +38,15 @@ async def generate(*, doc_url: str, release_notes: str, actor: str) -> list[Capa
         raise ValueError("Nội dung release notes phải từ 100 đến 30000 ký tự")
     allowed = capability_matrix.gated_command_ids()
     source_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if not (
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    ):
+        raise ValueError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     client = build_router_client(settings.router_api_key, settings.router_base_url)
-    response = await client.chat.completions.create(
+    async with client.chat.completions.stream(
         model=settings.router_model,
         temperature=0,
         response_format={"type": "json_object"},
@@ -47,8 +55,11 @@ async def generate(*, doc_url: str, release_notes: str, actor: str) -> list[Capa
             {"role": "user", "content": redact_text(f"Allowed command_id values: {allowed}\nOfficial source: {doc_url}\nRelease notes:\n{text}")},
         ],
         max_tokens=2000,
-        timeout=AI_TIMEOUT_SECONDS,
-    )
+        stream_options={"include_usage": True},
+        timeout=httpx.Timeout(AI_TIMEOUT_SECONDS),
+    ) as stream:
+        response = await stream.get_final_completion()
+    record_ai_usage(response)
     payload = json.loads(response.choices[0].message.content or "{}")
     proposals = payload.get("proposals")
     if not isinstance(proposals, list):

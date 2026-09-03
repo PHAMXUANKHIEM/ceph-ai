@@ -317,6 +317,13 @@ async def _summarize_upgrade_procedure(raw_text: str) -> str:
     for a human to read, not a structured decision the rest of the system
     acts on.
     """
+    if not (
+        settings.router_enabled
+        and settings.router_api_key
+        and settings.router_base_url
+        and settings.router_model
+    ):
+        raise UpgradeProcedureSummaryError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     try:
         client = build_router_client(settings.router_api_key, settings.router_base_url)
     except RouterNotConfiguredError as exc:

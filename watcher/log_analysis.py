@@ -426,7 +426,10 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
             provider_errors.append(f"Claude call failed: {exc}")
             logger.warning("%s; trying configured fallback", provider_errors[-1])
         else:
-            return json.loads(clean)
+            try:
+                return json.loads(clean)
+            except (TypeError, ValueError) as exc:
+                provider_errors.append(f"Claude response was not valid JSON: {exc}")
 
     router_ready = bool(
         settings.router_enabled

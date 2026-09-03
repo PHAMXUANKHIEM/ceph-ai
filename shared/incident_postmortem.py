@@ -16,7 +16,7 @@ from shared import db
 from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent
 from shared.router_client import build_router_client
 from shared.ai_redaction import default_redactor
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import observe_ai_call, record_ai_usage
 
 PROMPT_VERSION = "v1"
 TOOL_NAME = "report_incident_postmortem"
@@ -141,7 +141,10 @@ async def _call_model(payload: dict) -> dict:
         except (ClaudeCLIError, json.JSONDecodeError) as exc:
             provider_errors.append(f"Claude call failed: {exc}")
         else:
-            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
+            try:
+                return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I))
+            except (TypeError, ValueError) as exc:
+                provider_errors.append(f"Claude response was not valid JSON: {exc}")
     router_ready = bool(
         settings.router_enabled
         and settings.router_api_key
@@ -154,12 +157,14 @@ async def _call_model(payload: dict) -> dict:
         raise PostmortemError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
-        completion = await client.chat.completions.create(
+        async with client.chat.completions.stream(
             model=settings.router_model, max_tokens=MAX_TOKENS, tools=[schema],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            timeout=httpx.Timeout(TIMEOUT_SECONDS),
-        )
+            stream_options={"include_usage": True}, timeout=httpx.Timeout(TIMEOUT_SECONDS),
+        ) as stream:
+            completion = await stream.get_final_completion()
+        record_ai_usage(completion)
     except Exception as exc:
         raise PostmortemError(f"Router call failed: {str(exc) or type(exc).__name__}") from exc
     for call in completion.choices[0].message.tool_calls or []:
