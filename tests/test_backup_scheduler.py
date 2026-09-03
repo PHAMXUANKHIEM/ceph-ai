@@ -358,6 +358,20 @@ def test_default_target_readiness_allows_aws_s3_without_endpoint(monkeypatch):
     assert scheduler._default_backup_target_ready(policy) is True
 
 
+@pytest.mark.parametrize("invalid_count", ["two", [], {}])
+def test_default_target_readiness_fails_closed_for_invalid_copy_count(invalid_count):
+    policy = {
+        "backup_targets": [{"slot": "a"}],
+        "required_copy_count": invalid_count,
+    }
+
+    assert scheduler._default_backup_target_ready(policy) is False
+
+
+def test_default_target_readiness_fails_closed_for_invalid_policy_shape():
+    assert scheduler._default_backup_target_ready([]) is False
+
+
 def test_build_scheduler_removes_stale_persisted_backup_jobs(isolated_db, monkeypatch):
     policy = {
         "backup_targets": [{"slot": "a", "immutable": False}],

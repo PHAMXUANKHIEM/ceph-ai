@@ -63,11 +63,22 @@ def _target_fields_ready(source, prefix: str) -> bool:
 
 
 def _default_backup_target_ready(policy: dict) -> bool:
-    required_copy_count = max(int(policy.get("required_copy_count") or 1), 1)
+    if not isinstance(policy, dict):
+        logger.error("scheduler: backup policy must be a mapping; default targets are not ready")
+        return False
+    try:
+        required_copy_count = max(int(policy.get("required_copy_count") or 1), 1)
+    except (TypeError, ValueError):
+        logger.error(
+            "scheduler: invalid required_copy_count=%r; default targets are not ready",
+            policy.get("required_copy_count"),
+        )
+        return False
     ready_slots = {
         slot
         for target in (policy.get("backup_targets") or [])
-        if (slot := target.get("slot")) in ("a", "b")
+        if isinstance(target, dict)
+        and (slot := target.get("slot")) in ("a", "b")
         and _target_fields_ready(settings, f"backup_target_{slot}")
     }
     return len(ready_slots) >= required_copy_count
