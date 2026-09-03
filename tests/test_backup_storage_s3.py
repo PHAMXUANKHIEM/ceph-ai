@@ -25,6 +25,7 @@ class FakeS3Client:
 
     def __init__(self):
         self.objects: dict[str, _FakeObject] = {}
+        self.omit_checksums = False
 
     def upload_fileobj(self, fileobj, bucket, key, ExtraArgs=None):
         data = fileobj.read()
@@ -38,9 +39,26 @@ class FakeS3Client:
         if obj is None:
             raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         response = {"ContentLength": len(obj.body)}
-        if ChecksumMode == "ENABLED":
+        if ChecksumMode == "ENABLED" and not self.omit_checksums:
             response["ChecksumSHA256"] = obj.checksum_sha256
         return response
+
+    def get_object(self, Bucket, Key):
+        obj = self.objects.get(Key)
+        if obj is None:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "GetObject")
+
+        class _Body:
+            def __init__(self, data):
+                self._stream = io.BytesIO(data)
+
+            def read(self, size=-1):
+                return self._stream.read(size)
+
+            def close(self):
+                self._stream.close()
+
+        return {"Body": _Body(obj.body)}
 
     def get_paginator(self, operation_name):
         assert operation_name == "list_objects_v2"
@@ -118,6 +136,18 @@ def test_verify_missing_key_returns_false():
     backend = _backend()
 
     assert backend.verify("does/not/exist.bin", expected_size=1, expected_sha256="deadbeef") is False
+
+
+def test_verify_without_s3_checksum_downloads_and_hashes_object(fake_s3):
+    backend = _backend()
+    data = b"checksum fallback bytes"
+    result = backend.upload(io.BytesIO(data), "full/no-additional-checksum.bin")
+    fake_s3.omit_checksums = True
+
+    assert backend.verify("full/no-additional-checksum.bin", result.size, result.sha256) is True
+
+    fake_s3.objects["full/no-additional-checksum.bin"].body = b"tampered same-ish payload"
+    assert backend.verify("full/no-additional-checksum.bin", result.size, result.sha256) is False
 
 
 def test_list_returns_uploaded_objects():

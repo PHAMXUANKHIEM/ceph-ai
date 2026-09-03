@@ -104,8 +104,9 @@ class S3StorageBackend:
             raise S3StorageBackendError(f"upload failed for {remote_key}: {exc}") from exc
 
     def verify(self, remote_key: str, expected_size: int, expected_sha256: str) -> bool:
+        client = self._client()
         try:
-            response = self._client().head_object(Bucket=self._bucket, Key=remote_key, ChecksumMode="ENABLED")
+            response = client.head_object(Bucket=self._bucket, Key=remote_key, ChecksumMode="ENABLED")
         except ClientError as exc:
             if _is_not_found(exc):
                 return False
@@ -116,10 +117,28 @@ class S3StorageBackend:
         if checksum_b64 is None:
             logger.warning(
                 "S3StorageBackend.verify: bucket did not return ChecksumSHA256 for %s "
-                "(bucket may not support S3 additional checksums) — falling back to size-only match",
+                "(bucket may not support S3 additional checksums) — downloading to verify independently",
                 remote_key,
             )
-            return True
+            try:
+                object_response = client.get_object(Bucket=self._bucket, Key=remote_key)
+                body = object_response["Body"]
+                digest = hashlib.sha256()
+                actual_size = 0
+                while True:
+                    chunk = body.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    actual_size += len(chunk)
+                return actual_size == expected_size and digest.hexdigest() == expected_sha256
+            except ClientError as exc:
+                if _is_not_found(exc):
+                    return False
+                raise S3StorageBackendError(f"verify download failed for {remote_key}: {exc}") from exc
+            finally:
+                if "body" in locals() and hasattr(body, "close"):
+                    body.close()
         expected_b64 = base64.b64encode(bytes.fromhex(expected_sha256)).decode()
         return checksum_b64 == expected_b64
 
