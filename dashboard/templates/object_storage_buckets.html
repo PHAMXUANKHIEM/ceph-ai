@@ -73,7 +73,23 @@
         <label>RGW S3 endpoint<input id="bucket-create-endpoint" type="url" required placeholder="https://rgw.example.com"></label>
         <label id="bucket-create-api-name-label">Zonegroup API name<input id="bucket-create-api-name" maxlength="128" placeholder="default"></label>
         <label id="bucket-create-placement-label">Placement target<input id="bucket-create-placement" maxlength="128" placeholder="new-placement"></label>
-        <label id="bucket-create-object-lock-label"><input id="bucket-create-object-lock" type="checkbox"> Bật Object Lock ngay khi tạo (không thể bật muộn)</label>
+        <div id="bucket-create-object-lock-label" class="bucket-object-lock-setting">
+          <span class="bucket-object-lock-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M7.5 10V7.5a4.5 4.5 0 0 1 9 0V10M6 10h12v10H6V10Zm6 3.25v3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/><circle cx="12" cy="15" r=".7" fill="currentColor"/></svg>
+          </span>
+          <div class="bucket-object-lock-copy">
+            <div class="bucket-object-lock-kicker"><span>BẢO VỆ DỮ LIỆU</span><span>S3 / IMMUTABLE</span></div>
+            <strong>Object Lock</strong>
+            <p>Ngăn object bị xóa hoặc ghi đè trong thời gian retention.</p>
+            <span class="bucket-object-lock-note"><span aria-hidden="true">i</span> Chỉ bật được tại thời điểm tạo bucket</span>
+          </div>
+          <label class="bucket-object-lock-toggle">
+            <span class="sr-only">Bật Object Lock ngay khi tạo bucket</span>
+            <input id="bucket-create-object-lock" type="checkbox">
+            <span class="bucket-object-lock-track" aria-hidden="true"><span></span></span>
+            <span class="bucket-object-lock-state" aria-hidden="true"><span class="is-off">Chưa bật</span><span class="is-on">Sẽ bật khi tạo</span></span>
+          </label>
+        </div>
         <button class="btn btn-primary btn-sm" type="submit">Xem trước</button>
       </form>
       <div id="bucket-create-preview" hidden><p id="bucket-create-summary"></p><label>Nhập lại tên bucket<input id="bucket-create-confirmation" maxlength="63" autocomplete="off"></label><button id="bucket-create-execute" class="btn btn-danger btn-sm" type="button" disabled>Thực thi</button></div>
