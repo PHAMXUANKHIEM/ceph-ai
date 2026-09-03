@@ -98,6 +98,7 @@ RESTORE_AS_NEW_ACTION_ID = "restore_rbd_image_as_new"
 MANUAL_BACKUP_CEPH_CODE = "BACKUP_MANUAL"
 RESTORE_AS_NEW_CEPH_CODE = "RESTORE_RBD_IMAGE_AS_NEW"
 _RBD_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def _require_admin_privilege(user: str) -> None:
@@ -124,6 +125,15 @@ def _in_flight_action_query(session, action_ids: tuple[str, ...], cluster=None):
 
 def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
     """Return restorable full/incremental points with their exact chain."""
+
+    def _has_persisted_checksum(job: BackupJob) -> bool:
+        return (
+            job.size_bytes is not None
+            and job.size_bytes >= 0
+            and isinstance(job.sha256, str)
+            and _SHA256_RE.fullmatch(job.sha256) is not None
+        )
+
     expected_cluster_id = None if cluster.is_default else cluster.id
     with db.SessionLocal() as session:
         jobs = (
@@ -144,6 +154,8 @@ def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
             full = job if job.job_type == "full" else by_id.get(job.base_job_id)
             if full is None or full.job_type != "full" or full.status != "SUCCESS":
                 continue
+            if not _has_persisted_checksum(full):
+                continue
             if job.backup_target_slot != full.backup_target_slot:
                 continue
             diffs = sorted(
@@ -156,6 +168,8 @@ def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
                 ),
                 key=lambda candidate: candidate.created_at,
             )
+            if not all(_has_persisted_checksum(candidate) for candidate in diffs):
+                continue
             chain = [full] + diffs
             if job.job_type == "incremental" and (not diffs or diffs[-1].id != job.id):
                 continue
@@ -169,6 +183,7 @@ def _recovery_points(pool: str, image: str, cluster) -> list[dict]:
                 "base_job_id": full.id,
                 "chain_job_ids": [item.id for item in chain],
                 "chain_length": len(chain),
+                "verified": True,
             })
         return points
 

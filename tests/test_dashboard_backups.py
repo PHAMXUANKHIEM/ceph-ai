@@ -77,6 +77,8 @@ def _seed_successful_full(pool="vms", image="disk1"):
                 status="SUCCESS",
                 backup_target_slot="a",
                 remote_key=f"{pool}/{image}/full.bin",
+                size_bytes=1024,
+                sha256="a" * 64,
                 created_at=datetime.utcnow(),
                 finished_at=datetime.utcnow(),
             )
@@ -715,7 +717,7 @@ def test_recovery_points_api_returns_exact_full_and_incremental_chains(dashboard
     with db_module.SessionLocal() as session:
         diff = BackupJob(run_id="diff-1", pool="vms", image="disk1", job_type="incremental",
             status="SUCCESS", base_job_id=full_id, backup_target_slot="a", remote_key="diff.bin",
-            size_bytes=123, created_at=datetime.utcnow(), finished_at=datetime.utcnow())
+            size_bytes=123, sha256="b" * 64, created_at=datetime.utcnow(), finished_at=datetime.utcnow())
         session.add(diff)
         session.commit()
         diff_id = diff.id
@@ -728,6 +730,31 @@ def test_recovery_points_api_returns_exact_full_and_incremental_chains(dashboard
     assert points[0]["job_id"] == diff_id
     assert points[0]["chain_job_ids"] == [full_id, diff_id]
     assert points[0]["chain_length"] == 2
+    assert points[0]["verified"] is True
+
+
+def test_recovery_points_excludes_legacy_jobs_without_checksum(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [{"pool": "vms", "image": "disk1"}])
+    with db_module.SessionLocal() as session:
+        session.add(BackupJob(
+            run_id="legacy-full",
+            pool="vms",
+            image="disk1",
+            job_type="full",
+            status="SUCCESS",
+            backup_target_slot="a",
+            remote_key="legacy.bin",
+            size_bytes=123,
+            created_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+        ))
+        session.commit()
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/api/backups/recovery-points?pool=vms&image=disk1")
+
+    assert response.status_code == 200
+    assert response.json()["recovery_points"] == []
 
 
 def test_restore_as_new_rejects_unknown_recovery_point(dashboard_client, monkeypatch):
