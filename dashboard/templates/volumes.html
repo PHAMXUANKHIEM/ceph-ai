@@ -221,14 +221,14 @@
               {% endif %}
               <td>
                 <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>
-                {% if is_admin and selected_cluster.is_default and summary.eligible_count %}
-                <form method="post" action="/volumes/{{ summary.pool }}/trash/purge-all" class="inline-form"
-                  onsubmit="return confirm('XOÁ VĨNH VIỄN tất cả {{ summary.eligible_count }} volume đã hết TTL trong Trash của pool {{ summary.pool }}? Action cần được duyệt trước khi Worker thực thi.');">
-                  <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ summary.eligible_count }})</button>
+                {% if is_admin and selected_cluster.is_default and summary.entry_count %}
+                <form method="post" action="/volumes/{{ summary.pool }}/trash/purge-all" class="inline-form trash-force-purge-form" data-confirm-target="pool {{ summary.pool }}">
+                  <input type="hidden" name="confirmation" value="">
+                  <button type="submit" class="btn btn-reject btn-sm trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ summary.entry_count }})</button>
                 </form>
                 {% elif is_admin and summary.entry_count %}
                 <button type="button" class="btn btn-reject btn-sm trash-purge-all-btn" disabled
-                  title="{{ 'Chỉ hỗ trợ xoá trên cluster mặc định' if not selected_cluster.is_default else 'Chưa có volume nào hết TTL' }}">
+                  title="Chỉ hỗ trợ xoá trên cluster mặc định">
                   Xoá vĩnh viễn tất cả
                 </button>
                 {% endif %}
@@ -249,21 +249,14 @@
           <h2>Trash — {{ selected_pool }}</h2>
           <div>
             <a href="/trash" class="btn btn-ghost btn-sm">Chọn pool khác</a>
-            {% set purge_eligible_count = trash_entries|selectattr('purge_eligible')|list|length %}
-            {% if trash_bulk_pending and trash_bulk_pending.status == "PENDING_APPROVAL" and is_admin %}
-            <span class="hint">Đề xuất xoá tất cả đang chờ duyệt.</span>
-            <form method="post" action="/actions/{{ trash_bulk_pending.id }}/approve" class="inline-form"><button class="btn btn-approve btn-sm">Duyệt xoá tất cả</button></form>
-            <form method="post" action="/actions/{{ trash_bulk_pending.id }}/reject" class="inline-form"><button class="btn btn-reject btn-sm">Từ chối</button></form>
-            {% elif trash_bulk_pending %}
-            <span class="hint">Đề xuất xoá tất cả đang chờ Worker thực thi.</span>
-            {% elif is_admin and selected_cluster.is_default and purge_eligible_count %}
-            <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form"
-              onsubmit="return confirm('XOÁ VĨNH VIỄN tất cả {{ purge_eligible_count }} volume đã hết TTL trong Trash của pool {{ selected_pool }}? Action cần được duyệt trước khi Worker thực thi.');">
-              <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ purge_eligible_count }})</button>
+            {% if is_admin and selected_cluster.is_default and trash_entries %}
+            <form method="post" action="/volumes/{{ selected_pool }}/trash/purge-all" class="inline-form trash-force-purge-form" data-confirm-target="pool {{ selected_pool }}">
+              <input type="hidden" name="confirmation" value="">
+              <button type="submit" class="btn btn-reject btn-sm" id="trash-purge-all-btn">Xoá vĩnh viễn tất cả ({{ trash_entries|length }})</button>
             </form>
             {% elif is_admin and trash_entries %}
             <button type="button" class="btn btn-reject btn-sm" id="trash-purge-all-btn" disabled
-              title="{{ 'Chỉ hỗ trợ xoá trên cluster mặc định' if not selected_cluster.is_default else 'Chưa có volume nào hết TTL' }}">
+              title="Chỉ hỗ trợ xoá trên cluster mặc định">
               Xoá vĩnh viễn tất cả
             </button>
             {% endif %}
@@ -271,7 +264,7 @@
         </div>
       </div>
       <div class="card-body">
-        <p class="hint metrics-panel-desc">Volume được giữ tối thiểu <strong>{{ trash_retention_days }} ngày</strong> để khôi phục. Nút <strong>Xoá vĩnh viễn tất cả</strong> xoá toàn bộ volume đã hết TTL; thao tác không thể hoàn tác và luôn cần duyệt trước khi Worker thực thi.</p>
+        <p class="hint metrics-panel-desc">Volume được giữ tối thiểu <strong>{{ trash_retention_days }} ngày</strong> để khôi phục. Nút xoá cưỡng bức bỏ qua TTL và watcher protection, xoá vĩnh viễn không thể hoàn tác; hệ thống yêu cầu nhập chính xác <strong>OK</strong>.</p>
         {% if purge_error %}<p class="error">{{ purge_error }}</p>{% endif %}
         {% if purge_success %}<p class="success">{{ purge_success }}</p>{% endif %}
         {% if trash_error %}<p class="error">Một số pool không đọc được Trash: {{ trash_error }}</p>{% endif %}
@@ -302,6 +295,11 @@
               {% elif entry.purge_eligible %}<span class="hint">Chỉ admin được xoá</span>
               {% else %}<span class="hint">Chưa hết TTL</span>{% endif %}
               {% if is_admin %}
+              <form method="post" action="/volumes/{{ entry.pool }}/trash/{{ entry.id }}/force-remove" class="inline-form trash-force-remove-form" data-confirm-target="Trash {{ entry.pool }}/{{ entry.id }}">
+                <input type="hidden" name="confirmation" value="">
+                <button type="submit" class="btn btn-reject btn-sm">Xoá cưỡng bức</button>
+              </form>
+
               <form class="inline-form trash-restore-form" data-pool="{{ entry.pool }}" data-trash-id="{{ entry.id }}">
                 <input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" value="{{ entry.name }}" aria-label="Tên Volume khôi phục">
                 <button type="submit" class="btn btn-approve btn-sm">Đề xuất khôi phục</button>
@@ -330,7 +328,7 @@
     </div>
     </div>
   </main>
-  {% if selected_view == "trash" and selected_pool and trash_entries %}<script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
+  {% if selected_view == "trash" %}<script src="/static/trash.js?v={{ static_version }}"></script>{% endif %}
 
   <script src="/static/app.js?v={{ static_version }}"></script>
   {% if selected_view == 'performance' %}<script src="/static/volumes.js?v={{ static_version }}"></script>{% endif %}

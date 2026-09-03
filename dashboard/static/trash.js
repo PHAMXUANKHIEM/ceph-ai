@@ -11,6 +11,23 @@
   const nextButton = document.getElementById("trash-page-next");
   const pageStatus = document.getElementById("trash-page-status");
 
+  document.querySelectorAll(".trash-force-purge-form, .trash-force-remove-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const target = form.dataset.confirmTarget || "Trash";
+      if (!window.confirm(`XOÁ VĨNH VIỄN ${target}? Thao tác này bỏ qua TTL/watcher protection và không thể hoàn tác.`)) return;
+      const typed = window.prompt(`Nhập chính xác OK để xoá cưỡng bức ${target}:`, "");
+      if (typed !== "OK") {
+        window.alert("Không xoá: phải nhập chính xác OK.");
+        return;
+      }
+      form.elements.confirmation.value = typed;
+      const button = form.querySelector('button[type="submit"]');
+      if (button) button.disabled = true;
+      HTMLFormElement.prototype.submit.call(form);
+    });
+  });
+
   if (!table || !filterInput || !resetButton || !result || !empty || !pagination
       || !previousButton || !nextButton || !pageStatus) return;
 

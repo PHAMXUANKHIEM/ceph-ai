@@ -761,6 +761,26 @@ def force_purge_rbd_trash(pool: str) -> list[TrashPurgeResult]:
     return results
 
 
+def force_purge_rbd_trash_item(pool: str, trash_id: str) -> TrashPurgeResult:
+    """Force-remove one named entry from RBD trash, ignoring retention rules."""
+    entries = query_rbd_trash(pool)
+    entry = next((row for row in entries if str(row.get("id")) == str(trash_id)), None)
+    if entry is None:
+        raise CephQueryError(f"Trash ID không còn tồn tại trong pool: {pool}/{trash_id}")
+    mon_nodes = get_mon_nodes()
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
+    inner_command = f"rbd trash rm {shlex.quote(pool)}/{shlex.quote(str(trash_id))} --force"
+    command = build_exec_command(settings.ceph_exec_mode, settings.ceph_container_name, inner_command)
+    error: str | None = None
+    try:
+        _run_remote_command(mon_nodes[0], command, RBD_TRASH_PURGE_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.warning("force_purge_rbd_trash_item: failed to remove %s/%s: %s", pool, trash_id, exc)
+        error = str(exc)
+    return TrashPurgeResult(id=str(trash_id), name=str(entry.get("name") or "?"), error=error)
+
+
 def ssh_key_path_error(ssh_key_path: str) -> str | None:
     """Story 5.1: checked by the Dashboard's cluster-connection form BEFORE
     attempting an SSH connection, so a bad path fails with a clear message

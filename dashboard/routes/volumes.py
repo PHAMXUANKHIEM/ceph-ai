@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import or_
 
@@ -24,7 +24,7 @@ from dashboard.routes.incidents import OPEN_STATUSES, _resolve_selected_cluster
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
 from shared import audit, db
-from shared.ceph_query_cache import get_or_load as get_cached_ceph_query
+from shared.ceph_query_cache import get_or_load as get_cached_ceph_query, invalidate as invalidate_ceph_query_cache
 from shared.cluster_nodes import resolve_ssh_creds
 from shared.rbd_trash_retention import trash_entry_ttl_status
 from shared.models import (
@@ -34,6 +34,7 @@ from shared.models import (
     BackupJob,
     Incident,
     IncidentStatus,
+    ObjectStorageAuditEntry,
     VolumeMetric,
     VolumePerfSweep,
 )
@@ -201,6 +202,32 @@ VOLUME_PERF_SWEEP_ACTION_ID = "volume_perf_sweep"
 VM_PERF_BENCHMARK_CEPH_CODE = "VM_PERF_BENCHMARK"
 VM_PERF_BENCHMARK_ACTION_ID = "vm_perf_benchmark"
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
+def _start_trash_force_audit(cluster_id: str, actor: str, action: str, target_id: str, preview: str) -> str:
+    with db.SessionLocal() as session:
+        row = ObjectStorageAuditEntry(
+            cluster_id=cluster_id,
+            actor=actor,
+            action=action,
+            target_type="rbd_trash",
+            target_id=target_id,
+            preview=preview,
+            result="pending",
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+
+
+def _finish_trash_force_audit(audit_id: str, result: str, error: str | None = None) -> None:
+    with db.SessionLocal() as session:
+        row = session.get(ObjectStorageAuditEntry, audit_id)
+        if row is not None:
+            row.result = result
+            row.error_message = error
+            row.completed_at = datetime.utcnow()
+            session.commit()
+
+
 _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
 _RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _OPENSTACK_UUID_RE = re.compile(
@@ -1829,73 +1856,110 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
 
 
 @router.post("/volumes/{pool}/trash/purge-all", response_class=HTMLResponse)
-async def purge_all_rbd_trash(request: Request, pool: str, user: str = Depends(require_login)):
-    """Snapshot eligible trash IDs into one DESTRUCTIVE action; never purge inline."""
+async def purge_all_rbd_trash(
+    request: Request,
+    pool: str,
+    confirmation: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Immediately force-remove every current Trash entry in a pool."""
     _require_admin_privilege(user)
-    _require_default_cluster_operation(request)
+    cluster = _require_default_cluster_operation(request)
     pools = await asyncio.to_thread(_rbd_pools_for_request, request)
-    allowed_pools = set(pools)
-    if pool not in allowed_pools:
+    if pool not in set(pools):
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
-
+    if confirmation.strip() != "OK":
+        raise HTTPException(status_code=400, detail="Phải nhập chính xác OK để xoá cưỡng bức")
     try:
         entries = await asyncio.to_thread(ceph_client.query_rbd_trash, pool)
     except CephQueryError as exc:
         raise HTTPException(status_code=502, detail=f"Không lấy được danh sách trash: {exc}")
-    trash_ids = [str(entry["id"]) for entry in entries if _trash_retention(dict(entry))["purge_eligible"]]
-    if not trash_ids:
-        raise HTTPException(status_code=409, detail="Không có Trash item nào đã hết TTL để purge")
-    mon_nodes = ceph_client.get_mon_nodes()
-    if not mon_nodes:
-        raise HTTPException(status_code=400, detail="Chưa cấu hình CEPH_MON_NODES")
-    action_params = {"pool_name": pool, "trash_ids": trash_ids}
+    if not entries:
+        raise HTTPException(status_code=409, detail="Trash của pool này đang trống")
+
+    audit_id = _start_trash_force_audit(
+        str(cluster.id), user, "rbd_trash_force_purge", pool,
+        f"rbd trash rm {pool}/<all-trash-ids> --force",
+    )
     try:
-        preview = executor_commands.get_command(
-            RBD_TRASH_PURGE_ALL_ACTION_ID, mon_nodes[0], action_params
+        results = await asyncio.to_thread(ceph_client.force_purge_rbd_trash, pool)
+    except CephQueryError as exc:
+        _finish_trash_force_audit(audit_id, "failed", str(exc))
+        raise HTTPException(status_code=502, detail=f"Không xoá được Trash: {exc}")
+    failures = [row for row in results if row["error"]]
+    succeeded = len(results) - len(failures)
+    if failures:
+        detail = "; ".join(f"{row['id']}: {row['error']}" for row in failures)
+        result = "partial" if succeeded else "failed"
+        message = f"Đã xoá cưỡng bức {succeeded}/{len(results)} Trash item. Lỗi: {detail}"
+        _finish_trash_force_audit(audit_id, result, detail)
+        invalidate_ceph_query_cache("rbd-trash", f"{cluster.id}:{pool}")
+        clusters, selected = cluster_selection(request)
+        return templates.TemplateResponse(
+            request, "volumes.html", _volumes_page_context(
+                request, user, pool, pools, clusters=clusters, selected_cluster=selected,
+                selected_view="trash", purge_error=message,
+            )
         )
-    except ExecutorError as exc:
-        raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
-    with db.SessionLocal() as session:
-        existing = session.query(Action).filter(
-            Action.action_id == RBD_TRASH_PURGE_ALL_ACTION_ID,
-            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-        ).all()
-        for row in existing:
-            try:
-                params = json.loads(row.action_params or "{}")
-            except (TypeError, ValueError):
-                continue
-            if params.get("pool_name") == pool:
-                raise HTTPException(status_code=409, detail="Pool này đã có đề xuất purge-all đang chờ")
-        incident = Incident(
-            ceph_code=RBD_TRASH_PURGE_ALL_CEPH_CODE,
-            status=IncidentStatus.PENDING_APPROVAL.value,
-            log_excerpt=f"Đề xuất purge-all {len(trash_ids)} Trash item trong pool {pool} bởi {user}",
-            detected_at=datetime.utcnow(),
-        )
-        session.add(incident)
-        session.flush()  # assigns incident.id, needed by the Action FK below
 
-        action = Action(
-            incident_id=incident.id,
-            action_id=RBD_TRASH_PURGE_ALL_ACTION_ID,
-            classification=gate.classify_action(RBD_TRASH_PURGE_ALL_ACTION_ID).value,
-            status=ActionStatus.PENDING_APPROVAL.value,
-            rationale=f"Xoá vĩnh viễn {len(trash_ids)} Trash item trong pool {pool}; không thể hoàn tác",
-            target_nodes=json.dumps([mon_nodes[0]]),
-            action_params=json.dumps(action_params),
-            proposed_command=preview,
+    _finish_trash_force_audit(audit_id, "succeeded")
+    invalidate_ceph_query_cache("rbd-trash", f"{cluster.id}:{pool}")
+    clusters, selected = cluster_selection(request)
+    return templates.TemplateResponse(
+        request, "volumes.html", _volumes_page_context(
+            request, user, pool, pools, clusters=clusters, selected_cluster=selected,
+            selected_view="trash", purge_success=f"Đã xoá cưỡng bức {succeeded} Trash item.",
         )
-        session.add(action)
-        session.flush()
+    )
 
-        audit.record(
-            session,
-            incident_id=incident.id,
-            action_id=action.id,
-            event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
-            actor=user,
+
+@router.post("/volumes/{pool}/trash/{trash_id}/force-remove", response_class=HTMLResponse)
+async def force_remove_rbd_trash(
+    request: Request,
+    pool: str,
+    trash_id: str,
+    confirmation: str = Form(""),
+    user: str = Depends(require_login),
+):
+    """Force-remove one Trash entry, regardless of TTL or watcher protection."""
+    _require_admin_privilege(user)
+    cluster = _require_default_cluster_operation(request)
+    pools = await asyncio.to_thread(_rbd_pools_for_request, request)
+    if pool not in set(pools):
+        raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
+    if confirmation.strip() != "OK":
+        raise HTTPException(status_code=400, detail="Phải nhập chính xác OK để xoá cưỡng bức")
+    try:
+        entries = await asyncio.to_thread(ceph_client.query_rbd_trash, pool)
+    except CephQueryError as exc:
+        raise HTTPException(status_code=502, detail=f"Không kiểm tra được Trash: {exc}")
+    if not any(str(row.get("id")) == trash_id for row in entries):
+        raise HTTPException(status_code=404, detail="Trash ID không còn tồn tại trong pool")
+
+    audit_id = _start_trash_force_audit(
+        str(cluster.id), user, "rbd_trash_force_remove", f"{pool}/{trash_id}",
+        f"rbd trash rm {pool}/{trash_id} --force",
+    )
+    try:
+        result = await asyncio.to_thread(ceph_client.force_purge_rbd_trash_item, pool, trash_id)
+    except CephQueryError as exc:
+        _finish_trash_force_audit(audit_id, "failed", str(exc))
+        raise HTTPException(status_code=502, detail=f"Không xoá được Trash: {exc}")
+    invalidate_ceph_query_cache("rbd-trash", f"{cluster.id}:{pool}")
+    if result["error"]:
+        _finish_trash_force_audit(audit_id, "failed", result["error"])
+        return templates.TemplateResponse(
+            request, "volumes.html", _volumes_page_context(
+                request, user, pool, pools, clusters=cluster_selection(request)[0],
+                selected_cluster=cluster, selected_view="trash",
+                purge_error=f"Không xoá được {pool}/{trash_id}: {result['error']}",
+            )
         )
-        session.commit()
-
-    return RedirectResponse(url=f"/trash?pool={pool}", status_code=303)
+    _finish_trash_force_audit(audit_id, "succeeded")
+    return templates.TemplateResponse(
+        request, "volumes.html", _volumes_page_context(
+            request, user, pool, pools, clusters=cluster_selection(request)[0],
+            selected_cluster=cluster, selected_view="trash",
+            purge_success=f"Đã xoá cưỡng bức {pool}/{trash_id}.",
+        )
+    )

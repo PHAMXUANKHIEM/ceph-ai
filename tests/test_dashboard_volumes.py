@@ -1108,7 +1108,9 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'id="trash-purge-all-btn"' in response.text
     assert 'action="/volumes/vms/trash/purge-all"' in response.text
     assert "Xoá vĩnh viễn tất cả (1)" in response.text
-    assert "XOÁ VĨNH VIỄN tất cả 1 volume đã hết TTL" in response.text
+    assert 'name="confirmation"' in response.text
+    assert 'action="/volumes/vms/trash/1234567890ab/force-remove"' in response.text
+    assert "bỏ qua TTL" in response.text
 
 
 def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch):
@@ -1339,9 +1341,7 @@ def test_purge_all_trash_rejects_pool_not_in_configured_list(dashboard_client, m
     assert response.status_code == 404
 
 
-def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
-    dashboard_client, monkeypatch
-):
+def test_purge_all_trash_force_deletes_every_entry_without_pending_action(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
         volumes_route.ceph_client,
@@ -1351,52 +1351,67 @@ def test_purge_all_trash_creates_pending_approval_action_without_direct_delete(
             {"id": "id-2", "name": "disk-2", "deletion_time": "2020-01-01 00:00:00"},
         ],
     )
+    calls = []
+
+    def fake_force(pool):
+        calls.append(pool)
+        return [
+            {"id": "id-1", "name": "disk-1", "error": None},
+            {"id": "id-2", "name": "disk-2", "error": None},
+        ]
+
+    monkeypatch.setattr(volumes_route.ceph_client, "force_purge_rbd_trash", fake_force)
     _login(dashboard_client)
 
-    response = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
+    response = dashboard_client.post("/volumes/vms/trash/purge-all", data={"confirmation": "OK"})
 
-    assert response.status_code == 303
-    assert response.headers["location"] == "/trash?pool=vms"
+    assert response.status_code == 200
+    assert calls == ["vms"]
+    assert "Đã xoá cưỡng bức 2 Trash item." in response.text
 
     with db_module.SessionLocal() as session:
-        action = (
-            session.query(Action)
-            .filter_by(action_id="rbd_trash_purge_all", status=ActionStatus.PENDING_APPROVAL.value)
-            .one()
-        )
-        assert action.classification == "DESTRUCTIVE"
-        params = json.loads(action.action_params)
-        assert set(params["trash_ids"]) == {"id-1", "id-2"}
-        assert json.loads(action.target_nodes) == ["10.20.1.150"]
-        assert "--force" not in action.proposed_command
-        assert action.proposed_command.splitlines() == ["rbd trash rm vms/id-1", "rbd trash rm vms/id-2"]
-
-        incident = session.get(Incident, action.incident_id)
-        assert incident.ceph_code == "RBD_TRASH_PURGE_ALL"
-        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
-        action_pk = action.id
-
-    page = dashboard_client.get("/trash?pool=vms")
-    assert page.status_code == 200
-    assert "Đề xuất xoá tất cả đang chờ duyệt." in page.text
-    assert f'action="/actions/{action_pk}/approve"' in page.text
-    assert "Duyệt xoá tất cả" in page.text
+        assert session.query(Action).filter_by(action_id="rbd_trash_purge_all").count() == 0
 
 
-def test_purge_all_trash_rejects_duplicate_in_flight_proposal(dashboard_client, monkeypatch):
+def test_purge_all_trash_requires_exact_ok(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    called = []
+    monkeypatch.setattr(volumes_route.ceph_client, "force_purge_rbd_trash", lambda pool: called.append(pool))
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/volumes/vms/trash/purge-all", data={"confirmation": "ok"})
+
+    assert response.status_code == 400
+    assert called == []
+
+
+def test_force_remove_trash_requires_exact_ok_and_removes_item(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
         volumes_route.ceph_client,
         "query_rbd_trash",
-        lambda pool: [{"id": "id-1", "name": "disk-1", "deletion_time": "2020-01-01 00:00:00"}],
+        lambda pool: [{"id": "id-1", "name": "disk-1", "status": "normal"}],
+    )
+    calls = []
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "force_purge_rbd_trash_item",
+        lambda pool, trash_id: (calls.append((pool, trash_id)) or {"id": trash_id, "name": "disk-1", "error": None}),
     )
     _login(dashboard_client)
 
-    first = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
-    duplicate = dashboard_client.post("/volumes/vms/trash/purge-all", follow_redirects=False)
+    rejected = dashboard_client.post(
+        "/volumes/vms/trash/id-1/force-remove", data={"confirmation": "ok"}
+    )
+    assert rejected.status_code == 400
+    assert calls == []
 
-    assert first.status_code == 303
-    assert duplicate.status_code == 409
+    response = dashboard_client.post(
+        "/volumes/vms/trash/id-1/force-remove", data={"confirmation": "OK"}
+    )
+    assert response.status_code == 200
+    assert calls == [("vms", "id-1")]
+    assert "Đã xoá cưỡng bức vms/id-1." in response.text
 
 
 def test_purge_all_trash_empty_trash_reports_nothing_to_delete(dashboard_client, monkeypatch):
@@ -1404,7 +1419,7 @@ def test_purge_all_trash_empty_trash_reports_nothing_to_delete(dashboard_client,
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: [])
     _login(dashboard_client)
 
-    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+    response = dashboard_client.post("/volumes/vms/trash/purge-all", data={"confirmation": "OK"})
 
     assert response.status_code == 409
     with db_module.SessionLocal() as session:
@@ -1424,17 +1439,24 @@ def test_trash_ttl_blocks_early_delete_and_purge_all(dashboard_client, monkeypat
 
     page = dashboard_client.get("/trash?pool=vms")
     single = dashboard_client.post("/volumes/vms/trash/fresh-id/propose")
-    bulk = dashboard_client.post("/volumes/vms/trash/purge-all")
+    called = []
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "force_purge_rbd_trash",
+        lambda pool: (called.append(pool) or [{"id": "fresh-id", "name": "fresh-disk", "error": None}]),
+    )
+    bulk = dashboard_client.post("/volumes/vms/trash/purge-all", data={"confirmation": "OK"})
 
     assert page.status_code == 200
     assert "Còn 30 ngày" in page.text
     assert "Chưa hết TTL" in page.text
-    assert 'id="trash-purge-all-btn" disabled' in page.text
-    assert 'title="Chưa có volume nào hết TTL"' in page.text
-    assert 'action="/volumes/vms/trash/purge-all"' not in page.text
+    assert 'id="trash-purge-all-btn"' in page.text
+    assert 'id="trash-purge-all-btn" disabled' not in page.text
+    assert 'action="/volumes/vms/trash/purge-all"' in page.text
     assert 'action="/volumes/vms/trash/fresh-id/propose"' not in page.text
     assert single.status_code == 409
-    assert bulk.status_code == 409
+    assert bulk.status_code == 200
+    assert called == ["vms"]
 
 
 def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkeypatch):
@@ -1446,7 +1468,7 @@ def test_purge_all_trash_shows_error_when_listing_fails(dashboard_client, monkey
     monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", broken)
     _login(dashboard_client)
 
-    response = dashboard_client.post("/volumes/vms/trash/purge-all")
+    response = dashboard_client.post("/volumes/vms/trash/purge-all", data={"confirmation": "OK"})
 
     assert response.status_code == 502
     with db_module.SessionLocal() as session:

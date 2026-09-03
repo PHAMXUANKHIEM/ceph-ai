@@ -1428,6 +1428,34 @@ def test_force_purge_rbd_trash_returns_empty_list_when_trash_is_empty(monkeypatc
     assert ceph_client.force_purge_rbd_trash("vms") == []
 
 
+def test_force_purge_rbd_trash_item_uses_force(monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    monkeypatch.setattr(
+        ceph_client,
+        "query_rbd_trash",
+        lambda pool: [{"id": "id-1", "name": "disk-1"}],
+    )
+    calls = []
+    monkeypatch.setattr(
+        ceph_client,
+        "_run_remote_command",
+        lambda host, command, timeout: calls.append((host, command, timeout)),
+    )
+
+    result = ceph_client.force_purge_rbd_trash_item("vms", "id-1")
+
+    assert result == {"id": "id-1", "name": "disk-1", "error": None}
+    assert calls[0][0] == "10.20.1.150"
+    assert "rbd trash rm vms/id-1 --force" in calls[0][1]
+
+
+def test_force_purge_rbd_trash_item_rejects_missing_id(monkeypatch):
+    monkeypatch.setattr(ceph_client, "query_rbd_trash", lambda pool: [])
+
+    with pytest.raises(CephQueryError, match="không còn tồn tại"):
+        ceph_client.force_purge_rbd_trash_item("vms", "missing")
+
+
 def test_force_purge_rbd_trash_raises_when_no_mon_nodes_configured(monkeypatch):
     monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "")
     monkeypatch.setattr(
