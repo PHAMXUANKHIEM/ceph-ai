@@ -56,10 +56,12 @@
 
   var confirmInput = document.getElementById("cc-confirm-input");
   var approveBtn = document.getElementById("cc-approve-btn");
+  var confirmHidden = document.getElementById("cc-confirm-hidden");
   if (confirmInput && approveBtn) {
     var expected = initialState.confirm_text || "";
     confirmInput.addEventListener("input", function () {
       approveBtn.disabled = confirmInput.value !== expected;
+      if (confirmHidden) confirmHidden.value = confirmInput.value;
     });
   }
 

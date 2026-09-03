@@ -1,11 +1,11 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from config.settings import settings
 from dashboard.cluster_scope import require_default_cluster
@@ -13,7 +13,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
-from shared import audit, db
+from shared import audit, db, env_config
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from watcher import ceph_client
@@ -36,7 +36,11 @@ templates = make_templates()
 CONVERT_CLUSTER_CEPH_CODE = "CONVERT_CLUSTER_TO_CEPHADM"
 CONVERT_ACTION_ID = "convert_cluster_to_cephadm"
 
-_IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+_IN_FLIGHT_ACTION_STATUSES = (
+    ActionStatus.PENDING_APPROVAL.value,
+    ActionStatus.APPROVED.value,
+    ActionStatus.EXECUTING.value,
+)
 
 _ROLE_UPPER_TO_LOWER = {"MON": "mon", "MGR": "mgr", "OSD": "osd", "RGW": "rgw"}
 
@@ -217,7 +221,12 @@ async def propose_convert(request: Request, user: str = Depends(require_login)):
                 ),
             )
 
-    action_params = {"nodes": nodes, "version": version}
+    action_params = {
+        "nodes": nodes,
+        "version": version,
+        "_cluster_config_fingerprint": env_config.current_cluster_config_fingerprint(),
+        "_approval_confirmation": next(n["ip"] for n in nodes if "mon" in n["roles"]),
+    }
     target_nodes = [n["ip"] for n in nodes]
     try:
         preview_command = executor_commands.get_command(CONVERT_ACTION_ID, target_nodes[0], action_params)
@@ -225,15 +234,8 @@ async def propose_convert(request: Request, user: str = Depends(require_login)):
         raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
 
     with db.SessionLocal() as session:
-        # Broader in-flight check than delete_cluster.py's own (which only
-        # self-blocks against another delete) — this specifically also
-        # blocks while a deploy/delete is in flight, since converting a
-        # cluster mid-deploy/mid-delete would be genuinely dangerous, not
-        # just redundant. Does NOT (yet) block the reverse (a deploy/delete
-        # proposed while a convert is in flight) — that asymmetry already
-        # exists between deploy_cluster.py/delete_cluster.py today; fixing
-        # it fully is a separate, pre-existing gap, not something this
-        # feature introduces.
+        # All cluster lifecycle routes use this same family gate, including
+        # deploy/delete/restore proposals made while conversion is pending.
         existing = (
             session.query(Action)
             .filter(Action.action_id.in_(VALID_CLUSTER_DEPLOY_ACTION_IDS))
@@ -267,9 +269,18 @@ async def propose_convert(request: Request, user: str = Depends(require_login)):
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,
+            expires_at=datetime.utcnow() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
+            idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
         )
         session.add(action)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Đã có một lifecycle action khác vừa được tạo; không thể tạo thêm proposal.",
+            ) from exc
 
         audit.record(
             session,

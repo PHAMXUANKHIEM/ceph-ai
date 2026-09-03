@@ -1,11 +1,11 @@
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from config.settings import settings
 from dashboard.cluster_scope import require_default_cluster
@@ -13,7 +13,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
-from shared import audit, db
+from shared import audit, db, env_config
 from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from worker.executor import commands as executor_commands
@@ -35,7 +35,11 @@ DELETE_CEPHADM_ACTION_ID = "delete_cluster_cephadm"
 DELETE_MANUAL_ACTION_ID = "delete_cluster_manual"
 CLUSTER_DELETE_ACTION_IDS = frozenset({DELETE_CEPHADM_ACTION_ID, DELETE_MANUAL_ACTION_ID})
 
-_IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+_IN_FLIGHT_ACTION_STATUSES = (
+    ActionStatus.PENDING_APPROVAL.value,
+    ActionStatus.APPROVED.value,
+    ActionStatus.EXECUTING.value,
+)
 
 _ROLE_UPPER_TO_LOWER = {"MON": "mon", "MGR": "mgr", "OSD": "osd", "RGW": "rgw"}
 
@@ -223,7 +227,12 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
     exec_mode = settings.ceph_exec_mode
     action_id = DELETE_CEPHADM_ACTION_ID if exec_mode == "cephadm" else DELETE_MANUAL_ACTION_ID
 
-    action_params = {"nodes": nodes, "wipe_osd_disks": wipe_osd_disks}
+    action_params = {
+        "nodes": nodes,
+        "wipe_osd_disks": wipe_osd_disks,
+        "_cluster_config_fingerprint": env_config.current_cluster_config_fingerprint(),
+        "_approval_confirmation": next(n["ip"] for n in nodes if "mon" in n["roles"]),
+    }
 
     target_nodes = [n["ip"] for n in nodes]
     try:
@@ -234,7 +243,7 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
     with db.SessionLocal() as session:
         existing = (
             session.query(Action)
-            .filter(Action.action_id.in_(CLUSTER_DELETE_ACTION_IDS))
+            .filter(Action.action_id.in_(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS))
             .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
             .first()
         )
@@ -262,9 +271,18 @@ async def propose_delete(request: Request, user: str = Depends(require_login)):
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,
+            expires_at=datetime.utcnow() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
+            idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
         )
         session.add(action)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Đã có một lifecycle action khác vừa được tạo; không thể tạo thêm proposal.",
+            ) from exc
 
         audit.record(
             session,

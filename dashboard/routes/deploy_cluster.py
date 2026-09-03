@@ -2,18 +2,18 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
-from shared import audit, db
+from shared import audit, db, env_config
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from watcher.ceph_client import forget_host_key
@@ -52,7 +52,11 @@ _METHOD_TO_ACTION_ID = {
 # grey out any future not-yet-supported method without a code change there.
 _NOT_YET_SUPPORTED_METHODS: frozenset[str] = frozenset()
 
-_IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+_IN_FLIGHT_ACTION_STATUSES = (
+    ActionStatus.PENDING_APPROVAL.value,
+    ActionStatus.APPROVED.value,
+    ActionStatus.EXECUTING.value,
+)
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RPM_PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
@@ -436,6 +440,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
     }
     if method == "rpm-local":
         action_params["rpm_path"] = rpm_path
+    action_params["_cluster_config_fingerprint"] = env_config.current_cluster_config_fingerprint()
 
     target_nodes = [n["ip"] for n in nodes]
     try:
@@ -446,7 +451,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
     with db.SessionLocal() as session:
         existing = (
             session.query(Action)
-            .filter(Action.action_id.in_(CLUSTER_DEPLOY_ACTION_IDS))
+            .filter(Action.action_id.in_(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS))
             .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
             .first()
         )
@@ -476,9 +481,18 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,
+            expires_at=datetime.utcnow() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
+            idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
         )
         session.add(action)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Đã có một lifecycle action khác vừa được tạo; không thể tạo thêm proposal.",
+            ) from exc
 
         audit.record(
             session,

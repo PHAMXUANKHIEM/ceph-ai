@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import db, env_config
+from shared.clusters import sync_default_cluster_from_env
 from shared.ceph_releases import codename_for_version, major_version, repo_path_version
 from shared.cluster_nodes import configured_nodes
 from shared.models import NodeUpgradeGate, NodeUpgradeGateState
@@ -1408,10 +1409,12 @@ def _phase_verify(nodes: list[dict], action_params: dict, on_host_update) -> Non
     except (TypeError, ValueError, AttributeError):
         health = None
 
-    if health == "HEALTH_ERR":
+    if health not in {"HEALTH_OK", "HEALTH_WARN"}:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
-        raise DeployPhaseError("Cụm ở trạng thái HEALTH_ERR sau khi dựng — dừng lại")
+        raise DeployPhaseError(
+            f"Không xác minh được sức khoẻ cụm sau khi dựng (health={health!r}) — dừng lại"
+        )
 
     host_status[0]["status"] = "done"
     host_status[0]["message"] = health or "unknown"
@@ -1436,10 +1439,12 @@ def _phase_cephadm_verify(nodes: list[dict], action_params: dict, on_host_update
     except (TypeError, ValueError, AttributeError):
         health = None
 
-    if health == "HEALTH_ERR":
+    if health not in {"HEALTH_OK", "HEALTH_WARN"}:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
-        raise DeployPhaseError("Cụm ở trạng thái HEALTH_ERR sau khi dựng — dừng lại")
+        raise DeployPhaseError(
+            f"Không xác minh được sức khoẻ cụm sau khi dựng (health={health!r}) — dừng lại"
+        )
 
     host_status[0]["status"] = "done"
     host_status[0]["message"] = health or "unknown"
@@ -3768,6 +3773,15 @@ def run(
     progress = [_make_step(key, label, pct) for key, label, pct, _fn in phases]
     write_progress(action_pk, progress)
 
+    expected_fingerprint = action_params.get("_cluster_config_fingerprint")
+    if expected_fingerprint and expected_fingerprint != env_config.current_cluster_config_fingerprint():
+        progress[0]["status"] = "failed"
+        progress[0]["message"] = "Cấu hình cụm đã thay đổi sau khi đề xuất; tạo proposal mới trước khi chạy."
+        progress[0]["finished_at"] = datetime.utcnow().isoformat()
+        write_progress(action_pk, progress)
+        logger.warning("cluster_deploy.run: stale lifecycle proposal rejected: action=%s", action_pk)
+        return False
+
     for index, (step_key, _label, _pct, fn) in enumerate(phases):
         progress[index]["status"] = "running"
         progress[index]["started_at"] = datetime.utcnow().isoformat()
@@ -3813,6 +3827,8 @@ def run(
             pass
         else:
             _write_cluster_config(action_params, action_id)
+        with db.SessionLocal() as session:
+            sync_default_cluster_from_env(session)
     except Exception:
         # The cluster itself is up and healthy (verify already passed) —
         # a failure writing the convenience .env shortcut must not turn a

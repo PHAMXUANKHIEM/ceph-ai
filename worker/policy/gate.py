@@ -101,6 +101,23 @@ VALID_CLUSTER_UPGRADE_ACTION_IDS = _load_cluster_upgrade_action_ids()
 VALID_PATCH_ACTION_IDS = _load_patch_action_ids()
 VALID_BACKUP_ACTION_IDS = _load_backup_action_ids()
 VALID_CLUSTER_DEPLOY_ACTION_IDS = _load_cluster_deploy_action_ids()
+# These actions all mutate the cluster topology or its management mode. They
+# share one DB idempotency key so concurrent proposal requests cannot both
+# enter the approval queue, even when their check-then-insert transactions
+# race. Node OS gate actions remain in VALID_CLUSTER_DEPLOY_ACTION_IDS for
+# broader approval exclusion, but do not use this topology key.
+CLUSTER_LIFECYCLE_ACTION_IDS = frozenset(
+    {
+        "deploy_cluster_cephadm",
+        "deploy_cluster_ceph_deploy",
+        "deploy_cluster_rpm_local",
+        "delete_cluster_cephadm",
+        "delete_cluster_manual",
+        "convert_cluster_to_cephadm",
+        "restore_cluster_from_backup",
+    }
+)
+CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY = "cluster-lifecycle-in-flight"
 VALID_VOLUME_PERF_ACTION_IDS = _load_volume_perf_action_ids()
 VALID_DEVICE_HEALTH_ACTION_IDS = _load_device_health_action_ids()
 VALID_BLUESTORE_ACTION_IDS = _load_bluestore_action_ids()

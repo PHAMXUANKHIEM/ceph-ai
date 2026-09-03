@@ -315,10 +315,10 @@ class Action(Base):
             "idempotency_key",
             unique=True,
             sqlite_where=text(
-                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED','GRACE_PENDING')"
+                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED','EXECUTING','GRACE_PENDING')"
             ),
             postgresql_where=text(
-                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED','GRACE_PENDING')"
+                "idempotency_key IS NOT NULL AND status IN ('PENDING','PENDING_APPROVAL','APPROVED','EXECUTING','GRACE_PENDING')"
             ),
         ),
     )

@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config.settings import settings
+from shared import env_config
 from shared.models import Cluster
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,29 @@ def sync_default_cluster_from_settings(session: Session) -> Cluster:
     cluster.name = settings.cluster_name.strip() or DEFAULT_CLUSTER_NAME_FALLBACK
     for field in _DEFAULT_CLUSTER_SETTING_FIELDS:
         setattr(cluster, field, getattr(settings, field))
+    session.commit()
+    return cluster
+
+
+def sync_default_cluster_from_env(session: Session) -> Cluster:
+    """Refresh the default-cluster DB mirror from the current .env file.
+
+    The Worker can update .env after a successful lifecycle action while its
+    Settings singleton is still old. Reading the file here keeps Dashboard,
+    Watcher and multi-cluster queries from retaining the pre-action node list.
+    """
+    cluster = ensure_default_cluster(session)
+    values = env_config.read_env_values(list(env_config.CLUSTER_ENV_NAMES.values()))
+    for field, env_name in env_config.CLUSTER_ENV_NAMES.items():
+        # Lifecycle epilogues intentionally write only fields they own
+        # (node lists, mode and keyring). Keep unrelated Settings values when
+        # their env key is absent instead of replacing them with an empty
+        # string.
+        if hasattr(cluster, field) and env_name in values:
+            setattr(cluster, field, values.get(env_name, ""))
+    # ssh_key_path is intentionally not part of CLUSTER_ENV_NAMES; it is a
+    # process/server setting rather than lifecycle-managed cluster metadata.
+    cluster.ssh_key_path = settings.ssh_key_path
     session.commit()
     return cluster
 

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import stat
 from pathlib import Path
@@ -38,6 +40,20 @@ CLUSTER_ENV_NAMES: dict[str, str] = {
     "ceph_exec_mode": "CEPH_EXEC_MODE",
     "ssh_user": "SSH_USER",
 }
+
+
+def current_cluster_config_fingerprint() -> str:
+    """Return a stable fingerprint of the cluster connection in the .env.
+
+    Lifecycle proposals capture this value and the Worker checks it again
+    immediately before making SSH changes. This prevents an approved
+    proposal built from an older node list from overwriting a newer Settings
+    change in its success epilogue.
+    """
+    values = read_env_values(list(CLUSTER_ENV_NAMES.values()))
+    canonical = {name: values.get(name, "") for name in CLUSTER_ENV_NAMES.values()}
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # Epic 9 (Story 9.2/9.7): field-name suffixes shared by BOTH backup target

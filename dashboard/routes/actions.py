@@ -29,7 +29,7 @@ _POOL_NAME_RE = re.compile(r"pool\s+['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _ALLOWED_POOL_APPS = {"rbd", "cephfs", "rgw"}
 
 
-def _require_admin_for_destructive_approval(action_id: str, user: str) -> None:
+def _require_admin_for_destructive_approval(action_id: str, user: str, confirm_text: str) -> None:
     """Keep destructive Action approval admin-only on the Dashboard.
 
     ``approve_action_core`` is also used by a separately trusted Telegram
@@ -44,6 +44,17 @@ def _require_admin_for_destructive_approval(action_id: str, user: str) -> None:
             action.action_id in {"rbd_trash_remove", "rbd_trash_purge_all"}
             or gate.classify_action(action.action_id, session=session).value == "DESTRUCTIVE"
         )
+        if action.action_id in gate.CLUSTER_LIFECYCLE_ACTION_IDS:
+            try:
+                params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError):
+                params = {}
+            expected = str(params.get("_approval_confirmation") or "").strip()
+            if expected and confirm_text.strip() != expected:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Phải nhập chính xác {expected} để xác nhận thao tác trên cụm.",
+                )
     if is_destructive and not auth.is_admin_user(user):
         raise HTTPException(
             status_code=403,
@@ -238,6 +249,33 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
                 "khoá duyệt hành động khác cho tới khi xong."
             )
 
+        # Cluster lifecycle operations are one mutually-exclusive family.
+        # Proposal routes use a shared partial-unique idempotency key for the
+        # creation race; this approval-time check also protects legacy rows
+        # created before that key existed and prevents approving two rows from
+        # different lifecycle routes at once.
+        if action.action_id in gate.VALID_CLUSTER_DEPLOY_ACTION_IDS:
+            lifecycle_conflict = (
+                session.query(Action)
+                .filter(Action.action_id.in_(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS))
+                .filter(
+                    Action.status.in_(
+                        (
+                            ActionStatus.PENDING_APPROVAL.value,
+                            ActionStatus.APPROVED.value,
+                            ActionStatus.EXECUTING.value,
+                        )
+                    )
+                )
+                .filter(Action.id != action.id)
+                .order_by(Action.created_at.asc())
+                .first()
+            )
+            if lifecycle_conflict is not None:
+                raise ActionConflictError(
+                    "Đang có lifecycle action khác của cụm chờ duyệt/đã duyệt — không thể duyệt đồng thời."
+                )
+
         incident = session.get(Incident, action.incident_id)
 
         risk = change_risk.acknowledge(session, action=action, incident=incident)
@@ -326,9 +364,10 @@ async def approve_action(
     request: Request,
     user: str = Depends(require_login),
     pool_app: str = Form(""),
+    confirm_text: str = Form(""),
 ):
     try:
-        await asyncio.to_thread(_require_admin_for_destructive_approval, action_id, user)
+        await asyncio.to_thread(_require_admin_for_destructive_approval, action_id, user, confirm_text)
         if pool_app:
             await asyncio.to_thread(_prepare_pool_application_choice, action_id, pool_app)
         result = await asyncio.to_thread(approve_action_core, action_id, user)

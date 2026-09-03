@@ -14,11 +14,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from config.settings import settings
 from dashboard.cluster_scope import require_default_cluster
@@ -26,7 +26,7 @@ from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from dashboard.vntime import format_vn_clock
-from shared import audit, db
+from shared import audit, db, env_config
 from shared.ceph_releases import codenames_oldest_first, versions_by_codename
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from worker.executor import commands as executor_commands
@@ -47,7 +47,11 @@ templates = make_templates()
 RESTORE_CLUSTER_CEPH_CODE = "RESTORE_CLUSTER_FROM_BACKUP"
 RESTORE_ACTION_ID = "restore_cluster_from_backup"
 
-_IN_FLIGHT_ACTION_STATUSES = (ActionStatus.PENDING_APPROVAL.value, ActionStatus.APPROVED.value)
+_IN_FLIGHT_ACTION_STATUSES = (
+    ActionStatus.PENDING_APPROVAL.value,
+    ActionStatus.APPROVED.value,
+    ActionStatus.EXECUTING.value,
+)
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _VALID_ROLES = ("mon", "mgr", "osd", "mds", "rgw")
@@ -272,6 +276,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
         "cluster_network": cluster_network,
         "osd_pool_default_size": osd_pool_default_size,
         "osd_pool_default_min_size": osd_pool_default_min_size,
+        "_cluster_config_fingerprint": env_config.current_cluster_config_fingerprint(),
     }
 
     target_nodes = [n["ip"] for n in nodes]
@@ -319,9 +324,18 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             target_nodes=json.dumps(target_nodes),
             action_params=json.dumps(action_params),
             proposed_command=preview_command,
+            expires_at=datetime.utcnow() + timedelta(hours=max(1, settings.action_approval_expiry_hours)),
+            idempotency_key=gate.CLUSTER_LIFECYCLE_IDEMPOTENCY_KEY,
         )
         session.add(action)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Đã có một lifecycle action khác vừa được tạo; không thể tạo thêm proposal.",
+            ) from exc
 
         audit.record(
             session,

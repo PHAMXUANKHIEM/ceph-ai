@@ -81,10 +81,12 @@
 
   var confirmInput = document.getElementById("dc-confirm-input");
   var approveBtn = document.getElementById("dc-approve-btn");
+  var confirmHidden = document.getElementById("dc-confirm-hidden");
   if (confirmInput && approveBtn) {
     var expected = initialState.confirm_text || "";
     confirmInput.addEventListener("input", function () {
       approveBtn.disabled = confirmInput.value !== expected;
+      if (confirmHidden) confirmHidden.value = confirmInput.value;
     });
   }
 

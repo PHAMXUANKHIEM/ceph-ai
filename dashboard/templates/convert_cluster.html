@@ -116,6 +116,7 @@
           </label>
           <div class="pending-action-buttons">
             <form method="post" action="/actions/{{ pending_action.id }}/approve" class="inline-form">
+              <input type="hidden" name="confirm_text" id="cc-confirm-hidden" value="">
               <button type="submit" class="btn btn-reject" id="cc-approve-btn" disabled>Duyệt — chuyển đổi ngay</button>
             </form>
             <form method="post" action="/actions/{{ pending_action.id }}/reject" class="inline-form">
