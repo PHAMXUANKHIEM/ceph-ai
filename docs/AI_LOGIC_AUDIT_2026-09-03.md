@@ -125,3 +125,22 @@ Runtime có lỗi `getUpdates Conflict: terminated by other getUpdates request`.
 6. AI-08/AI-09/AI-10/AI-11 reliability và input limits.
 7. Migration backup và Telegram polling conflict.
 
+## Rollout thực tế
+
+- AI-01: đã triển khai, commit `e5fc7e30`; Watcher healthy sau restart.
+- AI-02: đã triển khai, commit `0588cdd5`; Full Executor và Telegram healthy sau restart.
+- AI-03/AI-04: đã triển khai, commit `357305ad`; Dashboard/Worker/Watcher healthy sau restart.
+- AI-05/AI-06: đã triển khai, commit `3f639475`; các test adapter/structured fallback liên quan đạt.
+- AI-07: đã triển khai, commit `8aecd322`; Dual/Single Full có Budget Guard và audit invocation.
+- AI-08 đến AI-11: đã triển khai, commit `d8f04c1d`; model reload, stdin, deadline và history limits đã được áp dụng.
+- AI-12: migration `2b3c4d5e6f7a` đã tồn tại; kiểm tra trực tiếp DB runtime xác nhận `backup_jobs.sha256` đã có và Alembic đang ở head `4d5e6f7a8b9c`. Lỗi log trước đó là từ thời điểm schema chưa đồng bộ.
+- AI-13: chưa thể kết thúc từ server này. Sau khi restart `ceph-ai_telegram-ai_1`, cả hai token vẫn nhận `getUpdates 409 Conflict`; `ps`/Podman chỉ thấy một poller local. Cần dừng poller đang chạy ở host/instance bên ngoài hoặc chuyển sang webhook trước khi xác nhận hoàn tất.
+
+## Test sau rollout
+
+- Nhóm core provider/chat/backup/log/volume: `232 passed`, 7 test cũ lệch chuỗi xưng hô mặc định.
+- Full/Telegram/Dual: `25 passed`.
+- Streaming/structured modules: `57 passed`, 1 lỗi setup do fixture DB xoá cluster.
+- Reliability/CLI/Full history: `44 passed`.
+- Budget/Dual/observability: `13 passed`.
+- Không có thay đổi chưa commit sau các bước triển khai; các lỗi còn lại được ghi ở trên là test fixture/state hoặc xung đột poller bên ngoài.
