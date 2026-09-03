@@ -495,6 +495,10 @@ def _run_rbd_backup(
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
                 result = backend.upload(f, remote_key)
+            # Record the target immediately: a later verify, upload, or DB
+            # failure must clean up this object as well, even though this
+            # slot has not received its BackupJob row yet.
+            uploaded_targets.append((slot, remote_key, backend))
             if result.size != size_bytes or result.sha256 != sha256:
                 raise BackupEngineError(
                     f"backend upload result does not match source for {remote_key}: "
@@ -503,7 +507,6 @@ def _run_rbd_backup(
                 )
             if not backend.verify(remote_key, size_bytes, sha256):
                 raise BackupEngineError(f"verify() failed after upload to slot {slot} for {remote_key}")
-            uploaded_targets.append((slot, remote_key, result))
 
         with db.SessionLocal() as session:
             running_job = session.get(BackupJob, running_job_id)
@@ -513,7 +516,7 @@ def _run_rbd_backup(
                 )
             finished_at = datetime.utcnow()
             duration_seconds = time.monotonic() - tracked_stream._started_at
-            first_slot, first_key, _first_result = uploaded_targets[0]
+            first_slot, first_key, _first_backend = uploaded_targets[0]
             running_job.status = "SUCCESS"
             running_job.backup_target_slot = first_slot
             running_job.remote_key = first_key
@@ -523,7 +526,7 @@ def _run_rbd_backup(
             running_job.finished_at = finished_at
             session.flush()
             job_ids.append(running_job.id)
-            for slot, remote_key, _result in uploaded_targets[1:]:
+            for slot, remote_key, _backend in uploaded_targets[1:]:
                 job = BackupJob(
                     run_id=run_id,
                     cluster_id=cluster_id,
@@ -568,6 +571,17 @@ def _run_rbd_backup(
 
     except Exception as exc:
         logger.exception("backup_engine._run_rbd_backup: export/upload failed for %s/%s", pool, image)
+        for slot, remote_key, backend in uploaded_targets:
+            try:
+                backend.delete(remote_key)
+            except Exception:
+                logger.warning(
+                    "backup_engine._run_rbd_backup: failed to clean partial upload "
+                    "for slot %s, %s",
+                    slot,
+                    remote_key,
+                    exc_info=True,
+                )
         progress[0]["status"] = "failed"
         progress[0]["message"] = str(exc)
         write_progress(action_pk, progress)

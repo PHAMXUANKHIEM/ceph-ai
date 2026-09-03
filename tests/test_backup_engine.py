@@ -418,6 +418,39 @@ def test_source_checksum_mismatch_marks_job_failed(isolated_db, fake_backend_and
     assert jobs[0].status == "FAILED"
 
 
+def test_partial_multi_target_upload_is_cleaned_up_on_later_failure(
+    isolated_db, fake_backend_and_ssh, monkeypatch
+):
+    first_backend = FakeBackend()
+
+    class FailingBackend(FakeBackend):
+        def upload(self, stream, remote_key):
+            raise RuntimeError("second target unavailable")
+
+    second_backend = FailingBackend()
+    monkeypatch.setattr(
+        engine,
+        "resolve_targets",
+        lambda _cluster: [("a", first_backend), ("b", second_backend)],
+    )
+    incident_id, action_pk = _make_incident_and_action()
+
+    succeeded = engine.run(
+        action_pk,
+        "rbd_backup_run",
+        {"pool": "vms", "image": "web01"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is False
+    assert len(first_backend.deleted) == 1
+    assert first_backend.deleted[0].startswith("full/vms/web01/")
+    assert first_backend.uploaded == {}
+
+
 def test_incremental_snapshot_is_removed_after_verified_backup(isolated_db, monkeypatch):
     commands = []
 
