@@ -517,13 +517,13 @@ def _make_success_full_backup_job(backend, content: bytes = b"full backup conten
 
 
 def test_restore_to_production_succeeds_when_full_backup_exists(isolated_db, fake_backend_and_ssh):
-    _make_success_full_backup_job(fake_backend_and_ssh)
+    full_id = _make_success_full_backup_job(fake_backend_and_ssh)
     incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
 
     succeeded = engine.run(
         action_pk,
         "restore_rbd_image_to_production",
-        {"pool": "vms", "image": "web01"},
+        {"pool": "vms", "image": "web01", "recovery_point_job_id": full_id},
         incident_id,
         None,
         _write_progress,
@@ -536,13 +536,14 @@ def test_restore_to_production_succeeds_when_full_backup_exists(isolated_db, fak
 
 
 def test_restore_as_new_uses_distinct_destination_and_verifies_it(isolated_db, fake_backend_and_ssh):
-    _make_success_full_backup_job(fake_backend_and_ssh)
+    full_id = _make_success_full_backup_job(fake_backend_and_ssh)
     incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_as_new")
 
     succeeded = engine.run(
         action_pk,
         "restore_rbd_image_as_new",
-        {"pool": "vms", "image": "web01", "dest_pool": "recovery", "dest_image": "web01-restored"},
+        {"pool": "vms", "image": "web01", "dest_pool": "recovery", "dest_image": "web01-restored",
+         "recovery_point_job_id": full_id},
         incident_id,
         None,
         _write_progress,
@@ -596,8 +597,26 @@ def test_restore_to_production_fails_when_no_full_backup_exists(isolated_db, fak
     assert FakeSSHClient.imported_calls == []
 
 
-def test_restore_to_production_fails_when_rbd_import_exits_nonzero(isolated_db, fake_backend_and_ssh):
+def test_restore_to_production_requires_approved_recovery_point(isolated_db, fake_backend_and_ssh):
     _make_success_full_backup_job(fake_backend_and_ssh)
+    incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
+
+    succeeded = engine.run(
+        action_pk,
+        "restore_rbd_image_to_production",
+        {"pool": "vms", "image": "web01"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is False
+    assert FakeSSHClient.imported_calls == []
+
+
+def test_restore_to_production_fails_when_rbd_import_exits_nonzero(isolated_db, fake_backend_and_ssh):
+    full_id = _make_success_full_backup_job(fake_backend_and_ssh)
     FakeSSHClient.exit_status_by_cmd["rbd import - vms/web01"] = 1
     FakeSSHClient.stderr_by_cmd["rbd import - vms/web01"] = b"no space left on device"
     incident_id, action_pk = _make_incident_and_action(action_id="restore_rbd_image_to_production")
@@ -605,7 +624,7 @@ def test_restore_to_production_fails_when_rbd_import_exits_nonzero(isolated_db, 
     succeeded = engine.run(
         action_pk,
         "restore_rbd_image_to_production",
-        {"pool": "vms", "image": "web01"},
+        {"pool": "vms", "image": "web01", "recovery_point_job_id": full_id},
         incident_id,
         None,
         _write_progress,

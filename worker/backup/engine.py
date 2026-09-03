@@ -690,6 +690,11 @@ def _run_restore_to_production(
             action_pk,
         )
         return False
+    if not recovery_point_job_id:
+        logger.error(
+            "backup_engine._run_restore_to_production: recovery_point_job_id is required"
+        )
+        return False
     progress = [{"step": "preflight_recheck", "status": "running", "started_at": datetime.utcnow().isoformat()},
                 {"step": "restore", "status": "pending"}]
     write_progress(action_pk, progress)

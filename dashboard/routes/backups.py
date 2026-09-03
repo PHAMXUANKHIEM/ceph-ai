@@ -594,6 +594,7 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
     body = await request.json()
     pool = str(body.get("pool", "")).strip()
     image = str(body.get("image", "")).strip()
+    requested_recovery_point = str(body.get("recovery_point_job_id", "")).strip()
 
     cluster = selected_cluster(request)
     tracked = _tracked_images(cluster)
@@ -603,20 +604,13 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             detail=f"{pool}/{image} không nằm trong tracked_images đã cấu hình — không thể đề xuất khôi phục",
         )
 
-    with db.SessionLocal() as session:
-        has_full_backup = (
-            session.query(BackupJob.id)
-            .filter(
-                BackupJob.pool == pool,
-                BackupJob.image == image,
-                BackupJob.job_type == "full",
-                BackupJob.status == "SUCCESS",
-                _job_scope(BackupJob.cluster_id, cluster),
-            )
-            .first()
-            is not None
-        )
-    if not has_full_backup:
+    points = _recovery_points(pool, image, cluster)
+    selected_point = next(
+        (point for point in points if point["job_id"] == requested_recovery_point), None
+    ) if requested_recovery_point else (points[0] if points else None)
+    if selected_point is None:
+        if requested_recovery_point:
+            raise HTTPException(status_code=409, detail="Recovery point không hợp lệ hoặc thuộc cluster khác.")
         raise HTTPException(
             status_code=409,
             detail=f"Chưa có bản full backup thành công cho {pool}/{image} — không thể khôi phục.",
@@ -632,7 +626,11 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
     if not mon_nodes:
         raise HTTPException(status_code=400, detail="ceph_mon_nodes chưa được cấu hình")
 
-    action_params = {"pool": pool, "image": image}
+    action_params = {
+        "pool": pool,
+        "image": image,
+        "recovery_point_job_id": selected_point["job_id"],
+    }
     try:
         preview_command = executor_commands.get_command(RESTORE_ACTION_ID, None, action_params)
     except ExecutorError as exc:
@@ -667,7 +665,8 @@ async def propose_restore(request: Request, user: str = Depends(require_login)):
             classification=gate.classify_action(RESTORE_ACTION_ID).value,  # always RISKY (AD-5)
             status=ActionStatus.PENDING_APPROVAL.value,
             rationale=(
-                f"Khôi phục {pool}/{image} từ bản backup full gần nhất + toàn bộ chain "
+                f"Khôi phục {pool}/{image} từ recovery point {selected_point['job_id']} "
+                f"({selected_point['created_at']}, chain {selected_point['chain_length']} artifact) + toàn bộ chain "
                 f"export-diff — GHI ĐÈ dữ liệu hiện tại của image này. Chỉ dùng khi image này bị "
                 f"hỏng/mất dữ liệu; không cần dựng lại cả cụm (khác với trang Restore Cluster)."
             ),

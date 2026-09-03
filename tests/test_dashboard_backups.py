@@ -555,7 +555,10 @@ def test_restore_propose_creates_pending_risky_action(dashboard_client, monkeypa
         # stricter classification, not a behavior change.
         assert action.classification == "DESTRUCTIVE"
         assert action.status == ActionStatus.PENDING_APPROVAL.value
-        assert json.loads(action.action_params) == {"pool": "vms", "image": "disk1"}
+        params = json.loads(action.action_params)
+        assert params["pool"] == "vms"
+        assert params["image"] == "disk1"
+        assert params["recovery_point_job_id"]
         assert json.loads(action.target_nodes) == ["10.20.1.112"]
 
 
