@@ -1035,7 +1035,7 @@ def test_post_chat_message_persists_proposal_fields(dashboard_client, monkeypatc
     assert assistant["proposed_status"] == "PENDING"
 
 
-def test_post_chat_message_claude_error_is_saved_not_500(dashboard_client, monkeypatch):
+def test_post_chat_message_claude_error_returns_gateway_error_with_saved_messages(dashboard_client, monkeypatch):
     async def fake_run_chat_turn(history, user_text, actor, cluster=None):
         raise chat_module.ChatTurnError("Lỗi gọi Claude API: boom")
 
@@ -1044,8 +1044,11 @@ def test_post_chat_message_claude_error_is_saved_not_500(dashboard_client, monke
 
     response = dashboard_client.post("/api/chat/messages", json={"content": "hi"})
 
-    assert response.status_code == 200
-    assert "boom" in response.json()["assistant_message"]["content"]
+    assert response.status_code == 502
+    body = response.json()
+    assert "boom" in body["detail"]
+    assert body["user_message"]["content"] == "hi"
+    assert "boom" in body["assistant_message"]["content"]
 
 
 def test_post_chat_message_persists_and_returns_tools_used(dashboard_client, monkeypatch):

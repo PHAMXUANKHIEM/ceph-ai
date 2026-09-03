@@ -385,6 +385,12 @@
     if (el) el.remove();
   }
 
+  function appendMessageOnce(message) {
+    if (!message || !message.id) return;
+    if (messagesEl.querySelector('[data-message-id="' + message.id + '"]')) return;
+    appendMessage(message);
+  }
+
   function setDualProcessing(running, sessionId) {
     if (running && dualStopRequestedSessionId === sessionId) return;
     dualProcessing = running;
@@ -858,6 +864,24 @@
 
   // --- sending messages ---------------------------------------------------
 
+  function parseFailedResponse(response) {
+    return response.text().then(function (raw) {
+      var data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch (e) {
+        data = {};
+      }
+      var error = new Error(data.detail || "HTTP " + response.status);
+      // The backend may have persisted both messages before the provider
+      // failed. Keep the conversation visible immediately instead of making
+      // the operator reload the page to discover what was saved.
+      error.userMessage = data.user_message;
+      error.assistantMessage = data.assistant_message;
+      throw error;
+    });
+  }
+
   formEl.addEventListener("submit", function (event) {
     event.preventDefault();
     var text = inputEl.value.trim();
@@ -877,18 +901,17 @@
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" }),
+      body: JSON.stringify({ content: text, session_id: currentSessionId }),
     })
       .then(handleAuthRedirect)
       .then(function (response) {
-        if (!response.ok) {
-          return response.json().then(function (data) {
-            throw new Error(data.detail || "HTTP " + response.status);
-          });
-        }
+        if (!response.ok) return parseFailedResponse(response);
         return response.json();
       })
       .then(function (data) {
+        if (!data || !data.user_message) {
+          throw new Error("Phản hồi chat không hợp lệ từ server.");
+        }
         // In dual mode the server returns immediately and the poller below
         // removes this indicator when the first AI event is persisted.
         if (!(data.mode === "dual" && data.processing)) removeTypingIndicator();
@@ -909,6 +932,11 @@
       .catch(function (err) {
         removeTypingIndicator();
         if (err.message === "unauthenticated") return;
+        if (err.userMessage && err.userMessage.session_id) {
+          currentSessionId = err.userMessage.session_id;
+        }
+        appendMessageOnce(err.userMessage);
+        appendMessageOnce(err.assistantMessage);
         // fetch() itself rejects with a TypeError for a genuine network
         // failure (offline, DNS, connection refused) — distinct from the
         // Error this code throws above for a non-2xx HTTP response, which

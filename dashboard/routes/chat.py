@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_
 
 from config.settings import settings
@@ -652,7 +653,14 @@ async def post_chat_message(
             session.commit()
             session.refresh(assistant_message)
             assistant_message_dict = _message_to_dict(assistant_message)
-        return {"user_message": user_message_dict, "assistant_message": assistant_message_dict}
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": str(exc),
+                "user_message": user_message_dict,
+                "assistant_message": assistant_message_dict,
+            },
+        )
 
     proposal = result["proposal"]
     tools_used = result.get("tools_used") or []
