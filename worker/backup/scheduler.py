@@ -60,11 +60,14 @@ def _target_fields_ready(source, prefix: str) -> bool:
 
 
 def _default_backup_target_ready(policy: dict) -> bool:
-    return any(
-        slot in ("a", "b") and _target_fields_ready(settings, f"backup_target_{slot}")
+    required_copy_count = max(int(policy.get("required_copy_count") or 1), 1)
+    ready_slots = {
+        slot
         for target in (policy.get("backup_targets") or [])
-        if (slot := target.get("slot"))
-    )
+        if (slot := target.get("slot")) in ("a", "b")
+        and _target_fields_ready(settings, f"backup_target_{slot}")
+    }
+    return len(ready_slots) >= required_copy_count
 
 
 def _cluster_backup_target_ready(cluster: Cluster) -> bool:
@@ -182,7 +185,9 @@ async def trigger_restore_drill() -> None:
     await _dispatch(action_pk, "scheduled RestoreDrill")
 
 
-def _register_cluster_backup_jobs(scheduler: AsyncIOScheduler, cron: dict, metadata_cron: dict) -> None:
+def _register_cluster_backup_jobs(
+    scheduler: AsyncIOScheduler, cron: dict, metadata_cron: dict, desired_job_ids: set[str]
+) -> None:
     """Multi-tenant remediation Phase 3 — registers `trigger_backup`/
     `trigger_metadata_backup` jobs for every ADDITIONAL cluster that has
     opted in (`Cluster.backup_enabled`), on the SAME shared global cron as
@@ -199,25 +204,55 @@ def _register_cluster_backup_jobs(scheduler: AsyncIOScheduler, cron: dict, metad
 
     for cluster in clusters:
         for pool, image in parse_tracked_images(cluster.backup_tracked_images):
+            job_id = f"rbd_backup_{cluster.id}_{pool}_{image}"
             scheduler.add_job(
                 trigger_backup,
                 trigger=CronTrigger(hour=cron.get("hour", 2), minute=cron.get("minute", 0)),
                 args=[pool, image, cluster.id],
-                id=f"rbd_backup_{cluster.id}_{pool}_{image}",
+                id=job_id,
                 replace_existing=True,
             )
+            desired_job_ids.add(job_id)
+        metadata_job_id = f"backup_metadata_run_{cluster.id}"
         scheduler.add_job(
             trigger_metadata_backup,
             trigger=CronTrigger(hour=metadata_cron.get("hour", "*/6"), minute=metadata_cron.get("minute", 0)),
             args=[cluster.id],
-            id=f"backup_metadata_run_{cluster.id}",
+            id=metadata_job_id,
             replace_existing=True,
         )
+        desired_job_ids.add(metadata_job_id)
+
+
+def _reconcile_backup_jobs(scheduler: AsyncIOScheduler, desired_job_ids: set[str]) -> None:
+    """Remove persisted jobs owned by this module that are no longer
+    represented by the current policy/configuration.
+
+    APScheduler's SQLAlchemy job store survives worker restarts; conditional
+    ``add_job`` calls alone therefore leave obsolete jobs active forever.
+    """
+    def is_managed(job_id: str) -> bool:
+        return (
+            job_id.startswith("rbd_backup_")
+            or job_id.startswith("backup_metadata_run")
+            or job_id in {
+                "restore_drill_execute",
+                "backup_alert_check",
+                "backup_digest_run",
+                "ai_ops_weekly_digest",
+            }
+        )
+
+    for job in scheduler.get_jobs():
+        if is_managed(job.id) and job.id not in desired_job_ids:
+            logger.info("scheduler: removing obsolete persisted backup job %s", job.id)
+            scheduler.remove_job(job.id)
 
 
 def build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     scheduler.add_jobstore(SQLAlchemyJobStore(engine=db.engine), alias="default")
+    desired_job_ids: set[str] = set()
 
     policy = load_backup_policy()
     default_target_ready = _default_backup_target_ready(policy)
@@ -228,13 +263,15 @@ def build_scheduler() -> AsyncIOScheduler:
         image = tracked.get("image")
         if not pool or not image:
             continue
+        job_id = f"rbd_backup_{pool}_{image}"
         scheduler.add_job(
             trigger_backup,
             trigger=CronTrigger(hour=cron.get("hour", 2), minute=cron.get("minute", 0)),
             args=[pool, image],
-            id=f"rbd_backup_{pool}_{image}",
+            id=job_id,
             replace_existing=True,
         )
+        desired_job_ids.add(job_id)
 
     metadata_cron = schedule.get("metadata_cron") or {}
     if metadata_cron and default_target_ready:
@@ -244,12 +281,13 @@ def build_scheduler() -> AsyncIOScheduler:
             id="backup_metadata_run",
             replace_existing=True,
         )
+        desired_job_ids.add("backup_metadata_run")
 
     # Multi-tenant remediation Phase 3 — every ADDITIONAL cluster with
     # backup_enabled gets its own rbd_backup_run/backup_metadata_run jobs
     # on this SAME shared cron/metadata_cron, registered alongside (never
     # replacing) the default cluster's jobs above.
-    _register_cluster_backup_jobs(scheduler, cron, metadata_cron)
+    _register_cluster_backup_jobs(scheduler, cron, metadata_cron, desired_job_ids)
 
     # Story 9.4 (AC #3): only register if restore_drill is actually
     # configured (pool/image + scratch_pool/scratch_image) — same "blank
@@ -269,6 +307,7 @@ def build_scheduler() -> AsyncIOScheduler:
             id="restore_drill_execute",
             replace_existing=True,
         )
+        desired_job_ids.add("restore_drill_execute")
 
     # Story 9.4 (AC #2): fail/overdue check — a plain sync callable,
     # APScheduler runs it in its own thread-pool executor automatically
@@ -280,6 +319,7 @@ def build_scheduler() -> AsyncIOScheduler:
         id="backup_alert_check",
         replace_existing=True,
     )
+    desired_job_ids.add("backup_alert_check")
 
     # Story 9.5 (AC #6): BackupDigest — also a plain sync callable, same
     # thread-pool-executor posture as backup_alert_check above.
@@ -290,6 +330,7 @@ def build_scheduler() -> AsyncIOScheduler:
         id="backup_digest_run",
         replace_existing=True,
     )
+    desired_job_ids.add("backup_digest_run")
     if settings.ai_ops_weekly_digest_enabled:
         weekday = str(settings.ai_ops_weekly_digest_day or "mon").strip().lower()
         if weekday not in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
@@ -305,6 +346,8 @@ def build_scheduler() -> AsyncIOScheduler:
             id="ai_ops_weekly_digest",
             replace_existing=True,
         )
+        desired_job_ids.add("ai_ops_weekly_digest")
+    _reconcile_backup_jobs(scheduler, desired_job_ids)
     return scheduler
 
 

@@ -296,6 +296,49 @@ def test_build_scheduler_skips_backup_jobs_when_default_target_is_unconfigured(i
     assert "restore_drill_execute" not in job_ids
 
 
+def test_default_target_readiness_requires_policy_copy_count(monkeypatch):
+    policy = {
+        "backup_targets": [{"slot": "a", "immutable": False}, {"slot": "b", "immutable": True}],
+        "required_copy_count": 2,
+    }
+    fields = {
+        "backup_target_a_transport": "s3",
+        "backup_target_a_s3_endpoint": "endpoint",
+        "backup_target_a_s3_access_key": "access",
+        "backup_target_a_s3_secret_key": "secret",
+        "backup_target_a_s3_bucket": "bucket",
+        "backup_target_b_transport": "",
+    }
+    for name, value in fields.items():
+        monkeypatch.setattr(scheduler.settings, name, value, raising=False)
+
+    assert scheduler._default_backup_target_ready(policy) is False
+
+    monkeypatch.setattr(scheduler.settings, "backup_target_b_transport", "s3", raising=False)
+    for suffix in ("endpoint", "access_key", "secret_key", "bucket"):
+        monkeypatch.setattr(scheduler.settings, f"backup_target_b_s3_{suffix}", suffix, raising=False)
+    assert scheduler._default_backup_target_ready(policy) is True
+
+
+def test_build_scheduler_removes_stale_persisted_backup_jobs(isolated_db, monkeypatch):
+    policy = {
+        "backup_targets": [{"slot": "a", "immutable": False}],
+        "tracked_images": [],
+        "required_copy_count": 1,
+        "retention": {"keep_full_count": 3, "keep_incremental_count": 7},
+        "schedule": {"metadata_cron": {"hour": "*/6", "minute": 0}},
+    }
+    monkeypatch.setattr(scheduler, "load_backup_policy", lambda: policy)
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: True)
+    first = scheduler.build_scheduler()
+    assert first.get_job("backup_metadata_run") is not None
+
+    monkeypatch.setattr(scheduler, "_default_backup_target_ready", lambda _policy: False)
+    second = scheduler.build_scheduler()
+
+    assert second.get_job("backup_metadata_run") is None
+
+
 def test_create_scheduled_action_stamps_cluster_id(isolated_db):
     cluster_id = _make_additional_cluster()
 
