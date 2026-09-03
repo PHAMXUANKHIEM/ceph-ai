@@ -13,10 +13,13 @@ import fcntl
 import os
 import re
 import signal
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings
+from shared.ai_budget import AIBudgetError, check as check_ai_budget
+from shared.ai_observability import record_ai_attempt
 from worker.code_repair import RepairConfig, RepairError, _provider_command, _role_account_dirs
 
 
@@ -335,7 +338,7 @@ async def _ask(
     model_override: str | None = None,
     allow_writes: bool = False,
     full_access: bool = False,
-) -> dict:
+    ) -> dict:
     source_repo = Path(__file__).resolve().parents[1]
     repo = _execution_repo(allow_writes=allow_writes, full_access=full_access)
     provider_spec = provider_spec or getattr(settings, f"dual_ai_{role}_provider")
@@ -345,6 +348,10 @@ async def _ask(
         else getattr(settings, f"dual_ai_{role}_model") or ""
     )
     process = None
+    provider = None
+    reservation_id = None
+    started = time.monotonic()
+    feature = "single_full" if full_access else f"dual_ai_{role}"
     try:
         provider_name = _provider_name(provider_spec)
         account_profile = _provider_account_profile(role, provider_spec)
@@ -369,6 +376,10 @@ async def _ask(
             claude_config_dir=claude_config_dir, codex_home=codex_home,
             model=model, mode=mode,
         )
+        model_id = model or "default"
+        reservation_id = await asyncio.to_thread(
+            check_ai_budget, provider, model_id, len(prompt)
+        )
         if allow_writes and not full_access:
             command = _unprivileged_dual_command(command)
         process = await asyncio.create_subprocess_exec(
@@ -388,18 +399,99 @@ async def _ask(
         )
     except asyncio.CancelledError:
         await _stop_process_tree(process)
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=0,
+                error_type="CancelledError",
+            )
         raise
     except asyncio.TimeoutError as exc:
         await _stop_process_tree(process)
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=0,
+                error_type="TimeoutError",
+            )
         raise DualAIChatError(
             f"AI không phản hồi trong thời gian cho phép ({DISCUSSION_TIMEOUT_SECONDS} giây)"
         ) from exc
     except OSError as exc:
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=0,
+                error_type="OSError",
+            )
         raise DualAIChatError(f"Không khởi chạy được AI: {exc}") from exc
     except RepairError as exc:
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=0,
+                error_type="RepairError",
+            )
         raise DualAIChatError(f"Cấu hình tài khoản/provider AI không hợp lệ: {exc}") from exc
+    except AIBudgetError as exc:
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=0,
+                output_chars=0,
+                error_type=type(exc).__name__,
+            )
+        raise DualAIChatError(f"AI Budget từ chối lượt gọi: {exc}") from exc
     output = output_bytes.decode(errors="replace").strip()
     if process.returncode != 0:
+        error_type = "ProviderQuotaError" if TOKEN_STOP_RE.search(output) else "ProviderError"
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=len(output),
+                error_type=error_type,
+            )
         if TOKEN_STOP_RE.search(output):
             raise DualAIChatExhausted(
                 "Provider đã hết token hoặc quota", provider=provider,
@@ -407,7 +499,31 @@ async def _ask(
             )
         raise DualAIChatError(f"{provider} trả về lỗi ({process.returncode}): {output[-3000:]}")
     if not output:
+        if provider is not None:
+            await asyncio.to_thread(
+                record_ai_attempt,
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model or "default",
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=0,
+                error_type="EmptyResponseError",
+            )
         raise DualAIChatError(f"{provider} không trả về nội dung")
+    await asyncio.to_thread(
+        record_ai_attempt,
+        reservation_id=reservation_id,
+        feature=feature,
+        provider=provider,
+        model_id=model or "default",
+        status="SUCCESS",
+        latency_ms=round((time.monotonic() - started) * 1000),
+        input_chars=len(prompt),
+        output_chars=len(output),
+    )
     return {
         "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
         "provider": provider,

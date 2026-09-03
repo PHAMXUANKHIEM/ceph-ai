@@ -121,6 +121,32 @@ def _record(*, reservation_id: str | None = None, **values: Any) -> None:
         logger.warning("Unable to persist AI invocation telemetry", exc_info=True)
 
 
+def record_ai_attempt(
+    *, reservation_id: str | None, feature: str, provider: str, model_id: str,
+    status: str, latency_ms: int, input_chars: int, output_chars: int,
+    error_type: str | None = None,
+) -> None:
+    """Persist a CLI-backed AI attempt using the same accounting row as the decorator.
+
+    CLI providers do not return an OpenAI usage object, so their token fields
+    remain estimated from character counts by the cost layer. Keeping this
+    public avoids making callers reach into the decorator's private recorder.
+    """
+    _record(
+        reservation_id=reservation_id,
+        feature=feature,
+        provider=provider,
+        model_id=model_id,
+        status=status,
+        latency_ms=max(0, int(latency_ms)),
+        input_chars=max(0, int(input_chars)),
+        output_chars=max(0, int(output_chars)),
+        input_tokens=None,
+        output_tokens=None,
+        error_type=error_type,
+    )
+
+
 def observe_ai_call(
     feature: str,
     *,
