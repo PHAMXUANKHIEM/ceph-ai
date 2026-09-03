@@ -184,17 +184,8 @@
   var execute = document.getElementById("bucket-create-execute");
   var status = document.getElementById("bucket-create-status");
   var objectLockInput = document.getElementById("bucket-create-object-lock");
-  var objectLockSetting = document.getElementById("bucket-create-object-lock-label");
-  var objectLockState = document.getElementById("bucket-create-object-lock-hint");
   var approved = null;
   function objectLockEnabled() { return objectLockInput.value.trim() === "OK"; }
-  function updateObjectLockState() {
-    var enabled = objectLockEnabled();
-    objectLockSetting.classList.toggle("is-enabled", enabled);
-    objectLockState.textContent = enabled ? "Object Lock sẽ được bật" : (objectLockInput.value.trim() ? "Cần nhập chính xác OK" : "Chưa bật");
-  }
-  objectLockInput.addEventListener("input", updateObjectLockState);
-  updateObjectLockState();
   function payload() { return {
     name: document.getElementById("bucket-create-name").value.trim(),
     owner: document.getElementById("bucket-create-owner").value.trim(),
