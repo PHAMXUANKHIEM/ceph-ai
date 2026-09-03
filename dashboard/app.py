@@ -61,9 +61,11 @@ from dashboard.ws import router as ws_router
 from shared import db
 from shared.codex_app_server import codex_app_server
 from shared.clusters import sync_default_cluster_from_settings
+from shared.logging_redaction import install_logging_redaction
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
+install_logging_redaction()
 
 
 class _CachedStaticFiles(StaticFiles):

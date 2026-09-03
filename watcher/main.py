@@ -46,10 +46,12 @@ from watcher.performance_rca import PERFORMANCE_RCA_PREFIX
 from shared import alert_lifecycle, audit, db, heartbeat, service_health, telegram_alerts
 from shared.incident_actions import cancel_pending_actions, reconcile_terminal_incident_actions
 from shared.clusters import get_default_cluster_id, list_active_clusters
+from shared.logging_redaction import install_logging_redaction
 from shared.models import Action, ActionStatus, AuditEntry, Cluster, Incident, IncidentStatus
 from shared.synthetic_incidents import is_synthetic_evidence
 
 logger = logging.getLogger(__name__)
+install_logging_redaction()
 
 OnTransition = Callable[[Optional[str], dict], None]
 

@@ -15,6 +15,9 @@ import signal
 from dashboard import telegram_approval_bot, telegram_chat
 from shared.codex_app_server import codex_app_server
 from shared import service_health
+from shared.logging_redaction import install_logging_redaction
+
+install_logging_redaction()
 
 
 async def run() -> None:

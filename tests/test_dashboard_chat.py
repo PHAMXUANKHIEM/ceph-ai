@@ -513,6 +513,7 @@ def test_dual_ai_keeps_internal_context_bounded(monkeypatch):
 
     monkeypatch.setattr(dual_module, "_ask", fake_ask)
     monkeypatch.setattr(dual_module, "_exchange_context", record_context)
+    monkeypatch.setattr(dual_module, "MAX_DUAL_EXCHANGE_ROUNDS", 20)
     monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", False, raising=False)
     monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
     monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "planner", raising=False)
@@ -528,6 +529,38 @@ def test_dual_ai_keeps_internal_context_bounded(monkeypatch):
 
     assert len(events) == 20
     assert max_context_events <= dual_module.MAX_EXCHANGE_CONTEXT_EVENTS
+
+
+def test_dual_ai_stops_after_max_exchange_rounds(monkeypatch):
+    calls = []
+
+    async def fake_ask(role, prompt, *, provider_spec=None, model_override=None, allow_writes=False):
+        calls.append(role)
+        return {
+            "speaker": "Planner/Reviewer" if role == "planner" else "Implementer",
+            "provider": provider_spec,
+            "model": model_override or "default",
+            "content": f"round {len(calls)}\nSTATUS: CONTINUE",
+        }
+
+    monkeypatch.setattr(dual_module, "_ask", fake_ask)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_fallback_enabled", False, raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_planner_model", "planner", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_provider", "codex", raising=False)
+    monkeypatch.setattr(dual_module.settings, "dual_ai_implementer_model", "implementer", raising=False)
+
+    import asyncio
+
+    async def collect():
+        return [event async for event in dual_module._stream_dual_ai_chat_unlocked("prompt")]
+
+    events = asyncio.run(collect())
+
+    assert len(calls) == dual_module.MAX_DUAL_EXCHANGE_ROUNDS
+    assert len(events) == dual_module.MAX_DUAL_EXCHANGE_ROUNDS + 1
+    assert events[-1]["speaker"] == "Hệ thống"
+    assert f"giới hạn {dual_module.MAX_DUAL_EXCHANGE_ROUNDS}" in events[-1]["content"]
 
 
 def test_dual_ai_does_not_retry_exhausted_provider_on_later_turn(monkeypatch):

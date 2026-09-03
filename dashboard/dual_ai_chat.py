@@ -30,6 +30,7 @@ MAX_AGENT_OUTPUT = 1_800
 MAX_AGENT_LINES = 6
 DISCUSSION_TIMEOUT_SECONDS = 600
 MAX_DUAL_PROMPT_CHARS = 12_000
+MAX_DUAL_EXCHANGE_ROUNDS = 10
 MAX_EXCHANGE_CONTEXT_EVENTS = 8
 MAX_CONTEXT_ITEM_CHARS = 4_000
 NOISE_LINE_RE = re.compile(
@@ -655,12 +656,14 @@ Lịch sử liên quan:
         return
 
     role = "implementer"
-    while True:
+    rounds = 1
+    while rounds < MAX_DUAL_EXCHANGE_ROUNDS:
         speaker = "Implementer" if role == "implementer" else "Planner/Reviewer"
         prompt_text = f"""{(TELEGRAM_IMPLEMENTER_INSTRUCTIONS if allow_writes else IMPLEMENTER_INSTRUCTIONS) if role == 'implementer' else PLANNER_INSTRUCTIONS}
 Bạn là {speaker}, đang tiếp tục trao đổi liên tục với AI còn lại. Đọc các lượt
 gần nhất, phản hồi trực tiếp ý trước, rồi làm/đề xuất đúng task nhỏ tiếp theo.
 Nếu vấn đề đã được xử lý và xác minh đầy đủ, không tạo task mới và trả STATUS: DONE.
+Phiên tự dừng sau tối đa {MAX_DUAL_EXCHANGE_ROUNDS} lượt AI; đây là lượt {rounds + 1}/{MAX_DUAL_EXCHANGE_ROUNDS}.
 Người dùng có thể bấm Dừng bất cứ lúc nào.
 Trả lời bằng tiếng Việt.
 
@@ -677,9 +680,19 @@ Các lượt gần nhất:
         event = await ask_and_track(role, prompt_text)
         _remember_exchange_event(events, event)
         yield event
+        rounds += 1
         if _agent_status(event.get("content", "")) == "DONE":
             return
         role = "planner" if role == "implementer" else "implementer"
+    yield {
+        "speaker": "Hệ thống",
+        "provider": "—",
+        "model": "",
+        "account_profile": "",
+        "termination_reason": "max_rounds",
+        "content": f"Đã dừng trao đổi vì đạt giới hạn {MAX_DUAL_EXCHANGE_ROUNDS} lượt AI.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _acquire_execution_lock():

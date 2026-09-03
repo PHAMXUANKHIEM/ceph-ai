@@ -14,6 +14,17 @@ def runtime_dir() -> Path:
     return Path(os.environ.get("CEPH_AI_RUNTIME_DIR", "/tmp/ceph-ai"))
 
 
+def _containerized() -> bool:
+    return os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
+
+
+def _pid_namespace() -> str | None:
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
 def record(service: str) -> None:
     directory = runtime_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -22,6 +33,7 @@ def record(service: str) -> None:
     temporary.write_text(json.dumps({
         "service": service,
         "pid": os.getpid(),
+        "pid_namespace": _pid_namespace(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }), encoding="utf-8")
     os.replace(temporary, target)
@@ -46,8 +58,29 @@ def status(service: str, *, stale_after_seconds: int = 60) -> dict:
             updated = updated.replace(tzinfo=timezone.utc)
         age = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
         pid = int(payload["pid"])
-        alive = Path(f"/proc/{pid}").exists()
-        return {"healthy": alive and age <= stale_after_seconds, "pid": pid,
-                "age_seconds": round(age, 1), "updated_at": updated.isoformat()}
+        recorded_pid_namespace = payload.get("pid_namespace")
+        current_pid_namespace = _pid_namespace()
+        same_pid_namespace = (
+            (recorded_pid_namespace is None and not _containerized())
+            or current_pid_namespace is None
+            or recorded_pid_namespace == current_pid_namespace
+        )
+        pid_alive = Path(f"/proc/{pid}").exists() if same_pid_namespace else None
+        pid_ok = pid_alive is not False
+        return {
+            "healthy": pid_ok and age <= stale_after_seconds,
+            "pid": pid,
+            "pid_alive": pid_alive,
+            "pid_namespace": recorded_pid_namespace,
+            "age_seconds": round(age, 1),
+            "updated_at": updated.isoformat(),
+        }
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-        return {"healthy": False, "pid": None, "age_seconds": None, "updated_at": None}
+        return {
+            "healthy": False,
+            "pid": None,
+            "pid_alive": None,
+            "pid_namespace": None,
+            "age_seconds": None,
+            "updated_at": None,
+        }

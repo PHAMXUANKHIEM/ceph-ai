@@ -80,7 +80,7 @@ _HELP_TEXT = (
     "Chatbox AI Telegram đã sẵn sàng.\n\n"
     "/model — Chọn 1 AI hoặc 2 AI\n"
     "/single — Chọn 1 AI\n"
-    "/dual — Chọn 2 AI trao đổi và sửa code trên server\n"
+    "/dual — Chọn 2 AI trao đổi và sửa code trong workspace cô lập\n"
     "/single_full — 1 AI có toàn quyền source và server (chỉ user được cấp riêng)\n"
     "/confirm_full <mã> — Xác nhận một phiên Single Full\n"
     "/confirm_destructive <mã> — Xác nhận yêu cầu có thể tác động service/dữ liệu\n"
@@ -815,7 +815,7 @@ async def _handle_command(
             return True
         label = {
             "single": "Chat với một AI",
-            "dual": "Hai AI trao đổi và sửa code",
+            "dual": "Hai AI trao đổi và sửa code trong workspace cô lập",
             "single-full": "Single Full — toàn quyền source và server",
         }[mode]
         await _send(token, chat_id, f"Đã chuyển sang chế độ {label}.")
@@ -837,7 +837,7 @@ async def _handle_command(
                 return True
             label = {
                 "single": "Chat với một AI",
-                "dual": "Hai AI trao đổi và sửa code",
+                "dual": "Hai AI trao đổi và sửa code trong workspace cô lập",
                 "single-full": "Single Full — toàn quyền source và server",
             }[selected]
             await _send(token, chat_id, f"Đã chuyển sang chế độ {label}.")
@@ -847,7 +847,7 @@ async def _handle_command(
         await _send(
             token,
             chat_id,
-            "Chọn model bằng lệnh:\n/model single — 1 AI\n/model dual — 2 AI trao đổi và sửa code trên server\n/model single_full — 1 AI toàn quyền source và server (cần cấp riêng)\n\nHoặc dùng /single, /dual và /single_full.",
+            "Chọn model bằng lệnh:\n/model single — 1 AI\n/model dual — 2 AI trao đổi và sửa code trong workspace cô lập\n/model single_full — 1 AI toàn quyền source và server (cần cấp riêng)\n\nHoặc dùng /single, /dual và /single_full.",
         )
     elif name == "/stop":
         state = _request_stop(chat_id, actor)
@@ -1218,7 +1218,8 @@ async def handle_message(message: dict, bot_token: str) -> None:
         with _dual_runs_lock:
             _dual_runs[run_id] = run_state
         try:
-            completed_events = 0
+            ai_events = 0
+            termination_reason = None
             await _send(bot_token, chat_id, f"👤 Câu hỏi Hai AI:\n{text}")
             status_message_id = await asyncio.to_thread(
                 send_telegram_message_with_keyboard,
@@ -1247,16 +1248,30 @@ async def handle_message(message: dict, bot_token: str) -> None:
                     role="assistant", content=content,
                 )
                 await _send(bot_token, chat_id, content)
-                completed_events += 1
-            await _edit_dual_status(
-                bot_token, chat_id, status_message_id,
-                "✅ Hai AI đã kết thúc phiên trao đổi.",
-            )
-            await _send(
-                bot_token,
-                chat_id,
-                f"✅ HOÀN TẤT\nHai AI đã xử lý xong yêu cầu ({completed_events} lượt).",
-            )
+                if event.get("termination_reason"):
+                    termination_reason = event.get("termination_reason")
+                elif event.get("speaker") != "Hệ thống":
+                    ai_events += 1
+            if termination_reason == "max_rounds":
+                await _edit_dual_status(
+                    bot_token, chat_id, status_message_id,
+                    "⚠️ Hai AI đã dừng vì đạt giới hạn lượt trao đổi.",
+                )
+                await _send(
+                    bot_token,
+                    chat_id,
+                    f"⚠️ ĐÃ DỪNG DO GIỚI HẠN\nHai AI đã đạt giới hạn {ai_events} lượt AI; chưa xác nhận là hoàn tất.",
+                )
+            else:
+                await _edit_dual_status(
+                    bot_token, chat_id, status_message_id,
+                    "✅ Hai AI đã hoàn tất phiên trao đổi.",
+                )
+                await _send(
+                    bot_token,
+                    chat_id,
+                    f"✅ HOÀN TẤT\nHai AI đã xử lý xong yêu cầu ({ai_events} lượt AI).",
+                )
         except asyncio.CancelledError:
             await _edit_dual_status(
                 bot_token, chat_id, status_message_id,

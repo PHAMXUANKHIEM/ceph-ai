@@ -85,6 +85,7 @@ long-poll response never stalls a single Dashboard HTTP request.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -746,7 +747,7 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
                     {"command": "start", "description": "Mở Chatbox AI"},
                     {"command": "model", "description": "Chọn 1 AI hoặc 2 AI"},
                     {"command": "single", "description": "Chế độ 1 AI"},
-                    {"command": "dual", "description": "Hai AI trao đổi và sửa code"},
+                    {"command": "dual", "description": "Hai AI sửa trong workspace cô lập"},
                     {"command": "single_full", "description": "1 AI toàn quyền (cần cấp riêng)"},
                     {"command": "stop", "description": "Dừng phiên AI đang chạy"},
                     {"command": "status", "description": "Xem trạng thái phiên AI"},
@@ -863,6 +864,38 @@ def _listen_supervisor_loop(stop_event: threading.Event) -> None:
 
 _threads: list[threading.Thread] = []
 _stop_event = threading.Event()
+_listener_lock_file = None
+
+
+def _runtime_dir() -> Path:
+    return Path(os.environ.get("CEPH_AI_RUNTIME_DIR", "/tmp/ceph-ai"))
+
+
+def _acquire_listener_lock() -> bool:
+    """Guarantee one Telegram polling owner per host/runtime directory."""
+    global _listener_lock_file
+    if _listener_lock_file is not None:
+        return True
+    lock_path = _runtime_dir() / "telegram-listener.lock"
+    handle = None
+    try:
+        lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        handle = lock_path.open("a+")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if handle is not None:
+            handle.close()
+        logger.warning(
+            "telegram_approval_bot: another local process already owns Telegram getUpdates; skipping listener startup"
+        )
+        return False
+    except Exception:
+        if handle is not None:
+            handle.close()
+        logger.exception("telegram_approval_bot: failed to acquire Telegram listener lock")
+        return False
+    _listener_lock_file = handle
+    return True
 
 
 def start() -> None:
@@ -873,6 +906,8 @@ def start() -> None:
     listener) are daemon=True so they never block process exit and need no
     explicit shutdown hook."""
     if _threads:
+        return
+    if not _acquire_listener_lock():
         return
     for target in (_notify_loop, _listen_supervisor_loop):
         thread = threading.Thread(target=target, args=(_stop_event,), daemon=True)

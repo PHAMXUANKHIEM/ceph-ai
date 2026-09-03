@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timedelta
 
 import dashboard.telegram_approval_bot as bot
@@ -95,6 +96,27 @@ def test_known_chat_ids_aggregates_every_configured_channel(monkeypatch):
     _configure_channel(monkeypatch, "node", token="t2", chat_id="-2")
 
     assert bot._known_chat_ids() == {"-1", "-2"}
+
+
+def test_start_skips_threads_when_listener_lock_is_owned(monkeypatch):
+    monkeypatch.setattr(bot, "_threads", [])
+    monkeypatch.setattr(bot, "_stop_event", threading.Event())
+    monkeypatch.setattr(bot, "_listener_lock_file", None)
+    monkeypatch.setattr(bot, "_acquire_listener_lock", lambda: False)
+    started = []
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            started.append((args, kwargs))
+
+        def start(self):
+            raise AssertionError("thread must not start without listener lock")
+
+    monkeypatch.setattr(bot.threading, "Thread", FakeThread)
+
+    bot.start()
+
+    assert started == []
 
 
 # --- _notify_pending_actions() — broadcast to every configured channel -----

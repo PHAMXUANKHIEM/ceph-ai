@@ -77,8 +77,8 @@ def test_httpx_log_filter_redacts_bot_token_url():
     record.args = (f"https://api.telegram.org/bot{token}/sendMessage",)
 
     assert telegram_client._TelegramUrlRedactionFilter().filter(record) is True
-    assert token not in str(record.args)
-    assert "bot<REDACTED>" in str(record.args)
+    assert token not in record.getMessage()
+    assert "bot<REDACTED>" in record.getMessage()
 
 
 def test_network_error_never_exposes_bot_token(monkeypatch):

@@ -10,10 +10,12 @@ from config.settings import settings
 from shared import db, service_health
 from shared.mq import QUEUE_NAME, declare_topology, get_connection
 from shared.models import Cluster, Incident, IncidentStatus
+from shared.logging_redaction import install_logging_redaction
 from shared.telegram_alerts import send_ai_unavailable_alert
 from watcher import incident_grouping
 
 logger = logging.getLogger(__name__)
+install_logging_redaction()
 
 RETRY_HEADER = "x-retry-count"
 _worker_broker_connection = None

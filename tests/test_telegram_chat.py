@@ -111,6 +111,47 @@ def test_single_and_dual_dispatch_reuse_chatbox_engines(monkeypatch):
     assert len(saved) == 5  # two user rows + one single + two dual assistant rows
 
 
+def test_dual_max_rounds_reports_limit_instead_of_completion(monkeypatch):
+    _settings(monkeypatch)
+    chat._mode_by_chat.clear()
+    chat._session_by_chat.clear()
+    monkeypatch.setattr(chat, "_cluster", lambda: SimpleNamespace(id="cluster-1", is_active=True))
+    monkeypatch.setattr(chat, "_session_and_history", lambda actor, cluster_id: ("session-1", []))
+    monkeypatch.setattr(chat, "_save_message", lambda **_kwargs: SimpleNamespace(id="message"))
+    monkeypatch.setattr(chat, "send_telegram_message_with_keyboard", lambda *_args, **_kwargs: 999)
+
+    sent = []
+    edits = []
+
+    async def send(_token, _chat_id, text):
+        sent.append(text)
+
+    def edit(_token, _chat_id, _message_id, text):
+        edits.append(text)
+
+    async def dual(_text, _history, *, allow_writes=False):
+        assert allow_writes is True
+        yield {"speaker": "Planner/Reviewer", "provider": "codex", "content": "plan"}
+        yield {
+            "speaker": "Hệ thống",
+            "provider": "—",
+            "termination_reason": "max_rounds",
+            "content": "Đã dừng trao đổi vì đạt giới hạn 10 lượt AI.",
+        }
+
+    monkeypatch.setattr(chat, "_send", send)
+    monkeypatch.setattr(chat, "edit_telegram_message", edit)
+    monkeypatch.setattr(chat, "stream_dual_ai_chat", dual)
+    chat._mode_by_chat["telegram-chat:77"] = "dual"
+
+    asyncio.run(chat.handle_message({"chat": {"id": -1001, "type": "private"}, "from": {"id": 77}, "text": "design"}, "123:token"))
+
+    assert any("ĐÃ DỪNG DO GIỚI HẠN" in text for text in sent)
+    assert any("đạt giới hạn 1 lượt AI" in text for text in sent)
+    assert not any("HOÀN TẤT" in text for text in sent)
+    assert any("dừng vì đạt giới hạn" in text for text in edits)
+
+
 def test_single_full_requires_exact_short_lived_confirmation(monkeypatch, tmp_path):
     _settings(monkeypatch)
     monkeypatch.setattr(chat.settings, "telegram_chatbox_full_access_user_ids", "77", raising=False)

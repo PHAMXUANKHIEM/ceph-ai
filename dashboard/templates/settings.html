@@ -437,7 +437,7 @@
       <div class="card-body">
         {% if dual_ai_error %}<p class="error">{{ dual_ai_error }}</p>{% endif %}
         {% if dual_ai_success %}<p class="success">{{ dual_ai_success }}</p>{% endif %}
-        <p class="hint">Cấu hình riêng cho Telegram Chatbox: Planner/Reviewer phân tích, Implementer có thể sửa code theo lệnh <code>/dual</code>. Chatbox web chỉ hỗ trợ một AI. Thay đổi ở đây không tác động đến AI tự động sửa code khi application có log lỗi.</p>
+        <p class="hint">Cấu hình riêng cho Telegram Chatbox: Planner/Reviewer phân tích, Implementer có thể sửa code trong workspace cô lập theo lệnh <code>/dual</code>, chờ operator promote. Chatbox web chỉ hỗ trợ một AI. Thay đổi ở đây không tác động đến AI tự động sửa code khi application có log lỗi.</p>
         <p class="hint"><strong>Muốn thêm tài khoản:</strong> mở <a href="/settings#code-repair">AI tự động sửa code từ log</a>, tại Planner hoặc Implementer chọn <strong>Tài khoản AI khác</strong>, nhập tên profile rồi bấm <strong>Đăng nhập tài khoản riêng</strong>. Lặp lại một lần cho từng tài khoản; không cần logout khi hệ thống tự xoay.</p>
         <form class="login-box" method="post" action="/settings/dual-ai">
           <label class="checkbox-label">

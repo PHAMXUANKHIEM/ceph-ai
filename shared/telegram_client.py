@@ -37,6 +37,7 @@ import logging
 import re
 
 import httpx
+from shared.logging_redaction import install_logging_redaction, redact_log_text
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 TELEGRAM_TIMEOUT_SECONDS = 10
@@ -70,19 +71,16 @@ def sanitize_telegram_text(value: str | None, *, limit: int = TELEGRAM_TEXT_LIMI
 class _TelegramUrlRedactionFilter(logging.Filter):
     """Prevent httpx INFO logs from exposing Bot API tokens in URL paths."""
 
-    _url_re = re.compile(r"/bot[^/\s]+/")
-
     def filter(self, record: logging.LogRecord) -> bool:
         if record.args:
-            record.args = tuple(
-                self._url_re.sub("/bot<REDACTED>/", str(arg))
-                if "api.telegram.org/bot" in str(arg) else arg
-                for arg in record.args
-            )
+            record.msg = redact_log_text(record.getMessage())
+            record.args = ()
+        elif isinstance(record.msg, str):
+            record.msg = redact_log_text(record.msg)
         return True
 
 
-logging.getLogger("httpx").addFilter(_TelegramUrlRedactionFilter())
+install_logging_redaction()
 
 
 class TelegramSendError(Exception):
