@@ -1630,7 +1630,9 @@ class BackupJob(Base):
     # there's no a/b distinction to make, just a fixed marker.
     backup_target_slot: Mapped[str | None] = mapped_column(String(16), nullable=True)
     remote_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # RBD images commonly exceed the signed 32-bit range; this is persisted
+    # byte count, not a row count or a UI-sized integer.
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
