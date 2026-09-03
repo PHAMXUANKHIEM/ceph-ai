@@ -121,6 +121,7 @@ class FakeSSHClient:
     exit_status_by_cmd: dict = {}
     stderr_by_cmd: dict = {}
     imported_calls: list = []  # [(cmd, bytes_written), ...] in call order
+    connect_error: Exception | None = None
 
     def __init__(self):
         pass
@@ -135,7 +136,8 @@ class FakeSSHClient:
         pass
 
     def connect(self, hostname, username, key_filename, timeout):
-        pass
+        if FakeSSHClient.connect_error is not None:
+            raise FakeSSHClient.connect_error
 
     def exec_command(self, cmd):
         FakeSSHClient.last_cmd = cmd
@@ -211,6 +213,7 @@ def fake_backend_and_ssh(monkeypatch):
     FakeSSHClient.exit_status_by_cmd = {}
     FakeSSHClient.stderr_by_cmd = {}
     FakeSSHClient.imported_calls = []
+    FakeSSHClient.connect_error = None
     monkeypatch.setattr(engine.paramiko, "SSHClient", FakeSSHClient)
     monkeypatch.setattr(restore.paramiko, "SSHClient", FakeSSHClient)
 
@@ -369,6 +372,28 @@ def test_verify_failure_marks_job_failed(isolated_db, fake_backend_and_ssh):
         jobs = session.query(BackupJob).filter(BackupJob.pool == "vms", BackupJob.image == "web01").all()
     assert len(jobs) == 1
     assert jobs[0].status == "FAILED"
+
+
+def test_ssh_connect_failure_marks_claimed_job_failed(isolated_db, fake_backend_and_ssh):
+    FakeSSHClient.connect_error = RuntimeError("ssh unavailable")
+    incident_id, action_pk = _make_incident_and_action()
+
+    succeeded = engine.run(
+        action_pk,
+        "rbd_backup_run",
+        {"pool": "vms", "image": "web01"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is False
+    with db_module.SessionLocal() as session:
+        jobs = session.query(BackupJob).filter(BackupJob.pool == "vms", BackupJob.image == "web01").all()
+    assert len(jobs) == 1
+    assert jobs[0].status == "FAILED"
+    assert jobs[0].error_message == "ssh unavailable"
 
 
 def test_invalid_rbd_names_are_rejected_before_remote_commands(isolated_db, fake_backend_and_ssh):

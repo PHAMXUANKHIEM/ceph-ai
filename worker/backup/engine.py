@@ -452,6 +452,7 @@ def _run_rbd_backup(
 
     job_ids: list[str] = []
     tmp_path = None
+    uploaded_targets: list[tuple[str, str, object]] = []
     backup_succeeded = False
     try:
         client = paramiko.SSHClient()
@@ -489,7 +490,6 @@ def _run_rbd_backup(
         sha256 = tracked_stream.sha256.hexdigest()
         size_bytes = tracked_stream._bytes_read
 
-        uploaded_targets: list[tuple[str, str, object]] = []
         for slot, backend in target_bindings:
             remote_key = f"{job_type}/{pool}/{image}/{snap_name}.bin"
             with open(tmp_path, "rb") as f:
