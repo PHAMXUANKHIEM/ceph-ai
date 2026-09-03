@@ -25,6 +25,7 @@ from pathlib import Path
 from config.settings import settings
 from dashboard.chat_client import ChatTurnError, MAX_HISTORY_MESSAGES, run_chat_turn
 from dashboard.dual_ai_chat import (
+    DualAIChatBusy,
     DualAIChatError,
     DualAIChatExhausted,
     run_single_full_access_chat,
@@ -966,8 +967,33 @@ async def _run_single_full_turn(run_id: str, text: str, history: list[dict]) -> 
                 "Executor chưa xác nhận đã dừng; gửi /status để theo dõi trước khi gửi yêu cầu mới."
             )
         raise
+    except httpx.HTTPStatusError as exc:
+        response = exc.response
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if isinstance(detail, dict):
+            code = str(detail.get("code") or "")
+            message = str(detail.get("message") or "Single Full executor từ chối yêu cầu")
+            if code == "provider_quota_exhausted" or response.status_code == 429:
+                raise DualAIChatExhausted(
+                    message,
+                    provider=detail.get("provider"),
+                    account_profile=detail.get("account_profile"),
+                ) from exc
+            if code == "executor_busy" or response.status_code == 409:
+                raise DualAIChatBusy(message) from exc
+        else:
+            message = str(detail or response.text or "Single Full executor trả lỗi")
+        raise DualAIChatError(
+            f"Single Full executor lỗi HTTP {response.status_code}: {message}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise DualAIChatError(f"Không kết nối được Single Full executor: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise DualAIChatError(f"Single Full executor không phản hồi: {exc}") from exc
+        raise DualAIChatError(f"Single Full executor gặp lỗi HTTP: {exc}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("event"), dict):
         raise DualAIChatError("Single Full executor trả dữ liệu không hợp lệ")
     return payload["event"]

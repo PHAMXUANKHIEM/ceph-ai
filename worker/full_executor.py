@@ -9,7 +9,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from dashboard.dual_ai_chat import DualAIChatError, run_single_full_access_chat
+from dashboard.dual_ai_chat import (
+    DualAIChatBusy,
+    DualAIChatError,
+    DualAIChatExhausted,
+    run_single_full_access_chat,
+)
 from dashboard.telegram_chat import _is_direct_data_destruction
 from shared import service_health
 from shared.full_executor_auth import executor_token
@@ -85,8 +90,27 @@ async def run_full(run_id: str, request: FullRunRequest, authorization: str | No
     try:
         event = await asyncio.shield(task)
         return {"event": event}
+    except DualAIChatExhausted as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "provider_quota_exhausted",
+                "message": str(exc),
+                "provider": exc.provider,
+                "account_profile": exc.account_profile,
+                "retryable": False,
+            },
+        ) from exc
+    except DualAIChatBusy as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "executor_busy", "message": str(exc), "retryable": True},
+        ) from exc
     except DualAIChatError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "single_full_failed", "message": str(exc), "retryable": True},
+        ) from exc
     except asyncio.CancelledError:
         # The shared task itself was cancelled (a concurrent DELETE), not
         # just this request; asyncio.shield does not protect against that.
