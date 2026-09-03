@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shlex
 import tempfile
 from datetime import datetime
 
@@ -30,6 +31,7 @@ from config.settings import settings
 from shared import db
 from shared.models import BackupJob
 from worker.backup import alerting
+from worker.backup.cluster_scope import is_valid_rbd_name
 from worker.backup.policy_config import load_backup_policy
 from worker.backup.storage.factory import get_backend
 from worker.executor.ssh_executor import KNOWN_HOSTS_PATH, execute_command
@@ -86,7 +88,9 @@ def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, s
     )
     client.save_host_keys(KNOWN_HOSTS_PATH)
     try:
-        stdin, stdout, stderr = client.exec_command(f"rbd import - {scratch_pool}/{scratch_image}")
+        stdin, stdout, stderr = client.exec_command(
+            f"rbd import - {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}"
+        )
         with open(local_path, "rb") as f:
             while True:
                 chunk = f.read(CHUNK_SIZE)
@@ -115,7 +119,9 @@ def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str) -
     )
     client.save_host_keys(KNOWN_HOSTS_PATH)
     try:
-        _stdin, stdout, stderr = client.exec_command(f"rbd export {scratch_pool}/{scratch_image} -")
+        _stdin, stdout, stderr = client.exec_command(
+            f"rbd export {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)} -"
+        )
         digest = hashlib.sha256()
         while True:
             chunk = stdout.read(CHUNK_SIZE)
@@ -133,7 +139,9 @@ def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str) -
 
 def _cleanup_scratch(mon_ip: str, scratch_pool: str, scratch_image: str) -> None:
     try:
-        execute_command(mon_ip, f"rbd rm {scratch_pool}/{scratch_image}")
+        execute_command(
+            mon_ip, f"rbd rm {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}"
+        )
     except Exception:
         logger.exception(
             "restore_drill: failed to clean up scratch image %s/%s — may need manual cleanup",
@@ -170,7 +178,7 @@ def run(action_pk: str, action_params: dict, incident_id: str, write_progress, *
     image = drill_config.get("image")
     scratch_pool = drill_config.get("scratch_pool")
     scratch_image = drill_config.get("scratch_image")
-    if not all([pool, image, scratch_pool, scratch_image]):
+    if not all(is_valid_rbd_name(value) for value in (pool, image, scratch_pool, scratch_image)):
         logger.error("restore_drill.run: 'restore_drill' is not fully configured in backup_policy.yaml")
         return False
 

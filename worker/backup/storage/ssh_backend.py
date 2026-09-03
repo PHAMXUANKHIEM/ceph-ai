@@ -74,6 +74,13 @@ class SSHStorageBackend:
         return client, sftp
 
     def _remote_path(self, remote_key: str) -> str:
+        if (
+            not remote_key
+            or remote_key.startswith("/")
+            or "\\" in remote_key
+            or any(part in ("", ".", "..") for part in remote_key.split("/"))
+        ):
+            raise SSHStorageBackendError(f"unsafe relative backup key: {remote_key!r}")
         return f"{self._landing_dir}/{remote_key}"
 
     def upload(self, stream: BinaryIO, remote_key: str) -> UploadResult:
@@ -149,7 +156,7 @@ class SSHStorageBackend:
     def list(self, prefix: str) -> list[BackupObjectInfo]:
         client, sftp = self._connect()
         try:
-            dir_path = f"{self._landing_dir}/{prefix}".rstrip("/") if prefix else self._landing_dir
+            dir_path = self._remote_path(prefix) if prefix else self._landing_dir
             try:
                 entries = sftp.listdir_attr(dir_path)
             except FileNotFoundError:

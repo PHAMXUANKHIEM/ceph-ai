@@ -10,6 +10,7 @@ unchanged" opt-in pattern).
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from config.settings import settings
@@ -23,6 +24,19 @@ if TYPE_CHECKING:
     from shared.models import Cluster
 
 logger = logging.getLogger(__name__)
+
+_RBD_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def is_valid_rbd_name(value: object) -> bool:
+    """Return whether a pool/image component is safe for RBD commands and
+    backup object keys. Callers still quote command arguments as defense in
+    depth."""
+    return (
+        isinstance(value, str)
+        and value not in {".", ".."}
+        and _RBD_NAME_RE.fullmatch(value) is not None
+    )
 
 
 def get_cluster(cluster_id: str | None) -> "Cluster | None":
@@ -71,8 +85,12 @@ def parse_tracked_images(raw: str) -> list[tuple[str, str]]:
         if not entry:
             continue
         parts = entry.split("/")
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            logger.warning("cluster_scope.parse_tracked_images: skipping malformed entry %r (expected pool/image)", entry)
+        if len(parts) != 2 or not all(is_valid_rbd_name(part) for part in parts):
+            logger.warning(
+                "cluster_scope.parse_tracked_images: skipping malformed entry %r "
+                "(expected safe pool/image)",
+                entry,
+            )
             continue
         pairs.append((parts[0], parts[1]))
     return pairs

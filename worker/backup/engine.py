@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import tempfile
 import time
 import uuid
@@ -42,7 +43,7 @@ from worker.backup import ai_analysis, anomaly
 from worker.backup import metadata as backup_metadata
 from worker.backup import restore
 from worker.backup import restore_drill
-from worker.backup.cluster_scope import first_mon_node, get_cluster, resolve_targets
+from worker.backup.cluster_scope import first_mon_node, get_cluster, is_valid_rbd_name, resolve_targets
 from worker.backup.policy_config import load_backup_policy
 from worker.backup.storage.base import RetentionPolicyLike
 from worker.backup.storage.factory import get_backend, get_backend_for_cluster
@@ -146,7 +147,7 @@ def _first_mon_node(cluster: "Cluster | None" = None) -> str:
 
 
 def _rbd_image_size_bytes(mon_ip: str, pool: str, image: str) -> int:
-    output = execute_command(mon_ip, f"rbd info {pool}/{image} --format json")
+    output = execute_command(mon_ip, f"rbd info {shlex.quote(pool)}/{shlex.quote(image)} --format json")
     info = json.loads(output)
     return int(info["size"])
 
@@ -310,7 +311,7 @@ def _run_rbd_backup(
 ) -> bool:
     pool = action_params.get("pool")
     image = action_params.get("image")
-    if not pool or not image:
+    if not is_valid_rbd_name(pool) or not is_valid_rbd_name(image):
         logger.error("backup_engine._run_rbd_backup: missing pool/image in action_params for action %s", action_pk)
         return False
 
@@ -417,7 +418,10 @@ def _run_rbd_backup(
     write_progress(action_pk, progress)
 
     try:
-        execute_command(mon_ip, f"rbd snap create {pool}/{image}@{snap_name}")
+        execute_command(
+            mon_ip,
+            f"rbd snap create {shlex.quote(pool)}/{shlex.quote(image)}@{shlex.quote(snap_name)}",
+        )
     except Exception as exc:
         logger.exception("backup_engine._run_rbd_backup: rbd snap create failed for %s/%s", pool, image)
         _mark_running_failed(running_job_id, str(exc))
@@ -435,11 +439,13 @@ def _run_rbd_backup(
     write_progress(action_pk, progress)
 
     if job_type == "full":
-        export_cmd = f"rbd export {pool}/{image}@{snap_name} -"
+        export_cmd = (
+            f"rbd export {shlex.quote(pool)}/{shlex.quote(image)}@{shlex.quote(snap_name)} -"
+        )
     else:
         export_cmd = (
-            f"rbd export-diff {pool}/{image}@{snap_name} "
-            f"--from-snap {_snap_name_of(base_job)} -"
+            f"rbd export-diff {shlex.quote(pool)}/{shlex.quote(image)}@{shlex.quote(snap_name)} "
+            f"--from-snap {shlex.quote(_snap_name_of(base_job))} -"
         )
 
     ssh_user, ssh_key_path, _exec_mode, _container_name = resolve_ssh_creds(cluster)
@@ -609,7 +615,10 @@ def _snap_name_of(job: BackupJob) -> str:
 
 def _remove_snapshot_best_effort(mon_ip: str, pool: str, image: str, snap_name: str) -> None:
     try:
-        execute_command(mon_ip, f"rbd snap rm {pool}/{image}@{snap_name}")
+        execute_command(
+            mon_ip,
+            f"rbd snap rm {shlex.quote(pool)}/{shlex.quote(image)}@{shlex.quote(snap_name)}",
+        )
     except Exception:
         logger.warning(
             "backup_engine: could not remove snapshot %s/%s@%s",
@@ -684,7 +693,7 @@ def _run_restore_to_production(
     dest_pool = action_params.get("dest_pool") or pool
     dest_image = action_params.get("dest_image") or image
     recovery_point_job_id = action_params.get("recovery_point_job_id")
-    if not pool or not image:
+    if not all(is_valid_rbd_name(value) for value in (pool, image, dest_pool, dest_image)):
         logger.error(
             "backup_engine._run_restore_to_production: missing pool/image in action_params for action %s",
             action_pk,
@@ -786,7 +795,7 @@ def _run_retention_sweep(
     — `action_params` must carry `pool`/`image`."""
     pool = action_params.get("pool")
     image = action_params.get("image")
-    if not pool or not image:
+    if not is_valid_rbd_name(pool) or not is_valid_rbd_name(image):
         logger.error("backup_engine._run_retention_sweep: missing pool/image in action_params for %s", action_pk)
         return False
     progress = [{"step": "retention", "status": "running", "started_at": datetime.utcnow().isoformat()}]

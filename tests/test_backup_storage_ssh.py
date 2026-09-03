@@ -228,3 +228,11 @@ def test_delete_of_missing_key_raises_backend_error():
 
     with pytest.raises(SSHStorageBackendError):
         backend.delete("full/never-existed.bin")
+
+
+@pytest.mark.parametrize("unsafe_key", ["../outside.bin", "/etc/passwd", "full/../outside.bin", "full\\outside.bin"])
+def test_remote_key_cannot_escape_landing_directory(unsafe_key):
+    backend = _backend()
+
+    with pytest.raises(SSHStorageBackendError):
+        backend._remote_path(unsafe_key)

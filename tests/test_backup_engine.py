@@ -371,6 +371,24 @@ def test_verify_failure_marks_job_failed(isolated_db, fake_backend_and_ssh):
     assert jobs[0].status == "FAILED"
 
 
+def test_invalid_rbd_names_are_rejected_before_remote_commands(isolated_db, fake_backend_and_ssh):
+    incident_id, action_pk = _make_incident_and_action()
+    FakeSSHClient.last_cmd = None
+
+    succeeded = engine.run(
+        action_pk,
+        "rbd_backup_run",
+        {"pool": "vms; touch /tmp/pwned", "image": "web01"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is False
+    assert FakeSSHClient.last_cmd is None
+
+
 def test_source_checksum_mismatch_marks_job_failed(isolated_db, fake_backend_and_ssh, monkeypatch):
     backend = fake_backend_and_ssh
     original_upload = backend.upload
@@ -508,6 +526,8 @@ def _make_success_full_backup_job(backend, content: bytes = b"full backup conten
             status="SUCCESS",
             backup_target_slot="a",
             remote_key=key,
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
             created_at=datetime.utcnow(),
             finished_at=datetime.utcnow(),
         )

@@ -297,6 +297,12 @@ def test_build_scheduler_skips_backup_jobs_when_default_target_is_unconfigured(i
     assert "restore_drill_execute" not in job_ids
 
 
+def test_parse_tracked_images_rejects_shell_and_path_components():
+    assert scheduler.parse_tracked_images(
+        "rbd/good, rbd/$(touch /tmp/pwned), ../image, pool/image-name"
+    ) == [("rbd", "good"), ("pool", "image-name")]
+
+
 def test_default_target_readiness_requires_policy_copy_count(monkeypatch):
     policy = {
         "backup_targets": [{"slot": "a", "immutable": False}, {"slot": "b", "immutable": True}],
