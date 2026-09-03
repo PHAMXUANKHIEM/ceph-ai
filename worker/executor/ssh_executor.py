@@ -34,7 +34,7 @@ def execute_command_bytes(
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             hostname=host,
@@ -42,7 +42,6 @@ def execute_command_bytes(
             key_filename=resolved_key_path,
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
-        client.save_host_keys(KNOWN_HOSTS_PATH)
         _stdin, stdout, stderr = client.exec_command(command, timeout=COMMAND_TIMEOUT_SECONDS)
         output = stdout.read()
         error_output = stderr.read().decode(errors="replace")

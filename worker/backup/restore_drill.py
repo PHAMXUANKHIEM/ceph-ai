@@ -82,11 +82,10 @@ def _import_backup_to_scratch(mon_ip: str, local_path: str, scratch_pool: str, s
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     client.connect(
         hostname=mon_ip, username=settings.ssh_user, key_filename=settings.ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS
     )
-    client.save_host_keys(KNOWN_HOSTS_PATH)
     try:
         stdin, stdout, stderr = client.exec_command(
             f"rbd import - {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)}"
@@ -113,11 +112,10 @@ def _export_scratch_sha256(mon_ip: str, scratch_pool: str, scratch_image: str) -
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     client.connect(
         hostname=mon_ip, username=settings.ssh_user, key_filename=settings.ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS
     )
-    client.save_host_keys(KNOWN_HOSTS_PATH)
     try:
         _stdin, stdout, stderr = client.exec_command(
             f"rbd export {shlex.quote(scratch_pool)}/{shlex.quote(scratch_image)} -"

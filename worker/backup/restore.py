@@ -169,14 +169,13 @@ def _ssh_connect(mon_ip: str, cluster: "Cluster | None" = None) -> paramiko.SSHC
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     client.connect(
         hostname=mon_ip,
         username=ssh_user,
         key_filename=ssh_key_path,
         timeout=CONNECT_TIMEOUT_SECONDS,
     )
-    client.save_host_keys(KNOWN_HOSTS_PATH)
     return client
 
 

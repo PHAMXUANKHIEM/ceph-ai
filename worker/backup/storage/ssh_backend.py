@@ -6,7 +6,7 @@ ssh_executor.py` (that module runs remote COMMANDS via `exec_command`,
 buffering the whole stdout in memory; this backend transfers FILES via
 SFTP, a different paramiko API with different memory characteristics for
 large objects) — only the connection-setup *style* (host key handling,
-`AutoAddPolicy`, `key_filename`) is mirrored, per the story's Dev Notes.
+`RejectPolicy`, `key_filename`) is mirrored, per the story's Dev Notes.
 
 AD-10: this backend's credential must only ever be granted write access to
 `landing_dir` on the destination host — never `chattr`/snapshot-management
@@ -58,7 +58,7 @@ class SSHStorageBackend:
         client = paramiko.SSHClient()
         if os.path.exists(KNOWN_HOSTS_PATH):
             client.load_host_keys(KNOWN_HOSTS_PATH)
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
         try:
             client.connect(
                 hostname=self._host,
@@ -66,7 +66,6 @@ class SSHStorageBackend:
                 key_filename=self._key_path,
                 timeout=CONNECT_TIMEOUT_SECONDS,
             )
-            client.save_host_keys(KNOWN_HOSTS_PATH)
             sftp = client.open_sftp()
         except Exception as exc:
             client.close()
