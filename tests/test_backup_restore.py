@@ -159,6 +159,8 @@ def _make_full_job(pool="vms", image="web01", remote_key="full/vms/web01/backup-
             status="SUCCESS",
             backup_target_slot="a",
             remote_key=remote_key,
+            size_bytes=len(FULL_CONTENT),
+            sha256=hashlib.sha256(FULL_CONTENT).hexdigest(),
             created_at=created_at or datetime.utcnow(),
             finished_at=created_at or datetime.utcnow(),
         )
@@ -169,6 +171,7 @@ def _make_full_job(pool="vms", image="web01", remote_key="full/vms/web01/backup-
 
 def _make_diff_job(base_job_id, pool="vms", image="web01", remote_key="incremental/vms/web01/diff-1.bin",
                    created_at=None, status="SUCCESS", cluster_id=None):
+    content = DIFF2_CONTENT if "diff-2" in remote_key else DIFF1_CONTENT
     with db_module.SessionLocal() as session:
         job = BackupJob(
             run_id="run-1",
@@ -180,6 +183,8 @@ def _make_diff_job(base_job_id, pool="vms", image="web01", remote_key="increment
             backup_target_slot="a",
             base_job_id=base_job_id,
             remote_key=remote_key,
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
             created_at=created_at or datetime.utcnow(),
             finished_at=created_at or datetime.utcnow(),
         )
@@ -334,6 +339,20 @@ def test_restore_image_fails_on_download_checksum_mismatch(isolated_db):
 
     assert result.success is False
     assert "checksum/size mismatch" in result.error_message
+    assert FakeSSHClient.imported_calls == []
+
+
+def test_restore_image_fails_when_remote_object_differs_from_persisted_source(isolated_db):
+    storage = FakeStorageBackend()
+    remote_key = "full/vms/web01/backup-1.bin"
+    storage.put(remote_key, FULL_CONTENT)
+    _make_full_job(remote_key=remote_key)
+    storage._objects[remote_key] = b"replacement object"
+
+    result = restore.restore_image("vms", "web01", storage, "vms", "web01")
+
+    assert result.success is False
+    assert "expected(size=" in result.error_message
     assert FakeSSHClient.imported_calls == []
 
 

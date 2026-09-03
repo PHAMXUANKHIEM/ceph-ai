@@ -188,24 +188,42 @@ def _download_and_verify(storage: BackupStorageBackend, job: BackupJob) -> tuple
     did), so a download corrupted in transit is caught here instead of
     silently feeding bad bytes into `rbd import`. Returns the local temp
     file path and its size — caller is responsible for deleting the file."""
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        tmp_path = tmp.name
-        storage.download(job.remote_key, tmp)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+            storage.download(job.remote_key, tmp)
 
-    digest = hashlib.sha256()
-    size = 0
-    with open(tmp_path, "rb") as f:
-        while True:
-            chunk = f.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            digest.update(chunk)
-            size += len(chunk)
+        digest = hashlib.sha256()
+        size = 0
+        with open(tmp_path, "rb") as f:
+            while True:
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
 
-    if not storage.verify(job.remote_key, size, digest.hexdigest()):
-        os.remove(tmp_path)
-        raise RestoreError(f"checksum/size mismatch downloading {job.remote_key} (BackupJob {job.id})")
-    return tmp_path, size
+        expected_size = job.size_bytes
+        expected_sha256 = job.sha256
+        if expected_size is None or not expected_sha256:
+            raise RestoreError(
+                f"BackupJob {job.id} has no persisted source checksum/size; refusing restore"
+            )
+        actual_sha256 = digest.hexdigest()
+        if size != expected_size or actual_sha256 != expected_sha256:
+            raise RestoreError(
+                f"checksum/size mismatch downloading {job.remote_key} (BackupJob {job.id}): "
+                f"expected(size={expected_size}, sha256={expected_sha256}) vs "
+                f"download(size={size}, sha256={actual_sha256})"
+            )
+        if not storage.verify(job.remote_key, expected_size, expected_sha256):
+            raise RestoreError(f"backend verification failed for {job.remote_key} (BackupJob {job.id})")
+        return tmp_path, size
+    except Exception:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cluster | None" = None) -> None:
