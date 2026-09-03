@@ -111,6 +111,33 @@
     });
   }
 
+  var deleteAllDigestsBtn = document.getElementById("btn-delete-all-backup-digests");
+  if (deleteAllDigestsBtn) {
+    deleteAllDigestsBtn.addEventListener("click", function () {
+      if (!window.confirm("Xóa vĩnh viễn toàn bộ thông báo Digest của cluster đang chọn?")) return;
+      deleteAllDigestsBtn.disabled = true;
+      fetch("/backups/digests/delete-all", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+            return data;
+          });
+        })
+        .then(function (data) {
+          window.alert("Đã xóa " + (data.deleted_count || 0) + " thông báo Digest.");
+          window.location.reload();
+        })
+        .catch(function (err) {
+          deleteAllDigestsBtn.disabled = false;
+          window.alert(err.message || "Không thể xóa thông báo Digest");
+        });
+    });
+  }
+
   // Safe default: restore into a new image and leave production untouched.
 
   Array.prototype.forEach.call(document.querySelectorAll(".btn-restore-image"), function (btn) {

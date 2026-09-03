@@ -378,6 +378,74 @@ def test_backups_page_lists_digests(dashboard_client, monkeypatch):
     assert "Trong 24h qua: 5 job thành công, 1 job thất bại." in response.text
 
 
+def test_backups_page_limits_digests_to_five_and_shows_admin_delete_button(
+    dashboard_client, monkeypatch
+):
+    _stub_tracked_images(monkeypatch, [])
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        for index in range(6):
+            session.add(
+                BackupDigestLog(
+                    period_start=now - timedelta(hours=24),
+                    period_end=now,
+                    succeeded_count=index,
+                    failed_count=0,
+                    anomaly_count=0,
+                    summary_text=f"digest-{index}",
+                    created_at=now - timedelta(minutes=index),
+                )
+            )
+        session.commit()
+
+    _login(dashboard_client)
+    response = dashboard_client.get("/backups")
+
+    assert response.status_code == 200
+    assert response.text.count("digest-") == 5
+    assert "digest-0" in response.text
+    assert "digest-4" in response.text
+    assert "digest-5" not in response.text
+    assert 'id="btn-delete-all-backup-digests"' in response.text
+
+
+def test_delete_all_digests_deletes_selected_cluster_scope(dashboard_client, monkeypatch):
+    _stub_tracked_images(monkeypatch, [])
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        cluster = _create_additional_cluster(session)
+        session.add_all([
+            BackupDigestLog(
+                cluster_id=None,
+                period_start=datetime.utcnow() - timedelta(hours=24),
+                period_end=datetime.utcnow(),
+                succeeded_count=1,
+                failed_count=0,
+                anomaly_count=0,
+                summary_text="default digest",
+            ),
+            BackupDigestLog(
+                cluster_id=cluster.id,
+                period_start=datetime.utcnow() - timedelta(hours=24),
+                period_end=datetime.utcnow(),
+                succeeded_count=2,
+                failed_count=0,
+                anomaly_count=0,
+                summary_text="secondary digest",
+            ),
+        ])
+        session.commit()
+
+    response = dashboard_client.post("/backups/digests/delete-all")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "deleted_count": 1}
+    with db_module.SessionLocal() as session:
+        remaining = session.query(BackupDigestLog).all()
+        assert len(remaining) == 1
+        assert remaining[0].cluster_id == cluster.id
+
+
 def test_digests_are_scoped_to_selected_cluster(dashboard_client, monkeypatch):
     _stub_tracked_images(monkeypatch, [])
     _login(dashboard_client)

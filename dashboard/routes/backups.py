@@ -81,7 +81,7 @@ HISTORY_LIMIT_PER_IMAGE = 30
 # a flat "most recent N overall" list (unlike `_history` above, which is
 # per tracked image) is enough for the Dashboard, same rationale as the
 # progress panel only ever showing the single latest running job.
-DIGEST_LIMIT = 10
+DIGEST_LIMIT = 5
 ANOMALY_LIMIT = 20
 DEFAULT_RPO_HOURS = 24
 DEFAULT_METADATA_RPO_HOURS = 12
@@ -547,6 +547,17 @@ def _digests(cluster=None) -> list[dict]:
         ]
 
 
+def _delete_all_digests(cluster=None) -> int:
+    """Delete all digest notifications visible for the selected cluster."""
+    with db.SessionLocal() as session:
+        query = session.query(BackupDigestLog)
+        if cluster is not None:
+            query = query.filter(_job_scope(BackupDigestLog.cluster_id, cluster))
+        deleted = query.delete(synchronize_session=False)
+        session.commit()
+        return deleted
+
+
 def _anomalies(cluster=None) -> list[dict]:
     """Story 9.5 (PRD FR-15): most recent BackupAnomaly rows, newest first
     — joined against BackupJob for pool/image/job_type context, since
@@ -872,6 +883,19 @@ async def run_metadata_backup_now(request: Request, user: str = Depends(require_
     cluster = selected_cluster(request)
     action_pk = _create_manual_backup_action("backup_metadata_run", {}, user, cluster)
     return JSONResponse({"action_id": action_pk}, status_code=201)
+
+
+@router.post("/backups/digests/delete-all")
+async def delete_all_digests(request: Request, user: str = Depends(require_login)):
+    """Delete every Backup Digest notification for the selected cluster."""
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    try:
+        deleted = _delete_all_digests(cluster)
+    except Exception as exc:
+        logger.exception("delete_all_digests: failed to delete digest notifications")
+        raise HTTPException(status_code=500, detail="Không thể xóa các thông báo Digest.") from exc
+    return {"ok": True, "deleted_count": deleted}
 
 
 @router.get("/api/backups/progress")
