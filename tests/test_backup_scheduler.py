@@ -372,6 +372,16 @@ def test_default_target_readiness_fails_closed_for_invalid_policy_shape():
     assert scheduler._default_backup_target_ready([]) is False
 
 
+@pytest.mark.parametrize("invalid_targets", ["a", {"slot": "a"}, 1])
+def test_default_target_readiness_fails_closed_for_invalid_targets_shape(invalid_targets):
+    policy = {
+        "backup_targets": invalid_targets,
+        "required_copy_count": 1,
+    }
+
+    assert scheduler._default_backup_target_ready(policy) is False
+
+
 def test_build_scheduler_removes_stale_persisted_backup_jobs(isolated_db, monkeypatch):
     policy = {
         "backup_targets": [{"slot": "a", "immutable": False}],

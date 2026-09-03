@@ -74,9 +74,13 @@ def _default_backup_target_ready(policy: dict) -> bool:
             policy.get("required_copy_count"),
         )
         return False
+    targets = policy.get("backup_targets")
+    if not isinstance(targets, list):
+        logger.error("scheduler: backup_targets must be a list; default targets are not ready")
+        return False
     ready_slots = {
         slot
-        for target in (policy.get("backup_targets") or [])
+        for target in targets
         if isinstance(target, dict)
         and (slot := target.get("slot")) in ("a", "b")
         and _target_fields_ready(settings, f"backup_target_{slot}")
