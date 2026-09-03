@@ -188,7 +188,16 @@ def _optimization_summary(groups: list[dict], total_cost: float, hours: int, usd
             "savings_percent": round(savings / current * 100, 1),
             "calls": calls,
         })
-    recommendations.sort(key=lambda item: item["estimated_savings_usd"], reverse=True)
+    # Unpriced current models intentionally carry ``None`` savings. Keep
+    # those advisory rows after numeric savings instead of comparing None
+    # with floats during sorting.
+    recommendations.sort(
+        key=lambda item: (
+            item["estimated_savings_usd"] is not None,
+            item["estimated_savings_usd"] or 0.0,
+        ),
+        reverse=True,
+    )
     monthly_cost = total_cost / hours * 730 if total_cost else 0.0
     return {
         "monthly_projection_usd": round(monthly_cost, 6),
