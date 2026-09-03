@@ -16,7 +16,7 @@ from shared import db
 from shared.models import Action, AuditEntry, Incident, IncidentTimelineEvent
 from shared.router_client import build_router_client
 from shared.ai_redaction import default_redactor
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 
 PROMPT_VERSION = "v1"
 TOOL_NAME = "report_incident_postmortem"
@@ -157,6 +157,7 @@ async def _call_model(payload: dict) -> dict:
         raise PostmortemError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model, max_tokens=MAX_TOKENS, tools=[schema],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},

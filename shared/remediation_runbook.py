@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import db
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.ai_redaction import default_redactor
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
@@ -292,6 +292,7 @@ async def _call_model(source: dict) -> dict:
         raise RunbookError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model, max_tokens=MAX_TOKENS, tools=[schema],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},

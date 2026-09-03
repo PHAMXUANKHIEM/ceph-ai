@@ -31,7 +31,7 @@ from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.router_client import RouterNotConfiguredError, build_router_client, readable_exception_message
 from shared.ai_redaction import default_redactor
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,7 @@ async def analyze_volume_perf_sweep(sweep: dict) -> dict:
         raise VolumePerfAnalysisError(str(exc)) from exc
 
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,

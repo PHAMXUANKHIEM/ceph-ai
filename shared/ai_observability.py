@@ -13,6 +13,7 @@ from typing import Any, Callable
 from config.settings import settings
 from shared import db
 from shared.ai_budget import AIBudgetError, check as check_ai_budget
+from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared.models import AIInvocation
 
 logger = logging.getLogger(__name__)
@@ -97,11 +98,13 @@ def _provider_and_model(scope: str, backend: str) -> tuple[str, str]:
     if backend == "codex" or (
         backend == "configured" and getattr(settings, f"{prefix}codex_chat_enabled", False)
     ):
-        return "codex", getattr(settings, f"{prefix}codex_chat_model", "") or "default"
+        model = getattr(settings, f"{prefix}codex_chat_model", "") or getattr(settings, "codex_chat_model", "")
+        return "codex", model or "default"
     if backend == "claude" or (
         backend == "configured" and getattr(settings, f"{prefix}claude_chat_enabled", False)
     ):
-        return "claude", getattr(settings, f"{prefix}claude_chat_model", "") or "default"
+        model = getattr(settings, f"{prefix}claude_chat_model", "") or getattr(settings, "claude_chat_model", "")
+        return "claude", model or "default"
     return (
         getattr(settings, f"{prefix}router_provider", "unknown") or "unknown",
         getattr(settings, f"{prefix}router_model", "") or "default",
@@ -166,6 +169,10 @@ def observe_ai_call(
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
             if when is not None and not when(*args, **kwargs):
                 return await function(*args, **kwargs)
+            # Provider toggles/models are persisted in the shared env file and
+            # may change while a container stays alive. Refresh before the
+            # budget preflight so it cannot reserve against stale settings.
+            refresh_chat_provider_flags()
             started = time.monotonic()
             input_chars = _content_size(args) + _content_size(kwargs)
             provider, model_id = _provider_and_model(scope, backend)
@@ -191,7 +198,9 @@ def observe_ai_call(
                         status="ERROR", latency_ms=max(0, round((time.monotonic() - started) * 1000)),
                         # A hard-budget rejection never reached a provider, so it
                         # must not look like billable input in the cost dashboard.
-                        input_chars=0 if isinstance(exc, AIBudgetError) else input_chars,
+                        # Validation/configuration can fail before any adapter
+                        # is entered. Such a request must not consume AI budget.
+                        input_chars=0 if isinstance(exc, AIBudgetError) or actual_provider is None else input_chars,
                         output_chars=0, input_tokens=actual_input_tokens,
                         output_tokens=actual_output_tokens, error_type=type(exc).__name__,
                     )

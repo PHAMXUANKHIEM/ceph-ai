@@ -396,11 +396,16 @@ class CodexAppServer:
                 pass
 
     async def run_turn(
-        self, prompt: str, dynamic_tools: list[dict], tool_handler: ToolHandler, timeout: float = 120
+        self, prompt: str, dynamic_tools: list[dict], tool_handler: ToolHandler, timeout: float = 120,
+        model: str | None = None,
     ) -> dict:
-        mark_ai_provider("codex", settings.codex_chat_model.strip() or "default")
+        selected_model = settings.codex_chat_model.strip() if model is None else model.strip()
         async with self._turn_lock:
             await self._ensure_started()
+            # Mark only after the app-server adapter is available. A missing
+            # CLI/auth/startup failure must remain a non-provider preflight
+            # error and must not consume billable input budget.
+            mark_ai_provider("codex", selected_model or "default")
             while not self._notifications.empty():
                 self._notifications.get_nowait()
             self._tool_handler = tool_handler
@@ -423,8 +428,8 @@ class CodexAppServer:
                 "dynamicTools": tools,
                 "serviceName": "ceph-ai-dashboard",
             }
-            if settings.codex_chat_model.strip():
-                thread_params["model"] = settings.codex_chat_model.strip()
+            if selected_model:
+                thread_params["model"] = selected_model
             thread = await self._request(
                 "thread/start",
                 thread_params,

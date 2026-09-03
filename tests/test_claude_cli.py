@@ -24,10 +24,10 @@ def test_run_claude_prompt_passes_model_and_effort(monkeypatch):
     monkeypatch.setattr(settings, "claude_chat_model", "claude-opus-4-8")
     monkeypatch.setattr(settings, "claude_chat_effort", "xhigh")
 
-    assert asyncio.run(claude_cli.run_claude_prompt("hello")) == "ok"
+    assert asyncio.run(claude_cli.run_claude_prompt("hello", model="vitastor-claude")) == "ok"
     assert captured[0][0] == (
         "/usr/bin/claude", "-p", "--output-format", "json", "--tools", "",
-        "--model", "claude-opus-4-8", "--effort", "xhigh",
+        "--model", "vitastor-claude", "--effort", "xhigh",
     )
 
 

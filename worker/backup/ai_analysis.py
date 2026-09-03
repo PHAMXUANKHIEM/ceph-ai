@@ -19,7 +19,7 @@ import httpx
 
 from config.settings import settings
 from shared import db
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.models import BackupAnomaly, BackupJob
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.codex_app_server import CodexAppServerError, codex_app_server
@@ -168,6 +168,7 @@ async def _call_router(user_content: str) -> dict:
 
     client = _get_client()
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
@@ -262,6 +263,7 @@ async def _call_digest_router(user_content: str) -> str:
 
     client = _get_client()
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,

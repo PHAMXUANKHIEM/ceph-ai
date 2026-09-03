@@ -244,6 +244,10 @@ class Settings(BaseSettings):
     vitastor_router_enabled: bool = False
     vitastor_codex_chat_enabled: bool = False
     vitastor_claude_chat_enabled: bool = False
+    # Optional Vitastor-specific model overrides. Blank preserves the shared
+    # Ceph model setting while allowing this product workspace to diverge.
+    vitastor_codex_chat_model: str = ""
+    vitastor_claude_chat_model: str = ""
 
     # Optional ChatGPT subscription-backed Codex connection used by the
     # dashboard chat only.  Credentials are owned/refreshed by Codex CLI in

@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared import db
+import shared.ai_observability as ai_observability
 from shared.ai_observability import mark_ai_provider, observe_ai_call
 from shared.db import Base
 from shared.models import AIBudgetLock, AIInvocation
@@ -66,6 +67,50 @@ def test_records_provider_that_handled_fallback(monkeypatch):
     with sessions() as session:
         row = session.query(AIInvocation).one()
         assert (row.provider, row.model_id) == ("claude", "sonnet")
+
+
+def test_records_router_that_handled_fallback(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+
+    @observe_ai_call("router_fallback_feature")
+    async def call():
+        mark_ai_provider("codex", "gpt-5.6-sol")
+        mark_ai_provider("claude", "sonnet")
+        mark_ai_provider("router", "gc/gemini-2.5-flash")
+        return "router-result"
+
+    assert asyncio.run(call()) == "router-result"
+    with sessions() as session:
+        row = session.query(AIInvocation).one()
+        assert (row.provider, row.model_id) == ("router", "gc/gemini-2.5-flash")
+
+
+def test_pre_provider_failure_does_not_count_as_billable_input(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+
+    @observe_ai_call("preflight_failure")
+    async def call():
+        raise ValueError("invalid request")
+
+    import pytest
+    with pytest.raises(ValueError):
+        asyncio.run(call())
+    with sessions() as session:
+        row = session.query(AIInvocation).one()
+        assert row.status == "ERROR"
+        assert row.input_chars == 0
+
+
+def test_vitastor_provider_uses_override_model(monkeypatch):
+    monkeypatch.setattr("shared.ai_observability.settings.vitastor_codex_chat_enabled", True)
+    monkeypatch.setattr("shared.ai_observability.settings.vitastor_codex_chat_model", "vita-codex")
+    assert ai_observability._provider_and_model("vitastor", "configured") == ("codex", "vita-codex")
+
+    monkeypatch.setattr("shared.ai_observability.settings.vitastor_codex_chat_model", "")
+    monkeypatch.setattr("shared.ai_observability.settings.codex_chat_model", "ceph-codex")
+    assert ai_observability._provider_and_model("vitastor", "configured") == ("codex", "ceph-codex")
 
 
 def test_records_only_exception_class(monkeypatch):

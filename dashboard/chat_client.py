@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationError
 
 from config.settings import settings
@@ -1031,6 +1031,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
             # reassembles the exact same ChatCompletion shape a plain call
             # would return, and works unchanged against a real non-
             # streaming-only OpenAI-compatible endpoint too.
+            mark_ai_provider("router", settings.router_model)
             async with client.chat.completions.stream(
                 model=settings.router_model,
                 messages=messages,

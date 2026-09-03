@@ -42,7 +42,7 @@ import httpx
 from config.settings import settings
 from shared import db, log_learning
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.incident_actions import cancel_pending_actions
 from shared.cluster_nodes import configured_nodes
 from shared import audit
@@ -444,6 +444,7 @@ async def _call_router(user_content: str, allowed_action_ids: list[str]) -> dict
 
     client = build_router_client(settings.router_api_key, settings.router_base_url)
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,

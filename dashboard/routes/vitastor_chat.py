@@ -45,7 +45,7 @@ from shared import db
 from shared.models import ChatMessage, ChatPreference, VitastorCluster
 from shared.router_client import build_router_client, readable_exception_message
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.codex_app_server import (
     CodexAppServerError, codex_app_server, codex_executable, install_codex_cli,
     refresh_app_server_after_cli_login, start_cli_device_login,
@@ -69,6 +69,8 @@ ENV_NAMES = {
 }
 VITASTOR_CODEX_ENABLED_ENV = "VITASTOR_CODEX_CHAT_ENABLED"
 VITASTOR_CLAUDE_ENABLED_ENV = "VITASTOR_CLAUDE_CHAT_ENABLED"
+VITASTOR_CODEX_MODEL_ENV = "VITASTOR_CODEX_CHAT_MODEL"
+VITASTOR_CLAUDE_MODEL_ENV = "VITASTOR_CLAUDE_CHAT_MODEL"
 VITASTOR_PROCESS_LOGS = {"worker": WORKER_LOG_PATH, "watcher": WATCHER_LOG_PATH}
 MAX_VITASTOR_PROCESS_LOG_LINES = 500
 
@@ -106,6 +108,13 @@ def _female_address(user: str) -> str:
         return pref.female_address if pref else "Mình yêu ơi, em là"
 
 
+def _cli_model_override(value: str) -> str:
+    value = value.strip()
+    if len(value) > 200 or any(ord(char) < 32 for char in value):
+        raise HTTPException(400, "Model CLI không hợp lệ hoặc quá dài")
+    return value
+
+
 @observe_ai_call("vitastor_chat", scope="vitastor")
 async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: str) -> str:
     """Send one Vitastor chat turn through the shared budget/telemetry guard."""
@@ -116,7 +125,9 @@ async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: 
         async def no_tools(_name, _arguments):
             return "Tool không khả dụng trong chat Vitastor", False
         try:
-            result = await codex_app_server.run_turn(prompt, [], no_tools)
+            codex_model = settings.vitastor_codex_chat_model.strip()
+            run_kwargs = {"model": codex_model} if codex_model else {}
+            result = await codex_app_server.run_turn(prompt, [], no_tools, **run_kwargs)
         except CodexAppServerError as exc:
             provider_errors.append(f"Codex call failed: {exc}")
         else:
@@ -126,7 +137,9 @@ async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: 
             provider_errors.append("Codex không trả về nội dung")
     if settings.vitastor_claude_chat_enabled:
         try:
-            return await run_claude_prompt(prompt)
+            claude_model = settings.vitastor_claude_chat_model.strip()
+            run_kwargs = {"model": claude_model} if claude_model else {}
+            return await run_claude_prompt(prompt, **run_kwargs)
         except ClaudeCLIError as exc:
             provider_errors.append(f"Claude call failed: {exc}")
     router_ready = bool(
@@ -141,6 +154,7 @@ async def _call_vitastor_ai(system_prompt: str, history: list[dict], user_text: 
             detail="; ".join(provider_errors) or "Router Vitastor đang tắt hoặc chưa cấu hình đầy đủ",
         )
     client = build_router_client(settings.vitastor_router_api_key, settings.vitastor_router_base_url)
+    mark_ai_provider("router", settings.vitastor_router_model)
     async with client.chat.completions.stream(
         model=settings.vitastor_router_model,
         messages=[{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_text}],
@@ -169,6 +183,8 @@ def _settings_context(user: str, **messages) -> dict:
         "connected": bool(settings.vitastor_router_enabled and settings.vitastor_router_api_key),
         "codex_enabled": settings.vitastor_codex_chat_enabled,
         "claude_enabled": settings.vitastor_claude_chat_enabled,
+        "codex_model": settings.vitastor_codex_chat_model,
+        "claude_model": settings.vitastor_claude_chat_model,
         "clusters": clusters, "exec_modes": sorted(VALID_EXEC_MODES),
         "current_database_display": _current_database_display(),
         "active_section": messages.pop("active_section", "cluster"),
@@ -469,6 +485,26 @@ async def save_ai(
     settings.vitastor_codex_chat_enabled = False
     settings.vitastor_claude_chat_enabled = False
     return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(user, active_section="ai", success="Đã kết nối AI cho Vitastor."))
+
+
+@router.post("/settings/ai/cli-models", response_class=HTMLResponse)
+async def save_cli_models(
+    request: Request, user: str = Depends(require_vitastor_login),
+    codex_model: str = Form(""), claude_model: str = Form(""),
+):
+    _require_admin(user)
+    codex_model = _cli_model_override(codex_model)
+    claude_model = _cli_model_override(claude_model)
+    _update_env_file_batch({
+        VITASTOR_CODEX_MODEL_ENV: codex_model,
+        VITASTOR_CLAUDE_MODEL_ENV: claude_model,
+    })
+    settings.vitastor_codex_chat_model = codex_model
+    settings.vitastor_claude_chat_model = claude_model
+    return templates.TemplateResponse(
+        request, "vitastor/settings.html",
+        _settings_context(user, active_section="ai", success="Đã lưu model CLI riêng cho Vitastor."),
+    )
 
 
 @router.post("/settings/ai/disconnect")

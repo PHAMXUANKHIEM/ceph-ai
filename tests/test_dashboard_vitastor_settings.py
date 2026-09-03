@@ -88,6 +88,26 @@ def test_claude_account_can_be_activated_for_vitastor_only(dashboard_client, mon
     assert settings.vitastor_codex_chat_enabled is False
 
 
+def test_admin_can_save_vitastor_cli_model_overrides(dashboard_client, monkeypatch):
+    writes = []
+    monkeypatch.setattr(route, "_update_env_file_batch", lambda values: writes.append(values))
+    monkeypatch.setattr(settings, "vitastor_codex_chat_model", "")
+    monkeypatch.setattr(settings, "vitastor_claude_chat_model", "")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/vitastor/settings/ai/cli-models", data={
+        "codex_model": "vita-codex-model", "claude_model": "vita-claude-model",
+    })
+
+    assert response.status_code == 200
+    assert settings.vitastor_codex_chat_model == "vita-codex-model"
+    assert settings.vitastor_claude_chat_model == "vita-claude-model"
+    assert writes[-1] == {
+        "VITASTOR_CODEX_CHAT_MODEL": "vita-codex-model",
+        "VITASTOR_CLAUDE_CHAT_MODEL": "vita-claude-model",
+    }
+
+
 def test_cluster_connection_can_be_added_inside_settings(dashboard_client, monkeypatch):
     monkeypatch.setattr(route, "query_status", lambda *_: {"osd_up": 1})
     _login(dashboard_client)

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from config.settings import settings
 from shared import capability_matrix, db
 from shared.ai_redaction import redact_text
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.models import CapabilityMatrixProposal
 from shared.router_client import build_router_client
 
@@ -46,6 +46,7 @@ async def generate(*, doc_url: str, release_notes: str, actor: str) -> list[Capa
     ):
         raise ValueError("Router đang tắt hoặc chưa cấu hình đầy đủ")
     client = build_router_client(settings.router_api_key, settings.router_base_url)
+    mark_ai_provider("router", settings.router_model)
     async with client.chat.completions.stream(
         model=settings.router_model,
         temperature=0,

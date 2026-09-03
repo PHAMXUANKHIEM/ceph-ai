@@ -209,8 +209,8 @@ async def claude_logout(config_dir: Path | None = None) -> None:
         raise ClaudeCLIError(_ANSI_RE.sub("", output.decode(errors="replace")).strip())
 
 
-async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
-    mark_ai_provider("claude", settings.claude_chat_model.strip() or "default")
+async def run_claude_prompt(prompt: str, *, timeout: float = 120, model: str | None = None) -> str:
+    selected_model = settings.claude_chat_model.strip() if model is None else model.strip()
     executable = claude_executable()
     if not executable:
         raise ClaudeCLIError("Chưa cài Claude Code CLI trên server")
@@ -218,9 +218,8 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
     # the OS argument-size limit. Claude accepts the prompt on stdin when -p
     # is supplied without a positional prompt argument.
     command = [executable, "-p", "--output-format", "json", "--tools", ""]
-    model = settings.claude_chat_model.strip()
-    if model and model != "default":
-        command.extend(["--model", model])
+    if selected_model and selected_model != "default":
+        command.extend(["--model", selected_model])
     effort = settings.claude_chat_effort.strip().lower()
     if effort and effort != "auto":
         command.extend(["--effort", effort])
@@ -230,6 +229,9 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120) -> str:
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         env=_env(), cwd="/tmp",
     )
+    # A failed executable lookup/spawn is a preflight error, not a provider
+    # attempt; mark only after the Claude process has actually started.
+    mark_ai_provider("claude", selected_model or "default")
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(prompt.encode()), timeout)
     except asyncio.TimeoutError as exc:

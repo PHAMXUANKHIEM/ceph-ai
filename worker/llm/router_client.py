@@ -16,7 +16,7 @@ from config.settings import settings
 from shared import alert_lifecycle, audit, change_risk, db, incident_events, log_learning, remediation_cases, trust_engine
 from shared.synthetic_incidents import is_synthetic_evidence
 from shared.case_retrieval import find_verified_cases
-from shared.ai_observability import observe_ai_call, record_ai_usage
+from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
 from shared.models import (
     Action,
     ActionClassification,
@@ -644,6 +644,7 @@ async def _call_router(user_content: str) -> dict:
 
     client = _get_client()
     try:
+        mark_ai_provider("router", settings.router_model)
         async with client.chat.completions.stream(
             model=settings.router_model,
             max_tokens=MAX_TOKENS,
