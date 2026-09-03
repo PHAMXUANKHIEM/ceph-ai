@@ -550,23 +550,35 @@ def _run_rbd_backup(
                 job_ids.append(job.id)
             session.commit()
 
-        progress[0]["status"] = "done"
-        progress[0]["finished_at"] = datetime.utcnow().isoformat()
-        progress[0]["bytes_transferred"] = size_bytes
-        write_progress(action_pk, progress)
-
-        # Story 9.5 (AC #7, #8): anomaly check runs on EVERY success, but
-        # AI is only invoked if it actually flags something — re-fetch ONE
-        # representative row (all slots share the same duration/size for
-        # this run) in a FRESH session, since `job` above is expired the
-        # moment its own `with db.SessionLocal()` block closed.
-        if job_ids:
-            with db.SessionLocal() as session:
-                representative_job = session.get(BackupJob, job_ids[0])
-                anomaly_result = anomaly.check_anomaly(representative_job)
-                if anomaly_result is not None:
-                    ai_analysis.analyze_backup_job(representative_job, anomaly_result)
         backup_succeeded = True
+
+        # The backup is durable and verified at this point. Progress and
+        # anomaly/AI analysis are observability work and must not be allowed
+        # to invalidate or delete an already successful backup.
+        try:
+            progress[0]["status"] = "done"
+            progress[0]["finished_at"] = datetime.utcnow().isoformat()
+            progress[0]["bytes_transferred"] = size_bytes
+            write_progress(action_pk, progress)
+
+            # Story 9.5 (AC #7, #8): anomaly check runs on EVERY success, but
+            # AI is only invoked if it actually flags something — re-fetch ONE
+            # representative row (all slots share the same duration/size for
+            # this run) in a FRESH session, since `job` above is expired the
+            # moment its own `with db.SessionLocal()` block closed.
+            if job_ids:
+                with db.SessionLocal() as session:
+                    representative_job = session.get(BackupJob, job_ids[0])
+                    anomaly_result = anomaly.check_anomaly(representative_job)
+                    if anomaly_result is not None:
+                        ai_analysis.analyze_backup_job(representative_job, anomaly_result)
+        except Exception:
+            logger.exception(
+                "backup_engine._run_rbd_backup: post-success progress/anomaly analysis failed "
+                "for %s/%s; preserving verified backup",
+                pool,
+                image,
+            )
 
     except Exception as exc:
         logger.exception("backup_engine._run_rbd_backup: export/upload failed for %s/%s", pool, image)

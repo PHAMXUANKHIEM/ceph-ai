@@ -396,6 +396,39 @@ def test_ssh_connect_failure_marks_claimed_job_failed(isolated_db, fake_backend_
     assert jobs[0].error_message == "ssh unavailable"
 
 
+def test_post_success_anomaly_failure_does_not_invalidate_backup(
+    isolated_db, fake_backend_and_ssh, monkeypatch
+):
+    monkeypatch.setattr(
+        engine.anomaly,
+        "check_anomaly",
+        lambda _job: {"kind": "size", "details": "test anomaly"},
+    )
+
+    def fail_analysis(*_args, **_kwargs):
+        raise RuntimeError("analysis unavailable")
+
+    monkeypatch.setattr(engine.ai_analysis, "analyze_backup_job", fail_analysis)
+    incident_id, action_pk = _make_incident_and_action()
+
+    succeeded = engine.run(
+        action_pk,
+        "rbd_backup_run",
+        {"pool": "vms", "image": "web01"},
+        incident_id,
+        None,
+        _write_progress,
+        _allow_execution,
+    )
+
+    assert succeeded is True
+    assert fake_backend_and_ssh.uploaded
+    with db_module.SessionLocal() as session:
+        jobs = session.query(BackupJob).filter(BackupJob.pool == "vms", BackupJob.image == "web01").all()
+    assert len(jobs) == 2
+    assert all(job.status == "SUCCESS" for job in jobs)
+
+
 def test_invalid_rbd_names_are_rejected_before_remote_commands(isolated_db, fake_backend_and_ssh):
     incident_id, action_pk = _make_incident_and_action()
     FakeSSHClient.last_cmd = None
