@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared import db
-from shared.ai_observability import observe_ai_call
+from shared.ai_observability import mark_ai_provider, observe_ai_call
 from shared.db import Base
 from shared.models import AIBudgetLock, AIInvocation
 
@@ -49,6 +49,23 @@ def test_records_provider_reported_usage_when_available(monkeypatch):
         row = session.query(AIInvocation).one()
         assert row.input_tokens == 17
         assert row.output_tokens == 5
+
+
+def test_records_provider_that_handled_fallback(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+
+    @observe_ai_call("fallback_feature")
+    async def call():
+        mark_ai_provider("codex", "gpt-5.6-sol")
+        # The fallback adapter overwrites the marker after the primary fails.
+        mark_ai_provider("claude", "sonnet")
+        return "fallback-result"
+
+    assert asyncio.run(call()) == "fallback-result"
+    with sessions() as session:
+        row = session.query(AIInvocation).one()
+        assert (row.provider, row.model_id) == ("claude", "sonnet")
 
 
 def test_records_only_exception_class(monkeypatch):
