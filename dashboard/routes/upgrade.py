@@ -12,7 +12,7 @@ from openai import APIError, APIConnectionError, AuthenticationError
 from sqlalchemy import or_, update
 from sqlalchemy.exc import SQLAlchemyError
 
-from config.settings import settings
+from config.settings import refresh_cluster_settings_from_env, settings
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
@@ -765,6 +765,11 @@ def _reject_duplicate_proposal(session, cluster=None) -> None:
 
 @router.get("/upgrade", response_class=HTMLResponse)
 async def upgrade_page(request: Request, user: str = Depends(require_login), tab: str = "upgrade"):
+    # Cluster lifecycle/worker processes can update the shared .env while
+    # this Dashboard process stays alive. Refresh before selecting the
+    # default cluster so Upgrade never renders a stale deployment mode from a
+    # container environment snapshot.
+    refresh_cluster_settings_from_env()
     try:
         clusters, cluster = _cluster_selection(request)
         with db.SessionLocal() as session:

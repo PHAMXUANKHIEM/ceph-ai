@@ -22,11 +22,27 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
 def make_engine(database_url: str | None = None):
     url = database_url or settings.database_url
     is_sqlite = url.startswith("sqlite")
-    connect_args = {"check_same_thread": False} if is_sqlite else {"connect_timeout": 5}
-    engine_options = {"connect_args": connect_args}
+    if is_sqlite:
+        connect_args = {"check_same_thread": False}
+        engine_options = {}
+    elif url.startswith("postgresql"):
+        # Each service is a separate process. SQLAlchemy defaults (five
+        # pooled connections plus ten overflow connections per process) can
+        # exhaust a small managed PostgreSQL instance during a restart storm,
+        # preventing Dashboard startup at pg_catalog.version().
+        connect_args = {"connect_timeout": 5}
+        engine_options = {
+            "pool_size": 1,
+            "max_overflow": 0,
+            "pool_timeout": 5,
+            "pool_pre_ping": True,
+        }
+    else:
+        connect_args = {}
+        engine_options = {}
     if not is_sqlite:
         engine_options.update(pool_pre_ping=True, pool_timeout=5, pool_recycle=300)
-    engine = create_engine(url, **engine_options)
+    engine = create_engine(url, connect_args=connect_args, **engine_options)
     if url.startswith("sqlite"):
         # SQLite ignores FK constraints by default — without this, the
         # ForeignKeyConstraint on Action.incident_id (AD-1) is purely

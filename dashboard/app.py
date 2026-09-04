@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import (
     DEFAULT_DASHBOARD_PASSWORD_HASH,
@@ -115,8 +116,14 @@ async def _lifespan(_app: FastAPI):
         telegram_approval_bot.start()
     # Seed the default row and repair stale mirrors left by older versions.
     # The .env-backed Settings form is the source of truth for this row.
-    with db.SessionLocal() as session:
-        sync_default_cluster_from_settings(session)
+    try:
+        with db.SessionLocal() as session:
+            sync_default_cluster_from_settings(session)
+    except SQLAlchemyError:
+        # Seeding the mirror is recoverable. Do not crash-loop the whole
+        # Dashboard because a transient PostgreSQL saturation/timeout occurs
+        # during deployment; database routes will report their normal 503.
+        logger.exception("Dashboard startup: unable to sync default cluster from settings")
     try:
         yield
     finally:

@@ -810,4 +810,28 @@ class Settings(BaseSettings):
     log_intel_loki_timeout_seconds: int = 30
 
 
+def refresh_cluster_settings_from_env() -> dict[str, str]:
+    """Refresh live cluster settings from the shared .env file.
+
+    podman-compose copies values from env_file into a container when that
+    container is created. A later edit of the mounted file therefore leaves
+    a stale CEPH_EXEC_MODE in os.environ; pydantic-settings would normally
+    let that stale process environment override the new file. The cluster
+    form and lifecycle are file-backed, so the file is authoritative here.
+
+    An absent file is deliberately a no-op so deployments that provide only
+    environment variables continue to work.
+    """
+    from shared import env_config
+
+    fresh = env_config.read_env_values(list(env_config.CLUSTER_ENV_NAMES.values()))
+    for field, env_name in env_config.CLUSTER_ENV_NAMES.items():
+        if env_name in fresh:
+            setattr(settings, field, fresh[env_name])
+    return fresh
+
+
 settings = Settings()
+# Apply the shared-file overlay once during import. Long-lived Dashboard
+# routes can call the same helper before rendering cluster-sensitive pages.
+refresh_cluster_settings_from_env()

@@ -9,4 +9,27 @@ cd "$script_dir"
 # for the controlled Telegram code-edit workflow, while a boot must be fast
 # and deterministic.
 python3 scripts/bootstrap_container_config.py
-exec podman-compose up -d "$@"
+
+# Code Repair has two supported owners: the host systemd supervisor on a
+# systemd deployment, or the compose service on a container-only deployment.
+# Never start both: each supervisor opens its own DB pool and can duplicate
+# repair work. The old combination also consumed enough PostgreSQL slots to
+# prevent Dashboard startup.
+services=("$@")
+if systemctl is-active --quiet ceph-ai-code-repair-supervisor.service 2>/dev/null; then
+  if [ "${#services[@]}" -eq 0 ]; then
+    services=(dashboard-web telegram-ai full-executor watcher worker)
+  else
+    filtered=()
+    for service in "${services[@]}"; do
+      [ "$service" = "code-repair" ] || filtered+=("$service")
+    done
+    services=("${filtered[@]}")
+    if [ "${#services[@]}" -eq 0 ]; then
+      echo "Code Repair is owned by ceph-ai-code-repair-supervisor.service; nothing to start in compose." >&2
+      exit 0
+    fi
+  fi
+fi
+
+exec podman-compose up -d "${services[@]}"
