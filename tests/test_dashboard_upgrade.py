@@ -1281,6 +1281,7 @@ def test_abort_happy_path_sets_abort_action_id_and_approves(dashboard_client, mo
     assert response.headers["location"] == "/upgrade/gate?target_version=19.2.0"
     with db_module.SessionLocal() as session:
         gate = session.get(NodeUpgradeGate, "g1")
+        assert gate.state == NodeUpgradeGateState.ABORTING.value
         assert gate.abort_action_id is not None
         action = session.get(Action, gate.abort_action_id)
         assert action.action_id == upgrade_route.NODE_OS_GATE_ABORT_ACTION_ID
@@ -1314,7 +1315,7 @@ def test_abort_double_submit_keeps_one_abort_action(dashboard_client, monkeypatc
     )
 
     assert first.status_code == 303
-    assert second.status_code == 409
+    assert second.status_code == 303
     with db_module.SessionLocal() as session:
         gate = session.get(NodeUpgradeGate, "g1")
         assert gate.abort_action_id is not None

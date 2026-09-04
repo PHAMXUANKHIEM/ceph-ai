@@ -2480,6 +2480,12 @@ def test_abort_maybe_clear_flags_skips_when_another_gate_pending(gate_db, monkey
 
 
 def test_abort_maybe_clear_flags_unsets_when_last_one(gate_db, monkeypatch):
+    _make_gate(
+        gate_db,
+        state=NodeUpgradeGateState.ABORTING.value,
+        abort_action_id="abort-action-1",
+        maintenance_flags_added=json.dumps(["noscrub"]),
+    )
     monkeypatch.setattr(
         cluster_deploy_module, "configured_nodes", lambda: [{"host": "10.20.1.150", "roles": ["MON"]}]
     )
@@ -2498,8 +2504,8 @@ def test_abort_maybe_clear_flags_unsets_when_last_one(gate_db, monkeypatch):
         ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"], action_pk="abort-action-1"), on_update
     )
 
-    assert len(commands_run) == 1
-    assert all(f in commands_run[0] for f in ("noout", "noscrub", "nodeep-scrub", "nosnaptrim"))
+    assert commands_run == ["ceph osd unset noscrub"]
+    assert _fetch_gate(gate_db, "gate-1").maintenance_flags_added == "[]"
 
 
 # --- _phase_gate_abort_mark_done -------------------------------------------

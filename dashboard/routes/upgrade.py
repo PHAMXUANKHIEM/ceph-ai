@@ -1264,6 +1264,11 @@ async def abort_node_os_gate(
             .order_by(NodeUpgradeGate.created_at.desc())
             .first()
         )
+        if gate_row is not None and gate_row.state == NodeUpgradeGateState.ABORTING.value and gate_row.abort_action_id:
+            # The first request already reserved the abort slot and moved
+            # the gate out of PREPARED. Treat a retry as an idempotent view
+            # refresh; the Worker owns completion of the approved Action.
+            return RedirectResponse(url=_upgrade_gate_url(cluster, gate_row.target_version), status_code=303)
         if gate_row is None or gate_row.state != NodeUpgradeGateState.PREPARED.value:
             raise HTTPException(
                 status_code=400,
@@ -1321,7 +1326,10 @@ async def abort_node_os_gate(
                 NodeUpgradeGate.state == NodeUpgradeGateState.PREPARED.value,
                 NodeUpgradeGate.abort_action_id.is_(None),
             )
-            .values(abort_action_id=action.id)
+            .values(
+                abort_action_id=action.id,
+                state=NodeUpgradeGateState.ABORTING.value,
+            )
         )
         if reserved.rowcount != 1:
             session.rollback()

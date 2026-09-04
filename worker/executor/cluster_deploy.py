@@ -3282,6 +3282,14 @@ def _phase_gate_abort_maybe_clear_flags(nodes: list[dict], action_params: dict, 
         on_host_update([{"host": host, "status": "done"}])
         return
 
+    # Only clear flags recorded by THIS Prepare. A flag already present before
+    # Prepare belongs to the operator/another workflow and must survive Abort.
+    # Missing markers are treated conservatively as "nothing to clear".
+    added_flags, _mon_removed = _prepare_rollback_state(action_params)
+    if not added_flags:
+        on_host_update([{"host": host, "status": "done"}])
+        return
+
     with db.SessionLocal() as session:
         someone_else_pending = is_node_upgrade_gate_pending(
             session,
@@ -3297,9 +3305,11 @@ def _phase_gate_abort_maybe_clear_flags(nodes: list[dict], action_params: dict, 
     on_host_update(list(host_status))
     try:
         current_flags = _read_osd_flags(mon_host, action_params)
-        to_unset = [f for f in _MAINTENANCE_FLAGS if f in current_flags]
-        if to_unset:
-            _gate_execute(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset), action_params)
+        to_unset = [f for f in added_flags if f in current_flags]
+        for flag in to_unset:
+            _gate_execute(mon_host, f"ceph osd unset {flag}", action_params)
+        action_params["_maintenance_flags_added"] = []
+        _persist_gate_marker(action_params, "_maintenance_flags_added", [])
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))

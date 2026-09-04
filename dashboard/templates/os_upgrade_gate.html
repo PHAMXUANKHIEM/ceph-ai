@@ -57,6 +57,8 @@
                       <input type="hidden" name="host" value="{{ node.host }}">
                       <button type="submit" class="btn btn-sm btn-ghost">Huỷ Chuẩn bị</button>
                     </form>
+                  {% elif gate.state == "ABORTING" %}
+                    <span class="badge">Đang Huỷ Chuẩn bị…</span>
                   {% elif gate.state == "RECOVERING" %}
                     <span class="badge">Đang Xác nhận &amp; Phục hồi node…</span>
                     {% set steps = recovering_progress.get(node.host) %}
