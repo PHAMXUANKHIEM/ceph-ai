@@ -9,14 +9,24 @@
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
+  <main class="page backup-page">
     <p class="hint">Đang xem backup của cụm <strong>{{ selected_cluster.name }}</strong>.</p>
+    <nav class="backup-tabs" aria-label="Các khu vực Backup" role="tablist">
+      <button type="button" class="backup-tab is-active" role="tab" aria-selected="true" aria-controls="backup-panel-protection" data-backup-tab="protection">RPO / RTO</button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-progress" data-backup-tab="progress">Đang chạy</button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-queue" data-backup-tab="queue">Hàng đợi</button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-history" data-backup-tab="history">Lịch sử</button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-anomalies" data-backup-tab="anomalies">Bất thường</button>
+      <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-digests" data-backup-tab="digests">Digest</button>
+    </nav>
     {% if pending_restore_action %}
     <section class="card">
       <div class="card-header"><h2>{% if pending_restore_action.status == "PENDING_APPROVAL" %}Chờ duyệt — Khôi phục volume{% else %}● ĐANG KHÔI PHỤC VOLUME...{% endif %}</h2></div>
       <div class="card-body">
-        <p><strong>Kế hoạch:</strong></p>
-        <pre class="upgrade-plan-text">{{ pending_restore_action.rationale }}</pre>
+        <details class="backup-inline-details">
+          <summary>Kế hoạch khôi phục chi tiết</summary>
+          <pre class="upgrade-plan-text">{{ pending_restore_action.rationale }}</pre>
+        </details>
         {% if pending_restore_action.status == "PENDING_APPROVAL" and is_admin %}
         <div class="pending-action-buttons">
           <form method="post" action="/actions/{{ pending_restore_action.id }}/approve" class="inline-form">
@@ -35,7 +45,7 @@
     </section>
     {% endif %}
 
-    <section class="card" id="backup-protection-overview">
+    <section class="card backup-tab-panel" id="backup-panel-protection" data-backup-panel="protection" role="tabpanel">
       <div class="card-header"><h2>RPO / RTO</h2><span class="hint">Mục tiêu RPO: {{ protection.rpo_hours }} giờ</span></div>
       <div class="card-body">
         <div class="node-summary-grid">
@@ -64,7 +74,7 @@
           · ngưỡng {{ protection.drill_freshness.threshold_hours }} giờ.{% endif %}
         </p>
         {% if protection.rows %}
-        <div class="table-wrap"><table>
+        <div class="table-wrap backup-table-scroll"><table>
           <thead><tr><th>Pool/Image</th><th>Trạng thái</th><th>RPO mục tiêu</th><th>Bản sao</th><th>Tuổi recovery point</th><th>Còn lại trước RPO</th><th>RTO dự kiến</th></tr></thead>
           <tbody>{% for item in protection.rows %}<tr class="{% if item.status in ['breached', 'never'] %}progress-item-failed{% endif %}">
             <td><code>{{ item.pool }}/{{ item.image }}</code></td>
@@ -80,7 +90,7 @@
       </div>
     </section>
 
-    <section class="card" id="backup-progress-panel">
+    <section class="card backup-tab-panel" id="backup-panel-progress" data-backup-panel="progress" role="tabpanel" hidden>
       <div class="card-header"><h2>Đang chạy</h2></div>
       <div class="card-body">
         <p class="hint" id="backup-progress-idle">Không có job backup nào đang chạy.</p>
@@ -98,14 +108,14 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card backup-tab-panel" id="backup-panel-queue" data-backup-panel="queue" role="tabpanel" hidden>
       <div class="card-header">
         <h2>Hàng đợi</h2>
         {% if is_admin %}<button type="button" class="btn btn-sm" id="btn-backup-metadata-now">Backup metadata ngay</button>{% endif %}
       </div>
       <div class="card-body">
         {% if queue %}
-        <div class="table-wrap">
+        <div class="table-wrap backup-table-scroll">
           <table>
             <thead><tr><th>Pool/Image</th><th>Lần chạy thành công gần nhất</th><th>Trạng thái gần nhất</th><th></th></tr></thead>
             <tbody>
@@ -132,11 +142,13 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card backup-tab-panel" id="backup-panel-history" data-backup-panel="history" role="tabpanel" hidden>
       <div class="card-header"><h2>Lịch sử</h2></div>
       <div class="card-body">
         {% if history %}
-        <div class="table-wrap">
+        <details class="backup-section-details">
+          <summary>Xem lịch sử backup</summary>
+          <div class="table-wrap backup-table-scroll">
           <table>
             <thead><tr><th>Pool/Image</th><th>Loại</th><th>Thời điểm</th><th>Thời lượng</th><th>Kết quả</th></tr></thead>
             <tbody>
@@ -146,23 +158,34 @@
                 <td>{{ h.job_type }}</td>
                 <td>{{ h.created_at|vntime if h.created_at else "—" }}</td>
                 <td>{% if h.duration_seconds %}{{ "%.1f"|format(h.duration_seconds) }}s{% else %}—{% endif %}</td>
-                <td>{{ h.status }}{% if h.error_message %} — {{ h.error_message }}{% endif %}</td>
+                <td>
+                  <span class="backup-history-status">{{ h.status }}</span>
+                  {% if h.error_message %}
+                  <details class="backup-inline-details">
+                    <summary>Xem log lỗi</summary>
+                    <pre class="backup-log">{{ h.error_message }}</pre>
+                  </details>
+                  {% endif %}
+                </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
-        </div>
+          </div>
+        </details>
         {% else %}
         <p class="hint">Chưa có lịch sử backup nào.</p>
         {% endif %}
       </div>
     </section>
 
-    <section class="card">
+    <section class="card backup-tab-panel" id="backup-panel-anomalies" data-backup-panel="anomalies" role="tabpanel" hidden>
       <div class="card-header"><h2>Bất thường phát hiện</h2></div>
       <div class="card-body">
         {% if anomalies %}
-        <div class="table-wrap">
+        <details class="backup-section-details">
+          <summary>Xem các bất thường đã phát hiện</summary>
+          <div class="table-wrap backup-table-scroll">
           <table>
             <thead><tr><th>Pool/Image</th><th>Loại</th><th>Mức độ</th><th>Thời điểm</th><th>Chi tiết (AI)</th></tr></thead>
             <tbody>
@@ -172,19 +195,27 @@
                 <td>{{ a.kind }}</td>
                 <td><span class="severity-badge severity-{{ 'err' if a.severity == 'critical' else ('warn' if a.severity == 'warning' else 'info') }}">{{ a.severity }}</span></td>
                 <td>{{ a.created_at|vntime if a.created_at else "—" }}</td>
-                <td>{{ a.ai_summary or "—" }}</td>
+                <td>
+                  {% if a.ai_summary %}
+                  <details class="backup-inline-details">
+                    <summary>Xem phân tích AI</summary>
+                    <div class="backup-long-text">{{ a.ai_summary }}</div>
+                  </details>
+                  {% else %}—{% endif %}
+                </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
-        </div>
+          </div>
+        </details>
         {% else %}
         <p class="hint">Chưa phát hiện bất thường nào.</p>
         {% endif %}
       </div>
     </section>
 
-    <section class="card">
+    <section class="card backup-tab-panel" id="backup-panel-digests" data-backup-panel="digests" role="tabpanel" hidden>
       <div class="card-header">
         <h2>Digest</h2>
         {% if is_admin %}
@@ -195,7 +226,9 @@
       </div>
       <div class="card-body">
         {% if digests %}
-        <div class="table-wrap">
+        <details class="backup-section-details">
+          <summary>Xem các bản Digest</summary>
+          <div class="table-wrap backup-table-scroll">
           <table>
             <thead><tr><th>Thời gian</th><th>Kỳ báo cáo</th><th>Thành công</th><th>Thất bại</th><th>Bất thường</th><th>Tóm tắt (AI)</th></tr></thead>
             <tbody>
@@ -206,12 +239,20 @@
                 <td>{{ d.succeeded_count }}</td>
                 <td>{{ d.failed_count }}</td>
                 <td>{{ d.anomaly_count }}</td>
-                <td>{{ d.summary_text }}</td>
+                <td>
+                  {% if d.summary_text %}
+                  <details class="backup-inline-details">
+                    <summary>Xem tóm tắt AI</summary>
+                    <div class="backup-long-text">{{ d.summary_text }}</div>
+                  </details>
+                  {% else %}—{% endif %}
+                </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
-        </div>
+          </div>
+        </details>
         {% else %}
         <p class="hint">Chưa có digest nào được tạo.</p>
         {% endif %}

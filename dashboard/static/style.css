@@ -3257,3 +3257,104 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   .vitastor-control-shell .vitastor-panel { padding: 16px; border-radius: 12px; }
   .vitastor-control-shell .vitastor-section-heading h1 { font-size: 1.55rem; }
 }
+
+/* ===== Compact Backup page =====
+   Keep large history/error/AI payloads inside the page instead of allowing
+   one verbose log entry to make the whole Backup screen excessively tall. */
+.backup-page .card-body > .hint { margin-block: 0.35rem; }
+.backup-tabs {
+  display: flex;
+  gap: 0.35rem;
+  overflow-x: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+  scrollbar-width: thin;
+}
+.backup-tab {
+  flex: 0 0 auto;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.backup-tab:hover { color: var(--text); background: var(--bg-surface); }
+.backup-tab.is-active,
+.backup-tab[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent-hover);
+}
+.backup-tab-panel[hidden] { display: none; }
+.backup-page .backup-table-scroll {
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.backup-page .backup-table-scroll table { min-width: 720px; }
+.backup-page .backup-table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: 0 1px 0 var(--border);
+}
+.backup-page .backup-table-scroll tbody td {
+  padding: 0.55rem 0.7rem;
+  line-height: 1.35;
+}
+.backup-page .backup-table-scroll td:last-child { max-width: 28rem; }
+.backup-section-details > summary,
+.backup-inline-details > summary {
+  color: var(--accent-hover);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  list-style-position: inside;
+}
+.backup-section-details > summary { padding: 0.15rem 0; }
+.backup-inline-details { margin-top: 0.35rem; }
+.backup-inline-details > summary { font-size: 0.74rem; font-weight: 500; }
+.backup-log {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0.45rem 0 0;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+  color: var(--text-muted);
+  font: 0.74rem/1.45 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.backup-long-text {
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 0.45rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.backup-history-status { font-weight: 600; }
+.backup-page .upgrade-plan-text {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .backup-page { padding: var(--space-3); }
+  .backup-page .card-body { padding: var(--space-3); }
+  .backup-page .backup-table-scroll { max-height: 280px; }
+}

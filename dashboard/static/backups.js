@@ -1,6 +1,29 @@
 (function () {
   var POLL_INTERVAL_MS = 3000;
 
+  // Backup is a single-panel workspace: keep the page compact even when
+  // history, anomaly details, or digest summaries contain large payloads.
+  var backupTabs = document.querySelectorAll("[data-backup-tab]");
+  var backupPanels = document.querySelectorAll("[data-backup-panel]");
+
+  function activateBackupTab(name) {
+    Array.prototype.forEach.call(backupTabs, function (tab) {
+      var active = tab.getAttribute("data-backup-tab") === name;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    Array.prototype.forEach.call(backupPanels, function (panel) {
+      panel.hidden = panel.getAttribute("data-backup-panel") !== name;
+    });
+  }
+
+  Array.prototype.forEach.call(backupTabs, function (tab) {
+    tab.addEventListener("click", function () {
+      activateBackupTab(tab.getAttribute("data-backup-tab"));
+    });
+  });
+  if (backupTabs.length) activateBackupTab("protection");
+
   var idleEl = document.getElementById("backup-progress-idle");
   var detailEl = document.getElementById("backup-progress-detail");
   var titleEl = document.getElementById("backup-progress-title");
