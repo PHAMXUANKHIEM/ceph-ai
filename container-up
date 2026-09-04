@@ -17,6 +17,10 @@ python3 scripts/bootstrap_container_config.py
 # prevent Dashboard startup.
 services=("$@")
 if systemctl is-active --quiet ceph-ai-code-repair-supervisor.service 2>/dev/null; then
+  # If an old compose container exists, stop it before starting the host
+  # supervisor-owned stack. Excluding the service from up alone does not
+  # stop a previously running duplicate.
+  podman-compose stop code-repair >/dev/null 2>&1 || true
   if [ "${#services[@]}" -eq 0 ]; then
     services=(dashboard-web telegram-ai full-executor watcher worker)
   else
