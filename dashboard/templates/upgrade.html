@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Upgrade Cluster — Ceph AIOps</title>
-  {% if pending_action and pending_action.status == "APPROVED" %}
-  <meta http-equiv="refresh" content="5;url=/upgrade?tab=upgrade">
+  {% if pending_action and pending_action.status == "APPROVED" and pending_action.action_id != "upgrade_ceph_cluster" %}
+  <meta http-equiv="refresh" content="5;url=/upgrade{{ upgrade_cluster_query }}{% if upgrade_cluster_query %}&{% else %}?{% endif %}tab=upgrade">
   {% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
@@ -65,6 +65,65 @@
     </section>
 
     {% else %}
+
+    {% if supports_cephadm %}
+    {% set upgrade_is_running = upgrade_progress and upgrade_progress.in_progress %}
+    {% set upgrade_is_paused = upgrade_progress and upgrade_progress.is_paused %}
+    {% set last_upgrade_succeeded = last_action and last_action.status == "EXECUTED" %}
+    {% set last_upgrade_failed = last_action and last_action.status == "FAILED" %}
+    <section class="card upgrade-tracker-card" id="cephadm-upgrade-tracker"
+      data-status-url="/upgrade/status{{ upgrade_cluster_query }}" data-poll-interval="5000">
+      <div class="card-header upgrade-tracker-header">
+        <div>
+          <h2>Tiến độ nâng cấp (trực tiếp từ cụm)</h2>
+          <span class="hint">{{ selected_cluster.name }}</span>
+        </div>
+        <span id="upgrade-live-badge" class="upgrade-live-badge {% if progress_error %}is-error{% elif upgrade_is_running %}is-running{% elif last_upgrade_failed %}is-error{% elif last_upgrade_succeeded %}is-success{% else %}is-idle{% endif %}">
+          {% if progress_error %}Mất kết nối{% elif upgrade_is_running %}{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}{% elif last_upgrade_failed %}Thất bại{% elif last_upgrade_succeeded %}Hoàn tất{% else %}Sẵn sàng{% endif %}
+        </span>
+      </div>
+      <div class="card-body">
+        {% if supports_cephadm %}
+        <p id="upgrade-live-error" class="error" {% if not progress_error %}hidden{% endif %}>
+          Không lấy được tiến độ: <span id="upgrade-live-error-text">{{ progress_error or "" }}</span>
+        </p>
+        <div id="upgrade-live-running" {% if not upgrade_is_running %}hidden{% endif %}>
+          <div class="upgrade-tracker-summary">
+            <div><span class="hint">Trạng thái</span><strong id="upgrade-live-state">{% if upgrade_is_paused %}Tạm dừng{% else %}Đang chạy{% endif %}</strong></div>
+            <div><span class="hint">Phiên bản đích</span><code id="upgrade-live-target">{{ upgrade_progress.target_image or "—" if upgrade_progress else "—" }}</code></div>
+            <div><span class="hint">Cập nhật lần cuối</span><span id="upgrade-live-updated">Vừa tải</span></div>
+          </div>
+          <p><strong>Tiến độ:</strong> <span id="upgrade-live-progress">{{ upgrade_progress.progress or "—" if upgrade_progress else "—" }}{% if upgrade_progress and upgrade_progress.progress_percent is not none %} ({{ "%.0f"|format(upgrade_progress.progress_percent) }}%){% endif %}</span></p>
+          <div id="upgrade-live-progress-bar" class="progress-bar" role="progressbar" aria-valuenow="{{ "%.0f"|format(upgrade_progress.progress_percent) if upgrade_progress and upgrade_progress.progress_percent is not none else "0" }}" aria-valuemin="0" aria-valuemax="100" {% if not upgrade_progress or upgrade_progress.progress_percent is none %}hidden{% endif %}>
+            <div id="upgrade-live-progress-fill" class="progress-bar-fill is-active" style="width: {{ upgrade_progress.progress_percent if upgrade_progress and upgrade_progress.progress_percent is not none else 0 }}%;"></div>
+          </div>
+          <p id="upgrade-live-message" class="hint" {% if not upgrade_progress or not upgrade_progress.message %}hidden{% endif %}>{{ upgrade_progress.message if upgrade_progress else "" }}</p>
+          <p id="upgrade-live-complete" {% if not upgrade_progress or not upgrade_progress.services_complete %}hidden{% endif %}><strong>Đã hoàn tất:</strong> <span>{% if upgrade_progress %}{{ upgrade_progress.services_complete|join(", ") }}{% endif %}</span></p>
+          <div id="upgrade-live-controls" class="pending-action-buttons">
+            <form id="upgrade-live-pause-form" method="post" action="/upgrade/pause{{ upgrade_cluster_query }}" class="inline-form" {% if upgrade_is_paused %}hidden{% endif %}>
+              <button type="submit" class="btn btn-reject">Tạm dừng</button>
+            </form>
+            <form id="upgrade-live-resume-form" method="post" action="/upgrade/resume{{ upgrade_cluster_query }}" class="inline-form" {% if not upgrade_is_paused %}hidden{% endif %}>
+              <button type="submit" class="btn btn-approve">Tiếp tục nâng cấp</button>
+            </form>
+          </div>
+        </div>
+        <p id="upgrade-live-empty" class="hint" {% if upgrade_is_running %}hidden{% endif %}><span id="upgrade-live-empty-text">{% if last_upgrade_succeeded %}Lần nâng cấp gần nhất đã hoàn tất.{% elif last_upgrade_failed %}Lần nâng cấp gần nhất thất bại — xem nhật ký bên dưới.{% else %}Không có tiến trình nâng cấp nào đang chạy trên cụm hiện tại.{% endif %}</span></p>
+        {% else %}
+        <p class="hint">Cụm hiện tại không dùng cephadm nên không có API theo dõi trực tiếp.</p>
+        {% endif %}
+        <p class="hint">
+          Cephadm chạy upgrade nền trong MGR. Tracker này tự hỏi trạng thái mỗi 5 giây và giữ đúng cụm đang chọn.
+          Sau khi hoàn tất, kiểm tra sức khoẻ cụm rồi bấm nút bỏ các cờ bảo trì bên dưới.
+        </p>
+        {% if supports_cephadm %}
+        <form method="post" action="/upgrade/unset-osd-flags{{ upgrade_cluster_query }}" class="inline-form">
+          <button type="submit" class="btn btn-sm">Bỏ noout/noscrub/nodeep-scrub/nosnaptrim</button>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+    {% endif %}
 
     {% if pending_action %}
     <section class="card">
@@ -278,55 +337,6 @@
     </section>
     {% endif %}
 
-    {% if supports_cephadm %}
-    <section class="card">
-      <div class="card-header"><h2>Tiến độ nâng cấp (trực tiếp từ cụm)</h2></div>
-      <div class="card-body">
-        {% if progress_error %}
-        <p class="error">Không lấy được tiến độ: {{ progress_error }}</p>
-        {% elif upgrade_progress %}
-          {% if upgrade_progress.in_progress %}
-          <p><strong>Đang nâng cấp lên:</strong> <code>{{ upgrade_progress.target_image or "—" }}</code></p>
-          <p><strong>Tiến độ:</strong> {{ upgrade_progress.progress or "—" }}{% if upgrade_progress.progress_percent is not none %} ({{ "%.0f"|format(upgrade_progress.progress_percent) }}%){% endif %}</p>
-          {% if upgrade_progress.progress_percent is not none %}
-          <div class="progress-bar" role="progressbar" aria-valuenow="{{ "%.0f"|format(upgrade_progress.progress_percent) }}" aria-valuemin="0" aria-valuemax="100">
-            <div class="progress-bar-fill" style="width: {{ upgrade_progress.progress_percent }}%;"></div>
-          </div>
-          {% endif %}
-          {% if upgrade_progress.message %}<p class="hint">{{ upgrade_progress.message }}</p>{% endif %}
-          {% if upgrade_progress.services_complete %}
-          <p><strong>Đã hoàn tất:</strong> {{ upgrade_progress.services_complete|join(", ") }}</p>
-          {% endif %}
-          <div class="pending-action-buttons">
-            {% if upgrade_progress.is_paused %}
-            <form method="post" action="/upgrade/resume{{ upgrade_cluster_query }}" class="inline-form">
-              <button type="submit" class="btn btn-approve">Tiếp tục nâng cấp</button>
-            </form>
-            {% else %}
-            <form method="post" action="/upgrade/pause{{ upgrade_cluster_query }}" class="inline-form">
-              <button type="submit" class="btn btn-reject">Tạm dừng</button>
-            </form>
-            {% endif %}
-          </div>
-          {% else %}
-          <p class="hint">Không có tiến trình nâng cấp nào đang chạy trên cụm hiện tại.</p>
-          {% endif %}
-        {% else %}
-        <p class="hint">Đang tải...</p>
-        {% endif %}
-        <p class="hint">
-          Trước khi bắt đầu, hệ thống đã tự đặt <code>noout</code>/<code>noscrub</code>/
-          <code>nodeep-scrub</code>/<code>nosnaptrim</code> để tránh scrub/backfill chen ngang
-          lúc OSD đang bounce từng cái — nhưng vì <code>ceph orch upgrade start</code> chạy nền
-          (không đồng bộ), hệ thống không tự biết lúc nào để bỏ lại các cờ này. Sau khi nâng cấp
-          xong (mục "Không có tiến trình nâng cấp nào" ở trên), bấm nút dưới đây để bỏ:
-        </p>
-        <form method="post" action="/upgrade/unset-osd-flags{{ upgrade_cluster_query }}" class="inline-form">
-          <button type="submit" class="btn btn-sm">Bỏ noout/noscrub/nodeep-scrub/nosnaptrim</button>
-        </form>
-      </div>
-    </section>
-    {% endif %}
     {% endif %}
     </div>
     </div>

@@ -265,6 +265,41 @@ code {
    still reads as "actively working", not frozen/stuck. */
 .progress-bar-fill.is-active { animation: pill-pulse 1.4s ease-in-out infinite; }
 
+.upgrade-tracker-header { align-items: center; }
+.upgrade-tracker-header h2 { margin-bottom: 2px; }
+.upgrade-live-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: .78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.upgrade-live-badge.is-running { color: var(--healthy); background: rgba(57, 205, 130, .12); }
+.upgrade-live-badge.is-paused { color: var(--warning); background: rgba(240, 180, 60, .14); }
+.upgrade-live-badge.is-success { color: var(--healthy); background: rgba(57, 205, 130, .12); }
+.upgrade-live-badge.is-error { color: var(--critical); background: rgba(235, 87, 87, .14); }
+.upgrade-live-badge.is-idle { color: var(--text-muted); background: rgba(255, 255, 255, .07); }
+.upgrade-tracker-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.upgrade-tracker-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.upgrade-tracker-summary strong { font-size: 1rem; }
+@media (max-width: 680px) {
+  .upgrade-tracker-header { align-items: flex-start; gap: var(--space-2); }
+  .upgrade-tracker-summary { grid-template-columns: 1fr; }
+}
+
 /* ===== Per-host progress list (package-based cluster upgrade — no
    orchestrator to poll, so this is the only "where is it right now" signal) ===== */
 .package-upgrade-progress { list-style: none; margin: var(--space-2) 0; padding: 0; }

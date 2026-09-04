@@ -7,7 +7,7 @@ from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from openai import APIError, APIConnectionError, AuthenticationError
 from sqlalchemy import or_, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -591,14 +591,19 @@ def _format_duration(start: datetime, end: datetime) -> str:
     return f"{minutes} phút {seconds} giây"
 
 
-def _build_post_upgrade_summary_lines() -> list[str]:
+def _build_post_upgrade_summary_lines(cluster=None) -> list[str]:
     """Live `ceph -s` snapshot (verified against a real cephadm/quincy
     cluster) — best-effort: the upgrade itself already succeeded by the
     time this is called (only invoked for an EXECUTED action), so a
     transient query failure here must not make the whole log look like a
     failure, just skip the summary with a clear note."""
     try:
-        _host, status = run_ceph_json_command("ceph -s")
+        if cluster is None or cluster.is_default:
+            _host, status = run_ceph_json_command("ceph -s")
+        else:
+            _host, status = run_ceph_json_command_with(
+                *_cluster_connection(cluster), "ceph -s"
+            )
     except CephQueryError as exc:
         return [f"Không lấy được trạng thái trực tiếp từ cụm: {exc}", ""]
     if not isinstance(status, dict):
@@ -624,7 +629,13 @@ def _build_post_upgrade_summary_lines() -> list[str]:
         "",
     ]
     try:
-        current_version = summarize_cluster_versions().get("current_version")
+        if cluster is None or cluster.is_default:
+            current_version = summarize_cluster_versions().get("current_version")
+        else:
+            _, versions_payload = run_ceph_json_command_with(
+                *_cluster_connection(cluster), "ceph versions"
+            )
+            current_version = summarize_versions_payload(versions_payload).get("current_version")
     except CephQueryError:
         current_version = None
     if current_version:
@@ -632,7 +643,9 @@ def _build_post_upgrade_summary_lines() -> list[str]:
     return lines
 
 
-def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str:
+def build_upgrade_log_markdown(
+    action: Action, incident: Incident | None, cluster=None
+) -> str:
     """Renders the FULL record of one Cluster Upgrade attempt as Markdown —
     proposal text, per-node steps (with start/end time, the exact command
     run, and the real error text on failure), and — for the cephadm method
@@ -679,7 +692,7 @@ def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str
         lines.append("## Tóm tắt cụm sau nâng cấp")
         lines.append("")
         lines.append(f"- **Thời gian nâng cấp:** {_format_duration(action.created_at, action.updated_at)}")
-        lines += _build_post_upgrade_summary_lines()
+        lines += _build_post_upgrade_summary_lines(cluster)
 
     if action.rationale:
         lines += ["## Quy trình dự kiến", "", "```", action.rationale, "```", ""]
@@ -717,7 +730,11 @@ def build_upgrade_log_markdown(action: Action, incident: Incident | None) -> str
         lines.append("## Trạng thái cephadm tại thời điểm tải nhật ký này")
         lines.append("")
         try:
-            live_status = get_upgrade_status()
+            live_status = (
+                get_upgrade_status()
+                if cluster is None or cluster.is_default
+                else get_upgrade_status_with(*_cluster_connection(cluster))
+            )
         except CephQueryError as exc:
             lines.append(f"Không lấy được trạng thái trực tiếp từ cụm: {exc}")
         else:
@@ -745,13 +762,57 @@ async def download_upgrade_log(request: Request, user: str = Depends(require_log
         action, incident = _latest_upgrade_action(session, cluster)
         if action is None:
             raise HTTPException(status_code=404, detail="Chưa có lần nâng cấp cụm nào được đề xuất.")
-        markdown = build_upgrade_log_markdown(action, incident)
+        markdown = await asyncio.to_thread(
+            build_upgrade_log_markdown, action, incident, cluster
+        )
 
     return PlainTextResponse(
         markdown,
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="nhat-ky-nang-cap-cum.md"'},
     )
+
+
+@router.get("/upgrade/status")
+async def upgrade_status_api(request: Request, user: str = Depends(require_login)):
+    """Return the live cephadm upgrade status for the selected cluster.
+
+    The page uses this small cluster-scoped endpoint for polling. Keeping it
+    separate from the HTML route avoids a full page reload and prevents a
+    refresh from silently switching an operator back to the default cluster.
+    """
+    refresh_cluster_settings_from_env()
+    cluster = _selected_cluster(request)
+    if _effective_exec_mode(cluster) != "cephadm":
+        return JSONResponse({"ok": False, "error": "Cụm hiện tại không dùng cephadm."}, status_code=400)
+    with db.SessionLocal() as session:
+        action, _incident = _latest_upgrade_action(session, cluster)
+        action_summary = None
+        if action is not None:
+            try:
+                action_params = json.loads(action.action_params or "{}")
+            except (TypeError, ValueError):
+                action_params = {}
+            action_summary = {
+                "status": action.status,
+                "target_version": action_params.get("target_version"),
+                "updated_at": action.updated_at.isoformat() if action.updated_at else None,
+            }
+    try:
+        if cluster.is_default:
+            status = await asyncio.to_thread(get_upgrade_status)
+        else:
+            status = await asyncio.to_thread(
+                get_upgrade_status_with, *_cluster_connection(cluster)
+            )
+    except CephQueryError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    return JSONResponse({
+        "ok": True,
+        "status": status,
+        "action": action_summary,
+        "cluster": cluster.name,
+    })
 
 
 def _reject_duplicate_proposal(session, cluster=None) -> None:
@@ -840,7 +901,9 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
         ActionStatus.EXECUTED.value,
         ActionStatus.FAILED.value,
     ):
-        upgrade_log_markdown = build_upgrade_log_markdown(last_action, last_incident)
+        upgrade_log_markdown = await asyncio.to_thread(
+            build_upgrade_log_markdown, last_action, last_incident, cluster
+        )
 
     current_versions = None
     versions_error = None
@@ -848,9 +911,10 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
     if (supports_cephadm or supports_package) and pending_action is None:
         try:
             if cluster.is_default:
-                current_versions = summarize_cluster_versions()
+                current_versions = await asyncio.to_thread(summarize_cluster_versions)
             else:
-                _, versions_payload = run_ceph_json_command_with(
+                _, versions_payload = await asyncio.to_thread(
+                    run_ceph_json_command_with,
                     *_cluster_connection(cluster), "ceph versions"
                 )
                 current_versions = summarize_versions_payload(versions_payload)
@@ -863,9 +927,12 @@ async def upgrade_page(request: Request, user: str = Depends(require_login), tab
     progress_error = None
     if supports_cephadm:
         try:
-            upgrade_progress = (
-                get_upgrade_status() if cluster.is_default else get_upgrade_status_with(*_cluster_connection(cluster))
-            )
+            if cluster.is_default:
+                upgrade_progress = await asyncio.to_thread(get_upgrade_status)
+            else:
+                upgrade_progress = await asyncio.to_thread(
+                    get_upgrade_status_with, *_cluster_connection(cluster)
+                )
         except CephQueryError as exc:
             progress_error = str(exc)
 
