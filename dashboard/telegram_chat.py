@@ -58,6 +58,7 @@ _MESSAGE_QUEUE_SIZE = 4
 _FULL_CONFIRM_TTL_SECONDS = 300
 _CODEX_LOGIN_WATCH_TIMEOUT_SECONDS = 600
 _DESTRUCTIVE_CONFIRM_TTL_SECONDS = 300
+_CLUSTER_LOOKUP_TIMEOUT_SECONDS = 8
 _SERVICE_OR_CEPH_CHANGE_RE = re.compile(
     r"(?i)(?:"
     r"\brestart\b|\breboot\b|\bshutdown\b|\bpoweroff\b|\bstop\b"
@@ -112,6 +113,7 @@ _mode_state_file_lock = threading.Lock()
 _cluster_state_file_lock = threading.Lock()
 _confirm_state_file_lock = threading.Lock()
 _codex_login_watchers: dict[str, asyncio.Task] = {}
+_NO_CLUSTER_OVERRIDE = object()
 
 
 def set_dashboard_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -724,7 +726,14 @@ def _cluster_selection_buttons(clusters: list[dict[str, str | bool]]) -> list[tu
 
 async def _send_cluster_selector(token: str, chat_id: str, mode: str | None = None) -> bool:
     try:
-        clusters = _active_clusters()
+        clusters = await asyncio.wait_for(
+            asyncio.to_thread(_active_clusters),
+            timeout=_CLUSTER_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error("telegram_chat: active cluster lookup timed out")
+        await _send(token, chat_id, "DB cụm đang phản hồi chậm; hãy thử lại sau vài giây.")
+        return False
     except Exception:
         logger.exception("telegram_chat: failed to load active clusters")
         await _send(token, chat_id, "Không tải được danh sách cụm Ceph; kiểm tra kết nối database.")
@@ -1139,7 +1148,7 @@ async def _run_single_full_turn(run_id: str, text: str, history: list[dict]) -> 
 
 
 async def _handle_message_impl(
-    message: dict, bot_token: str, *, cluster_override: Cluster | None = None,
+    message: dict, bot_token: str, *, cluster_override: Cluster | None | object = _NO_CLUSTER_OVERRIDE,
 ) -> None:
     if not is_allowed_message(message, bot_token):
         return
@@ -1186,7 +1195,10 @@ async def _handle_message_impl(
         await _send(bot_token, chat_id, f"Tin nhắn quá dài; giới hạn {_MAX_MESSAGE_CHARS} ký tự.")
         return
 
-    cluster = cluster_override or _cluster_for_actor(actor)
+    if cluster_override is _NO_CLUSTER_OVERRIDE:
+        cluster = await asyncio.to_thread(_cluster_for_actor, actor)
+    else:
+        cluster = cluster_override
     if cluster is None:
         await _send_cluster_selector(bot_token, chat_id, _mode(actor))
         return
@@ -1484,7 +1496,13 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
     if data.startswith(CLUSTER_SELECT_PREFIX):
         selected_id = data[len(CLUSTER_SELECT_PREFIX):].strip()
         try:
-            clusters = _active_clusters()
+            clusters = await asyncio.wait_for(
+                asyncio.to_thread(_active_clusters),
+                timeout=_CLUSTER_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error("telegram_chat: cluster selection validation timed out")
+            return "DB cụm đang phản hồi chậm; hãy thử lại sau vài giây."
         except Exception:
             logger.exception("telegram_chat: failed to validate Telegram cluster selection")
             return "Không tải được danh sách cụm Ceph."
@@ -1634,9 +1652,18 @@ async def handle_message(message: dict, bot_token: str) -> None:
     if not is_allowed_message(message, bot_token):
         return
     actor = _actor(message)
-    resolved = _resolve_cluster_for_actor(actor)
+    text = str(message.get("text") or "").strip().lower()
+    command_name = text.split(maxsplit=1)[0].split("@", 1)[0] if text.startswith("/") else ""
+    command_only = {
+        "/help", "/start", "/status", "/cluster", "/clusters", "/single", "/dual",
+        "/single_full", "/single-full", "/model", "/mode", "/stop", "/new",
+    }
+    if command_name in command_only:
+        await _handle_message_impl(message, bot_token, cluster_override=None)
+        return
+    resolved = await asyncio.to_thread(_resolve_cluster_for_actor, actor)
     if resolved is None:
-        await _handle_message_impl(message, bot_token)
+        await _handle_message_impl(message, bot_token, cluster_override=None)
         return
     target, cluster = resolved
     with db.use_database(target.source.url):

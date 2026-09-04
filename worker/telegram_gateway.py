@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 
 from dashboard import telegram_approval_bot, telegram_chat
@@ -20,13 +21,23 @@ from shared.logging_redaction import install_logging_redaction
 install_logging_redaction()
 
 
+def _telegram_polling_enabled() -> bool:
+    value = os.environ.get("CEPH_AI_TELEGRAM_POLLING_ENABLED", "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 async def run() -> None:
     loop = asyncio.get_running_loop()
     shutdown = asyncio.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, shutdown.set)
-    telegram_chat.set_dashboard_loop(loop)
-    telegram_approval_bot.start()
+    if _telegram_polling_enabled():
+        telegram_chat.set_dashboard_loop(loop)
+        telegram_approval_bot.start()
+    else:
+        logging.getLogger(__name__).warning(
+            "Telegram polling disabled by CEPH_AI_TELEGRAM_POLLING_ENABLED"
+        )
     async def heartbeat() -> None:
         while True:
             service_health.record_safe("telegram-ai")

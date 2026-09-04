@@ -21,8 +21,12 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
 
 def make_engine(database_url: str | None = None):
     url = database_url or settings.database_url
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    engine = create_engine(url, connect_args=connect_args)
+    is_sqlite = url.startswith("sqlite")
+    connect_args = {"check_same_thread": False} if is_sqlite else {"connect_timeout": 5}
+    engine_options = {"connect_args": connect_args}
+    if not is_sqlite:
+        engine_options.update(pool_pre_ping=True, pool_timeout=5, pool_recycle=300)
+    engine = create_engine(url, **engine_options)
     if url.startswith("sqlite"):
         # SQLite ignores FK constraints by default — without this, the
         # ForeignKeyConstraint on Action.incident_id (AD-1) is purely
