@@ -16,7 +16,7 @@
       <div class="card-header"><h1>Cinder Volume Backups</h1><span class="hint">Ceph / Vitastor</span></div>
       <div class="card-body">
         <p class="hint">Danh sách đọc trực tiếp từ Cinder bằng <code>openstack volume backup list</code>.</p>
-        <form method="get" action="/cinder-backups" class="cinder-backup-filters">
+        <form method="get" action="{{ cinder_backup_base_path }}" class="cinder-backup-filters">
           {% if selected_cluster %}<input type="hidden" name="cluster" value="{{ selected_cluster.id }}">{% endif %}
           <label>ID backup
             <input type="search" name="id" value="{{ cinder_backup_id_filter }}" placeholder="Lọc theo ID">
@@ -54,7 +54,8 @@
             <td>{{ item.status }}</td>
             <td>{{ item.size_gib }} GiB</td>
             <td>
-              <form method="post" action="/cinder-backups/{{ item.id }}/delete{% if cinder_backup_list_query %}?{{ cinder_backup_list_query }}{% endif %}" class="cinder-backup-delete-form">
+              <form method="post" action="{{ cinder_backup_base_path }}/{{ item.id }}/delete{% if cinder_backup_list_query %}?{{ cinder_backup_list_query }}{% endif %}" class="cinder-backup-delete-form">
+                <input type="hidden" name="csrf_token" value="{{ cinder_backup_csrf_token }}">
                 <input type="text" name="confirmation" placeholder="Nhập OK" aria-label="Nhập OK để xóa {{ item.id }}" autocomplete="off" pattern="OK" title="Nhập chính xác OK" required>
                 <button type="submit" class="btn btn-danger btn-sm">Xóa</button>
               </form>

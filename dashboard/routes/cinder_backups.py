@@ -2,6 +2,7 @@
 
 import asyncio
 from math import ceil
+import secrets
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -40,7 +41,7 @@ def _list_query(request: Request, cluster) -> str:
     return urlencode({key: value for key, value in values.items() if value})
 
 
-def _message_redirect(request: Request, *, success: str = "", error: str = "") -> RedirectResponse:
+def _message_redirect(request: Request, path: str, *, success: str = "", error: str = "") -> RedirectResponse:
     allowed = {"cluster", "id", "backend", "volume_type", "page"}
     values = {key: value for key, value in request.query_params.items() if key in allowed and value}
     if success:
@@ -48,11 +49,33 @@ def _message_redirect(request: Request, *, success: str = "", error: str = "") -
     if error:
         values["error"] = error
     query = urlencode(values)
-    return RedirectResponse("/cinder-backups" + (f"?{query}" if query else ""), status_code=303)
+    return RedirectResponse(path + (f"?{query}" if query else ""), status_code=303)
+
+
+def _csrf_token(request: Request) -> str:
+    token = request.session.get("cinder_backup_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["cinder_backup_csrf_token"] = token
+    return token
+
+
+def _valid_csrf_token(request: Request, token: str) -> bool:
+    expected = str(request.session.get("cinder_backup_csrf_token") or "")
+    supplied = str(token or "")
+    return bool(expected and supplied) and secrets.compare_digest(expected, supplied)
+
+
+def _backup_is_listed(result: dict, backup_id: str) -> bool:
+    return any(
+        str(item.get("id") or "").casefold() == str(backup_id).casefold()
+        for item in result.get("items", [])
+        if isinstance(item, dict)
+    )
 
 
 async def _backup_context(request: Request, user: str, cluster, *, product: str, clusters):
-    result = await asyncio.to_thread(discover_cinder_volume_backups, cluster, 500) if cluster else {
+    result = await asyncio.to_thread(discover_cinder_volume_backups, cluster, None) if cluster else {
         "items": [], "error": "Chưa có cấu hình OpenStack cho dashboard."
     }
     all_items = result.get("items", [])
@@ -112,6 +135,8 @@ async def _backup_context(request: Request, user: str, cluster, *, product: str,
         "cinder_backup_error": result.get("error"),
         "cinder_backup_count": result.get("count", 0),
         "product": product,
+        "cinder_backup_base_path": "/vitastor/cinder-backups" if product == "vitastor" else "/cinder-backups",
+        "cinder_backup_csrf_token": _csrf_token(request),
     }
 
 
@@ -127,17 +152,53 @@ async def delete_cinder_backup(
     request: Request,
     backup_id: str,
     confirmation: str = Form(""),
+    csrf_token: str = Form(""),
     user: str = Depends(require_login),
 ):
+    path = "/cinder-backups"
     if not auth.is_admin_user(user):
-        return _message_redirect(request, error="Tài khoản hiện tại không có quyền xóa Cinder backup.")
+        return _message_redirect(request, path, error="Tài khoản hiện tại không có quyền xóa Cinder backup.")
+    if not _valid_csrf_token(request, csrf_token):
+        return _message_redirect(request, path, error="Phiên xác nhận không hợp lệ hoặc đã hết hạn.")
     _clusters, cluster = cluster_selection(request)
     if not cluster:
-        return _message_redirect(request, error="Không xác định được cluster OpenStack.")
+        return _message_redirect(request, path, error="Không xác định được cluster OpenStack.")
+    discovered = await asyncio.to_thread(discover_cinder_volume_backups, cluster, None)
+    if discovered.get("status") != "ok":
+        return _message_redirect(request, path, error=discovered.get("error") or "Không xác minh được backup trong Cinder.")
+    if not _backup_is_listed(discovered, backup_id):
+        return _message_redirect(request, path, error="Backup không tồn tại trong cluster/OpenStack đang chọn.")
     result = await asyncio.to_thread(delete_cinder_volume_backup, cluster, backup_id, confirmation)
     if result.get("status") != "ok":
-        return _message_redirect(request, error=result.get("error") or "Xóa Cinder backup thất bại.")
-    return _message_redirect(request, success=f"Đã gửi yêu cầu xóa backup {backup_id}.")
+        return _message_redirect(request, path, error=result.get("error") or "Xóa Cinder backup thất bại.")
+    return _message_redirect(request, path, success=f"Đã gửi yêu cầu xóa backup {backup_id}.")
+
+
+@router.post("/vitastor/cinder-backups/{backup_id}/delete")
+async def delete_vitastor_cinder_backup(
+    request: Request,
+    backup_id: str,
+    confirmation: str = Form(""),
+    csrf_token: str = Form(""),
+    user: str = Depends(require_vitastor_login),
+):
+    path = "/vitastor/cinder-backups"
+    if not auth.is_vitastor_admin_user(user):
+        return _message_redirect(request, path, error="Tài khoản hiện tại không có quyền xóa Cinder backup.")
+    if not _valid_csrf_token(request, csrf_token):
+        return _message_redirect(request, path, error="Phiên xác nhận không hợp lệ hoặc đã hết hạn.")
+    cluster = _default_openstack_cluster()
+    if not cluster:
+        return _message_redirect(request, path, error="Không xác định được cluster OpenStack.")
+    discovered = await asyncio.to_thread(discover_cinder_volume_backups, cluster, None)
+    if discovered.get("status") != "ok":
+        return _message_redirect(request, path, error=discovered.get("error") or "Không xác minh được backup trong Cinder.")
+    if not _backup_is_listed(discovered, backup_id):
+        return _message_redirect(request, path, error="Backup không tồn tại trong cluster/OpenStack đang chọn.")
+    result = await asyncio.to_thread(delete_cinder_volume_backup, cluster, backup_id, confirmation)
+    if result.get("status") != "ok":
+        return _message_redirect(request, path, error=result.get("error") or "Xóa Cinder backup thất bại.")
+    return _message_redirect(request, path, success=f"Đã gửi yêu cầu xóa backup {backup_id}.")
 
 
 @router.get("/vitastor/cinder-backups", response_class=HTMLResponse)

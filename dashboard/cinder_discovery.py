@@ -255,7 +255,7 @@ def _cinder_backup_source(volume: dict) -> tuple[str, str]:
     return "unknown", "Không xác định"
 
 
-def discover_cinder_volume_backups(cluster, limit: int = 100) -> dict:
+def discover_cinder_volume_backups(cluster, limit: int | None = 100) -> dict:
     """Read Cinder volume backups and enrich them with source volume info.
 
     This is deliberately read-only.  The command runs on the configured
@@ -270,10 +270,13 @@ def discover_cinder_volume_backups(cluster, limit: int = 100) -> dict:
             "status": "not_configured", "items": [],
             "error": "Chưa cấu hình OpenStack Controller và openrc cho cluster.",
         }
-    limit = max(1, min(int(limit), 500))
+    limit_arg = ""
+    if limit is not None:
+        limit = max(1, min(int(limit), 500))
+        limit_arg = f" --limit {limit}"
     command = "sh -c " + shlex.quote(
         f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
-        f"backups=$(openstack volume backup list --long --limit {limit} -f json) && "
+        f"backups=$(openstack volume backup list --long{limit_arg} -f json) && "
         f"volumes=$(openstack volume list --all-projects --long -f json) && "
         "printf '%s\\n' \"{\\\"backups\\\":$backups,\\\"volumes\\\":$volumes}\""
     )
@@ -337,5 +340,5 @@ def delete_cinder_volume_backup(cluster, backup_id: str, confirmation: str) -> d
     try:
         _execute_controller_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
         return {"status": "ok", "backup_id": str(backup_id)}
-    except ExecutorError as exc:
+    except (ExecutorError, OSError, subprocess.SubprocessError) as exc:
         return {"status": "error", "error": str(exc)}
