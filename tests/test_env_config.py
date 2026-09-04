@@ -91,7 +91,6 @@ def test_write_env_lines_restricts_permissions_and_replaces_atomically(tmp_path,
     assert mode == stat.S_IRUSR | stat.S_IWUSR
 
 
-
 def test_refresh_cluster_settings_prefers_current_file_over_stale_process_env(tmp_path, monkeypatch):
     import importlib
 
