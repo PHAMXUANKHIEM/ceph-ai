@@ -132,3 +132,44 @@ def test_actor_without_cluster_selection_has_no_default_fallback(monkeypatch):
     monkeypatch.setattr(telegram_chat, "_selected_cluster_id", lambda _actor: None)
 
     assert telegram_chat._resolve_cluster_for_actor("telegram:123456") is None
+
+
+def test_mode_command_does_not_resolve_previous_cluster(monkeypatch):
+    calls = []
+
+    async def fake_handle(message, bot_token, *, cluster_override):
+        calls.append((message["text"], bot_token, cluster_override))
+
+    monkeypatch.setattr(telegram_chat, "is_allowed_message", lambda _message, _token: True)
+    monkeypatch.setattr(telegram_chat, "_actor", lambda _message: "telegram:123456")
+    monkeypatch.setattr(
+        telegram_chat,
+        "_resolve_cluster_for_actor",
+        lambda _actor: (_ for _ in ()).throw(AssertionError("mode command resolved a DB cluster")),
+    )
+    monkeypatch.setattr(telegram_chat, "_handle_message_impl", fake_handle)
+
+    asyncio.run(telegram_chat.handle_message({"text": "/single@Ceph_chat_ai_bot"}, "token"))
+
+    assert calls == [("/single@Ceph_chat_ai_bot", "token", None)]
+
+
+def test_cluster_selector_times_out_instead_of_blocking(monkeypatch):
+    sent = []
+
+    def slow_inventory():
+        import time
+        time.sleep(0.1)
+        return []
+
+    async def fake_send(_token, _chat_id, text):
+        sent.append(text)
+
+    monkeypatch.setattr(telegram_chat, "_CLUSTER_LOOKUP_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(telegram_chat, "_active_clusters", slow_inventory)
+    monkeypatch.setattr(telegram_chat, "_send", fake_send)
+
+    result = asyncio.run(telegram_chat._send_cluster_selector("token", "123456", "single"))
+
+    assert result is False
+    assert sent == ["DB cụm đang phản hồi chậm; hãy thử lại sau vài giây."]
