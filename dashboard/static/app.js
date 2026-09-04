@@ -131,7 +131,7 @@
     "/telegram-alerts": "↗", "/users": "♙", "/clusters": "⬡",
     "/crush-map": "⌘", "/deploy-cluster": "+", "/delete-cluster": "−",
     "/convert-cluster": "⇄", "/upgrade": "↑", "/patch": "◇",
-    "/backups": "□", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
+    "/backups": "□", "/cinder-backups": "▣", "/restore-cluster": "↶", "/object-storage/buckets": "◫", "/object-storage/users": "♙",
     "/object-storage/user-settings": "⚙", "/bucket-access-log": "≡", "/pgs": "∷",
     "/openstack/auth-pool": "◈", "/openstack/auth-user/create": "+"
   };
@@ -168,6 +168,7 @@
       ["/patch", "Patch Ceph"],
       ["/convert-cluster", "Convert to Cephadm"],
       ["/backups", "Backup"],
+      ["/cinder-backups", "Cinder Volume Backups"],
       ["/restore-cluster", "Restore Cluster"],
       ["/settings", "Settings"]
     ].forEach(function (entry) { ensureSharedLink(entry[0], entry[1]); });
@@ -243,7 +244,7 @@
       { label: "Block Storage", paths: ["/block-storage", "/volume-performance", "/trash"] },
       { label: "ceph-auth", paths: ["/openstack/auth-pool", "/openstack/auth-user/create"] },
       { label: "Cluster Lifecycle Management", paths: ["/deploy-cluster", "/delete-cluster", "/upgrade", "/patch", "/convert-cluster"] },
-      { label: "Backup", paths: ["/backups", "/restore-cluster"] },
+      { label: "Backup", paths: ["/backups", "/cinder-backups", "/restore-cluster"] },
       { label: "Users & Notifications", paths: ["/telegram-alerts", "/users"] },
       { label: "System Administration", paths: ["/settings", "/clusters"] }
     ];
