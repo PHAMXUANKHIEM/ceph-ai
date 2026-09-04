@@ -1287,6 +1287,41 @@ def test_abort_happy_path_sets_abort_action_id_and_approves(dashboard_client, mo
         assert action.status == ActionStatus.APPROVED.value
 
 
+def test_abort_double_submit_keeps_one_abort_action(dashboard_client, monkeypatch):
+    """The gate remains PREPARED until the approved abort executes, so the
+    database reservation—not the state check alone—must deduplicate retries.
+    """
+    _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150", osd_nodes="10.20.1.83")
+    _seed_gate_lock(active_gate_id="g1")
+    with db_module.SessionLocal() as session:
+        session.add(
+            NodeUpgradeGate(
+                id="g1",
+                host="10.20.1.83",
+                target_version="19.2.0",
+                state=NodeUpgradeGateState.PREPARED.value,
+                roles_snapshot=json.dumps(["OSD"]),
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    first = dashboard_client.post(
+        "/upgrade/gate/abort", data={"host": "10.20.1.83"}, follow_redirects=False
+    )
+    second = dashboard_client.post(
+        "/upgrade/gate/abort", data={"host": "10.20.1.83"}, follow_redirects=False
+    )
+
+    assert first.status_code == 303
+    assert second.status_code == 409
+    with db_module.SessionLocal() as session:
+        gate = session.get(NodeUpgradeGate, "g1")
+        assert gate.abort_action_id is not None
+        assert session.query(Action).filter_by(action_id=upgrade_route.NODE_OS_GATE_ABORT_ACTION_ID).count() == 1
+        assert session.query(Incident).filter_by(ceph_code=upgrade_route.NODE_OS_GATE_CEPH_CODE).count() == 1
+
+
 def test_get_upgrade_gate_redirects_when_no_node_incompatible(dashboard_client, monkeypatch):
     _set_package_deploy(monkeypatch, mon_nodes="10.20.1.150")
     _stub_os_release(monkeypatch, {"10.20.1.150": {"ID": "rocky", "VERSION_ID": "9"}})

@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from openai import APIError, APIConnectionError, AuthenticationError
-from sqlalchemy import or_
+from sqlalchemy import or_, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from config.settings import settings
@@ -1308,7 +1308,27 @@ async def abort_node_os_gate(
             _safe_command_preview, NODE_OS_GATE_ABORT_ACTION_ID, host, action_params
         )
 
-        gate_row.abort_action_id = action.id
+        # The initial PREPARED read is only advisory: two browser retries can
+        # pass it concurrently. Reserve the gate's single abort slot with a
+        # conditional UPDATE so at most one abort Action can be committed.
+        # PostgreSQL serializes concurrent writers to this row; the loser
+        # sees rowcount=0 after the winner commits and its transaction is
+        # rolled back, including the just-created Incident/Action.
+        reserved = session.execute(
+            update(NodeUpgradeGate)
+            .where(
+                NodeUpgradeGate.id == gate_row.id,
+                NodeUpgradeGate.state == NodeUpgradeGateState.PREPARED.value,
+                NodeUpgradeGate.abort_action_id.is_(None),
+            )
+            .values(abort_action_id=action.id)
+        )
+        if reserved.rowcount != 1:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Thao tác Huỷ Chuẩn bị vừa được tạo bởi request khác — tải lại trang.",
+            )
 
         audit.record(
             session,
