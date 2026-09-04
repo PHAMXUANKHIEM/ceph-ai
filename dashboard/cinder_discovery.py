@@ -313,3 +313,29 @@ def discover_cinder_volume_backups(cluster, limit: int = 100) -> dict:
         return {"status": "ok", "items": items, "count": len(items)}
     except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
         return {"status": "error", "items": [], "error": str(exc)}
+
+
+def delete_cinder_volume_backup(cluster, backup_id: str, confirmation: str) -> dict:
+    """Delete one Cinder volume backup after an explicit ``OK`` confirmation."""
+    if str(confirmation or "").strip() != "OK":
+        return {"status": "error", "error": "Phải nhập chính xác OK để xóa backup."}
+    if not _OPENSTACK_UUID_RE.fullmatch(str(backup_id or "")):
+        return {"status": "error", "error": "Backup ID không hợp lệ."}
+
+    controllers = [item.strip() for item in (cluster.openstack_controller_nodes or "").split(",") if item.strip()]
+    openrc_path = (cluster.openstack_openrc_path or "").strip()
+    if not controllers or not openrc_path:
+        return {
+            "status": "error",
+            "error": "Chưa cấu hình OpenStack Controller và openrc cho cluster.",
+        }
+    command = "sh -c " + shlex.quote(
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
+        f"openstack volume backup delete {shlex.quote(str(backup_id))}"
+    )
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    try:
+        _execute_controller_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
+        return {"status": "ok", "backup_id": str(backup_id)}
+    except ExecutorError as exc:
+        return {"status": "error", "error": str(exc)}

@@ -3359,3 +3359,50 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   .backup-page .card-body { padding: var(--space-3); }
   .backup-page .backup-table-scroll { max-height: 280px; }
 }
+
+.cinder-backup-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 var(--space-2);
+}
+.cinder-backup-filters label {
+  display: grid;
+  gap: 5px;
+  min-width: 180px;
+  color: var(--text-muted);
+  font-size: .78rem;
+}
+.cinder-backup-filters input,
+.cinder-backup-filters select,
+.cinder-backup-delete-form input {
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+  color: var(--text);
+  font: inherit;
+}
+.cinder-backup-count { margin: 0 0 var(--space-3); }
+.cinder-backup-delete-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 150px;
+  margin: 0;
+}
+.cinder-backup-delete-form input { width: 84px; }
+.cinder-backup-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: var(--space-4);
+}
+@media (max-width: 760px) {
+  .cinder-backup-filters { align-items: stretch; }
+  .cinder-backup-filters label { min-width: min(100%, 220px); flex: 1 1 100%; }
+  .cinder-backup-delete-form { min-width: 0; }
+}
