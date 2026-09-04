@@ -74,6 +74,9 @@ services:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
+      # The dedicated gateway is the sole getUpdates consumer in containers.
+      # dashboard-web keeps TELEGRAM_LISTENER_ENABLED=false.
+      CEPH_AI_TELEGRAM_POLLING_ENABLED: "true"
       TELEGRAM_LISTENER_ENABLED: "true"
       CEPH_AI_DROP_DUAL_PRIVILEGES: "true"
       CEPH_AI_DUAL_WORKSPACE: /var/lib/ceph-ai/dual-workspace
