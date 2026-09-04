@@ -391,6 +391,7 @@ code {
 }
 .nav-link:hover { color: var(--text); text-decoration: none; }
 .nav-link.active { color: var(--text); border-bottom-color: var(--accent); }
+.nav-link.nav-cinder-backups { color: var(--accent); font-weight: 700; }
 
 /* "Cluster" dropdown — groups every cluster-lifecycle page (Cluster
    Metrics, Volumes, Deploy/Delete/Convert/Upgrade Cluster, Patch Ceph,
@@ -2624,6 +2625,7 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
      absolutely-positioned dropdown). Admin destinations remain reachable
      on wider screens; mobile keeps Dashboard, Cluster and Settings. */
   .main-nav > a:nth-of-type(n+3) { display: none; }
+  .main-nav > a.nav-cinder-backups { display: flex; }
   .topbar-user .btn { padding-inline: 8px; }
 }
 

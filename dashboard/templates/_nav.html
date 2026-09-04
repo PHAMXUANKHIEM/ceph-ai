@@ -47,7 +47,7 @@
         </div>
       </div>
       <a href="/backups" class="nav-link{{ ' active' if nav_path == '/backups' else '' }}">Backup</a>
-      <a href="/cinder-backups" class="nav-link{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>
+      <a href="/cinder-backups" class="nav-link nav-cinder-backups{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>
       <a href="/restore-cluster" class="nav-link{{ ' active' if nav_path == '/restore-cluster' else '' }}">Restore Cluster</a>
       <div class="nav-dropdown">
         <button type="button" class="nav-link nav-dropdown-toggle{{ ' active' if object_storage_group_active else '' }}">Object Storage <span class="nav-dropdown-caret">&#9662;</span></button>
