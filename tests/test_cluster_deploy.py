@@ -2267,11 +2267,11 @@ def test_set_maintenance_flags_only_sets_flags_not_already_present(monkeypatch):
         ["10.20.1.83"], _gate_action_params("gate-1", roles=["OSD"]), on_update
     )
 
-    assert len(commands_run) == 1
-    assert "noout" not in commands_run[0]  # already set, must not be re-set
-    assert "noscrub" in commands_run[0]
-    assert "nodeep-scrub" in commands_run[0]
-    assert "nosnaptrim" in commands_run[0]
+    assert commands_run == [
+        "ceph osd set noscrub",
+        "ceph osd set nodeep-scrub",
+        "ceph osd set nosnaptrim",
+    ]
 
 
 def test_set_maintenance_flags_noop_when_all_already_set(monkeypatch):
@@ -2545,6 +2545,70 @@ def test_run_marks_gate_failed_and_releases_lock_on_mid_phase_failure(gate_db, m
     with gate_db() as session:
         assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
         assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_failed_prepare_rollback_only_unsets_flags_it_added_and_rejoins_mon(monkeypatch):
+    monkeypatch.setattr(
+        cluster_deploy_module,
+        "configured_nodes",
+        lambda: [
+            {"host": "10.20.1.83", "roles": ["MON", "OSD"]},
+            {"host": "10.20.1.150", "roles": ["MON"]},
+        ],
+    )
+    rejoined = []
+    unset_commands = []
+    flag_read_hosts = []
+
+    def fake_rejoin(host, mon_name, other_mon_host):
+        rejoined.append((host, mon_name, other_mon_host))
+
+    def fake_execute(host, command):
+        if command.startswith("hostname"):
+            return "node83.lab"
+        if command == "ceph osd dump --format json":
+            flag_read_hosts.append(host)
+            return json.dumps({"flags": "noout,noscrub"})
+        if command.startswith("ceph osd unset"):
+            unset_commands.append(command)
+            return ""
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(cluster_deploy_module, "_rejoin_mon_after_reinstall", fake_rejoin)
+    monkeypatch.setattr(cluster_deploy_module, "execute_command", fake_execute)
+    action_params = {
+        "host": "10.20.1.83",
+        "_maintenance_flags_added": ["noscrub"],
+        "_mon_removed": True,
+    }
+
+    assert cluster_deploy_module._rollback_failed_prepare(action_params) is True
+    assert rejoined == [("10.20.1.83", "node83.lab", "10.20.1.150")]
+    assert flag_read_hosts == ["10.20.1.150"]
+    assert unset_commands == ["ceph osd unset noscrub"]
+    assert action_params["_maintenance_flags_added"] == []
+    assert action_params["_mon_removed"] is False
+
+
+def test_prepare_rollback_markers_are_persisted_on_gate(gate_db):
+    gate_id = _make_gate(gate_db)
+    action_params = {"node_upgrade_gate_id": gate_id}
+
+    cluster_deploy_module._persist_gate_marker(
+        action_params, "_maintenance_flags_added", ["noout", "noscrub"]
+    )
+    cluster_deploy_module._persist_gate_marker(action_params, "_mon_removed", True)
+
+    with gate_db() as session:
+        gate = session.get(NodeUpgradeGate, gate_id)
+        assert json.loads(gate.maintenance_flags_added) == ["noout", "noscrub"]
+        assert gate.mon_removed is True
+
+    recovered_flags, recovered_mon_removed = cluster_deploy_module._prepare_rollback_state(
+        {"node_upgrade_gate_id": gate_id}
+    )
+    assert recovered_flags == ["noout", "noscrub"]
+    assert recovered_mon_removed is True
 
 
 def test_run_refuses_gate_without_incident_and_releases_lock(gate_db):

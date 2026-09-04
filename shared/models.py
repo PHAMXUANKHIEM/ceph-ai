@@ -1774,6 +1774,13 @@ class NodeUpgradeGate(Base):
     # JSON-encoded list of {osd_id, osd_fsid}, same JSON-as-Text convention.
     # Populated by node_os_gate_prepare's OSD backup phase (Story 11.3).
     osd_backup: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Durable compensation journal for a failed Prepare. Only flags that
+    # this gate actually added are recorded; pre-existing operator flags are
+    # never removed by automatic rollback.
+    maintenance_flags_added: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set immediately after `ceph mon rm` succeeds, before the quorum
+    # verification, so a verification failure can still compensate it.
+    mon_removed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     prepare_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
     confirm_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
     abort_action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)

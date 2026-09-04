@@ -2890,6 +2890,56 @@ def _get_node_upgrade_gate_or_raise(
     return gate
 
 
+def _persist_gate_marker(action_params: dict, key: str, value) -> None:
+    """Persist Prepare compensation markers on the Gate row.
+
+    The marker is written after each successful side effect, so a Worker
+    restart still leaves enough durable information for the next failure
+    handler/operator to know what must be compensated. Direct phase tests may
+    omit a real Gate row; those calls retain their in-memory markers.
+    """
+    gate_id = action_params.get("node_upgrade_gate_id")
+    if not gate_id:
+        return
+    with db.SessionLocal() as session:
+        gate = session.get(NodeUpgradeGate, gate_id)
+        if gate is None:
+            return
+        if key == "_maintenance_flags_added":
+            gate.maintenance_flags_added = json.dumps(value)
+        elif key == "_mon_removed":
+            gate.mon_removed = bool(value)
+        else:
+            raise DeployPhaseError(f"Rollback marker không hợp lệ: {key!r}")
+        session.commit()
+
+
+def _prepare_rollback_state(action_params: dict) -> tuple[list[str], bool]:
+    """Return compensation state from memory, or the durable Gate journal."""
+    flags = action_params.get("_maintenance_flags_added")
+    mon_removed = action_params.get("_mon_removed")
+    if flags is not None and mon_removed is not None:
+        return list(flags or []), bool(mon_removed)
+
+    gate_id = action_params.get("node_upgrade_gate_id")
+    if not gate_id:
+        return list(flags or []), bool(mon_removed)
+    with db.SessionLocal() as session:
+        gate = session.get(NodeUpgradeGate, gate_id)
+        if gate is None:
+            return list(flags or []), bool(mon_removed)
+        if flags is None:
+            try:
+                flags = json.loads(gate.maintenance_flags_added or "[]")
+            except (TypeError, ValueError) as exc:
+                raise DeployPhaseError(
+                    f"NodeUpgradeGate {gate_id!r} có maintenance rollback marker hỏng"
+                ) from exc
+        if mon_removed is None:
+            mon_removed = gate.mon_removed
+    return list(flags or []), bool(mon_removed)
+
+
 def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, on_host_update) -> None:
     """FR-3: backs up every OSD's id+fsid on this host (if it has the OSD
     role), then triggers an on-demand cluster metadata backup
@@ -2984,7 +3034,13 @@ def _phase_gate_set_maintenance_flags(nodes: list[dict], action_params: dict, on
         current_flags = _read_osd_flags(mon_host, action_params)
         to_set = [f for f in _MAINTENANCE_FLAGS if f not in current_flags]
         if to_set:
-            _gate_execute(mon_host, " && ".join(f"ceph osd set {f}" for f in to_set), action_params)
+            added_flags = list(action_params.get("_maintenance_flags_added") or [])
+            for flag in to_set:
+                _gate_execute(mon_host, f"ceph osd set {flag}", action_params)
+                if flag not in added_flags:
+                    added_flags.append(flag)
+                action_params["_maintenance_flags_added"] = added_flags
+                _persist_gate_marker(action_params, "_maintenance_flags_added", added_flags)
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3022,6 +3078,8 @@ def _phase_gate_remove_mon(nodes: list[dict], action_params: dict, on_host_updat
         expected_after = len(before.get("quorum_names") or []) - 1
 
         _gate_execute(other_mon_host, f"ceph mon rm {shlex.quote(mon_name)}", action_params)
+        action_params["_mon_removed"] = True
+        _persist_gate_marker(action_params, "_mon_removed", True)
 
         after = json.loads(_gate_execute(other_mon_host, "ceph quorum_status --format json", action_params))
         actual_after = len(after.get("quorum_names") or [])
@@ -3773,7 +3831,54 @@ _SKIP_CONFIG_EPILOGUE_ACTION_IDS = frozenset(
 )
 
 
-def _fail_node_upgrade_gate(action_params: dict) -> None:
+def _rollback_failed_prepare(action_params: dict) -> bool:
+    """Compensate side effects of a failed node_os_gate_prepare.
+
+    This is deliberately best-effort per side effect: a failed MON rejoin
+    must not prevent us from removing flags that this Prepare added. A
+    rollback failure keeps the CAS lock held for manual intervention; the
+    cluster must not be exposed to a second gate while its first rollback is
+    incomplete.
+    """
+    errors: list[str] = []
+    host = action_params.get("host")
+    cluster = _gate_cluster(action_params)
+    added_flags, mon_removed = _prepare_rollback_state(action_params)
+
+    if mon_removed:
+        try:
+            other_mon_host = _any_configured_mon_host(exclude=host, cluster=cluster)
+            mon_name = _gate_execute(host, "hostname -f 2>/dev/null || hostname", action_params).strip()
+            if _gate_cluster(action_params) is None:
+                _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+            else:
+                _rejoin_mon_after_reinstall(host, mon_name, other_mon_host, action_params)
+            action_params["_mon_removed"] = False
+            _persist_gate_marker(action_params, "_mon_removed", False)
+        except Exception as exc:
+            errors.append(f"rejoin MON: {exc}")
+            logger.exception("cluster_deploy: rollback rejoin MON failed for gate host %s", host)
+
+    if added_flags:
+        try:
+            mon_host = _any_configured_mon_host(
+                exclude=host if mon_removed else None,
+                cluster=cluster,
+            )
+            current_flags = _read_osd_flags(mon_host, action_params)
+            for flag in added_flags:
+                if flag in current_flags:
+                    _gate_execute(mon_host, f"ceph osd unset {flag}", action_params)
+            action_params["_maintenance_flags_added"] = []
+            _persist_gate_marker(action_params, "_maintenance_flags_added", [])
+        except Exception as exc:
+            errors.append(f"gỡ cờ bảo trì: {exc}")
+            logger.exception("cluster_deploy: rollback maintenance flags failed for gate host %s", host)
+
+    return not errors
+
+
+def _fail_node_upgrade_gate(action_params: dict, *, release_lock: bool = True) -> None:
     """Best-effort cleanup for a node_os_gate_* action that failed (kill-
     switch blocked before a phase, or a phase raised) — marks the
     NodeUpgradeGate FAILED and releases the CAS lock (AD-24) so a LATER
@@ -3795,7 +3900,8 @@ def _fail_node_upgrade_gate(action_params: dict) -> None:
                 NodeUpgradeGateState.FAILED.value,
             ):
                 gate.state = NodeUpgradeGateState.FAILED.value
-                release_node_upgrade_gate_lock(session, gate_id)
+                if release_lock:
+                    release_node_upgrade_gate_lock(session, gate_id)
                 session.commit()
     except Exception:
         logger.exception(
@@ -3921,7 +4027,10 @@ def run(
                 "cluster_deploy.run: phase %s failed for action %s: %s", step_key, action_pk, exc
             )
             if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
-                _fail_node_upgrade_gate(action_params)
+                rollback_ok = True
+                if action_id == "node_os_gate_prepare":
+                    rollback_ok = _rollback_failed_prepare(action_params)
+                _fail_node_upgrade_gate(action_params, release_lock=rollback_ok)
             return False
         except Exception as exc:
             progress[index]["status"] = "failed"
@@ -3932,7 +4041,10 @@ def run(
                 "cluster_deploy.run: unexpected error in phase %s for action %s", step_key, action_pk
             )
             if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
-                _fail_node_upgrade_gate(action_params)
+                rollback_ok = True
+                if action_id == "node_os_gate_prepare":
+                    rollback_ok = _rollback_failed_prepare(action_params)
+                _fail_node_upgrade_gate(action_params, release_lock=rollback_ok)
             return False
 
         progress[index]["status"] = "done"
