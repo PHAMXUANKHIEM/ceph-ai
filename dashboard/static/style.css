@@ -391,7 +391,6 @@ code {
 }
 .nav-link:hover { color: var(--text); text-decoration: none; }
 .nav-link.active { color: var(--text); border-bottom-color: var(--accent); }
-.nav-link.nav-cinder-backups { color: var(--accent); font-weight: 700; }
 
 /* "Cluster" dropdown — groups every cluster-lifecycle page (Cluster
    Metrics, Volumes, Deploy/Delete/Convert/Upgrade Cluster, Patch Ceph,
