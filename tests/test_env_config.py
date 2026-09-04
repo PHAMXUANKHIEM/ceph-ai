@@ -88,8 +88,9 @@ def test_write_env_lines_restricts_permissions_and_replaces_atomically(tmp_path,
 
     assert env_file.read_text() == "A=1\nB=2\n"
     mode = stat.S_IMODE(env_file.stat().st_mode)
-
     assert mode == stat.S_IRUSR | stat.S_IWUSR
+
+
 
 def test_refresh_cluster_settings_prefers_current_file_over_stale_process_env(tmp_path, monkeypatch):
     import importlib
