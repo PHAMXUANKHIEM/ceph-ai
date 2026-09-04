@@ -110,6 +110,7 @@ from dashboard.routes.actions import (
 from shared import db
 from shared.clusters import get_default_cluster_id
 from shared.models import Action, ActionStatus, Cluster, Incident
+from shared import telegram_federation
 from shared.telegram_client import (
     TelegramSendError,
     answer_telegram_callback,
@@ -284,11 +285,10 @@ def _cluster_tokens_cached() -> set[str]:
             return cached
         tokens: set[str] = set()
         try:
-            with db.SessionLocal() as session:
-                for cluster in session.query(Cluster).filter(Cluster.is_active.is_(True)).all():
-                    own_channel = _cluster_channel(cluster)
-                    if own_channel is not None:
-                        tokens.add(own_channel[1])
+            for _target, cluster in telegram_federation.active_clusters_with_models():
+                own_channel = _cluster_channel(cluster)
+                if own_channel is not None:
+                    tokens.add(own_channel[1])
         except Exception:
             logger.exception("telegram_approval_bot: _cluster_tokens_cached failed to query clusters")
             return cached
@@ -385,9 +385,10 @@ def _action_message_text(action: Action, incident: Incident | None, session) -> 
 
 
 def _keyboard_for(action_id: str) -> list[tuple[str, str]]:
+    action_ref = telegram_federation.qualify_reference(action_id)
     return [
-        ("✅ Duyệt", f"{APPROVE_CALLBACK_PREFIX}{action_id}"),
-        ("❌ Từ chối", f"{REJECT_CALLBACK_PREFIX}{action_id}"),
+        ("✅ Duyệt", f"{APPROVE_CALLBACK_PREFIX}{action_ref}"),
+        ("❌ Từ chối", f"{REJECT_CALLBACK_PREFIX}{action_ref}"),
     ]
 
 
@@ -416,16 +417,17 @@ def _needs_pool_application_choice(action: Action, incident: Incident | None) ->
 
 
 def _approval_keyboard(action: Action, incident: Incident | None = None) -> list[tuple[str, str]]:
+    action_ref = telegram_federation.qualify_reference(action.id)
     if action.status == ActionStatus.GRACE_PENDING.value:
-        return [("🛑 Hủy Autopilot", f"{CANCEL_GRACE_CALLBACK_PREFIX}{action.id}")]
+        return [("🛑 Hủy Autopilot", f"{CANCEL_GRACE_CALLBACK_PREFIX}{action_ref}")]
     if _needs_pool_application_choice(action, incident):
         params = _pool_application_params(action, incident)
         if params.get("pool_name") and not params.get("app_name"):
             return [
-                ("💾 RBD", f"{POOL_APP_CALLBACK_PREFIX}rbd:{action.id}"),
-                ("📁 CephFS", f"{POOL_APP_CALLBACK_PREFIX}cephfs:{action.id}"),
-                ("🌐 RGW", f"{POOL_APP_CALLBACK_PREFIX}rgw:{action.id}"),
-                ("❌ Từ chối", f"{REJECT_CALLBACK_PREFIX}{action.id}"),
+                ("💾 RBD", f"{POOL_APP_CALLBACK_PREFIX}rbd:{action_ref}"),
+                ("📁 CephFS", f"{POOL_APP_CALLBACK_PREFIX}cephfs:{action_ref}"),
+                ("🌐 RGW", f"{POOL_APP_CALLBACK_PREFIX}rgw:{action_ref}"),
+                ("❌ Từ chối", f"{REJECT_CALLBACK_PREFIX}{action_ref}"),
             ]
     return _keyboard_for(action.id)
 
@@ -440,7 +442,7 @@ def _load_message_ids(action: Action) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _notify_pending_actions() -> None:
+def _notify_pending_actions_for_current_db() -> None:
     """One scan cycle. Reads the candidate id list in one query, then
     re-checks + broadcasts-to-missing-channels + stamps EACH Action in its
     own session/transaction — a failure on one candidate (or one channel of
@@ -528,6 +530,19 @@ def _notify_pending_actions() -> None:
                 session.commit()
 
 
+def _notify_pending_actions() -> None:
+    """Broadcast pending actions from every configured Telegram database."""
+    for source in telegram_federation.database_sources():
+        with db.use_database(source.url):
+            try:
+                _notify_pending_actions_for_current_db()
+            except Exception:
+                logger.exception(
+                    "telegram_approval_bot: pending-action scan failed for source %s",
+                    source.key,
+                )
+
+
 def _notify_loop(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         try:
@@ -561,6 +576,38 @@ def _actor_for(callback_query: dict) -> str:
     return f"telegram:{username or user_id or 'unknown'}"
 
 
+def _database_url_for_approval_callback(data: str) -> str | None:
+    """Find the source DB that owns an approval callback's Action."""
+    action_id = ""
+    if data.startswith(POOL_APP_CALLBACK_PREFIX):
+        _pool, separator, action_id = data[len(POOL_APP_CALLBACK_PREFIX):].partition(":")
+        if not separator:
+            return None
+    elif data.startswith(APPROVE_CALLBACK_PREFIX):
+        action_id = data[len(APPROVE_CALLBACK_PREFIX):]
+    elif data.startswith(REJECT_CALLBACK_PREFIX):
+        action_id = data[len(REJECT_CALLBACK_PREFIX):]
+    elif data.startswith(CANCEL_GRACE_CALLBACK_PREFIX):
+        action_id = data[len(CANCEL_GRACE_CALLBACK_PREFIX):]
+    if not action_id:
+        return None
+    return telegram_federation.database_url_for_action_reference(action_id)
+
+
+def _approval_action_reference(data: str) -> str:
+    if data.startswith(POOL_APP_CALLBACK_PREFIX):
+        _pool, separator, action_ref = data[len(POOL_APP_CALLBACK_PREFIX):].partition(":")
+        return action_ref if separator else ""
+    for prefix in (
+        APPROVE_CALLBACK_PREFIX,
+        REJECT_CALLBACK_PREFIX,
+        CANCEL_GRACE_CALLBACK_PREFIX,
+    ):
+        if data.startswith(prefix):
+            return data[len(prefix):]
+    return ""
+
+
 def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     """`bot_token` is the token of the listener thread that received this
     update — answering the callback / editing the message MUST use that
@@ -592,6 +639,8 @@ def _handle_callback_query(callback_query: dict, bot_token: str) -> None:
     else:
         logger.warning("telegram_approval_bot: unrecognized callback_data=%r", data)
         return
+
+    action_id = telegram_federation.unqualify_reference(action_id)
 
     # TRUST MODEL (per-cluster scoped, 2026-08-10) — see this module's own
     # docstring: resolve the chat ids LEGITIMATELY covering THIS SPECIFIC
@@ -803,7 +852,20 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
                         logger.exception("telegram_approval_bot: unexpected error handling chat callback")
                 else:
                     try:
-                        _handle_callback_query(callback_query, bot_token)
+                        action_ref = _approval_action_reference(callback_data)
+                        database_urls = telegram_federation.database_urls_for_action_reference(action_ref)
+                        if len(database_urls) > 1:
+                            callback_id = callback_query.get("id")
+                            if callback_id:
+                                answer_telegram_callback(
+                                    bot_token,
+                                    callback_id,
+                                    "Yêu cầu cũ bị trùng giữa các DB; hãy tạo yêu cầu mới.",
+                                )
+                            continue
+                        database_url = database_urls[0] if database_urls else None
+                        with db.use_database(database_url):
+                            _handle_callback_query(callback_query, bot_token)
                     except Exception:
                         logger.exception("telegram_approval_bot: unexpected error handling callback_query")
             message = update.get("message")

@@ -34,7 +34,7 @@ from dashboard.dual_ai_chat import (
 from dashboard.routes.actions import ApprovalOutcome, approve_action_core
 from dashboard.routes.chat import _confirm_chat_action_core
 from shared import db
-from shared.clusters import get_default_cluster_id, list_active_clusters
+from shared import telegram_federation
 from shared.full_executor_auth import executor_token
 from shared.codex_app_server import (
     CodexAppServerError,
@@ -616,23 +616,25 @@ def _model_actor() -> str:
 
 
 def _cluster() -> Cluster | None:
+    """Return the configured local default for legacy/test call sites."""
     with db.SessionLocal() as session:
-        cluster_id = get_default_cluster_id(session)
-        cluster = session.get(Cluster, cluster_id)
+        cluster = session.query(Cluster).filter(Cluster.is_default.is_(True)).first()
         if cluster is None or not cluster.is_active:
             return None
+        session.expunge(cluster)
         return cluster
 
 
 def _active_clusters() -> list[dict[str, str | bool]]:
-    """Return active Ceph clusters in a callback-safe, detached form."""
-    with db.SessionLocal() as session:
-        clusters = list(list_active_clusters(session))
-        clusters.sort(key=lambda item: (not bool(item.is_default), item.name.casefold()))
-        return [
-            {"id": str(item.id), "name": str(item.name), "is_default": bool(item.is_default)}
-            for item in clusters
-        ]
+    """Return active Ceph clusters from every Telegram database source."""
+    return [
+        {
+            "id": target.qualified_id,
+            "name": target.name,
+            "is_default": target.is_default and target.source.key == "local",
+        }
+        for target in telegram_federation.active_clusters()
+    ]
 
 
 def _load_persisted_cluster_choices() -> dict[str, str]:
@@ -677,16 +679,31 @@ def _set_cluster(actor: str, cluster_id: str) -> None:
     _session_by_chat.pop(actor, None)
 
 
+def _clear_cluster(actor: str) -> None:
+    """Require an explicit cluster choice after every mode change."""
+    with _cluster_state_file_lock:
+        choices = _load_persisted_cluster_choices()
+        choices.pop(actor, None)
+        _CLUSTER_STATE_PATH.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        temporary = _CLUSTER_STATE_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(choices, sort_keys=True))
+        temporary.chmod(0o600)
+        temporary.replace(_CLUSTER_STATE_PATH)
+        _cluster_by_chat.pop(actor, None)
+    _session_by_chat.pop(actor, None)
+
+
 def _cluster_for_actor(actor: str) -> Cluster | None:
+    resolved = _resolve_cluster_for_actor(actor)
+    return resolved[1] if resolved is not None else None
+
+
+def _resolve_cluster_for_actor(actor: str):
+    """Return ``(federated target, detached Cluster)`` for this operator."""
     selected_id = _selected_cluster_id(actor)
-    if selected_id:
-        with db.SessionLocal() as session:
-            selected = session.get(Cluster, selected_id)
-            if selected is not None and selected.is_active:
-                return selected
-    # Backward compatibility: users who have not selected a cluster continue
-    # to use the configured default cluster.
-    return _cluster()
+    if not selected_id:
+        return None
+    return telegram_federation.target_for_actor_cluster(selected_id)
 
 
 _MODE_LABELS = {
@@ -761,6 +778,7 @@ async def _select_mode(
         logger.exception("telegram_chat: failed to persist selected mode")
         await _send(token, chat_id, "Không lưu được chế độ AI; chưa chuyển chế độ.")
         return None
+    _clear_cluster(actor)
     await _send(token, chat_id, f"Đã chuyển sang chế độ {_MODE_LABELS[mode]}.")
     await _send_cluster_selector(token, chat_id, mode)
     return _MODE_LABELS[mode]
@@ -845,7 +863,7 @@ async def _send(token: str, chat_id: str, text: str) -> None:
 
 
 async def _send_proposal(token: str, chat_id: str, text: str, message: ChatMessage) -> None:
-    buttons = [("✅ Thực hiện", f"{CHAT_CONFIRM_PREFIX}{message.id}")]
+    buttons = [("✅ Thực hiện", f"{CHAT_CONFIRM_PREFIX}{telegram_federation.qualify_reference(message.id)}")]
     await asyncio.to_thread(send_telegram_message_with_keyboard, token, chat_id, text, buttons)
 
 
@@ -1120,7 +1138,9 @@ async def _run_single_full_turn(run_id: str, text: str, history: list[dict]) -> 
     return payload["event"]
 
 
-async def handle_message(message: dict, bot_token: str) -> None:
+async def _handle_message_impl(
+    message: dict, bot_token: str, *, cluster_override: Cluster | None = None,
+) -> None:
     if not is_allowed_message(message, bot_token):
         return
     text = str(message.get("text") or "").strip()
@@ -1166,9 +1186,9 @@ async def handle_message(message: dict, bot_token: str) -> None:
         await _send(bot_token, chat_id, f"Tin nhắn quá dài; giới hạn {_MAX_MESSAGE_CHARS} ký tự.")
         return
 
-    cluster = _cluster_for_actor(actor)
+    cluster = cluster_override or _cluster_for_actor(actor)
     if cluster is None:
-        await _send(bot_token, chat_id, "Cụm Ceph mặc định chưa sẵn sàng hoặc đang tắt.")
+        await _send_cluster_selector(bot_token, chat_id, _mode(actor))
         return
     session_id, history = _session_and_history(actor, cluster.id)
     mode = _mode(actor)
@@ -1547,7 +1567,7 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
         )
         return "Đã yêu cầu dừng phiên Hai AI."
     if data.startswith(CHAT_APPROVE_PREFIX):
-        message_id = data[len(CHAT_APPROVE_PREFIX):]
+        message_id = telegram_federation.unqualify_reference(data[len(CHAT_APPROVE_PREFIX):])
         with db.SessionLocal() as session:
             row = session.get(ChatMessage, message_id)
             if row is None or row.actor != actor or not row.proposed_incident_id:
@@ -1570,7 +1590,7 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
         return suffix
     if not data.startswith(CHAT_CONFIRM_PREFIX):
         return None
-    message_id = data[len(CHAT_CONFIRM_PREFIX):]
+    message_id = telegram_federation.unqualify_reference(data[len(CHAT_CONFIRM_PREFIX):])
     try:
         await _confirm_chat_action_core(message_id, actor)
         with db.SessionLocal() as session:
@@ -1595,13 +1615,32 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
                 bot_token,
                 chat_id,
                 "⚠️ Action RISKY/DESTRUCTIVE cần một lần duyệt cuối trước khi Worker thực hiện.",
-                [("✅ Duyệt cuối", f"{CHAT_APPROVE_PREFIX}{message_id}")],
+                [
+                    (
+                        "✅ Duyệt cuối",
+                        f"{CHAT_APPROVE_PREFIX}{telegram_federation.qualify_reference(message_id)}",
+                    )
+                ],
             )
             detail = "Đề xuất đã tạo. Hãy bấm “Duyệt cuối” để cho phép Worker thực hiện."
         return detail
     except Exception as exc:
         logger.exception("telegram_chat: proposal confirmation failed")
         return f"Không thể xác nhận đề xuất: {exc}"
+
+
+async def handle_message(message: dict, bot_token: str) -> None:
+    """Handle one message using the database belonging to its cluster."""
+    if not is_allowed_message(message, bot_token):
+        return
+    actor = _actor(message)
+    resolved = _resolve_cluster_for_actor(actor)
+    if resolved is None:
+        await _handle_message_impl(message, bot_token)
+        return
+    target, cluster = resolved
+    with db.use_database(target.source.url):
+        await _handle_message_impl(message, bot_token, cluster_override=cluster)
 
 
 def run_message_sync(message: dict, bot_token: str) -> None:
@@ -1617,11 +1656,24 @@ def run_callback_sync(callback_query: dict, bot_token: str) -> str | None:
     # Device-auth callbacks own an async Codex CLI process until the operator
     # finishes browser login.  Keep them on Dashboard's long-lived loop;
     # asyncio.run() would tear down the drain task immediately on return.
+    data = str(callback_query.get("data") or "")
+    database_url = None
+    if data.startswith((CHAT_CONFIRM_PREFIX, CHAT_APPROVE_PREFIX)):
+        message_ref = data.split(":", 1)[1].strip()
+        database_urls = telegram_federation.database_urls_for_message_reference(message_ref)
+        if len(database_urls) > 1:
+            return "Yêu cầu cũ bị trùng giữa các DB; hãy gửi lại yêu cầu sau khi chọn đúng cụm."
+        database_url = database_urls[0] if database_urls else None
+
+    async def callback_in_database() -> str | None:
+        with db.use_database(database_url):
+            return await handle_callback(callback_query, bot_token)
+
     with _dashboard_loop_lock:
         loop = _dashboard_loop
     if loop is not None and loop.is_running():
-        return asyncio.run_coroutine_threadsafe(handle_callback(callback_query, bot_token), loop).result()
-    return asyncio.run(handle_callback(callback_query, bot_token))
+        return asyncio.run_coroutine_threadsafe(callback_in_database(), loop).result()
+    return asyncio.run(callback_in_database())
 
 
 def _message_worker() -> None:
