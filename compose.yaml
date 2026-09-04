@@ -74,7 +74,8 @@ services:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
-      TELEGRAM_LISTENER_ENABLED: "true"
+      CEPH_AI_TELEGRAM_POLLING_ENABLED: "false"
+      TELEGRAM_LISTENER_ENABLED: "false"
       CEPH_AI_DROP_DUAL_PRIVILEGES: "true"
       CEPH_AI_DUAL_WORKSPACE: /var/lib/ceph-ai/dual-workspace
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
