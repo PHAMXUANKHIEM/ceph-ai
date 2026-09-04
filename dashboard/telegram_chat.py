@@ -42,6 +42,7 @@ from shared.codex_app_server import (
     start_cli_device_login,
 )
 from shared.models import Action, ActionStatus, ChatMessage, Cluster
+from shared.single_full_scope import normalize_scope, sign_scope
 from shared.telegram_client import edit_telegram_message, send_telegram_message, send_telegram_message_with_keyboard
 
 logger = logging.getLogger(__name__)
@@ -369,7 +370,10 @@ def _write_full_run_markers(markers: dict[str, dict]) -> None:
     temporary.replace(_FULL_RUN_STATE_PATH)
 
 
-def _mark_full_run_started(run_id: str, bot_token: str, chat_id: str, actor: str) -> None:
+def _mark_full_run_started(
+    run_id: str, bot_token: str, chat_id: str, actor: str, *,
+    cluster_ref: str | None = None, cluster_name: str | None = None,
+) -> None:
     """Record a full-access execution before its CLI process can start."""
     with _full_run_state_file_lock:
         markers = _load_full_run_markers()
@@ -377,6 +381,8 @@ def _mark_full_run_started(run_id: str, bot_token: str, chat_id: str, actor: str
             "token_key": _full_run_token_key(bot_token),
             "chat_id": chat_id,
             "actor": actor,
+            "cluster_ref": cluster_ref or "",
+            "cluster_name": cluster_name or "",
             "started_at": time.time(),
         }
         _write_full_run_markers(markers)
@@ -464,7 +470,9 @@ def _clear_full_confirmation(actor: str) -> None:
         _write_confirmations(confirmations)
 
 
-def _issue_full_confirmation(actor: str, chat_id: str, prompt: str) -> str:
+def _issue_full_confirmation(
+    actor: str, chat_id: str, prompt: str, *, cluster_ref: str,
+) -> str:
     """Store one short-lived, exact-task confirmation for a full run."""
     confirmation = secrets.token_urlsafe(8)
     with _confirm_state_file_lock:
@@ -473,6 +481,7 @@ def _issue_full_confirmation(actor: str, chat_id: str, prompt: str) -> str:
             "token": confirmation,
             "chat_id": chat_id,
             "prompt": prompt,
+            "cluster_ref": cluster_ref,
             "expires_at": time.time() + _FULL_CONFIRM_TTL_SECONDS,
         }
         _write_confirmations(confirmations)
@@ -481,15 +490,15 @@ def _issue_full_confirmation(actor: str, chat_id: str, prompt: str) -> str:
 
 async def _consume_full_confirmation(
     token: str, chat_id: str, actor: str, text: str, *, full_access_allowed: bool,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, str | None]:
     """Return the exact confirmed request; never accept a broad OK token."""
     parts = text.strip().split()
     name = parts[0].split("@", 1)[0].lower() if parts else ""
     if name != "/confirm_full":
-        return False, None
+        return False, None, None
     if not full_access_allowed:
         await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
-        return True, None
+        return True, None, None
     supplied = parts[1] if len(parts) == 2 else ""
     with _confirm_state_file_lock:
         confirmations = _load_confirmations()
@@ -505,8 +514,12 @@ async def _consume_full_confirmation(
         _write_confirmations(confirmations)
     if pending is None:
         await _send(token, chat_id, "Mã xác nhận Single Full không hợp lệ hoặc đã hết hạn. Hãy gửi lại yêu cầu.")
-        return True, None
-    return True, str(pending["prompt"])
+        return True, None, None
+    cluster_ref = str(pending.get("cluster_ref") or "").strip()
+    if not cluster_ref:
+        await _send(token, chat_id, "Mã xác nhận cũ không có scope cụm; hãy gửi lại yêu cầu.")
+        return True, None, None
+    return True, str(pending["prompt"]), cluster_ref
 
 
 def _requires_destructive_confirmation(prompt: str) -> bool:
@@ -519,7 +532,9 @@ def _is_direct_data_destruction(prompt: str) -> bool:
     return bool(_DIRECT_DATA_DESTRUCTION_RE.search(prompt or ""))
 
 
-def _issue_destructive_confirmation(actor: str, chat_id: str, prompt: str) -> str:
+def _issue_destructive_confirmation(
+    actor: str, chat_id: str, prompt: str, *, cluster_ref: str,
+) -> str:
     confirmation = secrets.token_urlsafe(8)
     with _confirm_state_file_lock:
         confirmations = _load_confirmations()
@@ -527,6 +542,7 @@ def _issue_destructive_confirmation(actor: str, chat_id: str, prompt: str) -> st
             "token": confirmation,
             "chat_id": chat_id,
             "prompt": prompt,
+            "cluster_ref": cluster_ref,
             "expires_at": time.time() + _DESTRUCTIVE_CONFIRM_TTL_SECONDS,
         }
         _write_confirmations(confirmations)
@@ -535,14 +551,14 @@ def _issue_destructive_confirmation(actor: str, chat_id: str, prompt: str) -> st
 
 async def _consume_destructive_confirmation(
     token: str, chat_id: str, actor: str, text: str, *, full_access_allowed: bool,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, str | None]:
     parts = text.strip().split()
     name = parts[0].split("@", 1)[0].lower() if parts else ""
     if name != "/confirm_destructive":
-        return False, None
+        return False, None, None
     if not full_access_allowed:
         await _send(token, chat_id, "Single Full chưa được cấp cho Telegram user này.")
-        return True, None
+        return True, None, None
     supplied = parts[1] if len(parts) == 2 else ""
     with _confirm_state_file_lock:
         confirmations = _load_confirmations()
@@ -558,8 +574,12 @@ async def _consume_destructive_confirmation(
         _write_confirmations(confirmations)
     if pending is None:
         await _send(token, chat_id, "Mã xác nhận lệnh nguy hiểm không hợp lệ hoặc đã hết hạn.")
-        return True, None
-    return True, str(pending["prompt"])
+        return True, None, None
+    cluster_ref = str(pending.get("cluster_ref") or "").strip()
+    if not cluster_ref:
+        await _send(token, chat_id, "Mã xác nhận cũ không có scope cụm; hãy gửi lại yêu cầu.")
+        return True, None, None
+    return True, str(pending["prompt"]), cluster_ref
 
 
 def _sender_allowed(update: dict, *, chat_type: str) -> bool:
@@ -698,6 +718,55 @@ def _clear_cluster(actor: str) -> None:
 def _cluster_for_actor(actor: str) -> Cluster | None:
     resolved = _resolve_cluster_for_actor(actor)
     return resolved[1] if resolved is not None else None
+
+
+def _cluster_reference(actor: str, cluster: Cluster) -> str:
+    """Return the canonical qualified Telegram cluster reference for a run."""
+    selected_id = _selected_cluster_id(actor)
+    if selected_id:
+        resolved = telegram_federation.resolve_cluster(selected_id)
+        if resolved is not None:
+            return resolved[0].qualified_id
+    database_url = db.current_database_url() or settings.database_url
+    source = telegram_federation.source_for_url(database_url)
+    return f"{source.key}:{cluster.id}" if source is not None else str(cluster.id)
+
+
+def _single_full_cluster_context(actor: str, cluster: Cluster) -> dict[str, str]:
+    """Serialize only the selected cluster's connection scope for the executor."""
+    selected_id = _selected_cluster_id(actor)
+    resolved = telegram_federation.target_for_actor_cluster(selected_id) if selected_id else None
+    if resolved is not None:
+        target, resolved_cluster = resolved
+        if str(resolved_cluster.id) != str(cluster.id):
+            raise DualAIChatError("Single Full bị từ chối: scope cụm đã thay đổi")
+        database_source = target.source.key
+        database_url = target.source.url
+    else:
+        # Cluster-specific alert/approval bots run inside an explicit
+        # db.use_database() context but do not have a persisted selector.
+        database_url = db.current_database_url() or settings.database_url
+        source = telegram_federation.source_for_url(database_url)
+        database_source = source.key if source is not None else "local"
+    return normalize_scope({
+        "cluster_id": str(getattr(cluster, "id", "")),
+        "cluster_ref": _cluster_reference(actor, cluster),
+        "name": str(getattr(cluster, "name", "") or ""),
+        "database_source": database_source,
+        "database_url": database_url,
+        "ceph_mon_nodes": str(getattr(cluster, "ceph_mon_nodes", "") or ""),
+        "ceph_mon_hostnames": str(getattr(cluster, "ceph_mon_hostnames", "") or ""),
+        "ceph_mgr_nodes": str(getattr(cluster, "ceph_mgr_nodes", "") or ""),
+        "ceph_osd_nodes": str(getattr(cluster, "ceph_osd_nodes", "") or ""),
+        "ceph_rgw_nodes": str(getattr(cluster, "ceph_rgw_nodes", "") or ""),
+        "ceph_exec_mode": str(getattr(cluster, "ceph_exec_mode", "") or ""),
+        "ceph_container_name": str(getattr(cluster, "ceph_container_name", "") or ""),
+        "ceph_osd_container_name": str(getattr(cluster, "ceph_osd_container_name", "") or ""),
+        "ceph_rgw_container_name": str(getattr(cluster, "ceph_rgw_container_name", "") or ""),
+        "ssh_user": str(getattr(cluster, "ssh_user", "") or ""),
+        "ssh_key_path": str(getattr(cluster, "ssh_key_path", "") or ""),
+        "ceph_keyring_path": str(getattr(cluster, "ceph_keyring_path", "") or ""),
+    })
 
 
 def _resolve_cluster_for_actor(actor: str):
@@ -1024,6 +1093,7 @@ async def _handle_command(
 async def _run_single_full_in_background(
     *, run_id: str, bot_token: str, chat_id: str, actor: str,
     session_id: str, cluster_id: str, text: str, history: list[dict],
+    cluster_context: dict[str, str] | None = None,
 ) -> None:
     """Keep the Telegram queue responsive while one unrestricted CLI runs."""
     with _full_runs_lock:
@@ -1044,7 +1114,11 @@ async def _run_single_full_in_background(
         return
     try:
         try:
-            _mark_full_run_started(run_id, bot_token, chat_id, actor)
+            _mark_full_run_started(
+                run_id, bot_token, chat_id, actor,
+                cluster_ref=(cluster_context or {}).get("cluster_ref"),
+                cluster_name=(cluster_context or {}).get("name"),
+            )
         except Exception:
             logger.exception("telegram_chat: cannot persist Single Full recovery marker")
             await _send(
@@ -1052,7 +1126,7 @@ async def _run_single_full_in_background(
                 "Không thể tạo audit recovery cho Single Full; phiên toàn quyền không được khởi chạy.",
             )
             return
-        event = await _run_single_full_turn(run_id, text, history)
+        event = await _run_single_full_turn(run_id, text, history, cluster_context)
         content = f"[Single Full · {event.get('provider', '—')}]\n{event.get('content', '')}"
         _save_message(
             session_id=session_id, cluster_id=cluster_id, actor=actor,
@@ -1078,12 +1152,23 @@ async def _run_single_full_in_background(
             _full_runs.pop(run_id, None)
 
 
-async def _run_single_full_turn(run_id: str, text: str, history: list[dict]) -> dict:
+async def _run_single_full_turn(
+    run_id: str, text: str, history: list[dict],
+    cluster_context: dict[str, str] | None = None,
+) -> dict:
     """Execute Full mode in its dedicated container when configured."""
+    if not cluster_context:
+        raise DualAIChatError("Single Full bị từ chối: chưa có scope cụm đã chọn")
+    try:
+        selected_scope = normalize_scope(cluster_context)
+    except ValueError as exc:
+        raise DualAIChatError(f"Single Full bị từ chối: scope cụm không hợp lệ ({exc})") from exc
     endpoint = str(getattr(settings, "single_full_executor_url", "") or "").rstrip("/")
     token = executor_token()
     if not endpoint:
-        return await run_single_full_access_chat(text, history)
+        return await run_single_full_access_chat(
+            text, history, cluster_context=selected_scope,
+        )
     if not token:
         raise DualAIChatError("Single Full executor chưa có token xác thực")
     try:
@@ -1091,7 +1176,12 @@ async def _run_single_full_turn(run_id: str, text: str, history: list[dict]) -> 
             response = await client.post(
                 f"{endpoint}/v1/runs/{run_id}",
                 headers={"Authorization": f"Bearer {token}"},
-                json={"prompt": text, "history": history},
+                json={
+                    "prompt": text,
+                    "history": history,
+                    "cluster_context": selected_scope,
+                    "scope_signature": sign_scope(selected_scope, token),
+                },
             )
             response.raise_for_status()
             payload = response.json()
@@ -1161,7 +1251,8 @@ async def _handle_message_impl(
     actor = _actor(message)
     confirmed_full = False
     confirmed_destructive = False
-    consumed_confirmation, confirmed_prompt = await _consume_destructive_confirmation(
+    confirmed_cluster_ref: str | None = None
+    consumed_confirmation, confirmed_prompt, confirmed_cluster_ref = await _consume_destructive_confirmation(
         bot_token, chat_id, actor, text,
         full_access_allowed=_sender_can_use_full_access(message),
     )
@@ -1172,7 +1263,7 @@ async def _handle_message_impl(
         confirmed_full = True
         confirmed_destructive = True
     else:
-        consumed_confirmation, confirmed_prompt = await _consume_full_confirmation(
+        consumed_confirmation, confirmed_prompt, confirmed_cluster_ref = await _consume_full_confirmation(
             bot_token, chat_id, actor, text,
             full_access_allowed=_sender_can_use_full_access(message),
         )
@@ -1202,6 +1293,15 @@ async def _handle_message_impl(
     if cluster is None:
         await _send_cluster_selector(bot_token, chat_id, _mode(actor))
         return
+    current_cluster_ref = _cluster_reference(actor, cluster)
+    if confirmed_full and confirmed_cluster_ref != current_cluster_ref:
+        await _send(
+            bot_token,
+            chat_id,
+            "⛔ Mã xác nhận Single Full thuộc cụm khác hoặc cụm đã thay đổi. "
+            "Hãy chọn lại đúng cụm rồi gửi lại yêu cầu.",
+        )
+        return
     session_id, history = _session_and_history(actor, cluster.id)
     mode = _mode(actor)
     if mode == "single-full" and _is_direct_data_destruction(text):
@@ -1219,11 +1319,14 @@ async def _handle_message_impl(
         and _requires_destructive_confirmation(text)
         and not confirmed_destructive
     ):
-        confirmation = _issue_destructive_confirmation(actor, chat_id, text)
+        confirmation = _issue_destructive_confirmation(
+            actor, chat_id, text, cluster_ref=current_cluster_ref,
+        )
         await _send(
             bot_token,
             chat_id,
             "⚠️ XÁC NHẬN LỆNH NGUY HIỂM\n"
+            f"Cụm: {cluster.name}\n"
             f"Yêu cầu có thể tác động service/dữ liệu:\n{text[:1200]}\n\n"
             f"Nếu vẫn chính xác, gửi: /confirm_destructive {confirmation}\n"
             f"Mã có hiệu lực {_DESTRUCTIVE_CONFIRM_TTL_SECONDS // 60} phút.",
@@ -1238,11 +1341,14 @@ async def _handle_message_impl(
             session_id=session_id, cluster_id=cluster.id, actor=actor, role="user", content=text
         )
         del user_message
-        confirmation = _issue_full_confirmation(actor, chat_id, text)
+        confirmation = _issue_full_confirmation(
+            actor, chat_id, text, cluster_ref=current_cluster_ref,
+        )
         await _send(
             bot_token,
             chat_id,
             "⚠️ XÁC NHẬN SINGLE FULL\n"
+            f"Cụm: {cluster.name}\n"
             f"Yêu cầu sẽ chạy với toàn quyền source và server:\n{text[:1200]}\n\n"
             f"Nếu chính xác, gửi: /confirm_full {confirmation}\n"
             f"Mã có hiệu lực {_FULL_CONFIRM_TTL_SECONDS // 60} phút.",
@@ -1328,6 +1434,7 @@ async def _handle_message_impl(
             _run_single_full_in_background(
                 run_id=run_id, bot_token=bot_token, chat_id=chat_id, actor=actor,
                 session_id=session_id, cluster_id=cluster.id, text=text, history=history,
+                cluster_context=_single_full_cluster_context(actor, cluster),
             ),
             name=f"telegram-single-full-{run_id}",
         )
