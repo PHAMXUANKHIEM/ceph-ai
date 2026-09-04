@@ -3,6 +3,8 @@
 import json
 import re
 import shlex
+import socket
+import subprocess
 
 from shared.cluster_nodes import resolve_ssh_creds
 from worker.executor.ssh_executor import ExecutorError, execute_command
@@ -16,6 +18,36 @@ _OPENSTACK_UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
+
+
+def _is_local_host(host: str) -> bool:
+    """Avoid an unnecessary SSH loopback when Cinder is on this host."""
+    candidates = {"localhost", "127.0.0.1", "::1", socket.gethostname(), socket.getfqdn()}
+    try:
+        candidates.update(
+            info[4][0]
+            for info in socket.getaddrinfo(socket.gethostname(), None)
+            if info[4]
+        )
+        local_ips = subprocess.run(
+            ["hostname", "-I"], capture_output=True, timeout=3, check=False, text=True
+        ).stdout.split()
+        candidates.update(local_ips)
+    except OSError:
+        pass
+    return host.strip().casefold() in {item.casefold() for item in candidates if item}
+
+
+def _execute_controller_command(host: str, command: str, user: str, key_path: str) -> str:
+    if not _is_local_host(host):
+        return execute_command(host, command, user=user, key_path=key_path)
+    completed = subprocess.run(
+        ["sh", "-c", command], capture_output=True, timeout=1800, check=False
+    )
+    if completed.returncode:
+        error = completed.stderr.decode(errors="replace")
+        raise ExecutorError(f"{host}: command exited {completed.returncode}: {error}")
+    return completed.stdout.decode()
 
 
 def _field(payload: dict, *names: str):
@@ -157,7 +189,7 @@ def discover_cinder_volume(cluster, image: str) -> dict:
     )
     ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
     try:
-        raw = execute_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
+        raw = _execute_controller_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("Cinder CLI không trả về JSON object")
@@ -186,7 +218,7 @@ def discover_cinder_snapshots(cluster, volume_id: str) -> dict:
     ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
     try:
         payload = json.loads(
-            execute_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
+            _execute_controller_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
         )
         if not isinstance(payload, list):
             raise ValueError("Cinder snapshot CLI không trả về JSON array")
@@ -200,6 +232,83 @@ def discover_cinder_snapshots(cluster, volume_id: str) -> dict:
                 "status": _field(row, "status"),
                 "size_gib": _field(row, "size"),
                 "created_at": _field(row, "created_at", "created at"),
+            })
+        return {"status": "ok", "items": items, "count": len(items)}
+    except (ExecutorError, json.JSONDecodeError, ValueError) as exc:
+        return {"status": "error", "items": [], "error": str(exc)}
+
+
+def _cinder_backup_source(volume: dict) -> tuple[str, str]:
+    """Classify a Cinder volume for display in the Ceph/Vitastor UIs.
+
+    Cinder's backup API only returns the source volume ID.  The volume list
+    gives us the volume type, which is the stable user-facing discriminator
+    already used by this lab (``vitastor-*`` and ``ceph*``).  Unknown types are
+    kept visible instead of being silently dropped.
+    """
+    volume_type = str(_field(volume, "type", "volume_type") or "").strip()
+    lowered = volume_type.casefold()
+    if "vitastor" in lowered:
+        return "vitastor", "Vitastor"
+    if "ceph" in lowered or "rbd" in lowered:
+        return "ceph", "Ceph"
+    return "unknown", "Không xác định"
+
+
+def discover_cinder_volume_backups(cluster, limit: int = 100) -> dict:
+    """Read Cinder volume backups and enrich them with source volume info.
+
+    This is deliberately read-only.  The command runs on the configured
+    OpenStack controller using its openrc, so the dashboard can display the
+    same objects as ``openstack volume backup list`` without importing
+    OpenStack SDK dependencies into the dashboard process.
+    """
+    controllers = [item.strip() for item in (cluster.openstack_controller_nodes or "").split(",") if item.strip()]
+    openrc_path = (cluster.openstack_openrc_path or "").strip()
+    if not controllers or not openrc_path:
+        return {
+            "status": "not_configured", "items": [],
+            "error": "Chưa cấu hình OpenStack Controller và openrc cho cluster.",
+        }
+    limit = max(1, min(int(limit), 500))
+    command = "sh -c " + shlex.quote(
+        f". {shlex.quote(openrc_path)} >/dev/null 2>&1 && "
+        f"backups=$(openstack volume backup list --long --limit {limit} -f json) && "
+        f"volumes=$(openstack volume list --all-projects --long -f json) && "
+        "printf '%s\\n' \"{\\\"backups\\\":$backups,\\\"volumes\\\":$volumes}\""
+    )
+    ssh_user, ssh_key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    try:
+        raw = _execute_controller_command(controllers[0], command, user=ssh_user, key_path=ssh_key_path)
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("Cinder CLI không trả về JSON object")
+        backups = payload.get("backups")
+        volumes = payload.get("volumes")
+        if not isinstance(backups, list) or not isinstance(volumes, list):
+            raise ValueError("Cinder CLI trả về payload backup/volume không hợp lệ")
+        volume_by_id = {
+            str(_field(row, "id") or "").lower(): row
+            for row in volumes if isinstance(row, dict) and _field(row, "id")
+        }
+        items = []
+        for row in backups:
+            if not isinstance(row, dict):
+                continue
+            volume_id = str(_field(row, "volume") or "").strip()
+            volume = volume_by_id.get(volume_id.lower(), {})
+            source, source_label = _cinder_backup_source(volume)
+            items.append({
+                "id": _field(row, "id"),
+                "name": _field(row, "name") or "—",
+                "status": _field(row, "status") or "unknown",
+                "size_gib": _field(row, "size") or 0,
+                "volume_id": volume_id or "—",
+                "volume_name": _field(volume, "name") or "—",
+                "volume_type": _field(volume, "type", "volume_type") or "—",
+                "source": source,
+                "source_label": source_label,
+                "container": _field(row, "container") or "—",
             })
         return {"status": "ok", "items": items, "count": len(items)}
     except (ExecutorError, json.JSONDecodeError, ValueError) as exc:

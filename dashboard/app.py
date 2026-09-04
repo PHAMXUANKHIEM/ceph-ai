@@ -30,6 +30,7 @@ from dashboard.routes import (
     performance_rca as performance_rca_routes,
     log_intelligence as log_intelligence_routes,
     chat,
+    cinder_backups,
     clusters as clusters_routes,
     convert_cluster,
     crush_map,
@@ -176,6 +177,7 @@ def create_app() -> FastAPI:
     application.include_router(volumes.router)
     application.include_router(pgs.router)
     application.include_router(backups.router)
+    application.include_router(cinder_backups.router)
     application.include_router(restore_cluster.router)
     application.include_router(bucket_access_log.router)
     application.include_router(object_storage.router)

@@ -9,7 +9,7 @@
 <body class="vitastor-app">
   <header class="vitastor-topbar">
     <a href="/vitastor" class="vitastor-brand"><span class="vitastor-brand-mark">V</span><span>Vitastor <small>CONTROL PLANE</small></span></a>
-    <nav class="vitastor-nav"><a href="/vitastor" class="active">Dashboard</a><a href="/vitastor/logs">Logs</a>{% if is_admin %}<a href="/vitastor/deploy-cluster">Deploy</a><a href="/vitastor/upgrade">Upgrade</a><a href="/vitastor/backup">Backup</a><a href="/vitastor/delete-cluster">Delete</a><a href="/vitastor/settings">Settings</a><a href="/vitastor/users">Users</a>{% endif %}</nav>
+    <nav class="vitastor-nav"><a href="/vitastor" class="active">Dashboard</a><a href="/vitastor/logs">Logs</a>{% if is_admin %}<a href="/vitastor/deploy-cluster">Deploy</a><a href="/vitastor/upgrade">Upgrade</a><a href="/vitastor/backup">Backup</a><a href="/vitastor/cinder-backups">Cinder Backups</a><a href="/vitastor/delete-cluster">Delete</a><a href="/vitastor/settings">Settings</a><a href="/vitastor/users">Users</a>{% endif %}</nav>
     <form method="post" action="/logout" class="topbar-user"><span class="user-chip">{{ user }}</span><button class="btn btn-ghost btn-sm">Đăng xuất</button></form>
   </header>
 

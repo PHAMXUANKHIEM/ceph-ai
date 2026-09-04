@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cinder Volume Backups — Ceph AIOps</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
+</head>
+<body>
+  {% include "_nav.html" %}
+  <main class="page backup-page">
+    <p class="hint">Đang xem Cinder Volume Backup của cụm <strong>{{ selected_cluster.name }}</strong>.</p>
+    <section class="card">
+      <div class="card-header"><h1>Cinder Volume Backups</h1><span class="hint">Ceph / Vitastor</span></div>
+      <div class="card-body">
+        <p class="hint">Danh sách đọc trực tiếp từ Cinder bằng <code>openstack volume backup list</code>.</p>
+        {% if cinder_backup_error %}
+        <p class="error">Không đọc được Cinder backup: {{ cinder_backup_error }}</p>
+        {% elif cinder_backups %}
+        <div class="table-wrap backup-table-scroll"><table>
+          <thead><tr><th>Backup</th><th>Volume nguồn</th><th>Backend</th><th>Volume type</th><th>Trạng thái</th><th>Dung lượng</th></tr></thead>
+          <tbody>{% for item in cinder_backups %}<tr>
+            <td><strong>{{ item.name }}</strong><br><code>{{ item.id }}</code></td>
+            <td>{{ item.volume_name }}<br><code>{{ item.volume_id }}</code></td>
+            <td>{{ item.source_label }}</td>
+            <td><code>{{ item.volume_type }}</code></td>
+            <td>{{ item.status }}</td>
+            <td>{{ item.size_gib }} GiB</td>
+          </tr>{% endfor %}</tbody>
+        </table></div>
+        {% else %}
+        <p class="hint">Chưa có Cinder Volume Backup nào.</p>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>
