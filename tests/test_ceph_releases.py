@@ -165,6 +165,14 @@ def test_reef_1823_excluded_from_versions_picker():
     assert "18.2.3" not in versions_by_codename()["reef"]
 
 
+def test_tentacle_picker_includes_current_202_maintenance_releases():
+    from shared.ceph_releases import versions_by_codename
+
+    assert versions_by_codename()["tentacle"] == [
+        "20.2.0", "20.2.1", "20.2.2", "20.2.3", "20.2.4",
+    ]
+
+
 def test_min_os_label_for_known_major():
     assert min_os_label_for("16.2.15") == "CentOS/RHEL/Rocky Linux/AlmaLinux 8 trở lên"
 

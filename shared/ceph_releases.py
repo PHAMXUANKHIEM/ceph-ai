@@ -168,7 +168,11 @@ RELEASES: dict[int, dict] = {
     20: {
         "codename": "tentacle",
         "next_min_version": None,
-        "versions": ["20.2.0"],
+        # Tentacle maintenance releases currently published by Ceph. Keep
+        # this picker list explicit so Deploy/Upgrade/Restore show the same
+        # newest point release while the free-text field remains available
+        # for a release published after this table is updated.
+        "versions": ["20.2.0", "20.2.1", "20.2.2", "20.2.3", "20.2.4"],
         "el_history": [("20.2.0", (9,))],
     },
 }
