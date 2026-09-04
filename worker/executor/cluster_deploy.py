@@ -28,8 +28,8 @@ from config.settings import settings
 from shared import db, env_config
 from shared.clusters import sync_default_cluster_from_env
 from shared.ceph_releases import codename_for_version, major_version, repo_path_version
-from shared.cluster_nodes import configured_nodes
-from shared.models import NodeUpgradeGate, NodeUpgradeGateState
+from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
+from shared.models import Cluster, Incident, NodeUpgradeGate, NodeUpgradeGateState
 from shared.node_upgrade_gate import is_node_upgrade_gate_pending, release_node_upgrade_gate_lock
 from worker.backup import metadata as backup_metadata
 from worker.backup import restore as backup_restore
@@ -592,14 +592,16 @@ def _mon_data_dir(hostname: str) -> str:
     return f"/var/lib/ceph/mon/ceph-{hostname}"
 
 
-def _read_remote_file_b64(host: str, path: str) -> str:
+def _read_remote_file_b64(host: str, path: str, action_params: dict | None = None) -> str:
     try:
-        return execute_command(host, f"base64 {shlex.quote(path)}").strip()
+        return _gate_execute(host, f"base64 {shlex.quote(path)}", action_params or {}).strip()
     except ExecutorError as exc:
         raise DeployPhaseError(f"{host}: không đọc được {path}: {exc}") from exc
 
 
-def _write_remote_file_b64(host: str, path: str, content_b64: str) -> None:
+def _write_remote_file_b64(
+    host: str, path: str, content_b64: str, action_params: dict | None = None
+) -> None:
     """Writes base64-decoded bytes to `path` on `host`, creating its parent
     directory first — binary-safe (keyrings/monmaps), unlike a plain heredoc,
     same base64-over-exec_command trick `commands.py::_patch_build_and_stage_command`
@@ -609,7 +611,7 @@ def _write_remote_file_b64(host: str, path: str, content_b64: str) -> None:
     quoted_dir = shlex.quote(os.path.dirname(path))
     cmd = f"mkdir -p {quoted_dir} && base64 -d > {quoted_path} <<< {shlex.quote(content_b64)}"
     try:
-        execute_command(host, cmd)
+        _gate_execute(host, cmd, action_params or {})
     except ExecutorError as exc:
         raise DeployPhaseError(f"{host}: không ghi được {path}: {exc}") from exc
 
@@ -2767,13 +2769,60 @@ def _mon_role(action_params: dict) -> bool:
     return "MON" in (action_params.get("roles") or [])
 
 
-def _any_configured_mon_host(exclude: str | None = None) -> str:
+def _gate_cluster(action_params: dict) -> Cluster | None:
+    return action_params.get("_gate_cluster")
+
+
+def _gate_cluster_id(action_params: dict) -> str | None:
+    cluster = _gate_cluster(action_params)
+    return cluster.id if cluster is not None else None
+
+
+def _gate_nodes(action_params: dict) -> list[dict]:
+    cluster = _gate_cluster(action_params)
+    return configured_nodes() if cluster is None else configured_nodes(cluster)
+
+
+def _gate_execute(host: str, command: str, action_params: dict) -> str:
+    cluster = _gate_cluster(action_params)
+    if cluster is None:
+        return execute_command(host, command)
+    user, key_path, _exec_mode, _container = resolve_ssh_creds(cluster)
+    return execute_command(host, command, user=user, key_path=key_path)
+
+
+def _cluster_for_gate_action(incident_id: str) -> Cluster | None:
+    """Resolve the gate's authoritative cluster once in the Worker.
+
+    ``None`` is the legacy/default cluster and intentionally keeps using the
+    environment-backed settings. Non-default actions must have a live
+    cluster row; silently falling back to default would be cross-cluster SSH.
+    """
+    with db.SessionLocal() as session:
+        incident = session.get(Incident, incident_id)
+        if incident is None:
+            raise DeployPhaseError(
+                f"Không tìm thấy Incident của NodeUpgradeGate: {incident_id!r} — từ chối chạy"
+            )
+        if incident.cluster_id is None:
+            return None
+        cluster = session.get(Cluster, incident.cluster_id)
+        if cluster is None or not cluster.is_active:
+            raise DeployPhaseError(
+                f"Cụm của NodeUpgradeGate không còn tồn tại hoặc đã bị vô hiệu hoá: {incident.cluster_id}"
+            )
+        session.expunge(cluster)
+        return cluster
+
+
+def _any_configured_mon_host(exclude: str | None = None, cluster: Cluster | None = None) -> str:
     """Any currently-configured MON node's host, optionally excluding one
     (FR-5's "chạy từ MỘT MON KHÁC, không phải chính node đang xử lý") —
     raises DeployPhaseError if none remain, which also naturally covers
     "this node is the only configured mon" (a 1-mon cluster can never
     safely run node_os_gate_prepare's mon-removal step at all)."""
-    candidates = [n["host"] for n in configured_nodes() if "MON" in n["roles"] and n["host"] != exclude]
+    nodes = configured_nodes() if cluster is None else configured_nodes(cluster)
+    candidates = [n["host"] for n in nodes if "MON" in n["roles"] and n["host"] != exclude]
     if not candidates:
         raise DeployPhaseError(
             "Không có node MON nào khác trong cấu hình — không thể gỡ mon an toàn (cụm chỉ có 1 mon)"
@@ -2783,10 +2832,10 @@ def _any_configured_mon_host(exclude: str | None = None) -> str:
     return candidates[0]
 
 
-def _read_osd_flags(mon_host: str) -> set[str]:
+def _read_osd_flags(mon_host: str, action_params: dict | None = None) -> set[str]:
     """`ceph osd dump`'s `flags` field is a single comma-joined STRING
     (e.g. "sortbitwise,recovery_deletes,noout"), NOT a JSON array."""
-    output = execute_command(mon_host, "ceph osd dump --format json")
+    output = _gate_execute(mon_host, "ceph osd dump --format json", action_params or {})
     flags_str = json.loads(output).get("flags") or ""
     return {f for f in flags_str.split(",") if f}
 
@@ -2820,10 +2869,24 @@ def _parse_osd_backup(output: str) -> list[dict]:
     return backups
 
 
-def _get_node_upgrade_gate_or_raise(session, gate_id: str) -> NodeUpgradeGate:
+def _get_node_upgrade_gate_or_raise(
+    session, gate_id: str, action_params: dict | None = None
+) -> NodeUpgradeGate:
     gate = session.get(NodeUpgradeGate, gate_id)
     if gate is None:
         raise DeployPhaseError(f"Không tìm thấy NodeUpgradeGate id={gate_id!r} — dữ liệu không nhất quán")
+    if action_params is not None:
+        expected_cluster_id = _gate_cluster_id(action_params)
+        if gate.cluster_id != expected_cluster_id:
+            raise DeployPhaseError(
+                f"NodeUpgradeGate {gate_id!r} không thuộc cluster của Incident "
+                f"(gate={gate.cluster_id!r}, incident={expected_cluster_id!r}) — từ chối chạy"
+            )
+        host = action_params.get("host")
+        if not host or host not in {node["host"] for node in _gate_nodes(action_params)}:
+            raise DeployPhaseError(
+                f"Host {host!r} của NodeUpgradeGate không nằm trong cấu hình cluster — từ chối chạy"
+            )
     return gate
 
 
@@ -2849,7 +2912,7 @@ def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, 
 
     if _osd_role(action_params):
         try:
-            output = execute_command(host, "ceph-volume lvm list")
+            output = _gate_execute(host, "ceph-volume lvm list", action_params)
         except ExecutorError as exc:
             host_status[0]["status"] = "failed"
             on_host_update(list(host_status))
@@ -2857,21 +2920,37 @@ def _phase_gate_backup_osd_and_metadata(nodes: list[dict], action_params: dict, 
 
         osd_backup = _parse_osd_backup(output)
         with db.SessionLocal() as session:
-            gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+            gate = _get_node_upgrade_gate_or_raise(
+                session, action_params["node_upgrade_gate_id"], action_params
+            )
             gate.osd_backup = json.dumps(osd_backup)
             session.commit()
 
-    last_job = backup_metadata.latest_successful_metadata_job()
+    gate_cluster_id = _gate_cluster_id(action_params)
+    if gate_cluster_id is None:
+        last_job = backup_metadata.latest_successful_metadata_job()
+    else:
+        last_job = backup_metadata.latest_successful_metadata_job(gate_cluster_id)
     needs_backup = last_job is None or last_job.created_at < datetime.utcnow() - timedelta(
         hours=_METADATA_BACKUP_FRESHNESS_HOURS
     )
     if needs_backup:
-        ok = backup_metadata.run(
-            action_params["action_pk"],
-            {},
-            action_params["incident_id"],
-            lambda *_a, **_k: None,
-        )
+        if gate_cluster_id is None:
+            ok = backup_metadata.run(
+                action_params["action_pk"],
+                {},
+                action_params["incident_id"],
+                None,
+                lambda *_a, **_k: None,
+            )
+        else:
+            ok = backup_metadata.run(
+                action_params["action_pk"],
+                {},
+                action_params["incident_id"],
+                gate_cluster_id,
+                lambda *_a, **_k: None,
+            )
         if not ok:
             host_status[0]["status"] = "failed"
             on_host_update(list(host_status))
@@ -2893,18 +2972,19 @@ def _phase_gate_set_maintenance_flags(nodes: list[dict], action_params: dict, on
     yet — the cluster's own current flag state is the only information
     that actually answers that question."""
     host = action_params["host"]
+    cluster = _gate_cluster(action_params)
     if not _osd_role(action_params):
         on_host_update([{"host": host, "status": "done"}])
         return
 
-    mon_host = _any_configured_mon_host()
+    mon_host = _any_configured_mon_host(cluster=cluster)
     host_status = [{"host": mon_host, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        current_flags = _read_osd_flags(mon_host)
+        current_flags = _read_osd_flags(mon_host, action_params)
         to_set = [f for f in _MAINTENANCE_FLAGS if f not in current_flags]
         if to_set:
-            execute_command(mon_host, " && ".join(f"ceph osd set {f}" for f in to_set))
+            _gate_execute(mon_host, " && ".join(f"ceph osd set {f}" for f in to_set), action_params)
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -2921,28 +3001,29 @@ def _phase_gate_remove_mon(nodes: list[dict], action_params: dict, on_host_updat
     immediately (this IS the "không 2 mon cùng offline" hard invariant's
     enforcement point)."""
     host = action_params["host"]
+    cluster = _gate_cluster(action_params)
     if not _mon_role(action_params):
         on_host_update([{"host": host, "status": "done"}])
         return
 
-    other_mon_host = _any_configured_mon_host(exclude=host)
+    other_mon_host = _any_configured_mon_host(exclude=host, cluster=cluster)
     host_status = [{"host": host, "status": "running"}]
     on_host_update(list(host_status))
 
     try:
-        mon_name = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+        mon_name = _gate_execute(host, "hostname -f 2>/dev/null || hostname", action_params).strip()
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
         raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
 
     try:
-        before = json.loads(execute_command(other_mon_host, "ceph quorum_status --format json"))
+        before = json.loads(_gate_execute(other_mon_host, "ceph quorum_status --format json", action_params))
         expected_after = len(before.get("quorum_names") or []) - 1
 
-        execute_command(other_mon_host, f"ceph mon rm {shlex.quote(mon_name)}")
+        _gate_execute(other_mon_host, f"ceph mon rm {shlex.quote(mon_name)}", action_params)
 
-        after = json.loads(execute_command(other_mon_host, "ceph quorum_status --format json"))
+        after = json.loads(_gate_execute(other_mon_host, "ceph quorum_status --format json", action_params))
         actual_after = len(after.get("quorum_names") or [])
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
@@ -2968,7 +3049,9 @@ def _phase_gate_mark_prepared(nodes: list[dict], action_params: dict, on_host_up
     until Confirm→Recover→DONE (Story 11.4) or Abort→DONE (below)."""
     host = action_params["host"]
     with db.SessionLocal() as session:
-        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate = _get_node_upgrade_gate_or_raise(
+            session, action_params["node_upgrade_gate_id"], action_params
+        )
         gate.state = NodeUpgradeGateState.PREPARED.value
         session.commit()
     on_host_update([{"host": host, "status": "done"}])
@@ -2985,7 +3068,9 @@ _PHASES_BY_ACTION_ID["node_os_gate_prepare"] = [
 # FR-6) -----------------------------------------------------------------
 
 
-def _rejoin_mon_after_reinstall(host: str, mon_name: str, other_mon_host: str) -> None:
+def _rejoin_mon_after_reinstall(
+    host: str, mon_name: str, other_mon_host: str, action_params: dict | None = None
+) -> None:
     """AD-22's doc-verified sequence (addendum.md, 2 corrections applied):
     fetch the `mon.` keyring + CURRENT monmap (not yet including this mon)
     from a live mon, `mkfs`+start the daemon on `host` with that exact
@@ -3012,17 +3097,17 @@ def _rejoin_mon_after_reinstall(host: str, mon_name: str, other_mon_host: str) -
         f"ceph mon getmap -o {shlex.quote(_REMOTE_MONMAP_PATH)}"
     )
     try:
-        execute_command(other_mon_host, fetch_cmd)
+        _gate_execute(other_mon_host, fetch_cmd, action_params or {})
     except ExecutorError as exc:
         raise DeployPhaseError(f"{other_mon_host}: lấy mon keyring/monmap hiện tại thất bại: {exc}") from exc
 
-    keyring_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_MON_KEYRING_PATH)
-    monmap_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_MONMAP_PATH)
-    _write_remote_file_b64(host, _REMOTE_MON_KEYRING_PATH, keyring_b64)
-    _write_remote_file_b64(host, _REMOTE_MONMAP_PATH, monmap_b64)
+    keyring_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_MON_KEYRING_PATH, action_params)
+    monmap_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_MONMAP_PATH, action_params)
+    _write_remote_file_b64(host, _REMOTE_MON_KEYRING_PATH, keyring_b64, action_params)
+    _write_remote_file_b64(host, _REMOTE_MONMAP_PATH, monmap_b64, action_params)
 
     try:
-        execute_command(host, _mkfs_and_start_mon_command(mon_name))
+        _gate_execute(host, _mkfs_and_start_mon_command(mon_name), action_params or {})
     except ExecutorError as exc:
         raise DeployPhaseError(f"{host}: mkfs/start lại ceph-mon@{mon_name} thất bại: {exc}") from exc
 
@@ -3030,7 +3115,7 @@ def _rejoin_mon_after_reinstall(host: str, mon_name: str, other_mon_host: str) -
     last_error: Exception | None = None
     while True:
         try:
-            quorum = json.loads(execute_command(other_mon_host, "ceph quorum_status --format json"))
+            quorum = json.loads(_gate_execute(other_mon_host, "ceph quorum_status --format json", action_params or {}))
             if mon_name in (quorum.get("quorum_names") or []):
                 break
         except (ExecutorError, ValueError) as exc:
@@ -3042,10 +3127,12 @@ def _rejoin_mon_after_reinstall(host: str, mon_name: str, other_mon_host: str) -
             )
         time.sleep(_QUORUM_POLL_INTERVAL_SECONDS)
 
-    _refresh_static_mon_config(host, mon_name)
+    _refresh_static_mon_config(host, mon_name, action_params)
 
 
-def _refresh_static_mon_config(rejoined_host: str, rejoined_mon_name: str) -> None:
+def _refresh_static_mon_config(
+    rejoined_host: str, rejoined_mon_name: str, action_params: dict | None = None
+) -> None:
     """FR-14's own consequence: runtime monmap is correct immediately after
     rejoin, but the STATIC /etc/ceph/ceph.conf is not — a future
     full-cluster restart reads the static file. Refreshes
@@ -3055,7 +3142,7 @@ def _refresh_static_mon_config(rejoined_host: str, rejoined_mon_name: str) -> No
     deploy-time-only action_params this code path doesn't have, and a
     live node's ceph.conf may carry settings that reconstruction doesn't
     know about)."""
-    mon_nodes = [n for n in configured_nodes() if "MON" in n["roles"]]
+    mon_nodes = [n for n in _gate_nodes(action_params or {}) if "MON" in n["roles"]]
     hostnames: dict[str, str] = {}
     for n in mon_nodes:
         ip = n["host"]
@@ -3063,7 +3150,7 @@ def _refresh_static_mon_config(rejoined_host: str, rejoined_mon_name: str) -> No
             hostnames[ip] = rejoined_mon_name
             continue
         try:
-            hostnames[ip] = execute_command(ip, "hostname -f 2>/dev/null || hostname").strip()
+            hostnames[ip] = _gate_execute(ip, "hostname -f 2>/dev/null || hostname", action_params or {}).strip()
         except ExecutorError as exc:
             raise DeployPhaseError(f"{ip}: không lấy được hostname để cập nhật ceph.conf: {exc}") from exc
 
@@ -3078,9 +3165,9 @@ def _refresh_static_mon_config(rejoined_host: str, rejoined_mon_name: str) -> No
         f"-e 's/^mon host.*/mon host = {mon_host}/' "
         f"{shlex.quote(_REMOTE_CEPH_CONF_PATH)}"
     )
-    for target_host in {n["host"] for n in configured_nodes()}:
+    for target_host in {n["host"] for n in _gate_nodes(action_params or {})}:
         try:
-            execute_command(target_host, sed_cmd)
+            _gate_execute(target_host, sed_cmd, action_params or {})
         except ExecutorError as exc:
             raise DeployPhaseError(
                 f"{target_host}: cập nhật mon_host/mon_initial_members trong ceph.conf thất bại: {exc}"
@@ -3097,22 +3184,26 @@ def _phase_gate_abort_rejoin_mon(nodes: list[dict], action_params: dict, on_host
     retracts the earlier "just restart the daemon" shortcut assumption,
     since FR-5 already made this node's local monmap stale."""
     host = action_params["host"]
+    cluster = _gate_cluster(action_params)
     if "MON" not in (action_params.get("roles") or []):
         on_host_update([{"host": host, "status": "done"}])
         return
 
-    other_mon_host = _any_configured_mon_host(exclude=host)
+    other_mon_host = _any_configured_mon_host(exclude=host, cluster=cluster)
     host_status = [{"host": host, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        mon_name = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+        mon_name = _gate_execute(host, "hostname -f 2>/dev/null || hostname", action_params).strip()
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
         raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
 
     try:
-        _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+        if _gate_cluster(action_params) is None:
+            _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+        else:
+            _rejoin_mon_after_reinstall(host, mon_name, other_mon_host, action_params)
     except DeployPhaseError:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3135,20 +3226,22 @@ def _phase_gate_abort_maybe_clear_flags(nodes: list[dict], action_params: dict, 
 
     with db.SessionLocal() as session:
         someone_else_pending = is_node_upgrade_gate_pending(
-            session, exclude_action_id=action_params["action_pk"]
+            session,
+            exclude_action_id=action_params["action_pk"],
+            cluster_id=_gate_cluster_id(action_params),
         )
     if someone_else_pending:
         on_host_update([{"host": host, "status": "done"}])
         return
 
-    mon_host = _any_configured_mon_host()
+    mon_host = _any_configured_mon_host(cluster=_gate_cluster(action_params))
     host_status = [{"host": mon_host, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        current_flags = _read_osd_flags(mon_host)
+        current_flags = _read_osd_flags(mon_host, action_params)
         to_unset = [f for f in _MAINTENANCE_FLAGS if f in current_flags]
         if to_unset:
-            execute_command(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset))
+            _gate_execute(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset), action_params)
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3163,7 +3256,9 @@ def _phase_gate_abort_mark_done(nodes: list[dict], action_params: dict, on_host_
     node_os_gate_recover would."""
     host = action_params["host"]
     with db.SessionLocal() as session:
-        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate = _get_node_upgrade_gate_or_raise(
+            session, action_params["node_upgrade_gate_id"], action_params
+        )
         gate.state = NodeUpgradeGateState.DONE.value
         release_node_upgrade_gate_lock(session, action_params["node_upgrade_gate_id"])
         session.commit()
@@ -3280,7 +3375,7 @@ def _phase_gate_check_disk(nodes: list[dict], action_params: dict, on_host_updat
         "lvscan 2>/dev/null | grep -q 'inactive' && echo CEPH_AIOPS_LV_INACTIVE || echo CEPH_AIOPS_LV_ALL_ACTIVE"
     )
     try:
-        output = execute_command(host, check_and_repair_cmd)
+        output = _gate_execute(host, check_and_repair_cmd, action_params)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3311,17 +3406,18 @@ def _phase_gate_configure_base(nodes: list[dict], action_params: dict, on_host_u
     firewalld/chrony apply to every node regardless of role, unlike every
     other phase in this Epic 11 section)."""
     host = action_params["host"]
+    gate_nodes = _gate_nodes(action_params)
     host_status = [{"host": host, "status": "running"}]
     on_host_update(list(host_status))
 
     try:
         hosts_lines: list[str] = []
-        for n in configured_nodes():
+        for n in gate_nodes:
             other_ip = n["host"]
             if other_ip == host:
-                other_hostname = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+                other_hostname = _gate_execute(host, "hostname -f 2>/dev/null || hostname", action_params).strip()
             else:
-                other_hostname = execute_command(other_ip, "hostname -f 2>/dev/null || hostname").strip()
+                other_hostname = _gate_execute(other_ip, "hostname -f 2>/dev/null || hostname", action_params).strip()
             hosts_lines.append((other_ip, other_hostname))
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
@@ -3347,15 +3443,15 @@ def _phase_gate_configure_base(nodes: list[dict], action_params: dict, on_host_u
     )
     try:
         if append_hosts_cmd:
-            execute_command(host, append_hosts_cmd)
-        execute_command(host, dependency_cmd)
+            _gate_execute(host, append_hosts_cmd, action_params)
+        _gate_execute(host, dependency_cmd, action_params)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
         raise DeployPhaseError(f"{host}: cấu hình node cơ bản thất bại: {exc}") from exc
 
     try:
-        verify_output = execute_command(host, verify_cmd)
+        verify_output = _gate_execute(host, verify_cmd, action_params)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3446,9 +3542,9 @@ def _phase_gate_install_packages(nodes: list[dict], action_params: dict, on_host
     install_cmd = _package_manager_branch({"apt": apt_install_snippet, "rpm": rpm_install_snippet})
 
     try:
-        execute_command(host, repo_cmd)
-        execute_command(host, epel_and_devel_repo_cmd)
-        execute_command(host, install_cmd)
+        _gate_execute(host, repo_cmd, action_params)
+        _gate_execute(host, epel_and_devel_repo_cmd, action_params)
+        _gate_execute(host, install_cmd, action_params)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3464,15 +3560,15 @@ def _phase_gate_restore_config_and_keyring(nodes: list[dict], action_params: dic
     step — FR-12's own testable consequence, no inferring success via a
     later phase."""
     host = action_params["host"]
-    other_mon_host = _any_configured_mon_host(exclude=host)
+    other_mon_host = _any_configured_mon_host(exclude=host, cluster=_gate_cluster(action_params))
     host_status = [{"host": other_mon_host, "status": "running"}]
     on_host_update(list(host_status))
 
     try:
-        conf_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_CEPH_CONF_PATH)
-        admin_keyring_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_ADMIN_KEYRING_PATH)
-        _write_remote_file_b64(host, _REMOTE_CEPH_CONF_PATH, conf_b64)
-        _write_remote_file_b64(host, _REMOTE_ADMIN_KEYRING_PATH, admin_keyring_b64)
+        conf_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_CEPH_CONF_PATH, action_params)
+        admin_keyring_b64 = _read_remote_file_b64(other_mon_host, _REMOTE_ADMIN_KEYRING_PATH, action_params)
+        _write_remote_file_b64(host, _REMOTE_CEPH_CONF_PATH, conf_b64, action_params)
+        _write_remote_file_b64(host, _REMOTE_ADMIN_KEYRING_PATH, admin_keyring_b64, action_params)
     except DeployPhaseError:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3481,7 +3577,7 @@ def _phase_gate_restore_config_and_keyring(nodes: list[dict], action_params: dic
     host_status = [{"host": host, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        execute_command(host, "ceph -s")
+        _gate_execute(host, "ceph -s", action_params)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3491,10 +3587,11 @@ def _phase_gate_restore_config_and_keyring(nodes: list[dict], action_params: dic
         ) from exc
 
     try:
-        execute_command(
+        _gate_execute(
             host,
             f"mkdir -p {shlex.quote(os.path.dirname(_REMOTE_BOOTSTRAP_OSD_KEYRING_PATH))} && "
             f"ceph auth get client.bootstrap-osd -o {shlex.quote(_REMOTE_BOOTSTRAP_OSD_KEYRING_PATH)}",
+            action_params,
         )
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
@@ -3516,7 +3613,9 @@ def _phase_gate_activate_osd(nodes: list[dict], action_params: dict, on_host_upd
     on_host_update(list(host_status))
 
     with db.SessionLocal() as session:
-        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate = _get_node_upgrade_gate_or_raise(
+            session, action_params["node_upgrade_gate_id"], action_params
+        )
         backed_up = json.loads(gate.osd_backup or "[]")
     expected_ids = sorted({str(entry["osd_id"]) for entry in backed_up})
     if not expected_ids:
@@ -3529,15 +3628,15 @@ def _phase_gate_activate_osd(nodes: list[dict], action_params: dict, on_host_upd
 
     start_cmds = " && ".join(f"systemctl enable --now ceph-osd@{shlex.quote(i)}" for i in expected_ids)
     try:
-        execute_command(host, "ceph-volume lvm activate --all")
-        execute_command(host, start_cmds)
+        _gate_execute(host, "ceph-volume lvm activate --all", action_params)
+        _gate_execute(host, start_cmds, action_params)
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
         raise DeployPhaseError(f"{host}: kích hoạt lại OSD thất bại: {exc}") from exc
 
     try:
-        tree = json.loads(execute_command(host, "ceph osd tree --format json"))
+        tree = json.loads(_gate_execute(host, "ceph osd tree --format json", action_params))
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3573,18 +3672,21 @@ def _phase_gate_rejoin_mon(nodes: list[dict], action_params: dict, on_host_updat
         on_host_update([{"host": host, "status": "done"}])
         return
 
-    other_mon_host = _any_configured_mon_host(exclude=host)
+    other_mon_host = _any_configured_mon_host(exclude=host, cluster=_gate_cluster(action_params))
     host_status = [{"host": host, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        mon_name = execute_command(host, "hostname -f 2>/dev/null || hostname").strip()
+        mon_name = _gate_execute(host, "hostname -f 2>/dev/null || hostname", action_params).strip()
     except ExecutorError as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
         raise DeployPhaseError(f"{host}: không lấy được hostname: {exc}") from exc
 
     try:
-        _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+        if _gate_cluster(action_params) is None:
+            _rejoin_mon_after_reinstall(host, mon_name, other_mon_host)
+        else:
+            _rejoin_mon_after_reinstall(host, mon_name, other_mon_host, action_params)
     except DeployPhaseError:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3605,20 +3707,22 @@ def _phase_gate_maybe_clear_flags(nodes: list[dict], action_params: dict, on_hos
 
     with db.SessionLocal() as session:
         someone_else_pending = is_node_upgrade_gate_pending(
-            session, exclude_action_id=action_params["action_pk"]
+            session,
+            exclude_action_id=action_params["action_pk"],
+            cluster_id=_gate_cluster_id(action_params),
         )
     if someone_else_pending:
         on_host_update([{"host": host, "status": "done"}])
         return
 
-    mon_host = _any_configured_mon_host()
+    mon_host = _any_configured_mon_host(cluster=_gate_cluster(action_params))
     host_status = [{"host": mon_host, "status": "running"}]
     on_host_update(list(host_status))
     try:
-        current_flags = _read_osd_flags(mon_host)
+        current_flags = _read_osd_flags(mon_host, action_params)
         to_unset = [f for f in _MAINTENANCE_FLAGS if f in current_flags]
         if to_unset:
-            execute_command(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset))
+            _gate_execute(mon_host, "; ".join(f"ceph osd unset {f}" for f in to_unset), action_params)
     except (ExecutorError, ValueError) as exc:
         host_status[0]["status"] = "failed"
         on_host_update(list(host_status))
@@ -3632,7 +3736,9 @@ def _phase_gate_mark_recovered(nodes: list[dict], action_params: dict, on_host_u
     reached it — identical shape to `_phase_gate_abort_mark_done`."""
     host = action_params["host"]
     with db.SessionLocal() as session:
-        gate = _get_node_upgrade_gate_or_raise(session, action_params["node_upgrade_gate_id"])
+        gate = _get_node_upgrade_gate_or_raise(
+            session, action_params["node_upgrade_gate_id"], action_params
+        )
         gate.state = NodeUpgradeGateState.DONE.value
         release_node_upgrade_gate_lock(session, action_params["node_upgrade_gate_id"])
         session.commit()
@@ -3764,6 +3870,19 @@ def run(
     Action.status EXECUTED/FAILED the same way it already does for the
     generic per-host loop's own True/False result.
     """
+    if action_id in _SKIP_CONFIG_EPILOGUE_ACTION_IDS:
+        # The persisted action_params intentionally contains only JSON data;
+        # resolve the Incident's cluster here in the Worker and keep the ORM
+        # object in this in-memory copy. This prevents a gate created for a
+        # non-default cluster from falling back to default SSH/settings.
+        action_params = dict(action_params)
+        try:
+            action_params["_gate_cluster"] = _cluster_for_gate_action(incident_id)
+        except DeployPhaseError as exc:
+            logger.error("cluster_deploy.run: refusing unscoped OS gate action %s: %s", action_pk, exc)
+            _fail_node_upgrade_gate(action_params)
+            return False
+
     nodes = action_params.get("nodes") or []
     phases = _PHASES_BY_ACTION_ID.get(action_id)
     if not phases:

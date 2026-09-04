@@ -5,6 +5,7 @@ import shutil
 import stat
 import subprocess
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -13,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 import worker.executor.cluster_deploy as cluster_deploy_module
 from shared.db import Base
-from shared.models import BackupJob, NodeUpgradeGate, NodeUpgradeGateLock, NodeUpgradeGateState
+from shared.models import BackupJob, Incident, NodeUpgradeGate, NodeUpgradeGateLock, NodeUpgradeGateState
 from shared.node_upgrade_gate import LOCK_ID, claim_node_upgrade_gate_lock
 from worker.executor.cluster_deploy import CLUSTER_DEPLOY_ACTION_IDS, DeployPhaseError, run
 from worker.executor.ssh_executor import ExecutorError
@@ -2050,6 +2051,9 @@ def gate_db(monkeypatch):
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     monkeypatch.setattr(cluster_deploy_module.db, "SessionLocal", session_factory)
+    with session_factory() as session:
+        session.add(Incident(id="incident-1", ceph_code="NODE_OS_GATE", detected_at=datetime.utcnow()))
+        session.commit()
     yield session_factory
     Base.metadata.drop_all(engine)
 
@@ -2541,6 +2545,45 @@ def test_run_marks_gate_failed_and_releases_lock_on_mid_phase_failure(gate_db, m
     with gate_db() as session:
         assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
         assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_run_refuses_gate_without_incident_and_releases_lock(gate_db):
+    gate_id = _make_gate(gate_db)
+    action_params = _gate_action_params(gate_id, roles=["MON"], incident_id="missing-incident")
+
+    result = run(
+        "action-pk-1", "node_os_gate_prepare", action_params, "missing-incident",
+        lambda pk, progress: None, lambda incident_id: False,
+    )
+
+    assert result is False
+    with gate_db() as session:
+        assert session.get(NodeUpgradeGate, gate_id).state == NodeUpgradeGateState.FAILED.value
+        assert session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id is None
+
+
+def test_gate_worker_rejects_gate_from_another_cluster(gate_db):
+    gate_id = _make_gate(gate_db)
+    action_params = _gate_action_params(
+        gate_id, roles=["MON"], _gate_cluster=SimpleNamespace(id="cluster-a")
+    )
+
+    with gate_db() as session:
+        with pytest.raises(DeployPhaseError, match="không thuộc cluster"):
+            cluster_deploy_module._get_node_upgrade_gate_or_raise(session, gate_id, action_params)
+
+
+def test_gate_worker_rejects_host_outside_selected_cluster(gate_db, monkeypatch):
+    gate_id = _make_gate(gate_db)
+    monkeypatch.setattr(
+        cluster_deploy_module, "configured_nodes",
+        lambda: [{"host": "10.20.1.150", "roles": ["MON"]}],
+    )
+    action_params = _gate_action_params(gate_id, roles=["MON"], host="10.20.1.83")
+
+    with gate_db() as session:
+        with pytest.raises(DeployPhaseError, match="không nằm trong cấu hình cluster"):
+            cluster_deploy_module._get_node_upgrade_gate_or_raise(session, gate_id, action_params)
 
 
 def test_run_failure_cleanup_unblocks_a_later_prepare_attempt(gate_db):

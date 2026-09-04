@@ -1759,6 +1759,10 @@ class NodeUpgradeGate(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # A nullable value keeps the legacy/default cluster represented by the
+    # environment-backed settings, while non-default gates are hard-scoped
+    # to the cluster selected by the operator.
+    cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True, index=True)
     host: Mapped[str] = mapped_column(String(64), nullable=False)
     target_version: Mapped[str] = mapped_column(String(32), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default=NodeUpgradeGateState.PREPARING.value)
@@ -1796,7 +1800,7 @@ class NodeUpgradeGateLock(Base):
 
     __tablename__ = "node_upgrade_gate_locks"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     active_gate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 

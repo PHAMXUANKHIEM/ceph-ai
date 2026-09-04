@@ -243,7 +243,10 @@ def approve_action_core(action_id: str, actor: str) -> ApprovalResult:
         # already prevents a second node's gate row from ever being
         # created while one is mid-flight, so this check only ever needs
         # to exempt THIS SAME action's own gate row, never a whole family.
-        if is_node_upgrade_gate_pending(session, exclude_action_id=action.id):
+        gate_cluster_id = scoped_incident.cluster_id if scoped_incident is not None else None
+        if is_node_upgrade_gate_pending(
+            session, exclude_action_id=action.id, cluster_id=gate_cluster_id
+        ):
             raise ActionConflictError(
                 "Đang có node khác trong quá trình Chuẩn bị/chờ Xác nhận/Node Recovery OS — tạm "
                 "khoá duyệt hành động khác cho tới khi xong."

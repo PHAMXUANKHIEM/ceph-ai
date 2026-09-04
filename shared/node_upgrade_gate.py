@@ -1,9 +1,11 @@
 from sqlalchemy import or_, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shared.models import NodeUpgradeGate, NodeUpgradeGateLock, NodeUpgradeGateState
 
 LOCK_ID = "singleton"
+_UNSET_CLUSTER_SCOPE = object()
 
 _NON_TERMINAL_STATES = (
     NodeUpgradeGateState.PREPARING.value,
@@ -13,7 +15,11 @@ _NON_TERMINAL_STATES = (
 )
 
 
-def claim_node_upgrade_gate_lock(session: Session, gate_id: str) -> bool:
+def _lock_id(cluster_id: str | None) -> str:
+    return LOCK_ID if cluster_id is None else f"cluster:{cluster_id}"
+
+
+def claim_node_upgrade_gate_lock(session: Session, gate_id: str, cluster_id: str | None = None) -> bool:
     """AD-24: the ONLY mechanism that actually enforces "at most one node
     mid-flight" -- an atomic conditional UPDATE, safe against concurrent
     callers because the database serializes writers to the same row.
@@ -25,9 +31,21 @@ def claim_node_upgrade_gate_lock(session: Session, gate_id: str) -> bool:
     Returns True if this call won the claim (rowcount == 1), False if the
     lock was already held by another gate (rowcount == 0).
     """
+    lock_id = _lock_id(cluster_id)
+    if lock_id != LOCK_ID:
+        # Non-default cluster lock rows are created lazily so existing
+        # installations only need the migration; the legacy singleton row
+        # remains the default cluster's lock.
+        try:
+            with session.begin_nested():
+                session.add(NodeUpgradeGateLock(id=lock_id, active_gate_id=None))
+                session.flush()
+        except IntegrityError:
+            pass
+
     result = session.execute(
         update(NodeUpgradeGateLock)
-        .where(NodeUpgradeGateLock.id == LOCK_ID, NodeUpgradeGateLock.active_gate_id.is_(None))
+        .where(NodeUpgradeGateLock.id == lock_id, NodeUpgradeGateLock.active_gate_id.is_(None))
         .values(active_gate_id=gate_id)
     )
     return result.rowcount == 1
@@ -56,7 +74,12 @@ def _not_this_action(column, action_id: str):
     return or_(column.is_(None), column != action_id)
 
 
-def is_node_upgrade_gate_pending(session: Session, exclude_action_id: str | None = None) -> bool:
+def is_node_upgrade_gate_pending(
+    session: Session,
+    exclude_action_id: str | None = None,
+    *,
+    cluster_id: str | None | object = _UNSET_CLUSTER_SCOPE,
+) -> bool:
     """AD-19: defense-in-depth SELECT check, NOT the safety boundary
     (AD-24's CAS lock is) -- fast user-facing rejection with a clearer
     error message. True if any `NodeUpgradeGate` row is in a non-terminal
@@ -71,6 +94,8 @@ def is_node_upgrade_gate_pending(session: Session, exclude_action_id: str | None
     exists to close).
     """
     query = session.query(NodeUpgradeGate).filter(NodeUpgradeGate.state.in_(_NON_TERMINAL_STATES))
+    if cluster_id is not _UNSET_CLUSTER_SCOPE:
+        query = query.filter(NodeUpgradeGate.cluster_id == cluster_id)
     if exclude_action_id is not None:
         query = query.filter(
             _not_this_action(NodeUpgradeGate.prepare_action_id, exclude_action_id),

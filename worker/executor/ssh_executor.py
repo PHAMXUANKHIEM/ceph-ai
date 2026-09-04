@@ -71,9 +71,9 @@ def execute_command(host: str, command: str, user: Optional[str] = None, key_pat
         ) from exc
 
 
-def read_os_release(host: str) -> Dict[str, str]:
+def read_os_release(host: str, user: Optional[str] = None, key_path: Optional[str] = None) -> Dict[str, str]:
     """Read and parse /etc/os-release for upgrade compatibility checks."""
-    output = execute_command(host, "cat /etc/os-release")
+    output = execute_command(host, "cat /etc/os-release", user=user, key_path=key_path)
     fields: Dict[str, str] = {}
     for line in output.splitlines():
         if "=" in line:

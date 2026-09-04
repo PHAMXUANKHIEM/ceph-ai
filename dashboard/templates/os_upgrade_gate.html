@@ -38,7 +38,7 @@
                 <td>{{ min_os_label }}</td>
                 <td>
                   {% if gate is none %}
-                    <form method="post" action="/upgrade/gate/prepare" class="inline-form">
+                    <form method="post" action="/upgrade/gate/prepare{{ upgrade_cluster_query }}" class="inline-form">
                       <input type="hidden" name="host" value="{{ node.host }}">
                       <input type="hidden" name="target_version" value="{{ target_version }}">
                       <button type="submit" class="btn btn-sm">Chuẩn bị</button>
@@ -49,11 +49,11 @@
                     <p class="hint">
                       ✅ Sẵn sàng cài lại OS — nhắc lại OS tối thiểu cần: <strong>{{ min_os_label }}</strong>
                     </p>
-                    <form method="post" action="/upgrade/gate/confirm" class="inline-form">
+                    <form method="post" action="/upgrade/gate/confirm{{ upgrade_cluster_query }}" class="inline-form">
                       <input type="hidden" name="host" value="{{ node.host }}">
                       <button type="submit" class="btn btn-sm">Xác nhận</button>
                     </form>
-                    <form method="post" action="/upgrade/gate/abort" class="inline-form">
+                    <form method="post" action="/upgrade/gate/abort{{ upgrade_cluster_query }}" class="inline-form">
                       <input type="hidden" name="host" value="{{ node.host }}">
                       <button type="submit" class="btn btn-sm btn-ghost">Huỷ Chuẩn bị</button>
                     </form>
@@ -80,7 +80,7 @@
                     {% endif %}
                   {% elif gate.state == "FAILED" %}
                     <span class="badge badge-error">❌ Thất bại</span>
-                    <form method="post" action="/upgrade/gate/prepare" class="inline-form">
+                    <form method="post" action="/upgrade/gate/prepare{{ upgrade_cluster_query }}" class="inline-form">
                       <input type="hidden" name="host" value="{{ node.host }}">
                       <input type="hidden" name="target_version" value="{{ target_version }}">
                       <button type="submit" class="btn btn-sm">Chuẩn bị lại</button>
@@ -105,7 +105,7 @@
         </p>
 
         <div class="pending-action-buttons">
-          <a href="/upgrade" class="btn btn-sm">Quay lại Upgrade Cluster</a>
+          <a href="/upgrade{{ upgrade_cluster_query }}" class="btn btn-sm">Quay lại Upgrade Cluster</a>
         </div>
       </div>
     </section>

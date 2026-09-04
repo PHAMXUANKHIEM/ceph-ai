@@ -102,6 +102,25 @@ def _effective_mon_nodes(cluster) -> list[str]:
 def _upgrade_url(cluster) -> str:
     return "/upgrade" if cluster.is_default else f"/upgrade?cluster={cluster.id}"
 
+
+def _cluster_scope_id(cluster) -> str | None:
+    return None if cluster.is_default else cluster.id
+
+
+def _upgrade_gate_url(cluster, target_version: str) -> str:
+    url = f"/upgrade/gate?target_version={target_version}"
+    if not cluster.is_default:
+        url += f"&cluster={cluster.id}"
+    return url
+
+
+def _read_os_release_for_cluster(host: str, cluster) -> dict[str, str]:
+    # Keep the default path's call shape compatible with existing deployments
+    # and tests that replace the environment-backed SSH reader.
+    if cluster.is_default:
+        return read_os_release(host)
+    return read_os_release(host, user=cluster.ssh_user, key_path=cluster.ssh_key_path)
+
 # Synthetic Incident.ceph_code for this feature — same trick
 # dashboard/routes/chat.py uses (CHAT_REQUEST_CEPH_CODE): AuditEntry.incident_id
 # is a required FK (AD-7), and this feature has no real detected Incident
@@ -403,7 +422,7 @@ async def _save_upgrade_procedure(filename: str, raw_text: str, user: str) -> No
         session.commit()
 
 
-def _check_os_upgrade_needed(target_version: str, target_nodes: list[str]) -> list[dict]:
+def _check_os_upgrade_needed(target_version: str, target_nodes: list[str], cluster=None) -> list[dict]:
     """Best-effort OS-vs-target-Ceph-version preflight for the package-
     based (ceph-deploy/download.ceph.com) upgrade path — the CentOS 7 ->
     Ceph Pacific case: that install would otherwise only fail live, mid-run,
@@ -433,7 +452,7 @@ def _check_os_upgrade_needed(target_version: str, target_nodes: list[str]) -> li
     incompatible: list[dict] = []
     for host in target_nodes:
         try:
-            os_release = read_os_release(host)
+            os_release = _read_os_release_for_cluster(host, cluster) if cluster is not None else read_os_release(host)
         except ExecutorError:
             continue
         os_id = (os_release.get("ID") or "").lower()
@@ -962,7 +981,7 @@ async def propose_upgrade(request: Request, target_version: str = Form(...), use
 
 
 async def _build_os_upgrade_gate_context(
-    session, user: str, target_version: str, codename: str, incompatible_nodes: list[dict]
+    session, user: str, target_version: str, codename: str, incompatible_nodes: list[dict], cluster
 ) -> dict:
     """Story 11.3: shared context builder for `os_upgrade_gate.html`,
     extracted from `propose_package_download_upgrade`'s own blocked-proposal
@@ -986,6 +1005,7 @@ async def _build_os_upgrade_gate_context(
     non_terminal_rows = (
         session.query(NodeUpgradeGate)
         .filter(NodeUpgradeGate.target_version == target_version)
+        .filter(NodeUpgradeGate.cluster_id == _cluster_scope_id(cluster))
         .filter(NodeUpgradeGate.state.in_(_NODE_OS_GATE_NON_TERMINAL_STATES))
         .all()
     )
@@ -999,7 +1019,7 @@ async def _build_os_upgrade_gate_context(
             # so it must not block the event loop (same asyncio.to_thread
             # wrapping this route's own _check_os_upgrade_needed call
             # already uses).
-            os_release = await asyncio.to_thread(read_os_release, host)
+            os_release = await asyncio.to_thread(_read_os_release_for_cluster, host, cluster)
             os_id, os_version_id = os_release.get("ID", "?"), os_release.get("VERSION_ID", "?")
         except ExecutorError:
             os_id, os_version_id = "?", "?"
@@ -1011,6 +1031,7 @@ async def _build_os_upgrade_gate_context(
         rows = (
             session.query(NodeUpgradeGate)
             .filter(NodeUpgradeGate.host.in_(union_hosts))
+            .filter(NodeUpgradeGate.cluster_id == _cluster_scope_id(cluster))
             .order_by(NodeUpgradeGate.created_at.desc())
             .all()
         )
@@ -1042,6 +1063,7 @@ async def _build_os_upgrade_gate_context(
         "incompatible_nodes": nodes,
         "node_gates": node_gates,
         "recovering_progress": recovering_progress,
+        "upgrade_cluster_query": "" if cluster.is_default else f"?cluster={cluster.id}",
     }
 
 
@@ -1065,8 +1087,11 @@ async def os_upgrade_gate_page(
             detail=f"Không tìm thấy mã tên release Ceph cho phiên bản {target_version!r}",
         )
 
-    target_nodes = [n["host"] for n in configured_nodes()]
-    incompatible_nodes = await asyncio.to_thread(_check_os_upgrade_needed, target_version, target_nodes)
+    cluster = _selected_cluster(request)
+    if _effective_exec_mode(cluster) != "none":
+        raise HTTPException(status_code=400, detail="Chỉ áp dụng cho cụm kiểu ceph-deploy (ceph_exec_mode=none)")
+    target_nodes = [n["host"] for n in _effective_nodes(cluster)]
+    incompatible_nodes = await asyncio.to_thread(_check_os_upgrade_needed, target_version, target_nodes, cluster)
 
     with db.SessionLocal() as session:
         # A node mid-Confirm/Recovery can pass the live OS check before its
@@ -1075,21 +1100,23 @@ async def os_upgrade_gate_page(
         has_non_terminal_gate = (
             session.query(NodeUpgradeGate)
             .filter(NodeUpgradeGate.target_version == target_version)
+            .filter(NodeUpgradeGate.cluster_id == _cluster_scope_id(cluster))
             .filter(NodeUpgradeGate.state.in_(_NODE_OS_GATE_NON_TERMINAL_STATES))
             .first()
             is not None
         )
         if not incompatible_nodes and not has_non_terminal_gate:
-            return RedirectResponse(url="/upgrade", status_code=303)
+            return RedirectResponse(url=_upgrade_url(cluster), status_code=303)
 
         context = await _build_os_upgrade_gate_context(
-            session, user, target_version, codename.capitalize(), incompatible_nodes
+            session, user, target_version, codename.capitalize(), incompatible_nodes, cluster
         )
     return templates.TemplateResponse(request, "os_upgrade_gate.html", context)
 
 
 @router.post("/upgrade/gate/prepare")
 async def prepare_node_os_gate(
+    request: Request,
     host: str = Form(...), target_version: str = Form(...), user: str = Depends(require_login)
 ):
     """Story 11.3 (AD-21): one click — claims the CAS lock (AD-24), creates
@@ -1101,11 +1128,13 @@ async def prepare_node_os_gate(
     `upgrade_routes` for its own two older mutual-exclusion checks."""
     from dashboard.routes.actions import ActionConflictError, approve_action_core
 
-    if settings.ceph_exec_mode != "none":
+    cluster = _selected_cluster(request)
+    cluster_id = _cluster_scope_id(cluster)
+    if _effective_exec_mode(cluster) != "none":
         raise HTTPException(
             status_code=400, detail="Chỉ áp dụng cho cụm kiểu ceph-deploy (ceph_exec_mode=none)"
         )
-    matching = [n for n in configured_nodes() if n["host"] == host]
+    matching = [n for n in _effective_nodes(cluster) if n["host"] == host]
     if not matching:
         raise HTTPException(status_code=400, detail=f"Node {host!r} không nằm trong danh sách cấu hình")
     roles = matching[0]["roles"]
@@ -1114,16 +1143,17 @@ async def prepare_node_os_gate(
         existing = (
             session.query(NodeUpgradeGate)
             .filter(NodeUpgradeGate.host == host)
+            .filter(NodeUpgradeGate.cluster_id == cluster_id)
             .filter(NodeUpgradeGate.state.in_(_NODE_OS_GATE_NON_TERMINAL_STATES))
             .first()
         )
         if existing is not None:
             # FR-7: idempotent re-click for a node already PREPARING/PREPARED
             # — do NOT re-run FR-3/4/5, do NOT touch the CAS lock at all.
-            return RedirectResponse(url=f"/upgrade/gate?target_version={target_version}", status_code=303)
+            return RedirectResponse(url=_upgrade_gate_url(cluster, target_version), status_code=303)
 
         gate_id = str(uuid.uuid4())
-        if not claim_node_upgrade_gate_lock(session, gate_id):
+        if not claim_node_upgrade_gate_lock(session, gate_id, cluster_id):
             session.rollback()
             raise HTTPException(
                 status_code=409,
@@ -1134,6 +1164,7 @@ async def prepare_node_os_gate(
             )
 
         incident = Incident(
+            cluster_id=cluster_id,
             ceph_code=NODE_OS_GATE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Chuẩn bị node {host} để cài lại OS (mục tiêu Ceph {target_version}) bởi {user}",
@@ -1142,7 +1173,13 @@ async def prepare_node_os_gate(
         session.add(incident)
         session.flush()
 
-        action_params = {"host": host, "target_version": target_version, "roles": roles, "nodes": [host]}
+        action_params = {
+            "host": host,
+            "target_version": target_version,
+            "roles": roles,
+            "nodes": [host],
+            "_cluster_id": cluster_id,
+        }
         action = Action(
             incident_id=incident.id,
             action_id=NODE_OS_GATE_PREPARE_ACTION_ID,
@@ -1168,6 +1205,7 @@ async def prepare_node_os_gate(
         session.add(
             NodeUpgradeGate(
                 id=gate_id,
+                cluster_id=cluster_id,
                 host=host,
                 target_version=target_version,
                 state=NodeUpgradeGateState.PREPARING.value,
@@ -1202,11 +1240,13 @@ async def prepare_node_os_gate(
         )
         raise HTTPException(status_code=409, detail=exc.detail)
 
-    return RedirectResponse(url=f"/upgrade/gate?target_version={target_version}", status_code=303)
+    return RedirectResponse(url=_upgrade_gate_url(cluster, target_version), status_code=303)
 
 
 @router.post("/upgrade/gate/abort")
-async def abort_node_os_gate(host: str = Form(...), user: str = Depends(require_login)):
+async def abort_node_os_gate(
+    request: Request, host: str = Form(...), user: str = Depends(require_login)
+):
     """Story 11.3 (FR-6): reverses a PREPARED node back out — only valid
     while the gate is still exactly PREPARED (not available once Confirm
     has been clicked, Story 11.4 — written as an explicit `== PREPARED`
@@ -1214,10 +1254,13 @@ async def abort_node_os_gate(host: str = Form(...), user: str = Depends(require_
     too)."""
     from dashboard.routes.actions import ActionConflictError, approve_action_core
 
+    cluster = _selected_cluster(request)
+    cluster_id = _cluster_scope_id(cluster)
     with db.SessionLocal() as session:
         gate_row = (
             session.query(NodeUpgradeGate)
             .filter(NodeUpgradeGate.host == host)
+            .filter(NodeUpgradeGate.cluster_id == cluster_id)
             .order_by(NodeUpgradeGate.created_at.desc())
             .first()
         )
@@ -1230,6 +1273,7 @@ async def abort_node_os_gate(host: str = Form(...), user: str = Depends(require_
         roles = json.loads(gate_row.roles_snapshot or "[]")
         target_version = gate_row.target_version
         incident = Incident(
+            cluster_id=cluster_id,
             ceph_code=NODE_OS_GATE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Huỷ Chuẩn bị cho node {host} bởi {user}",
@@ -1244,6 +1288,7 @@ async def abort_node_os_gate(host: str = Form(...), user: str = Depends(require_
             "roles": roles,
             "nodes": [host],
             "node_upgrade_gate_id": gate_row.id,
+            "_cluster_id": cluster_id,
         }
         action = Action(
             incident_id=incident.id,
@@ -1287,11 +1332,13 @@ async def abort_node_os_gate(host: str = Form(...), user: str = Depends(require_
         )
         raise HTTPException(status_code=409, detail=exc.detail)
 
-    return RedirectResponse(url=f"/upgrade/gate?target_version={gate_target_version}", status_code=303)
+    return RedirectResponse(url=_upgrade_gate_url(cluster, gate_target_version), status_code=303)
 
 
 @router.post("/upgrade/gate/confirm")
-async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(require_login)):
+async def confirm_node_os_gate(
+    request: Request, host: str = Form(...), user: str = Depends(require_login)
+):
     """Story 11.4 (FR-8, AD-20, AD-21): re-checks OS live BEFORE creating
     anything (AD-20 — sync, dashboard-side, no Action) — only if that
     passes does it propose+approve `node_os_gate_recover` in the same
@@ -1300,10 +1347,13 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
     không release")."""
     from dashboard.routes.actions import ActionConflictError, approve_action_core
 
+    cluster = _selected_cluster(request)
+    cluster_id = _cluster_scope_id(cluster)
     with db.SessionLocal() as session:
         gate_row = (
             session.query(NodeUpgradeGate)
             .filter(NodeUpgradeGate.host == host)
+            .filter(NodeUpgradeGate.cluster_id == cluster_id)
             .order_by(NodeUpgradeGate.created_at.desc())
             .first()
         )
@@ -1318,7 +1368,7 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
         # not be re-triggered just because the operator double-clicked).
         if gate_row.state == NodeUpgradeGateState.RECOVERING.value:
             return RedirectResponse(
-                url=f"/upgrade/gate?target_version={gate_row.target_version}", status_code=303
+                url=_upgrade_gate_url(cluster, gate_row.target_version), status_code=303
             )
 
         if gate_row.state != NodeUpgradeGateState.PREPARED.value:
@@ -1331,7 +1381,7 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
 
     # FR-8's re-check, AD-20: sync, no Action, no DB write on failure.
     try:
-        os_release = await asyncio.to_thread(read_os_release, host)
+        os_release = await asyncio.to_thread(_read_os_release_for_cluster, host, cluster)
     except ExecutorError:
         raise HTTPException(
             status_code=400,
@@ -1372,7 +1422,7 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
         # STILL exactly PREPARED right before mutating it, since a
         # concurrent double-click or a concurrent Abort could have changed
         # it during that window.
-        if gate_row.state != NodeUpgradeGateState.PREPARED.value:
+        if gate_row.state != NodeUpgradeGateState.PREPARED.value or gate_row.cluster_id != cluster_id:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -1387,6 +1437,7 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
         roles = json.loads(gate_row.roles_snapshot or "[]")
 
         incident = Incident(
+            cluster_id=cluster_id,
             ceph_code=NODE_OS_GATE_CEPH_CODE,
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Xác nhận & Phục hồi node {host} (mục tiêu Ceph {target_version}) bởi {user}",
@@ -1401,6 +1452,7 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
             "roles": roles,
             "nodes": [host],
             "node_upgrade_gate_id": gate_row.id,
+            "_cluster_id": cluster_id,
         }
         action = Action(
             incident_id=incident.id,
@@ -1446,7 +1498,7 @@ async def confirm_node_os_gate(host: str = Form(...), user: str = Depends(requir
         )
         raise HTTPException(status_code=409, detail=exc.detail)
 
-    return RedirectResponse(url=f"/upgrade/gate?target_version={target_version}", status_code=303)
+    return RedirectResponse(url=_upgrade_gate_url(cluster, target_version), status_code=303)
 
 
 @router.post("/upgrade/propose-package-download")
@@ -1502,10 +1554,12 @@ async def propose_package_download_upgrade(
         if not target_nodes:
             raise HTTPException(status_code=400, detail="Chưa cấu hình node nào (xem trang Cài đặt)")
 
-        incompatible_nodes = await asyncio.to_thread(_check_os_upgrade_needed, target_version, target_nodes)
+        incompatible_nodes = await asyncio.to_thread(
+            _check_os_upgrade_needed, target_version, target_nodes, cluster
+        )
         if incompatible_nodes:
             context = await _build_os_upgrade_gate_context(
-                session, user, target_version, codename.capitalize(), incompatible_nodes
+                session, user, target_version, codename.capitalize(), incompatible_nodes, cluster
             )
             return templates.TemplateResponse(request, "os_upgrade_gate.html", context)
 

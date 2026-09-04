@@ -5,6 +5,7 @@ from shared.models import (
     Action,
     ActionClassification,
     ActionStatus,
+    Cluster,
     Incident,
     NodeUpgradeGate,
     NodeUpgradeGateLock,
@@ -43,6 +44,21 @@ def _seed_lock(db_session, active_gate_id=None):
     db_session.commit()
 
 
+def _seed_cluster(db_session, cluster_id: str) -> None:
+    db_session.add(
+        Cluster(
+            id=cluster_id,
+            name=cluster_id,
+            ceph_mon_nodes="10.20.1.150",
+            ssh_user="ceph",
+            ssh_key_path="/tmp/key",
+            is_default=False,
+            is_active=True,
+        )
+    )
+    db_session.flush()
+
+
 def test_claim_succeeds_when_lock_is_free(db_session):
     _seed_lock(db_session)
     gate_id = str(uuid.uuid4())
@@ -51,6 +67,18 @@ def test_claim_succeeds_when_lock_is_free(db_session):
     db_session.commit()
 
     assert db_session.get(NodeUpgradeGateLock, LOCK_ID).active_gate_id == gate_id
+
+
+def test_non_default_cluster_locks_are_independent(db_session):
+    first = str(uuid.uuid4())
+    second = str(uuid.uuid4())
+    assert claim_node_upgrade_gate_lock(db_session, first, "cluster-a") is True
+    assert claim_node_upgrade_gate_lock(db_session, second, "cluster-b") is True
+    assert claim_node_upgrade_gate_lock(db_session, str(uuid.uuid4()), "cluster-a") is False
+    db_session.commit()
+
+    assert db_session.get(NodeUpgradeGateLock, "cluster:cluster-a").active_gate_id == first
+    assert db_session.get(NodeUpgradeGateLock, "cluster:cluster-b").active_gate_id == second
 
 
 def test_claim_fails_when_lock_already_held(db_session):
@@ -140,6 +168,32 @@ def test_is_node_upgrade_gate_pending_true_with_recovering_row(db_session):
     db_session.commit()
 
     assert is_node_upgrade_gate_pending(db_session) is True
+
+
+def test_is_node_upgrade_gate_pending_can_be_scoped_to_cluster(db_session):
+    _seed_cluster(db_session, "cluster-a")
+    _seed_cluster(db_session, "cluster-b")
+    db_session.add(
+        NodeUpgradeGate(
+            cluster_id="cluster-a",
+            host="10.20.1.83",
+            target_version="18.2.4",
+            state=NodeUpgradeGateState.PREPARING.value,
+        )
+    )
+    db_session.add(
+        NodeUpgradeGate(
+            cluster_id="cluster-b",
+            host="10.20.1.84",
+            target_version="18.2.4",
+            state=NodeUpgradeGateState.PREPARING.value,
+        )
+    )
+    db_session.commit()
+
+    assert is_node_upgrade_gate_pending(db_session, cluster_id="cluster-a") is True
+    assert is_node_upgrade_gate_pending(db_session, cluster_id="cluster-b") is True
+    assert is_node_upgrade_gate_pending(db_session, cluster_id="cluster-c") is False
 
 
 def test_is_node_upgrade_gate_pending_false_with_only_terminal_rows(db_session):
