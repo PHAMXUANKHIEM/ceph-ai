@@ -11,6 +11,13 @@
 
   <main class="page backup-page">
     <p class="hint">Đang xem backup của cụm <strong>{{ selected_cluster.name }}</strong>.</p>
+    <section class="card">
+      <div class="card-header"><h2>Cinder Volume Backups</h2></div>
+      <div class="card-body">
+        <p class="hint">Backup volume Cinder được quản lý ở khu vực riêng để theo dõi trạng thái, backend Ceph/Vitastor và thao tác khôi phục.</p>
+        <a class="btn btn-primary" href="/cinder-backups">Mở Cinder Volume Backups</a>
+      </div>
+    </section>
     <nav class="backup-tabs" aria-label="Các khu vực Backup" role="tablist">
       <button type="button" class="backup-tab is-active" role="tab" aria-selected="true" aria-controls="backup-panel-protection" data-backup-tab="protection">RPO / RTO</button>
       <button type="button" class="backup-tab" role="tab" aria-selected="false" aria-controls="backup-panel-progress" data-backup-tab="progress">Đang chạy</button>
