@@ -1,5 +1,5 @@
 from shared import db as db_module
-from shared.models import VitastorCluster, VitastorOperation
+from shared.models import VitastorActionStatus, VitastorCluster, VitastorOperation, VitastorRemediationAction
 import dashboard.routes.vitastor_clusters as route
 
 
@@ -93,6 +93,29 @@ def test_cannot_disable_or_delete_cluster_with_in_flight_operation(dashboard_cli
     with db_module.SessionLocal() as session:
         assert session.get(VitastorCluster, cluster_id) is not None
         assert session.get(VitastorCluster, cluster_id).is_active is True
+
+
+def test_cannot_disable_or_delete_cluster_with_in_flight_remediation(dashboard_client, monkeypatch):
+    monkeypatch.setattr(route, "query_status", lambda *_: {"cluster": {"osd": "3 / 3 up"}})
+    _login(dashboard_client)
+    dashboard_client.post("/vitastor/clusters/create", data=_form())
+    with db_module.SessionLocal() as session:
+        cluster = session.query(VitastorCluster).one()
+        session.add(VitastorRemediationAction(
+            cluster_id=cluster.id, source="MONITOR", action_id="restart_mon_service",
+            classification="RISKY", status=VitastorActionStatus.APPROVED.value,
+            target_host="10.0.0.20", action_params="{}",
+            proposed_command="systemctl restart vitastor-mon", rationale="test",
+            dedup_key="test-remediation", requested_by="admin",
+        ))
+        session.commit()
+        cluster_id = cluster.id
+
+    toggle = dashboard_client.post(f"/vitastor/clusters/{cluster_id}/toggle-active")
+    delete = dashboard_client.post(f"/vitastor/clusters/{cluster_id}/delete")
+
+    assert "Không thể vô hiệu hoá cụm" in toggle.text
+    assert "Không thể xoá cụm" in delete.text
 
 
 def test_ceph_session_cannot_open_vitastor_clusters(dashboard_client):

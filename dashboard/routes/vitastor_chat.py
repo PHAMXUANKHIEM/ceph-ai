@@ -42,7 +42,7 @@ from dashboard.routes.settings import (
 from dashboard.routes.vitastor import require_vitastor_login
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import ChatMessage, ChatPreference, VitastorCluster, VitastorOperation
+from shared.models import ChatMessage, ChatPreference, VitastorActionStatus, VitastorCluster, VitastorOperation, VitastorRemediationAction
 from shared.router_client import build_router_client, readable_exception_message
 from shared.ai_redaction import redact_text
 from shared.ai_observability import mark_ai_provider, observe_ai_call, record_ai_usage
@@ -297,10 +297,22 @@ async def toggle_cluster_connection(request: Request, cluster_id: str, user: str
     with db.SessionLocal() as session:
         cluster = session.get(VitastorCluster, cluster_id)
         if not cluster: error = "Không tìm thấy cụm."
-        elif cluster.is_active and session.query(VitastorOperation.id).filter(
-            VitastorOperation.cluster_id == cluster_id,
-            VitastorOperation.status.in_(("PENDING_APPROVAL", "RUNNING")),
-        ).first():
+        elif cluster.is_active and (
+            session.query(VitastorOperation.id).filter(
+                VitastorOperation.cluster_id == cluster_id,
+                VitastorOperation.status.in_(("PENDING_APPROVAL", "RUNNING")),
+            ).first()
+            or session.query(VitastorRemediationAction.id).filter(
+                VitastorRemediationAction.cluster_id == cluster_id,
+                VitastorRemediationAction.status.in_(
+                    (
+                        VitastorActionStatus.PENDING_APPROVAL.value,
+                        VitastorActionStatus.APPROVED.value,
+                        VitastorActionStatus.EXECUTING.value,
+                    )
+                ),
+            ).first()
+        ):
             error = "Không thể vô hiệu hoá cụm khi đang có operation Vitastor chờ duyệt hoặc đang chạy."
         else: cluster.is_active = not cluster.is_active; session.commit()
     return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(user, active_section="cluster", cluster_error=error))
