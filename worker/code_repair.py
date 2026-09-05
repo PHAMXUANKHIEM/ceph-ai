@@ -649,7 +649,7 @@ Additional task constraints:
         notifier.update(15, f"{planner_provider} đang phân tích và lập kế hoạch (Planner/Reviewer)")
         planner = _run(
             planner_command, cwd=planner_worktree, timeout=config.timeout_seconds,
-            input_text=planner_prompt if planner_provider == "codex" else None, check=False,
+            input_text=planner_prompt, check=False,
         )
         _record_transcript(
             config, speaker="Planner/Reviewer", event="plan", direction="from_ai",

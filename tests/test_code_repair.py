@@ -253,6 +253,36 @@ def test_test_failure_kind_separates_infrastructure_from_candidate():
     assert code_repair._test_failure_kind("AssertionError: expected 2 got 3") == "CANDIDATE"
 
 
+
+def test_planner_prompt_is_sent_to_claude_stdin(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args == ["claude", "-p"]:
+            return type("Result", (), {"stdout": "VERDICT: NO_CHANGE_NEEDED", "returncode": 0})()
+        return type("Result", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(code_repair, "_run", fake_run)
+    monkeypatch.setattr(
+        code_repair, "_provider_command",
+        lambda *args, **kwargs: ("claude", ["claude", "-p"]),
+    )
+    monkeypatch.setattr(code_repair.os, "symlink", lambda *args, **kwargs: None)
+
+    result = code_repair.run_repair(
+        "ERROR test",
+        code_repair.RepairConfig(
+            repo=tmp_path, state_file=tmp_path / "state.json", planner_provider="claude",
+            allow_no_change=True, notify_telegram=False,
+        ),
+        force=True,
+    )
+
+    assert result.status == "NO_CHANGE"
+    claude_call = next(kwargs for args, kwargs in calls if args == ["claude", "-p"])
+    assert "Planner/Reviewer" in claude_call["input_text"]
+
 def test_claude_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")
     provider, command = code_repair._provider_command(
