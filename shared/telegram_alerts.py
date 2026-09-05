@@ -288,11 +288,12 @@ def send_node_forecast_alert(
     if not settings.telegram_node_enabled or not settings.telegram_node_bot_token or not settings.telegram_node_chat_id:
         return False
     label = "RAM" if metric.lower() == "ram" else "CPU"
+    horizon_hours = settings.node_resource_forecast_horizon_hours
     text = "\n".join(
         (
             f"🟡 CẢNH BÁO DỰ BÁO {label}",
             f"Node: {host}",
-            f"Hiện tại: {current_percent:.1f}% · dự báo trong 168h: {predicted_percent:.1f}%",
+            f"Hiện tại: {current_percent:.1f}% · dự báo trong {horizon_hours}h: {predicted_percent:.1f}%",
             f"Có thể chạm 90% sau: ~{hours_to_90:.1f} giờ",
             f"Confidence: {confidence * 100:.1f}% · mẫu: {samples} · cửa sổ học: {window_hours}h",
             "Đây là cảnh báo sớm từ forecast, chưa tự động thay đổi cluster.",
@@ -380,6 +381,9 @@ def send_auto_remediation_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
+    *,
+    cluster_name: str | None = None,
+    server_ip: str | None = None,
 ) -> None:
     """Called once per SAFE Action after execution finishes
     (worker/llm/router_client.py::_record_execution_result) — the
@@ -397,7 +401,10 @@ def send_auto_remediation_alert(
     llm/router_client.py::_record_execution_result` passes the SAFE
     Action's own Incident's cluster's channel here when that cluster has
     configured one of its own; `None` (default) keeps reading the 3
-    global settings.telegram_incident_* fields exactly as before."""
+    global settings.telegram_incident_* fields exactly as before.
+
+    `cluster_name`/`server_ip` preserve the originating cluster context in
+    follow-up messages for observed clusters."""
     if succeeded and action_id == "restart_osd_daemon":
         prefix = "✅ Khởi động lại thành công, đang xác minh Ceph"
     elif succeeded:
@@ -413,11 +420,14 @@ def send_auto_remediation_alert(
         lines.append(f"🔧 Giải pháp: {_compact(rationale, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if command:
         lines.append(f"💻 Lệnh: {_compact(command, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    if server_ip and server_ip.strip():
+        lines.append(f"🖥️ Ceph MON/IP: {_compact(server_ip, _MAX_FOLLOWUP_FIELD_CHARS)}")
     _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,
         enabled if enabled is not None else settings.telegram_incident_enabled,
         "\n".join(lines),
+        cluster_name,
     )
 
 

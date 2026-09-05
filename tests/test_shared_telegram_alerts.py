@@ -167,6 +167,23 @@ def test_successful_restart_sends_explicit_ok_notification(monkeypatch):
     assert "đang xác minh Ceph" in calls[0]
 
 
+def test_auto_remediation_alert_keeps_cluster_and_server_context(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_auto_remediation_alert(
+        "OSD_DOWN", "osd.0 down", "Restart daemon", "systemctl restart ceph-osd@0",
+        True, action_id="restart_osd_daemon", cluster_name="Hapu-Lab", server_ip="10.2.0.94",
+    )
+
+    assert "Cụm: Hapu-Lab" in calls[0]
+    assert "Cụm Ceph: OSD_DOWN" in calls[0]
+    assert "Ceph MON/IP: 10.2.0.94" in calls[0]
+
+
 def test_update_failure_alert_contains_error_ai_summary_and_rollback(monkeypatch):
     _configure_incident(monkeypatch)
     calls = []
@@ -273,6 +290,21 @@ def test_send_node_forecast_alert_sends_cluster_scoped_warning(monkeypatch):
     assert "Cụm: CS-LAB" in calls[0][2]
     assert "CẢNH BÁO DỰ BÁO RAM" in calls[0][2]
     assert "101.8 giờ" in calls[0][2]
+
+
+def test_send_node_forecast_alert_uses_configured_horizon(monkeypatch):
+    _configure_node(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "node_resource_forecast_horizon_hours", 72)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_node_forecast_alert(
+        "10.0.0.5", "cpu", 70.0, 95.0, 12.0, 0.8, 100, 24,
+    )
+
+    assert "dự báo trong 72h" in calls[0]
 
 
 def test_send_node_alert_skips_when_not_configured(monkeypatch):

@@ -21,7 +21,7 @@ from shared.models import (
     LogLearningSample,
     LogPattern,
 )
-from shared.remediation_cases import create_for_action, record_verified
+from shared.remediation_cases import create_for_action, record_inconclusive, record_verified
 
 
 def _session():
@@ -166,3 +166,29 @@ def test_bad_operator_verdict_is_a_verified_negative_even_after_success():
     assert sample.label == "VERIFIED_FAILED"
     assert sample.eligible_for_learning is True
     assert sample.outcome_source == "OPERATOR_VERDICT"
+
+
+def test_inconclusive_case_is_counted_as_inconclusive_not_diagnosed():
+    session = _session()
+    now, cluster, incident, finding = _seed(session)
+    action = Action(
+        incident_id=incident.id, action_id="restart_osd_daemon",
+        classification="SAFE", status="AUTO_EXECUTED", target_nodes='["node-a"]',
+    )
+    session.add(action); session.flush()
+    create_for_action(
+        session, incident=incident, action=action,
+        redacted_envelope={"nodes": ["node-a"], "cluster_snapshot": {}},
+        diagnosis="heartbeat failure", model_provider="test",
+    )
+    record_inconclusive(session, action_id=action.id, at=now, reason="post-check unavailable")
+    sample = record_finding_sample(session, finding)
+
+    evaluate_sample(session, sample, now=now)
+    recompute_fault_stats(session, now=now)
+
+    stat = session.query(LogFaultStat).one()
+    assert sample.state == "INCONCLUSIVE"
+    assert sample.eligible_for_learning is False
+    assert stat.inconclusive_count == 1
+    assert stat.verified_count == 0

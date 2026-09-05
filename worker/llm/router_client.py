@@ -1267,6 +1267,8 @@ def _record_execution_result(
     notify_bot_token: str | None = None
     notify_chat_id: str | None = None
     notify_enabled: bool | None = None
+    notify_cluster_name: str | None = settings.cluster_name
+    notify_server_ip: str | None = settings.ceph_mon_nodes
 
     with db.SessionLocal() as session:
         action = session.get(Action, action_pk)
@@ -1329,10 +1331,13 @@ def _record_execution_result(
             notify_diagnosis = incident.diagnosis_text
             if incident.cluster_id is not None:
                 cluster = session.get(Cluster, incident.cluster_id)
-                if cluster is not None and cluster.telegram_bot_token and cluster.telegram_chat_id:
-                    notify_bot_token = cluster.telegram_bot_token
-                    notify_chat_id = cluster.telegram_chat_id
-                    notify_enabled = cluster.telegram_enabled
+                if cluster is not None:
+                    notify_cluster_name = cluster.name
+                    notify_server_ip = cluster.ceph_mon_nodes
+                    if cluster.telegram_bot_token and cluster.telegram_chat_id:
+                        notify_bot_token = cluster.telegram_bot_token
+                        notify_chat_id = cluster.telegram_chat_id
+                        notify_enabled = cluster.telegram_enabled
         session.commit()
 
     # Best-effort, never raises (see shared/telegram_alerts.py's own
@@ -1351,6 +1356,8 @@ def _record_execution_result(
             bot_token=notify_bot_token,
             chat_id=notify_chat_id,
             enabled=notify_enabled,
+            cluster_name=notify_cluster_name,
+            server_ip=notify_server_ip,
         )
 
 
@@ -2760,12 +2767,17 @@ def _record_approved_execution_result(
                 actor=audit.ACTOR_SYSTEM,
             )
             bot_token = chat_id = enabled = None
+            cluster_name = settings.cluster_name
+            server_ip = settings.ceph_mon_nodes
             if incident.cluster_id is not None:
                 cluster = session.get(Cluster, incident.cluster_id)
-                if cluster is not None and cluster.telegram_bot_token and cluster.telegram_chat_id:
-                    bot_token = cluster.telegram_bot_token
-                    chat_id = cluster.telegram_chat_id
-                    enabled = cluster.telegram_enabled
+                if cluster is not None:
+                    cluster_name = cluster.name
+                    server_ip = cluster.ceph_mon_nodes
+                    if cluster.telegram_bot_token and cluster.telegram_chat_id:
+                        bot_token = cluster.telegram_bot_token
+                        chat_id = cluster.telegram_chat_id
+                        enabled = cluster.telegram_enabled
             notify = {
                 "ceph_code": incident.ceph_code,
                 "diagnosis_text": incident.diagnosis_text,
@@ -2777,6 +2789,8 @@ def _record_approved_execution_result(
                 "bot_token": bot_token,
                 "chat_id": chat_id,
                 "enabled": enabled,
+                "cluster_name": cluster_name,
+                "server_ip": server_ip,
             }
         if action.action_id == "execute_node_command":
             source_message = (

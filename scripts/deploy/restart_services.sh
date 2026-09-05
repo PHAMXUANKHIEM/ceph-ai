@@ -93,12 +93,19 @@ MANAGED_SYSTEMD_UNITS=(
 )
 if command -v systemctl >/dev/null 2>&1; then
   all_units_present=true
+  present_units=0
   for unit in "${MANAGED_SYSTEMD_UNITS[@]}"; do
     if ! systemctl cat "$unit" >/dev/null 2>&1; then
       all_units_present=false
-      break
+    else
+      present_units=$((present_units + 1))
     fi
   done
+  if [ "$present_units" -gt 0 ] && [ "$all_units_present" = false ]; then
+    echo "ERROR: only ${present_units}/${#MANAGED_SYSTEMD_UNITS[@]} managed systemd units are installed."
+    echo "Refusing detached fallback because it could create duplicate services."
+    exit 1
+  fi
   if [ "$all_units_present" = true ]; then
     echo "==> Restarting systemd-managed services"
     systemctl daemon-reload

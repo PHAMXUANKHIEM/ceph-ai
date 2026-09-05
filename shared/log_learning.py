@@ -162,6 +162,13 @@ def evaluate_sample(session, sample: LogLearningSample, *, now: datetime | None 
                 sample.exclusion_reason = None
                 sample.outcome_source = "TELEMETRY_POST_CHECK"
                 sample.verified_at = case.verified_at
+            elif case.outcome == "INCONCLUSIVE":
+                sample.state = "INCONCLUSIVE"
+                sample.label = "UNVERIFIED"
+                sample.eligible_for_learning = False
+                sample.exclusion_reason = "remediation outcome is INCONCLUSIVE"
+                sample.outcome_source = "POSTCHECK"
+                sample.verified_at = case.verified_at
             else:
                 sample.state = "DIAGNOSED"
                 sample.label = "UNVERIFIED"

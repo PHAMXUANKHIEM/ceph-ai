@@ -540,7 +540,11 @@ def build_and_publish_incident(
         # a delivery dependency. send_incident_alert is best-effort and
         # swallows Telegram failures, so RabbitMQ publishing still proceeds.
         telegram_alerts.send_incident_alert(
-            ceph_code, check_detail.get("severity"), log_excerpt
+            ceph_code,
+            check_detail.get("severity"),
+            log_excerpt,
+            cluster_name=settings.cluster_name,
+            server_ip=settings.ceph_mon_nodes,
         )
         envelopes.append(
             publisher.build_envelope(
