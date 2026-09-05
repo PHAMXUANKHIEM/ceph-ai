@@ -86,6 +86,10 @@ def _fast_node_health_monitor_default(monkeypatch):
     monkeypatch.setattr(
         watcher_main.node_health_monitor, "create_or_resolve_node_health_incidents", lambda *_a: None
     )
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_reachability", lambda *_a: {})
+    monkeypatch.setattr(
+        watcher_main.node_health_monitor, "create_or_resolve_node_unreachable_incidents", lambda *_a: None
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -436,6 +440,31 @@ def test_run_calls_node_health_monitor_every_iteration_when_interval_is_zero(mon
     watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
 
     assert check_calls["n"] == 3
+
+
+def test_run_calls_node_reachability_monitor_every_iteration_when_interval_is_zero(monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "node_reachability_scan_interval_seconds", 0, raising=False)
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+
+    check_calls = {"n": 0}
+    resolve_calls = []
+
+    def fake_check(*_a):
+        check_calls["n"] += 1
+        return {"NODE_UNREACHABLE:node-1": {"host": "node-1"}}
+
+    monkeypatch.setattr(watcher_main.node_health_monitor, "check_node_reachability", fake_check)
+    monkeypatch.setattr(
+        watcher_main.node_health_monitor,
+        "create_or_resolve_node_unreachable_incidents",
+        lambda current, *_a: resolve_calls.append(current),
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=3)
+
+    assert check_calls["n"] == 3
+    assert resolve_calls == [{"NODE_UNREACHABLE:node-1": {"host": "node-1"}}] * 3
 
 
 def test_run_survives_node_health_monitor_raising(monkeypatch):

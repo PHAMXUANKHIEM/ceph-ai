@@ -250,3 +250,60 @@ def test_create_or_resolve_does_not_alert_on_resolve(isolated_db, monkeypatch):
     nhm.create_or_resolve_node_health_incidents({})  # resolve — must not send another alert
 
     assert calls == []
+
+
+def test_check_node_reachability_flags_only_after_consecutive_failures(monkeypatch):
+    nhm._consecutive_unreachable_scans.clear()
+    monkeypatch.setattr(
+        nhm, "configured_nodes", lambda: [{"host": "node-1", "roles": ["MON", "OSD"]}],
+    )
+    monkeypatch.setattr(nhm.settings, "node_reachability_consecutive_failures", 2, raising=False)
+    monkeypatch.setattr(
+        nhm.ceph_client, "run_command_on_node",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("SSH timeout")),
+    )
+
+    still_unreachable = set()
+    assert nhm.check_node_reachability(still_unreachable) == {}
+    current = nhm.check_node_reachability(still_unreachable)
+
+    detail = current["NODE_UNREACHABLE:node-1"]
+    assert detail["roles"] == ["MON", "OSD"]
+    assert detail["consecutive_failures"] == 2
+    assert still_unreachable == {"NODE_UNREACHABLE:node-1"}
+
+    monkeypatch.setattr(nhm.ceph_client, "run_command_on_node", lambda *args, **kwargs: "")
+    assert nhm.check_node_reachability() == {}
+    assert nhm._consecutive_unreachable_scans["node-1"] == 0
+
+
+def test_node_unreachable_incident_sends_one_alert_and_resolves(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(nhm, "send_node_alert", lambda host, message: calls.append((host, message)))
+    current = {
+        "NODE_UNREACHABLE:node-1": {
+            "host": "node-1",
+            "roles": ["MON"],
+            "consecutive_failures": 2,
+            "error": "SSH timeout",
+        }
+    }
+
+    nhm.create_or_resolve_node_unreachable_incidents(current)
+    nhm.create_or_resolve_node_unreachable_incidents(current)
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="NODE_UNREACHABLE:node-1").one()
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert json.loads(incident.signal_evidence_json)["source"] == "ssh_reachability"
+        action = session.query(Action).filter_by(incident_id=incident.id).one()
+        assert action.action_id == "investigate_manually"
+        assert action.target_nodes == '["node-1"]'
+
+    assert len(calls) == 1
+    assert calls[0][0] == "node-1"
+
+    nhm.create_or_resolve_node_unreachable_incidents({})
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="NODE_UNREACHABLE:node-1").one()
+        assert incident.status == IncidentStatus.RESOLVED.value

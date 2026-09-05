@@ -539,6 +539,11 @@ class Settings(BaseSettings):
     # meaningfully heavier SSH load than the single `ceph health detail`
     # query the main loop already does. 15 minutes by default.
     node_health_scan_interval_seconds: int = 900
+    # A host that no longer accepts the configured SSH connection is a
+    # separate availability failure from high CPU/RAM. Scan it promptly,
+    # but require two consecutive failures before notifying operators.
+    node_reachability_scan_interval_seconds: int = 60
+    node_reachability_consecutive_failures: int = Field(default=2, ge=1, le=10)
 
     # CPU/RAM forecasting is deliberately backed by Loki rather than the
     # application database.  Watcher pushes each node-health sample as a

@@ -726,6 +726,7 @@ def run(
     last_checks: frozenset = frozenset()
     last_device_health_scan_at: Optional[datetime] = None
     last_node_health_scan_at: Optional[datetime] = None
+    last_node_reachability_scan_at: Optional[datetime] = None
     last_bluestore_omap_scan_at: Optional[datetime] = None
     last_osd_latency_scan_at: Optional[datetime] = None
     last_crush_scan_at: Optional[datetime] = None
@@ -901,6 +902,26 @@ def run(
             except Exception:
                 logger.exception("run: device health scan failed")
             last_device_health_scan_at = now
+
+        # A down host otherwise only appears as best-effort collector errors.
+        # Keep this independent from the slower CPU/RAM scan so operators get
+        # a hardware-channel Telegram alert within roughly two failed probes.
+        if (
+            last_node_reachability_scan_at is None
+            or (now - last_node_reachability_scan_at).total_seconds()
+            >= settings.node_reachability_scan_interval_seconds
+        ):
+            try:
+                node_still_unreachable: set[str] = set()
+                current_node_reachability = node_health_monitor.check_node_reachability(
+                    node_still_unreachable,
+                )
+                node_health_monitor.create_or_resolve_node_unreachable_incidents(
+                    current_node_reachability, node_still_unreachable,
+                )
+            except Exception:
+                logger.exception("run: node reachability scan failed")
+            last_node_reachability_scan_at = now
 
         # 2026-08-05: Node hardware (CPU/RAM) threshold scan — own
         # independent try/except (same isolation reasoning as the volume-

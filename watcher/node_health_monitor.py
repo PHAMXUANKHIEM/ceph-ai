@@ -34,12 +34,14 @@ from shared.cluster_nodes import configured_nodes
 from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_node_alert
-from watcher import node_metrics, node_resource_forecast
+from watcher import ceph_client, node_metrics, node_resource_forecast
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
 
 NODE_RESOURCE_HIGH_PREFIX = "NODE_RESOURCE_HIGH:"
+NODE_UNREACHABLE_PREFIX = "NODE_UNREACHABLE:"
+NODE_UNREACHABLE_ACTION_ID = "investigate_manually"
 # CPU-only pressure remains an operator investigation. Sustained RAM >=90%
 # proposes a hard reboot, but it is RISKY and remains approval-gated.
 NODE_RESOURCE_HIGH_ACTION_ID = "investigate_manually"
@@ -59,6 +61,7 @@ MEM_ALERT_THRESHOLD_PERCENT = 90.0
 # than the main poll loop's, so 2 consecutive scans already means the
 # condition held for roughly 2 x node_health_scan_interval_seconds).
 CONSECUTIVE_SCANS_REQUIRED = 2
+NODE_REACHABILITY_TIMEOUT_SECONDS = 5
 
 # Mirrors watcher/main.py::_RECOVERABLE_STATUSES / watcher/volume_monitor.py's
 # own copy — kept as its own copy rather than a cross-import, same
@@ -82,7 +85,101 @@ _RECOVERABLE_STATUSES = {
 # call as volume_monitor.py's own _state (a lab/small deployment's node
 # count is small and stable enough not to be a real unbounded-growth risk).
 _consecutive_high_scans: dict[str, int] = {}
+_consecutive_unreachable_scans: dict[str, int] = {}
 
+
+def node_unreachable_code_for(host: str) -> str:
+    return f"{NODE_UNREACHABLE_PREFIX}{host}"
+
+
+def check_node_reachability(still_unreachable: set[str] | None = None) -> dict[str, dict]:
+    """Return hosts that failed the configured SSH probe repeatedly."""
+    flagged: dict[str, dict] = {}
+    required = max(1, int(settings.node_reachability_consecutive_failures))
+    for node in configured_nodes():
+        host = node["host"]
+        try:
+            ceph_client.run_command_on_node(
+                host, "true", timeout=NODE_REACHABILITY_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            failures = _consecutive_unreachable_scans.get(host, 0) + 1
+            _consecutive_unreachable_scans[host] = failures
+            code = node_unreachable_code_for(host)
+            if still_unreachable is not None:
+                still_unreachable.add(code)
+            if failures >= required:
+                flagged[code] = {
+                    "host": host,
+                    "roles": node.get("roles", []),
+                    "consecutive_failures": failures,
+                    "error": str(exc)[:500],
+                }
+        else:
+            _consecutive_unreachable_scans[host] = 0
+    return flagged
+
+
+def _unreachable_rationale(detail: dict) -> str:
+    roles = ", ".join(detail.get("roles") or []) or "Ceph"
+    return (
+        f"Node {detail['host']} ({roles}) không phản hồi SSH sau "
+        f"{detail['consecutive_failures']} lần kiểm tra liên tiếp. "
+        f"Lỗi gần nhất: {detail.get('error') or 'không rõ'}. "
+        "Cần kiểm tra nguồn điện, mạng và console của node; hệ thống không tự reboot."
+    )
+
+
+def create_or_resolve_node_unreachable_incidents(
+    current: dict[str, dict], still_unreachable: set[str] | None = None,
+) -> None:
+    """Persist one approval-gated incident and Telegram alert per outage."""
+    with db.SessionLocal() as session:
+        open_incidents = (
+            session.query(Incident)
+            .filter(Incident.ceph_code.like(f"{NODE_UNREACHABLE_PREFIX}%"))
+            .filter(Incident.status.in_(_RECOVERABLE_STATUSES))
+            .all()
+        )
+        open_codes = {incident.ceph_code for incident in open_incidents}
+        still_unreachable = still_unreachable or set()
+        for incident in open_incidents:
+            if incident.ceph_code not in current and incident.ceph_code not in still_unreachable:
+                incident.status = IncidentStatus.RESOLVED.value
+                cancel_pending_actions(session, incident.id)
+
+        for ceph_code, detail in current.items():
+            if ceph_code in open_codes:
+                continue
+            rationale = _unreachable_rationale(detail)
+            incident = Incident(
+                ceph_code=ceph_code,
+                status=IncidentStatus.PENDING_APPROVAL.value,
+                detected_at=datetime.utcnow(),
+                log_excerpt=rationale,
+                signal_evidence_json=json.dumps({"source": "ssh_reachability", **detail}),
+            )
+            session.add(incident)
+            session.flush()
+            action = Action(
+                incident_id=incident.id,
+                action_id=NODE_UNREACHABLE_ACTION_ID,
+                classification=gate.classify_action(NODE_UNREACHABLE_ACTION_ID).value,
+                status=ActionStatus.PENDING_APPROVAL.value,
+                rationale=rationale,
+                target_nodes=json.dumps([detail["host"]]),
+                action_params=json.dumps({"host": detail["host"]}),
+            )
+            session.add(action)
+            session.flush()
+            audit.record(
+                session, incident_id=incident.id, action_id=action.id,
+                event_type=audit.EVENT_RISKY_ACTION_PENDING_APPROVAL,
+                actor=audit.ACTOR_SYSTEM,
+            )
+            if not alert_lifecycle.inherit_active_mute(session, incident):
+                send_node_alert(detail["host"], rationale)
+        session.commit()
 
 def ceph_code_for(host: str) -> str:
     return f"{NODE_RESOURCE_HIGH_PREFIX}{host}"
