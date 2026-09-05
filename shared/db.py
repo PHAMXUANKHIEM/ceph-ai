@@ -32,7 +32,7 @@ def make_engine(database_url: str | None = None):
         # preventing Dashboard startup at pg_catalog.version().
         connect_args = {"connect_timeout": 5}
         engine_options = {
-            "pool_size": 1,
+            "pool_size": 3,
             "max_overflow": 0,
             "pool_timeout": 5,
             "pool_pre_ping": True,
