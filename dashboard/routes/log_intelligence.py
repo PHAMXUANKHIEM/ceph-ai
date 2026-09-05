@@ -19,6 +19,8 @@ xuất hành động đi qua đúng hàng chờ Duyệt sẵn có (xem
 ràng buộc R5 của plan.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -83,6 +85,13 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
 
         finding_rows = []
         for finding in findings:
+            try:
+                daemon_types = {
+                    value.lower() for value in json.loads(finding.affected_daemons_json or "[]")
+                    if isinstance(value, str)
+                }
+            except (TypeError, ValueError):
+                daemon_types = set()
             finding_rows.append({
                 "row": finding,
                 # Bằng chứng gốc luôn đi kèm kết luận -- người đọc phải tự
@@ -90,6 +99,7 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
                 "evidence": resolve_pattern_templates(finding),
                 "ceph_code": ceph_code_for(finding.dedupe_key),
                 "correlated_incident": correlated_incidents.get(finding.correlated_incident_id),
+                "is_rgw": "rgw" in daemon_types,
             })
 
         # Tách các đối tượng ra khỏi session trước khi nó đóng: template
@@ -101,6 +111,7 @@ def _context(user: str, *, message: str | None = None, error: str | None = None)
         "is_admin": auth.is_admin_user(user),
         "runs": runs,
         "finding_rows": finding_rows,
+        "rgw_finding_rows": [item for item in finding_rows if item["is_rgw"]],
         "patterns": patterns,
         "open_status": LogFindingStatus.OPEN.value,
         "acknowledged_status": LogFindingStatus.ACKNOWLEDGED.value,

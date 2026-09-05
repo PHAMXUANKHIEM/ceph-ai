@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 PROBLEM_STATES = {"WARNING", "CRITICAL", "UNREACHABLE"}
 
 
+def _alert(cluster: VitastorCluster, health: str, detail: str) -> None:
+    """Keep product and management-host context on every Vitastor alert."""
+    send_vitastor_alert(cluster.name, health, detail, cluster.management_host)
+
+
 def _cached(cluster: VitastorCluster) -> dict:
     try:
         value = json.loads(cluster.last_status_json or "{}")
@@ -152,14 +157,14 @@ def _capacity_alerts(cluster: VitastorCluster, datasets: dict, summary: dict, ca
         current[key] = level
         old = str(previous.get(key) or "")
         if level in PROBLEM_STATES and level != old:
-            send_vitastor_alert(
-                cluster.name, level,
+            _alert(
+                cluster, level,
                 f"Dung lượng {label}: {percent:.2f}% đã dùng · ngưỡng WARNING "
                 f"{settings.vitastor_capacity_warning_percent:g}% / CRITICAL "
                 f"{settings.vitastor_capacity_critical_percent:g}%",
             )
         elif level == "HEALTHY" and old in PROBLEM_STATES:
-            send_vitastor_alert(cluster.name, "HEALTHY", f"Dung lượng {label} đã phục hồi: {percent:.2f}% đã dùng")
+            _alert(cluster, "HEALTHY", f"Dung lượng {label} đã phục hồi: {percent:.2f}% đã dùng")
     cache["_telegram_capacity"] = current
 
 
@@ -179,9 +184,9 @@ def _etcd_alert(cluster: VitastorCluster, detail: dict, cache: dict) -> None:
     previous = str(cache.get("_telegram_etcd") or "")
     latency_text = f"{latency:.2f} ms" if isinstance(latency, (int, float)) else "không có dữ liệu"
     if level in PROBLEM_STATES and level != previous:
-        send_vitastor_alert(cluster.name, level, f"Etcd {healthy}/{total} healthy · leader {detail.get('leader_count', 0)} · latency {latency_text}")
+        _alert(cluster, level, f"Etcd {healthy}/{total} healthy · leader {detail.get('leader_count', 0)} · latency {latency_text}")
     elif level == "HEALTHY" and previous in PROBLEM_STATES:
-        send_vitastor_alert(cluster.name, "HEALTHY", f"Etcd đã phục hồi · {healthy}/{total} healthy · latency {latency_text}")
+        _alert(cluster, "HEALTHY", f"Etcd đã phục hồi · {healthy}/{total} healthy · latency {latency_text}")
     cache["_telegram_etcd"] = level
 
 
@@ -191,9 +196,9 @@ def _recovery_and_data_alerts(cluster: VitastorCluster, summary: dict, cache: di
     data_level = "CRITICAL" if int(states.get("incomplete") or 0) else "WARNING" if affected else "HEALTHY"
     old_data = str(cache.get("_telegram_data_integrity") or "")
     if data_level in PROBLEM_STATES and data_level != old_data:
-        send_vitastor_alert(cluster.name, data_level, f"Data integrity: degraded={states.get('degraded', 0)} bytes · incomplete={states.get('incomplete', 0)} bytes")
+        _alert(cluster, data_level, f"Data integrity: degraded={states.get('degraded', 0)} bytes · incomplete={states.get('incomplete', 0)} bytes")
     elif data_level == "HEALTHY" and old_data in PROBLEM_STATES:
-        send_vitastor_alert(cluster.name, "HEALTHY", "Dữ liệu đã trở lại CLEAN, không còn degraded/incomplete")
+        _alert(cluster, "HEALTHY", "Dữ liệu đã trở lại CLEAN, không còn degraded/incomplete")
     cache["_telegram_data_integrity"] = data_level
 
     recovery = summary.get("recovery") or {}
@@ -202,9 +207,9 @@ def _recovery_and_data_alerts(cluster: VitastorCluster, summary: dict, cache: di
     level = "CRITICAL" if mbps >= settings.vitastor_recovery_critical_mbps else "WARNING" if mbps >= settings.vitastor_recovery_warning_mbps else "HEALTHY"
     old = str(cache.get("_telegram_recovery") or "")
     if level in PROBLEM_STATES and level != old:
-        send_vitastor_alert(cluster.name, level, f"Recovery/Rebalance đang dùng {mbps:.1f} MB/s; có thể làm tăng latency ứng dụng")
+        _alert(cluster, level, f"Recovery/Rebalance đang dùng {mbps:.1f} MB/s; có thể làm tăng latency ứng dụng")
     elif level == "HEALTHY" and old in PROBLEM_STATES:
-        send_vitastor_alert(cluster.name, "HEALTHY", f"Recovery/Rebalance đã giảm còn {mbps:.1f} MB/s")
+        _alert(cluster, "HEALTHY", f"Recovery/Rebalance đã giảm còn {mbps:.1f} MB/s")
     cache["_telegram_recovery"] = level
 
 
@@ -234,9 +239,9 @@ def _slow_osd_alerts(cluster: VitastorCluster, datasets: dict, cache: dict) -> N
             slow.add(osd_id)
     for osd_id in sorted(slow - previous_set):
         latency, host = latencies[osd_id]
-        send_vitastor_alert(cluster.name, "WARNING", f"Slow OSD {osd_id} ({host}): {latency:.2f} ms · median cụm {median:.2f} ms")
+        _alert(cluster, "WARNING", f"Slow OSD {osd_id} ({host}): {latency:.2f} ms · median cụm {median:.2f} ms")
     for osd_id in sorted(previous_set - slow):
-        send_vitastor_alert(cluster.name, "HEALTHY", f"OSD {osd_id} không còn là latency outlier")
+        _alert(cluster, "HEALTHY", f"OSD {osd_id} không còn là latency outlier")
     cache["_slow_osd_streaks"] = streaks
     cache["_telegram_slow_osds"] = sorted(slow)
 
@@ -272,8 +277,8 @@ def _collect_hardware(cluster: VitastorCluster, datasets: dict, cache: dict) -> 
             level = "CRITICAL" if critical else "WARNING" if warning else "HEALTHY"; current[key] = level
             old = str(previous.get(key) or "")
             detail = f"{key} · temperature={temp}°C · wear={wear}% · media_errors={errors}"
-            if level in PROBLEM_STATES and level != old: send_vitastor_alert(cluster.name, level, "Hardware " + detail)
-            elif level == "HEALTHY" and old in PROBLEM_STATES: send_vitastor_alert(cluster.name, "HEALTHY", "Hardware đã phục hồi " + detail)
+            if level in PROBLEM_STATES and level != old: _alert(cluster, level, "Hardware " + detail)
+            elif level == "HEALTHY" and old in PROBLEM_STATES: _alert(cluster, "HEALTHY", "Hardware đã phục hồi " + detail)
     cache["_telegram_hardware"] = current
     return results
 
@@ -315,8 +320,8 @@ def _collect_network(cluster: VitastorCluster, datasets: dict, cache: dict) -> l
             level = "CRITICAL" if critical else "WARNING" if warning else "HEALTHY"; current[key] = level
             old = str(previous.get(key) or "")
             detail = f"Network {key} · RTT={rtt} ms · jumbo9000={probe.get('jumbo_9000')} · NIC errors/drops tăng={nic_delta}"
-            if level in PROBLEM_STATES and level != old: send_vitastor_alert(cluster.name, level, detail)
-            elif level == "HEALTHY" and old in PROBLEM_STATES: send_vitastor_alert(cluster.name, "HEALTHY", detail + " · đã phục hồi")
+            if level in PROBLEM_STATES and level != old: _alert(cluster, level, detail)
+            elif level == "HEALTHY" and old in PROBLEM_STATES: _alert(cluster, "HEALTHY", detail + " · đã phục hồi")
     cache["_telegram_network"], cache["_network_counters"] = current, counters
     return results
 
@@ -330,7 +335,7 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
     except VitastorConnectionError as exc:
         current = "UNREACHABLE"
         if previous != current:
-            send_vitastor_alert(cluster.name, current, f"Không kết nối được management host {cluster.management_host}: {exc}")
+            _alert(cluster, current, f"Không kết nối được management host {cluster.management_host}: {exc}")
         cache["monitor_error"] = str(exc)
         _persist(cluster.id, cache, current)
         cluster.last_status_json = json.dumps(cache)
@@ -340,9 +345,9 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
     etcd_detail = normalize_etcd(datasets.get("etcd_status"), datasets.get("etcd_health"))
     anomalies = detect_and_record(cluster.id, extract_entities(datasets, summary))
     for explanation in anomalies["opened"]:
-        send_vitastor_alert(cluster.name, "WARNING", "Dynamic anomaly: " + explanation)
+        _alert(cluster, "WARNING", "Dynamic anomaly: " + explanation)
     for explanation in anomalies["resolved"]:
-        send_vitastor_alert(cluster.name, "HEALTHY", "Dynamic anomaly đã phục hồi: " + explanation)
+        _alert(cluster, "HEALTHY", "Dynamic anomaly đã phục hồi: " + explanation)
     _record_metrics(cluster.id, datasets, summary, etcd_detail)
     _capacity_alerts(cluster, datasets, summary, cache)
     _etcd_alert(cluster, etcd_detail, cache)
@@ -356,17 +361,17 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
     # never abort the health poll or block cache persistence below.
     try:
         for proposal in reconcile_monitor_proposals(cluster, datasets, summary):
-            send_vitastor_alert(
-                cluster.name, "WARNING",
+            _alert(
+                cluster, "WARNING",
                 "Đề xuất khắc phục (chờ duyệt): " + (proposal.get("rationale") or proposal.get("action_id", "")),
             )
     except Exception:
         logger.exception("Vitastor remediation reconcile failed for %r", cluster.name)
     current = summary["health"]
     if current in PROBLEM_STATES and current != previous:
-        send_vitastor_alert(cluster.name, current, _health_detail(summary))
+        _alert(cluster, current, _health_detail(summary))
     elif current == "HEALTHY" and previous in PROBLEM_STATES:
-        send_vitastor_alert(cluster.name, current, "Cluster đã phục hồi · " + _health_detail(summary))
+        _alert(cluster, current, "Cluster đã phục hồi · " + _health_detail(summary))
 
     cache.update({
         "summary": summary,

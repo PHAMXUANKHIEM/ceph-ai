@@ -1966,6 +1966,135 @@ def test_unauthenticated_patch_pipeline_settings_submit_redirects_to_login(dashb
     assert response.headers["location"] == "/login"
 
 
+# --- AI Code Repair supervisor settings (Planner/Reviewer + Implementer) ---
+
+
+def test_get_settings_shows_code_repair_roles_for_admin(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert "AI Code Repair" in response.text
+    assert "Planner / Reviewer" in response.text
+    assert "Implementer" in response.text
+    assert 'action="/settings/code-repair"' in response.text
+
+
+def test_get_settings_hides_code_repair_roles_for_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'action="/settings/code-repair"' not in response.text
+
+
+def test_code_repair_settings_submit_persists_two_roles_without_restarting_worker(
+    dashboard_client, monkeypatch, tmp_path
+):
+    tmp_env = tmp_path / ".env"
+    tmp_env.write_text("DASHBOARD_USERNAME=admin\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", tmp_env)
+    for field, value in {
+        "code_repair_planner_provider": "codex",
+        "code_repair_planner_model": "old-planner",
+        "code_repair_implementer_provider": "codex",
+        "code_repair_implementer_model": "old-implementer",
+        "code_repair_max_review_rounds": 2,
+    }.items():
+        monkeypatch.setattr(settings, field, value)
+    restart_calls = []
+    monkeypatch.setattr(
+        settings_route, "restart_worker", lambda: restart_calls.append(1)
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/code-repair",
+        data={
+            "code_repair_planner_provider": "claude",
+            "code_repair_planner_model": "sonnet",
+            "code_repair_implementer_provider": "codex",
+            "code_repair_implementer_model": "gpt-5-codex",
+            "code_repair_max_review_rounds": "3",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Đã lưu cấu hình AI Code Repair" in response.text
+    assert settings.code_repair_planner_provider == "claude"
+    assert settings.code_repair_planner_model == "sonnet"
+    assert settings.code_repair_implementer_provider == "codex"
+    assert settings.code_repair_implementer_model == "gpt-5-codex"
+    assert settings.code_repair_max_review_rounds == 3
+    env_contents = tmp_env.read_text()
+    assert "CODE_REPAIR_PLANNER_PROVIDER=claude" in env_contents
+    assert "CODE_REPAIR_PLANNER_MODEL=sonnet" in env_contents
+    assert "CODE_REPAIR_IMPLEMENTER_PROVIDER=codex" in env_contents
+    assert "CODE_REPAIR_IMPLEMENTER_MODEL=gpt-5-codex" in env_contents
+    assert "CODE_REPAIR_MAX_REVIEW_ROUNDS=3" in env_contents
+    assert restart_calls == []
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        (
+            "code_repair_planner_provider",
+            "other",
+            "provider phải là auto, codex hoặc claude",
+        ),
+        (
+            "code_repair_max_review_rounds",
+            "6",
+            "Số vòng review phải nằm trong khoảng 0 đến 5",
+        ),
+    ],
+)
+def test_code_repair_settings_submit_rejects_invalid_values(
+    dashboard_client, field, value, expected
+):
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/settings/code-repair",
+        data={
+            "code_repair_planner_provider": "codex",
+            "code_repair_planner_model": "",
+            "code_repair_implementer_provider": "codex",
+            "code_repair_implementer_model": "",
+            "code_repair_max_review_rounds": "2",
+            field: value,
+        },
+    )
+
+    assert response.status_code == 200
+    assert expected in response.text
+
+
+def test_code_repair_settings_submit_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post(
+        "/settings/code-repair",
+        data={"code_repair_planner_provider": "codex"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_unauthenticated_code_repair_settings_submit_redirects_to_login(dashboard_client):
+    response = dashboard_client.post(
+        "/settings/code-repair", data={"code_repair_planner_provider": "codex"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
 # Note: user-management ("Users") tests live in test_dashboard_users.py —
 # that feature is its own standalone page (/users), not a Settings card,
 # as of 2026-07-24.

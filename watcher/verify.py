@@ -69,6 +69,7 @@ def _cluster_channel_kwargs(cluster: Cluster | None) -> dict:
     has_own = bool(cluster and cluster.telegram_bot_token and cluster.telegram_chat_id)
     return {
         "cluster_name": cluster.name if cluster else None,
+        "server_ip": cluster.ceph_mon_nodes if cluster else settings.ceph_mon_nodes,
         "bot_token": cluster.telegram_bot_token if has_own else None,
         "chat_id": cluster.telegram_chat_id if has_own else None,
         "enabled": cluster.telegram_enabled if has_own else None,

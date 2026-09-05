@@ -98,6 +98,36 @@
     </section>
 
     <section class="card">
+      <div class="card-header"><h2>🌐 Cảnh báo RGW — AI phân tích</h2></div>
+      <div class="card-body">
+        <p class="muted">
+          Các bất thường từ log RADOS Gateway được AI phân tích nguyên nhân, mức độ và hướng kiểm tra.
+          Lệnh đề xuất chỉ để người vận hành xem xét; hệ thống không tự chạy lệnh lên RGW.
+        </p>
+        {% if not rgw_finding_rows %}
+          <p class="muted">Chưa có cảnh báo RGW nào.</p>
+        {% else %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Thời điểm</th><th>Mức độ</th><th>Phân tích AI</th><th>Trạng thái</th></tr></thead>
+            <tbody>
+              {% for item in rgw_finding_rows %}
+              {% set f = item.row %}
+              <tr>
+                <td>{{ f.created_at.strftime('%d/%m %H:%M') }}</td>
+                <td>{% if f.severity == 'CRITICAL' %}<span class="badge badge-err">CRITICAL</span>{% elif f.severity == 'WARNING' %}<span class="badge badge-warn">WARNING</span>{% else %}<span class="badge">{{ f.severity }}</span>{% endif %}</td>
+                <td><strong>{{ f.title or '(không tiêu đề)' }}</strong>{% if f.summary %}<div class="muted">{{ f.summary }}</div>{% endif %}</td>
+                <td>{% if f.status == resolved_status %}<span class="badge badge-ok">Đã hết</span>{% elif f.status == acknowledged_status %}<span class="badge">Đã ghi nhận</span>{% else %}<span class="badge badge-warn">Đang mở</span>{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><h2>Phát hiện từ log</h2></div>
       <div class="card-body">
         <p class="muted">

@@ -170,6 +170,16 @@ REMEDIATION_WATCHER_MODULE = "watcher.remediation_main"
 REMEDIATION_WATCHER_PGREP_PATTERN = r"(^|[[:space:]])-m[[:space:]]+watcher\.remediation_main([[:space:]]|$)"
 REMEDIATION_WATCHER_LOG_PATH = Path(f"/var/log/{LOG_TAG}-remediation-watcher.log")
 
+# These processes are separate systemd units in production.  Starting a
+# detached child from Dashboard and then discovering/killing matching PIDs
+# races systemd and leaves duplicate singleton services behind.
+MANAGED_SERVICE_UNITS = {
+    "worker": "ceph-ai-worker.service",
+    "watcher": "ceph-ai-watcher.service",
+    "remediation_watcher": "ceph-ai-remediation-watcher.service",
+}
+SYSTEMCTL_TIMEOUT_SECONDS = 10
+
 # Restarting the Dashboard itself — unlike Worker/Watcher, this is the very
 # process handling the HTTP request that triggers it, so it can't just spawn
 # a replacement and kill the old one the same way _start_process() does (see
@@ -425,6 +435,13 @@ PATCH_PIPELINE_ENV_NAMES = {
     # separate one for this form to manage.
 }
 
+# AI Code Repair supervisor configuration. This is intentionally separate
+# from ROUTER_* and the Chat-with-AI account settings: Planner/Reviewer
+# proposes and audits a patch, while Implementer edits the isolated worktree.
+CODE_REPAIR_ENV_NAMES = env_config.CODE_REPAIR_ENV_NAMES
+CODE_REPAIR_PROVIDERS = ("auto", "codex", "claude")
+CODE_REPAIR_MAX_REVIEW_ROUNDS = 5
+
 
 def _start_watcher() -> int:
     # Explicit env= override — mirrors _start_worker()'s ROUTER_API_KEY
@@ -453,6 +470,48 @@ def _start_remediation_watcher() -> int:
     return _start_process(
         REMEDIATION_WATCHER_MODULE, REMEDIATION_WATCHER_LOG_PATH, child_env,
     )
+
+
+def _restart_managed_service(kind: str) -> dict | None:
+    """Restart a managed process through systemd when Dashboard is managed.
+
+    ``None`` means this is a development/no-systemd deployment and callers
+    should use the existing detached-process fallback.
+    """
+    owner = _current_systemd_service_unit()
+    if not owner or "dashboard" not in owner:
+        return None
+    unit = MANAGED_SERVICE_UNITS[kind]
+    try:
+        # An installed unit may be inactive after a crash or intentional
+        # stop.  It is still owned by systemd and `restart` correctly starts
+        # it; falling back to a detached process here would create a second
+        # copy outside systemd's lifecycle.
+        subprocess.run(
+            ["systemctl", "restart", unit],
+            check=True,
+            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
+        main_pid = subprocess.run(
+            ["systemctl", "show", "--property=MainPID", "--value", unit],
+            check=True,
+            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if not main_pid.isdigit() or int(main_pid) <= 0:
+            raise RuntimeError(f"systemd restarted {unit} without a live MainPID")
+        return {"restarted": True, "new_pid": int(main_pid), "error": None}
+    except Exception:
+        logger.exception("systemd restart failed for %s", unit)
+        return {
+            "restarted": False,
+            "new_pid": None,
+            "error": f"systemd không khởi động lại được {unit} — xem server log",
+        }
 
 
 # --- Database connection (Settings page's "Kết nối Database" section) ---
@@ -629,6 +688,9 @@ def restart_worker() -> dict:
     {"restarted": bool, "new_pid": int | None, "error": str | None}.
     """
     try:
+        managed = _restart_managed_service("worker")
+        if managed is not None:
+            return managed
         old_pids = _find_worker_pids()
         new_pid = _start_worker()
         time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
@@ -656,6 +718,9 @@ def restart_watcher() -> dict:
     as-is (it's already generic over a pid list, nothing Worker-specific in
     its body)."""
     try:
+        managed = _restart_managed_service("watcher")
+        if managed is not None:
+            return managed
         old_pids = _find_watcher_pids()
         new_pid = _start_watcher()
         time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
@@ -679,6 +744,9 @@ def restart_watcher() -> dict:
 
 def restart_remediation_watcher() -> dict:
     try:
+        managed = _restart_managed_service("remediation_watcher")
+        if managed is not None:
+            return managed
         old_pids = _find_remediation_watcher_pids()
         new_pid = _start_remediation_watcher()
         time.sleep(WORKER_START_CHECK_DELAY_SECONDS)
@@ -846,6 +914,13 @@ def _patch_pipeline_form_values() -> dict:
     }
 
 
+def _code_repair_form_values() -> dict:
+    return {
+        field: getattr(settings, field)
+        for field in CODE_REPAIR_ENV_NAMES
+    }
+
+
 def _settings_context(
     user: str,
     *,
@@ -880,6 +955,9 @@ def _settings_context(
     patch_pipeline_error: str | None = None,
     patch_pipeline_success: str | None = None,
     patch_pipeline_values: dict | None = None,
+    code_repair_error: str | None = None,
+    code_repair_success: str | None = None,
+    code_repair_values: dict | None = None,
     log_intel_error: str | None = None,
     log_intel_success: str | None = None,
     log_intel_values: dict | None = None,
@@ -963,6 +1041,12 @@ def _settings_context(
         "current_database_display": _current_database_display(),
         "patch_pipeline_error": patch_pipeline_error,
         "patch_pipeline_success": patch_pipeline_success,
+        "code_repair_error": code_repair_error,
+        "code_repair_success": code_repair_success,
+        "code_repair_providers": CODE_REPAIR_PROVIDERS,
+        "code_repair_values": (
+            code_repair_values if code_repair_values is not None else _code_repair_form_values()
+        ),
         "log_intel_error": log_intel_error,
         "log_intel_success": log_intel_success,
         "log_intel_values": (
@@ -1032,6 +1116,9 @@ def _settings_context(
     context.update(cluster_values if cluster_values is not None else _cluster_form_values())
     context.update(
         patch_pipeline_values if patch_pipeline_values is not None else _patch_pipeline_form_values()
+    )
+    context.update(
+        code_repair_values if code_repair_values is not None else _code_repair_form_values()
     )
     context.update(
         backup_target_values if backup_target_values is not None else _backup_target_form_values()
@@ -1104,6 +1191,8 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
         return "log-intel"
     if any(context.get(k) for k in ("patch_pipeline_error", "patch_pipeline_success")):
         return "patch-pipeline"
+    if any(context.get(k) for k in ("code_repair_error", "code_repair_success")):
+        return "code-repair"
     if any(context.get(k) for k in ("backup_target_error", "backup_target_success")):
         return "backup-targets"
     if any(context.get(k) for k in ("openstack_error", "openstack_success")):
@@ -2399,6 +2488,72 @@ async def patch_pipeline_settings_submit(
         _settings_context(
             user,
             patch_pipeline_success="Đã lưu cấu hình — Worker đã khởi động lại để áp dụng ngay.",
+        ),
+    )
+
+
+@router.post("/settings/code-repair", response_class=HTMLResponse)
+async def code_repair_settings_submit(
+    request: Request,
+    user: str = Depends(require_login),
+    code_repair_planner_provider: str = Form("codex"),
+    code_repair_planner_model: str = Form(""),
+    code_repair_implementer_provider: str = Form("codex"),
+    code_repair_implementer_model: str = Form(""),
+    code_repair_max_review_rounds: str = Form("2"),
+):
+    """Save the two roles used by the external AI code-repair supervisor.
+
+    This route only persists supervisor configuration. It deliberately does
+    not restart Worker: `worker.code_repair` is an explicit supervisor process
+    and reads these values when its next run starts.
+    """
+    _require_admin_privilege(user)
+    submitted = {
+        "code_repair_planner_provider": code_repair_planner_provider.strip().lower(),
+        "code_repair_planner_model": code_repair_planner_model.strip(),
+        "code_repair_implementer_provider": code_repair_implementer_provider.strip().lower(),
+        "code_repair_implementer_model": code_repair_implementer_model.strip(),
+        "code_repair_max_review_rounds": code_repair_max_review_rounds.strip(),
+    }
+
+    def _fail(message: str):
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_context(user, code_repair_error=message, code_repair_values=submitted),
+        )
+
+    for field in ("code_repair_planner_provider", "code_repair_implementer_provider"):
+        if submitted[field] not in CODE_REPAIR_PROVIDERS:
+            return _fail(f"{field}: provider phải là auto, codex hoặc claude.")
+    try:
+        rounds = int(submitted["code_repair_max_review_rounds"])
+    except ValueError:
+        return _fail("Số vòng review phải là số nguyên từ 0 đến 5.")
+    if not 0 <= rounds <= CODE_REPAIR_MAX_REVIEW_ROUNDS:
+        return _fail("Số vòng review phải nằm trong khoảng 0 đến 5.")
+    submitted["code_repair_max_review_rounds"] = rounds
+
+    try:
+        _update_env_file_batch({
+            env_name: str(submitted[field])
+            for field, env_name in CODE_REPAIR_ENV_NAMES.items()
+        })
+        for field in CODE_REPAIR_ENV_NAMES:
+            setattr(settings, field, submitted[field])
+    except Exception:
+        logger.exception("code_repair_settings_submit: failed to persist config to .env")
+        return _fail("Không ghi được file cấu hình — kiểm tra quyền ghi trên server")
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(
+            user,
+            code_repair_success=(
+                "Đã lưu cấu hình AI Code Repair. Cấu hình sẽ được dùng ở lần chạy supervisor kế tiếp."
+            ),
         ),
     )
 

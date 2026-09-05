@@ -2,8 +2,8 @@
 # Redeploys this exact checkout: pulls latest main, installs any new
 # dependencies, applies pending DB migrations, and restarts the four
 # long-running services (watcher, AI remediation watcher, worker, dashboard)
-# the same way they've always been run here — plain `nohup ... & disown`
-# background processes, no systemd unit exists on this host.
+# through the host's existing systemd units when they are present, with a
+# plain `nohup ... & disown` fallback for development hosts without systemd.
 #
 # Run from the repo root, as the same user the services already run as
 # (root, matching this deployment's existing operational model — see the
@@ -80,6 +80,36 @@ echo "==> Applying DB migrations"
 # case, so this is strictly safer with no downside when there's only one
 # head.
 alembic upgrade heads
+
+# On systemd-managed hosts, PID 1 owns the service lifecycle.  Do not launch
+# detached copies from this script: that races the units and leaves duplicate
+# singleton services behind.  The fallback below remains for older/local
+# deployments that genuinely have no units installed.
+MANAGED_SYSTEMD_UNITS=(
+  ceph-ai-worker.service
+  ceph-ai-watcher.service
+  ceph-ai-remediation-watcher.service
+  ceph-ai-dashboard.service
+)
+if command -v systemctl >/dev/null 2>&1; then
+  all_units_present=true
+  for unit in "${MANAGED_SYSTEMD_UNITS[@]}"; do
+    if ! systemctl cat "$unit" >/dev/null 2>&1; then
+      all_units_present=false
+      break
+    fi
+  done
+  if [ "$all_units_present" = true ]; then
+    echo "==> Restarting systemd-managed services"
+    systemctl daemon-reload
+    systemctl restart "${MANAGED_SYSTEMD_UNITS[@]}"
+    for unit in "${MANAGED_SYSTEMD_UNITS[@]}"; do
+      systemctl is-active --quiet "$unit"
+    done
+    echo "==> Deploy complete via systemd: $(date -u +%FT%TZ)"
+    exit 0
+  fi
+fi
 
 echo "==> Stopping existing services (if running)"
 pkill -f "$VENV_PYTHON -m watcher.main" || true

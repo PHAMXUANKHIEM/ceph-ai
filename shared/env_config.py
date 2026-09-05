@@ -95,6 +95,29 @@ TELEGRAM_NODE_ENV_NAMES: dict[str, str] = {
     "telegram_node_chat_id": "TELEGRAM_NODE_CHAT_ID",
     "telegram_node_enabled": "TELEGRAM_NODE_ENABLED",
 }
+TELEGRAM_RGW_ENV_NAMES: dict[str, str] = {
+    "telegram_rgw_bot_token": "TELEGRAM_RGW_BOT_TOKEN",
+    "telegram_rgw_chat_id": "TELEGRAM_RGW_CHAT_ID",
+    "telegram_rgw_enabled": "TELEGRAM_RGW_ENABLED",
+}
+TELEGRAM_CODE_REPAIR_ENV_NAMES: dict[str, str] = {
+    "telegram_code_repair_bot_token": "TELEGRAM_CODE_REPAIR_BOT_TOKEN",
+    "telegram_code_repair_chat_id": "TELEGRAM_CODE_REPAIR_CHAT_ID",
+    "telegram_code_repair_enabled": "TELEGRAM_CODE_REPAIR_ENABLED",
+}
+AI_OPS_DIGEST_ENV_NAMES: dict[str, str] = {
+    "ai_ops_weekly_digest_enabled": "AI_OPS_WEEKLY_DIGEST_ENABLED",
+    "ai_ops_weekly_digest_day": "AI_OPS_WEEKLY_DIGEST_DAY",
+    "ai_ops_weekly_digest_hour": "AI_OPS_WEEKLY_DIGEST_HOUR",
+    "ai_ops_weekly_digest_minute": "AI_OPS_WEEKLY_DIGEST_MINUTE",
+}
+CODE_REPAIR_ENV_NAMES: dict[str, str] = {
+    "code_repair_planner_provider": "CODE_REPAIR_PLANNER_PROVIDER",
+    "code_repair_planner_model": "CODE_REPAIR_PLANNER_MODEL",
+    "code_repair_implementer_provider": "CODE_REPAIR_IMPLEMENTER_PROVIDER",
+    "code_repair_implementer_model": "CODE_REPAIR_IMPLEMENTER_MODEL",
+    "code_repair_max_review_rounds": "CODE_REPAIR_MAX_REVIEW_ROUNDS",
+}
 
 
 def apply_env_updates(existing_lines: list[str], fields: dict[str, str]) -> list[str]:

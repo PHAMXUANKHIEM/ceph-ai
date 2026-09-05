@@ -18,7 +18,8 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from shared import db
-from shared.models import NodeResourceForecastRun, NodeResourceModelState
+from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
+from shared.telegram_alerts import send_node_forecast_alert
 
 logger = logging.getLogger(__name__)
 JOB = "ceph-ai-node-metrics"
@@ -274,7 +275,10 @@ def adaptive_forecast(
     samples = fetch_samples(cluster, host, now=now)
     if not samples:
         return {}
-    observed_at = now or samples[-1][0]
+    # The newest actual Loki sample is the observation time.  Using the
+    # caller's wall clock here would evaluate forecasts against a stale last
+    # sample when Alloy/Loki has stopped shipping data.
+    observed_at = samples[-1][0]
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
     now_naive = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
@@ -330,3 +334,90 @@ def risky_forecasts(values: dict[str, ResourceForecast]) -> list[ResourceForecas
             and value.hours_to_90 <= settings.node_resource_forecast_horizon_hours
             and value.confidence >= settings.node_resource_forecast_min_confidence
             and math.isfinite(value.hours_to_90)]
+
+
+def sync_forecast_alerts(
+    cluster: str,
+    host: str,
+    values: dict[str, ResourceForecast],
+    *,
+    now: datetime | None = None,
+    available_metrics: set[str] | None = None,
+) -> None:
+    """Open/resolve durable early-warning alerts and enforce Telegram cooldown."""
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    now_naive = reference.astimezone(timezone.utc).replace(tzinfo=None)
+    risky = {value.metric: value for value in risky_forecasts(values)}
+
+    with db.SessionLocal() as session:
+        existing = {
+            row.metric: row
+            for row in session.query(NodeResourceForecastAlert).filter_by(
+                cluster_name=cluster, host=host
+            ).all()
+        }
+        for metric in ("cpu", "ram"):
+            # Missing candidates mean that this metric has insufficient or
+            # unavailable Loki history, not that an existing warning is
+            # healthy again.  The default None preserves the public helper's
+            # existing behaviour for callers that explicitly pass a complete
+            # forecast snapshot.
+            if available_metrics is not None and metric not in available_metrics:
+                continue
+            prediction = risky.get(metric)
+            alert = existing.get(metric)
+            if prediction is None:
+                if alert is not None and alert.status == "OPEN":
+                    alert.status = "RESOLVED"
+                    alert.resolved_at = now_naive
+                continue
+
+            if alert is None:
+                alert = NodeResourceForecastAlert(
+                    cluster_name=cluster,
+                    host=host,
+                    metric=metric,
+                    status="OPEN",
+                    first_detected_at=now_naive,
+                    last_detected_at=now_naive,
+                    current_percent=prediction.current_percent,
+                    predicted_percent=prediction.predicted_percent,
+                    hours_to_90=prediction.hours_to_90,
+                    confidence=prediction.confidence,
+                    samples=prediction.samples,
+                    window_hours=int(prediction.training_window_hours or prediction.window_hours),
+                )
+                session.add(alert)
+            elif alert.status != "OPEN":
+                alert.status = "OPEN"
+                alert.first_detected_at = now_naive
+                alert.resolved_at = None
+
+            alert.last_detected_at = now_naive
+            alert.current_percent = prediction.current_percent
+            alert.predicted_percent = prediction.predicted_percent
+            alert.hours_to_90 = prediction.hours_to_90
+            alert.confidence = prediction.confidence
+            alert.samples = prediction.samples
+            alert.window_hours = int(prediction.training_window_hours or prediction.window_hours)
+
+            cooldown = max(0, settings.node_resource_forecast_alert_cooldown_seconds)
+            due = (
+                alert.last_notified_at is None
+                or (now_naive - alert.last_notified_at).total_seconds() >= cooldown
+            )
+            if due and send_node_forecast_alert(
+                host,
+                metric,
+                prediction.current_percent,
+                prediction.predicted_percent,
+                prediction.hours_to_90,
+                prediction.confidence,
+                prediction.samples,
+                int(prediction.training_window_hours or prediction.window_hours),
+                cluster_name=cluster,
+            ):
+                alert.last_notified_at = now_naive
+        session.commit()

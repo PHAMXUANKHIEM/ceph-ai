@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared.db import Base
-from shared.models import NodeResourceForecastRun, NodeResourceModelState
+from shared.models import NodeResourceForecastAlert, NodeResourceForecastRun, NodeResourceModelState
 from watcher import node_resource_forecast as forecast
 
 
@@ -135,3 +135,34 @@ def test_adaptive_forecast_evaluates_due_run_and_updates_mae(monkeypatch):
         assert run.actual_percent == samples[-1][1]
         assert state.evaluated_count == 1
         assert state.mean_absolute_error == run.absolute_error
+
+
+def test_sync_forecast_alerts_sends_once_then_resolves_after_risk_clears(monkeypatch):
+    factory = _learning_db(monkeypatch)
+    calls = []
+    monkeypatch.setattr(forecast.settings, "node_resource_forecast_alert_cooldown_seconds", 86400)
+    monkeypatch.setattr(
+        forecast,
+        "send_node_forecast_alert",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+    )
+    prediction = forecast.ResourceForecast(
+        "ram", 79.6, 0.2, 98.2, 101.8, 0.569, 237, 168, training_window_hours=168
+    )
+    first = datetime(2026, 8, 28, 10, tzinfo=timezone.utc)
+
+    forecast.sync_forecast_alerts("CS-LAB", "node-1", {"ram": prediction}, now=first)
+    forecast.sync_forecast_alerts(
+        "CS-LAB", "node-1", {"ram": prediction}, now=first + timedelta(hours=1)
+    )
+
+    with factory() as session:
+        alert = session.query(NodeResourceForecastAlert).one()
+        assert alert.status == "OPEN"
+        assert alert.last_notified_at is not None
+    assert len(calls) == 1
+
+    forecast.sync_forecast_alerts("CS-LAB", "node-1", {}, now=first + timedelta(hours=2))
+
+    with factory() as session:
+        assert session.query(NodeResourceForecastAlert).one().status == "RESOLVED"

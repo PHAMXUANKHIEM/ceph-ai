@@ -87,6 +87,27 @@ def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: 
         logger.exception("shared.telegram_alerts: Telegram delivery failed")
 
 
+def send_code_repair_alert(text: str) -> None:
+    """Send a status update for the application code-repair supervisor."""
+    _send(
+        settings.telegram_code_repair_bot_token,
+        settings.telegram_code_repair_chat_id,
+        settings.telegram_code_repair_enabled,
+        text,
+    )
+
+
+def send_ai_ops_digest_alert(text: str, *, cluster_name: str | None = None) -> None:
+    """Send the read-only AIOps digest through the Ceph incident channel."""
+    _send(
+        settings.telegram_incident_bot_token,
+        settings.telegram_incident_chat_id,
+        settings.telegram_incident_enabled,
+        text,
+        cluster_name,
+    )
+
+
 def send_incident_alert(
     ceph_code: str,
     severity: str | None,
@@ -98,6 +119,7 @@ def send_incident_alert(
     reminder: bool = False,
     diagnosis_text: str | None = None,
     rationale: str | None = None,
+    server_ip: str | None = None,
 ) -> None:
     """Called once per newly-created cluster-health Incident
     (watcher/main.py::build_and_publish_incident, one call per `ceph
@@ -127,6 +149,8 @@ def send_incident_alert(
     text = f"{reminder_prefix}{prefix} Cụm Ceph: {ceph_code}"
     if excerpt:
         text += f"\n{excerpt}"
+    if server_ip and server_ip.strip():
+        text += f"\n🖥️ Ceph MON/IP: {_compact(server_ip, _MAX_FOLLOWUP_FIELD_CHARS)}"
     if reminder and diagnosis_text:
         text += f"\n🧠 Tóm tắt AI: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}"
     if reminder and rationale:
@@ -152,24 +176,35 @@ def send_periodic_health_status(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,
         enabled if enabled is not None else settings.telegram_incident_enabled,
-        f"📊 Trạng thái định kỳ: {icon} {status}\nHealth checks: {details}",
+        f"📊 Trạng thái Ceph định kỳ: {icon} {status}\nHealth checks: {details}",
         cluster_name,
     )
 
 
-def send_vitastor_alert(cluster_name: str, health: str, detail: str) -> None:
-    """Send a Vitastor health transition through the cluster-alert channel."""
+def send_vitastor_alert(
+    cluster_name: str,
+    health: str,
+    detail: str,
+    server_ip: str | None = None,
+) -> None:
+    """Send a Vitastor health transition through the cluster-alert channel.
+
+    ``server_ip`` is optional for compatibility with callers that do not
+    have a management-host value, but when present it makes alerts from
+    multiple storage products/servers unambiguous to operators.
+    """
     prefix = {
         "CRITICAL": "🔴 CRITICAL",
         "WARNING": "🟡 WARNING",
         "UNREACHABLE": "🔴 UNREACHABLE",
         "HEALTHY": "🟢 RECOVERED",
     }.get(health, f"⚠️ {health}")
+    server_line = f"🖥️ Server/IP: {server_ip.strip()}\n" if server_ip and server_ip.strip() else ""
     _send(
         settings.telegram_incident_bot_token,
         settings.telegram_incident_chat_id,
         settings.telegram_incident_enabled,
-        f"{prefix} Cụm Vitastor\n{_compact(detail, _MAX_EXCERPT_CHARS)}",
+        f"{prefix} Cụm Vitastor\n{server_line}{_compact(detail, _MAX_EXCERPT_CHARS)}",
         cluster_name,
     )
 
@@ -235,6 +270,44 @@ def send_node_alert(host: str, message: str) -> None:
     stays flagged). No-op if the Phần cứng channel's bot token/chat id
     aren't configured yet (same reasoning as send_incident_alert above)."""
     _send(settings.telegram_node_bot_token, settings.telegram_node_chat_id, settings.telegram_node_enabled, f"\U0001f7e0 Node {host}: {_compact(message, _MAX_EXCERPT_CHARS)}")
+
+
+def send_node_forecast_alert(
+    host: str,
+    metric: str,
+    current_percent: float,
+    predicted_percent: float,
+    hours_to_90: float,
+    confidence: float,
+    samples: int,
+    window_hours: int,
+    *,
+    cluster_name: str | None = None,
+) -> bool:
+    """Send one early CPU/RAM forecast warning and report delivery status."""
+    if not settings.telegram_node_enabled or not settings.telegram_node_bot_token or not settings.telegram_node_chat_id:
+        return False
+    label = "RAM" if metric.lower() == "ram" else "CPU"
+    text = "\n".join(
+        (
+            f"🟡 CẢNH BÁO DỰ BÁO {label}",
+            f"Node: {host}",
+            f"Hiện tại: {current_percent:.1f}% · dự báo trong 168h: {predicted_percent:.1f}%",
+            f"Có thể chạm 90% sau: ~{hours_to_90:.1f} giờ",
+            f"Confidence: {confidence * 100:.1f}% · mẫu: {samples} · cửa sổ học: {window_hours}h",
+            "Đây là cảnh báo sớm từ forecast, chưa tự động thay đổi cluster.",
+        )
+    )
+    try:
+        send_telegram_message(
+            settings.telegram_node_bot_token,
+            settings.telegram_node_chat_id,
+            _with_cluster_prefix(text, cluster_name),
+        )
+        return True
+    except TelegramSendError:
+        logger.exception("shared.telegram_alerts: node forecast Telegram delivery failed")
+        return False
 
 
 def send_trash_capacity_alert(trash_bytes: int, total_bytes: int, ratio: float, entry_count: int) -> None:
@@ -331,7 +404,7 @@ def send_auto_remediation_alert(
         prefix = "✅ Thực hiện thành công, đang xác minh"
     else:
         prefix = "\u274c Xử lý thất bại"
-    lines = [f"{prefix}: {ceph_code}"]
+    lines = [f"{prefix}: Cụm Ceph: {ceph_code}"]
     if target_nodes:
         lines.append(f"🎯 Đối tượng: {_compact(target_nodes, _MAX_FOLLOWUP_FIELD_CHARS)}")
     if diagnosis_text:
@@ -377,11 +450,9 @@ def send_update_failure_alert(
 
 
 # --- Log Intelligence L3 (Plan/log-intelligence-rca-plan.md) --------------
-#
-# Dùng chung kênh "Cụm Ceph" (telegram_incident_*) với send_ai_incident_alert
-# / send_trash_capacity_alert — KHÔNG mở kênh thứ 4. Đây là chẩn đoán AI về
-# sức khoẻ cụm, đúng loại nội dung kênh đó đang mang; và thiết kế 3 kênh
-# được giữ nguyên là 3 (xem docstring đầu module + AD-31).
+# Generic findings use the cluster-incident channel.  RGW findings use a
+# dedicated notification-only channel so an object-storage team can receive
+# them without also gaining Telegram approval authority for other Actions.
 
 _LOG_FINDING_SEVERITY_PREFIX = {
     "CRITICAL": "\U0001f534 NGHIÊM TRỌNG",  # red circle
@@ -405,6 +476,7 @@ def send_log_finding_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
+    daemon_types: list[str] | None = None,
 ) -> None:
     """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
     (`watcher/log_analysis.py` chỉ gọi khi `dedupe_key` chưa có bản ghi nào
@@ -417,8 +489,11 @@ def send_log_finding_alert(
     trả lời của model thì người đọc cần biết ngay trên điện thoại, chứ không
     phải mở Dashboard mới thấy."""
     prefix = _LOG_FINDING_SEVERITY_PREFIX.get(severity, f"⚠️ {severity}")
+    daemon_set = {value.strip().lower() for value in (daemon_types or []) if isinstance(value, str)}
+    source_label = "Cảnh báo RGW do AI phân tích" if "rgw" in daemon_set else "Phát hiện từ log"
+    source_icon = "🌐 " if "rgw" in daemon_set else ""
     lines = [
-        f"{prefix} Phát hiện từ log: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
+        f"{prefix} {source_icon}{source_label}: {_compact(title, _MAX_FOLLOWUP_FIELD_CHARS)}",
         f"🎯 Độ tin cậy: {confidence}",
     ]
     if summary:
@@ -434,10 +509,18 @@ def send_log_finding_alert(
         lines.extend(f"`{_compact(command, _MAX_EXCERPT_CHARS)}`" for command in operator_commands)
     if validation_notes:
         lines.append(f"⚠️ Hệ thống đã chỉnh câu trả lời của AI: {_compact(validation_notes, _MAX_FOLLOWUP_FIELD_CHARS)}")
+    if "rgw" in daemon_set:
+        selected_token = settings.telegram_rgw_bot_token
+        selected_chat = settings.telegram_rgw_chat_id
+        selected_enabled = settings.telegram_rgw_enabled
+    else:
+        selected_token = bot_token if bot_token is not None else settings.telegram_incident_bot_token
+        selected_chat = chat_id if chat_id is not None else settings.telegram_incident_chat_id
+        selected_enabled = enabled if enabled is not None else settings.telegram_incident_enabled
     _send(
-        bot_token if bot_token is not None else settings.telegram_incident_bot_token,
-        chat_id if chat_id is not None else settings.telegram_incident_chat_id,
-        enabled if enabled is not None else settings.telegram_incident_enabled,
+        selected_token,
+        selected_chat,
+        selected_enabled,
         "\n".join(lines),
         cluster_name,
     )
@@ -467,6 +550,7 @@ def send_incident_verified_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
+    server_ip: str | None = None,
 ) -> None:
     """"✅ ĐÃ KHẮC PHỤC" — gửi khi watcher/verify.py đã HỎI LẠI CỤM và xác
     nhận ceph_code không còn trong `ceph health detail` nữa.
@@ -481,7 +565,9 @@ def send_incident_verified_alert(
     cố này lúc đầu — đóng lại đúng chỗ đã mở ra, để một cuộc hội thoại nằm
     gọn trong một chat thay vì rải ra các kênh khác nhau.
     """
-    text = f"✅ ĐÃ KHẮC PHỤC · {ceph_code}"
+    text = f"✅ ĐÃ KHẮC PHỤC · Cụm Ceph: {ceph_code}"
+    if server_ip and server_ip.strip():
+        text += f"\n🖥️ Ceph MON/IP: {_compact(server_ip, _MAX_FOLLOWUP_FIELD_CHARS)}"
     text += "\nĐã kiểm chứng lại trên cụm: lỗi không còn xuất hiện trong `ceph health detail`."
     if attempted_command:
         text += f"\n💻 Lệnh đã chạy: {_compact(attempted_command, _MAX_FOLLOWUP_FIELD_CHARS)}"
@@ -501,6 +587,7 @@ def send_incident_verify_exhausted_alert(
     bot_token: str | None = None,
     chat_id: str | None = None,
     enabled: bool | None = None,
+    server_ip: str | None = None,
 ) -> None:
     """"⚠️ CHƯA KHẮC PHỤC ĐƯỢC" — đã dùng hết
     `settings.incident_verify_max_attempts` vòng chẩn đoán lại mà lỗi vẫn
@@ -509,7 +596,9 @@ def send_incident_verify_exhausted_alert(
     (CRUSH skew cần người cân lại weight, đĩa hỏng cần thay), và mỗi vòng
     thêm chỉ tốn một lần gọi router cùng một loạt thông báo.
     """
-    text = f"⚠️ CHƯA KHẮC PHỤC ĐƯỢC · {ceph_code}"
+    text = f"⚠️ CHƯA KHẮC PHỤC ĐƯỢC · Cụm Ceph: {ceph_code}"
+    if server_ip and server_ip.strip():
+        text += f"\n🖥️ Ceph MON/IP: {_compact(server_ip, _MAX_FOLLOWUP_FIELD_CHARS)}"
     text += (
         f"\nĐã thử {attempts} vòng khắc phục + chẩn đoán lại, kiểm chứng trên cụm vẫn thấy lỗi."
         "\nDừng tự động xử lý — cần vận hành viên vào xem trực tiếp."

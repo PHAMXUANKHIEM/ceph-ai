@@ -53,9 +53,10 @@
       <div class="card-body">
         <p class="hint">Các kênh ở đây là cấu hình toàn hệ thống và fallback của cụm mặc định. Kênh riêng của cluster phụ được cấu hình tại <a href="/clusters">Clusters</a>.</p>
         <p class="hint">
-          3 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
+          5 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
           bằng chính việc điền hay để trống Chat ID (không có công tắc riêng). <strong>Yêu cầu phê duyệt
-          (Duyệt/Từ chối)</strong> là năng lực MẶC ĐỊNH của mọi kênh bên dưới đã được cấu hình — hễ 1 kênh
+          (Duyệt/Từ chối)</strong> áp dụng cho ba kênh vận hành Backup/Lỗi cụm/Phần cứng. Kênh RGW chỉ nhận
+          cảnh báo và không cấp quyền phê duyệt. Với ba kênh vận hành, hễ một kênh
           có đủ Bot Token + Chat ID, mọi đề xuất đang chờ duyệt sẽ tự động kèm 2 nút Duyệt/Từ chối gửi tới
           đúng kênh đó, không cần bật thêm gì. Duyệt/Từ chối ở BẤT KỲ kênh nào trong số đang cấu hình đều
           xử lý được — xem lưu ý về mức độ tin cậy (TRUST MODEL) ngay dưới mỗi kênh trước khi điền Chat ID.
@@ -70,7 +71,7 @@
       <div class="card-body">
         <p class="hint">
           Nếu nhiều cụm Ceph (nhiều ceph-aiops) cùng gửi cảnh báo vào chung 1 chat Telegram, điền tên/nhãn
-          cụm ở đây để phân biệt — tên này sẽ được chèn vào đầu MỌI tin nhắn của cả 3 kênh bên dưới (kể cả
+          cụm ở đây để phân biệt — tên này sẽ được chèn vào đầu MỌI tin nhắn của cả 5 kênh bên dưới (kể cả
           tin nhắn Duyệt/Từ chối). Để trống nếu chỉ có 1 cụm — tin nhắn giữ nguyên như trước, không có gì
           thay đổi.
         </p>
@@ -133,6 +134,7 @@
           <button type="submit" class="btn btn-ghost">Gửi thử</button>
         </form>
         <p class="hint" style="margin-top: 0.75rem;">
+          {% if ch.approval_enabled %}
           <strong>TRUST MODEL:</strong> hễ điền Chat ID ở đây, BẤT KỲ ai đọc được và bấm nút trong đúng chat/
           nhóm đó đều Duyệt/Từ chối được các đề xuất đang chờ — không riêng gì cảnh báo của kênh này, mà mọi
           đề xuất chờ duyệt trong toàn hệ thống (Backup/Lỗi cụm/Phần cứng/đề xuất thủ công). Chỉ điền Chat ID
@@ -140,6 +142,10 @@
           Không cần khởi động lại gì cho phần Duyệt/Từ chối — áp dụng ngay trong tiến trình Dashboard.
           <strong>Tắt kênh này</strong> (nút phía trên) cũng dừng luôn việc kênh này nhận tin Duyệt/Từ chối,
           không chỉ cảnh báo thường — không mất Bot Token/Chat ID đã lưu, bật lại là hoạt động ngay.
+          {% else %}
+          <strong>NOTIFICATION-ONLY:</strong> kênh này chỉ nhận thông báo {{ ch.label }}. Người trong chat
+          không có quyền Duyệt/Từ chối Action qua Bot từ cấu hình này.
+          {% endif %}
         </p>
 
         {% if is_admin %}

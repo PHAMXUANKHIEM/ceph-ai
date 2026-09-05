@@ -74,7 +74,12 @@ def ensure_default_cluster(session: Session) -> Cluster:
             raise
         logger.info("ensure_default_cluster: lost startup race to another process, reusing its row")
         return existing
-    session.refresh(cluster)
+    # The INSERT was committed successfully and all mapped values are already
+    # present on this instance.  Avoid a second SELECT here: with SQLite's
+    # StaticPool (used by the dashboard test client and some embedded
+    # deployments), another short-lived session can borrow the same
+    # connection between COMMIT and REFRESH and make the refresh spuriously
+    # report that the just-created row is missing.
     return cluster
 
 
@@ -91,7 +96,6 @@ def sync_default_cluster_from_settings(session: Session) -> Cluster:
     for field in _DEFAULT_CLUSTER_SETTING_FIELDS:
         setattr(cluster, field, getattr(settings, field))
     session.commit()
-    session.refresh(cluster)
     return cluster
 
 

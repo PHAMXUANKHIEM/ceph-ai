@@ -35,6 +35,7 @@ from shared.models import Action, ActionStatus, Incident, IncidentStatus
 from shared.incident_actions import cancel_pending_actions
 from shared.telegram_alerts import send_node_alert
 from watcher import node_resource_forecast
+from watcher import node_metrics
 from worker.policy import gate
 
 logger = logging.getLogger(__name__)
@@ -104,8 +105,36 @@ def check_node_resources(
     flagged: dict[str, dict] = {}
     for node in configured_nodes():
         host = node["host"]
+        fresh_metrics = None
+        if (
+            settings.node_resource_forecast_enabled
+            and settings.node_resource_live_ingest_enabled
+        ):
+            try:
+                candidate = node_metrics.collect_node_metrics(host)
+                if node_resource_forecast.push_sample(
+                    cluster_name or settings.cluster_name, host, candidate
+                ):
+                    # Loki ingestion is asynchronous. Use the just-collected
+                    # sample for this scan, while adaptive_forecast() below
+                    # continues to use Loki as its historical source of truth.
+                    fresh_metrics = candidate
+                else:
+                    logger.warning(
+                        "check_node_resources: live CPU/RAM sample for %s was not pushed to Loki",
+                        host,
+                    )
+            except Exception:
+                # A live-ingest failure must not hide a usable recent Loki
+                # sample. The fallback fetch below remains fail-closed on
+                # stale/missing data.
+                logger.warning(
+                    "check_node_resources: live CPU/RAM ingest failed for %s; falling back to Loki",
+                    host,
+                    exc_info=True,
+                )
         try:
-            metrics = node_resource_forecast.fetch_latest_metrics(
+            metrics = fresh_metrics or node_resource_forecast.fetch_latest_metrics(
                 cluster_name or settings.cluster_name, host
             )
         except node_resource_forecast.NodeResourceLokiError:
@@ -118,6 +147,10 @@ def check_node_resources(
             try:
                 forecasts = node_resource_forecast.adaptive_forecast(
                     cluster_name or settings.cluster_name, host
+                )
+                node_resource_forecast.sync_forecast_alerts(
+                    cluster_name or settings.cluster_name, host, forecasts,
+                    available_metrics=set(forecasts),
                 )
                 for prediction in node_resource_forecast.risky_forecasts(forecasts):
                     logger.warning(

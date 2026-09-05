@@ -1071,6 +1071,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             check_detail.get("severity"),
             log_excerpt,
             cluster_name=cluster.name,
+            server_ip=cluster.ceph_mon_nodes,
             bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
             chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
             enabled=cluster.telegram_enabled if has_cluster_channel else None,

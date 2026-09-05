@@ -2,10 +2,39 @@
 
 `worker.code_repair` repairs failures in the Ceph AIOps application itself;
 it does not execute Ceph remediation actions. It extracts the newest error
-from application logs, redacts credentials, creates an isolated Git worktree,
-asks Codex or Claude Code for a minimal patch and regression test, then applies
-path and test gates before committing and optionally pushing a dedicated
-branch.
+from application logs, redacts credentials, creates isolated Git worktrees,
+asks a planning/review agent to investigate, asks an implementation agent for
+a minimal patch and regression test, then lets the two agents exchange review
+feedback for a bounded number of rounds. Path and test gates still run before
+committing and optionally pushing a dedicated branch.
+
+The default is two independent agents using the same selected provider. This
+means two Codex processes are supported. Different providers and model ids can
+be selected when both CLIs are installed/authenticated:
+
+An administrator can save the same values in **Settings → Pipeline & lưu trữ →
+AI Code Repair**. The page labels **Planner / Reviewer** as the role that asks,
+analyses, and audits, and **Implementer** as the role allowed to edit the
+isolated worktree and write tests. Saving the form updates `.env`; it does not
+start a repair run, merge a branch, or deploy anything.
+
+```bash
+PYTHONPATH=. .venv/bin/python -m worker.code_repair \
+  --provider auto \
+  --planner-provider claude --planner-model sonnet \
+  --implementer-provider codex --implementer-model gpt-5-codex \
+  --max-review-rounds 2 --push
+```
+
+`--planner-provider` is used for both the initial plan and independent review;
+`--implementer-provider` writes and revises the patch. Use `--max-review-rounds
+0` only for diagnostics; normal repairs should retain the review gate. The
+value is hard-limited to 5. Evidence from logs and `--evidence-file` is
+redacted before it reaches either agent or Telegram. Candidate validation
+also expands untracked files, rejects credential paths/symlinks, scans new
+file contents, and checks both staged and unstaged changes. The model ids are
+passed to the installed CLI, so availability depends on that CLI
+account/catalog.
 
 Example on staging:
 

@@ -116,6 +116,49 @@ def test_check_node_resources_skips_a_host_that_fails_to_collect(monkeypatch):
     assert nhm.check_node_resources() == {}  # must not raise
 
 
+def test_check_node_resources_publishes_and_uses_fresh_live_sample(monkeypatch):
+    monkeypatch.setattr(nhm, "configured_nodes", lambda: [{"host": "10.0.0.5", "roles": ["OSD"]}])
+    monkeypatch.setattr(nhm.settings, "node_resource_forecast_enabled", True)
+    monkeypatch.setattr(nhm.settings, "node_resource_live_ingest_enabled", True)
+    fresh = _metrics(cpu=95.0, mem=40.0)
+    collected = []
+    pushed = []
+    monkeypatch.setattr(nhm.node_metrics, "collect_node_metrics", lambda host: collected.append(host) or fresh)
+    monkeypatch.setattr(
+        nhm.node_resource_forecast,
+        "push_sample",
+        lambda cluster, host, metrics: pushed.append((cluster, host, metrics)) or True,
+    )
+    monkeypatch.setattr(nhm.node_resource_forecast, "adaptive_forecast", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        nhm.node_resource_forecast,
+        "fetch_latest_metrics",
+        lambda *args, **kwargs: pytest.fail("fresh live sample should be used immediately"),
+    )
+
+    result = nhm.check_node_resources()
+
+    assert collected == ["10.0.0.5"]
+    assert pushed == [(nhm.settings.cluster_name, "10.0.0.5", fresh)]
+    assert result == {}
+
+
+def test_check_node_resources_falls_back_to_loki_when_live_ingest_fails(monkeypatch):
+    monkeypatch.setattr(nhm, "configured_nodes", lambda: [{"host": "10.0.0.5", "roles": ["OSD"]}])
+    monkeypatch.setattr(nhm.settings, "node_resource_forecast_enabled", True)
+    monkeypatch.setattr(nhm.settings, "node_resource_live_ingest_enabled", True)
+    fallback = _metrics(cpu=20.0, mem=20.0)
+    monkeypatch.setattr(
+        nhm.node_metrics,
+        "collect_node_metrics",
+        lambda host: (_ for _ in ()).throw(nhm.node_metrics.NodeMetricsError("ssh failed")),
+    )
+    monkeypatch.setattr(nhm.node_resource_forecast, "fetch_latest_metrics", lambda cluster, host: fallback)
+    monkeypatch.setattr(nhm.node_resource_forecast, "adaptive_forecast", lambda *args, **kwargs: {})
+
+    assert nhm.check_node_resources() == {}
+
+
 # --- create_or_resolve_node_health_incidents() ------------------------------
 
 

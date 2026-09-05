@@ -220,6 +220,25 @@ def test_send_vitastor_alert_uses_incident_channel_and_cluster_name(monkeypatch)
     assert "OSD 2/3 up" in calls[0][2]
 
 
+def test_send_vitastor_alert_shows_management_server_ip(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message",
+        lambda token, chat_id, text: calls.append((token, chat_id, text)),
+    )
+
+    telegram_alerts.send_vitastor_alert(
+        "Hapu-Lab", "HEALTHY", "OSD 11 không còn là latency outlier", "10.2.0.94"
+    )
+
+    assert "Cụm: Hapu-Lab" in calls[0][2]
+    assert "Cụm Vitastor" in calls[0][2]
+    assert "Server/IP: 10.2.0.94" in calls[0][2]
+    assert "OSD 11 không còn là latency outlier" in calls[0][2]
+
+
 def test_send_node_alert_sends_when_configured(monkeypatch):
     _configure_node(monkeypatch)
     calls = []
@@ -234,6 +253,26 @@ def test_send_node_alert_sends_when_configured(monkeypatch):
     assert token == "123:ABC"
     assert "10.0.0.5" in text
     assert "CPU 95%" in text
+
+
+def test_send_node_forecast_alert_sends_cluster_scoped_warning(monkeypatch):
+    _configure_node(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append((token, chat_id, text))
+    )
+
+    delivered = telegram_alerts.send_node_forecast_alert(
+        "10.0.0.5", "ram", 79.6, 98.2, 101.8, 0.569, 237, 168,
+        cluster_name="CS-LAB",
+    )
+
+    assert delivered is True
+    assert len(calls) == 1
+    assert calls[0][0:2] == ("123:ABC", "-100999")
+    assert "Cụm: CS-LAB" in calls[0][2]
+    assert "CẢNH BÁO DỰ BÁO RAM" in calls[0][2]
+    assert "101.8 giờ" in calls[0][2]
 
 
 def test_send_node_alert_skips_when_not_configured(monkeypatch):

@@ -289,6 +289,23 @@ def build_scheduler() -> AsyncIOScheduler:
         id="backup_digest_run",
         replace_existing=True,
     )
+    if settings.ai_ops_weekly_digest_enabled:
+        from worker import ai_ops_digest
+
+        weekday = str(settings.ai_ops_weekly_digest_day or "mon").strip().lower()
+        if weekday not in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
+            logger.warning("Invalid AI Ops digest weekday=%r; using mon", weekday)
+            weekday = "mon"
+        scheduler.add_job(
+            ai_ops_digest.run_digest,
+            trigger=CronTrigger(
+                day_of_week=weekday,
+                hour=settings.ai_ops_weekly_digest_hour,
+                minute=settings.ai_ops_weekly_digest_minute,
+            ),
+            id="ai_ops_weekly_digest",
+            replace_existing=True,
+        )
     return scheduler
 
 

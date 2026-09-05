@@ -59,12 +59,13 @@
         </div>
       </section>
       <section class="settings-nav-group" data-settings-group="storage">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['patch-pipeline', 'backup-targets'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['patch-pipeline', 'log-intel', 'code-repair', 'backup-targets'] else 'false' }}">
           <span>Pipeline &amp; lưu trữ</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'backup-targets'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['patch-pipeline', 'log-intel', 'code-repair', 'backup-targets'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'patch-pipeline' %}active{% endif %}" data-section="patch-pipeline">Pipeline</button>
           <button type="button" class="settings-nav-item {% if active_section == 'log-intel' %}active{% endif %}" data-section="log-intel">Log Intelligence</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'code-repair' %}active{% endif %}" data-section="code-repair">AI Code Repair</button>
           <button type="button" class="settings-nav-item {% if active_section == 'backup-targets' %}active{% endif %}" data-section="backup-targets">Storage Configuration</button>
         </div>
       </section>
@@ -455,6 +456,61 @@
             <input type="text" name="ceph_patch_node_staging_dir" value="{{ ceph_patch_node_staging_dir }}" placeholder="/opt/ceph-aiops-patch-staging">
           </label>
           <button type="submit" class="btn btn-primary">Lưu &amp; khởi động lại Worker</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="code-repair" {% if active_section != 'code-repair' %}hidden{% endif %}>
+      <div class="card-header"><h2>AI Code Repair</h2></div>
+      <div class="card-body">
+        {% if code_repair_error %}
+          <p class="error">{{ code_repair_error }}</p>
+        {% endif %}
+        {% if code_repair_success %}
+          <p class="success">{{ code_repair_success }}</p>
+        {% endif %}
+        <p class="hint">
+          Cấu hình cho supervisor <code>worker.code_repair</code>. Hai vai trò chạy trong
+          process/worktree riêng: <strong>Planner / Reviewer</strong> hỏi, phân tích và kiểm tra
+          diff; <strong>Implementer</strong> thực hiện sửa code, viết test và sửa lại theo feedback.
+          Lưu cấu hình không tự chạy, merge hoặc deploy production.
+        </p>
+        <form class="login-box" method="post" action="/settings/code-repair">
+          <div class="settings-field-grid">
+            <div>
+              <h3>Planner / Reviewer</h3>
+              <p class="hint">AI này chỉ hỏi/phân tích và review độc lập; process chạy read-only, không được sửa file.</p>
+              <label>Provider
+                <select name="code_repair_planner_provider">
+                  {% for provider in code_repair_providers %}
+                    <option value="{{ provider }}" {% if code_repair_values.code_repair_planner_provider == provider %}selected{% endif %}>{{ provider }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Model
+                <input type="text" name="code_repair_planner_model" value="{{ code_repair_values.code_repair_planner_model }}" placeholder="để trống = model mặc định của CLI">
+              </label>
+            </div>
+            <div>
+              <h3>Implementer</h3>
+              <p class="hint">AI này được phép sửa trong worktree cô lập và phải thêm/cập nhật regression test.</p>
+              <label>Provider
+                <select name="code_repair_implementer_provider">
+                  {% for provider in code_repair_providers %}
+                    <option value="{{ provider }}" {% if code_repair_values.code_repair_implementer_provider == provider %}selected{% endif %}>{{ provider }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Model
+                <input type="text" name="code_repair_implementer_model" value="{{ code_repair_values.code_repair_implementer_model }}" placeholder="để trống = model mặc định của CLI">
+              </label>
+            </div>
+          </div>
+          <label>Số vòng review tối đa
+            <input type="number" name="code_repair_max_review_rounds" min="0" max="5" value="{{ code_repair_values.code_repair_max_review_rounds }}">
+          </label>
+          <p class="hint">0 = chỉ planner và implementer, không review. Khuyến nghị: 2. Giá trị tối đa: 5.</p>
+          <button type="submit" class="btn btn-primary">Lưu cấu hình AI Code Repair</button>
         </form>
       </div>
     </section>

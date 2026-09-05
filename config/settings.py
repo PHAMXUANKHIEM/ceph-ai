@@ -227,6 +227,17 @@ class Settings(BaseSettings):
     # "auto" leaves the effort choice to the selected model/Claude Code.
     claude_chat_effort: str = "auto"
 
+    # AI Code Repair supervisor (worker/code_repair.py). These settings are
+    # intentionally separate from incident-diagnosis/Chat-with-AI: planner
+    # reviews and designs the fix, while implementer edits the isolated
+    # worktree and writes tests. The supervisor still requires its explicit
+    # CLI invocation; saving these fields does not auto-deploy code.
+    code_repair_planner_provider: str = "codex"
+    code_repair_planner_model: str = ""
+    code_repair_implementer_provider: str = "codex"
+    code_repair_implementer_model: str = ""
+    code_repair_max_review_rounds: int = 2
+
     # Worker (Story 4.3): how often the Worker checks for Actions an
     # operator just approved on the Dashboard. Separate from RabbitMQ
     # entirely — an approval isn't a queue message, so nothing redelivers
@@ -338,6 +349,22 @@ class Settings(BaseSettings):
     telegram_node_bot_token: str = ""
     telegram_node_chat_id: str = ""
     telegram_node_enabled: bool = True
+    # Dedicated notification-only channel for AI-analyzed RADOS Gateway
+    # findings.  Unlike the three operational channels above it is not an
+    # approval-bot trust boundary: members of this chat receive RGW alerts
+    # but do not gain permission to approve unrelated Actions.
+    telegram_rgw_bot_token: str = ""
+    telegram_rgw_chat_id: str = ""
+    telegram_rgw_enabled: bool = True
+    # Notification-only channel for repairs to the ceph-ai application.
+    telegram_code_repair_bot_token: str = ""
+    telegram_code_repair_chat_id: str = ""
+    telegram_code_repair_enabled: bool = True
+    # Weekly read-only operational digest through the incident channel.
+    ai_ops_weekly_digest_enabled: bool = True
+    ai_ops_weekly_digest_day: str = "mon"
+    ai_ops_weekly_digest_hour: int = 8
+    ai_ops_weekly_digest_minute: int = 0
     # dashboard/telegram_approval_bot.py's own DB-scan cadence for newly
     # PENDING_APPROVAL Actions not yet broadcast to every configured
     # channel above — short by design (unlike device_health/node_health's
@@ -384,6 +411,12 @@ class Settings(BaseSettings):
     # trend.  Disabled by default so an existing SSH-only deployment does
     # not unexpectedly start writing to Loki.
     node_resource_forecast_enabled: bool = False
+    # When enabled, the Watcher collects a fresh /proc sample over its
+    # existing read-only SSH path and publishes it to Loki before analysing
+    # the node. This makes the CPU/RAM loop self-contained for deployments
+    # that do not already run Alloy on every Ceph node. Keep it opt-in: an
+    # external Alloy agent remains the preferred lower-overhead source.
+    node_resource_live_ingest_enabled: bool = False
     node_resource_forecast_history_days: int = 30
     node_resource_forecast_horizon_hours: int = 168
     node_resource_forecast_min_samples: int = 24
@@ -394,6 +427,7 @@ class Settings(BaseSettings):
     node_resource_learning_evaluation_hours: int = 24
     node_resource_learning_min_outcomes: int = 3
     node_resource_learning_candidate_hours: str = "24,72,168,720"
+    node_resource_forecast_alert_cooldown_seconds: int = 86400
 
     # watcher/osd_latency_monitor.py's own scan cadence — much SHORTER than
     # device_health/node_health above because `ceph osd perf` is a single

@@ -62,6 +62,8 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
   - Operator đánh dấu chẩn đoán đúng/sai, false positive và hiệu quả action.
   - Báo cáo precision/false-positive theo health code, fault family và AI provider.
   - Trước mắt dùng phản hồi để chỉnh rule/prompt; chưa tự fine-tune từ dữ liệu production.
+  - Quy trình triển khai vòng học lỗi daemon từ Loki được đặc tả tại
+    [`loki-daemon-log-learning.md`](loki-daemon-log-learning.md).
 - [ ] **8. Autonomous Operations theo playbook maturity**
   - Lưu Remediation Case và outcome đã verify để tái sử dụng cho lỗi quen thuộc.
   - Chạy Shadow Autopilot trước khi mở quyền tự thực thi trên lab/production.
@@ -74,6 +76,9 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
 - Alloy ghi mẫu node health vào Loki với `job="ceph-ai-node-metrics"`, labels
   `cluster`, `host`, `metric_type="node_resource"`. Watcher đọc CPU/RAM hiện
   tại và lịch sử từ stream này, không SSH vào node để lấy `/proc`.
+- Nếu chưa có Alloy trên node, có thể bật `NODE_RESOURCE_LIVE_INGEST_ENABLED=true`:
+  Watcher dùng đường SSH read-only hiện có để lấy một mẫu `/proc`, đẩy mẫu JSON
+  vào Loki rồi phân tích ngay; lịch sử và outcome học vẫn chỉ đọc từ Loki.
 - Dự báo không đọc cache/DB cục bộ: luôn query lại lịch sử Loki, mặc định 30
   ngày, tối thiểu 24 mẫu và dự báo cửa sổ 168 giờ.
 - Chỉ ghi cảnh báo xu hướng khi mốc 90% nằm trong cửa sổ và hệ số phù hợp
@@ -88,6 +93,8 @@ memory, trust engine, shadow mode, promotion/demotion và rollout production,
   tự được chọn; trước đó dùng cửa sổ dài nhất có đủ dữ liệu.
 - Việc học chỉ đổi lựa chọn mô hình forecast. Nó không được thay policy,
   allowlist, ngưỡng hành động hoặc tự thực thi remediation.
+- Cách cấu hình và bật luồng live được ghi tại
+  [`runbook-node-resource-learning.md`](runbook-node-resource-learning.md).
 
 ## Block Storage/RBD — hiện trạng và lộ trình AI
 

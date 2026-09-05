@@ -2078,6 +2078,96 @@ class LogFinding(Base):
     )
 
 
+class LogLearningSample(Base):
+    """Auditable supervised-learning projection of one LogFinding.
+
+    The raw log remains in Loki.  This row stores only server-owned identity,
+    hashes/provenance and the later deterministic remediation outcome.
+    """
+
+    __tablename__ = "log_learning_samples"
+    __table_args__ = (
+        UniqueConstraint("log_finding_id", name="uq_log_learning_samples_finding"),
+        Index("ix_log_learning_samples_scope", "cluster_id", "daemon_type", "fault_family"),
+        Index("ix_log_learning_samples_eligibility", "eligible_for_learning", "label"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    log_finding_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("log_findings.id"), nullable=False
+    )
+    ingest_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("log_ingest_runs.id"), nullable=False
+    )
+    incident_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("incidents.id"), nullable=True
+    )
+    remediation_case_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("remediation_cases.id"), nullable=True
+    )
+    action_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("actions.id"), nullable=True)
+    daemon_type: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    daemon_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fault_family: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
+    entity_key: Mapped[str] = mapped_column(String(255), nullable=False, default="unknown")
+    pattern_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ingest_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    semantic_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    prompt_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    diagnosis_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    recommended_playbook_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    playbook_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="CANDIDATE")
+    label: Mapped[str] = mapped_column(String(32), nullable=False, default="UNVERIFIED")
+    eligible_for_learning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    exclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    regressed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class LogFaultStat(Base):
+    """Idempotent trust aggregate for verified daemon-log learning samples."""
+
+    __tablename__ = "log_fault_stats"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id", "daemon_type", "fault_family", "playbook_id",
+            "playbook_version", name="uq_log_fault_stats_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False)
+    daemon_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    fault_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    playbook_id: Mapped[str] = mapped_column(String(64), nullable=False, default="observation_only")
+    playbook_version: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verified_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    inconclusive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trust_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    promotion_candidate_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    promotion_blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class NodeResourceForecastRun(Base):
     """Auditable forecast plus the later observed outcome from Loki."""
 
@@ -2130,3 +2220,32 @@ class NodeResourceModelState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class NodeResourceForecastAlert(Base):
+    """Durable Telegram lifecycle for a risky CPU/RAM forecast."""
+
+    __tablename__ = "node_resource_forecast_alerts"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_name", "host", "metric",
+            name="uq_node_resource_forecast_alert_identity",
+        ),
+        Index("ix_node_resource_forecast_alert_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cluster_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    predicted_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    hours_to_90: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_hours: Mapped[int] = mapped_column(Integer, nullable=False)
