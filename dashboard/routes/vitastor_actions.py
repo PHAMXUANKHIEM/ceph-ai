@@ -139,8 +139,11 @@ async def approve_action(action_pk: str, background: BackgroundTasks, user: str 
         row = session.get(VitastorRemediationAction, action_pk)
         if not row:
             raise HTTPException(status_code=409, detail="Hành động không còn ở trạng thái chờ duyệt")
-        if not session.query(VitastorCluster).filter_by(id=row.cluster_id).first():
-            raise HTTPException(status_code=404, detail="Cụm Vitastor không còn tồn tại")
+        if not session.query(VitastorCluster).filter(
+            VitastorCluster.id == row.cluster_id,
+            VitastorCluster.is_active.is_(True),
+        ).first():
+            raise HTTPException(status_code=409, detail="Cụm Vitastor đã bị vô hiệu hoá hoặc xoá")
         approved = session.query(VitastorRemediationAction).filter(
             VitastorRemediationAction.id == action_pk,
             VitastorRemediationAction.status == VitastorActionStatus.PENDING_APPROVAL.value,

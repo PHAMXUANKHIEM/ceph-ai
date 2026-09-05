@@ -220,6 +220,20 @@ def test_approve_executes_and_audits(dashboard_client, monkeypatch):
         assert {"APPROVED", "EXECUTING", "EXECUTED"} <= events
 
 
+def test_approve_rejects_inactive_cluster(dashboard_client, monkeypatch):
+    cluster = _seed_cluster(is_active=False)
+    action_id = _seed_action(cluster.id)
+    import dashboard.routes.vitastor_actions as routes
+    monkeypatch.setattr(routes, "run_remediation", lambda *a, **k: pytest.fail("must not execute"))
+    _login_admin(dashboard_client)
+
+    response = dashboard_client.post(f"/vitastor/api/actions/{action_id}/approve")
+
+    assert response.status_code == 409
+    with db.SessionLocal() as session:
+        assert session.get(VitastorRemediationAction, action_id).status == VitastorActionStatus.PENDING_APPROVAL.value
+
+
 def test_duplicate_background_tasks_execute_an_approval_only_once(dashboard_client, monkeypatch):
     cluster = _seed_cluster()
     action_id = _seed_action(cluster.id, status=VitastorActionStatus.APPROVED.value)

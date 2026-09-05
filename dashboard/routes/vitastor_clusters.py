@@ -11,11 +11,12 @@ from dashboard.routes import auth
 from dashboard.routes.vitastor import require_vitastor_login
 from dashboard.templating import make_templates
 from shared import db
-from shared.models import VitastorCluster
+from shared.models import VitastorCluster, VitastorOperation
 from vitastor.client import VALID_EXEC_MODES, VitastorConnectionError, query_status
 
 router = APIRouter(prefix="/vitastor/clusters", tags=["vitastor-clusters"])
 templates = make_templates()
+IN_FLIGHT_OPERATIONS = ("PENDING_APPROVAL", "RUNNING")
 
 
 def _require_admin(user: str) -> None:
@@ -32,6 +33,13 @@ def _context(user: str, *, error: str | None = None, success: str | None = None,
 
 def _connection_args(cluster: VitastorCluster) -> tuple:
     return (cluster.management_host, cluster.ssh_user, cluster.ssh_key_path, cluster.etcd_address, cluster.etcd_prefix, cluster.config_path, cluster.exec_mode, cluster.container_name)
+
+
+def _has_in_flight_operation(session, cluster_id: str) -> bool:
+    return session.query(VitastorOperation.id).filter(
+        VitastorOperation.cluster_id == cluster_id,
+        VitastorOperation.status.in_(IN_FLIGHT_OPERATIONS),
+    ).first() is not None
 
 
 @router.get("", response_class=HTMLResponse)
@@ -105,6 +113,11 @@ async def toggle_cluster(request: Request, cluster_id: str, user: str = Depends(
         cluster = session.get(VitastorCluster, cluster_id)
         if cluster is None:
             return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error="Không tìm thấy cụm."))
+        if cluster.is_active and _has_in_flight_operation(session, cluster_id):
+            return templates.TemplateResponse(
+                request, "vitastor/clusters.html",
+                _context(user, error="Không thể vô hiệu hoá cụm khi đang có operation Vitastor chờ duyệt hoặc đang chạy."),
+            )
         cluster.is_active = not cluster.is_active
         session.commit()
     return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user))
@@ -117,6 +130,11 @@ async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(
         cluster = session.get(VitastorCluster, cluster_id)
         if cluster is None:
             return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error="Không tìm thấy cụm."))
+        if _has_in_flight_operation(session, cluster_id):
+            return templates.TemplateResponse(
+                request, "vitastor/clusters.html",
+                _context(user, error="Không thể xoá cụm khi đang có operation Vitastor chờ duyệt hoặc đang chạy."),
+            )
         name = cluster.name
         session.delete(cluster)
         session.commit()

@@ -1,5 +1,5 @@
 from shared import db as db_module
-from shared.models import VitastorCluster
+from shared.models import VitastorCluster, VitastorOperation
 import dashboard.routes.vitastor_clusters as route
 
 
@@ -70,6 +70,29 @@ def test_check_toggle_and_delete_cluster(dashboard_client, monkeypatch):
     with db_module.SessionLocal() as session:
         assert session.get(VitastorCluster, cluster_id).is_active is False
     assert "Đã xoá kết nối cụm" in dashboard_client.post(f"/vitastor/clusters/{cluster_id}/delete").text
+
+
+def test_cannot_disable_or_delete_cluster_with_in_flight_operation(dashboard_client, monkeypatch):
+    monkeypatch.setattr(route, "query_status", lambda *_: {"cluster": {"osd": "3 / 3 up"}})
+    _login(dashboard_client)
+    dashboard_client.post("/vitastor/clusters/create", data=_form())
+    with db_module.SessionLocal() as session:
+        cluster = session.query(VitastorCluster).one()
+        session.add(VitastorOperation(
+            operation="upgrade", cluster_id=cluster.id, cluster_name=cluster.name,
+            params_json="{}", plan_text="test", progress_json="[]", requested_by="admin",
+        ))
+        session.commit()
+        cluster_id = cluster.id
+
+    toggle = dashboard_client.post(f"/vitastor/clusters/{cluster_id}/toggle-active")
+    delete = dashboard_client.post(f"/vitastor/clusters/{cluster_id}/delete")
+
+    assert "Không thể vô hiệu hoá cụm" in toggle.text
+    assert "Không thể xoá cụm" in delete.text
+    with db_module.SessionLocal() as session:
+        assert session.get(VitastorCluster, cluster_id) is not None
+        assert session.get(VitastorCluster, cluster_id).is_active is True
 
 
 def test_ceph_session_cannot_open_vitastor_clusters(dashboard_client):
