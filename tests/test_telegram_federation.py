@@ -5,7 +5,7 @@ from dashboard import telegram_chat
 from shared import telegram_federation as federation
 
 
-def test_database_sources_always_include_local_and_parse_remote_urls(monkeypatch):
+def test_database_sources_are_local_only_even_with_legacy_remote_config(monkeypatch):
     monkeypatch.setattr(federation.settings, "database_url", "sqlite:///hapu.db")
     monkeypatch.setattr(
         federation.settings,
@@ -15,15 +15,11 @@ def test_database_sources_always_include_local_and_parse_remote_urls(monkeypatch
 
     sources = federation.database_sources()
 
-    assert [(source.key, source.url) for source in sources] == [
-        ("local", "sqlite:///hapu.db"),
-        ("cs-lab", "postgresql://user:pass@cs.example/ceph"),
-    ]
+    assert [(source.key, source.url) for source in sources] == [("local", "sqlite:///hapu.db")]
 
 
-def test_active_clusters_are_qualified_by_database_source(monkeypatch):
+def test_active_clusters_only_load_the_local_database(monkeypatch):
     local = SimpleNamespace(id="hapu-id", name="Hapu-Lab", is_default=True, is_active=True)
-    remote = SimpleNamespace(id="cs-id", name="CS-LAB", is_default=True, is_active=True)
 
     monkeypatch.setattr(
         federation.settings,
@@ -43,16 +39,13 @@ def test_active_clusters_are_qualified_by_database_source(monkeypatch):
                 federation.ClusterTarget(source, str(cluster.id), cluster.name, cluster.is_default),
                 cluster,
             )
-            for cluster in ([local] if source.key == "local" else [remote])
+            for cluster in [local]
         ],
     )
 
     targets = federation.active_clusters()
 
-    assert [(target.qualified_id, target.name) for target in targets] == [
-        ("cs-lab:cs-id", "CS-LAB"),
-        ("local:hapu-id", "Hapu-Lab"),
-    ]
+    assert [(target.qualified_id, target.name) for target in targets] == [("local:hapu-id", "Hapu-Lab")]
 
 
 def test_qualified_reference_routes_without_scanning_other_databases(monkeypatch):
@@ -63,9 +56,7 @@ def test_qualified_reference_routes_without_scanning_other_databases(monkeypatch
         "cs-lab=postgresql://cs",
     )
 
-    assert federation.database_urls_for_message_reference("cs-lab:duplicate-id") == [
-        "postgresql://cs"
-    ]
+    assert federation.database_urls_for_message_reference("cs-lab:duplicate-id") == []
     assert federation.database_urls_for_action_reference("local:duplicate-id") == [
         "postgresql://hapu"
     ]
@@ -78,11 +69,11 @@ def test_legacy_lookup_returns_all_matching_database_urls(monkeypatch):
         "telegram_federated_database_urls",
         "cs-lab=postgresql://cs",
     )
-    monkeypatch.setattr(federation, "database_urls_for_message", lambda _id: ["hapu", "cs"])
-    monkeypatch.setattr(federation, "database_urls_for_action", lambda _id: ["hapu", "cs"])
+    monkeypatch.setattr(federation, "database_urls_for_message", lambda _id: ["hapu"])
+    monkeypatch.setattr(federation, "database_urls_for_action", lambda _id: ["hapu"])
 
-    assert federation.database_urls_for_message_reference("duplicate-id") == ["hapu", "cs"]
-    assert federation.database_urls_for_action_reference("duplicate-id") == ["hapu", "cs"]
+    assert federation.database_urls_for_message_reference("duplicate-id") == ["hapu"]
+    assert federation.database_urls_for_action_reference("duplicate-id") == ["hapu"]
 
 
 def test_legacy_chat_callback_is_rejected_when_id_is_ambiguous(monkeypatch):
@@ -157,7 +148,7 @@ def test_mode_command_does_not_resolve_previous_cluster(monkeypatch):
 def test_cluster_selector_times_out_instead_of_blocking(monkeypatch):
     sent = []
 
-    def slow_inventory():
+    def slow_inventory(*_args):
         import time
         time.sleep(0.1)
         return []

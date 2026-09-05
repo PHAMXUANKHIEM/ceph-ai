@@ -481,10 +481,9 @@ class Settings(BaseSettings):
     # Separate, mandatory allow-list for the unrestricted Telegram
     # /single-full mode. Empty means the mode is disabled for everyone.
     telegram_chatbox_full_access_user_ids: str = ""
-    # Central Telegram gateway only: newline/semicolon-separated
-    # ``source=DATABASE_URL`` entries for independently deployed Ceph
-    # installations. The local ``database_url`` is always included as
-    # source ``local``; these extra URLs are used only by Telegram routing.
+    # Deprecated compatibility field. Each Ceph-AI installation is local-only;
+    # Telegram routing never opens another deployment's database, even if an
+    # old environment file still contains this setting.
     telegram_federated_database_urls: str = ""
     # Container deployments route Single Full to a separate privileged
     # executor. Empty keeps the legacy in-process behavior for systemd/dev.
