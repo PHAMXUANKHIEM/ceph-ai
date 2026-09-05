@@ -276,6 +276,33 @@ def configured_token() -> str | None:
     return target[0] if target else None
 
 
+def _cluster_channel(cluster: Cluster) -> tuple[str, str] | None:
+    """Return the local cluster's own Telegram channel when configured."""
+    token = str(getattr(cluster, "telegram_bot_token", "") or "").strip()
+    chat_id = str(getattr(cluster, "telegram_chat_id", "") or "").strip()
+    if not token or not chat_id or not getattr(cluster, "telegram_enabled", True):
+        return None
+    return token, chat_id
+
+
+def configured_tokens() -> set[str]:
+    """Return every local token that may carry Chat-AI messages."""
+    tokens: set[str] = set()
+    target = configured()
+    if target is not None:
+        tokens.add(target[0])
+    try:
+        tokens.update(
+            channel[0]
+            for _target, cluster in telegram_federation.active_clusters_with_models()
+            for channel in [_cluster_channel(cluster)]
+            if channel is not None
+        )
+    except Exception:
+        logger.exception("telegram_chat: failed to load local cluster Telegram tokens")
+    return tokens
+
+
 def _allowed_user_ids() -> set[str] | None:
     """Return configured sender ids; ``None`` means malformed config."""
     raw = str(getattr(settings, "telegram_chatbox_allowed_user_ids", "") or "").strip()
@@ -596,22 +623,29 @@ def _sender_allowed(update: dict, *, chat_type: str) -> bool:
 
 def is_allowed_message(message: dict, bot_token: str) -> bool:
     target = configured()
-    if target is None or target[0] != bot_token:
-        return False
     chat = message.get("chat") or {}
     incoming_chat_id = str(chat.get("id", ""))
-    return incoming_chat_id == target[1] and _sender_allowed(message, chat_type=str(chat.get("type") or ""))
+    global_match = target is not None and (target[0], target[1]) == (bot_token, incoming_chat_id)
+    cluster_match = False
+    if not global_match:
+        try:
+            cluster_match = any(
+                _cluster_channel(cluster) == (bot_token, incoming_chat_id)
+                for _target, cluster in telegram_federation.active_clusters_with_models()
+            )
+        except Exception:
+            logger.exception("telegram_chat: failed to validate local cluster Telegram channel")
+    return (global_match or cluster_match) and _sender_allowed(
+        message, chat_type=str(chat.get("type") or "")
+    )
 
 
 def is_allowed_callback(callback_query: dict, bot_token: str) -> bool:
-    target = configured()
-    if target is None or target[0] != bot_token:
-        return False
     message = callback_query.get("message") or {}
     chat = message.get("chat") or {}
     incoming_chat_id = str(chat.get("id", ""))
-    return incoming_chat_id == target[1] and _sender_allowed(
-        callback_query, chat_type=str(chat.get("type") or "")
+    return is_allowed_message(
+        {"chat": chat, "from": callback_query.get("from") or {}}, bot_token
     )
 
 
@@ -647,15 +681,22 @@ def _cluster() -> Cluster | None:
         return cluster
 
 
-def _active_clusters() -> list[dict[str, str | bool]]:
-    """Return active Ceph clusters from every Telegram database source."""
+def _active_clusters(
+    bot_token: str | None = None, chat_id: str | None = None,
+) -> list[dict[str, str | bool]]:
+    """Return active local clusters visible from one Telegram channel."""
+    global_target = configured()
+    filter_channel = bot_token is not None and chat_id is not None
     return [
         {
             "id": target.qualified_id,
             "name": target.name,
             "is_default": target.is_default and target.source.key == "local",
         }
-        for target in telegram_federation.active_clusters()
+        for target, cluster in telegram_federation.active_clusters_with_models()
+        if not filter_channel
+        or (global_target is not None and (bot_token, chat_id) == global_target)
+        or _cluster_channel(cluster) == (bot_token, chat_id)
     ]
 
 
@@ -796,7 +837,7 @@ def _cluster_selection_buttons(clusters: list[dict[str, str | bool]]) -> list[tu
 async def _send_cluster_selector(token: str, chat_id: str, mode: str | None = None) -> bool:
     try:
         clusters = await asyncio.wait_for(
-            asyncio.to_thread(_active_clusters),
+            asyncio.to_thread(_active_clusters, token, chat_id),
             timeout=_CLUSTER_LOOKUP_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
@@ -1604,7 +1645,7 @@ async def handle_callback(callback_query: dict, bot_token: str) -> str | None:
         selected_id = data[len(CLUSTER_SELECT_PREFIX):].strip()
         try:
             clusters = await asyncio.wait_for(
-                asyncio.to_thread(_active_clusters),
+                asyncio.to_thread(_active_clusters, bot_token, chat_id),
                 timeout=_CLUSTER_LOOKUP_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:

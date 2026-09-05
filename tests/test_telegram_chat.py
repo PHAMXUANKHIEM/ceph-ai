@@ -56,6 +56,33 @@ def test_configured_private_chat_and_explicit_group_allowlist(monkeypatch):
     )
 
 
+def test_cluster_owned_channel_is_scoped_to_the_local_cluster(monkeypatch):
+    _settings(monkeypatch)
+    cluster = SimpleNamespace(
+        id="cluster-1", name="CS-LAB", is_default=True, is_active=True,
+        telegram_bot_token="456:token", telegram_chat_id="-2002", telegram_enabled=True,
+    )
+    target = SimpleNamespace(
+        qualified_id="local:cluster-1", name="CS-LAB", is_default=True,
+        source=SimpleNamespace(key="local", url="sqlite:///local.db"),
+    )
+    monkeypatch.setattr(
+        chat.telegram_federation,
+        "active_clusters_with_models",
+        lambda: [(target, cluster)],
+    )
+
+    message = {"chat": {"id": -2002, "type": "private"}, "from": {"id": 77}, "text": "hi"}
+    assert chat.is_allowed_message(message, "456:token")
+    assert not chat.is_allowed_message(message, "123:token")
+    assert not chat.is_allowed_message(
+        {**message, "chat": {"id": -2003, "type": "private"}}, "456:token"
+    )
+    assert [item["id"] for item in chat._active_clusters("456:token", "-2002")] == [
+        "local:cluster-1"
+    ]
+
+
 def test_malformed_sender_allowlist_fails_closed(monkeypatch):
     _settings(monkeypatch, allowed="alice")
     assert not chat.is_allowed_message(
@@ -648,7 +675,7 @@ def test_telegram_cluster_choice_persists_and_starts_a_new_session(monkeypatch, 
 
 def test_cluster_selector_callback_accepts_only_active_clusters(monkeypatch, tmp_path):
     monkeypatch.setattr(chat, "_CLUSTER_STATE_PATH", tmp_path / "clusters.json")
-    monkeypatch.setattr(chat, "_active_clusters", lambda: [
+    monkeypatch.setattr(chat, "_active_clusters", lambda *_args: [
         {"id": "cluster-1", "name": "Hapu-Lab", "is_default": True},
         {"id": "cluster-2", "name": "CS-LAB", "is_default": False},
     ])

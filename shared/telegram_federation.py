@@ -1,10 +1,9 @@
-"""Database federation used by the single central Telegram gateway.
+"""Database scope used by the Telegram gateway.
 
-The web Dashboard, Watcher and Worker remain single-database processes.  The
-Telegram gateway is intentionally different: one bot may operate multiple
-independent Ceph installations, so it needs a small read-only directory of
-active clusters and a per-update database route.  Cluster/action/message IDs
-are qualified with the source key before they are persisted outside a DB.
+Each Ceph-AI installation owns one independent cluster and one database.  The
+Telegram gateway must therefore stay local to the installation that runs it;
+it must never scan or open another server's database.  References retain the
+``local:`` qualifier for compatibility with existing callbacks and state.
 """
 
 from __future__ import annotations
@@ -50,34 +49,13 @@ def _source_key(value: str) -> str:
 
 
 def database_sources() -> list[DatabaseSource]:
-    """Return the local DB plus configured remote Telegram DBs.
+    """Return only this installation's database.
 
-    ``TELEGRAM_FEDERATED_DATABASE_URLS`` is a newline/semicolon-separated
-    ``source=url`` list.  The local ``DATABASE_URL`` is always source
-    ``local`` and cannot be overridden by this setting.
+    Remote database federation was removed because CS-LAB and Hapu-Lab are
+    separate deployments.  The old setting is intentionally ignored so a
+    stale environment variable cannot make this process read another server.
     """
-    sources = [DatabaseSource("local", settings.database_url)]
-    configured = str(getattr(settings, "telegram_federated_database_urls", "") or "")
-    seen = {sources[0].key}
-    for entry in re.split(r"[;\r\n]+", configured):
-        entry = entry.strip()
-        if not entry or "=" not in entry:
-            continue
-        raw_key, url = entry.split("=", 1)
-        url = url.strip()
-        if not url:
-            continue
-        try:
-            key = _source_key(raw_key)
-        except ValueError:
-            logger.warning("telegram federation: ignoring empty source key")
-            continue
-        if key in seen:
-            logger.warning("telegram federation: ignoring duplicate source %s", key)
-            continue
-        seen.add(key)
-        sources.append(DatabaseSource(key, url))
-    return sources
+    return [DatabaseSource("local", settings.database_url)]
 
 
 def source_for_url(database_url: str | None) -> DatabaseSource | None:

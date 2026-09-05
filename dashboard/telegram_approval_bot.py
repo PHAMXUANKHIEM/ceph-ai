@@ -788,7 +788,7 @@ def _listen_loop_for_token(bot_token: str, stop_event: threading.Event) -> None:
     """One long-polling loop for a single bot token — see this module's own
     docstring for why this is grouped by TOKEN rather than by channel."""
     offset = _load_update_offset(bot_token)
-    if bot_token == telegram_chat.configured_token():
+    if bot_token in telegram_chat.configured_tokens():
         try:
             set_telegram_commands(
                 bot_token,
