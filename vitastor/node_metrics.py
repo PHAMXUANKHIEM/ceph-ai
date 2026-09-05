@@ -37,7 +37,7 @@ def _smart_summary(payload: dict) -> dict:
 def query_node_hardware(host: str, ssh_user: str, ssh_key_path: str) -> dict:
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH): client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(hostname=host, username=ssh_user, key_filename=ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS)
         client.save_host_keys(KNOWN_HOSTS_PATH)
@@ -65,7 +65,7 @@ def query_node_hardware(host: str, ssh_user: str, ssh_key_path: str) -> dict:
 def query_node_network(host: str, targets: list[str], ssh_user: str, ssh_key_path: str) -> dict:
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH): client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(hostname=host, username=ssh_user, key_filename=ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS)
         client.save_host_keys(KNOWN_HOSTS_PATH)

@@ -95,6 +95,23 @@ def _query_cluster(cluster: VitastorCluster) -> dict:
     )
 
 
+def _normalize_cached_snapshot(snapshot: dict) -> dict:
+    """Normalize legacy raw status while keeping deployment-only cache unknown."""
+    if "summary" in snapshot:
+        return snapshot
+    summary = normalize_status(snapshot)
+    has_status_fields = any(
+        key in snapshot
+        for key in ("etcd_alive", "etcd_count", "osd_up", "osd_count", "pool_count", "pg_states")
+    )
+    if not has_status_fields:
+        summary["health"] = "UNKNOWN"
+    return {
+        "summary": summary,
+        "pools": [], "osds": [], "images": [], "section_errors": {},
+    }
+
+
 def _diagnostic_dict(row: VitastorDiagnosticRun) -> dict:
     result = None
     if row.result_json:
@@ -184,10 +201,7 @@ async def vitastor_overview_api(
             if snapshot:
                 snapshot = {k: v for k, v in snapshot.items() if not str(k).startswith("_")}
                 if "summary" not in snapshot:
-                    snapshot = {
-                        "summary": normalize_status(snapshot),
-                        "pools": [], "osds": [], "images": [], "section_errors": {},
-                    }
+                    snapshot = _normalize_cached_snapshot(snapshot)
                 return {
                     **snapshot,
                     "cluster": {"id": cluster_pk, "name": cluster_name},
@@ -204,10 +218,7 @@ async def vitastor_overview_api(
                     pass
             if cached:
                 if "summary" not in cached:
-                    cached = {
-                        "summary": normalize_status(cached),
-                        "pools": [], "osds": [], "images": [], "section_errors": {},
-                    }
+                    cached = _normalize_cached_snapshot(cached)
                 return {
                     **cached,
                     "cluster": {"id": cluster_pk, "name": cluster_name},

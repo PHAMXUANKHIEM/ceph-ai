@@ -4,6 +4,8 @@ import json
 import re
 from datetime import datetime
 
+from sqlalchemy import exists, or_
+from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
@@ -23,6 +25,13 @@ IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 SNAPSHOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BACKUP_METHODS = {"snapshot", "full_qcow2", "incremental_qcow2", "raw", "metadata_etcd", "metadata_antietcd"}
 IN_FLIGHT = ("PENDING_APPROVAL", "RUNNING")
+
+
+def _active_cluster(session, cluster_id: str):
+    return session.query(VitastorCluster).filter(
+        VitastorCluster.id == cluster_id,
+        VitastorCluster.is_active.is_(True),
+    ).first()
 
 
 def _require_admin(user: str) -> None:
@@ -73,12 +82,51 @@ def _validate_nodes(raw) -> list[dict]:
     return nodes
 
 
+def _known_upgrade_hosts(cluster) -> set[str]:
+    """Return hosts discovered from the cluster connection and cached topology."""
+    hosts = {str(cluster.management_host or "").strip()}
+    try:
+        cached = json.loads(cluster.last_status_json or "{}")
+    except (TypeError, ValueError):
+        cached = {}
+    if not isinstance(cached, dict):
+        cached = {}
+
+    deployment = cached.get("deployment")
+    if isinstance(deployment, dict):
+        for node in deployment.get("nodes") or []:
+            if isinstance(node, dict) and str(node.get("host") or "").strip():
+                hosts.add(str(node["host"]).strip())
+
+    for item in cached.get("osds") or []:
+        if not isinstance(item, dict) or item.get("type") != "osd":
+            continue
+        parent = str(item.get("parent") or "").strip()
+        if parent:
+            hosts.add(parent.split("/", 1)[0])
+
+    # A manually-connected cluster has no deployment object; its Etcd
+    # endpoints still identify monitor nodes that may need upgrading.
+    for endpoint in str(cluster.etcd_address or "").split(","):
+        endpoint = endpoint.strip()
+        if not endpoint:
+            continue
+        hosts.add(endpoint.rsplit(":", 1)[0] if ":" in endpoint else endpoint)
+    return {host for host in hosts if host}
+
+
 def _create_operation(operation: str, cluster_name: str, params: dict, plan: str, user: str, cluster_id=None):
     with db.SessionLocal() as session:
         if session.query(VitastorOperation).filter(VitastorOperation.status.in_(IN_FLIGHT)).first():
             raise HTTPException(409, "Đang có một thao tác Vitastor chờ duyệt hoặc đang chạy")
         row = VitastorOperation(operation=operation, cluster_id=cluster_id, cluster_name=cluster_name, params_json=json.dumps(params), plan_text=plan, progress_json="[]", requested_by=user)
-        session.add(row); session.commit(); session.refresh(row)
+        session.add(row)
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(409, "Đang có một thao tác Vitastor chờ duyệt hoặc đang chạy") from exc
+        session.refresh(row)
         return {"operation_id": row.id, "status": row.status}
 
 
@@ -86,6 +134,12 @@ def _execute(operation_id: str) -> None:
     with db.SessionLocal() as session:
         row = session.get(VitastorOperation, operation_id)
         if not row or row.status != "RUNNING": return
+        if row.cluster_id and not _active_cluster(session, row.cluster_id):
+            row.status = "FAILED"
+            row.error_message = "Cụm Vitastor đã bị vô hiệu hoá hoặc xoá trước khi chạy thao tác"
+            row.finished_at = datetime.utcnow()
+            session.commit()
+            return
         operation, params = row.operation, json.loads(row.params_json)
     steps: dict[str, dict] = {}
     def progress(step: str, status: str, message: str):
@@ -112,10 +166,15 @@ def _execute(operation_id: str) -> None:
                 if cluster: session.delete(cluster)
             row.status, row.finished_at = "SUCCESS", datetime.utcnow(); session.commit()
     except Exception as exc:
-        progress("error", "failed", str(exc))
+        error_message = str(exc)
+        if operation == "deploy":
+            error_message += " | Deploy có thể đã thay đổi một phần; giữ nguyên package/dữ liệu để kiểm tra thủ công, không tự rollback."
+        elif operation == "upgrade":
+            error_message += " | Upgrade đã dừng tại node lỗi; package các node trước đó không được tự rollback."
+        progress("error", "failed", error_message)
         with db.SessionLocal() as session:
             row = session.get(VitastorOperation, operation_id)
-            row.status, row.error_message, row.finished_at = "FAILED", str(exc), datetime.utcnow(); session.commit()
+            row.status, row.error_message, row.finished_at = "FAILED", error_message, datetime.utcnow(); session.commit()
 
 
 @router.get("/deploy-cluster", response_class=HTMLResponse)
@@ -150,8 +209,8 @@ async def delete_page(request: Request, user: str = Depends(require_vitastor_log
 async def propose_delete(request: Request, user: str = Depends(require_vitastor_login)):
     _require_admin(user); body = await request.json(); cluster_id = str(body.get("cluster_id") or "")
     with db.SessionLocal() as session:
-        cluster = session.get(VitastorCluster, cluster_id)
-        if not cluster: raise HTTPException(404, "Không tìm thấy cụm")
+        cluster = _active_cluster(session, cluster_id)
+        if not cluster: raise HTTPException(404, "Không tìm thấy cụm đang hoạt động")
         try: deployment = json.loads(cluster.last_status_json or "{}").get("deployment")
         except ValueError: deployment = None
         if not deployment: raise HTTPException(400, "Cụm được kết nối thủ công không có topology deploy để xoá tự động")
@@ -188,9 +247,15 @@ async def propose_upgrade(request: Request, user: str = Depends(require_vitastor
     if not nodes:
         raise HTTPException(400, "Cần ít nhất một node để upgrade")
     with db.SessionLocal() as session:
-        cluster = session.get(VitastorCluster, cluster_id)
+        cluster = _active_cluster(session, cluster_id)
         if not cluster:
-            raise HTTPException(404, "Không tìm thấy cụm")
+            raise HTTPException(404, "Không tìm thấy cụm đang hoạt động")
+        unknown_hosts = set(nodes) - _known_upgrade_hosts(cluster)
+        if unknown_hosts:
+            raise HTTPException(
+                400,
+                "Node không thuộc topology Vitastor đã biết: " + ", ".join(sorted(unknown_hosts)),
+            )
         params = {
             "nodes": nodes, "target_version": target,
             "management_host": cluster.management_host, "ssh_user": cluster.ssh_user,
@@ -237,9 +302,9 @@ async def propose_backup(request: Request, user: str = Depends(require_vitastor_
     if method == "incremental_qcow2" and (not backing_file.startswith("/") or "\x00" in backing_file):
         raise HTTPException(400, "Incremental backup cần đường dẫn backing QCOW2 tuyệt đối")
     with db.SessionLocal() as session:
-        cluster = session.get(VitastorCluster, cluster_id)
+        cluster = _active_cluster(session, cluster_id)
         if not cluster:
-            raise HTTPException(404, "Không tìm thấy cụm")
+            raise HTTPException(404, "Không tìm thấy cụm đang hoạt động")
         if method in {"metadata_etcd", "metadata_antietcd"} and not cluster.etcd_address:
             raise HTTPException(400, "Backup metadata cần Etcd address rõ ràng trong cấu hình cụm")
         params = {
@@ -266,9 +331,30 @@ async def propose_backup(request: Request, user: str = Depends(require_vitastor_
 async def execute_operation(operation_id: str, background: BackgroundTasks, user: str = Depends(require_vitastor_login)):
     _require_admin(user)
     with db.SessionLocal() as session:
-        row = session.get(VitastorOperation, operation_id)
-        if not row or row.status != "PENDING_APPROVAL": raise HTTPException(409, "Thao tác không còn ở trạng thái chờ duyệt")
-        row.status, row.started_at = "RUNNING", datetime.utcnow(); session.commit()
+        # Claim with a compare-and-set so two concurrent approval requests
+        # cannot both start the same destructive workflow.
+        active_cluster = or_(
+            VitastorOperation.cluster_id.is_(None),
+            exists().where(
+                VitastorCluster.id == VitastorOperation.cluster_id,
+                VitastorCluster.is_active.is_(True),
+            ),
+        )
+        claimed = session.query(VitastorOperation).filter(
+            VitastorOperation.id == operation_id,
+            VitastorOperation.status == "PENDING_APPROVAL",
+            active_cluster,
+        ).update(
+            {VitastorOperation.status: "RUNNING", VitastorOperation.started_at: datetime.utcnow()},
+            synchronize_session=False,
+        )
+        if claimed != 1:
+            session.rollback()
+            row = session.get(VitastorOperation, operation_id)
+            if row and row.status == "PENDING_APPROVAL" and row.cluster_id:
+                raise HTTPException(409, "Cụm Vitastor đã bị vô hiệu hoá hoặc xoá")
+            raise HTTPException(409, "Thao tác không còn ở trạng thái chờ duyệt")
+        session.commit()
     background.add_task(_execute, operation_id)
     return {"status": "RUNNING"}
 

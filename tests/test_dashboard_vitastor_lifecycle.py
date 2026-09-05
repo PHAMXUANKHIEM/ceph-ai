@@ -43,6 +43,20 @@ def test_deploy_requires_preview_then_explicit_execute(dashboard_client, monkeyp
         assert "deployment" in json.loads(cluster.last_status_json)
 
 
+def test_operation_execute_is_one_shot(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(route, "deploy", lambda params, progress: calls.append(params))
+    _login(dashboard_client)
+
+    operation_id = dashboard_client.post("/vitastor/deploy-cluster/propose", json=_deploy_payload()).json()["operation_id"]
+    first = dashboard_client.post(f"/vitastor/operations/{operation_id}/execute")
+    second = dashboard_client.post(f"/vitastor/operations/{operation_id}/execute")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert len(calls) == 1
+
+
 def test_delete_requires_exact_name_and_can_preserve_disks(dashboard_client, monkeypatch):
     deleted_params = []
     monkeypatch.setattr(route, "delete", lambda params, progress: deleted_params.append(params))
@@ -80,6 +94,12 @@ def test_upgrade_requires_preview_and_runs_independently(dashboard_client, monke
             etcd_address="10.20.1.10:2379", etcd_prefix="/vitastor",
             config_path="/etc/vitastor/vitastor.conf", ssh_user="root",
             ssh_key_path="/root/.ssh/vita", exec_mode="none", container_name="",
+            last_status_json=json.dumps({
+                "osds": [
+                    {"type": "osd", "parent": "10.20.1.11"},
+                    {"type": "osd", "parent": "10.20.1.12"},
+                ],
+            }),
             created_by="admin",
         )
         session.add(cluster); session.commit(); cluster_id = cluster.id
@@ -122,6 +142,48 @@ def test_upgrade_rejects_unsafe_version_and_duplicate_nodes(dashboard_client):
         "nodes": ["10.20.1.11", "10.20.1.11"],
     })
     assert duplicate.status_code == 400
+
+
+def test_upgrade_rejects_hosts_outside_cluster_topology(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = VitastorCluster(
+            name="vita-prod", management_host="10.20.1.10",
+            etcd_address="10.20.1.10:2379", etcd_prefix="/vitastor",
+            config_path="/etc/vitastor/vitastor.conf", ssh_user="root",
+            ssh_key_path="/root/.ssh/vita", exec_mode="none", container_name="",
+            last_status_json=json.dumps({"osds": [{"type": "osd", "parent": "10.20.1.11"}]}),
+            created_by="admin",
+        )
+        session.add(cluster); session.commit(); cluster_id = cluster.id
+
+    response = dashboard_client.post("/vitastor/upgrade/propose", json={
+        "cluster_id": cluster_id, "target_version": "3.0.16",
+        "nodes": ["10.20.1.99"],
+    })
+    assert response.status_code == 400
+
+
+def test_lifecycle_proposals_reject_inactive_cluster(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        cluster = VitastorCluster(
+            name="inactive-vita", management_host="10.20.1.10",
+            etcd_address="10.20.1.10:2379", etcd_prefix="/vitastor",
+            config_path="/etc/vitastor/vitastor.conf", ssh_user="root",
+            ssh_key_path="/root/.ssh/vita", exec_mode="none", container_name="",
+            is_active=False, created_by="admin",
+        )
+        session.add(cluster); session.commit(); cluster_id = cluster.id
+
+    upgrade = dashboard_client.post("/vitastor/upgrade/propose", json={
+        "cluster_id": cluster_id, "target_version": "3.0.16", "nodes": ["10.20.1.10"],
+    })
+    backup = dashboard_client.post("/vitastor/backup/propose", json={
+        "cluster_id": cluster_id, "method": "snapshot", "image": "vm-100", "snapshot": "daily",
+    })
+    assert upgrade.status_code == 404
+    assert backup.status_code == 404
 
 
 def test_backup_supports_all_documented_methods_with_approval(dashboard_client, monkeypatch):

@@ -53,6 +53,28 @@ def test_full_backup_snapshots_before_qcow2_export(monkeypatch):
     assert commands[-1] == "test -s /backup/vm-100.qcow2"
 
 
+def test_delete_does_not_swallow_service_control_errors(monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        operations, "_run",
+        lambda host, user, key, command: commands.append(command) or "ok",
+    )
+    params = {
+        "nodes": [{"host": "node-a", "disks": []}], "wipe_disks": False,
+        "ssh_user": "root", "ssh_key_path": "/key",
+    }
+
+    operations.delete(params, lambda *_: None)
+
+    stop_command = commands[1]
+    cleanup_command = commands[2]
+    assert "set -eu" in stop_command
+    assert "|| true" not in stop_command
+    assert "vitastor-osd@*.service" in stop_command
+    assert "set -eu" in cleanup_command
+    assert "|| true" not in cleanup_command
+
+
 def test_metadata_etcd_backup_uses_snapshot_save(monkeypatch):
     commands = []
     monkeypatch.setattr(operations, "_assert_healthy", lambda params: None)
@@ -65,3 +87,63 @@ def test_metadata_etcd_backup_uses_snapshot_save(monkeypatch):
     }
     operations.backup(params, lambda *_: None)
     assert any("etcdctl --endpoints=10.0.0.1:2379 snapshot save /backup/etcd.db" in command for command in commands)
+
+
+def test_qemu_uri_preserves_custom_etcd_prefix():
+    uri = operations._qemu_uri({
+        "etcd_address": "10.0.0.1:2379", "etcd_prefix": "/custom",
+        "config_path": "",
+    }, "vm-100@daily")
+
+    assert "etcd_host=10.0.0.1:2379" in uri
+    assert "etcd_prefix=/custom" in uri
+
+
+def test_failed_export_cleans_up_temporary_snapshot(monkeypatch):
+    commands = []
+
+    def fake_run(host, user, key, command):
+        commands.append(command)
+        if "qemu-img convert" in command:
+            raise operations.VitastorOperationError("convert failed")
+        return "ok"
+
+    monkeypatch.setattr(operations, "_assert_healthy", lambda params: None)
+    monkeypatch.setattr(operations, "_run", fake_run)
+    params = {
+        "method": "full_qcow2", "image": "vm-100", "snapshot": "daily",
+        "destination": "/backup/vm-100.qcow2", "backing_file": "",
+        "management_host": "node-a", "ssh_user": "root", "ssh_key_path": "/key",
+        "config_path": "/etc/vitastor/vitastor.conf", "etcd_address": "",
+        "etcd_prefix": "/vitastor", "exec_mode": "none", "container_name": "",
+    }
+
+    with pytest.raises(operations.VitastorOperationError, match="convert failed"):
+        operations.backup(params, lambda *_: None)
+
+    assert any("rm vm-100@daily" in command for command in commands)
+
+
+def test_failed_backup_verification_cleans_up_temporary_snapshot(monkeypatch):
+    commands = []
+
+    def fake_run(host, user, key, command):
+        commands.append(command)
+        if command.startswith("test -s"):
+            raise operations.VitastorOperationError("empty backup")
+        return "ok"
+
+    monkeypatch.setattr(operations, "_assert_healthy", lambda params: None)
+    monkeypatch.setattr(operations, "_run", fake_run)
+    params = {
+        "method": "raw", "image": "vm-100", "snapshot": "daily",
+        "destination": "/backup/vm-100.raw",
+        "management_host": "node-a", "ssh_user": "root", "ssh_key_path": "/key",
+        "config_path": "/etc/vitastor/vitastor.conf", "etcd_address": "",
+        "etcd_prefix": "/vitastor", "exec_mode": "none", "container_name": "",
+    }
+
+    with pytest.raises(operations.VitastorOperationError, match="empty backup"):
+        operations.backup(params, lambda *_: None)
+
+    assert any("rm vm-100@daily" in command for command in commands)

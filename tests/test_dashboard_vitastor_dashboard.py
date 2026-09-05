@@ -51,6 +51,18 @@ def test_dashboard_page_contains_complete_monitor_sections(dashboard_client):
     assert "Performance history" in response.text
 
 
+def test_vitastor_mutation_rejects_cross_origin_request(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/vitastor/api/diagnostics",
+        headers={"Origin": "https://evil.example"},
+        data={"cluster_id": "unknown"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_overview_api_normalizes_and_caches_live_data(dashboard_client, monkeypatch):
     _login(dashboard_client)
     cluster_id = _cluster()
@@ -82,6 +94,20 @@ def test_overview_api_uses_legacy_status_cache_when_cluster_is_offline(dashboard
     assert response.status_code == 200
     assert response.json()["stale"] is True
     assert response.json()["summary"]["osds"] == {"up": 2, "total": 2, "full": 0, "nearfull": 0, "primary_slow": [], "secondary_slow": []}
+
+
+def test_deployment_only_cache_is_unknown_until_first_telemetry_poll(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    cluster_id = _cluster(json.dumps({"deployment": {"nodes": []}}))
+    monkeypatch.setattr(
+        route, "query_dashboard",
+        lambda *_: (_ for _ in ()).throw(route.VitastorConnectionError("SSH timeout")),
+    )
+
+    response = dashboard_client.get(f"/vitastor/api/overview?cluster_id={cluster_id}&cached=true")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["health"] == "UNKNOWN"
 
 
 def test_metric_history_is_scoped_to_selected_cluster(dashboard_client):

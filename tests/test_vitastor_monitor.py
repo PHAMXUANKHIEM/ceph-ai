@@ -93,6 +93,9 @@ def test_successful_poll_records_cluster_and_per_osd_history(cluster, monkeypatc
     with db.SessionLocal() as session:
         sample = session.query(VitastorMetricSample).one()
         osd = session.query(VitastorOsdMetricSample).one()
+        saved_cluster = session.get(VitastorCluster, cluster.id)
+        assert saved_cluster.last_checked_at is not None
+        assert json.loads(saved_cluster.last_status_json)["checked_at"].endswith("Z")
         assert sample.used_percent == 75
         assert sample.read_latency_ms == 0.5
         assert sample.recovery_bps == 333
@@ -136,6 +139,24 @@ def test_etcd_latency_alert_is_transition_scoped(cluster, monkeypatch):
     vitastor_monitor.poll_cluster_once(cluster)
     etcd_alerts = [item for item in alerts if item[2].startswith("Etcd")]
     assert [item[1] for item in etcd_alerts] == ["CRITICAL", "HEALTHY"]
+
+
+def test_etcd_query_failure_is_alerted_and_recovers(cluster, monkeypatch):
+    alerts = []
+    data = _data()
+    data["etcd_status"] = [{"Endpoint": "e1", "Status": {"header": {"member_id": 1}, "leader": 1}}]
+    data["etcd_health"] = [{"endpoint": "e1", "health": True, "took": "2ms"}]
+    data["errors"] = {"etcd_health": "permission denied"}
+    monkeypatch.setattr(vitastor_monitor, "query_dashboard", lambda *_: data)
+    monkeypatch.setattr(vitastor_monitor, "send_vitastor_alert", lambda *args: alerts.append(args))
+
+    vitastor_monitor.poll_cluster_once(cluster)
+    vitastor_monitor.poll_cluster_once(cluster)
+    data["errors"] = {}
+    vitastor_monitor.poll_cluster_once(cluster)
+
+    etcd_alerts = [item for item in alerts if "Etcd" in item[2]]
+    assert [item[1] for item in etcd_alerts] == ["UNREACHABLE", "HEALTHY"]
 
 
 def test_slow_osd_needs_consecutive_relative_outlier_scans(cluster, monkeypatch):

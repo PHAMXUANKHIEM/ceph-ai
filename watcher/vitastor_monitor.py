@@ -62,6 +62,7 @@ def _persist(cluster_id: str, cache: dict, alert_state: str) -> None:
         row = session.get(VitastorCluster, cluster_id)
         if row is not None:
             row.last_status_json = json.dumps(cache)
+            row.last_checked_at = datetime.utcnow()
             session.commit()
 
 
@@ -163,7 +164,13 @@ def _capacity_alerts(cluster: VitastorCluster, datasets: dict, summary: dict, ca
     cache["_telegram_capacity"] = current
 
 
-def _etcd_alert(cluster: VitastorCluster, detail: dict, cache: dict) -> None:
+def _etcd_alert(cluster: VitastorCluster, detail: dict, cache: dict, error: str | None = None) -> None:
+    if error:
+        previous = str(cache.get("_telegram_etcd") or "")
+        if previous != "UNREACHABLE":
+            send_vitastor_alert(cluster.name, "UNREACHABLE", f"Không lấy được Etcd detail: {error}")
+        cache["_telegram_etcd"] = "UNREACHABLE"
+        return
     total, healthy = int(detail.get("total") or 0), int(detail.get("healthy") or 0)
     if not total:
         return
@@ -324,6 +331,7 @@ def _collect_network(cluster: VitastorCluster, datasets: dict, cache: dict) -> l
 def poll_cluster_once(cluster: VitastorCluster) -> str:
     """Poll one cluster, alert only on state transitions, and return its state."""
     cache = _cached(cluster)
+    checked_at = datetime.utcnow().isoformat() + "Z"
     previous = str(cache.get("_telegram_health") or "")
     try:
         datasets = query_dashboard(*_connection_args(cluster))
@@ -331,6 +339,7 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
         current = "UNREACHABLE"
         if previous != current:
             send_vitastor_alert(cluster.name, current, f"Không kết nối được management host {cluster.management_host}: {exc}")
+        cache["checked_at"] = checked_at
         cache["monitor_error"] = str(exc)
         _persist(cluster.id, cache, current)
         cluster.last_status_json = json.dumps(cache)
@@ -338,6 +347,11 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
 
     summary = normalize_status(datasets["status"])
     etcd_detail = normalize_etcd(datasets.get("etcd_status"), datasets.get("etcd_health"))
+    errors = datasets.get("errors") if isinstance(datasets.get("errors"), dict) else {}
+    etcd_error = "; ".join(
+        f"{key}: {value}" for key, value in errors.items()
+        if key in {"etcd_status", "etcd_health"} and value
+    ) or None
     anomalies = detect_and_record(cluster.id, extract_entities(datasets, summary))
     for explanation in anomalies["opened"]:
         send_vitastor_alert(cluster.name, "WARNING", "Dynamic anomaly: " + explanation)
@@ -345,7 +359,7 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
         send_vitastor_alert(cluster.name, "HEALTHY", "Dynamic anomaly đã phục hồi: " + explanation)
     _record_metrics(cluster.id, datasets, summary, etcd_detail)
     _capacity_alerts(cluster, datasets, summary, cache)
-    _etcd_alert(cluster, etcd_detail, cache)
+    _etcd_alert(cluster, etcd_detail, cache, etcd_error)
     _recovery_and_data_alerts(cluster, summary, cache)
     _slow_osd_alerts(cluster, datasets, cache)
     hardware = _collect_hardware(cluster, datasets, cache)
@@ -370,6 +384,7 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
 
     cache.update({
         "summary": summary,
+        "checked_at": checked_at,
         "etcd_detail": etcd_detail,
         "hardware": hardware,
         "network": network,

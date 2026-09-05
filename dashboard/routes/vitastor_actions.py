@@ -97,10 +97,13 @@ def _execute_approved(action_pk: str, actor: str) -> None:
             return
         session.flush()
         row = session.get(VitastorRemediationAction, action_pk)
-        cluster = session.query(VitastorCluster).filter_by(id=row.cluster_id).first()
+        cluster = session.query(VitastorCluster).filter(
+            VitastorCluster.id == row.cluster_id,
+            VitastorCluster.is_active.is_(True),
+        ).first()
         if not cluster:
             row.status = VitastorActionStatus.FAILED.value
-            row.error_message = "Cụm Vitastor không còn tồn tại"
+            row.error_message = "Cụm Vitastor đã bị vô hiệu hoá hoặc xoá"
             record_audit(session, row.cluster_id, row.id, "FAILED", actor, row.error_message)
             session.commit()
             return

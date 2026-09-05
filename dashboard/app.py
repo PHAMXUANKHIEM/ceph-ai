@@ -2,8 +2,10 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -142,6 +144,14 @@ def create_app() -> FastAPI:
         product = request.session.get("product")
         path = request.url.path
         shared_path = path.startswith("/static/") or path in {"/logout", "/login"}
+        if user and request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith("/vitastor"):
+            # SameSite=Lax blocks normal cross-site POST cookies in modern
+            # browsers; validate Origin/Referer as an additional server-side
+            # guard for every authenticated Vitastor mutation.
+            expected_host = request.headers.get("host", "").lower()
+            source = request.headers.get("origin") or request.headers.get("referer")
+            if source and urlsplit(source).netloc.lower() != expected_host:
+                return JSONResponse({"detail": "Cross-site Vitastor request bị từ chối"}, status_code=403)
         if user and not shared_path:
             if product == "vitastor" and not path.startswith("/vitastor"):
                 from fastapi.responses import RedirectResponse
@@ -153,7 +163,7 @@ def create_app() -> FastAPI:
 
     # Added after the product middleware so SessionMiddleware wraps it and
     # `request.session` is available inside the namespace guard.
-    application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key)
+    application.add_middleware(SessionMiddleware, secret_key=settings.session_secret_key, same_site="lax")
     # Outermost middleware (added last): compress every response over ~500B —
     # the 129KB stylesheet, large Jinja pages (settings.html ~52KB) and the
     # telemetry JSON APIs all shrink ~70-80% over the wire, the single biggest

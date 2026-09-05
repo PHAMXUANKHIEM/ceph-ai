@@ -966,6 +966,18 @@ class VitastorOperation(Base):
     """Deploy/delete workflow state, isolated from Ceph Incident/Action."""
 
     __tablename__ = "vitastor_operations"
+    # The application intentionally permits only one pending/running
+    # lifecycle operation at a time.  Indexing a constant makes that rule
+    # atomic at the database boundary, including concurrent propose requests.
+    __table_args__ = (
+        Index(
+            "uq_vitastor_single_inflight",
+            text("(1)"),
+            unique=True,
+            sqlite_where=text("status IN ('PENDING_APPROVAL','RUNNING')"),
+            postgresql_where=text("status IN ('PENDING_APPROVAL','RUNNING')"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     operation: Mapped[str] = mapped_column(String(16), nullable=False)

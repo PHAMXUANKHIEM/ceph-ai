@@ -39,7 +39,7 @@ def query_logs(
     command = f"journalctl --no-pager -o short-iso -n {lines} {units}"
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH): client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(hostname=management_host, username=ssh_user, key_filename=ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS)
         client.save_host_keys(KNOWN_HOSTS_PATH)
@@ -84,7 +84,7 @@ def query_status(
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             hostname=management_host, username=ssh_user, key_filename=ssh_key_path,
@@ -132,7 +132,7 @@ def query_dashboard(
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             hostname=management_host, username=ssh_user, key_filename=ssh_key_path,
@@ -283,13 +283,32 @@ def normalize_status(payload: dict) -> dict:
         else:
             value = stats.get("latency_us", stats.get("usec"))
             if isinstance(value, (int, float)): latency_values.append(float(value) / 1000)
-    health = "HEALTHY"
-    if integer("etcd_alive") < integer("etcd_count") or integer("osd_up") < integer("osd_count"):
+    core_fields = ("etcd_alive", "etcd_count", "osd_up", "osd_count")
+    core_complete = (
+        all(isinstance(payload.get(key), (int, float)) and not isinstance(payload.get(key), bool) for key in core_fields)
+        and integer("etcd_count") > 0
+        and integer("osd_count") > 0
+    )
+    detail_complete = (
+        core_complete
+        and all(isinstance(payload.get(key), (int, float)) and not isinstance(payload.get(key), bool)
+                for key in ("pool_count", "active_pool_count"))
+        and isinstance(payload.get("pg_states"), dict)
+    )
+    health = "UNKNOWN"
+    if core_complete and (
+        integer("etcd_alive") < integer("etcd_count")
+        or integer("osd_up") < integer("osd_count")
+    ):
         health = "CRITICAL"
-    elif unhealthy_pg_count or integer("osds_full") or slow_primary or slow_secondary:
-        health = "CRITICAL"
-    elif integer("osds_nearfull") or flags or integer("active_pool_count") < integer("pool_count"):
-        health = "WARNING"
+    elif detail_complete:
+        health = "HEALTHY"
+        if integer("etcd_alive") < integer("etcd_count") or integer("osd_up") < integer("osd_count"):
+            health = "CRITICAL"
+        elif unhealthy_pg_count or integer("osds_full") or slow_primary or slow_secondary:
+            health = "CRITICAL"
+        elif integer("osds_nearfull") or flags or integer("active_pool_count") < integer("pool_count"):
+            health = "WARNING"
     return {
         "health": health,
         "etcd": {"up": integer("etcd_alive"), "total": integer("etcd_count"), "db_size": integer("etcd_db_size")},

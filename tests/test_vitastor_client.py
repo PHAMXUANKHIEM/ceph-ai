@@ -65,6 +65,10 @@ def test_normalize_status_marks_down_osd_critical():
     assert result["health"] == "CRITICAL"
 
 
+def test_normalize_status_marks_missing_cluster_counts_unknown():
+    assert client.normalize_status({})["health"] == "UNKNOWN"
+
+
 def test_normalize_etcd_exposes_quorum_leader_and_slowest_latency():
     result = client.normalize_etcd([
         {"Endpoint": "http://e1:2379", "Status": {"header": {"member_id": 1}, "leader": 1, "dbSize": 100, "raftIndex": 9}},

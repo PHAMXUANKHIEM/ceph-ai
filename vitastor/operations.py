@@ -25,7 +25,7 @@ def _run(host: str, ssh_user: str, ssh_key_path: str, command: str) -> str:
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(hostname=host, username=ssh_user, key_filename=ssh_key_path, timeout=CONNECT_TIMEOUT_SECONDS)
         client.save_host_keys(KNOWN_HOSTS_PATH)
@@ -116,12 +116,28 @@ def delete(params: dict, progress: Callable[[str, str, str], None]) -> None:
     # cluster control services are deliberately stopped only afterwards.
     progress("stop", "running", "Dừng service Vitastor")
     for node in nodes:
-        _run(node["host"], ssh_user, ssh_key, "systemctl stop vitastor.target vitastor-mon vitastor-etcd 2>/dev/null || true")
+        _run(
+            node["host"], ssh_user, ssh_key,
+            "set -eu; command -v systemctl >/dev/null; "
+            "osd_units=\"$(systemctl list-unit-files --type=service --no-legend 'vitastor-osd@*.service' | awk '{print $1}')\"; "
+            "for unit in vitastor.target vitastor-mon vitastor-etcd $osd_units; do "
+            "if systemctl is-active --quiet \"$unit\" 2>/dev/null; then systemctl stop \"$unit\"; fi; "
+            "if systemctl is-active --quiet \"$unit\" 2>/dev/null; then "
+            "echo \"$unit vẫn đang active sau khi stop\" >&2; exit 1; fi; "
+            "done",
+        )
     progress("stop", "done", "Đã dừng service")
 
     progress("cleanup", "running", "Vô hiệu hoá service và xoá cấu hình")
     for node in nodes:
-        _run(node["host"], ssh_user, ssh_key, "systemctl disable vitastor.target vitastor-mon vitastor-etcd 2>/dev/null || true; rm -f /etc/vitastor/vitastor.conf")
+        _run(
+            node["host"], ssh_user, ssh_key,
+            "set -eu; command -v systemctl >/dev/null; "
+            "osd_units=\"$(systemctl list-unit-files --type=service --no-legend 'vitastor-osd@*.service' | awk '{print $1}')\"; "
+            "for unit in vitastor.target vitastor-mon vitastor-etcd $osd_units; do "
+            "if systemctl is-enabled --quiet \"$unit\" 2>/dev/null; then systemctl disable \"$unit\"; fi; "
+            "done; rm -f /etc/vitastor/vitastor.conf",
+        )
     progress("cleanup", "done", "Đã xoá cấu hình cụm")
 
 
@@ -200,7 +216,10 @@ def _qemu_uri(params: dict, image: str, skip_parents: bool = False) -> str:
     if params.get("config_path"):
         uri += f":config_path={params['config_path']}"
     else:
-        uri += f":etcd_host={params['etcd_address']}"
+        uri += (
+            f":etcd_host={params['etcd_address']}"
+            f":etcd_prefix={params.get('etcd_prefix', '/vitastor')}"
+        )
     if skip_parents:
         uri += ":skip-parents=1"
     return shlex.quote(uri)
@@ -247,8 +266,24 @@ def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
             command = f"qemu-img convert -p -f raw {_qemu_uri(params, snapshot_image, True)} -O qcow2 -o cluster_size=4k -B {backing} {destination}"
         else:
             command = f"{cli} dd iimg={shlex.quote(snapshot_image)} of={destination} bs=1M status=progress"
-        _run(host, user, key, command)
-        progress("export", "done", "Đã ghi và đồng bộ file backup")
+        try:
+            _run(host, user, key, command)
+            progress("export", "done", "Đã ghi và đồng bộ file backup")
+            progress("verify", "running", "Xác minh file backup")
+            _run(host, user, key, f"test -s {shlex.quote(params['destination'])}")
+            progress("verify", "done", "File backup tồn tại và có dữ liệu")
+        except Exception:
+            # The snapshot is temporary for exported backups. Best-effort
+            # cleanup covers both export and post-export verification errors;
+            # preserve the original error if cleanup also fails.
+            progress("cleanup", "running", f"Dọn snapshot tạm {snapshot_image}")
+            try:
+                _run(host, user, key, f"{cli} rm {shlex.quote(snapshot_image)}")
+            except Exception as cleanup_exc:
+                progress("cleanup", "failed", f"Không dọn được snapshot tạm: {cleanup_exc}")
+            else:
+                progress("cleanup", "done", f"Đã dọn snapshot tạm {snapshot_image}")
+            raise
     elif method == "metadata_etcd":
         destination = shlex.quote(params["destination"])
         endpoint = shlex.quote(params["etcd_address"].split(",")[0])
@@ -264,6 +299,7 @@ def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
     else:
         raise VitastorOperationError(f"Phương thức backup không được hỗ trợ: {method}")
 
-    progress("verify", "running", "Xác minh file backup")
-    _run(host, user, key, f"test -s {shlex.quote(params['destination'])}")
-    progress("verify", "done", "File backup tồn tại và có dữ liệu")
+    if method not in {"full_qcow2", "incremental_qcow2", "raw"}:
+        progress("verify", "running", "Xác minh file backup")
+        _run(host, user, key, f"test -s {shlex.quote(params['destination'])}")
+        progress("verify", "done", "File backup tồn tại và có dữ liệu")

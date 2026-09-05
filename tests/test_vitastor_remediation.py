@@ -235,6 +235,20 @@ def test_duplicate_background_tasks_execute_an_approval_only_once(dashboard_clie
         assert session.query(VitastorAuditEntry).filter_by(action_pk=action_id, event_type="EXECUTING").count() == 1
 
 
+def test_approved_action_on_inactive_cluster_never_ssh(dashboard_client, monkeypatch):
+    cluster = _seed_cluster(is_active=False)
+    action_id = _seed_action(cluster.id, status=VitastorActionStatus.APPROVED.value)
+    import dashboard.routes.vitastor_actions as routes
+    monkeypatch.setattr(routes, "run_remediation", lambda *a, **k: pytest.fail("must not execute"))
+
+    routes._execute_approved(action_id, "admin")
+
+    with db.SessionLocal() as session:
+        row = session.get(VitastorRemediationAction, action_id)
+        assert row.status == VitastorActionStatus.FAILED.value
+        assert "vô hiệu hoá" in (row.error_message or "")
+
+
 def test_reject_sets_status_and_audits(dashboard_client):
     cluster = _seed_cluster()
     action_id = _seed_action(cluster.id)
