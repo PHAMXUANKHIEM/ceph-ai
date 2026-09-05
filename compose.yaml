@@ -75,9 +75,10 @@ services:
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
       CEPH_AI_CONTAINERIZED: "true"
       # The dedicated gateway is the sole getUpdates consumer in containers.
-      # dashboard-web keeps TELEGRAM_LISTENER_ENABLED=false.
+      # dashboard-web keeps TELEGRAM_LISTENER_ENABLED=false, so this must be
+      # enabled here or Telegram commands are silently never received.
       CEPH_AI_TELEGRAM_POLLING_ENABLED: "true"
-      TELEGRAM_LISTENER_ENABLED: "true"
+      TELEGRAM_LISTENER_ENABLED: "false"
       CEPH_AI_DROP_DUAL_PRIVILEGES: "true"
       CEPH_AI_DUAL_WORKSPACE: /var/lib/ceph-ai/dual-workspace
       PATH: /app/scripts/aiagent-bin:/opt/ai-tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

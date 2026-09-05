@@ -89,3 +89,20 @@ def test_write_env_lines_restricts_permissions_and_replaces_atomically(tmp_path,
     assert env_file.read_text() == "A=1\nB=2\n"
     mode = stat.S_IMODE(env_file.stat().st_mode)
     assert mode == stat.S_IRUSR | stat.S_IWUSR
+
+
+def test_refresh_cluster_settings_prefers_current_file_over_stale_process_env(tmp_path, monkeypatch):
+    import importlib
+
+    settings_module = importlib.import_module("config.settings")
+    env_file = tmp_path / ".env"
+    env_file.write_text("CEPH_EXEC_MODE=cephadm\nCEPH_MON_NODES=10.3.53.1,10.3.53.69\n")
+    monkeypatch.setattr(env_config, "ENV_PATH", env_file)
+    monkeypatch.setenv("CEPH_EXEC_MODE", "none")
+    monkeypatch.setattr(settings_module.settings, "ceph_exec_mode", "none")
+    monkeypatch.setattr(settings_module.settings, "ceph_mon_nodes", "stale-node")
+
+    settings_module.refresh_cluster_settings_from_env()
+
+    assert settings_module.settings.ceph_exec_mode == "cephadm"
+    assert settings_module.settings.ceph_mon_nodes == "10.3.53.1,10.3.53.69"
