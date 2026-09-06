@@ -51,6 +51,7 @@ def _worker_broker_is_ready(connection) -> bool:
     )
 
 ProcessIncident = Callable[[str, dict], Awaitable[None]]
+ServiceOperation = Callable[[], Awaitable[None]]
 
 
 async def default_process_incident(incident_id: str, envelope: dict) -> None:
@@ -317,6 +318,32 @@ async def run(
             _worker_broker_connection = None
 
 
+async def _supervise(
+    name: str,
+    operation: ServiceOperation,
+    *,
+    restart_delay_seconds: float = 5,
+) -> None:
+    """Keep an auxiliary worker loop from taking down incident consumption.
+
+    The worker hosts several independent long-running loops.  A transient
+    failure in an optional collector (for example RGW audit SSH or a database
+    checkout) must be visible and retried, but must not cancel the AMQP
+    incident consumer or the approved-action poller through ``gather()``.
+    ``CancelledError`` intentionally escapes so container shutdown remains
+    prompt and deterministic.
+    """
+    while True:
+        try:
+            await operation()
+            logger.warning("worker service %s exited unexpectedly; restarting", name)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("worker service %s failed; restarting", name)
+        await asyncio.sleep(restart_delay_seconds)
+
+
 async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
     from worker import bucket_logging, rgw_access_audit
@@ -334,16 +361,16 @@ async def _main() -> None:
         while True:
             connection = _worker_broker_connection
             if _worker_broker_is_ready(connection):
-                service_health.record("worker")
+                service_health.record_safe("worker")
             await asyncio.sleep(15)
 
     await asyncio.gather(
-        run(process_incident=diagnose_incident),
-        poll_approved_actions(),
-        backup_scheduler.run(),
-        bucket_logging.run(),
-        rgw_access_audit.run(),
-        service_heartbeat(),
+        _supervise("incident-consumer", lambda: run(process_incident=diagnose_incident)),
+        _supervise("approved-action-poller", poll_approved_actions),
+        _supervise("backup-scheduler", backup_scheduler.run),
+        _supervise("bucket-logging", bucket_logging.run),
+        _supervise("rgw-access-audit", rgw_access_audit.run),
+        _supervise("heartbeat", service_heartbeat),
     )
 
 

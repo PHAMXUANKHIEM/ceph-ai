@@ -571,5 +571,15 @@ def collect_once() -> None:
 
 async def run() -> None:
     while True:
-        await asyncio.to_thread(collect_once)
+        try:
+            await asyncio.to_thread(collect_once)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # SSH collection, a temporary PostgreSQL pool checkout failure,
+            # or alert delivery must not terminate the worker's incident
+            # consumer.  Keep the failure observable and retry on the normal
+            # interval; per-host failures are handled in collect_once(), and
+            # this boundary protects failures before/after that inner loop.
+            logger.exception("RGW access audit cycle failed; retrying next interval")
         await asyncio.sleep(max(5, settings.rgw_access_audit_interval_seconds))

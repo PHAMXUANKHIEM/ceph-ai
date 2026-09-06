@@ -51,15 +51,14 @@ jobs:
       group: ceph-ai-lab-deploy
       cancel-in-progress: false
     steps:
-      - name: Deploy pushed commit to lab-hapu-ctl
+      - name: Deploy pushed commit to the container stack
         env:
           DEPLOY_SHA: ${{ github.sha }}
+          # The active compose deployment lives here. A self-hosted runner
+          # may override this repository variable for another lab host.
+          CEPH_AI_DEPLOY_DIR: ${{ vars.CEPH_AI_DEPLOY_DIR || '/root/ceph-ai' }}
         run: |
           set -euo pipefail
-          cd /opt/ceph-ai
-          test "$(git rev-parse --show-toplevel)" = "/opt/ceph-ai"
-          test -z "$(git status --porcelain)"
-          git fetch --prune origin main
-          git cat-file -e "${DEPLOY_SHA}^{commit}"
-          DEPLOY_REF="$DEPLOY_SHA" bash scripts/deploy/restart_services.sh
-          curl -fsS --max-time 10 http://127.0.0.1:8000/login >/dev/null
+          cd "$CEPH_AI_DEPLOY_DIR"
+          test "$(git rev-parse --show-toplevel)" = "$CEPH_AI_DEPLOY_DIR"
+          DEPLOY_REF="$DEPLOY_SHA" bash scripts/deploy/restart_container_stack.sh

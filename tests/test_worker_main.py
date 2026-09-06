@@ -28,6 +28,26 @@ def test_worker_broker_is_ready_requires_an_active_broker_connection():
     assert not worker_main._worker_broker_is_ready(_Connection(closed=True, ready=True))
     assert not worker_main._worker_broker_is_ready(_Connection(closed=False, ready=False))
     assert worker_main._worker_broker_is_ready(_Connection(closed=False, ready=True))
+
+
+def test_supervise_restarts_a_failed_auxiliary_service(monkeypatch):
+    calls = []
+
+    async def operation():
+        calls.append("run")
+        if len(calls) == 1:
+            raise RuntimeError("temporary collector failure")
+        raise asyncio.CancelledError()
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(worker_main.asyncio, "sleep", no_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker_main._supervise("test-service", operation))
+
+    assert calls == ["run", "run"]
 from shared import db as db_module
 from shared.db import Base
 from shared.models import Incident, IncidentStatus

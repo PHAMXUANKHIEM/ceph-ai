@@ -1,6 +1,8 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 from config.settings import settings
 from sqlalchemy.orm import sessionmaker
 from shared import db
@@ -8,6 +10,27 @@ from shared.models import (
     Cluster, LogFinding, LogIngestRun, RgwAccessAuditEvent, RgwAnalysisJob, RgwErrorNotification,
 )
 from worker import rgw_access_audit as audit
+
+
+def test_audit_loop_recovers_from_a_cycle_failure(monkeypatch):
+    calls = []
+
+    def failing_then_recovering_collect_once():
+        calls.append("collect")
+        if len(calls) == 1:
+            raise RuntimeError("temporary SSH failure")
+
+    async def no_wait_then_cancel(_seconds):
+        if len(calls) >= 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(audit, "collect_once", failing_then_recovering_collect_once)
+    monkeypatch.setattr(audit.asyncio, "sleep", no_wait_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(audit.run())
+
+    assert calls == ["collect", "collect"]
 
 
 def _row(method="PUT", path="/photos/a.jpg", status=200):

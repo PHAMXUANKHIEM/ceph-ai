@@ -10,6 +10,17 @@ cd "$script_dir"
 # and deterministic.
 python3 scripts/bootstrap_container_config.py
 
+# This unit is the canonical owner for the compose services.  Leaving one of
+# the legacy bare-metal services enabled starts a second Worker/Watcher against
+# the same database and RabbitMQ queues, which can duplicate incident handling
+# and overwrite the shared heartbeat.  Remediation Watcher is intentionally
+# excluded because it has no compose counterpart.
+for legacy_service in ceph-ai-worker.service ceph-ai-watcher.service ceph-ai-dashboard.service; do
+  if systemctl cat "$legacy_service" >/dev/null 2>&1; then
+    systemctl disable --now "$legacy_service"
+  fi
+done
+
 # Code Repair has two supported owners: the host systemd supervisor on a
 # systemd deployment, or the compose service on a container-only deployment.
 # Never start both: each supervisor opens its own DB pool and can duplicate
@@ -36,4 +47,7 @@ if systemctl is-active --quiet ceph-ai-code-repair-supervisor.service 2>/dev/nul
   fi
 fi
 
-exec podman-compose up -d "${services[@]}"
+# Application source is mounted into the containers.  Recreate processes on
+# every explicit stack start so an updated checkout cannot leave Python
+# modules from an older commit resident in a long-running container.
+exec podman-compose up -d --force-recreate "${services[@]}"
