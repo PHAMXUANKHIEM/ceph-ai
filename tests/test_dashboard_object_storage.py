@@ -56,7 +56,7 @@ def test_inventory_page_shows_empty_state_without_sample_buckets(dashboard_clien
     assert response.status_code == 200
     assert "Chưa có bucket trên cụm đang chọn." in response.text
     assert ".mgr" not in response.text
-    assert '<a href="/object-storage/buckets" class="nav-link active">Buckets</a>' in response.text
+    assert 'href="/object-storage/buckets" class="nav-dropdown-item nav-dropdown-item-active">Buckets</a>' in response.text
     assert '>Object Storage</a>' not in response.text
     assert 'role="tablist" aria-label="Tính năng Buckets"' in response.text
     assert 'data-bucket-tab="bucket-overview-panel"' in response.text

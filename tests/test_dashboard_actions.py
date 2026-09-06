@@ -90,26 +90,21 @@ def test_approve_rejects_inactive_cluster_action(dashboard_client):
         raise AssertionError("inactive cluster action must not be approved")
 
 
-def test_index_shows_pending_action_card(dashboard_client):
-    # 2026-07-23 restore: this card was removed in a prior session on the
-    # (wrong) assumption that Chat-with-AI's own confirm click was itself
-    # sufficient for a RISKY proposal. It isn't —
-    # dashboard/routes/chat.py::confirm_chat_action routes a RISKY-classified
-    # chat proposal (e.g. restart_osd_daemon, still `risky:` in
-    # action_policy.yaml) through this SAME PENDING_APPROVAL state, and
-    # without this card there was no UI path left to ever call
-    # POST /actions/{id}/approve|reject — the action just sat there forever,
-    # looking confirmed in the chat transcript but never actually executed.
+def test_index_directs_pending_actions_to_telegram(dashboard_client):
+    # Risky actions remain PENDING_APPROVAL, but the approval UI deliberately
+    # lives in Telegram now.  The Dashboard must not render the legacy card
+    # (which implied that a browser could approve the action), and it must
+    # make the new operator path discoverable instead.
     _pending_action()
     _login(dashboard_client)
 
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "Chờ duyệt" in response.text
-    assert "restart_osd_daemon" in response.text
-    assert "looks like a stuck OSD" in response.text
-    assert "docker restart ceph-osd-B" in response.text
+    assert "Risky Action" in response.text
+    assert "Telegram" in response.text
+    assert "restart_osd_daemon" not in response.text
+    assert "docker restart ceph-osd-B" not in response.text
 
 
 def test_approve_action_sets_approved_and_audits_operator_as_actor(dashboard_client):
@@ -254,8 +249,8 @@ def test_index_warns_about_uncovered_pending_action_on_other_cluster_without_mix
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "Chờ duyệt" in response.text
-    assert "Cụm khác có hành động Chờ duyệt" in response.text
+    assert "Risky Action" in response.text
+    assert "Telegram" in response.text
     assert "stuck OSD on cluster-b" not in response.text
 
 
@@ -683,7 +678,7 @@ def test_approve_gate_also_covers_both_package_based_upgrade_action_ids(dashboar
         assert response.status_code == 409, f"expected block for {action_id}"
 
 
-def test_index_shows_disabled_approve_button_for_other_action_while_upgrade_pending(dashboard_client):
+def test_index_keeps_approval_controls_out_of_dashboard_while_upgrade_pending(dashboard_client):
     _pending_upgrade_action(ActionStatus.PENDING_APPROVAL.value)
     _pending_action("inc-other-6")
     _login(dashboard_client)
@@ -691,7 +686,9 @@ def test_index_shows_disabled_approve_button_for_other_action_while_upgrade_pend
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert 'class="btn btn-approve" disabled' in response.text
+    assert 'class="btn btn-approve" disabled' not in response.text
+    assert "Risky Action" in response.text
+    assert "Telegram" in response.text
 
 
 # --- Story 11.3 (AD-19): approving an unrelated Action is blocked while a

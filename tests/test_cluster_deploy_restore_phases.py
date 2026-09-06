@@ -97,7 +97,23 @@ def fakes(monkeypatch):
     monkeypatch.setattr(
         cluster_deploy_module.backup_metadata,
         "latest_successful_metadata_job",
-        lambda: SimpleNamespace(backup_target_slot="a", remote_key="metadata/20260731T000000Z"),
+        lambda: SimpleNamespace(
+            id="metadata-1", backup_target_slot="a", remote_key="metadata/20260731T000000Z"
+        ),
+    )
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "artifact_manifest",
+        lambda _job_id: {
+            "auth_export.txt": (1, "test-sha256"),
+            "crushmap.bin": (1, "test-sha256"),
+            "monmap.bin": (1, "test-sha256"),
+        },
+    )
+    monkeypatch.setattr(
+        cluster_deploy_module.backup_metadata,
+        "download_artifact",
+        lambda _backend, _remote_key, artifact_name, _size, _sha256: f"fake-{artifact_name}".encode(),
     )
     monkeypatch.setattr(
         cluster_deploy_module.backup_restore, "latest_backup_target_slot", lambda pool, image: "a"

@@ -24,6 +24,10 @@ SHARED_NAV_PATHS = {
 def test_every_ceph_shell_template_loads_the_shared_navigation_script():
     missing = []
     for template in sorted(TEMPLATE_DIR.glob("*.html")):
+        # Partials are rendered inside a page template and must not load a
+        # second copy of app.js.  `_nav.html` deliberately owns only markup.
+        if template.name.startswith("_"):
+            continue
         source = template.read_text(encoding="utf-8")
         if 'class="main-nav"' in source and "/static/app.js" not in source:
             missing.append(template.name)
@@ -63,7 +67,7 @@ def test_permission_gated_links_are_not_synthesized_by_shared_navigation():
         assert f'["{path}",' not in shared_block
 
 
-def test_compact_admin_pages_keep_permission_gated_navigation_sources():
+def test_compact_admin_pages_include_the_shared_permission_aware_navigation():
     templates = (
         "block_storage.html",
         "object_storage_buckets.html",
@@ -72,8 +76,7 @@ def test_compact_admin_pages_keep_permission_gated_navigation_sources():
     )
     for name in templates:
         source = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
-        for path in ("/crush-map", "/telegram-alerts", "/users", "/clusters"):
-            assert f'href="{path}"' in source, f"{name} drops admin navigation {path}"
+        assert '{% include "_nav.html" %}' in source, f"{name} omits the shared navigation"
 def test_object_storage_quota_link_uses_admin_navigation_capability():
     source = APP_JS.read_text(encoding="utf-8")
     assert 'linksByPath["/users"] || linksByPath["/clusters"]' in source

@@ -152,6 +152,12 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "telegram_incident_enabled", True, raising=False)
     monkeypatch.setattr(settings, "telegram_rbd_forecast_enabled", True, raising=False)
     monkeypatch.setattr(settings, "telegram_node_enabled", True, raising=False)
+    # The Dashboard lifespan owns an approval-bot long-poll listener in the
+    # legacy single-process deployment.  A TestClient enters that lifespan,
+    # therefore leaving this setting inherited from a staging .env would let
+    # ordinary unit tests open a real Telegram getUpdates connection.  Keep
+    # the suite hermetic; tests for the listener must enable/mock it locally.
+    monkeypatch.setattr(settings, "telegram_listener_enabled", False, raising=False)
     # 2026-08-07: cluster_name is written the same way (plain setattr in
     # dashboard/routes/telegram_alerts.py::telegram_cluster_name_submit,
     # not monkeypatch.setattr) — same leak-across-tests/inherits-real-.env

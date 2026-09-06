@@ -369,6 +369,9 @@ def test_telegram_dual_implementer_explicitly_enables_write_mode(monkeypatch):
         return FakeProcess()
 
     monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    # Write-capable Dual mode must use an isolated workspace.  This unit test
+    # exercises provider mode selection, not workspace validation.
+    monkeypatch.setattr(dual_module, "_execution_repo", lambda **_kwargs: Path("/tmp/dual-workspace"))
     monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
     monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
 
@@ -1356,11 +1359,12 @@ def test_confirm_action_risky_action_routes_to_pending_approval(dashboard_client
         assert action.classification == ActionClassification.RISKY.value
         assert action.status == ActionStatus.PENDING_APPROVAL.value
 
-    # And it now shows up on the normal Dashboard "Chờ duyệt" section, same
-    # as any Incident-triggered RISKY action (restored 2026-07-23 — see
-    # tests/test_dashboard_actions.py::test_index_shows_pending_action_card).
+    # Browser approval controls are intentionally absent; Telegram owns the
+    # second approval step for risky actions.
     home = dashboard_client.get("/")
-    assert "restart_osd_daemon" in home.text
+    assert "Risky Action" in home.text
+    assert "Telegram" in home.text
+    assert "restart_osd_daemon" not in home.text
 
 
 def test_confirm_action_double_submit_is_a_no_op(dashboard_client):
@@ -1418,10 +1422,10 @@ def test_confirm_action_create_pool_auto_approves_with_resolved_command(dashboar
 def test_confirm_action_delete_pool_now_waits_for_a_second_approval(dashboard_client):
     """2026-08-19: `delete_pool` chuyển `safe:` -> `destructive:`.
 
-    ĐÂY LÀ MỘT THAY ĐỔI HÀNH VI CÓ CHỦ Ý: trước đó confirm trên Chat là
-    thực thi ngay (Action tạo thẳng ở APPROVED cho Worker nhặt). Giờ nó
-    dừng ở PENDING_APPROVAL và hiện trên mục "Chờ duyệt" — operator vẫn
-    xem lệnh đã resolve ở bước confirm, rồi Duyệt lần hai trên Dashboard.
+        ĐÂY LÀ MỘT THAY ĐỔI HÀNH VI CÓ CHỦ Ý: trước đó confirm trên Chat là
+        thực thi ngay (Action tạo thẳng ở APPROVED cho Worker nhặt). Giờ nó
+        dừng ở PENDING_APPROVAL; Telegram là nơi operator thực hiện duyệt
+        lần hai, không phải Dashboard.
 
     Lý do đầy đủ nằm trong worker/policy/action_policy.yaml; tóm tắt: DoD
     của Pha 0.4 nêu đích danh "xóa pool" là thứ không được nằm trong luồng
@@ -1452,7 +1456,9 @@ def test_confirm_action_delete_pool_now_waits_for_a_second_approval(dashboard_cl
         assert "pool_bo_di" in (action.proposed_command or "")
 
     home = dashboard_client.get("/")
-    assert "delete_pool" in home.text
+    assert "Risky Action" in home.text
+    assert "Telegram" in home.text
+    assert "delete_pool" not in home.text
 
 
 def test_confirm_action_delete_pool_rejects_invalid_pool_name(dashboard_client):
