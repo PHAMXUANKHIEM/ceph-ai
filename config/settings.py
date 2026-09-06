@@ -638,6 +638,9 @@ class Settings(BaseSettings):
     # lower confidence remains visible to operators but cannot trigger work.
     ai_min_diagnosis_confidence: float = Field(default=0.6, gt=0, le=1)
     ai_low_confidence_retry_cooldown_seconds: int = Field(default=3600, ge=60)
+    # A failed attempt remains visible, but must not produce a new identical
+    # Incident/Telegram message on every health-poll transition.
+    incident_failed_retry_cooldown_seconds: int = Field(default=900, ge=60)
 
     # watcher/database_capacity_monitor.py's own cadence -- deliberately
     # much slower than every other scan above: this app's own DB size

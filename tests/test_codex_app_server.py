@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from shared import codex_app_server as codex
 
@@ -37,3 +38,19 @@ def test_refreshing_default_login_never_consumes_a_separate_profile(monkeypatch,
         codex._device_login_processes.clear()
         codex._device_login_results.clear()
         codex._device_login_drain_tasks.clear()
+
+
+def test_auth_file_change_invalidates_a_live_app_server(monkeypatch, tmp_path):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    auth_file = home / "auth.json"
+    auth_file.write_text('{"token":"old"}')
+    app_server = codex.CodexAppServer()
+    monkeypatch.setattr(app_server, "_codex_home", lambda: home)
+    app_server._process = SimpleNamespace(returncode=None)
+    app_server._reader_task = SimpleNamespace(done=lambda: False)
+    app_server._auth_state = app_server._auth_file_state()
+
+    assert app_server._is_live_for_auth_state(app_server._auth_file_state())
+    auth_file.write_text('{"token":"new-account-token"}')
+    assert not app_server._is_live_for_auth_state(app_server._auth_file_state())

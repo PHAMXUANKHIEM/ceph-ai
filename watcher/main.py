@@ -145,6 +145,21 @@ _REMINDER_EXCLUDED_CODES = {
 }
 
 
+def _recent_failed_incident_codes(session, cluster_id: str | None, now: datetime) -> set[str]:
+    """Return checks whose failed attempt is still in the retry cooldown."""
+    cutoff = now - timedelta(seconds=settings.incident_failed_retry_cooldown_seconds)
+    query = session.query(Incident.ceph_code).filter(
+        Incident.status == IncidentStatus.FAILED.value,
+        Incident.created_at >= cutoff,
+    )
+    query = (
+        query.filter(Incident.cluster_id == cluster_id)
+        if cluster_id is not None
+        else query.filter(Incident.cluster_id.is_(None))
+    )
+    return {row.ceph_code for row in query.all()}
+
+
 def send_due_incident_reminders(now: datetime | None = None) -> int:
     """Re-send every still-open Incident to Telegram once per configured interval."""
     now = now or datetime.utcnow()
@@ -510,6 +525,12 @@ def build_and_publish_incident(
             else low_confidence_query.filter(Incident.cluster_id.is_(None))
         )
         already_open_codes.update(row.ceph_code for row in low_confidence_query.all())
+        # FAILED is deliberately eligible for retry eventually, but a
+        # provider/SSH failure must not create and Telegram-alert a new row
+        # every time the same health check flaps during that failure window.
+        already_open_codes.update(
+            _recent_failed_incident_codes(session, cluster_id, datetime.utcnow())
+        )
 
         # OSD_DOWN can recur immediately after a successful systemd restart
         # (or the daemon can die again while the previous Incident is still

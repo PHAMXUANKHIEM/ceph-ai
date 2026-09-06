@@ -220,6 +220,10 @@ class CodexAppServer:
     def __init__(self) -> None:
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
+        # Each container owns an app-server process, while CODEX_HOME is a
+        # shared volume. Keep the auth state used to launch this child so a
+        # device login in Telegram cannot leave Dashboard on a revoked token.
+        self._auth_state: tuple[int, int, int] | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._next_id = 1
         self._start_lock = asyncio.Lock()
@@ -238,14 +242,27 @@ class CodexAppServer:
             pass
         return value
 
+    def _auth_file_state(self) -> tuple[int, int, int] | None:
+        """Return a cheap identity/version fingerprint for auth.json."""
+        try:
+            stat = (self._codex_home() / "auth.json").stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+    def _is_live_for_auth_state(self, auth_state: tuple[int, int, int] | None) -> bool:
+        return bool(
+            self._process
+            and self._process.returncode is None
+            and self._reader_task
+            and not self._reader_task.done()
+            and self._auth_state == auth_state
+        )
+
     async def _ensure_started(self) -> None:
         async with self._start_lock:
-            if (
-                self._process
-                and self._process.returncode is None
-                and self._reader_task
-                and not self._reader_task.done()
-            ):
+            auth_state = self._auth_file_state()
+            if self._is_live_for_auth_state(auth_state):
                 return
             if self._process or self._reader_task:
                 # A failed reader can leave the child process alive. Do not
@@ -269,6 +286,7 @@ class CodexAppServer:
             except FileNotFoundError as exc:
                 raise CodexAppServerError("Chưa cài Codex CLI trên server") from exc
             self._reader_task = asyncio.create_task(self._read_loop())
+            self._auth_state = auth_state
             await self._request(
                 "initialize",
                 {
@@ -381,6 +399,7 @@ class CodexAppServer:
         process, task = self._process, self._reader_task
         self._process = None
         self._reader_task = None
+        self._auth_state = None
         if process and process.returncode is None:
             process.terminate()
             try:

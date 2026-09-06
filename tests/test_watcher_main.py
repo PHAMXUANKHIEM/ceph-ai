@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 import threading
@@ -585,6 +585,30 @@ def test_run_clamps_negative_poll_interval(monkeypatch):
     watcher_main.run(on_transition=lambda *_: None, max_iterations=2)
 
     assert sleep_calls == [0, 0]
+
+
+def test_recent_failed_incident_codes_observe_retry_cooldown(monkeypatch):
+    now = datetime.utcnow()
+    monkeypatch.setattr(watcher_main.settings, "incident_failed_retry_cooldown_seconds", 300)
+    with db_module.SessionLocal() as session:
+        session.add_all([
+            Incident(
+                ceph_code="BLUESTORE_SLOW_OP_ALERT",
+                status=IncidentStatus.FAILED.value,
+                detected_at=now - timedelta(seconds=30),
+                created_at=now - timedelta(seconds=30),
+            ),
+            Incident(
+                ceph_code="OLD_FAILURE",
+                status=IncidentStatus.FAILED.value,
+                detected_at=now - timedelta(seconds=301),
+                created_at=now - timedelta(seconds=301),
+            ),
+        ])
+        session.commit()
+        assert watcher_main._recent_failed_incident_codes(session, None, now) == {
+            "BLUESTORE_SLOW_OP_ALERT"
+        }
 
 
 # --- Story 5.2: heartbeat wiring --------------------------------------------
