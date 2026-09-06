@@ -150,6 +150,12 @@
     var actionsDiv = document.createElement("div");
     actionsDiv.className = "chat-proposal-actions";
     if (message.proposed_status === "PENDING") {
+      var simulateBtn = document.createElement("button");
+      simulateBtn.type = "button";
+      simulateBtn.className = "btn btn-ghost btn-sm chat-simulate-btn";
+      simulateBtn.dataset.messageId = message.id;
+      simulateBtn.textContent = "Mô phỏng";
+      actionsDiv.appendChild(simulateBtn);
       if (message.proposed_action_id === "execute_node_command") {
         var okHint = document.createElement("strong");
         okHint.textContent = "Nhập chính xác OK ở tin nhắn kế tiếp để thực hiện.";
@@ -953,6 +959,49 @@
   // --- confirm a staged proposal ------------------------------------------
 
   messagesEl.addEventListener("click", function (event) {
+    var simulateBtn = event.target.closest(".chat-simulate-btn");
+    if (simulateBtn) {
+      var simulationMessageId = simulateBtn.dataset.messageId;
+      simulateBtn.disabled = true;
+      simulateBtn.textContent = "Đang mô phỏng...";
+      fetch(apiPrefix + "/messages/" + encodeURIComponent(simulationMessageId) + "/simulate-action", {
+        method: "POST",
+        credentials: "same-origin",
+      })
+        .then(handleAuthRedirect)
+        .then(function (response) {
+          if (!response.ok) {
+            return response.json().then(function (data) {
+              throw new Error(data.detail || "HTTP " + response.status);
+            });
+          }
+          return response.json();
+        })
+        .then(function (simulation) {
+          var actions = simulateBtn.closest(".chat-proposal-actions");
+          var existing = actions.querySelector(".chat-simulation-result");
+          if (existing) existing.remove();
+          var result = document.createElement("pre");
+          result.className = "chat-simulation-result";
+          result.textContent = "MÔ PHỎNG AN TOÀN — không chạy lệnh\n" +
+            "Phân loại: " + simulation.classification + "\n" +
+            "Node: " + (simulation.target_nodes || []).join(", ") + "\n" +
+            "Lệnh dự kiến: " + (simulation.command_preview || "xử lý thủ công") + "\n" +
+            "Khi xác nhận: " + simulation.approval;
+          actions.appendChild(result);
+          simulateBtn.textContent = "Mô phỏng lại";
+          simulateBtn.disabled = false;
+        })
+        .catch(function (err) {
+          if (err.message !== "unauthenticated") {
+            showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
+            simulateBtn.disabled = false;
+            simulateBtn.textContent = "Mô phỏng";
+          }
+        });
+      return;
+    }
+
     var btn = event.target.closest(".chat-confirm-btn");
     if (!btn) return;
     var messageId = btn.dataset.messageId;

@@ -872,3 +872,85 @@ async def _confirm_chat_action_core(
 @router.post("/api/chat/messages/{message_id}/confirm-action")
 async def confirm_chat_action(message_id: str, user: str = Depends(require_login)):
     return await _confirm_chat_action_core(message_id, user)
+
+
+@router.post("/api/chat/messages/{message_id}/simulate-action")
+async def simulate_chat_action(message_id: str, user: str = Depends(require_login)):
+    """Build a deterministic, zero-side-effect remediation dry-run.
+
+    This endpoint never opens SSH, calls Ceph, creates an Incident/Action,
+    or publishes a queue message.  It is intentionally based on the same
+    current proposal validation that confirmation uses, so the operator sees
+    whether the staged request is still scoped to an active cluster before
+    choosing the real confirmation path.
+    """
+    with db.SessionLocal() as session:
+        message = session.get(ChatMessage, message_id)
+        if message is None or message.actor != user:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn")
+        if message.role != "assistant" or message.proposed_action_id is None:
+            raise HTTPException(status_code=400, detail="Tin nhắn này không có đề xuất hành động")
+        if message.proposed_status != "PENDING":
+            raise HTTPException(status_code=409, detail="Chỉ mô phỏng đề xuất đang chờ xác nhận")
+
+        try:
+            target_nodes = json.loads(message.proposed_target_nodes) if message.proposed_target_nodes else None
+            action_params = json.loads(message.proposed_action_params) if message.proposed_action_params else {}
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Đề xuất không còn hợp lệ (dữ liệu bị lỗi)") from None
+
+        action_id = message.proposed_action_id
+        is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
+        is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
+        is_parameterized_action = is_management_action or is_bluestore_action
+        cluster = session.get(Cluster, message.cluster_id) if message.cluster_id else None
+        if cluster is None:
+            cluster = session.query(Cluster).filter_by(is_default=True).first()
+        if cluster is None or not cluster.is_active:
+            raise HTTPException(status_code=400, detail="Cụm của đề xuất không còn hoạt động")
+        allowed_hosts = {node["host"] for node in configured_nodes(cluster)}
+        if (
+            action_id not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS)
+            or not isinstance(target_nodes, list)
+            or not target_nodes
+            or not all(isinstance(host, str) and host in allowed_hosts for host in target_nodes)
+            or (is_parameterized_action and len(target_nodes) != 1)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Đề xuất không còn hợp lệ (action_id hoặc node đã thay đổi từ lúc đề xuất)",
+            )
+
+        command_preview = message.proposed_command_preview
+        if is_parameterized_action:
+            try:
+                command_preview = executor_commands.get_command(action_id, target_nodes[0], action_params or {})
+            except ExecutorError as exc:
+                raise HTTPException(status_code=400, detail=f"Tham số không hợp lệ: {exc}") from exc
+
+        classification = gate.classify_action(action_id, session).value
+        approval = {
+            ActionClassification.READ_ONLY.value: "Không chạy thay đổi; chỉ đọc dữ liệu khi được xác nhận.",
+            ActionClassification.SAFE.value: "Nếu xác nhận, Worker có thể thực hiện theo policy SAFE.",
+            ActionClassification.RISKY.value: "Nếu xác nhận, action vẫn chờ operator duyệt qua Telegram.",
+            ActionClassification.DESTRUCTIVE.value: "Nếu xác nhận, action vẫn chờ duyệt qua Telegram; xem kỹ tác động phá huỷ.",
+        }[classification]
+        return {
+            "mode": "dry_run",
+            "will_execute": False,
+            "will_contact_cluster": False,
+            "action_id": action_id,
+            "classification": classification,
+            "target_nodes": target_nodes,
+            "command_preview": command_preview,
+            "approval": approval,
+            "steps": [
+                {"step": "validate_proposal", "status": "passed", "detail": "Action, node và tham số còn hợp lệ."},
+                {"step": "contact_cluster", "status": "skipped", "detail": "Mô phỏng không mở SSH và không gọi Ceph."},
+                {
+                    "step": "execute_action",
+                    "status": "skipped",
+                    "detail": "Không tạo Incident/Action, không gửi Worker hoặc RabbitMQ.",
+                },
+            ],
+        }

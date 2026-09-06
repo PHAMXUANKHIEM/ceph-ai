@@ -1287,6 +1287,26 @@ def test_post_chat_message_allows_claude_without_api_key(dashboard_client, monke
 # --- POST /api/chat/messages/{id}/confirm-action -------------------------------
 
 
+def test_simulate_chat_action_is_dry_run_and_does_not_create_execution_rows(dashboard_client):
+    message_id = _stage_proposal(action_id="resync_ntp")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(f"/api/chat/messages/{message_id}/simulate-action")
+
+    assert response.status_code == 200
+    simulation = response.json()
+    assert simulation["mode"] == "dry_run"
+    assert simulation["will_execute"] is False
+    assert simulation["will_contact_cluster"] is False
+    assert simulation["action_id"] == "resync_ntp"
+    assert simulation["target_nodes"] == [A_MON_HOST]
+    assert simulation["steps"][1]["status"] == "skipped"
+    with db_module.SessionLocal() as session:
+        assert session.query(Action).count() == 0
+        assert session.query(Incident).count() == 0
+        assert session.get(ChatMessage, message_id).proposed_status == "PENDING"
+
+
 def test_confirm_action_requires_login(dashboard_client):
     message_id = _stage_proposal()
     response = dashboard_client.post(f"/api/chat/messages/{message_id}/confirm-action", follow_redirects=False)
