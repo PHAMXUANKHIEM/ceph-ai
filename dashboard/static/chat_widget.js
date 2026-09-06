@@ -981,13 +981,17 @@
           var actions = simulateBtn.closest(".chat-proposal-actions");
           var existing = actions.querySelector(".chat-simulation-result");
           if (existing) existing.remove();
+          var steps = (simulation.steps || []).map(function (item) {
+            return "- " + item.step + ": " + item.status + " — " + item.detail;
+          }).join("\n");
           var result = document.createElement("pre");
           result.className = "chat-simulation-result";
           result.textContent = "MÔ PHỎNG AN TOÀN — không chạy lệnh\n" +
             "Phân loại: " + simulation.classification + "\n" +
             "Node: " + (simulation.target_nodes || []).join(", ") + "\n" +
             "Lệnh dự kiến: " + (simulation.command_preview || "xử lý thủ công") + "\n" +
-            "Khi xác nhận: " + simulation.approval;
+            "Khi xác nhận: " + simulation.approval + "\n" +
+            "Các bước:\n" + (steps || "- Không có bước bổ sung.");
           actions.appendChild(result);
           simulateBtn.textContent = "Mô phỏng lại";
           simulateBtn.disabled = false;

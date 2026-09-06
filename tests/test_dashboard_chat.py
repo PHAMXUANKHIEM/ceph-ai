@@ -12,6 +12,7 @@ from shared import db as db_module
 from shared.models import (
     Action,
     ActionClassification,
+    ActionPolicyOverride,
     ActionStatus,
     AuditEntry,
     ChatMessage,
@@ -1305,6 +1306,38 @@ def test_simulate_chat_action_is_dry_run_and_does_not_create_execution_rows(dash
         assert session.query(Action).count() == 0
         assert session.query(Incident).count() == 0
         assert session.get(ChatMessage, message_id).proposed_status == "PENDING"
+
+
+def test_simulation_and_confirmation_use_the_same_policy_override(dashboard_client):
+    message_id = _stage_proposal(action_id="resync_ntp")
+    with db_module.SessionLocal() as session:
+        session.add(
+            ActionPolicyOverride(
+                action_id="resync_ntp",
+                classification=ActionClassification.RISKY.value,
+                updated_by="admin",
+                reason="verify chat simulation matches confirmation",
+            )
+        )
+        session.commit()
+    _login(dashboard_client)
+
+    simulation = dashboard_client.post(f"/api/chat/messages/{message_id}/simulate-action")
+    confirmation = dashboard_client.post(f"/api/chat/messages/{message_id}/confirm-action")
+
+    assert simulation.status_code == 200
+    assert simulation.json()["classification"] == ActionClassification.RISKY.value
+    assert confirmation.status_code == 200
+    with db_module.SessionLocal() as session:
+        action = session.query(Action).one()
+        assert action.classification == ActionClassification.RISKY.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+
+
+def test_chat_widget_renders_simulation_steps():
+    widget_source = (Path(__file__).parents[1] / "dashboard/static/chat_widget.js").read_text()
+    assert "simulation.steps" in widget_source
+    assert "Các bước:" in widget_source
 
 
 def test_confirm_action_requires_login(dashboard_client):

@@ -719,6 +719,75 @@ async def stop_dual_chat(request: Request, user: str = Depends(require_login)):
     return {"session_id": session_id, "stopped": True, "running": False}
 
 
+def _validate_chat_action_proposal(session, message):
+    """Revalidate a staged chat proposal against the current cluster policy.
+
+    Both simulation and confirmation call this function.  Keeping that
+    decision boundary in one place is important: an operator must not see a
+    different classification or command preview from the one that confirmation
+    will actually persist.
+    """
+    action_id = message.proposed_action_id
+    try:
+        target_nodes = (
+            json.loads(message.proposed_target_nodes) if message.proposed_target_nodes else None
+        )
+        action_params = (
+            json.loads(message.proposed_action_params) if message.proposed_action_params else {}
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="Đề xuất không còn hợp lệ (dữ liệu bị lỗi)"
+        ) from None
+
+    is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
+    is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
+    is_parameterized_action = is_management_action or is_bluestore_action
+    cluster = session.get(Cluster, message.cluster_id) if message.cluster_id else None
+    if cluster is None:
+        cluster = session.query(Cluster).filter_by(is_default=True).first()
+    if cluster is None or not cluster.is_active:
+        raise HTTPException(status_code=400, detail="Cụm của đề xuất không còn hoạt động")
+
+    allowed_hosts = {node["host"] for node in configured_nodes(cluster)}
+    if (
+        action_id not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS)
+        or not isinstance(target_nodes, list)
+        or not target_nodes
+        or not all(isinstance(host, str) and host in allowed_hosts for host in target_nodes)
+        # Management commands are cluster-wide (not per-host like
+        # restart_osd_daemon/resync_ntp) — same single-node requirement
+        # dashboard/chat_client.py::_validate_proposal enforces at proposal
+        # time, re-checked here from scratch.
+        or (is_parameterized_action and len(target_nodes) != 1)
+        or not isinstance(action_params, dict)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Đề xuất không còn hợp lệ (action_id, node hoặc tham số đã thay đổi từ lúc đề xuất)",
+        )
+
+    resolved_command = message.proposed_command_preview
+    if is_parameterized_action:
+        # The command builder is the authoritative validation for pool name,
+        # PG/size and OSD bounds.  Do not trust values saved when the proposal
+        # was staged.
+        try:
+            resolved_command = executor_commands.get_command(
+                action_id, target_nodes[0], action_params
+            )
+        except ExecutorError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Đề xuất không còn hợp lệ (tham số không hợp lệ: {exc})",
+            ) from None
+
+    # Pass the live session in both paths so persisted admin policy overrides
+    # cannot make dry-run disagree with the resulting Action.
+    classification = gate.classify_action(action_id, session=session)
+    return action_id, target_nodes, action_params, cluster, resolved_command, classification
+
+
 async def _confirm_chat_action_core(
     message_id: str, user: str, *, allow_node_command: bool = False
 ):
@@ -751,61 +820,14 @@ async def _confirm_chat_action_core(
                 status_code=400,
                 detail="Lệnh trực tiếp trên node chỉ được xác nhận bằng cách nhập OK ở tin nhắn kế tiếp",
             )
-        try:
-            target_nodes = (
-                json.loads(message.proposed_target_nodes) if message.proposed_target_nodes else None
-            )
-        except (TypeError, ValueError):
-            target_nodes = None
-        try:
-            action_params = (
-                json.loads(message.proposed_action_params) if message.proposed_action_params else None
-            )
-        except (TypeError, ValueError):
-            action_params = None
-
-        is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
-        is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
-        is_parameterized_action = is_management_action or is_bluestore_action
-        cluster = session.get(Cluster, message.cluster_id) if message.cluster_id else None
-        if cluster is None:
-            cluster = session.query(Cluster).filter_by(is_default=True).first()
-        if cluster is None or not cluster.is_active:
-            raise HTTPException(status_code=400, detail="Cụm của đề xuất không còn hoạt động")
-        allowed_hosts = {n["host"] for n in configured_nodes(cluster)}
-        if (
-            action_id
-            not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS)
-            or not isinstance(target_nodes, list)
-            or not target_nodes
-            or not all(isinstance(host, str) and host in allowed_hosts for host in target_nodes)
-            # Management commands are cluster-wide (not per-host like
-            # restart_osd_daemon/resync_ntp) — same single-node requirement
-            # dashboard/chat_client.py::_validate_proposal already enforces
-            # at proposal time, re-checked here from scratch.
-            or (is_parameterized_action and len(target_nodes) != 1)
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Đề xuất không còn hợp lệ (action_id hoặc node đã thay đổi từ lúc đề xuất)",
-            )
-
-        resolved_command = message.proposed_command_preview
-        if is_parameterized_action:
-            # Authoritative re-validation of action_params (pool name
-            # charset, pg_num/size/osd_id bounds — see
-            # worker/executor/commands.py's builders) from scratch at
-            # confirm time, same "don't trust what was staged" posture this
-            # endpoint already applies to action_id/target_nodes above.
-            try:
-                resolved_command = executor_commands.get_command(
-                    action_id, target_nodes[0], action_params or {}
-                )
-            except ExecutorError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Đề xuất không còn hợp lệ (tham số không hợp lệ: {exc})",
-                )
+        (
+            action_id,
+            target_nodes,
+            action_params,
+            cluster,
+            resolved_command,
+            classification,
+        ) = _validate_chat_action_proposal(session, message)
 
         incident = Incident(
             cluster_id=cluster.id,
@@ -817,7 +839,6 @@ async def _confirm_chat_action_core(
         session.add(incident)
         session.flush()  # assigns incident.id, needed by the Action FK below
 
-        classification = gate.classify_action(action_id)
         is_safe = classification == ActionClassification.SAFE
         action = Action(
             incident_id=incident.id,
@@ -893,42 +914,15 @@ async def simulate_chat_action(message_id: str, user: str = Depends(require_logi
         if message.proposed_status != "PENDING":
             raise HTTPException(status_code=409, detail="Chỉ mô phỏng đề xuất đang chờ xác nhận")
 
-        try:
-            target_nodes = json.loads(message.proposed_target_nodes) if message.proposed_target_nodes else None
-            action_params = json.loads(message.proposed_action_params) if message.proposed_action_params else {}
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="Đề xuất không còn hợp lệ (dữ liệu bị lỗi)") from None
-
-        action_id = message.proposed_action_id
-        is_management_action = action_id in VALID_MANAGEMENT_ACTION_IDS
-        is_bluestore_action = action_id in VALID_BLUESTORE_ACTION_IDS
-        is_parameterized_action = is_management_action or is_bluestore_action
-        cluster = session.get(Cluster, message.cluster_id) if message.cluster_id else None
-        if cluster is None:
-            cluster = session.query(Cluster).filter_by(is_default=True).first()
-        if cluster is None or not cluster.is_active:
-            raise HTTPException(status_code=400, detail="Cụm của đề xuất không còn hoạt động")
-        allowed_hosts = {node["host"] for node in configured_nodes(cluster)}
-        if (
-            action_id not in (VALID_ACTION_IDS | VALID_MANAGEMENT_ACTION_IDS | VALID_BLUESTORE_ACTION_IDS)
-            or not isinstance(target_nodes, list)
-            or not target_nodes
-            or not all(isinstance(host, str) and host in allowed_hosts for host in target_nodes)
-            or (is_parameterized_action and len(target_nodes) != 1)
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Đề xuất không còn hợp lệ (action_id hoặc node đã thay đổi từ lúc đề xuất)",
-            )
-
-        command_preview = message.proposed_command_preview
-        if is_parameterized_action:
-            try:
-                command_preview = executor_commands.get_command(action_id, target_nodes[0], action_params or {})
-            except ExecutorError as exc:
-                raise HTTPException(status_code=400, detail=f"Tham số không hợp lệ: {exc}") from exc
-
-        classification = gate.classify_action(action_id, session).value
+        (
+            action_id,
+            target_nodes,
+            _action_params,
+            _cluster,
+            command_preview,
+            action_classification,
+        ) = _validate_chat_action_proposal(session, message)
+        classification = action_classification.value
         approval = {
             ActionClassification.READ_ONLY.value: "Không chạy thay đổi; chỉ đọc dữ liệu khi được xác nhận.",
             ActionClassification.SAFE.value: "Nếu xác nhận, Worker có thể thực hiện theo policy SAFE.",
