@@ -118,6 +118,10 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "ceph_rgw_nodes", TEST_CEPH_RGW_NODES)
     monkeypatch.setattr(settings, "ceph_rgw_container_name", TEST_CEPH_RGW_CONTAINER_NAME)
     monkeypatch.setattr(settings, "ceph_exec_mode", TEST_CEPH_EXEC_MODE)
+    # Forecasting may query Loki and persist learning state. Keep ordinary unit
+    # tests offline and deterministic; forecast-focused tests opt in explicitly.
+    monkeypatch.setattr(settings, "node_resource_forecast_enabled", False, raising=False)
+    monkeypatch.setattr(settings, "node_resource_live_ingest_enabled", False, raising=False)
     monkeypatch.setattr(settings, "ssh_key_path", str(test_ssh_key_path))
 
     # 2026-08-05 fix (found live), updated 2026-08-06 for the 3-independent-
