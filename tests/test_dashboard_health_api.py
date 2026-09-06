@@ -75,7 +75,7 @@ def test_dashboard_health_payload_exposes_live_metrics_and_servers():
     body = incidents._dashboard_health_payload(status, cluster, perf, hosts)
 
     assert body["metrics"] == {"latency_ms": 5.0, "bandwidth_bps": 3000, "iops": 10}
-    assert body["servers"] == {"online": 1, "total": 3}
+    assert body["servers"] == {"online": 1, "total": 2}
 
 
 def test_dashboard_health_payload_prefers_per_osd_up_flags():

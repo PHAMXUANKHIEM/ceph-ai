@@ -828,7 +828,10 @@ def _dashboard_health_payload(
             status_text = str(row.get("status") or "").strip().lower()
             if hostname and status_text not in {"offline", "maintenance", "error"}:
                 online_hosts.add(hostname)
-        server_total = max(server_total, len(cluster_nodes))
+        # Cephadm returns every registered host here, including offline ones.
+        # Its inventory is authoritative and avoids counting separate MON/OSD
+        # network addresses for one physical server as multiple servers.
+        server_total = len(cluster_nodes)
     elif isinstance(cluster_nodes, dict):
         # `ceph node ls` works for both legacy and cephadm clusters. Its
         # shape is role -> hostname -> daemon-id list.
