@@ -1320,6 +1320,37 @@ def test_execute_approved_action_success_marks_executed_and_resolved(isolated_db
         assert entries[-1].event_type == audit.EVENT_RISKY_ACTION_EXECUTED
 
 
+def test_execute_approved_action_requires_reapproval_after_policy_change(isolated_db, monkeypatch):
+    monkeypatch.setattr(
+        router_client, "execute_command", lambda *_args, **_kwargs: pytest.fail("must not SSH")
+    )
+    _create_incident("incident-policy-change")
+    with db_module.SessionLocal() as session:
+        action = _approved_action(session, "incident-policy-change")
+        action_pk = action.id
+        session.add(
+            ActionPolicyOverride(
+                action_id="restart_osd_daemon",
+                classification=ActionClassification.DESTRUCTIVE.value,
+                updated_by="admin",
+                reason="pause pending restart until it is re-approved",
+            )
+        )
+        session.commit()
+
+    router_client._execute_approved_action(action_pk)
+
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, action_pk)
+        incident = session.get(Incident, "incident-policy-change")
+        assert action.classification == ActionClassification.DESTRUCTIVE.value
+        assert action.status == ActionStatus.PENDING_APPROVAL.value
+        assert incident.status == IncidentStatus.PENDING_APPROVAL.value
+        assert audit.EVENT_ACTION_POLICY_REAPPROVAL_REQUIRED in {
+            entry.event_type for entry in session.query(AuditEntry).filter_by(incident_id=incident.id)
+        }
+
+
 def test_execute_approved_rbd_action_fails_when_post_check_disagrees(isolated_db, monkeypatch):
     monkeypatch.setattr(
         router_client, "execute_command",

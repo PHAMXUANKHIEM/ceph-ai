@@ -1334,10 +1334,48 @@ def test_simulation_and_confirmation_use_the_same_policy_override(dashboard_clie
         assert action.status == ActionStatus.PENDING_APPROVAL.value
 
 
+def test_non_admin_cannot_confirm_even_a_safe_chat_action(dashboard_client):
+    with db_module.SessionLocal() as session:
+        session.add(
+            User(
+                username="operator",
+                password_hash=bcrypt.hashpw(b"operator-pass", bcrypt.gensalt()).decode(),
+                is_admin=False,
+                is_active=True,
+                created_by="admin",
+            )
+        )
+        session.add(
+            ChatMessage(
+                id="operator-safe-proposal",
+                role="assistant",
+                content="Đề xuất đồng bộ NTP.",
+                actor="operator",
+                proposed_action_id="resync_ntp",
+                proposed_target_nodes=json.dumps([A_MON_HOST]),
+                proposed_rationale="clock skew",
+                proposed_status="PENDING",
+            )
+        )
+        session.commit()
+    dashboard_client.post(
+        "/login", data={"username": "operator", "password": "operator-pass"}
+    )
+
+    response = dashboard_client.post("/api/chat/messages/operator-safe-proposal/confirm-action")
+
+    assert response.status_code == 403
+    with db_module.SessionLocal() as session:
+        assert session.get(ChatMessage, "operator-safe-proposal").proposed_status == "PENDING"
+        assert session.query(Action).count() == 0
+
+
 def test_chat_widget_renders_simulation_steps():
     widget_source = (Path(__file__).parents[1] / "dashboard/static/chat_widget.js").read_text()
     assert "simulation.steps" in widget_source
     assert "Các bước:" in widget_source
+    assert "MÔ PHỎNG KHÔNG TÁC ĐỘNG" in widget_source
+    assert "CẢNH BÁO: Action này cần một bước duyệt bổ sung" in widget_source
 
 
 def test_confirm_action_requires_login(dashboard_client):

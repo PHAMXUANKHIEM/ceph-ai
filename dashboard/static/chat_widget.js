@@ -984,14 +984,19 @@
           var steps = (simulation.steps || []).map(function (item) {
             return "- " + item.step + ": " + item.status + " — " + item.detail;
           }).join("\n");
+          var requiresAdditionalApproval = simulation.classification !== "SAFE" &&
+            simulation.classification !== "READ_ONLY";
           var result = document.createElement("pre");
           result.className = "chat-simulation-result";
-          result.textContent = "MÔ PHỎNG AN TOÀN — không chạy lệnh\n" +
+          result.textContent = "MÔ PHỎNG KHÔNG TÁC ĐỘNG — không chạy lệnh\n" +
             "Phân loại: " + simulation.classification + "\n" +
             "Node: " + (simulation.target_nodes || []).join(", ") + "\n" +
             "Lệnh dự kiến: " + (simulation.command_preview || "xử lý thủ công") + "\n" +
             "Khi xác nhận: " + simulation.approval + "\n" +
-            "Các bước:\n" + (steps || "- Không có bước bổ sung.");
+            "Các bước:\n" + (steps || "- Không có bước bổ sung.") +
+            (requiresAdditionalApproval
+              ? "\nCẢNH BÁO: Action này cần một bước duyệt bổ sung trước khi Worker có thể chạy."
+              : "");
           actions.appendChild(result);
           simulateBtn.textContent = "Mô phỏng lại";
           simulateBtn.disabled = false;

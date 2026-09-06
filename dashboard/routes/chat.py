@@ -809,6 +809,15 @@ async def _confirm_chat_action_core(
             raise HTTPException(status_code=404, detail="Không tìm thấy tin nhắn")
         if message.role != "assistant" or message.proposed_action_id is None:
             raise HTTPException(status_code=400, detail="Tin nhắn này không có đề xuất hành động")
+        # A chat proposal can turn directly into an APPROVED SAFE action.
+        # Owning the conversation is not sufficient authority to create a
+        # cluster mutation: non-admin accounts may use Chat for observation,
+        # but an admin must explicitly take responsibility for remediation.
+        if not auth.is_admin_user(user):
+            raise HTTPException(
+                status_code=403,
+                detail="Chỉ tài khoản admin được xác nhận hành động từ Chat",
+            )
         if message.proposed_status != "PENDING":
             # Already confirmed (double-submit, second tab) — no-op, same
             # pattern as dashboard/routes/actions.py's approve/reject guard.

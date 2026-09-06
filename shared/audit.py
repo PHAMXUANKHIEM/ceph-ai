@@ -104,6 +104,10 @@ EVENT_SYNTHETIC_EXECUTION_BLOCKED = "synthetic_execution_blocked"
 # EVENT_RISKY_ACTION_REJECTED even though both end with "operator did not
 # get their approval to go through".
 EVENT_RISKY_ACTION_APPROVAL_EXPIRED = "risky_action_approval_expired"
+# The effective action policy changed while a row was awaiting Worker
+# execution.  The existing approval is no longer valid, so the Worker parks
+# it back in PENDING_APPROVAL without opening SSH.
+EVENT_ACTION_POLICY_REAPPROVAL_REQUIRED = "action_policy_reapproval_required"
 
 # Alert Center operator controls. These are deliberately separate from
 # Incident lifecycle events: acknowledge/mute changes what is surfaced to an

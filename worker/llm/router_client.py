@@ -2975,6 +2975,37 @@ def _execute_approved_action(action_pk: str) -> None:
         action_id_str = action.action_id
         target_nodes_raw = action.target_nodes
         action_params_raw = action.action_params
+        # Policy can change in the gap between Chat/operator approval and the
+        # Worker poll.  An APPROVED row is not a permanent authorization:
+        # re-evaluate the persisted admin override in this same transaction
+        # before taking the execution claim or opening SSH.
+        effective_classification = gate.classify_action(action_id_str, session=session)
+        if action.classification != effective_classification.value:
+            previous_classification = action.classification
+            action.classification = effective_classification.value
+            action.status = ActionStatus.PENDING_APPROVAL.value
+            if incident is not None:
+                incident.status = IncidentStatus.PENDING_APPROVAL.value
+                audit.record(
+                    session,
+                    incident_id=incident.id,
+                    action_id=action.id,
+                    event_type=audit.EVENT_ACTION_POLICY_REAPPROVAL_REQUIRED,
+                    actor=audit.ACTOR_SYSTEM,
+                    evidence={
+                        "previous_classification": previous_classification,
+                        "effective_classification": effective_classification.value,
+                    },
+                )
+            session.commit()
+            logger.warning(
+                "_execute_approved_action: policy changed for action %s (%s -> %s); "
+                "operator reapproval required",
+                action.id,
+                previous_classification,
+                effective_classification.value,
+            )
+            return
         existing_assessment = session.query(ChangeRiskAssessment).filter_by(
             action_id=action.id,
         ).one_or_none()
