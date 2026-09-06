@@ -1,4 +1,5 @@
 from dashboard.routes import incidents
+from shared import ceph_query_cache
 
 
 def test_dashboard_health_api_uses_live_daemon_counts(dashboard_client, monkeypatch):
@@ -46,6 +47,12 @@ def test_dashboard_health_reuses_cached_ceph_status(dashboard_client, monkeypatc
     monkeypatch.setattr(incidents, "run_ceph_json_command_with", fake)
     assert dashboard_client.get("/api/dashboard/health").status_code == 200
     assert dashboard_client.get("/api/dashboard/health").status_code == 200
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    assert calls.count("ceph -s") == 1
+    assert calls.count("ceph osd perf") == 1
+    assert calls.count("ceph osd dump") == 1
+    assert calls.count("ceph node ls") == 1
+    assert dashboard_client.get("/api/dashboard/health").json()["cached"] is True
     assert calls.count("ceph -s") == 1
     assert calls.count("ceph osd perf") == 1
     assert calls.count("ceph osd dump") == 1

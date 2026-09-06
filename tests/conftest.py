@@ -85,7 +85,10 @@ def _pin_cluster_settings(monkeypatch, tmp_path):
     the suite depend on nothing outside its own tmp dir.
     """
     from shared.object_storage_cache import clear as clear_object_storage_cache
+    from shared import ceph_query_cache
     clear_object_storage_cache()
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path / "ceph-query-cache")
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
     test_ssh_key_path = tmp_path / "ceph_lab_watcher_test_key"
     test_ssh_key_path.write_text("fake test-only private key, never used for a real SSH connection\n")
 

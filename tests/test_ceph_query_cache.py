@@ -40,3 +40,17 @@ def test_missing_shared_file_invalidates_another_process_memory(monkeypatch, tmp
     assert ceph_query_cache.get_or_load("rbd-trash", "cluster:pool", lambda: ["old"]) == ["old"]
     ceph_query_cache._path("rbd-trash", "cluster:pool").unlink()
     assert ceph_query_cache.get_or_load("rbd-trash", "cluster:pool", lambda: ["new"]) == ["new"]
+
+
+def test_get_cached_reads_persisted_value_and_reports_its_age(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    ceph_query_cache.store("dashboard-health", "cluster", {"health": "OK"})
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+
+    cached = ceph_query_cache.get_cached("dashboard-health", "cluster", max_age_seconds=60)
+
+    assert cached is not None
+    value, age_seconds = cached
+    assert value == {"health": "OK"}
+    assert age_seconds >= 0

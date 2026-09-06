@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import threading
 from urllib.parse import urlencode
 from datetime import datetime, timedelta
 
@@ -30,7 +31,8 @@ from shared.models import (
     Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus,
     RemediationCase, WatcherHeartbeat,
 )
-from shared.object_storage_cache import get_or_load
+from shared.ceph_query_cache import get_cached as get_persisted_cache
+from shared.ceph_query_cache import store as store_persisted_cache
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from watcher import incident_grouping
 
@@ -43,6 +45,11 @@ templates = make_templates()
 # interval rather than a fixed number of seconds, so it scales with
 # whatever watcher_poll_interval_seconds is configured to.
 HEARTBEAT_STALE_MULTIPLIER = 3
+_DASHBOARD_HEALTH_CACHE_NAMESPACE = "dashboard-health"
+_DASHBOARD_HEALTH_REFRESH_SECONDS = 15
+_DASHBOARD_HEALTH_MAX_STALE_SECONDS = 900
+_DASHBOARD_HEALTH_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD = threading.Lock()
 CASE_VERDICTS = {
     "CORRECT": "Chẩn đoán/xử lý đúng",
     "FALSE_POSITIVE": "Cảnh báo sai",
@@ -121,6 +128,84 @@ def _alert_redirect(request: Request) -> RedirectResponse:
     """Return to the centre after a lifecycle action, without trusting an external URL."""
     return RedirectResponse("/alerts", status_code=303)
 
+
+
+def _cached_node_inventory(mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode):
+    commands = ("ceph orch host ls", "ceph node ls") if exec_mode == "cephadm" else ("ceph node ls",)
+    for command in commands:
+        try:
+            return _run_monitor_command(
+                mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode, command,
+            )
+        except Exception as exc:
+            logger.info("dashboard_health: server inventory unavailable via %s: %s", command, exc)
+    return None
+
+
+async def _load_dashboard_health_live(selected_cluster: Cluster) -> dict:
+    mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
+    if not mon_nodes:
+        raise CephQueryError("Cụm chưa cấu hình MON node")
+    ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
+    _host, payload = await asyncio.to_thread(
+        _run_monitor_command, mon_nodes, container_name,
+        ssh_user, ssh_key_path, exec_mode, "ceph -s",
+    )
+    if not isinstance(payload, dict):
+        raise CephQueryError("ceph -s returned an unexpected response")
+
+    perf_result, dump_result, nodes_result = await asyncio.gather(
+        asyncio.to_thread(
+            _run_monitor_command, mon_nodes, container_name,
+            ssh_user, ssh_key_path, exec_mode, "ceph osd perf",
+        ),
+        asyncio.to_thread(
+            _run_monitor_command, mon_nodes, container_name,
+            ssh_user, ssh_key_path, exec_mode, "ceph osd dump",
+        ),
+        asyncio.to_thread(
+            _cached_node_inventory, mon_nodes, container_name,
+            ssh_user, ssh_key_path, exec_mode,
+        ),
+        return_exceptions=True,
+    )
+    osd_perf = None
+    if isinstance(perf_result, Exception):
+        logger.info("dashboard_health: osd latency unavailable: %s", perf_result)
+    else:
+        _host, osd_perf = perf_result
+    osd_dump = None
+    if isinstance(dump_result, Exception):
+        logger.info("dashboard_health: detailed OSD state unavailable: %s", dump_result)
+    else:
+        _host, osd_dump = dump_result
+    cluster_nodes = None
+    if isinstance(nodes_result, Exception):
+        logger.info("dashboard_health: server inventory unavailable: %s", nodes_result)
+    elif nodes_result is not None:
+        _host, cluster_nodes = nodes_result
+    return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
+
+
+def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> None:
+    with _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD:
+        lock = _DASHBOARD_HEALTH_REFRESH_LOCKS.setdefault(selected_cluster.id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return
+
+    async def refresh() -> None:
+        try:
+            store_persisted_cache(
+                _DASHBOARD_HEALTH_CACHE_NAMESPACE,
+                selected_cluster.id,
+                await _load_dashboard_health_live(selected_cluster),
+            )
+        except Exception as exc:
+            logger.info("dashboard_health(%s): background refresh failed: %s", selected_cluster.name, exc)
+        finally:
+            lock.release()
+
+    asyncio.create_task(refresh())
 
 @router.get("/alerts", response_class=HTMLResponse)
 async def alert_center_page(request: Request, user: str = Depends(require_login)):
@@ -379,15 +464,10 @@ async def generate_incident_postmortem(
     return RedirectResponse(f"/incidents/{incident_id}/timeline", status_code=303)
 
 
-def _cached_monitor_command(cluster_id: str, mon_nodes, container_name: str, ssh_user: str,
-                            ssh_key_path: str, exec_mode: str, command: str):
-    return get_or_load(
-        "monitor",
-        f"{cluster_id}:{command}",
-        lambda: run_ceph_json_command_with(
-            mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode, command
-        ),
-        ttl_seconds=300,
+def _run_monitor_command(mon_nodes, container_name: str, ssh_user: str,
+                         ssh_key_path: str, exec_mode: str, command: str):
+    return run_ceph_json_command_with(
+        mon_nodes, container_name, ssh_user, ssh_key_path, exec_mode, command
     )
 
 # Incident statuses that mean "still needs attention" — anything else
@@ -878,57 +958,32 @@ def _dashboard_health_payload(
 
 @router.get("/api/dashboard/health")
 async def dashboard_health(request: Request, _user: str = Depends(require_login)):
-    """Return live card data for the cluster selected in this session."""
+    """Paint the persisted health snapshot immediately, then refresh it."""
     selected_cluster = None
     try:
         _clusters, selected_cluster = _resolve_selected_cluster(
             request.query_params.get("cluster", "").strip(),
             request.session.get("selected_cluster_id", ""),
         )
-        mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
-        if not mon_nodes:
-            raise CephQueryError("Cụm chưa cấu hình MON node")
-        ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
-        _host, payload = await asyncio.to_thread(
-            _cached_monitor_command,
+        cached = get_persisted_cache(
+            _DASHBOARD_HEALTH_CACHE_NAMESPACE,
             selected_cluster.id,
-            mon_nodes,
-            container_name,
-            ssh_user,
-            ssh_key_path,
-            exec_mode,
-            "ceph -s",
+            max_age_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
         )
-        if not isinstance(payload, dict):
-            raise CephQueryError("ceph -s returned an unexpected response")
-        osd_perf = None
-        osd_dump = None
-        cluster_nodes = None
-        try:
-            _host, osd_perf = await asyncio.to_thread(
-                _cached_monitor_command, selected_cluster.id, mon_nodes, container_name, ssh_user,
-                ssh_key_path, exec_mode, "ceph osd perf",
-            )
-        except Exception as exc:
-            logger.info("dashboard_health: osd latency unavailable: %s", exc)
-        try:
-            _host, osd_dump = await asyncio.to_thread(
-                _cached_monitor_command, selected_cluster.id, mon_nodes, container_name, ssh_user,
-                ssh_key_path, exec_mode, "ceph osd dump",
-            )
-        except Exception as exc:
-            logger.info("dashboard_health: detailed OSD state unavailable: %s", exc)
-        node_commands = ("ceph orch host ls", "ceph node ls") if exec_mode == "cephadm" else ("ceph node ls",)
-        for node_command in node_commands:
-            try:
-                _host, cluster_nodes = await asyncio.to_thread(
-                    _cached_monitor_command, selected_cluster.id, mon_nodes, container_name, ssh_user,
-                    ssh_key_path, exec_mode, node_command,
-                )
-                break
-            except Exception as exc:
-                logger.info("dashboard_health: server inventory unavailable via %s: %s", node_command, exc)
-        return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
+        if cached is not None:
+            payload, age_seconds = cached
+            if isinstance(payload, dict):
+                response = dict(payload)
+                response["cached"] = True
+                response["stale"] = age_seconds > _DASHBOARD_HEALTH_REFRESH_SECONDS
+                response["cache_age_seconds"] = round(age_seconds, 1)
+                if response["stale"]:
+                    _schedule_dashboard_health_refresh(selected_cluster)
+                return response
+
+        payload = await _load_dashboard_health_live(selected_cluster)
+        store_persisted_cache(_DASHBOARD_HEALTH_CACHE_NAMESPACE, selected_cluster.id, payload)
+        return {**payload, "cached": False, "stale": False, "cache_age_seconds": 0}
     except CephQueryError as exc:
         cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
         logger.warning("dashboard_health(%s): live Ceph query failed: %s", cluster_name, exc)

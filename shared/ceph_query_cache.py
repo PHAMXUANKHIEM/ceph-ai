@@ -48,6 +48,34 @@ def _write(namespace: str, key: str, created_at: float, value: object) -> None:
         return
 
 
+
+def get_cached(namespace: str, key: str, *, max_age_seconds: int | None = None) -> tuple[object, float] | None:
+    """Return a cached value and its age without invoking a loader."""
+    cache_key = (namespace, key)
+    now = time()
+    with _lock:
+        cached = _memory.get(cache_key)
+        if cached is not None and not _path(namespace, key).exists():
+            _memory.pop(cache_key, None)
+            cached = None
+        cached = cached or _read(namespace, key)
+        if cached is None:
+            return None
+        created_at, value = cached
+        age_seconds = max(0.0, now - created_at)
+        if max_age_seconds is not None and age_seconds > max_age_seconds:
+            return None
+        _memory[cache_key] = cached
+        return deepcopy(value), age_seconds
+
+
+def store(namespace: str, key: str, value: object) -> None:
+    """Persist a JSON-compatible value for an immediate cache reader."""
+    created_at = time()
+    cache_key = (namespace, key)
+    with _lock:
+        _memory[cache_key] = (created_at, deepcopy(value))
+        _write(namespace, key, created_at, value)
 def get_or_load(namespace: str, key: str, loader: Callable[[], T], *, ttl_seconds: int = 45) -> T:
     """Load a JSON-compatible Ceph result, reusing fresh disk or RAM data.
 
