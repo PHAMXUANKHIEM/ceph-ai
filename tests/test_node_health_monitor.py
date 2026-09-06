@@ -120,8 +120,34 @@ def test_check_node_resources_skips_a_host_that_fails_to_collect(monkeypatch):
     assert nhm.check_node_resources() == {}  # must not raise
 
 
+def test_check_node_resources_continues_after_one_host_loki_failure(monkeypatch):
+    monkeypatch.setattr(
+        nhm, "configured_nodes", lambda: [{"host": "broken", "roles": ["MON"]}, {"host": "ok", "roles": ["OSD"]}]
+    )
+    monkeypatch.setattr(nhm, "CONSECUTIVE_SCANS_REQUIRED", 1)
+    monkeypatch.setattr(nhm.settings, "node_resource_forecast_enabled", False)
+
+    def fetch(host_cluster, host):
+        if host == "broken":
+            raise nhm.node_resource_forecast.NodeResourceLokiError("loki unavailable")
+        return _metrics(cpu=95.0, mem=10.0)
+
+    monkeypatch.setattr(nhm.node_resource_forecast, "fetch_latest_metrics", fetch)
+    monkeypatch.setattr(
+        nhm.node_metrics, "collect_node_metrics",
+        lambda _host: (_ for _ in ()).throw(nhm.node_metrics.NodeMetricsError("ssh unavailable")),
+    )
+
+    result = nhm.check_node_resources()
+
+    assert result["NODE_RESOURCE_HIGH:ok"]["host"] == "ok"
+
+
 def test_stale_loki_uses_ssh_fallback_and_repairs_stream(monkeypatch):
     monkeypatch.setattr(nhm, "configured_nodes", lambda: [{"host": "node-1", "roles": ["MON"]}])
+    # Exercise the stale-Loki fallback itself, not the optional live-ingest
+    # fast path inherited from a deployer's staging configuration.
+    monkeypatch.setattr(nhm.settings, "node_resource_live_ingest_enabled", False)
     monkeypatch.setattr(
         nhm.node_resource_forecast, "fetch_latest_metrics",
         lambda *_: (_ for _ in ()).throw(nhm.node_resource_forecast.NodeResourceLokiError("stale")),

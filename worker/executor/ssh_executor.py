@@ -14,7 +14,15 @@ CONNECT_TIMEOUT_SECONDS = 5
 # `dnf/apt install ceph` can sit silent for minutes while downloading
 # packages over the network.
 COMMAND_TIMEOUT_SECONDS = 1800
-KNOWN_HOSTS_PATH = os.path.expanduser("~/.ssh/ceph_lab_known_hosts")
+# Must match watcher.ceph_client: container filesystems are ephemeral, while
+# this shared volume persists the operator-provisioned host-key pins across a
+# recreate.  Bare-metal deployments keep the legacy local path.
+_DEFAULT_KNOWN_HOSTS_PATH = (
+    "/var/lib/ceph-ai/ssh/ceph_lab_known_hosts"
+    if os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
+    else os.path.expanduser("~/.ssh/ceph_lab_known_hosts")
+)
+KNOWN_HOSTS_PATH = os.environ.get("CEPH_AI_SSH_KNOWN_HOSTS_PATH", _DEFAULT_KNOWN_HOSTS_PATH)
 
 
 class ExecutorError(Exception):

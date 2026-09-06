@@ -52,12 +52,13 @@ class FakeSSHClient:
 
     behavior: dict = {}
     calls: list = []
+    host_key_policies: list = []
 
     def __init__(self):
         self._host = None
 
     def set_missing_host_key_policy(self, policy):
-        pass
+        FakeSSHClient.host_key_policies.append(policy)
 
     def load_host_keys(self, path):
         pass
@@ -86,8 +87,16 @@ class FakeSSHClient:
 def fake_ssh(monkeypatch):
     FakeSSHClient.behavior = {}
     FakeSSHClient.calls = []
+    FakeSSHClient.host_key_policies = []
     monkeypatch.setattr(ceph_client.paramiko, "SSHClient", FakeSSHClient)
     yield FakeSSHClient
+
+
+def test_remote_commands_reject_unprovisioned_host_keys(fake_ssh):
+    fake_ssh.behavior = {"10.0.0.5": {"status": "HEALTH_OK"}}
+
+    assert ceph_client._run_remote_command_with("10.0.0.5", "true", "root", "/tmp/key")
+    assert isinstance(fake_ssh.host_key_policies[-1], ceph_client.paramiko.RejectPolicy)
 
 
 def test_get_mon_nodes_parses_settings(monkeypatch):

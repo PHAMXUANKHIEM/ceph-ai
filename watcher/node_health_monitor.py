@@ -250,7 +250,10 @@ def check_node_resources(
                     "check_node_resources: Loki data stale for %s; collected and pushed SSH fallback",
                     host,
                 )
-            except node_metrics.NodeMetricsError:
+            except Exception:
+                # Keep the isolation contract of this function: a broken
+                # Loki query, SSH fallback, or persistence repair for one
+                # node must never skip the rest of the configured nodes.
                 logger.warning(
                     "check_node_resources: Loki and SSH fallback both failed for %s", host,
                     exc_info=True,

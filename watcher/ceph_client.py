@@ -20,7 +20,17 @@ COMMAND_TIMEOUT_SECONDS = 5
 # ~2.5s against a real cephadm/reef cluster, comfortably under this but with
 # headroom for a cold image pull or a slower link.
 CEPHADM_COMMAND_TIMEOUT_SECONDS = 15
-KNOWN_HOSTS_PATH = os.path.expanduser("~/.ssh/ceph_lab_known_hosts")
+# Container layers are replaced on every deploy, so a host-key pin file in
+# `/root/.ssh` would disappear with the container.  Keep it under the shared
+# persistent application volume instead; bare-metal installs retain the
+# historical path.  The optional override also supports an externally
+# provisioned, read-only known_hosts file.
+_DEFAULT_KNOWN_HOSTS_PATH = (
+    "/var/lib/ceph-ai/ssh/ceph_lab_known_hosts"
+    if os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
+    else os.path.expanduser("~/.ssh/ceph_lab_known_hosts")
+)
+KNOWN_HOSTS_PATH = os.environ.get("CEPH_AI_SSH_KNOWN_HOSTS_PATH", _DEFAULT_KNOWN_HOSTS_PATH)
 VALID_STATUSES = {"HEALTH_OK", "HEALTH_WARN", "HEALTH_ERR"}
 VALID_EXEC_MODES = {"docker", "podman", "cephadm", "none"}
 
@@ -827,18 +837,12 @@ def validate_ceph_keyring_with(
 
 
 def forget_host_key(host: str) -> bool:
-    """Removes `host`'s pinned SSH host key from KNOWN_HOSTS_PATH (trust-on-
-    first-use pinning shared by this module and worker/executor/
-    ssh_executor.py's identical constant/mechanism -- same physical file) so
-    the next connection accepts and re-pins whatever key the host presents.
+    """Removes `host`'s pinned SSH host key from KNOWN_HOSTS_PATH.
 
-    Needed operationally: a lab node's OS reinstall legitimately changes its
-    SSH host key, and paramiko's BadHostKeyException (raised by the
-    Transport itself, not by set_missing_host_key_policy -- see the
-    connect()-site comments in this file and ssh_executor.py) then blocks
-    EVERY future connection to that host until the stale entry is cleared.
-    Without this, an operator had no way to recover short of SSHing into
-    this server and hand-editing the known_hosts file.
+    After a node rebuild, the operator must provision its newly verified key
+    before the next connection; this function never silently trusts a
+    replacement key.  It remains a surgical recovery mechanism rather than
+    a blanket `known_hosts` reset.
 
     Returns True if a stored entry was found and removed, False if the host
     had no entry (nothing to do -- not an error, e.g. it was never connected
@@ -898,12 +902,11 @@ def _run_remote_command_with(
     client = paramiko.SSHClient()
     if os.path.exists(KNOWN_HOSTS_PATH):
         client.load_host_keys(KNOWN_HOSTS_PATH)
-    # Trust-on-first-use: an unseen host's key is accepted and persisted below;
-    # a *changed* key for an already-known host is rejected by paramiko's
-    # Transport itself (BadHostKeyException), regardless of this policy —
-    # that mismatch check is what actually guards against a swapped/MITM'd
-    # node, not this policy object.
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Never accept a first-seen key implicitly: accepting it here makes the
+    # bootstrap connection vulnerable to a MITM which would then be persisted
+    # as trusted.  Provision each node key in KNOWN_HOSTS_PATH before adding
+    # it to CEPH_*_NODES; changed keys remain blocked as well.
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             hostname=host,

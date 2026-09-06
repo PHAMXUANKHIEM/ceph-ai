@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import httpx
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -107,6 +109,16 @@ def test_latest_metrics_rejects_stale_loki_sample(monkeypatch):
         assert "stale" in str(exc)
     else:
         raise AssertionError("stale Loki data must be rejected")
+
+
+def test_fetch_samples_normalizes_loki_transport_failure(monkeypatch):
+    monkeypatch.setattr(forecast.settings, "log_intel_loki_url", "http://loki.invalid")
+    monkeypatch.setattr(
+        httpx, "get", lambda *_args, **_kwargs: (_ for _ in ()).throw(httpx.ConnectError("offline"))
+    )
+
+    with pytest.raises(forecast.NodeResourceLokiError, match="không truy vấn được"):
+        forecast.fetch_samples("CS-LAB", "node-1")
 
 
 def _learning_db(monkeypatch):

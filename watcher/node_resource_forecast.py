@@ -96,11 +96,22 @@ def fetch_samples(cluster: str, host: str, *, now: datetime | None = None) -> li
         JOB, cluster.replace('"', '\\"'), host.replace('"', '\\"'))
     params = {"query": selector, "start": str(int(start.timestamp() * 1e9)),
               "end": str(int(end.timestamp() * 1e9)), "limit": "5000", "direction": "forward"}
-    response = httpx.get(f"{_base_url()}/loki/api/v1/query_range", params=params,
-                         headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
-    response.raise_for_status()
+    try:
+        response = httpx.get(f"{_base_url()}/loki/api/v1/query_range", params=params,
+                             headers=_headers(), timeout=settings.log_intel_loki_timeout_seconds)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
+        # Callers use NodeResourceLokiError to isolate one unavailable Loki
+        # query from the remaining nodes in a health scan.  Do not leak a
+        # transport, status, or malformed-JSON exception across that boundary.
+        raise NodeResourceLokiError(f"{host}: không truy vấn được CPU/RAM từ Loki: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise NodeResourceLokiError(f"{host}: Loki trả về payload CPU/RAM không hợp lệ")
     rows: dict[int, tuple[datetime, float, float]] = {}
-    for stream in ((response.json().get("data") or {}).get("result") or []):
+    for stream in ((payload.get("data") or {}).get("result") or []):
+        if not isinstance(stream, dict):
+            continue
         for ts_ns, line in stream.get("values") or []:
             try:
                 raw = json.loads(line)
