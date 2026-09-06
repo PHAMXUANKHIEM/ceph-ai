@@ -332,6 +332,36 @@ def test_forget_host_key_returns_false_when_file_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(tmp_path / "does_not_exist"))
 
     assert forget_host_key("10.3.55.98") is False
+
+def test_provision_host_key_replaces_only_the_verified_host_entry(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text(
+        "10.3.55.98 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+        "10.3.55.104 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    )
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+    replacement = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D"
+
+    assert ceph_client.provision_host_key("10.3.55.98", replacement) == "ssh-ed25519"
+
+    stored = known_hosts.read_text()
+    assert "10.3.55.98" in stored
+    assert "10.3.55.104" in stored
+    assert known_hosts.stat().st_mode & 0o777 == 0o600
+
+
+def test_provision_host_key_rejects_malformed_input_without_overwriting(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    original = "10.3.55.104 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    known_hosts.write_text(original)
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+
+    with pytest.raises(ceph_client.HostKeyProvisionError):
+        ceph_client.provision_host_key("10.3.55.98", "ssh-ed25519 invalid-base64")
+
+    assert known_hosts.read_text() == original
+
+
 # The branch itself is simple enough (os.access negative case) to trust
 # without a test that would be meaningless in this environment.
 

@@ -265,7 +265,7 @@
       }
       if (step.status === "failed" && step.message && HOST_KEY_MISMATCH_RE.test(step.message)) {
         var failedHost = (step.hosts || []).filter(function (h) { return h.status === "failed"; })[0];
-        if (failedHost) renderForgetHostKeyControl(failedHost.host);
+        if (failedHost) renderProvisionHostKeyControl(failedHost.host);
       }
       if (step.status === "running") runningStep = step;
     });
@@ -303,34 +303,48 @@
     return div.innerHTML;
   }
 
-  function renderForgetHostKeyControl(host) {
+  function renderProvisionHostKeyControl(host) {
     var box = document.createElement("p");
     box.className = "deploy-log-line status-failed";
     box.style.marginLeft = "1.5em";
     box.appendChild(document.createTextNode(
-      "⚠ Node " + host + " có SSH host key mới (thường do cài lại OS). "
+      "⚠ Node " + host + " có SSH host key mới. Xác minh fingerprint ngoài hệ thống rồi dán public key mới. "
     ));
 
     if (!initialState.is_admin) {
       box.appendChild(document.createTextNode(
-        "Cần tài khoản admin để xoá host key cũ — liên hệ admin."
+        "Cần tài khoản admin để provision host key đã xác minh."
       ));
       logBox.appendChild(box);
       return;
     }
 
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "form-control";
+    input.placeholder = "ssh-ed25519 AAAA...";
+    input.style.margin = "0.4em";
+    input.style.maxWidth = "42em";
+    input.setAttribute("aria-label", "SSH host public key đã xác minh cho " + host);
+
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "btn btn-sm";
-    btn.textContent = "Xoá SSH host key cũ của " + host;
+    btn.textContent = "Lưu SSH host key đã xác minh";
     btn.addEventListener("click", function () {
+      var hostKey = input.value.trim();
+      if (!hostKey) {
+        input.focus();
+        return;
+      }
       btn.disabled = true;
-      btn.textContent = "Đang xoá...";
-      fetch("/deploy-cluster/forget-host-key", {
+      input.disabled = true;
+      btn.textContent = "Đang lưu...";
+      fetch("/deploy-cluster/provision-host-key", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: host })
+        body: JSON.stringify({ host: host, host_key: hostKey })
       })
         .then(function (response) {
           return response.json().then(function (data) {
@@ -345,13 +359,22 @@
             ? result.data.message
             : (result.ok ? "Đã xử lý." : "Có lỗi xảy ra, thử lại.");
           box.parentNode.insertBefore(resultLine, box.nextSibling);
-          btn.remove();
+          if (result.ok && result.data.success) {
+            input.remove();
+            btn.remove();
+          } else {
+            input.disabled = false;
+            btn.disabled = false;
+            btn.textContent = "Lưu SSH host key đã xác minh";
+          }
         })
         .catch(function () {
+          input.disabled = false;
           btn.disabled = false;
-          btn.textContent = "Xoá SSH host key cũ của " + host;
+          btn.textContent = "Lưu SSH host key đã xác minh";
         });
     });
+    box.appendChild(input);
     box.appendChild(btn);
     logBox.appendChild(box);
   }

@@ -480,6 +480,56 @@ def test_deploy_cluster_nav_link_present_on_other_pages(dashboard_client):
     assert 'href="/deploy-cluster"' in response.text
 
 
+# -- POST /deploy-cluster/provision-host-key -------------------------------
+
+def test_provision_host_key_route_rejects_non_admin(dashboard_client):
+    _create_user("regular", "s3cret-pw", is_admin=False)
+    _login_as(dashboard_client, "regular", "s3cret-pw")
+
+    response = dashboard_client.post(
+        "/deploy-cluster/provision-host-key",
+        json={"host": "10.3.55.98", "host_key": "ssh-ed25519 AAAAverified"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_provision_host_key_route_stores_only_operator_supplied_verified_key(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    calls = []
+    monkeypatch.setattr(
+        deploy_cluster_route,
+        "provision_host_key",
+        lambda host, host_key: calls.append((host, host_key)) or "ssh-ed25519",
+    )
+
+    response = dashboard_client.post(
+        "/deploy-cluster/provision-host-key",
+        json={"host": "10.3.55.98", "host_key": "ssh-ed25519 AAAAverified"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert calls == [("10.3.55.98", "ssh-ed25519 AAAAverified")]
+
+
+def test_provision_host_key_route_rejects_invalid_key(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    monkeypatch.setattr(
+        deploy_cluster_route,
+        "provision_host_key",
+        lambda _host, _key: (_ for _ in ()).throw(deploy_cluster_route.HostKeyProvisionError("key sai")),
+    )
+
+    response = dashboard_client.post(
+        "/deploy-cluster/provision-host-key",
+        json={"host": "10.3.55.98", "host_key": "not-a-key"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "key sai"
+
+
 # -- POST /deploy-cluster/forget-host-key ------------------------------------
 # "Xoá SSH host key cũ" moved here from the always-visible Settings-page
 # form — it's now hidden until deploy_cluster.js's HOST_KEY_MISMATCH_RE

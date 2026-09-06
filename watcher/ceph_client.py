@@ -3,9 +3,11 @@ import logging
 import os
 import re
 import shlex
+import tempfile
 from typing import Callable, TypedDict
 
 import paramiko
+from paramiko.hostkeys import HostKeyEntry, InvalidHostKey
 
 from config.settings import settings
 from shared import ceph_releases
@@ -836,6 +838,62 @@ def validate_ceph_keyring_with(
         raise CephQueryError(f"Keyring không đọc được trên MON: {'; '.join(errors)}")
 
 
+class HostKeyProvisionError(ValueError):
+    """A supplied SSH host key is malformed or cannot be stored safely."""
+
+
+_HOSTNAME_RE = re.compile(r"[A-Za-z0-9_.:-]+")
+
+
+def _write_host_keys_atomically(host_keys: paramiko.HostKeys) -> None:
+    directory = os.path.dirname(KNOWN_HOSTS_PATH) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, temporary_path = tempfile.mkstemp(prefix=".known_hosts.", dir=directory)
+    try:
+        os.close(fd)
+        host_keys.save(temporary_path)
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, KNOWN_HOSTS_PATH)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def provision_host_key(host: str, public_key: str) -> str:
+    """Atomically pin an operator-verified OpenSSH host public key.
+
+    The key must be obtained and verified out of band. This function never
+    opens an SSH connection or performs trust-on-first-use.
+    """
+    if not _HOSTNAME_RE.fullmatch(host):
+        raise HostKeyProvisionError("IP/hostname không hợp lệ")
+    parts = public_key.strip().split()
+    if len(parts) < 2 or not re.fullmatch(r"(?:ssh|ecdsa)-[A-Za-z0-9@._+-]+", parts[0]):
+        raise HostKeyProvisionError("SSH host public key không hợp lệ")
+    try:
+        entry = HostKeyEntry.from_line(f"{host} {parts[0]} {parts[1]}")
+    except (TypeError, ValueError, InvalidHostKey) as exc:
+        raise HostKeyProvisionError("SSH host public key không hợp lệ") from exc
+    if entry is None or entry.key is None:
+        raise HostKeyProvisionError("Loại SSH host key không được hỗ trợ")
+
+    host_keys = paramiko.HostKeys()
+    if os.path.exists(KNOWN_HOSTS_PATH):
+        try:
+            host_keys.load(KNOWN_HOSTS_PATH)
+        except (OSError, paramiko.SSHException) as exc:
+            raise HostKeyProvisionError("Không đọc được kho SSH host key hiện tại") from exc
+    host_keys.pop(host, None)
+    host_keys.add(host, entry.key.get_name(), entry.key)
+    try:
+        _write_host_keys_atomically(host_keys)
+    except OSError as exc:
+        raise HostKeyProvisionError("Không thể lưu SSH host key") from exc
+    return entry.key.get_name()
+
+
 def forget_host_key(host: str) -> bool:
     """Removes `host`'s pinned SSH host key from KNOWN_HOSTS_PATH.
 
@@ -853,7 +911,7 @@ def forget_host_key(host: str) -> bool:
     host_keys.load(KNOWN_HOSTS_PATH)
     removed = host_keys.pop(host, None) is not None
     if removed:
-        host_keys.save(KNOWN_HOSTS_PATH)
+        _write_host_keys_atomically(host_keys)
     return removed
 
 
