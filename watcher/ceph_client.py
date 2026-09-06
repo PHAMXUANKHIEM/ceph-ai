@@ -1,9 +1,11 @@
+import fcntl
 import json
 import logging
 import os
 import re
 import shlex
 import tempfile
+from contextlib import contextmanager
 from typing import Callable, TypedDict
 
 import paramiko
@@ -845,6 +847,21 @@ class HostKeyProvisionError(ValueError):
 _HOSTNAME_RE = re.compile(r"[A-Za-z0-9_.:-]+")
 
 
+@contextmanager
+def _host_keys_lock():
+    """Serialize read-modify-write updates to the persistent host-key file."""
+    directory = os.path.dirname(KNOWN_HOSTS_PATH) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    lock_path = f"{KNOWN_HOSTS_PATH}.lock"
+    with open(lock_path, "a+", encoding="utf-8") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _write_host_keys_atomically(host_keys: paramiko.HostKeys) -> None:
     directory = os.path.dirname(KNOWN_HOSTS_PATH) or "."
     os.makedirs(directory, mode=0o700, exist_ok=True)
@@ -879,18 +896,19 @@ def provision_host_key(host: str, public_key: str) -> str:
     if entry is None or entry.key is None:
         raise HostKeyProvisionError("Loại SSH host key không được hỗ trợ")
 
-    host_keys = paramiko.HostKeys()
-    if os.path.exists(KNOWN_HOSTS_PATH):
+    with _host_keys_lock():
+        host_keys = paramiko.HostKeys()
+        if os.path.exists(KNOWN_HOSTS_PATH):
+            try:
+                host_keys.load(KNOWN_HOSTS_PATH)
+            except (OSError, paramiko.SSHException) as exc:
+                raise HostKeyProvisionError("Không đọc được kho SSH host key hiện tại") from exc
+        host_keys.pop(host, None)
+        host_keys.add(host, entry.key.get_name(), entry.key)
         try:
-            host_keys.load(KNOWN_HOSTS_PATH)
-        except (OSError, paramiko.SSHException) as exc:
-            raise HostKeyProvisionError("Không đọc được kho SSH host key hiện tại") from exc
-    host_keys.pop(host, None)
-    host_keys.add(host, entry.key.get_name(), entry.key)
-    try:
-        _write_host_keys_atomically(host_keys)
-    except OSError as exc:
-        raise HostKeyProvisionError("Không thể lưu SSH host key") from exc
+            _write_host_keys_atomically(host_keys)
+        except OSError as exc:
+            raise HostKeyProvisionError("Không thể lưu SSH host key") from exc
     return entry.key.get_name()
 
 
@@ -905,14 +923,15 @@ def forget_host_key(host: str) -> bool:
     Returns True if a stored entry was found and removed, False if the host
     had no entry (nothing to do -- not an error, e.g. it was never connected
     to, or was already cleared)."""
-    if not os.path.exists(KNOWN_HOSTS_PATH):
-        return False
-    host_keys = paramiko.HostKeys()
-    host_keys.load(KNOWN_HOSTS_PATH)
-    removed = host_keys.pop(host, None) is not None
-    if removed:
-        _write_host_keys_atomically(host_keys)
-    return removed
+    with _host_keys_lock():
+        if not os.path.exists(KNOWN_HOSTS_PATH):
+            return False
+        host_keys = paramiko.HostKeys()
+        host_keys.load(KNOWN_HOSTS_PATH)
+        removed = host_keys.pop(host, None) is not None
+        if removed:
+            _write_host_keys_atomically(host_keys)
+        return removed
 
 
 def read_public_key(ssh_key_path: str) -> str | None:
@@ -972,7 +991,6 @@ def _run_remote_command_with(
             key_filename=ssh_key_path,
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
-        client.save_host_keys(KNOWN_HOSTS_PATH)
         _stdin, stdout, stderr = client.exec_command(command, timeout=command_timeout)
         # Read output fully BEFORE checking exit status: if the remote command
         # writes more than the channel buffer holds, it blocks on write until

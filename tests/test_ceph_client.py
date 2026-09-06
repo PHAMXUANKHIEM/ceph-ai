@@ -53,6 +53,7 @@ class FakeSSHClient:
     behavior: dict = {}
     calls: list = []
     host_key_policies: list = []
+    saved_host_key_paths: list = []
 
     def __init__(self):
         self._host = None
@@ -64,7 +65,7 @@ class FakeSSHClient:
         pass
 
     def save_host_keys(self, path):
-        pass
+        FakeSSHClient.saved_host_key_paths.append(path)
 
     def connect(self, hostname, username, key_filename, timeout):
         FakeSSHClient.calls.append(hostname)
@@ -88,6 +89,7 @@ def fake_ssh(monkeypatch):
     FakeSSHClient.behavior = {}
     FakeSSHClient.calls = []
     FakeSSHClient.host_key_policies = []
+    FakeSSHClient.saved_host_key_paths = []
     monkeypatch.setattr(ceph_client.paramiko, "SSHClient", FakeSSHClient)
     yield FakeSSHClient
 
@@ -97,6 +99,7 @@ def test_remote_commands_reject_unprovisioned_host_keys(fake_ssh):
 
     assert ceph_client._run_remote_command_with("10.0.0.5", "true", "root", "/tmp/key")
     assert isinstance(fake_ssh.host_key_policies[-1], ceph_client.paramiko.RejectPolicy)
+    assert fake_ssh.saved_host_key_paths == []
 
 
 def test_get_mon_nodes_parses_settings(monkeypatch):
