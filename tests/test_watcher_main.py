@@ -595,14 +595,18 @@ def test_recent_failed_incident_codes_observe_retry_cooldown(monkeypatch):
             Incident(
                 ceph_code="BLUESTORE_SLOW_OP_ALERT",
                 status=IncidentStatus.FAILED.value,
-                detected_at=now - timedelta(seconds=30),
-                created_at=now - timedelta(seconds=30),
+                detected_at=now - timedelta(hours=1),
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(seconds=30),
+                failed_at=now - timedelta(seconds=30),
             ),
             Incident(
                 ceph_code="OLD_FAILURE",
                 status=IncidentStatus.FAILED.value,
-                detected_at=now - timedelta(seconds=301),
-                created_at=now - timedelta(seconds=301),
+                detected_at=now - timedelta(seconds=30),
+                created_at=now - timedelta(seconds=30),
+                updated_at=now - timedelta(seconds=301),
+                failed_at=now - timedelta(seconds=301),
             ),
         ])
         session.commit()

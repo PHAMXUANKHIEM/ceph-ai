@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -433,6 +434,18 @@ def test_failed_incident_does_not_permanently_block_a_fresh_remediation_attempt(
     isolated_db, monkeypatch
 ):
     _seed_incident("BLUESTORE_SLOW_OP_ALERT", IncidentStatus.FAILED.value)
+    # A FAILED Incident may retry only after its failure cooldown has elapsed.
+    # Keep creation recent to prove the gate follows the status transition
+    # timestamp, not ``created_at``.
+    with db_module.SessionLocal() as session:
+        failed = session.query(Incident).filter_by(
+            ceph_code="BLUESTORE_SLOW_OP_ALERT"
+        ).one()
+        failed.updated_at = datetime.utcnow() - timedelta(
+            seconds=watcher_main.settings.incident_failed_retry_cooldown_seconds + 1
+        )
+        failed.failed_at = failed.updated_at
+        session.commit()
     published = []
     monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async(published))
     monkeypatch.setattr(
@@ -721,6 +734,153 @@ def test_observed_cluster_does_not_create_duplicate_open_incident(isolated_db, m
             .count()
             == 1
         )
+
+
+def test_observed_cluster_retries_failed_incident_after_cooldown(isolated_db, monkeypatch):
+    now = datetime.utcnow()
+    with db_module.SessionLocal() as session:
+        cluster = Cluster(
+            name="backup-retry",
+            ceph_mon_nodes="10.0.0.1",
+            ssh_user="root",
+            ssh_key_path="/tmp/test-key",
+            is_default=False,
+        )
+        session.add(cluster)
+        session.flush()
+        session.add(
+            Incident(
+                cluster_id=cluster.id,
+                ceph_code="POOL_APP_NOT_ENABLED",
+                status=IncidentStatus.FAILED.value,
+                detected_at=now - timedelta(hours=1),
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(
+                    seconds=watcher_main.settings.incident_failed_retry_cooldown_seconds + 1
+                ),
+                failed_at=now - timedelta(
+                    seconds=watcher_main.settings.incident_failed_retry_cooldown_seconds + 1
+                ),
+            )
+        )
+        session.commit()
+        cluster_id = cluster.id
+
+    published = []
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async(published))
+    monkeypatch.setattr(
+        watcher_main.collector,
+        "collect_relevant_logs",
+        lambda *_args, **_kwargs: (["10.0.0.2"], "fresh evidence"),
+    )
+    with db_module.SessionLocal() as session:
+        watcher_main._build_and_publish_incident_for_observed_cluster(
+            session.get(Cluster, cluster_id),
+            {
+                "status": "HEALTH_WARN",
+                "checks": {"POOL_APP_NOT_ENABLED": {"severity": "HEALTH_WARN", "detail": []}},
+            },
+        )
+
+    with db_module.SessionLocal() as session:
+        assert session.query(Incident).filter_by(
+            cluster_id=cluster_id, ceph_code="POOL_APP_NOT_ENABLED"
+        ).count() == 2
+    assert len(published) == 1
+
+
+def test_inflight_incident_unique_index_rejects_concurrent_duplicate(isolated_db):
+    with db_module.SessionLocal() as session:
+        session.add(Incident(
+            ceph_code="OSD_DOWN", status=IncidentStatus.NEW.value, detected_at=datetime.utcnow()
+        ))
+        session.commit()
+        session.add(Incident(
+            ceph_code="OSD_DOWN", status=IncidentStatus.NEW.value, detected_at=datetime.utcnow()
+        ))
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+
+def test_grace_pending_incident_blocks_a_duplicate_health_alert(isolated_db, monkeypatch):
+    _seed_incident("OSD_DOWN", IncidentStatus.GRACE_PENDING.value)
+    monkeypatch.setattr(
+        watcher_main.collector,
+        "collect_relevant_logs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not recollect")),
+    )
+
+    watcher_main.build_and_publish_incident(None, {
+        "status": "HEALTH_WARN",
+        "checks": {"OSD_DOWN": {"severity": "HEALTH_WARN", "detail": []}},
+    })
+
+    with db_module.SessionLocal() as session:
+        assert session.query(Incident).filter_by(ceph_code="OSD_DOWN").count() == 1
+
+
+def test_grace_pending_incident_is_not_resolved_by_generic_health_recovery(isolated_db):
+    incident_id = _seed_incident("OSD_DOWN", IncidentStatus.GRACE_PENDING.value)
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, incident_id).status == IncidentStatus.GRACE_PENDING.value
+
+
+def test_only_the_active_incident_unique_index_is_treated_as_duplicate():
+    class Diagnostic:
+        def __init__(self, constraint_name):
+            self.constraint_name = constraint_name
+
+    class DatabaseError:
+        def __init__(self, constraint_name):
+            self.diag = Diagnostic(constraint_name)
+
+    duplicate = IntegrityError(
+        "INSERT", {}, DatabaseError("uq_incidents_inflight_cluster_code")
+    )
+    unrelated = IntegrityError("INSERT", {}, DatabaseError("some_other_constraint"))
+
+    assert watcher_main._is_inflight_incident_duplicate(duplicate) is True
+    assert watcher_main._is_inflight_incident_duplicate(unrelated) is False
+
+
+def test_unrelated_integrity_error_is_not_silently_treated_as_a_duplicate(isolated_db, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    monkeypatch.setattr(
+        watcher_main.collector,
+        "collect_relevant_logs",
+        lambda *_args, **_kwargs: (["10.20.1.83"], "evidence"),
+    )
+
+    def fail_commit(_session):
+        raise IntegrityError("INSERT", {}, Exception("unrelated constraint failure"))
+
+    monkeypatch.setattr(Session, "commit", fail_commit)
+    with pytest.raises(IntegrityError):
+        watcher_main.build_and_publish_incident(None, {
+            "status": "HEALTH_WARN",
+            "checks": {"OSD_DOWN": {"severity": "HEALTH_WARN", "detail": []}},
+        })
+
+
+def test_failed_at_is_stamped_once_and_not_changed_by_later_updates(isolated_db):
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code="OSD_DOWN", status=IncidentStatus.NEW.value, detected_at=datetime.utcnow()
+        )
+        session.add(incident)
+        session.commit()
+        incident.status = IncidentStatus.FAILED.value
+        session.commit()
+        first_failed_at = incident.failed_at
+        assert first_failed_at is not None
+        incident.acknowledged_at = datetime.utcnow()
+        session.commit()
+        assert incident.failed_at == first_failed_at
 
 
 def test_multiple_simultaneous_checks_create_one_incident_each_and_publish_all(

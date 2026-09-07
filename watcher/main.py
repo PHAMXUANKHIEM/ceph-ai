@@ -6,7 +6,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from watcher import (
@@ -111,7 +112,14 @@ _RECOVERABLE_STATUSES = {
 # in-flight remediation.  Let a fresh Watcher transition create a new attempt
 # for a warning that still exists; otherwise one historical router/preflight
 # failure permanently suppresses Autopilot for that ceph_code.
-_IN_FLIGHT_DEDUPE_STATUSES = _RECOVERABLE_STATUSES - {IncidentStatus.FAILED.value}
+# A SAFE action is still active while its cancellation grace window is open.
+# It must block a second Incident, but it is intentionally not in
+# ``_RECOVERABLE_STATUSES``: generic health reconciliation must never close a
+# grace-period Incident while its Action can still resume execution.
+_IN_FLIGHT_DEDUPE_STATUSES = (
+    _RECOVERABLE_STATUSES - {IncidentStatus.FAILED.value}
+) | {IncidentStatus.GRACE_PENDING.value}
+_INFLIGHT_INCIDENT_UNIQUE_INDEX = "uq_incidents_inflight_cluster_code"
 _OSD_RESTART_RETRY_AFTER_SECONDS = 30
 _IDEMPOTENT_VERIFY_RETRY_ACTIONS = {
     "MON_MSGR2_NOT_ENABLED": "enable_mon_msgr2",
@@ -146,11 +154,16 @@ _REMINDER_EXCLUDED_CODES = {
 
 
 def _recent_failed_incident_codes(session, cluster_id: str | None, now: datetime) -> set[str]:
-    """Return checks whose failed attempt is still in the retry cooldown."""
+    """Return checks whose failed attempt is still in the retry cooldown.
+
+    ``failed_at`` is separate from ``updated_at`` so acknowledgement and mute
+    changes cannot postpone a retry.  ``updated_at`` remains a compatibility
+    fallback for rows created before the timestamp migration.
+    """
     cutoff = now - timedelta(seconds=settings.incident_failed_retry_cooldown_seconds)
     query = session.query(Incident.ceph_code).filter(
         Incident.status == IncidentStatus.FAILED.value,
-        Incident.created_at >= cutoff,
+        func.coalesce(Incident.failed_at, Incident.updated_at) >= cutoff,
     )
     query = (
         query.filter(Incident.cluster_id == cluster_id)
@@ -158,6 +171,18 @@ def _recent_failed_incident_codes(session, cluster_id: str | None, now: datetime
         else query.filter(Incident.cluster_id.is_(None))
     )
     return {row.ceph_code for row in query.all()}
+
+
+def _is_inflight_incident_duplicate(error: IntegrityError) -> bool:
+    """Return true only for the active-Incident partial unique-index race.
+
+    An existence query after rollback is insufficient: an unrelated FK or
+    schema error could occur while another active Incident already exists.
+    PostgreSQL exposes the violated index in ``diag.constraint_name``; every
+    other integrity error must remain visible to the caller.
+    """
+    diagnostic = getattr(error.orig, "diag", None)
+    return getattr(diagnostic, "constraint_name", None) == _INFLIGHT_INCIDENT_UNIQUE_INDEX
 
 
 def send_due_incident_reminders(now: datetime | None = None) -> int:
@@ -642,7 +667,28 @@ def build_and_publish_incident(
                 signal_evidence_json=signal_evidence_json,
             )
             session.add(incident)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                # The DB partial unique index is the authoritative dedupe
+                # boundary.  Another Watcher won the concurrent insert, so
+                # do not emit a second Telegram alert or queue message.
+                session.rollback()
+                if not _is_inflight_incident_duplicate(exc):
+                    logger.exception(
+                        "build_and_publish_incident: unexpected integrity error "
+                        "for cluster_id=%s ceph_code=%s",
+                        cluster_id,
+                        ceph_code,
+                    )
+                    raise
+                logger.info(
+                    "build_and_publish_incident: duplicate in-flight incident skipped "
+                    "for cluster_id=%s ceph_code=%s",
+                    cluster_id,
+                    ceph_code,
+                )
+                continue
             session.refresh(incident)
             incident_id = incident.id
             notification_muted = alert_lifecycle.inherit_active_mute(
@@ -1189,10 +1235,16 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
             for row in session.query(Incident.ceph_code)
             .filter(
                 Incident.cluster_id == cluster.id,
-                Incident.status.in_(_RECOVERABLE_STATUSES),
+                Incident.status.in_(_IN_FLIGHT_DEDUPE_STATUSES),
             )
             .all()
         }
+        # Keep the observed-cluster lifecycle consistent with the default
+        # cluster: a recent FAILED attempt must not spam alerts, but it must
+        # become eligible again after the configured cooldown.
+        already_open_codes.update(
+            _recent_failed_incident_codes(session, cluster.id, datetime.utcnow())
+        )
 
     envelopes = []
     for ceph_code, check_detail in current_checks.items():
@@ -1218,7 +1270,25 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 signal_evidence_json=signal_evidence_json,
             )
             session.add(incident)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                if not _is_inflight_incident_duplicate(exc):
+                    logger.exception(
+                        "_build_and_publish_incident_for_observed_cluster: unexpected "
+                        "integrity error for cluster_id=%s ceph_code=%s",
+                        cluster.id,
+                        ceph_code,
+                    )
+                    raise
+                logger.info(
+                    "_build_and_publish_incident_for_observed_cluster: duplicate "
+                    "in-flight incident skipped for cluster_id=%s ceph_code=%s",
+                    cluster.id,
+                    ceph_code,
+                )
+                continue
             session.refresh(incident)
             incident_id = incident.id
             notification_muted = alert_lifecycle.inherit_active_mute(

@@ -15,6 +15,9 @@ type DashboardHealth = {
   utilization: { percent: number | null; bytes_used: number | null; pools: number | null };
   metrics: { latency_ms: number | null; bandwidth_bps: number | null; iops: number | null };
   placement_groups: string;
+  cached?: boolean;
+  stale?: boolean;
+  cache_age_seconds?: number;
 };
 
 const emptyHealth: DashboardHealth = {
@@ -105,6 +108,12 @@ export function CephDashboard() {
         <div className="dashboard-live-error" role="alert">
           <span><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</span>
           <button type="button" onClick={() => setReloadToken((value) => value + 1)}>Thử lại</button>
+        </div>
+      )}
+      {health.stale && (
+        <div className="dashboard-live-stale" role="status">
+          <strong>Dữ liệu cụm đang cũ</strong>
+          <span>Snapshot gần nhất cách đây {Math.round(health.cache_age_seconds ?? 0)} giây; đang làm mới nền.</span>
         </div>
       )}
       <section className="status-grid" aria-label="Ceph status overview">

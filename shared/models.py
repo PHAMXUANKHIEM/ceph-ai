@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    event,
     Float,
     ForeignKey,
     Index,
@@ -182,6 +183,23 @@ class Incident(Base):
             "status IN ('" + "','".join(s.value for s in IncidentStatus) + "')",
             name="ck_incidents_status_valid",
         ),
+        # The watcher can have more than one process during a rollout.  A
+        # read-before-insert check alone cannot prevent two processes from
+        # creating/alerting the same still-active Ceph finding.  FAILED is
+        # deliberately excluded: it remains historical evidence and is
+        # eligible for a later retry after the watcher cooldown.
+        Index(
+            "uq_incidents_inflight_cluster_code",
+            text("COALESCE(cluster_id, '')"),
+            "ceph_code",
+            unique=True,
+            sqlite_where=text(
+                "status IN ('NEW','DIAGNOSING','PENDING_APPROVAL','APPROVED','EXECUTING','GRACE_PENDING','VERIFYING')"
+            ),
+            postgresql_where=text(
+                "status IN ('NEW','DIAGNOSING','PENDING_APPROVAL','APPROVED','EXECUTING','GRACE_PENDING','VERIFYING')"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -239,6 +257,19 @@ class Incident(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    # ``updated_at`` also changes for acknowledgement/mute and other operator
+    # activity. Retry policy needs the actual terminal-failure instant, not
+    # the last presentation-only update.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@event.listens_for(Incident.status, "set")
+def _stamp_incident_failure(
+    incident: Incident, value: str, oldvalue: object, _initiator: object
+) -> None:
+    """Persist the instant an Incident enters FAILED exactly once per attempt."""
+    if value == IncidentStatus.FAILED.value and oldvalue != IncidentStatus.FAILED.value:
+        incident.failed_at = datetime.utcnow()
 
 
 class ActionClassification(str, enum.Enum):
