@@ -56,6 +56,14 @@ MAX_TOOL_ITERATIONS = 6
 # long-lived operational chat doesn't need its entire history re-sent on
 # every message.
 MAX_HISTORY_MESSAGES = 20
+# Chat history is bounded by both dimensions because character counts alone
+# under-estimate JSON/CJK/code-like content, while message counts alone allow a
+# single large evidence reply to dominate the provider context.
+CHAT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
+CHAT_HISTORY_TRUNCATION_MARKER = (
+    "[Các lượt lịch sử cũ hơn đã được lược bỏ để giới hạn chi phí context; "
+    "chỉ dùng các lượt gần đây dưới đây.]"
+)
 
 # rbd_trash_remove shares the management command-builder family but belongs
 # to the Volumes page, not free-form Chat. The remaining management actions
@@ -131,6 +139,93 @@ def is_ceph_scoped(user_text: str, history: list[dict] | None = None) -> bool:
         if message.get("role") == "user":
             return bool(_CEPH_SCOPE_RE.search(str(message.get("content", ""))))
     return False
+
+
+def _estimated_chat_context_tokens(text: str) -> int:
+    return (
+        len(text) + CHAT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN - 1
+    ) // CHAT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN
+
+
+def _truncate_chat_text(text: str, limit: int) -> str:
+    """Keep both the beginning and end of one oversized history message."""
+    if len(text) <= limit:
+        return text
+    marker = "\n...[message lịch sử bị cắt để giới hạn context]\n"
+    if limit <= len(marker):
+        return text[:limit]
+    available = limit - len(marker)
+    head = max(1, int(available * 0.6))
+    tail = max(1, available - head)
+    return text[:head] + marker + text[-tail:]
+
+
+def _pack_chat_history(history: list[dict]) -> list[dict]:
+    """Pack recent chat history within hard character/token/message ceilings.
+
+    The current user turn is supplied separately by ``run_chat_turn`` and is
+    never removed here. When old history is omitted, an explicit assistant
+    marker tells every provider why the transcript starts mid-conversation.
+    Recent evidence therefore wins over stale context without silently making
+    the model believe that the visible transcript is complete.
+    """
+    normalized = [
+        {
+            "role": str(message.get("role") or "assistant"),
+            "content": str(message.get("content") or ""),
+        }
+        for message in history
+        if isinstance(message, dict)
+    ]
+    if not normalized:
+        return []
+
+    char_limit = max(1000, int(getattr(settings, "ai_chat_max_context_chars", 12000)))
+    token_limit = max(256, int(getattr(settings, "ai_chat_max_context_tokens", 6000)))
+    total_chars = sum(len(message["content"]) for message in normalized)
+    total_tokens = sum(_estimated_chat_context_tokens(message["content"]) for message in normalized)
+    if (
+        len(normalized) <= MAX_HISTORY_MESSAGES
+        and total_chars <= char_limit
+        and total_tokens <= token_limit
+    ):
+        return normalized
+
+    marker = CHAT_HISTORY_TRUNCATION_MARKER
+    marker_tokens = _estimated_chat_context_tokens(marker)
+    content_char_budget = max(1, char_limit - len(marker))
+    content_token_budget = max(1, token_limit - marker_tokens)
+    selected_reversed: list[dict] = []
+    used_chars = 0
+    used_tokens = 0
+    for message in reversed(normalized):
+        if len(selected_reversed) >= max(1, MAX_HISTORY_MESSAGES - 1):
+            break
+        remaining_chars = content_char_budget - used_chars
+        remaining_tokens = content_token_budget - used_tokens
+        if remaining_chars <= 0 or remaining_tokens <= 0:
+            break
+        message_limit = min(
+            remaining_chars,
+            remaining_tokens * CHAT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN,
+        )
+        content = _truncate_chat_text(message["content"], message_limit)
+        if not content:
+            continue
+        selected_reversed.append({"role": message["role"], "content": content})
+        used_chars += len(content)
+        used_tokens += _estimated_chat_context_tokens(content)
+
+    packed = [{"role": "assistant", "content": marker}]
+    packed.extend(reversed(selected_reversed))
+    logger.debug(
+        "chat history packed messages=%d->%d chars=%d->%d estimated_tokens=%d->%d",
+        len(normalized), len(packed), total_chars,
+        sum(len(message["content"]) for message in packed), total_tokens,
+        sum(_estimated_chat_context_tokens(message["content"]) for message in packed),
+    )
+    return packed
+
 
 # AD-5's "action_id/command_id đóng từ structured output, không parse free
 # text" applies here exactly as it does to worker/llm/router_client.py's
@@ -973,13 +1068,14 @@ async def run_chat_turn(
         ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address,
         cluster_name=getattr(cluster, "name", None),
     )
-    bluestore_hint = _bluestore_history_hint(history, cluster)
-    if bluestore_hint:
-        actor_system_prompt += "\n\n" + bluestore_hint
     outbound_history = [
         {**message, "content": redact_text(str(message.get("content") or ""))}
         for message in history
     ]
+    outbound_history = _pack_chat_history(outbound_history)
+    bluestore_hint = _bluestore_history_hint(outbound_history, cluster)
+    if bluestore_hint:
+        actor_system_prompt += "\n\n" + bluestore_hint
     outbound_user_text = redact_text(user_text)
 
     provider_errors: list[str] = []

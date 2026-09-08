@@ -19,8 +19,10 @@ usage mà không làm mất evidence quan trọng hoặc tự ý đổi provider
   `ai_incident_max_context_tokens` (mặc định 6.000, ước lượng bảo thủ 2
   ký tự/token), giữ mã lỗi/thời điểm/node/snapshot/log chính rồi mới cắt
   historical evidence. Đã deploy 2026-09-07.
-- [ ] **2. Context packing cho Chat** — giới hạn theo ký tự/token thay vì chỉ
+- [x] **2. Context packing cho Chat** — giới hạn theo ký tự/token thay vì chỉ
   giới hạn số message; giữ lượt hiện tại và evidence gần nhất, loại lịch sử dư.
+  Đã thêm hard ceiling 12.000 ký tự/6.000 token ước lượng, marker khi cắt và
+  regression test cho transcript dài.
 - [ ] **3. Giảm số provider round-trip** — cache read-only tool trong cùng lượt,
   dừng sớm khi đủ evidence, giới hạn model output theo từng feature.
 - [ ] **4. Routing tiết kiệm có kiểm soát** — phân loại tác vụ, đề xuất model rẻ

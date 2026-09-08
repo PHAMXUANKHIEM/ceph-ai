@@ -248,6 +248,12 @@ class Settings(BaseSettings):
     # The runtime enforces both this and the character ceiling because exact
     # tokenization differs between Codex, Claude and router models.
     ai_incident_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
+    # Chat history is persisted indefinitely, so a message-count-only window
+    # still allows a few large tool/evidence replies to consume the whole
+    # provider context. Keep the current turn separate and pack only the
+    # most recent useful history within both hard ceilings.
+    ai_chat_max_context_chars: int = Field(default=12000, ge=4000, le=50000)
+    ai_chat_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
 
     # Delegated AI guardrails. These limits are deliberately independent from
     # the normal chat turn so one delegated request cannot fan out without a

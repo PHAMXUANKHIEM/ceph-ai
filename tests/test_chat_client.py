@@ -476,6 +476,37 @@ def test_ceph_scope_allows_contextual_follow_up():
     assert chat_client.is_ceph_scoped("giải thích chi tiết", []) is False
 
 
+def test_pack_chat_history_keeps_recent_context_with_hard_ceilings(monkeypatch):
+    monkeypatch.setattr(chat_client.settings, "ai_chat_max_context_chars", 1200)
+    monkeypatch.setattr(chat_client.settings, "ai_chat_max_context_tokens", 600)
+    history = [
+        {"role": "user", "content": "cũ " * 250},
+        {"role": "assistant", "content": "evidence cũ " * 180},
+        {"role": "user", "content": "câu hỏi gần nhất về Ceph"},
+        {"role": "assistant", "content": "evidence gần nhất " * 120},
+    ]
+
+    packed = chat_client._pack_chat_history(history)
+
+    assert packed[0]["content"] == chat_client.CHAT_HISTORY_TRUNCATION_MARKER
+    assert packed[-1]["content"].endswith("evidence gần nhất ")
+    assert sum(len(message["content"]) for message in packed) <= 1200
+    assert sum(
+        chat_client._estimated_chat_context_tokens(message["content"])
+        for message in packed
+    ) <= 600
+    assert len(packed) <= chat_client.MAX_HISTORY_MESSAGES
+
+
+def test_pack_chat_history_leaves_small_transcript_unchanged(monkeypatch):
+    history = [
+        {"role": "user", "content": "Ceph HEALTH_WARN"},
+        {"role": "assistant", "content": "Đang kiểm tra evidence."},
+    ]
+    packed = chat_client._pack_chat_history(history)
+    assert packed == history
+
+
 def test_run_chat_turn_plain_text_answer(monkeypatch):
     _install_fake_client(monkeypatch, [_text_completion("Cluster đang HEALTH_OK.")])
 
