@@ -864,6 +864,77 @@ class ChatMessage(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
+class DelegatedAITask(Base):
+    """A user request executed by a supervisor and isolated read-only agents.
+
+    The parent stores only the request and the final synthesis. Each
+    DelegatedAISubtask gets a bounded role-specific prompt instead of the
+    complete chat transcript. This is separate from filesystem-backed
+    development tasks in dashboard/routes/ai_tasks.py.
+    """
+
+    __tablename__ = "delegated_ai_tasks"
+    __table_args__ = (
+        Index("ix_delegated_ai_tasks_actor_created", "actor", "created_at"),
+        Index("ix_delegated_ai_tasks_status_updated", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    cluster_id: Mapped[str] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    assistant_message_id: Mapped[str] = mapped_column(String(36), ForeignKey("chat_messages.id"), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="QUEUED", index=True)
+    # Persisted lifetime provider-call budget. This must survive Worker
+    # reclaim/restart; an in-memory counter would reset after a crash.
+    provider_call_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Worker lease used to make RabbitMQ redelivery and multiple Worker
+    # replicas safe. A stale lease can be reclaimed after a crash.
+    execution_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    dispatch_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class DelegatedAISubtask(Base):
+    """One bounded agent invocation belonging to a DelegatedAITask."""
+
+    __tablename__ = "delegated_ai_subtasks"
+    __table_args__ = (
+        UniqueConstraint("task_id", "role", name="uq_delegated_ai_subtask_task_role"),
+        Index("ix_delegated_ai_subtasks_task_status", "task_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("delegated_ai_tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(48), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_tools_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="QUEUED", index=True)
+    execution_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tools_used_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
 
 class UpgradeProcedureDocument(Base):
     """Singleton (id always 1, upserted) — the operator's own upgrade

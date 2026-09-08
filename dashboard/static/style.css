@@ -1496,6 +1496,32 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   border: 1px solid var(--border-strong);
   border-radius: 12px 12px 12px 2px;
 }
+.chat-delegated-progress {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 8px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.chat-delegated-progress strong { color: var(--text); margin-right: 4px; }
+.chat-delegated-progress ul { margin: 5px 0 0; padding-left: 16px; }
+.chat-delegated-progress li { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.chat-delegated-cancel {
+  display: block;
+  margin-top: 7px;
+  padding: 3px 8px;
+  border: 1px solid var(--critical-border);
+  border-radius: 5px;
+  background: var(--critical-bg);
+  color: var(--critical);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.chat-delegated-cancel:disabled { opacity: 0.65; cursor: wait; }
 
 /* Typing indicator — animated 3-dot pulse inside an AI-styled bubble,
    shown while waiting for the chat API's response. */

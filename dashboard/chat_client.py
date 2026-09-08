@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 import httpx
 from shared.ai_redaction import redact_text
@@ -858,13 +859,21 @@ def _get_client() -> AsyncOpenAI:
     return build_router_client(settings.router_api_key, settings.router_base_url)
 
 
-def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> tuple[str, bool]:
+def _run_tool(
+    name: str,
+    args: dict,
+    actor: str | None = None,
+    cluster=None,
+    allowed_tools: set[str] | None = None,
+) -> tuple[str, bool]:
     """Returns (result_text, is_error). Never raises — ChatToolError and any
     unexpected exception are both turned into an error result string, same
     posture as the original MCP-based tool loop this replaces. Truncates to
     MAX_TOOL_RESULT_CHARS regardless of which tool ran — get_osd_tree/
     get_pool_list on a large cluster could plausibly hit the same wall
     run_ceph_command's raw `ceph osd dump` output did."""
+    if allowed_tools is not None and name not in allowed_tools:
+        return f"tool {name!r} không được cấp cho agent này", True
     try:
         if name == TOOL_LIST_NODES:
             result_text, is_error = _run_list_nodes(cluster), False
@@ -913,12 +922,22 @@ def _run_tool(name: str, args: dict, actor: str | None = None, cluster=None) -> 
     return result_text[:limit], is_error
 
 
-def _chat_uses_ai(history: list[dict], user_text: str, actor: str, cluster=None) -> bool:
+def _chat_uses_ai(history: list[dict], user_text: str, actor: str, cluster=None, allowed_tools: list[str] | None = None) -> bool:
     return not auth.is_ceph_chat_restricted(actor) or is_ceph_scoped(user_text, history)
 
 
 @observe_ai_call("ceph_chat", when=_chat_uses_ai)
-async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster=None) -> dict:
+async def run_chat_turn(
+    history: list[dict],
+    user_text: str,
+    actor: str,
+    cluster=None,
+    allowed_tools: list[str] | None = None,
+    max_tool_iterations: int | None = None,
+    timeout_seconds: float | None = None,
+    max_tokens: int | None = None,
+    provider_call_budget: Callable[[], Awaitable[None]] | None = None,
+) -> dict:
     """Runs one chat turn: sends `user_text` (plus prior `history`) to
     9router (OpenAI-compatible /v1/chat/completions), executing any
     read-only tool calls it makes in-process (up to MAX_TOOL_ITERATIONS
@@ -966,8 +985,12 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
     provider_errors: list[str] = []
     if settings.codex_chat_enabled:
         try:
+            if provider_call_budget is not None:
+                await provider_call_budget()
             result = await _run_codex_chat_turn(
-                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster
+                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
+                allowed_tools, timeout_seconds=timeout_seconds,
+                max_tool_iterations=max_tool_iterations,
             )
         except ChatTurnError as exc:
             # Codex auth/quota failures must not block a configured Claude
@@ -983,7 +1006,10 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
     if settings.claude_chat_enabled:
         try:
             result = await _run_claude_chat_turn(
-                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster
+                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
+                allowed_tools, max_tool_iterations=max_tool_iterations,
+                timeout_seconds=timeout_seconds,
+                provider_call_budget=provider_call_budget,
             )
         except ChatTurnError as exc:
             provider_errors.append(f"Claude call failed: {exc}")
@@ -1018,13 +1044,22 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
 
     is_admin = auth.is_admin_user(actor)
     tools = _tool_schemas(is_admin=is_admin, cluster=cluster)
+    if allowed_tools is not None:
+        allowed = set(allowed_tools)
+        tools = [item for item in tools if item["function"]["name"] in allowed]
+    allowed_tool_names = {item["function"]["name"] for item in tools}
     reply_text_parts: list[str] = []
     proposal: dict | None = None
     tools_used: list[str] = []
     citations: list[dict] = []
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    tool_iterations = max(1, min(max_tool_iterations or MAX_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS))
+    provider_timeout = timeout_seconds or ROUTER_TIMEOUT_SECONDS
+    output_tokens = max(1, min(max_tokens or MAX_TOKENS, MAX_TOKENS))
+    for _ in range(tool_iterations):
         try:
+            if provider_call_budget is not None:
+                await provider_call_budget()
             # 9router (verified live) always responds with an SSE stream
             # regardless of whether streaming was requested —
             # client.chat.completions.stream() + get_final_completion()
@@ -1038,7 +1073,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 tools=tools,
                 tool_choice="auto",
                 temperature=0.1,
-                max_tokens=MAX_TOKENS,
+                max_tokens=output_tokens,
                 stream_options={"include_usage": True},
                 # httpx.Timeout(...), NOT a bare float — verified directly
                 # against a real running 9router: passing a plain float
@@ -1046,7 +1081,7 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
                 # "Hiện" instead of the full sentence, no error raised) on
                 # a .stream() call specifically. httpx.Timeout(...) does
                 # not have this problem.
-                timeout=httpx.Timeout(ROUTER_TIMEOUT_SECONDS),
+                timeout=httpx.Timeout(provider_timeout),
             ) as stream:
                 completion = await stream.get_final_completion()
             record_ai_usage(completion)
@@ -1080,7 +1115,11 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
         messages.append(msg.model_dump(exclude_none=True))
 
         propose_call = next(
-            (c for c in tool_calls if c.function.name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}),
+            (
+                c for c in tool_calls
+                if c.function.name in allowed_tool_names
+                and c.function.name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}
+            ),
             None,
         )
         if propose_call is not None:
@@ -1104,11 +1143,22 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
             break
 
         for call in tool_calls:
+            if call.function.name not in allowed_tool_names:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"tool {call.function.name!r} không được cấp cho agent này",
+                    }
+                )
+                continue
             try:
                 args = json.loads(call.function.arguments or "{}")
             except (TypeError, ValueError):
                 args = {}
-            result_text, is_error = _run_tool(call.function.name, args, actor, cluster)
+            result_text, is_error = _run_tool(
+                call.function.name, args, actor, cluster, allowed_tools=allowed_tool_names
+            )
             if not is_error:
                 tools_used.append(call.function.name)
                 citations.extend(_citations_from_result(result_text))
@@ -1134,7 +1184,9 @@ async def run_chat_turn(history: list[dict], user_text: str, actor: str, cluster
 
 
 async def _run_codex_chat_turn(
-    history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None
+    history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None,
+    allowed_tools: list[str] | None = None, timeout_seconds: float | None = None,
+    max_tool_iterations: int | None = None,
 ) -> dict:
     """Run chat through Codex while retaining ceph-ai's guarded tools."""
     transcript = []
@@ -1150,6 +1202,8 @@ async def _run_codex_chat_turn(
 
     async def handle_tool(name: str, args: dict) -> tuple[str, bool]:
         nonlocal proposal
+        if allowed_tools is not None and name not in set(allowed_tools):
+            return f"Tool {name!r} không được cấp cho agent này", False
         if name in {TOOL_PROPOSE_ACTION, TOOL_PROPOSE_NODE_COMMAND}:
             try:
                 if name == TOOL_PROPOSE_NODE_COMMAND:
@@ -1162,7 +1216,10 @@ async def _run_codex_chat_turn(
                 return "Đề xuất đã tạo và đang chờ operator xác nhận trên giao diện.", True
             except (ChatToolError, TypeError, ValueError) as exc:
                 return f"Đề xuất không hợp lệ: {exc}", False
-        text, is_error = _run_tool(name, args, actor, cluster)
+        text, is_error = _run_tool(
+            name, args, actor, cluster,
+            allowed_tools=set(allowed_tools) if allowed_tools is not None else None,
+        )
         if not is_error:
             tools_used.append(name)
             citations.extend(_citations_from_result(text))
@@ -1171,7 +1228,12 @@ async def _run_codex_chat_turn(
 
     try:
         result = await codex_app_server.run_turn(
-            prompt, _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster), handle_tool
+            prompt,
+            [item for item in _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster)
+             if allowed_tools is None or item["function"]["name"] in set(allowed_tools)],
+            handle_tool,
+            timeout=timeout_seconds or 120,
+            max_tool_calls=max(1, min(max_tool_iterations or MAX_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS)),
         )
     except CodexAppServerError as exc:
         raise ChatTurnError(f"Codex: {exc}") from exc
@@ -1198,7 +1260,10 @@ def _parse_claude_tool_envelope(raw: str) -> dict | None:
 
 
 async def _run_claude_chat_turn(
-    history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None
+    history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None,
+    allowed_tools: list[str] | None = None, max_tool_iterations: int | None = None,
+    timeout_seconds: float | None = None,
+    provider_call_budget: Callable[[], Awaitable[None]] | None = None,
 ) -> dict:
     """Run Claude with server-managed tools and the same guards as other providers.
 
@@ -1211,6 +1276,9 @@ async def _run_claude_chat_turn(
         role = "Người dùng" if message["role"] == "user" else "Trợ lý"
         transcript.append(f"{role}: {message['content']}")
     schemas = _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster)
+    if allowed_tools is not None:
+        allowed = set(allowed_tools)
+        schemas = [item for item in schemas if item["function"]["name"] in allowed]
     tool_contract = [item["function"] for item in schemas]
     exchange: list[str] = []
     tools_used: list[str] = []
@@ -1228,11 +1296,15 @@ async def _run_claude_chat_turn(
         + f"\n\nNgười dùng: {user_text}"
     )
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    tool_iterations = max(1, min(max_tool_iterations or MAX_TOOL_ITERATIONS, MAX_TOOL_ITERATIONS))
+    provider_timeout = timeout_seconds or ROUTER_TIMEOUT_SECONDS
+    for _ in range(tool_iterations):
         prompt = base_prompt + ("\n\nKết quả các bước trước:\n" + "\n".join(exchange) if exchange else "")
         prompt += "\n\nChỉ trả về JSON object theo contract:"
         try:
-            raw = await run_claude_prompt(prompt, timeout=ROUTER_TIMEOUT_SECONDS)
+            if provider_call_budget is not None:
+                await provider_call_budget()
+            raw = await run_claude_prompt(prompt, timeout=provider_timeout)
         except ClaudeCLIError as exc:
             raise ChatTurnError(f"Claude: {exc}") from exc
         envelope = _parse_claude_tool_envelope(raw)

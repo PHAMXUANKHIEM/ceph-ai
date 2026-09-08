@@ -346,7 +346,7 @@ async def _supervise(
 
 async def _main() -> None:
     from worker.backup import scheduler as backup_scheduler
-    from worker import bucket_logging, rgw_access_audit
+    from worker import bucket_logging, rgw_access_audit, delegated_tasks
     from worker.llm.router_client import diagnose_incident, poll_approved_actions
 
     # Story 4.3: the approved-RISKY-action poller runs alongside the
@@ -366,6 +366,7 @@ async def _main() -> None:
 
     await asyncio.gather(
         _supervise("incident-consumer", lambda: run(process_incident=diagnose_incident)),
+        _supervise("delegated-ai-consumer", delegated_tasks.run),
         _supervise("approved-action-poller", poll_approved_actions),
         _supervise("backup-scheduler", backup_scheduler.run),
         _supervise("bucket-logging", bucket_logging.run),

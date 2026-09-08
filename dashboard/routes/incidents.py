@@ -46,10 +46,16 @@ templates = make_templates()
 # whatever watcher_poll_interval_seconds is configured to.
 HEARTBEAT_STALE_MULTIPLIER = 3
 _DASHBOARD_HEALTH_CACHE_NAMESPACE = "dashboard-health"
-_DASHBOARD_HEALTH_REFRESH_SECONDS = 15
+# Refresh proactively while keeping the dashboard response fast.  This is
+# intentionally separate from the stale-warning threshold: a cache can be
+# due for refresh without being unusable to an operator.
+_DASHBOARD_HEALTH_REFRESH_SECONDS = 60
+_DASHBOARD_HEALTH_STALE_SECONDS = 180
 _DASHBOARD_HEALTH_MAX_STALE_SECONDS = 900
 _DASHBOARD_HEALTH_REFRESH_LOCKS: dict[str, threading.Lock] = {}
 _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD = threading.Lock()
+_DASHBOARD_HEALTH_MON_PREFERENCES: dict[str, str] = {}
+_DASHBOARD_HEALTH_MON_PREFERENCES_GUARD = threading.Lock()
 CASE_VERDICTS = {
     "CORRECT": "Chẩn đoán/xử lý đúng",
     "FALSE_POSITIVE": "Cảnh báo sai",
@@ -58,6 +64,24 @@ CASE_VERDICTS = {
     "INCONCLUSIVE": "Chưa đủ bằng chứng",
 }
 ALERT_MUTE_HOURS = (1, 6, 24)
+
+
+def _ordered_dashboard_mon_nodes(cluster_id: str, mon_nodes: list[str]) -> list[str]:
+    """Put the last MON that answered first, retaining configured fallback order."""
+    nodes = list(dict.fromkeys(node.strip() for node in mon_nodes if node and node.strip()))
+    with _DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
+        preferred = _DASHBOARD_HEALTH_MON_PREFERENCES.get(cluster_id)
+    if preferred in nodes:
+        return [preferred, *[node for node in nodes if node != preferred]]
+    return nodes
+
+
+def _remember_dashboard_mon(cluster_id: str, host: str | None) -> None:
+    host = str(host or "").strip()
+    if not host:
+        return
+    with _DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
+        _DASHBOARD_HEALTH_MON_PREFERENCES[cluster_id] = host
 
 
 def _rca_evidence(raw: str | None) -> dict | None:
@@ -143,14 +167,20 @@ def _cached_node_inventory(mon_nodes, container_name, ssh_user, ssh_key_path, ex
 
 
 async def _load_dashboard_health_live(selected_cluster: Cluster) -> dict:
-    mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
+    configured_mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
+    mon_nodes = _ordered_dashboard_mon_nodes(selected_cluster.id, configured_mon_nodes)
     if not mon_nodes:
         raise CephQueryError("Cụm chưa cấu hình MON node")
     ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
-    _host, payload = await asyncio.to_thread(
+    host, payload = await asyncio.to_thread(
         _run_monitor_command, mon_nodes, container_name,
         ssh_user, ssh_key_path, exec_mode, "ceph -s",
     )
+    # A failed/slow MON is automatically bypassed on the next refresh after
+    # the fallback succeeds. This makes the fix survive transient MON
+    # outages and avoids depending on a hand-maintained list order.
+    _remember_dashboard_mon(selected_cluster.id, host)
+    mon_nodes = _ordered_dashboard_mon_nodes(selected_cluster.id, configured_mon_nodes)
     if not isinstance(payload, dict):
         raise CephQueryError("ceph -s returned an unexpected response")
 
@@ -187,11 +217,17 @@ async def _load_dashboard_health_live(selected_cluster: Cluster) -> dict:
     return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
 
 
-def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> None:
+def _dashboard_health_refresh_in_progress(cluster_id: str) -> bool:
+    with _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD:
+        lock = _DASHBOARD_HEALTH_REFRESH_LOCKS.get(cluster_id)
+    return bool(lock and lock.locked())
+
+
+def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> bool:
     with _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD:
         lock = _DASHBOARD_HEALTH_REFRESH_LOCKS.setdefault(selected_cluster.id, threading.Lock())
     if not lock.acquire(blocking=False):
-        return
+        return True
 
     async def refresh() -> None:
         try:
@@ -206,6 +242,7 @@ def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> None:
             lock.release()
 
     asyncio.create_task(refresh())
+    return True
 
 @router.get("/alerts", response_class=HTMLResponse)
 async def alert_center_page(request: Request, user: str = Depends(require_login)):
@@ -975,15 +1012,16 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
             if isinstance(payload, dict):
                 response = dict(payload)
                 response["cached"] = True
-                response["stale"] = age_seconds > _DASHBOARD_HEALTH_REFRESH_SECONDS
+                response["refreshing"] = _dashboard_health_refresh_in_progress(selected_cluster.id)
+                response["stale"] = age_seconds > _DASHBOARD_HEALTH_STALE_SECONDS
                 response["cache_age_seconds"] = round(age_seconds, 1)
-                if response["stale"]:
-                    _schedule_dashboard_health_refresh(selected_cluster)
+                if age_seconds > _DASHBOARD_HEALTH_REFRESH_SECONDS:
+                    response["refreshing"] = _schedule_dashboard_health_refresh(selected_cluster)
                 return response
 
         payload = await _load_dashboard_health_live(selected_cluster)
         store_persisted_cache(_DASHBOARD_HEALTH_CACHE_NAMESPACE, selected_cluster.id, payload)
-        return {**payload, "cached": False, "stale": False, "cache_age_seconds": 0}
+        return {**payload, "cached": False, "stale": False, "refreshing": False, "cache_age_seconds": 0}
     except CephQueryError as exc:
         cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
         logger.warning("dashboard_health(%s): live Ceph query failed: %s", cluster_name, exc)

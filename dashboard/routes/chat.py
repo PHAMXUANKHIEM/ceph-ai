@@ -3,14 +3,15 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import or_
+from sqlalchemy import or_, text as sql_text
 
 from config.settings import settings
 from dashboard.chat_client import (
+    is_ceph_scoped,
     ChatTurnError,
     MAX_HISTORY_MESSAGES,
     MISSING_AI_CONFIG_MESSAGE,
@@ -32,6 +33,7 @@ from shared.ai_limits import normalize_rate_limits
 from shared.claude_cli import ClaudeCLIError, claude_status
 from shared.codex_app_server import CodexAppServerError, codex_app_server
 from shared.cluster_nodes import configured_nodes
+from shared.ai_delegation import enqueue_task
 from shared.models import (
     Action,
     ActionClassification,
@@ -41,6 +43,8 @@ from shared.models import (
     Incident,
     IncidentStatus,
     Cluster,
+    DelegatedAITask,
+    DelegatedAISubtask,
 )
 from worker.executor import commands as executor_commands
 from worker.executor.ssh_executor import ExecutorError
@@ -49,6 +53,8 @@ from worker.policy import gate
 from worker.policy.gate import VALID_BLUESTORE_ACTION_IDS, VALID_MANAGEMENT_ACTION_IDS
 
 logger = logging.getLogger(__name__)
+
+_DELEGATED_ACTIVE_STATUSES = ("QUEUED", "PLANNING", "RUNNING", "AGGREGATING")
 
 router = APIRouter()
 
@@ -117,6 +123,64 @@ def _validated_female_address(value) -> str:
     if any(ch in address for ch in "\r\n\x00"):
         raise HTTPException(status_code=400, detail="Cách xưng hô nữ chỉ được nằm trên một dòng")
     return address
+
+
+def _lock_delegated_admission(session) -> None:
+    """Serialize admission checks with task creation for every supported DB."""
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        # SQLite has no row/advisory lock. BEGIN IMMEDIATE takes the database
+        # write lock before the count, so another process cannot pass the
+        # check and insert a task concurrently.
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    elif dialect == "postgresql":
+        session.execute(
+            sql_text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": "ceph-ai:delegated-admission"},
+        )
+    else:
+        raise RuntimeError(f"Unsupported database for delegated admission lock: {dialect}")
+
+
+def _check_delegated_admission(session, actor: str) -> None:
+    """Bound delegated backlog atomically with the task insert transaction."""
+    _lock_delegated_admission(session)
+    now = datetime.utcnow()
+    global_active = (
+        session.query(DelegatedAITask)
+        .filter(DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES))
+        .count()
+    )
+    if global_active >= settings.delegated_ai_max_active_tasks:
+        raise HTTPException(
+            status_code=429,
+            detail="Đang có quá nhiều delegated task hoạt động; vui lòng thử lại sau.",
+        )
+    actor_active = (
+        session.query(DelegatedAITask)
+        .filter(
+            DelegatedAITask.actor == actor,
+            DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES),
+        )
+        .count()
+    )
+    if actor_active >= settings.delegated_ai_max_active_tasks_per_actor:
+        raise HTTPException(
+            status_code=429,
+            detail="Bạn đã có delegated task đang chạy; chờ task hiện tại hoàn tất.",
+        )
+    latest = (
+        session.query(DelegatedAITask)
+        .filter(DelegatedAITask.actor == actor)
+        .order_by(DelegatedAITask.created_at.desc())
+        .first()
+    )
+    cooldown = settings.delegated_ai_submit_cooldown_seconds
+    if latest is not None and cooldown > 0 and latest.created_at > now - timedelta(seconds=cooldown):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Vui lòng chờ {cooldown} giây giữa hai delegated task.",
+        )
 
 
 @router.get("/api/chat/preferences")
@@ -494,7 +558,13 @@ async def post_chat_message(
     if not text:
         raise HTTPException(status_code=400, detail="Nội dung tin nhắn không được để trống")
     mode = (body.get("mode") or "single").strip().lower()
-    if mode != "single":
+    if mode == "delegate":
+        if len(text) > settings.delegated_ai_max_prompt_chars:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Delegated prompt tối đa {settings.delegated_ai_max_prompt_chars} ký tự.",
+            )
+    if mode not in {"single", "delegate"}:
         raise HTTPException(
             status_code=400,
             detail="Chế độ Hai AI chỉ khả dụng qua Telegram Chatbox.",
@@ -531,6 +601,8 @@ async def post_chat_message(
             {"role": m.role, "content": m.content}
             for m in reversed(recent_messages)
         ]
+        if mode == "delegate" and not is_ceph_scoped(text, history):
+            raise HTTPException(status_code=400, detail="Delegated task chỉ nhận yêu cầu liên quan đến Ceph")
         previous = recent_messages[0] if recent_messages else None
         pending_node_command_id = (
             previous.id
@@ -540,11 +612,76 @@ async def post_chat_message(
             and previous.proposed_status == "PENDING"
             else None
         )
+        if mode == "delegate":
+            # The lock and both ChatMessage/DelegatedAITask inserts must live
+            # in one transaction. Checking counts in an earlier session lets
+            # concurrent HTTP requests bypass the global/actor limits.
+            _check_delegated_admission(session, user)
         user_message = ChatMessage(session_id=session_id, cluster_id=cluster.id, role="user", content=text, actor=user)
         session.add(user_message)
-        session.commit()
-        session.refresh(user_message)
+        session.flush()
         user_message_dict = _message_to_dict(user_message)
+        if mode == "delegate":
+            ai_name = auth.chat_ai_name(user)
+            female_address = auth.chat_female_address(user)
+            assistant_message = ChatMessage(
+                session_id=session_id,
+                cluster_id=cluster.id,
+                role="assistant",
+                content=with_romantic_address(
+                    "Đã nhận việc. Supervisor đang tách thành các sub-agent Ceph độc lập; kết quả sẽ tự trả về trong phiên này.",
+                    ai_name,
+                    female_address,
+                ),
+                actor=user,
+            )
+            session.add(assistant_message)
+            session.flush()
+            delegated_task = DelegatedAITask(
+                actor=user,
+                cluster_id=cluster.id,
+                session_id=session_id,
+                assistant_message_id=assistant_message.id,
+                prompt=text,
+                status="QUEUED",
+            )
+            session.add(delegated_task)
+            session.commit()
+            session.refresh(assistant_message)
+            session.refresh(delegated_task)
+            assistant_message_dict = _message_to_dict(assistant_message)
+            task_id = delegated_task.id
+        else:
+            session.commit()
+            session.refresh(user_message)
+
+    if mode == "delegate":
+        try:
+            await enqueue_task(task_id)
+        except Exception as exc:
+            logger.exception("could not enqueue delegated task %s", task_id)
+            with db.SessionLocal() as session:
+                task = session.get(DelegatedAITask, task_id)
+                message = session.get(ChatMessage, assistant_message_dict["id"])
+                if task is not None:
+                    task.status = "FAILED"
+                    task.error = "Không đưa được task vào hàng đợi xử lý"
+                    task.finished_at = datetime.utcnow()
+                if message is not None:
+                    message.content = with_romantic_address(
+                        "Không đưa được delegated task vào Worker; kiểm tra RabbitMQ/Worker.",
+                        ai_name,
+                        female_address,
+                    )
+                session.commit()
+            raise HTTPException(status_code=503, detail="Worker chưa sẵn sàng nhận delegated task") from exc
+        return {
+            "mode": "delegate",
+            "processing": True,
+            "task_id": task_id,
+            "user_message": user_message_dict,
+            "assistant_message": assistant_message_dict,
+        }
 
     if mode == "dual" and pending_node_command_id is None:
         # Return immediately. The background task persists each AI turn as it
@@ -687,6 +824,126 @@ async def post_chat_message(
         assistant_message_dict = _message_to_dict(assistant_message)
 
     return {"user_message": user_message_dict, "assistant_message": assistant_message_dict}
+
+
+def _delegated_task_payload(session, task: DelegatedAITask) -> dict:
+    subtasks = (
+        session.query(DelegatedAISubtask)
+        .filter_by(task_id=task.id)
+        .order_by(DelegatedAISubtask.role)
+        .all()
+    )
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "result": task.result_text,
+        "error": task.error,
+        "subtasks": [
+            {"id": item.id, "role": item.role, "status": item.status, "error": item.error}
+            for item in subtasks
+        ],
+    }
+
+
+@router.get("/api/chat/delegated-tasks")
+async def list_delegated_tasks(
+    request: Request,
+    session_id: str = "",
+    user: str = Depends(require_login),
+):
+    """Restore active delegated progress after a browser reload."""
+    session_id = session_id.strip()
+    if not session_id:
+        return {"tasks": []}
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        tasks = (
+            session.query(DelegatedAITask)
+            .filter(
+                DelegatedAITask.actor == user,
+                DelegatedAITask.cluster_id == cluster.id,
+                DelegatedAITask.session_id == session_id,
+                DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES),
+            )
+            .order_by(DelegatedAITask.created_at.asc())
+            .limit(20)
+            .all()
+        )
+        return {"tasks": [{"task_id": task.id, "status": task.status} for task in tasks]}
+
+
+@router.get("/api/chat/delegated-tasks/{task_id}")
+async def get_delegated_task(task_id: str, request: Request, user: str = Depends(require_login)):
+    """Return progress only to the task owner and selected cluster."""
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        task = session.query(DelegatedAITask).filter_by(
+            id=task_id, actor=user, cluster_id=cluster.id
+        ).first()
+        if task is None:
+            raise HTTPException(status_code=404, detail="Delegated task không tồn tại")
+        return _delegated_task_payload(session, task)
+
+
+@router.post("/api/chat/delegated-tasks/{task_id}/cancel")
+async def cancel_delegated_task(task_id: str, request: Request, user: str = Depends(require_login)):
+    """Cancel an owned delegated task and prevent its Worker from progressing."""
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        task = session.query(DelegatedAITask).filter_by(
+            id=task_id, actor=user, cluster_id=cluster.id
+        ).first()
+        if task is None:
+            raise HTTPException(status_code=404, detail="Delegated task không tồn tại")
+        if task.status == "CANCELLED":
+            return _delegated_task_payload(session, task)
+        if task.status not in _DELEGATED_ACTIVE_STATUSES:
+            raise HTTPException(status_code=409, detail=f"Task đã ở trạng thái {task.status}")
+
+        result = session.execute(
+            DelegatedAITask.__table__.update()
+            .where(
+                DelegatedAITask.id == task_id,
+                DelegatedAITask.actor == user,
+                DelegatedAITask.cluster_id == cluster.id,
+                DelegatedAITask.status.in_(_DELEGATED_ACTIVE_STATUSES),
+            )
+            .values(
+                status="CANCELLED",
+                error="Đã hủy bởi operator",
+                lease_until=None,
+                finished_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        if result.rowcount != 1:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="Task vừa chuyển sang trạng thái khác")
+        session.refresh(task)
+        session.execute(
+            DelegatedAISubtask.__table__.update()
+            .where(
+                DelegatedAISubtask.task_id == task_id,
+                DelegatedAISubtask.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+            )
+            .values(
+                status="CANCELLED",
+                error="Sub-agent bị hủy theo delegated task",
+                lease_until=None,
+                finished_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        message = session.get(ChatMessage, task.assistant_message_id)
+        if message is not None:
+            message.content = with_romantic_address(
+                "Đã hủy delegated task theo yêu cầu operator.",
+                auth.chat_ai_name(user),
+                auth.chat_female_address(user),
+            )
+        session.commit()
+        session.refresh(task)
+        return _delegated_task_payload(session, task)
 
 
 @router.get("/api/chat/dual/status")

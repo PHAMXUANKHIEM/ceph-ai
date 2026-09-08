@@ -114,3 +114,20 @@ def test_dashboard_health_api_never_returns_sample_counts_on_query_failure(dashb
 
     assert response.status_code == 502
     assert response.json()["detail"] == "all MON nodes failed"
+
+
+def test_dashboard_health_prefers_last_successful_mon():
+    cluster_id = "dashboard-mon-preference-test"
+    with incidents._DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
+        previous = incidents._DASHBOARD_HEALTH_MON_PREFERENCES.pop(cluster_id, None)
+    try:
+        incidents._remember_dashboard_mon(cluster_id, "10.0.0.2")
+        assert incidents._ordered_dashboard_mon_nodes(
+            cluster_id, ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+        ) == ["10.0.0.2", "10.0.0.1", "10.0.0.3"]
+    finally:
+        with incidents._DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
+            if previous is None:
+                incidents._DASHBOARD_HEALTH_MON_PREFERENCES.pop(cluster_id, None)
+            else:
+                incidents._DASHBOARD_HEALTH_MON_PREFERENCES[cluster_id] = previous

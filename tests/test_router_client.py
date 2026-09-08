@@ -114,6 +114,55 @@ def test_pool_too_many_pgs_extracts_only_decreasing_ceph_targets():
     ]
 
 
+def test_incident_user_content_has_a_hard_context_ceiling(monkeypatch):
+    monkeypatch.setattr(settings, "ai_incident_max_context_chars", 4000)
+    payload = {
+        **ENVELOPE,
+        "log_excerpt": "x" * 100000,
+        "incident_group": {
+            "root_incident_id": "root-1",
+            "related_incidents": [
+                {"incident_id": "related-1", "diagnosis_text": "y" * 10000, "log_excerpt": "z" * 10000}
+            ],
+        },
+    }
+    content = router_client._build_user_content(payload)
+    assert len(content) <= 4000
+    assert "Ceph error code: MON_CLOCK_SKEW" in content
+    assert "Relevant daemon log excerpt:" in content
+    assert "evidence bị cắt theo giới hạn context" in content
+
+
+def test_incident_context_keeps_failed_attempt_safety_block_before_large_log(monkeypatch):
+    monkeypatch.setattr(settings, "ai_incident_max_context_chars", 4000)
+    payload = {
+        **ENVELOPE,
+        "log_excerpt": "x" * 100000,
+        "previous_attempts": [
+            {
+                "action_id": "restart_osd_daemon",
+                "command": "systemctl restart ceph-osd@2.service",
+                "executed_at": "2026-09-07T10:00:00Z",
+            }
+        ],
+    }
+    content = router_client._build_user_content(payload)
+    assert "systemctl restart ceph-osd@2.service" in content
+    assert "Đừng đề xuất lại đúng những lệnh trên" in content
+
+
+def test_incident_context_enforces_conservative_token_estimate(monkeypatch):
+    monkeypatch.setattr(settings, "ai_incident_max_context_chars", 50000)
+    monkeypatch.setattr(settings, "ai_incident_max_context_tokens", 1000)
+    payload = {
+        **ENVELOPE,
+        "log_excerpt": "Ổ đĩa JSON: {} []\n" * 10000,
+    }
+    content = router_client._build_user_content(payload)
+    assert router_client._estimated_incident_context_tokens(content) <= 1000
+    assert "Ceph error code: MON_CLOCK_SKEW" in content
+
+
 def test_large_omap_diagnosis_is_read_only_and_rgw_specific():
     envelope = {
         "cluster_snapshot": {"checks": {"LARGE_OMAP_OBJECTS": {"detail": [

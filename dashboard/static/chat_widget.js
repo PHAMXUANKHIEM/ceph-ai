@@ -49,10 +49,14 @@
   // clickable Settings link instead of just the raw text.
   var MISSING_AI_CONFIG_MESSAGE = "⚙️ Chưa kết nối AI. Vào Settings để kết nối API, Codex hoặc Claude.";
   var NETWORK_ERROR_MESSAGE = "Không thể kết nối server. Thử lại sau.";
+  var DELEGATED_POLL_BASE_MS = 2500;
+  var DELEGATED_POLL_MAX_MS = 30000;
+  var DELEGATED_TASK_MAX_MS = 30 * 60 * 1000;
   var LIMIT_WARNING_THRESHOLDS = [5, 10, 15];
   var dualProcessing = false;
   var activeDualSessionId = null;
   var dualStopRequestedSessionId = null;
+  var activeDelegatedTasks = {};
 
   // Always renders in Asia/Ho_Chi_Minh regardless of the viewing browser's
   // own OS timezone — deliberately NOT getHours()/getMinutes() etc. (those
@@ -278,6 +282,7 @@
       container.classList.add(dualSpeaker === "Implementer" ? "chat-msg-dual-right" : "chat-msg-dual-left");
     }
     container.dataset.messageId = message.id;
+    container.dataset.content = message.content || "";
 
     var meta = document.createElement("div");
     meta.className = "chat-msg-meta";
@@ -397,6 +402,200 @@
     appendMessage(message);
   }
 
+  function delegatedTaskElementId(taskId) {
+    return "chat-delegated-task-" + String(taskId).replace(/[^A-Za-z0-9_-]/g, "_");
+  }
+
+  function delegatedStatusLabel(status) {
+    return {
+      QUEUED: "đang chờ Worker",
+      PLANNING: "đang lập kế hoạch",
+      RUNNING: "đang chạy sub-agent",
+      AGGREGATING: "đang tổng hợp",
+      COMPLETED: "hoàn tất",
+      FAILED: "thất bại",
+      CANCELLED: "đã hủy",
+    }[status] || status || "đang xử lý";
+  }
+
+  function renderDelegatedProgress(taskId, data) {
+    var progress = document.getElementById(delegatedTaskElementId(taskId));
+    if (!progress) return;
+    while (progress.firstChild) progress.removeChild(progress.firstChild);
+
+    var title = document.createElement("strong");
+    title.textContent = "Giao việc · " + delegatedStatusLabel(data.status);
+    progress.appendChild(title);
+
+    var subtasks = data.subtasks || [];
+    if (!subtasks.length) {
+      var waiting = document.createElement("span");
+      waiting.textContent = data.status === "CANCELLED"
+        ? "Task đã được hủy."
+        : data.status === "FAILED"
+          ? (data.error || "Task thất bại.")
+          : "Đang chờ Worker tạo các sub-agent...";
+      progress.appendChild(waiting);
+    } else {
+      var completed = subtasks.filter(function (item) {
+        return item.status === "COMPLETED" || item.status === "FAILED" || item.status === "CANCELLED";
+      }).length;
+      var summary = document.createElement("span");
+      summary.textContent = " " + completed + "/" + subtasks.length + " sub-agent đã kết thúc";
+      progress.appendChild(summary);
+
+      var list = document.createElement("ul");
+      subtasks.forEach(function (item) {
+        var row = document.createElement("li");
+        row.textContent = item.role + ": " + delegatedStatusLabel(item.status);
+        if (item.error) row.textContent += " — " + item.error;
+        list.appendChild(row);
+      });
+      progress.appendChild(list);
+    }
+
+    if (["QUEUED", "PLANNING", "RUNNING", "AGGREGATING"].indexOf(data.status) !== -1) {
+      var cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "chat-delegated-cancel";
+      cancelBtn.textContent = "Hủy task";
+      cancelBtn.addEventListener("click", function () {
+        cancelDelegatedTask(taskId, cancelBtn);
+      });
+      progress.appendChild(cancelBtn);
+    }
+  }
+
+  function pollDelegatedTask(taskId) {
+    var job = activeDelegatedTasks[taskId];
+    if (!job || job.inFlight || Date.now() < job.nextPollAt) return;
+    if (Date.now() - job.startedAt > DELEGATED_TASK_MAX_MS) {
+      renderDelegatedProgress(taskId, {
+        status: "FAILED",
+        error: "Không nhận được tiến độ task sau 30 phút; kiểm tra Worker/RabbitMQ.",
+        subtasks: [],
+      });
+      delete activeDelegatedTasks[taskId];
+      return;
+    }
+    job.inFlight = true;
+    fetch(apiPrefix + "/delegated-tasks/" + encodeURIComponent(taskId), { credentials: "same-origin" })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        if (!response.ok) {
+          var error = new Error("HTTP " + response.status);
+          error.status = response.status;
+          throw error;
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        job.failures = 0;
+        job.nextPollAt = 0;
+        renderDelegatedProgress(taskId, data);
+        if (["COMPLETED", "FAILED", "CANCELLED"].indexOf(data.status) !== -1) {
+          delete activeDelegatedTasks[taskId];
+        }
+      })
+      .catch(function (err) {
+        if (err.message === "unauthenticated") return;
+        if (err.status === 404) {
+          renderDelegatedProgress(taskId, {
+            status: "FAILED",
+            error: "Task không còn tồn tại hoặc không thuộc cluster hiện tại.",
+            subtasks: [],
+          });
+          delete activeDelegatedTasks[taskId];
+          return;
+        }
+        job.failures += 1;
+        if (job.failures >= 4) {
+          renderDelegatedProgress(taskId, {
+            status: "FAILED",
+            error: "Không lấy được tiến độ task sau nhiều lần thử; kết quả cuối vẫn sẽ được đồng bộ qua tin nhắn.",
+            subtasks: [],
+          });
+          delete activeDelegatedTasks[taskId];
+          return;
+        }
+        job.nextPollAt = Date.now() + Math.min(
+          DELEGATED_POLL_MAX_MS,
+          DELEGATED_POLL_BASE_MS * Math.pow(2, job.failures)
+        );
+      })
+      .finally(function () {
+        if (activeDelegatedTasks[taskId]) activeDelegatedTasks[taskId].inFlight = false;
+      });
+  }
+
+  function cancelDelegatedTask(taskId, button) {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Đang hủy…";
+    }
+    fetch(apiPrefix + "/delegated-tasks/" + encodeURIComponent(taskId) + "/cancel", {
+      method: "POST",
+      credentials: "same-origin",
+    })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.detail || "HTTP " + response.status);
+          return data;
+        });
+      })
+      .then(function (data) {
+        renderDelegatedProgress(taskId, data);
+        delete activeDelegatedTasks[taskId];
+      })
+      .catch(function (err) {
+        if (err.message === "unauthenticated") return;
+        if (button) {
+          button.disabled = false;
+          button.textContent = "Hủy task";
+        }
+        showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
+      });
+  }
+
+  function startDelegatedTask(taskId) {
+    if (!taskId) return;
+    var safeId = delegatedTaskElementId(taskId);
+    if (!document.getElementById(safeId)) {
+      var progress = document.createElement("div");
+      progress.id = safeId;
+      progress.className = "chat-delegated-progress";
+      progress.setAttribute("aria-live", "polite");
+      messagesEl.appendChild(progress);
+      scrollToBottom();
+    }
+    activeDelegatedTasks[taskId] = activeDelegatedTasks[taskId] || {
+      inFlight: false,
+      failures: 0,
+      startedAt: Date.now(),
+      nextPollAt: 0,
+    };
+    pollDelegatedTask(taskId);
+  }
+
+  function resumeDelegatedTasks() {
+    if (!currentSessionId) return;
+    fetch(apiPrefix + "/delegated-tasks?session_id=" + encodeURIComponent(currentSessionId), {
+      credentials: "same-origin",
+    })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        (data.tasks || []).forEach(function (task) { startDelegatedTask(task.task_id); });
+      })
+      .catch(function (err) {
+        if (err.message !== "unauthenticated") return;
+      });
+  }
+
   function setDualProcessing(running, sessionId) {
     if (running && dualStopRequestedSessionId === sessionId) return;
     dualProcessing = running;
@@ -475,12 +674,14 @@
         var messages = data.messages || [];
         if (!messages.length) {
           setDualProcessing(false);
+          resumeDelegatedTasks();
           return;
         }
         clearEmptyState();
         messages.forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
         scrollToBottom();
         setDualProcessing(false);
+        resumeDelegatedTasks();
       })
       .catch(function (err) {
         if (err.message === "unauthenticated") return;
@@ -519,12 +720,19 @@
         var addedAny = false;
         var messages = data.messages || [];
         messages.forEach(function (message) {
-          if (!messagesEl.querySelector('[data-message-id="' + message.id + '"]')) {
+          var existing = messagesEl.querySelector('[data-message-id="' + message.id + '"]');
+          if (!existing) {
             appendMessage(message);
+            addedAny = true;
+          } else if (existing.dataset.content !== (message.content || "")) {
+            existing.replaceWith(buildMessage(message));
             addedAny = true;
           }
         });
         if (addedAny) removeTypingIndicator();
+        Object.keys(activeDelegatedTasks).forEach(function (taskId) {
+          pollDelegatedTask(taskId);
+        });
         if (messages.some(function (message) {
           return message.role === "assistant" && /^\[Dual AI: Hệ thống/.test(message.content || "") &&
             ((message.content || "").indexOf("Đã dừng") !== -1 || (message.content || "").indexOf("Không thể") !== -1 || (message.content || "").indexOf("gặp lỗi") !== -1);
@@ -559,6 +767,7 @@
       })
       .then(function (data) {
         currentSessionId = data.session_id;
+        activeDelegatedTasks = {};
         resetToEmptyState();
         if (panelEl.classList.contains("is-minimized")) setMinimized(false);
         inputEl.focus();
@@ -851,10 +1060,11 @@
   function updateChatMode() {
     if (!modeSelectEl) return;
     var dual = modeSelectEl.value === "dual";
+    var delegated = modeSelectEl.value === "delegate";
     if (modeHintEl) modeHintEl.textContent = dual
       ? "Hỏi / Planner bên trái · Trả lời / Implementer bên phải · chỉ hiển thị ý chính."
-      : "Dùng AI đang cấu hình trong hệ thống.";
-    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : "Nhập câu hỏi về cụm Ceph...";
+      : (delegated ? "Supervisor tách việc cho các agent Ceph độc lập rồi tự tổng hợp kết quả." : "Dùng AI đang cấu hình trong hệ thống.");
+    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc điều tra cụm Ceph..." : "Nhập câu hỏi về cụm Ceph...");
   }
   if (modeSelectEl) {
     modeSelectEl.addEventListener("change", updateChatMode);
@@ -907,7 +1117,7 @@
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: text, session_id: currentSessionId }),
+      body: JSON.stringify({ content: text, session_id: currentSessionId, mode: modeSelectEl ? modeSelectEl.value : "single" }),
     })
       .then(handleAuthRedirect)
       .then(function (response) {
@@ -933,6 +1143,7 @@
         } else if (data.assistant_message) {
           appendMessage(data.assistant_message);
         }
+        if (data.mode === "delegate" && data.processing) startDelegatedTask(data.task_id);
         checkAiLimitWarnings();
       })
       .catch(function (err) {

@@ -238,6 +238,17 @@ async def run_claude_prompt(prompt: str, *, timeout: float = 120, model: str | N
         process.kill()
         await process.wait()
         raise ClaudeCLIError("Claude phản hồi quá thời gian cho phép") from exc
+    except asyncio.CancelledError:
+        # asyncio.wait_for() cancellation does not terminate the external CLI.
+        # Kill it before the worker releases this delegated slot, otherwise a
+        # timed-out sub-agent can keep consuming provider resources in the
+        # background.
+        process.kill()
+        try:
+            await asyncio.shield(process.wait())
+        except ProcessLookupError:
+            pass
+        raise
     if process.returncode:
         detail = _ANSI_RE.sub("", (stderr or stdout).decode(errors="replace")).strip()
         raise ClaudeCLIError(detail[-3000:] or f"Claude CLI exit {process.returncode}")

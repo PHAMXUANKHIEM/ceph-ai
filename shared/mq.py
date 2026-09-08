@@ -1,3 +1,5 @@
+import json
+
 import aio_pika
 from aio_pika.abc import AbstractChannel, AbstractConnection
 
@@ -6,6 +8,9 @@ from config.settings import settings
 QUEUE_NAME = "incidents"
 DLX_NAME = "incidents.dlx"
 DLQ_NAME = "incidents.dlq"
+DELEGATED_QUEUE_NAME = "ai.delegated.tasks"
+DELEGATED_DLX_NAME = "ai.delegated.tasks.dlx"
+DELEGATED_DLQ_NAME = "ai.delegated.tasks.dlq"
 
 
 CONNECT_TIMEOUT_SECONDS = 10
@@ -42,3 +47,40 @@ async def declare_topology(channel: AbstractChannel):
     )
 
     return queue, dlx, dlq
+
+
+async def declare_delegated_topology(channel: AbstractChannel):
+    """Declare the durable supervisor queue and its dead-letter queue."""
+    dlx = await channel.declare_exchange(
+        DELEGATED_DLX_NAME, aio_pika.ExchangeType.DIRECT, durable=True
+    )
+    dlq = await channel.declare_queue(DELEGATED_DLQ_NAME, durable=True)
+    await dlq.bind(dlx, routing_key=DELEGATED_QUEUE_NAME)
+    queue = await channel.declare_queue(
+        DELEGATED_QUEUE_NAME,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": DELEGATED_DLX_NAME,
+            "x-dead-letter-routing-key": DELEGATED_QUEUE_NAME,
+        },
+    )
+    return queue
+
+
+async def publish_delegated_task(task_id: str) -> None:
+    """Publish one parent task after its DB rows are committed."""
+    connection = await get_connection()
+    try:
+        async with connection:
+            channel = await connection.channel()
+            queue = await declare_delegated_topology(channel)
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps({"task_id": task_id}).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key=queue.name,
+            )
+    finally:
+        if not connection.is_closed:
+            await connection.close()

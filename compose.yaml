@@ -38,6 +38,7 @@ services:
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
@@ -69,6 +70,7 @@ services:
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
       - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
@@ -103,6 +105,7 @@ services:
       - /root/.local:/root/.local:ro
       - /root/.codex/packages:/root/.codex/packages:ro
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
       - /etc/ceph-ai-secrets/single-full-executor.token:/run/secrets/single-full-executor.token:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
@@ -130,6 +133,7 @@ services:
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai
@@ -155,6 +159,7 @@ services:
       - ./.codex-account:/app/.codex-account:rw
       - ./.claude-account:/app/.claude-account:rw
       - ${SSH_KEY_PATH:?Set SSH_KEY_PATH in .env}:${SSH_KEY_PATH}:ro
+      - ${SSH_KEY_PATH}.pub:${SSH_KEY_PATH}.pub:ro
     environment:
       CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
       CEPH_AI_RUNTIME_DIR: /run/ceph-ai

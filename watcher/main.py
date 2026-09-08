@@ -791,12 +791,18 @@ def run(
     """
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
-    last_device_health_scan_at: Optional[datetime] = None
-    last_node_health_scan_at: Optional[datetime] = None
-    last_node_reachability_scan_at: Optional[datetime] = None
-    last_bluestore_omap_scan_at: Optional[datetime] = None
-    last_osd_latency_scan_at: Optional[datetime] = None
-    last_crush_scan_at: Optional[datetime] = None
+    # Avoid a restart stampede: health remains immediate, while expensive
+    # auxiliary scans wait for their normal cadence in the production loop.
+    # Finite test runs retain the historical first-iteration behavior.
+    initial_auxiliary_scan_at = datetime.utcnow() if max_iterations is None else None
+    last_device_health_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_node_health_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_node_reachability_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_bluestore_omap_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_osd_latency_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_crush_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_volume_scan_at: Optional[datetime] = initial_auxiliary_scan_at
+    last_volume_topology_scan_at: Optional[datetime] = initial_auxiliary_scan_at
     last_capacity_forecast_scan_at: Optional[datetime] = None
     last_database_size_scan_at: Optional[datetime] = None
     last_trash_capacity_scan_at: Optional[datetime] = None
@@ -905,8 +911,8 @@ def run(
         # the cluster genuinely has no RBD pools yet or is unreachable.
         # persist_last_poll_metrics writes every sample check_volumes just
         # saw to shared.models.VolumeMetric (see that function's own
-        # docstring) — deliberately called every poll regardless of
-        # whether anything looked saturated this cycle.
+        # docstring). It is deliberately on a slower, independent cadence:
+        # every pool query in cephadm mode creates a temporary Podman shell.
         def scan_volumes() -> None:
             try:
                 current_saturated = volume_monitor.check_volumes(cluster_id=cluster_id)
@@ -916,17 +922,25 @@ def run(
                 )
             except Exception:
                 logger.exception("run: volume saturation check failed")
-        _run_auxiliary_scan(
-            f"volume-{cluster_id or 'default'}", scan_volumes,
-            background=max_iterations is None,
-        )
+        volume_now = datetime.utcnow()
+        if (
+            last_volume_scan_at is None
+            or (volume_now - last_volume_scan_at).total_seconds()
+            >= settings.volume_scan_interval_seconds
+        ):
+            _run_auxiliary_scan(
+                f"volume-{cluster_id or 'default'}", scan_volumes,
+                background=max_iterations is None,
+            )
+            last_volume_scan_at = volume_now
 
         # Aggregate Trash needs one query per RBD pool plus `ceph df`, so
         # cap it at once per minute even when the main poll is faster.
         trash_now = datetime.utcnow()
         if (
             last_trash_capacity_scan_at is None
-            or (trash_now - last_trash_capacity_scan_at).total_seconds() >= 60
+            or (trash_now - last_trash_capacity_scan_at).total_seconds()
+            >= getattr(settings, "trash_capacity_scan_interval_seconds", 300)
         ):
             def scan_trash() -> None:
                 try:
@@ -1098,13 +1112,23 @@ def run(
 
             # Cross-layer RCA needs the current RBD header-object acting set.
             # It is deliberately a background read-only scan: one rbd info +
-            # one ceph osd map per active image must never delay health polls.
-            if max_iterations is None:
+            # one ceph osd map per sampled object must never delay health
+            # polls. Keep it on a much slower cadence because each call
+            # starts a fresh cephadm shell on the MON.
+            if (
+                max_iterations is None
+                and (
+                    last_volume_topology_scan_at is None
+                    or (now - last_volume_topology_scan_at).total_seconds()
+                    >= settings.volume_topology_scan_interval_seconds
+                )
+            ):
                 _run_auxiliary_scan(
                     f"volume-topology-{cluster_id or 'default'}",
                     lambda: volume_topology.collect_and_store(cluster_id, None),
                     background=True,
                 )
+                last_volume_topology_scan_at = now
                 _run_auxiliary_scan(
                     f"host-metrics-{cluster_id or 'default'}",
                     lambda: host_metrics.collect_and_store(cluster_id, None),
@@ -1373,6 +1397,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_status: Optional[str] = None
     last_checks: frozenset = frozenset()
     last_crush_scan_at: Optional[datetime] = None
+    last_volume_scan_at: Optional[datetime] = None
+    last_volume_topology_scan_at: Optional[datetime] = None
     last_capacity_forecast_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
@@ -1441,16 +1467,23 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 last_status = current_status
                 last_checks = current_checks
 
-            try:
-                current_saturated = volume_monitor.check_volumes(cluster=cluster)
-                volume_monitor.persist_last_poll_metrics(cluster_id=cluster.id)
-                volume_monitor.create_or_resolve_volume_incidents(
-                    current_saturated, cluster_id=cluster.id, include_legacy_null=False
-                )
-            except Exception:
-                logger.exception(
-                    "run_observed_cluster_loop(%r): volume saturation check failed", cluster.name
-                )
+            volume_now = datetime.utcnow()
+            if (
+                last_volume_scan_at is None
+                or (volume_now - last_volume_scan_at).total_seconds()
+                >= settings.volume_scan_interval_seconds
+            ):
+                try:
+                    current_saturated = volume_monitor.check_volumes(cluster=cluster)
+                    volume_monitor.persist_last_poll_metrics(cluster_id=cluster.id)
+                    volume_monitor.create_or_resolve_volume_incidents(
+                        current_saturated, cluster_id=cluster.id, include_legacy_null=False
+                    )
+                except Exception:
+                    logger.exception(
+                        "run_observed_cluster_loop(%r): volume saturation check failed", cluster.name
+                    )
+                last_volume_scan_at = volume_now
 
             now = datetime.utcnow()
             if (
@@ -1460,11 +1493,17 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 try:
                     crush_structure_monitor.scan_and_store(cluster.id, cluster=cluster)
                     crush_distribution_monitor.sync_distribution(cluster.id, cluster=cluster)
-                    _run_auxiliary_scan(
-                        f"volume-topology-{cluster.id}",
-                        lambda: volume_topology.collect_and_store(cluster.id, cluster),
-                        background=True,
-                    )
+                    if (
+                        last_volume_topology_scan_at is None
+                        or (now - last_volume_topology_scan_at).total_seconds()
+                        >= settings.volume_topology_scan_interval_seconds
+                    ):
+                        _run_auxiliary_scan(
+                            f"volume-topology-{cluster.id}",
+                            lambda: volume_topology.collect_and_store(cluster.id, cluster),
+                            background=True,
+                        )
+                        last_volume_topology_scan_at = now
                     _run_auxiliary_scan(
                         f"host-metrics-{cluster.id}",
                         lambda: host_metrics.collect_and_store(cluster.id, cluster),

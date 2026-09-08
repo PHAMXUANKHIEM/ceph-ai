@@ -17,13 +17,13 @@ from watcher.ceph_client import CephQueryError
 logger = logging.getLogger(__name__)
 
 LOOKBACK_MINUTES = 30
-MAX_VOLUMES_PER_SCAN = 50
-MAX_DATA_OBJECT_SAMPLES = 8
+MAX_VOLUMES_PER_SCAN = 10
+MAX_DATA_OBJECT_SAMPLES = 2
 
 
 def _connection(cluster):
     if cluster is None:
-        nodes = [node.strip() for node in settings.ceph_mon_nodes.split(",") if node.strip()]
+        nodes = ceph_client.get_mon_nodes()
         ssh_user = settings.ssh_user
         ssh_key_path = settings.ssh_key_path
         exec_mode = settings.ceph_exec_mode
@@ -55,7 +55,9 @@ def normalize_osd_map_payload(payload: dict | list) -> dict:
     }
 
 
-def sample_data_object_names(info: dict, image_id: str) -> tuple[list[str], int]:
+def sample_data_object_names(
+    info: dict, image_id: str, *, max_samples: int | None = None
+) -> tuple[list[str], int]:
     """Return bounded, deterministic samples of RBD data objects.
 
     RBD object indexes are hexadecimal and zero-padded to 16 characters.
@@ -74,10 +76,11 @@ def sample_data_object_names(info: dict, image_id: str) -> tuple[list[str], int]
     prefix = info.get("block_name_prefix") or f"rbd_data.{image_id}"
     if not isinstance(prefix, str) or not prefix:
         prefix = f"rbd_data.{image_id}"
+    sample_limit = max(2, int(max_samples or MAX_DATA_OBJECT_SAMPLES))
     indexes = {0, object_count - 1}
-    for step in range(1, MAX_DATA_OBJECT_SAMPLES - 1):
-        indexes.add(round((object_count - 1) * step / (MAX_DATA_OBJECT_SAMPLES - 1)))
-    indexes = sorted(indexes)[:MAX_DATA_OBJECT_SAMPLES]
+    for step in range(1, sample_limit - 1):
+        indexes.add(round((object_count - 1) * step / (sample_limit - 1)))
+    indexes = sorted(indexes)[:sample_limit]
     return [f"{prefix}.{index:016x}" for index in indexes], object_count
 
 
@@ -91,7 +94,14 @@ def map_volume(cluster, pool: str, image: str) -> dict:
     if not isinstance(info, dict) or not info.get("id"):
         raise ValueError("rbd info không trả image id")
     image_id = str(info["id"])
-    object_names, data_object_count = sample_data_object_names(info, image_id)
+    object_names, data_object_count = sample_data_object_names(
+        info,
+        image_id,
+        max_samples=max(
+            2,
+            int(getattr(settings, "volume_topology_max_data_object_samples", MAX_DATA_OBJECT_SAMPLES)),
+        ),
+    )
     mapped_objects = []
     for object_name in object_names:
         _stdout, mapped = ceph_client.run_ceph_json_command_with(
@@ -119,6 +129,113 @@ def map_volume(cluster, pool: str, image: str) -> dict:
     }
 
 
+def map_volumes(cluster, keys: list[tuple[str, str]]) -> list[tuple[str, str, dict]]:
+    """Map several recent volumes using two bounded remote shells."""
+    if not keys:
+        return []
+    connection = _connection(cluster)
+    info_commands = [
+        f"rbd info {shlex.quote(pool)}/{shlex.quote(image)} --format json"
+        for pool, image in keys
+    ]
+    try:
+        _info_host, infos = ceph_client.run_ceph_json_batch_command_with(
+            *connection, info_commands
+        )
+    except CephQueryError as exc:
+        logger.info("volume topology info batch unavailable: %s", exc)
+        return []
+
+    requests = []
+    grouped: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    for key, info in zip(keys, infos):
+        pool, image = key
+        if not isinstance(info, dict) or not info.get("id"):
+            continue
+        image_id = str(info["id"])
+        object_names, data_object_count = sample_data_object_names(
+            info,
+            image_id,
+            max_samples=max(
+                2,
+                int(getattr(settings, "volume_topology_max_data_object_samples", MAX_DATA_OBJECT_SAMPLES)),
+            ),
+        )
+        grouped[key] = [(object_name, data_object_count) for object_name in object_names]
+        requests.extend(
+            (key, object_name)
+            for object_name in object_names
+        )
+    if not requests:
+        return []
+
+    map_commands = [
+        f"ceph osd map {shlex.quote(pool)} {shlex.quote(object_name)} --format json"
+        for (pool, _image), object_name in requests
+    ]
+    try:
+        _map_host, mapped_payloads = ceph_client.run_ceph_json_batch_command_with(
+            *connection, map_commands
+        )
+    except CephQueryError as exc:
+        logger.info("volume topology map batch unavailable: %s", exc)
+        return []
+
+    mapped_by_key: dict[tuple[str, str], list[dict]] = {}
+    request_index = 0
+    for key in grouped:
+        mapped_objects = []
+        for object_name, _data_object_count in grouped[key]:
+            payload = mapped_payloads[request_index]
+            request_index += 1
+            if payload is None:
+                mapped_objects = []
+                break
+            try:
+                mapped_objects.append({
+                    "object_name": object_name,
+                    **normalize_osd_map_payload(payload),
+                })
+            except (TypeError, ValueError, KeyError):
+                mapped_objects = []
+                break
+        if mapped_objects:
+            mapped_by_key[key] = mapped_objects
+
+    results = []
+    for pool, image in keys:
+        mapped_objects = mapped_by_key.get((pool, image))
+        info = infos[keys.index((pool, image))]
+        if not mapped_objects or not isinstance(info, dict):
+            continue
+        try:
+            image_id = str(info["id"])
+            _objects, data_object_count = sample_data_object_names(info, image_id)
+            acting_osds = sorted({
+                osd_id
+                for item in mapped_objects
+                for osd_id in item["acting_osds"]
+            })
+            results.append((
+                pool,
+                image,
+                {
+                    "pool": pool,
+                    "image": image,
+                    "image_id": image_id,
+                    "object_name": mapped_objects[0]["object_name"],
+                    "pgid": mapped_objects[0]["pgid"],
+                    "acting_osds": acting_osds,
+                    "primary_osd": mapped_objects[0]["primary_osd"],
+                    "pgids": [item["pgid"] for item in mapped_objects],
+                    "sampled_objects": [item["object_name"] for item in mapped_objects],
+                    "data_object_count": data_object_count,
+                    "mapping_scope": "data_sample",
+                },
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return results
 def collect_and_store(cluster_id: str, cluster, *, now: datetime | None = None) -> int:
     """Refresh mappings for recently active RBD volumes, best effort."""
     now = now or datetime.utcnow()
@@ -136,16 +253,13 @@ def collect_and_store(cluster_id: str, cluster, *, now: datetime | None = None) 
             if key not in seen:
                 seen.add(key)
                 keys.append(key)
-                if len(keys) >= MAX_VOLUMES_PER_SCAN:
+                if len(keys) >= max(
+                    1, int(getattr(settings, "volume_topology_max_volumes_per_scan", MAX_VOLUMES_PER_SCAN))
+                ):
                     break
 
         stored = 0
-        for pool, image in keys:
-            try:
-                mapping = map_volume(cluster, pool, image)
-            except (CephQueryError, ValueError, KeyError, TypeError) as exc:
-                logger.info("volume topology mapping unavailable for %s/%s: %s", pool, image, exc)
-                continue
+        for pool, image, mapping in map_volumes(cluster, keys):
             row = session.get(VolumeOsdMapping, (cluster_id, pool, image))
             if row is None:
                 row = VolumeOsdMapping(cluster_id=cluster_id, pool=pool, image=image)

@@ -90,6 +90,17 @@ def _run(max_iterations: Optional[int] = None) -> None:
     while max_iterations is None or iterations < max_iterations:
         started = time.monotonic()
         try:
+            # Cluster settings can be changed from the Dashboard while this
+            # long-lived service is running. Refresh the connection tuple on
+            # every cycle so a MON reorder/failover takes effect without
+            # keeping the old node hot for the lifetime of the process.
+            with db.SessionLocal() as session:
+                refreshed_cluster = session.get(Cluster, cluster_id)
+                if refreshed_cluster is not None:
+                    mon_nodes = ceph_client.ordered_mon_nodes(
+                        refreshed_cluster.ceph_mon_nodes.split(",")
+                    )
+                    ssh_user, ssh_key, exec_mode, container = resolve_ssh_creds(refreshed_cluster)
             health = ceph_client.query_cluster_health_with(
                 mon_nodes, container, ssh_user, ssh_key, exec_mode,
                 update_sticky_fallback=True,

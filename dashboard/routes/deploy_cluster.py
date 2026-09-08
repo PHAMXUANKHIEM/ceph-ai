@@ -53,10 +53,65 @@ _METHOD_TO_ACTION_ID = {
 _NOT_YET_SUPPORTED_METHODS: frozenset[str] = frozenset()
 
 _IN_FLIGHT_ACTION_STATUSES = (
+    ActionStatus.PENDING.value,
     ActionStatus.PENDING_APPROVAL.value,
     ActionStatus.APPROVED.value,
     ActionStatus.EXECUTING.value,
+    ActionStatus.GRACE_PENDING.value,
+    ActionStatus.INCONCLUSIVE.value,
 )
+_IN_FLIGHT_DEPLOY_INCIDENT_STATUSES = (
+    IncidentStatus.NEW.value,
+    IncidentStatus.DIAGNOSING.value,
+    IncidentStatus.PENDING_APPROVAL.value,
+    IncidentStatus.APPROVED.value,
+    IncidentStatus.EXECUTING.value,
+    IncidentStatus.GRACE_PENDING.value,
+    IncidentStatus.VERIFYING.value,
+)
+
+_TERMINAL_DEPLOY_ACTION_TO_INCIDENT_STATUS = {
+    ActionStatus.AUTO_EXECUTED.value: IncidentStatus.RESOLVED.value,
+    ActionStatus.EXECUTED.value: IncidentStatus.RESOLVED.value,
+    ActionStatus.FAILED.value: IncidentStatus.FAILED.value,
+    ActionStatus.REJECTED.value: IncidentStatus.REJECTED.value,
+}
+
+
+def _reconcile_stale_deploy_incidents(session) -> None:
+    """Repair an old deploy Incident left active after its Action finished.
+
+    The Incident partial unique index is intentionally the final concurrency
+    guard. A previous/manual state transition could update only Action,
+    leaving the linked Incident active and making the next proposal fail
+    during the Incident INSERT. Reconcile only unambiguous terminal Action
+    states; INCONCLUSIVE and orphaned rows remain blocked for safety.
+    """
+    active_incidents = (
+        session.query(Incident)
+        .filter(Incident.ceph_code == CLUSTER_DEPLOY_CEPH_CODE)
+        .filter(Incident.status.in_(_IN_FLIGHT_DEPLOY_INCIDENT_STATUSES))
+        .all()
+    )
+    for incident in active_incidents:
+        action = (
+            session.query(Action)
+            .filter(Action.incident_id == incident.id)
+            .order_by(Action.created_at.desc(), Action.id.desc())
+            .first()
+        )
+        repaired_status = (
+            _TERMINAL_DEPLOY_ACTION_TO_INCIDENT_STATUS.get(action.status)
+            if action is not None
+            else None
+        )
+        if repaired_status is None:
+            raise HTTPException(
+                status_code=409,
+                detail="An active or unresolved deploy lifecycle already exists; "
+                       "a new proposal cannot be created.",
+            )
+        incident.status = repaired_status
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RPM_PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
@@ -458,6 +513,7 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
         raise HTTPException(status_code=400, detail=f"Không tạo được lệnh xem trước: {exc}")
 
     with db.SessionLocal() as session:
+        _reconcile_stale_deploy_incidents(session)
         existing = (
             session.query(Action)
             .filter(Action.action_id.in_(gate.VALID_CLUSTER_DEPLOY_ACTION_IDS))
@@ -479,7 +535,15 @@ async def propose_deploy(request: Request, user: str = Depends(require_login)):
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()  # assigns incident.id, needed by the Action FK below
+        try:
+            session.flush()  # assigns incident.id, needed by the Action FK below
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="A deploy lifecycle proposal was created concurrently; "
+                       "a new proposal cannot be created.",
+            ) from exc
 
         action = Action(
             incident_id=incident.id,

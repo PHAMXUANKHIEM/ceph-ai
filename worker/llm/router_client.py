@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 
 OPERATIONAL_TELEMETRY_ATTEMPTS = 5
 OPERATIONAL_TELEMETRY_RETRY_SECONDS = 3.0
+INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
 
 
 def _read_operational_status(connection):
@@ -514,6 +515,24 @@ def _verified_cases_block(payload: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _bound_incident_context(text: str) -> str:
+    """Keep incident input bounded without dropping the structured header."""
+    char_limit = max(4000, int(getattr(settings, "ai_incident_max_context_chars", 12000)))
+    token_limit = max(1000, int(getattr(settings, "ai_incident_max_context_tokens", 6000)))
+    # Two characters per estimated token is intentionally more conservative
+    # than the cost dashboard's 4-char estimate: CJK, JSON and code-like logs
+    # can tokenize much more densely than ordinary English prose.
+    limit = min(char_limit, token_limit * INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN)
+    if len(text) <= limit:
+        return text
+    marker = "\n...[evidence bị cắt theo giới hạn context]"
+    return text[: max(0, limit - len(marker))] + marker
+
+
+def _estimated_incident_context_tokens(text: str) -> int:
+    return (len(text) + INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN - 1) // INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN
+
+
 def _build_user_content(payload: dict) -> str:
     nodes = payload.get("nodes") or []
     group = payload.get("incident_group") or {}
@@ -542,17 +561,27 @@ def _build_user_content(payload: dict) -> str:
         if group_lines
         else ""
     )
-    return (
-        f"{_previous_attempts_block(payload)}"
-        f"{_verified_cases_block(payload)}"
-        f"{group_block}"
+    # Put the current incident identity and the safety-critical record of
+    # failed attempts before the potentially huge log. The final hard cap must
+    # not make the model forget a command that was already tried and verified
+    # ineffective; optional historical context comes last.
+    core = (
         f"Ceph error code: {payload.get('ceph_code')}\n"
         f"Detected at: {payload.get('detected_at')}\n"
         f"Affected nodes: {', '.join(nodes)}\n"
         f"{_osd_placement_line(payload)}"
         f"Cluster snapshot: {json.dumps(payload.get('cluster_snapshot', {}))}\n\n"
-        f"Relevant daemon log excerpt:\n{payload.get('log_excerpt', '')}"
     )
+    previous_attempts = _previous_attempts_block(payload)
+    primary_evidence = f"Relevant daemon log excerpt:\n{payload.get('log_excerpt', '')}\n\n"
+    content = (
+        core
+        + previous_attempts
+        + primary_evidence
+        + _verified_cases_block(payload)
+        + group_block
+    )
+    return _bound_incident_context(content)
 
 
 def _get_client():

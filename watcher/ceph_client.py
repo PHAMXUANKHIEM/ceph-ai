@@ -68,6 +68,7 @@ MCP_COMMAND_TIMEOUT_SECONDS = 10
 # SSH channel and can leave the remote `rbd` child re-parented to PID 1.
 RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS = 8
 CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
+CEPHADM_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
 
 
 def _rbd_iostat_base_command(pool: str, keyring_path: str) -> str:
@@ -134,12 +135,20 @@ def build_exec_command(exec_mode: str, container: str, inner_command: str) -> st
 last_successful_mon_node: str | None = None
 
 
+def ordered_mon_nodes(mon_nodes: list[str]) -> list[str]:
+    """Prefer the last MON that answered, preserving configured fallbacks."""
+    nodes = list(dict.fromkeys(node.strip() for node in mon_nodes if node and node.strip()))
+    if last_successful_mon_node in nodes:
+        return [last_successful_mon_node, *[node for node in nodes if node != last_successful_mon_node]]
+    return nodes
+
+
 class CephQueryError(Exception):
     """Raised when no MON node could be reached and queried successfully."""
 
 
 def get_mon_nodes() -> list[str]:
-    return [h.strip() for h in settings.ceph_mon_nodes.split(",") if h.strip()]
+    return ordered_mon_nodes(settings.ceph_mon_nodes.split(","))
 
 
 def _normalize_rbd_pools(payload: dict | list) -> list[str]:
@@ -991,7 +1000,16 @@ def _run_remote_command_with(
             key_filename=ssh_key_path,
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
-        _stdin, stdout, stderr = client.exec_command(command, timeout=command_timeout)
+        # cephadm creates a transient Podman container per call. A
+        # non-blocking host lock prevents concurrent app processes from
+        # stampeding one MON; the caller's normal MON fallback then spreads
+        # work to another member of the quorum.
+        remote_command = command
+        if command.lstrip().startswith("cephadm shell"):
+            remote_command = (
+                f"flock -n {shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
+            )
+        _stdin, stdout, stderr = client.exec_command(remote_command, timeout=command_timeout)
         # Read output fully BEFORE checking exit status: if the remote command
         # writes more than the channel buffer holds, it blocks on write until
         # someone drains stdout — calling recv_exit_status() first would wait
@@ -1176,6 +1194,62 @@ def run_ceph_json_command_with(
     raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 
 
+def run_ceph_json_batch_command_with(
+    mon_nodes: list[str],
+    container_name: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    exec_mode: str,
+    inner_commands: list[str],
+) -> tuple[str, list[dict | list | None]]:
+    """Run bounded JSON commands in one remote Ceph shell."""
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured for this cluster")
+    if not inner_commands:
+        return mon_nodes[0], []
+    frames = []
+    for index, inner_command in enumerate(inner_commands):
+        begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
+        status = f"__CEPH_AI_BATCH_{index}_STATUS__"
+        end = f"__CEPH_AI_BATCH_{index}_END__"
+        frames.extend((
+            f"printf '%s\\n' {shlex.quote(begin)}",
+            f"{inner_command} 2>/dev/null",
+            "command_status=$?",
+            "printf '\n'",
+            f"printf '%s:%s\\n' {shlex.quote(status)} $command_status",
+            f"printf '%s\\n' {shlex.quote(end)}",
+        ))
+    batch_inner_command = f"bash -lc {shlex.quote(chr(10).join(frames))}"
+    command = build_exec_command(exec_mode, container_name, batch_inner_command)
+    command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
+    errors = []
+    for host in mon_nodes:
+        try:
+            output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
+        except Exception as exc:
+            error = str(exc) or type(exc).__name__
+            logger.warning("run_ceph_json_batch_command_with: %s failed: %s", host, error)
+            errors.append(f"{host}: {error}")
+            continue
+        parsed: list[dict | list | None] = [None] * len(inner_commands)
+        output_lines = output.splitlines()
+        for index in range(len(inner_commands)):
+            begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
+            status_prefix = f"__CEPH_AI_BATCH_{index}_STATUS__:"
+            end = f"__CEPH_AI_BATCH_{index}_END__"
+            try:
+                start = output_lines.index(begin)
+                finish = output_lines.index(end, start + 1)
+                payload_lines = output_lines[start + 1:finish]
+                status_line = next(line for line in payload_lines if line.startswith(status_prefix))
+                payload_lines.remove(status_line)
+                if status_line == f"{status_prefix}0":
+                    parsed[index] = json.loads("\n".join(payload_lines))
+            except (StopIteration, ValueError, TypeError, json.JSONDecodeError):
+                logger.warning("run_ceph_json_batch_command_with: invalid response frame %s from %s", index, host)
+        return host, parsed
+    raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
 def _parse_health_payload(raw_output: str) -> dict:
     payload = json.loads(raw_output)
     if not isinstance(payload, dict) or payload.get("status") not in VALID_STATUSES:

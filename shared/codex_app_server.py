@@ -230,6 +230,8 @@ class CodexAppServer:
         self._turn_lock = asyncio.Lock()
         self._notifications: asyncio.Queue[dict] = asyncio.Queue()
         self._tool_handler: ToolHandler | None = None
+        self._tool_call_count = 0
+        self._max_tool_calls: int | None = None
 
     def _codex_home(self) -> Path:
         value = Path(settings.codex_home).expanduser()
@@ -365,7 +367,10 @@ class CodexAppServer:
             self._pending.clear()
 
     async def _handle_tool_request(self, request_id: int, params: dict) -> None:
-        if self._tool_handler is None:
+        self._tool_call_count += 1
+        if self._max_tool_calls is not None and self._tool_call_count > self._max_tool_calls:
+            text, success = "Đã đạt giới hạn số lần gọi tool của lượt delegated", False
+        elif self._tool_handler is None:
             text, success = "Tool không khả dụng", False
         else:
             try:
@@ -414,8 +419,25 @@ class CodexAppServer:
             except asyncio.CancelledError:
                 pass
 
+    async def _interrupt_turn(self, thread_id: str | None, turn_id: str | None) -> None:
+        """Stop the external turn before this adapter releases its lock."""
+        if not thread_id or not turn_id:
+            logger.warning("Cannot interrupt Codex turn: missing thread_id/turn_id")
+            return
+        try:
+            await asyncio.shield(
+                self._request(
+                    "turn/interrupt",
+                    {"threadId": thread_id, "turnId": turn_id},
+                    timeout=10,
+                )
+            )
+        except Exception:
+            logger.exception("Codex turn interrupt failed for %s", turn_id)
+
     async def run_turn(
         self, prompt: str, dynamic_tools: list[dict], tool_handler: ToolHandler, timeout: float = 120,
+        max_tool_calls: int | None = None,
         model: str | None = None,
     ) -> dict:
         selected_model = settings.codex_chat_model.strip() if model is None else model.strip()
@@ -428,6 +450,8 @@ class CodexAppServer:
             while not self._notifications.empty():
                 self._notifications.get_nowait()
             self._tool_handler = tool_handler
+            self._tool_call_count = 0
+            self._max_tool_calls = max_tool_calls
             tools = [
                 {
                     "type": "function",
@@ -449,25 +473,36 @@ class CodexAppServer:
             }
             if selected_model:
                 thread_params["model"] = selected_model
+            thread_id = None
+            turn_id = None
             thread = await self._request(
                 "thread/start",
                 thread_params,
             )
             thread_id = thread["thread"]["id"]
-            await self._request(
+            turn_start = await self._request(
                 "turn/start",
                 {"threadId": thread_id, "input": [{"type": "text", "text": prompt}]},
             )
+            turn = turn_start.get("turn") or {}
+            turn_id = turn.get("id") or turn_start.get("turnId")
             final_text = ""
             deadline = asyncio.get_running_loop().time() + timeout
             try:
                 while True:
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
+                        await self._interrupt_turn(thread_id, turn_id)
                         raise CodexAppServerError(
                             f"Codex turn vượt thời gian cho phép ({timeout:g} giây)"
                         )
-                    message = await asyncio.wait_for(self._notifications.get(), remaining)
+                    try:
+                        message = await asyncio.wait_for(self._notifications.get(), remaining)
+                    except asyncio.TimeoutError as exc:
+                        await self._interrupt_turn(thread_id, turn_id)
+                        raise CodexAppServerError(
+                            f"Codex turn vượt thời gian cho phép ({timeout:g} giây)"
+                        ) from exc
                     method = message.get("method")
                     params = message.get("params") or {}
                     if method == "item/completed":
@@ -482,8 +517,16 @@ class CodexAppServer:
                             raise CodexAppServerError((turn.get("error") or {}).get("message", "Codex turn thất bại"))
                         record_ai_usage(turn)
                         return {"reply_text": final_text.strip() or "Codex không trả về nội dung"}
+            except asyncio.CancelledError:
+                # asyncio.wait_for() cancels this coroutine on timeout, but
+                # Codex itself is a separate app-server process. Interrupt
+                # the exact active turn before releasing the global turn lock
+                # so its late tool calls cannot leak into the next agent.
+                await self._interrupt_turn(thread_id, turn_id)
+                raise
             finally:
                 self._tool_handler = None
+                self._max_tool_calls = None
 
 
 codex_app_server = CodexAppServer()

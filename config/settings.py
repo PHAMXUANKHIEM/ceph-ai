@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     # poll cost control, or a pool you deliberately don't want watched) —
     # once set, it's the ONLY list used, auto-discovery is skipped entirely.
     ceph_rbd_pools: str = ""
+    # RBD performance is an auxiliary signal, not part of the 15s health
+    # heartbeat. Keeping it on its own cadence prevents each poll from
+    # creating one cephadm/Podman shell per RBD pool.
+    volume_scan_interval_seconds: int = 300
+    # PG/OSD topology is substantially more expensive than a health query:
+    # it can require several cephadm shells per active image. Refresh it
+    # less often and keep the bounded collector's own limit configurable.
+    volume_topology_scan_interval_seconds: int = 900
+    volume_topology_max_volumes_per_scan: int = 10
+    volume_topology_max_data_object_samples: int = 2
+    volume_scan_max_parallel_pools: int = 2
+    trash_capacity_scan_interval_seconds: int = 300
     # Minimum recovery window before a soft-deleted RBD image becomes
     # eligible for permanent removal. Restore remains available throughout.
     rbd_trash_retention_days: int = 7
@@ -227,6 +239,31 @@ class Settings(BaseSettings):
     # Reserved output tokens used before a call, since output usage is not
     # known until the provider returns. This is deliberately conservative.
     ai_cost_budget_reserve_output_tokens: int = Field(default=2048, ge=0, le=100000)
+    # Hard input-context ceiling for incident diagnosis. This bounds the
+    # highest-volume AI path even when a log collector or related-incident
+    # query returns unexpectedly large evidence; output/schema reasoning keeps
+    # its existing separate budget.
+    ai_incident_max_context_chars: int = Field(default=12000, ge=4000, le=50000)
+    # Provider-neutral conservative estimate for multilingual/JSON evidence.
+    # The runtime enforces both this and the character ceiling because exact
+    # tokenization differs between Codex, Claude and router models.
+    ai_incident_max_context_tokens: int = Field(default=6000, ge=1000, le=20000)
+
+    # Delegated AI guardrails. These limits are deliberately independent from
+    # the normal chat turn so one delegated request cannot fan out without a
+    # predictable ceiling on provider calls and wall-clock time.
+    delegated_ai_max_subtasks: int = Field(default=4, ge=1, le=4)
+    delegated_ai_max_tool_iterations: int = Field(default=3, ge=1, le=6)
+    delegated_ai_task_timeout_seconds: int = Field(default=900, ge=60, le=3600)
+    delegated_ai_provider_timeout_seconds: float = Field(default=90.0, ge=10.0, le=300.0)
+    delegated_ai_max_provider_calls: int = Field(default=12, ge=1, le=50)
+    delegated_ai_max_output_tokens: int = Field(default=1024, ge=256, le=2048)
+    delegated_ai_max_parallel_subtasks: int = Field(default=2, ge=1, le=4)
+    delegated_ai_max_active_tasks: int = Field(default=2, ge=1, le=10)
+    delegated_ai_max_active_tasks_per_actor: int = Field(default=1, ge=1, le=5)
+    delegated_ai_submit_cooldown_seconds: int = Field(default=10, ge=0, le=3600)
+    delegated_ai_max_prompt_chars: int = Field(default=12000, ge=1000, le=50000)
+    delegated_ai_max_result_chars: int = Field(default=6000, ge=1000, le=12000)
 
     # Weekly read-only health digest. It is sent only through configured
     # alert channels and never creates or executes an Action.
@@ -493,7 +530,7 @@ class Settings(BaseSettings):
     # Log Intelligence: CRUD access events are facts, not AI findings, and
     # must not be suppressed or grouped by the anomaly/noise pipeline.
     rgw_access_audit_enabled: bool = True
-    rgw_access_audit_interval_seconds: int = 15
+    rgw_access_audit_interval_seconds: int = 60
     # "Lịch sử IP thao tác Bucket/Object" (dashboard/templates/bucket_access_log.html's
     # #bah-* panel) is a per-request audit table, not a bounded log tail — left
     # unbounded it grows with every S3 request the cluster ever serves. Pruned
@@ -542,7 +579,7 @@ class Settings(BaseSettings):
     # A host that no longer accepts the configured SSH connection is a
     # separate availability failure from high CPU/RAM. Scan it promptly,
     # but require two consecutive failures before notifying operators.
-    node_reachability_scan_interval_seconds: int = 60
+    node_reachability_scan_interval_seconds: int = 120
     node_reachability_consecutive_failures: int = Field(default=2, ge=1, le=10)
 
     # CPU/RAM forecasting is deliberately backed by Loki rather than the
@@ -610,7 +647,7 @@ class Settings(BaseSettings):
     # default, independent of watcher_poll_interval_seconds (15s) so a
     # transient MON hiccup on this query never affects the main health-check
     # cadence and vice versa.
-    osd_latency_scan_interval_seconds: int = 60
+    osd_latency_scan_interval_seconds: int = 120
 
     # watcher/crush_structure_monitor.py + watcher/crush_distribution_monitor.py's
     # shared scan cadence (Epic 12, AD-25b) -- both `ceph osd crush dump` and
@@ -621,7 +658,7 @@ class Settings(BaseSettings):
     # ONE after confirming `ceph osd df` already reports per-OSD PG count
     # (the `pgs` column) in the same call. 1 minute by default, same as
     # osd_latency_scan_interval_seconds above.
-    crush_scan_interval_seconds: int = 60
+    crush_scan_interval_seconds: int = 300
 
     # Append-only Ceph capacity history. Forecasts fail closed until the
     # configured minimum time span and sample count are both available.

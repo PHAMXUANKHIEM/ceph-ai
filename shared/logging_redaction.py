@@ -29,10 +29,26 @@ def redact_log_text(value: str) -> str:
     return _TOKEN_RE.sub("<TELEGRAM_BOT_TOKEN>", value)
 
 
+def _redact_log_arg(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_log_text(value)
+    if isinstance(value, tuple):
+        return tuple(_redact_log_arg(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_log_arg(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_log_arg(item) for key, item in value.items()}
+    return value
+
+
 def _redact_record(record: logging.LogRecord) -> logging.LogRecord:
     if record.args:
-        record.msg = redact_log_text(record.getMessage())
-        record.args = ()
+        # Keep the original argument shape. Uvicorn's access formatter, for
+        # example, unpacks five positional fields from record.args; replacing
+        # them with an already-rendered message causes its formatter to throw
+        # on every request. Redacting each value preserves all formatters.
+        record.msg = redact_log_text(record.msg) if isinstance(record.msg, str) else record.msg
+        record.args = _redact_log_arg(record.args)
     elif isinstance(record.msg, str):
         record.msg = redact_log_text(record.msg)
     return record

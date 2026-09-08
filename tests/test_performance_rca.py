@@ -82,6 +82,7 @@ def test_normalize_osd_map_requires_acting_set():
 
 
 def test_map_volume_uses_rbd_header_object(monkeypatch):
+    monkeypatch.setattr(volume_topology.settings, "volume_topology_max_data_object_samples", 8)
     calls = []
 
     def fake_run(*args, **kwargs):

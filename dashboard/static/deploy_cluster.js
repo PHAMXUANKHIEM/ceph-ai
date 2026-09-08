@@ -22,7 +22,7 @@
   // "Host key for server '<ip>' does not match: got '...', expected
   // '...'". Only match on that, not on every SSH failure (a plain refused/
   // timed-out connection needs a different fix, not this button).
-  var HOST_KEY_MISMATCH_RE = /Host key for server .* does not match/;
+  var HOST_KEY_PROVISION_RE = /Host key for server .* does not match|Server .* not found in known_hosts/;
 
   function pad2(n) { return String(n).padStart(2, "0"); }
   function nowClock() {
@@ -263,7 +263,7 @@
           logBox.appendChild(hostLine);
         });
       }
-      if (step.status === "failed" && step.message && HOST_KEY_MISMATCH_RE.test(step.message)) {
+      if (step.status === "failed" && step.message && HOST_KEY_PROVISION_RE.test(step.message)) {
         var failedHost = (step.hosts || []).filter(function (h) { return h.status === "failed"; })[0];
         if (failedHost) renderProvisionHostKeyControl(failedHost.host);
       }

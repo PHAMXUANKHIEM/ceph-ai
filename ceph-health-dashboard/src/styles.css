@@ -54,6 +54,7 @@ html, body { min-width: 320px; margin: 0; }
 .dashboard-live-error button { flex: none; padding: 6px 10px; border: 1px solid rgba(254,202,202,.35); border-radius: 7px; background: rgba(255,255,255,.08); color: #fff; cursor: pointer; font-weight: 600; }
 .dashboard-live-error button:hover { background: rgba(255,255,255,.15); }
 .dashboard-live-stale { position: absolute; z-index: 2; top: 16px; left: 50%; width: min(760px, calc(100% - 32px)); transform: translateX(-50%); display: flex; align-items: center; justify-content: center; gap: 9px; padding: 9px 13px; border: 1px solid rgba(251,191,36,.55); border-radius: 9px; background: rgba(69,45,5,.96); box-shadow: 0 8px 30px rgba(0,0,0,.35); color: #fde68a; font-size: 13px; }
+.dashboard-live-syncing { position: absolute; z-index: 2; top: 16px; left: 50%; width: min(760px, calc(100% - 32px)); transform: translateX(-50%); display: flex; align-items: center; justify-content: center; gap: 9px; padding: 9px 13px; border: 1px solid rgba(96,165,250,.55); border-radius: 9px; background: rgba(10,35,69,.96); box-shadow: 0 8px 30px rgba(0,0,0,.35); color: #bfdbfe; font-size: 13px; }
 .status-grid, .metrics-grid { min-width: 0; display: grid; gap: 14px; }
 .status-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .metrics-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }

@@ -231,6 +231,14 @@
       </div>
     </header>
 
+    <div class="chat-mode-bar" aria-label="Chế độ xử lý AI">
+      <label for="chat-mode-select">Chế độ</label>
+      <select id="chat-mode-select">
+        <option value="single">Chat trực tiếp</option>
+        <option value="delegate">Giao việc / nhiều agent</option>
+      </select>
+      <span id="chat-mode-hint">Dùng AI đang cấu hình trong hệ thống.</span>
+    </div>
     <div class="chat-panel-body" id="chat-panel-body">
       <div class="chat-history-list-view" id="chat-history-list-view" hidden>
         <div class="chat-view-header">

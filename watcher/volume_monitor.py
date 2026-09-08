@@ -39,7 +39,9 @@ import logging
 import threading
 from collections import deque
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
+from config.settings import settings
 from shared import audit, db
 from shared.incident_actions import cancel_pending_actions
 from shared.models import Action, ActionStatus, Cluster, Incident, IncidentStatus, VolumeMetric
@@ -182,14 +184,15 @@ def check_volumes(cluster: Cluster | None = None, cluster_id: str | None = None)
             with result_lock:
                 pool_errors[pool] = exc
 
-    threads = [
-        threading.Thread(target=query_and_store, args=(pool,), name=f"rbd-iostat-{pool}", daemon=True)
-        for pool in pools
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    max_workers = max(1, min(
+        len(pools), int(getattr(settings, "volume_scan_max_parallel_pools", 2))
+    ))
+    # A bounded pool keeps one volume scan from spawning one cephadm shell per
+    # RBD pool at the same instant. The scan itself is already cadence-gated
+    # by watcher/main.py, so a little extra wall time is preferable to a
+    # transient CPU/RAM storm on the MON.
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rbd-iostat") as executor:
+        list(executor.map(query_and_store, pools))
     for pool, exc in pool_errors.items():
         logger.warning(
             "check_volumes: cluster %s failed to query RBD pool %r: %s",

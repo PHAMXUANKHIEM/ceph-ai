@@ -17,6 +17,7 @@ type DashboardHealth = {
   placement_groups: string;
   cached?: boolean;
   stale?: boolean;
+  refreshing?: boolean;
   cache_age_seconds?: number;
 };
 
@@ -79,9 +80,10 @@ export function CephDashboard() {
       });
     };
     load();
-    // Metrics remain live without constantly repainting the dashboard. A
-    // WebSocket incident event still requests an immediate refresh.
-    const timer = window.setInterval(load, 30_000);
+    // The API returns the persisted snapshot immediately and starts a
+    // single-flight refresh when its age crosses the refresh threshold. A
+    // short cache poll keeps that refresh independent from the SSH latency.
+    const timer = window.setInterval(load, 5_000);
     window.addEventListener("ceph-dashboard-refresh", load);
     return () => {
       window.clearInterval(timer);
@@ -110,10 +112,10 @@ export function CephDashboard() {
           <button type="button" onClick={() => setReloadToken((value) => value + 1)}>Thử lại</button>
         </div>
       )}
-      {health.stale && (
-        <div className="dashboard-live-stale" role="status">
-          <strong>Dữ liệu cụm đang cũ</strong>
-          <span>Snapshot gần nhất cách đây {Math.round(health.cache_age_seconds ?? 0)} giây; đang làm mới nền.</span>
+      {(health.stale || health.refreshing) && (
+        <div className={health.stale ? "dashboard-live-stale" : "dashboard-live-syncing"} role="status">
+          <strong>{health.stale ? "Dữ liệu cụm đang cũ" : "Đang đồng bộ dữ liệu cụm"}</strong>
+          <span>Snapshot gần nhất cách đây {Math.round(health.cache_age_seconds ?? 0)} giây; {health.refreshing ? "đang làm mới nền." : "chưa có bản mới."}</span>
         </div>
       )}
       <section className="status-grid" aria-label="Ceph status overview">

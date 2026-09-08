@@ -279,6 +279,7 @@ def test_run_still_logs_a_real_connectivity_failure_loudly(monkeypatch, caplog):
 
 
 def test_run_calls_volume_monitor_every_poll_iteration(monkeypatch):
+    monkeypatch.setattr(watcher_main.settings, "volume_scan_interval_seconds", 0)
     monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: {"status": "HEALTH_OK"})
     monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
 
