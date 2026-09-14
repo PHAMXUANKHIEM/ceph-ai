@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import httpx
 
@@ -33,6 +34,14 @@ nội dung nguồn. Không bịa thêm dữ kiện, nguyên nhân hoặc hành �
 trong nguồn. Nếu nguồn chỉ là thông tin kỹ thuật, hãy nói rõ đó là thông tin
 quan sát được và không khẳng định nó là nguyên nhân gốc.
 """
+
+_MACHINE_RESPONSE_RE = re.compile(
+    r"(?:^\s*[\[{]|^\s*(?:json|yaml|yml|traceback|stack\s+trace)\b|"
+    r"^\s*[-*]\s+|^\s*[-*]?\s*[A-Za-z_][\w.-]*\s*[:=]\s*\S)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_VIETNAMESE_LETTER_RE = re.compile(r"[À-ỹĐđ]")
+_SENTENCE_END_RE = re.compile(r"[.!?]+(?=\s|$)")
 
 
 def _compact_input(value: str | None) -> str:
@@ -60,9 +69,24 @@ def _response_text(response) -> str:
 
 
 def _valid_response(value: str) -> bool:
-    if not value or len(value) > 1_200:
+    """Accept only a short, human-readable Vietnamese paragraph.
+
+    Prompt instructions are not a sufficient safety boundary: a provider can
+    still return JSON, YAML, a stack trace, or an unexpectedly long answer.
+    Invalid output falls back to the original evidence instead of reaching
+    Telegram with a misleading "humanized" label.
+    """
+    text = (value or "").strip()
+    if not text or len(text) > 1_200:
         return False
-    return "```" not in value and not value.startswith(("{", "["))
+    if "```" in text or any(char in text for char in "{}[]"):
+        return False
+    if _MACHINE_RESPONSE_RE.search(text):
+        return False
+    if not _VIETNAMESE_LETTER_RE.search(text):
+        return False
+    sentence_count = len(_SENTENCE_END_RE.findall(text))
+    return 1 <= sentence_count <= 3
 
 
 async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:

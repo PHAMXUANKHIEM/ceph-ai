@@ -6,6 +6,92 @@ from shared.telegram_client import TelegramSendError
 from datetime import datetime
 
 
+def _mock_humanizer_router(monkeypatch, content):
+    monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_api_key", "configured")
+    monkeypatch.setattr(telegram_humanizer.settings, "router_base_url", "http://router")
+    monkeypatch.setattr(telegram_humanizer.settings, "router_model", "model")
+
+    class Completions:
+        async def create(self, **_kwargs):
+            return type(
+                "Response",
+                (),
+                {
+                    "choices": [
+                        type(
+                            "Choice",
+                            (),
+                            {"message": type("Message", (), {"content": content})()},
+                        )()
+                    ]
+                },
+            )()
+
+    class Client:
+        chat = type("Chat", (), {"completions": Completions()})()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(telegram_humanizer, "build_router_client", lambda *_args: Client())
+
+
+def test_humanizer_accepts_short_vietnamese_response(monkeypatch):
+    _mock_humanizer_router(
+        monkeypatch,
+        "OSD 2 đang không hoạt động trên node 10.20.1.195.",
+    )
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN trên node 10.20.1.195", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 đang không hoạt động trên node 10.20.1.195."
+
+
+def test_humanizer_rejects_machine_formatted_response(monkeypatch):
+    _mock_humanizer_router(monkeypatch, "status: DOWN\nnode: 10.20.1.195")
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN"
+
+
+def test_humanizer_rejects_english_only_response(monkeypatch):
+    _mock_humanizer_router(monkeypatch, "OSD 2 is down.")
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN"
+
+
+def test_humanizer_rejects_more_than_three_sentences(monkeypatch):
+    _mock_humanizer_router(
+        monkeypatch,
+        "OSD 2 đang DOWN. Cụm đang cảnh báo. Cần kiểm tra ngay. Đây là câu thừa.",
+    )
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN"
+
+
 def test_humanizer_skips_disabled_router_without_building_client(monkeypatch):
     monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
     monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", False)
