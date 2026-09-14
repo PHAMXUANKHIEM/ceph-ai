@@ -148,7 +148,7 @@
     <section class="card tabbed-panel" data-panel="incidents" {% if active_tab != 'incidents' %}hidden{% endif %}>
       <div class="card-header"><h2>Incident Feed</h2></div>
       {% if telegram_approval_configured %}
-      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối Risky Action đã chuyển hẳn sang Telegram (xem <a href="/telegram-alerts">Alert Telegram</a>) — không còn danh sách chờ duyệt riêng trên trang này.</p>
+      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối Risky Action đã chuyển hẳn sang Telegram (xem {% if is_admin %}<a href="/telegram-alerts">Alert Telegram</a>{% else %}Telegram{% endif %}) — không còn danh sách chờ duyệt riêng trên trang này.</p>
       {% endif %}
       <div class="card-body table-wrap">
         <table id="incident-feed">
@@ -239,10 +239,11 @@
       </select>
     </div>
     <div class="chat-panel-body" id="chat-panel-body">
+      <div class="chat-history-toast" id="chat-history-toast" role="status" aria-live="polite" hidden></div>
       <div class="chat-history-list-view" id="chat-history-list-view" hidden>
         <div class="chat-view-header">
           <span class="chat-view-icon" aria-hidden="true">↶</span>
-          <div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3><p>Xem và quản lý các phiên trò chuyện gần đây.</p></div>
+          <div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3></div>
         </div>
         <div class="chat-history-toolbar">
           <label class="chat-history-select-all"><input type="checkbox" id="chat-history-select-all"> Chọn tất cả</label>

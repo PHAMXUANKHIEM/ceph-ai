@@ -940,7 +940,7 @@ def test_bucket_detail_links_to_prefilled_access_log(dashboard_client, monkeypat
 
     access_log = dashboard_client.get("/bucket-access-log?bucket=team%20bucket")
     assert access_log.status_code == 200
-    assert 'id="bal-bucket" value="team bucket"' in access_log.text
+    assert 'id="bah-bucket" value="team bucket"' in access_log.text
 
 
 def test_bucket_detail_shows_unknown_optional_capabilities_truthfully(dashboard_client, monkeypatch):

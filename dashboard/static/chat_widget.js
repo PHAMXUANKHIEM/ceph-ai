@@ -12,6 +12,7 @@
   var historyListEl = document.getElementById("chat-history-list");
   var historySelectAllEl = document.getElementById("chat-history-select-all");
   var historyDeleteSelectedBtn = document.getElementById("chat-history-delete-selected");
+  var historyToastEl = document.getElementById("chat-history-toast");
   var settingsViewEl = document.getElementById("chat-settings-view");
   var settingsFormEl = document.getElementById("chat-settings-form");
   var aiNameInputEl = document.getElementById("chat-ai-name");
@@ -792,6 +793,30 @@
 
   var historyMode = "closed";
   var selectedHistorySessions = Object.create(null);
+  var historyOpenToken = 0;
+  var historyToastTimer = null;
+
+  function showHistoryToast(message) {
+    if (!historyToastEl) return;
+    if (historyToastTimer) window.clearTimeout(historyToastTimer);
+    historyToastEl.textContent = message;
+    historyToastEl.hidden = false;
+    historyToastTimer = window.setTimeout(function () { historyToastEl.hidden = true; }, 3200);
+  }
+
+  function renderHistoryEmptyState() {
+    var empty = document.createElement("div");
+    empty.className = "chat-history-empty";
+    var icon = document.createElement("span");
+    icon.className = "chat-history-empty-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "🗂";
+    var text = document.createElement("p");
+    text.textContent = "Chưa có đoạn chat nào";
+    empty.appendChild(icon);
+    empty.appendChild(text);
+    return empty;
+  }
 
   function updateHistorySelection() {
     var checkboxes = historyListEl.querySelectorAll(".chat-history-select");
@@ -855,11 +880,21 @@
     preview.className = "chat-history-row-preview";
     preview.textContent = entry.preview;
     main.appendChild(preview);
-    var meta = document.createElement("p");
+    var meta = document.createElement("div");
     meta.className = "chat-history-row-meta";
-    meta.textContent =
-      entry.message_count + " tin nhắn · " + formatDateTime(entry.last_active_at) +
-      (entry.is_current ? " · hiện tại" : "");
+    var stats = document.createElement("span");
+    stats.textContent = entry.message_count + " tin nhắn · " + formatDateTime(entry.last_active_at);
+    meta.appendChild(stats);
+    if (entry.is_current) {
+      var badge = document.createElement("span");
+      badge.className = "chat-history-current-badge";
+      var dot = document.createElement("span");
+      dot.className = "chat-history-current-dot";
+      dot.setAttribute("aria-hidden", "true");
+      badge.appendChild(dot);
+      badge.appendChild(document.createTextNode("Hiện tại"));
+      meta.appendChild(badge);
+    }
     main.appendChild(meta);
     row.appendChild(main);
 
@@ -884,10 +919,7 @@
     while (historyListEl.firstChild) historyListEl.removeChild(historyListEl.firstChild);
     selectedHistorySessions = Object.create(null);
     if (!sessions.length) {
-      var empty = document.createElement("p");
-      empty.className = "chat-history-empty";
-      empty.textContent = "Chưa có đoạn chat nào.";
-      historyListEl.appendChild(empty);
+      historyListEl.appendChild(renderHistoryEmptyState());
       updateHistorySelection();
       return;
     }
@@ -915,6 +947,7 @@
 
   function openHistorySession(sessionId) {
     clearError();
+    var requestToken = ++historyOpenToken;
     fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), { credentials: "same-origin" })
       .then(handleAuthRedirect)
       .then(function (response) {
@@ -922,6 +955,7 @@
         return response.json();
       })
       .then(function (data) {
+        if (requestToken !== historyOpenToken) return;
         currentSessionId = data.session_id || sessionId;
         activeDelegatedTasks = {};
         setDualProcessing(false);
@@ -932,12 +966,14 @@
         inputEl.focus();
       })
       .catch(function (err) {
+        if (requestToken !== historyOpenToken) return;
         if (err.message === "unauthenticated") return;
         showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
       });
   }
 
   function closeHistoryView() {
+    historyOpenToken += 1;
     applyViewMode("closed");
     // Reload whatever's actually current — it may have changed (a new
     // message sent elsewhere, or a session deleted) while browsing history.
@@ -945,7 +981,13 @@
     loadHistory();
   }
 
-  function deleteHistorySession(sessionId, rowEl, skipConfirm) {
+  function activateHistoryFallback() {
+    var nextRow = historyListEl.querySelector(".chat-history-row");
+    if (nextRow && nextRow.dataset.sessionId) openHistorySession(nextRow.dataset.sessionId);
+    else startNewSession();
+  }
+
+  function deleteHistorySession(sessionId, rowEl, skipConfirm, deferFallback, showSuccess) {
     if (!skipConfirm && !window.confirm("Xoá vĩnh viễn đoạn chat này? Không thể hoàn tác.")) return Promise.resolve(false);
     var deleteBtn = rowEl && rowEl.querySelector(".chat-history-delete-btn");
     if (deleteBtn) deleteBtn.disabled = true;
@@ -959,23 +1001,18 @@
         return response.json();
       })
       .then(function () {
-        var wasCurrent = rowEl.classList.contains("is-current");
-        rowEl.remove();
+        var wasCurrent = rowEl && rowEl.classList.contains("is-current");
+        if (rowEl) rowEl.remove();
         if (!historyListEl.firstChild) {
-          var empty = document.createElement("p");
-          empty.className = "chat-history-empty";
-          empty.textContent = "Chưa có đoạn chat nào.";
-          historyListEl.appendChild(empty);
+          historyListEl.appendChild(renderHistoryEmptyState());
         }
         delete selectedHistorySessions[sessionId];
         updateHistorySelection();
         if (wasCurrent) {
-          // The live view (if reopened) must not keep pointing at a
-          // session that no longer exists — closeHistoryView()'s
-          // loadHistory() call will resolve whatever's now current, or
-          // the empty state if nothing's left.
           currentSessionId = null;
+          if (!deferFallback) activateHistoryFallback();
         }
+        if (showSuccess !== false) showHistoryToast("Đã xoá 1 phiên chat.");
         return true;
       })
       .catch(function (err) {
@@ -991,11 +1028,20 @@
     if (!sessionIds.length) return;
     if (!window.confirm("Xoá vĩnh viễn " + sessionIds.length + " đoạn chat đã chọn? Không thể hoàn tác.")) return;
     var rows = Array.prototype.slice.call(historyListEl.querySelectorAll(".chat-history-row"));
+    var activeSessionIdBeforeDelete = currentSessionId;
     if (historyDeleteSelectedBtn) historyDeleteSelectedBtn.disabled = true;
     Promise.all(sessionIds.map(function (sessionId) {
       var row = rows.find(function (item) { return item.dataset.sessionId === sessionId; });
-      return deleteHistorySession(sessionId, row, true);
-    })).then(updateHistorySelection);
+      return deleteHistorySession(sessionId, row, true, true, false);
+    })).then(function (results) {
+      updateHistorySelection();
+      var deletedCount = results.filter(Boolean).length;
+      if (deletedCount) showHistoryToast("Đã xoá " + deletedCount + " phiên chat.");
+      var activeSessionDeleted = activeSessionIdBeforeDelete && !historyListEl.querySelector(
+        '[data-session-id="' + activeSessionIdBeforeDelete + '"]'
+      );
+      if (activeSessionDeleted || !historyListEl.querySelector(".chat-history-row")) activateHistoryFallback();
+    });
   }
 
   if (historyBtn) {

@@ -16,7 +16,7 @@
         <form class="audit-filters" id="bucket-access-history-form" data-cluster="{{ selected_cluster.id }}">
           <label>IP client<input id="bah-ip" maxlength="255" placeholder="vd: 10.20.1.5"></label>
           <label>User<input id="bah-user" maxlength="255" placeholder="vd: admin"></label>
-          <label>Bucket<input id="bah-bucket" maxlength="255"></label>
+          <label>Bucket<input id="bah-bucket" value="{{ bucket }}" maxlength="255"></label>
           <label>Hành động<select id="bah-method"><option value="">Tất cả</option><option>PUT</option><option>POST</option><option>DELETE</option><option>GET</option><option>HEAD</option></select></label>
           <label>Từ ngày<input id="bah-from" type="datetime-local"></label>
           <label>Đến ngày<input id="bah-to" type="datetime-local"></label>
