@@ -5,6 +5,7 @@ import { CephHealthCard } from "./CephHealthCard";
 import { MetricPanel } from "./MetricPanel";
 import { PlacementGroupsCard } from "./PlacementGroupsCard";
 import { StatusCard } from "./StatusCard";
+import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
 
 type StatusDatum = { title: string; value: string; subtitle: string; icon: LucideIcon };
 type DashboardHealth = {
@@ -60,14 +61,15 @@ export function CephDashboard() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshPending, setRefreshPending] = useState(false);
+  const selectedCluster = new URLSearchParams(window.location.search).get("cluster") || "";
+  const eventVersion = useClusterSnapshotEvents(selectedCluster);
 
   const requestRefresh = () => {
     if (refreshPending) return;
     setRefreshPending(true);
     setLoadError(null);
-    const cluster = new URLSearchParams(window.location.search).get("cluster");
-    const url = cluster
-      ? "/api/dashboard/health/refresh?cluster=" + encodeURIComponent(cluster)
+    const url = selectedCluster
+      ? "/api/dashboard/health/refresh?cluster=" + encodeURIComponent(selectedCluster)
       : "/api/dashboard/health/refresh";
     fetch(url, { method: "POST", credentials: "same-origin" })
       .then(async (response) => {
@@ -86,8 +88,7 @@ export function CephDashboard() {
       if (document.hidden) return;
       controller?.abort();
       controller = new AbortController();
-      const cluster = new URLSearchParams(window.location.search).get("cluster");
-      const url = cluster ? "/api/dashboard/health?cluster=" + encodeURIComponent(cluster) : "/api/dashboard/health";
+      const url = selectedCluster ? "/api/dashboard/health?cluster=" + encodeURIComponent(selectedCluster) : "/api/dashboard/health";
       fetch(url, { credentials: "same-origin", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
@@ -127,7 +128,7 @@ export function CephDashboard() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       controller?.abort();
     };
-  }, [reloadToken]);
+  }, [eventVersion, reloadToken, selectedCluster]);
 
   const statusCards = useMemo<StatusDatum[]>(() => [
     { title: "OSDs", value: ratio(health.osds.up, health.osds.total), subtitle: "Up", icon: HardDrive },

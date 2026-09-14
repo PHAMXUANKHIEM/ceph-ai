@@ -72,3 +72,21 @@ def test_authenticated_websocket_receives_snapshot_change_notification(
         "cluster_id": default_cluster_id,
         "sections": ["health"],
     }
+
+
+def test_cluster_state_websocket_receives_scoped_event(
+    dashboard_client, default_cluster_id, monkeypatch
+):
+    monkeypatch.setattr(ws_module, "POLL_INTERVAL_SECONDS", 0.05)
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    with dashboard_client.websocket_connect(
+        f"/ws/cluster-state?cluster_id={default_cluster_id}"
+    ) as websocket:
+        publish_snapshot(default_cluster_id, {"pools": [{"name": "rbd"}]})
+        message = websocket.receive_json()
+
+    assert message["event"] == "snapshot_changed"
+    assert message["cluster_id"] == default_cluster_id
+    assert message["sections"] == ["pools"]
+    assert isinstance(message["generation"], int)

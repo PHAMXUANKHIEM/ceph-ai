@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Mapping
 
 from shared import ceph_query_cache
+from shared.cluster_events import publish_event
 
 SNAPSHOT_NAMESPACE = "cluster-snapshot"
 SECTION_SNAPSHOT_NAMESPACE = "cluster-section-snapshot"
@@ -111,6 +112,17 @@ def publish_snapshot(
         last_error=last_error,
     )
     stored = ceph_query_cache.store_versioned(SNAPSHOT_NAMESPACE, _key(cluster_id), snapshot)
+    changed_sections = [
+        name for name in ("health", "status", "pools", "pgs", "crush", "nodes")
+        if name in sections
+    ]
+    publish_event(
+        cluster_id,
+        "snapshot_changed",
+        sections=changed_sections,
+        generation=stored.get("generation"),
+        collected_at=stored.get("collected_at"),
+    )
     # A successful publish closes the lifecycle even when the caller did not
     # explicitly clear the marker in its finally block.
     mark_refreshing(cluster_id, False)
@@ -192,11 +204,19 @@ def publish_section_snapshot(
         partial_errors=partial_errors,
         last_error=last_error,
     )
-    return ceph_query_cache.store_versioned(
+    stored = ceph_query_cache.store_versioned(
         SECTION_SNAPSHOT_NAMESPACE,
         f"{normalized_id}:{normalized_section}",
         snapshot,
     )
+    publish_event(
+        normalized_id,
+        "snapshot_changed",
+        sections=[normalized_section],
+        generation=stored.get("generation"),
+        collected_at=stored.get("collected_at"),
+    )
+    return stored
 
 
 def record_section_error(

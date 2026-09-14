@@ -5,6 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
 
 from shared import db
+from shared.cluster_events import read_latest_event
 from shared.cluster_snapshot import read_section_snapshot, read_snapshot
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.models import Incident
@@ -92,3 +93,54 @@ async def incidents_ws(websocket: WebSocket) -> None:
         pass
     except Exception:
         logger.exception("incidents_ws: unexpected error, closing connection")
+
+
+@router.websocket("/ws/cluster-state")
+async def cluster_state_ws(websocket: WebSocket) -> None:
+    """Send cluster-scoped invalidation metadata over the shared event store.
+
+    The event is only a hint. Clients must fetch the normal authenticated HTTP
+    API to obtain the snapshot, which keeps the transport small and makes a
+    missed event safe. The legacy incidents socket remains available for older
+    dashboard clients.
+    """
+    if not websocket.session.get("user") or websocket.session.get("product") == "vitastor":
+        await websocket.close(code=WS_POLICY_VIOLATION)
+        return
+
+    with db.SessionLocal() as session:
+        default_cluster = ensure_default_cluster(session)
+        active = {cluster.id: cluster for cluster in list_active_clusters(session)}
+        selected = active.get(websocket.session.get("selected_cluster_id"), default_cluster)
+        selected_id = selected.id
+    requested_id = websocket.query_params.get("cluster_id") or websocket.query_params.get("cluster")
+    if requested_id and requested_id != selected_id:
+        await websocket.close(code=WS_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    last_event_id = None
+    initial = read_latest_event(selected_id)
+    if initial:
+        last_event_id = initial.get("generation")
+    try:
+        while True:
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            current = read_latest_event(selected_id)
+            if not current or current.get("generation") == last_event_id:
+                continue
+            last_event_id = current.get("generation")
+            await websocket.send_json(
+                {
+                    "event": current.get("event"),
+                    "cluster_id": selected_id,
+                    "sections": current.get("sections", []),
+                    "generation": current.get("generation"),
+                    "collected_at": current.get("collected_at"),
+                    **({"action_id": current["action_id"]} if current.get("action_id") else {}),
+                }
+            )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("cluster_state_ws: unexpected error, closing connection")

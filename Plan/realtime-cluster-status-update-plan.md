@@ -6,8 +6,9 @@
 
 **Ngày lập kế hoạch:** 2026-09-14
 
-**Trạng thái:** Đang triển khai từng lát cắt có test; RT-00 đến RT-04 đã có
-implementation, RT-05 đang hoàn thiện.
+**Trạng thái:** Đang triển khai từng lát cắt có test; RT-00 đến RT-05 đã có
+implementation, RT-06/RT-07 đã có event/fallback foundation và vẫn còn các
+mutation producer and status-component items mở.
 
 ---
 
@@ -516,35 +517,32 @@ thị ngay; snapshot mới tự thay đúng section.
 
 ### RT-06 — WebSocket/SSE event bus
 
-- [~] Existing authenticated WebSocket polling now fingerprints shared
-  snapshot generations and emits cluster-scoped `snapshot_changed` events;
-  the complete broadcaster, mutation producers, debounce, and reconnect
-  protocol remain open.
-- [ ] Tạo broadcaster trong `dashboard/ws.py` hoặc module mới; map connection
-  theo `cluster_id` và user session.
-- [ ] Auth WebSocket giống HTTP; session product Vitastor/cluster scope phải
-  bị chặn đúng.
-- [ ] Collector publish `snapshot_changed` sau khi commit snapshot thành công.
+- [x] Persistent event broadcaster metadata được lưu theo `cluster_id` trong
+  `shared/cluster_events.py`; payload chỉ là invalidation hint, không chứa
+  snapshot lớn hoặc secret.
+- [x] Tạo endpoint `/ws/cluster-state`; auth dùng session HTTP, Vitastor bị
+  chặn và `cluster_id` trên query phải khớp cluster đã chọn.
+- [x] Collector/snapshot publisher phát `snapshot_changed` sau khi commit
+  snapshot/section thành công.
 - [ ] Worker publish `action_state_changed` sau mỗi transition state bền vững.
 - [ ] CRUSH/Pool mutation publish sau post-check, không publish “success” ngay
   khi mới enqueue.
 - [ ] Debounce event liên tiếp trong khoảng 100–300 ms để một batch query chỉ
-  tạo một lần refresh UI.
-- [ ] Client reconnect exponential backoff; khi reconnect phải fetch snapshot
-  một lần để bù event bị mất.
-- [ ] Có polling fallback khi WebSocket không được proxy hỗ trợ.
+  tạo một lần refresh UI; hiện server giữ event mới nhất và client coalesce
+  bằng generation.
+- [x] Client reconnect exponential backoff; HTTP polling vẫn là fallback khi
+  WebSocket không được proxy hỗ trợ hoặc event bị mất.
 
 **Exit gate:** mở DevTools vẫn thấy event/GET đúng cluster; đóng WebSocket
 không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
 
 ### RT-07 — Chuẩn hóa frontend status/freshness
 
-- [~] Health and Pools React pages now use abortable, sequence-safe reads;
-  hidden tabs stop polling, visibility resume triggers one fetch, and manual
-  health refresh buttons prevent duplicate requests. A shared hook/component
-  and equivalent treatment for every remaining section are still open.
-- [ ] Tạo một component/hook dùng chung, ví dụ `useClusterSnapshot()` hoặc
-  `ClusterFreshnessBadge`.
+- [~] Health and Pools React pages now use abortable, sequence-safe reads,
+  shared cluster event invalidation, hidden-tab handling, and HTTP fallback.
+  Equivalent treatment for every remaining section is still open.
+- [x] Tạo shared hook `useClusterSnapshotEvents()` với reconnect backoff,
+  cluster filtering và no-payload event handling.
 - [ ] Các trạng thái phải phân biệt:
   - `loading`: chưa có snapshot;
   - `refreshing`: đang lấy snapshot mới nhưng vẫn có dữ liệu cũ;
@@ -564,6 +562,15 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
 
 **Exit gate:** mọi trang có cùng cách hiển thị freshness, không còn refresh loop
 3 giây và không nhấp nháy toàn trang.
+
+**RT-06/RT-07 evidence (2026-09-14):**
+
+- `tests/test_cluster_events.py`, `tests/test_cluster_snapshot.py`,
+  `tests/test_dashboard_ws.py`: **18 passed**.
+- Health/Pool/PG/CRUSH/Nodes/collector regression: **68 passed**.
+- Node 20 frontend type-check and production build: **passed**.
+- Remaining: action-state producers, mutation post-check invalidation,
+  universal freshness badge, and event/load observability.
 
 ### RT-08 — Invalidation sau mutation và liên kết trạng thái
 

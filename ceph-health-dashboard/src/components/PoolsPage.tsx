@@ -16,6 +16,7 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
+import { useClusterSnapshotEvents } from "../useClusterSnapshotEvents";
 
 type PoolRow = {
   name: string;
@@ -73,6 +74,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   const [rows, setRows] = useState<PoolRow[]>(bootstrap.pools || []);
   const [snapshotMeta, setSnapshotMeta] = useState<SnapshotMeta>(bootstrap.snapshotMeta || {});
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const eventVersion = useClusterSnapshotEvents(bootstrap.clusterId);
   const lastGeneration = useRef<number | null>(bootstrap.snapshotMeta?.generation ?? null);
   const initial = bootstrap.selectedPool || (bootstrap.pools.some((row) => row.name === "test") ? "test" : bootstrap.pools[0]?.name || "");
   const [selected, setSelected] = useState(initial);
@@ -131,7 +133,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
     const timer = window.setInterval(load, 10_000);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); activeController?.abort(); };
-  }, [bootstrap.clusterId]);
+  }, [bootstrap.clusterId, eventVersion]);
 
   useEffect(() => {
     if (bootstrap.actionSuccess !== "set_pool_protection") return;
