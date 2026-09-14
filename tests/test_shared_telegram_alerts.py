@@ -38,6 +38,27 @@ def _mock_humanizer_router(monkeypatch, content):
     monkeypatch.setattr(telegram_humanizer, "build_router_client", lambda *_args: Client())
 
 
+def test_incident_alert_skips_humanizer_for_clean_short_excerpt(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_bot_token", "token")
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_chat_id", "chat")
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True)
+    calls = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args[3]))
+
+    def unexpected_humanizer(*_args, **_kwargs):
+        raise AssertionError("clean short excerpts must not call the humanizer")
+
+    monkeypatch.setattr(telegram_alerts, "_humanize_sync", unexpected_humanizer)
+    telegram_alerts.send_incident_alert(
+        "MON_DOWN",
+        "HEALTH_ERR",
+        "Một Monitor đang không hoạt động.",
+    )
+
+    assert len(calls) == 1
+    assert "Một Monitor đang không hoạt động." in calls[0]
+
+
 def test_humanizer_accepts_short_vietnamese_response(monkeypatch):
     _mock_humanizer_router(
         monkeypatch,

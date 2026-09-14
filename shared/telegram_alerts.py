@@ -425,7 +425,8 @@ def send_incident_alert(
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
     excerpt = _compact_incident_excerpt(log_excerpt, _MAX_EXCERPT_CHARS)
     explanation = _translate_incident_log(ceph_code, log_excerpt)
-    excerpt = _humanize_sync(log_excerpt, context=f"log gốc {ceph_code}")
+    if _needs_humanization(log_excerpt):
+        excerpt = _humanize_sync(log_excerpt, context=f"log gốc {ceph_code}")
     reminder_prefix = "🔁 NHẮC LẠI · " if reminder else ""
     text = f"{reminder_prefix}{prefix} Cụm Ceph: {ceph_code}"
     text += f"\n📝 Diễn giải: {explanation}"
