@@ -981,6 +981,7 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             enabled=cluster.telegram_enabled if has_cluster_channel else None,
             daemon_types=payload.get("affected_daemons"),
             rca_stage=payload.get("rca_stage"),
+            background=settings.telegram_ai_humanize_enabled,
         )
     except Exception:
         logger.exception("log_analysis: gửi cảnh báo Telegram thất bại")

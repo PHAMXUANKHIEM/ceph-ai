@@ -57,6 +57,46 @@ def test_incident_alert_skips_humanizer_for_clean_short_excerpt(monkeypatch):
 
     assert len(calls) == 1
     assert "Một Monitor đang không hoạt động." in calls[0]
+    assert "🔎 Chi tiết kỹ thuật:" in calls[0]
+
+
+def test_incident_alert_humanizes_machine_excerpt(monkeypatch):
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_bot_token", "token")
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_chat_id", "chat")
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True)
+    calls = []
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args[3]))
+    seen = []
+    monkeypatch.setattr(
+        telegram_alerts,
+        "_humanize_sync",
+        lambda value, **kwargs: (seen.append((value, kwargs)), "OSD 2 đang DOWN trên node 10.20.1.195.")[1],
+    )
+
+    telegram_alerts.send_incident_alert(
+        "OSD_DOWN",
+        "HEALTH_WARN",
+        "status: DOWN\nnode: 10.20.1.195",
+    )
+
+    assert len(seen) == 1
+    assert calls and "📖 Giải thích chi tiết:" in calls[0]
+
+
+def test_incident_alert_background_mode_queues_delivery(monkeypatch):
+    queued = []
+    monkeypatch.setattr(
+        telegram_alerts._BACKGROUND_ALERT_EXECUTOR,
+        "submit",
+        lambda callback: queued.append(callback),
+    )
+
+    telegram_alerts.send_incident_alert(
+        "MON_DOWN", "HEALTH_ERR", "mon.a is down", background=True
+    )
+
+    assert len(queued) == 1
+
 
 
 def test_humanizer_accepts_short_vietnamese_response(monkeypatch):
@@ -252,7 +292,7 @@ def test_osd_down_alert_explains_deactivate_container_and_github_metadata(monkey
     assert "OSD 2 trên node 10.20.1.195 đang DOWN" in calls[0]
     assert "đã xoá container tạm phục vụ deactivate OSD" in calls[0]
     assert "không phải lỗi kết nối GitHub" in calls[0]
-    assert "🔎 Log gốc:" in calls[0]
+    assert "📖 Giải thích chi tiết:" in calls[0]
 
 
 def test_unknown_incident_alert_still_has_human_explanation(monkeypatch):
@@ -265,7 +305,7 @@ def test_unknown_incident_alert_still_has_human_explanation(monkeypatch):
     telegram_alerts.send_incident_alert("NEW_CEPH_CHECK", "HEALTH_WARN", "raw detail")
 
     assert "📝 Diễn giải:" in calls[0]
-    assert "🔎 Log gốc:" in calls[0]
+    assert "🔎 Chi tiết kỹ thuật:" in calls[0]
 
 
 def test_send_incident_alert_skips_when_not_configured(monkeypatch):

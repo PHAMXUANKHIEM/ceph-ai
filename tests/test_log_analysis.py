@@ -90,6 +90,31 @@ def test_rgw_finding_uses_dedicated_ai_alert_label(monkeypatch):
     assert "ceph status" not in sent[0][3]
 
 
+def test_log_finding_alert_uses_background_delivery(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(
+        telegram_alerts,
+        "send_log_finding_alert",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+    payload = {
+        "verdict": "FINDING",
+        "evidence_pattern_ids": ["pattern-1"],
+        "severity": "WARNING",
+        "confidence": "HIGH",
+        "title": "OSD chậm",
+        "summary": "Latency tăng",
+        "root_cause": "Disk nghẽn",
+        "recommended_action_id": "investigate_manually",
+        "validation_notes": None,
+    }
+
+    log_analysis._maybe_alert(payload, [], None)
+
+    assert captured["background"] is True
+
+
 def test_generic_finding_notification_is_concise_too(monkeypatch):
     sent = []
     monkeypatch.setattr(telegram_alerts, "_send", lambda *args: sent.append(args))
