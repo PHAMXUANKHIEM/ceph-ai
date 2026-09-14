@@ -121,6 +121,48 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     assert len(notifications) == 2
 
 
+def test_nightly_multi_agent_reports_are_passed_to_single_writer(monkeypatch, tmp_path):
+    state_path = tmp_path / "nightly.json"
+    captured = {}
+    monkeypatch.setattr(supervisor, "_dirty_checkout", lambda repo: "")
+    monkeypatch.setattr(supervisor, "send_code_repair_alert", lambda message: None)
+    monkeypatch.setattr(supervisor.settings, "ai_nightly_multi_agent_analysis_enabled", True, raising=False)
+    monkeypatch.setattr(
+        supervisor,
+        "collect_nightly_multi_agent_analysis",
+        lambda repo, evidence: (["[ai_product / claude]\nbounded finding"], ["safety_budget: timeout"]),
+    )
+
+    def fake_run(evidence, config, *, force):
+        captured["evidence"] = evidence
+        captured["config"] = config
+        return SimpleNamespace(
+            status="NO_CHANGE", fingerprint="fp", branch=None, commit=None,
+            changed_files=[], review_rounds=0, error=None,
+        )
+
+    monkeypatch.setattr(supervisor, "run_repair", fake_run)
+    now = datetime(2026, 8, 30, 17, 0, tzinfo=timezone.utc)
+
+    assert supervisor.run_nightly_ai_improvement(tmp_path, state_path, now=now) is True
+    assert "bounded finding" in captured["evidence"]
+    saved = json.loads(state_path.read_text())
+    assert saved["analysis_status"] == "COMPLETED"
+    assert saved["analysis_reports"] == 1
+    assert saved["analysis_failures"] == ["safety_budget: timeout"]
+
+
+def test_nightly_analysis_redacts_assignment_and_json_secrets():
+    text = 'TOKEN=super-secret "password":"another-secret" private_key:third-secret'
+
+    redacted = supervisor._redact_nightly_text(text)
+
+    assert "super-secret" not in redacted
+    assert "another-secret" not in redacted
+    assert "third-secret" not in redacted
+    assert redacted.count("<redacted>") == 3
+
+
 def test_nightly_due_is_idempotent_when_systemd_starts_late():
     now = datetime(2026, 8, 30, 20, 15, tzinfo=timezone.utc)
 

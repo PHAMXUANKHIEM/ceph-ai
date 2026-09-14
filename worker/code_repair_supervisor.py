@@ -8,9 +8,13 @@ evaluate the deployment and promote or roll it back.
 from __future__ import annotations
 
 import fcntl
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 import os
+import re
+import shutil
+import tempfile
 import time
 import subprocess
 import threading
@@ -29,6 +33,9 @@ from worker.code_repair import (
     clean_evidence,
     reconcile_stale_attempts_file,
     run_repair,
+    _provider_command,
+    _role_account_dirs,
+    _run,
 )
 from worker import ceph_capability_learning as ceph_learning
 from shared import service_health
@@ -47,6 +54,26 @@ NIGHTLY_REGRESSION_TEST_COMMAND = (
 )
 NIGHTLY_AI_STEP_TIMEOUT_SECONDS = 1200
 NIGHTLY_MAX_REVIEW_ROUNDS = 2
+NIGHTLY_ANALYSIS_REPORT_LIMIT = 4_500
+NIGHTLY_ANALYSIS_TOTAL_LIMIT = 16_000
+_NIGHTLY_SECRET_RE = re.compile(
+    r"(?i)(?P<prefix>[\"']?(?:api[_-]?key|secret|password|token|authorization|private[_-]?key)"
+    r"[\"']?\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\"'\s,}]+)(?P=quote)"
+)
+NIGHTLY_ANALYSTS = (
+    (
+        "ai_product",
+        "provider routing, chat-with-AI, two-agent workflows, and user-visible AI behavior",
+    ),
+    (
+        "safety_budget",
+        "rate limits, provider budgets, isolation, permissions, secrets, and failure handling",
+    ),
+    (
+        "tests_observability",
+        "regression tests, telemetry, lifecycle state, logs, and operational diagnosability",
+    ),
+)
 NIGHTLY_IMPROVEMENT_INSTRUCTIONS = """This is a proactive nightly AI improvement task, not an incident repair.
 
 Review only the ceph-ai AI product surface: provider routing, Codex/Claude integration, Chat-with-AI,
@@ -58,6 +85,149 @@ VERDICT: NO_CHANGE_NEEDED
 Otherwise give the Implementer an exact, low-risk plan and tests. The Implementer must keep the same scope
 and add or update at least one regression test under tests/ in the candidate diff.
 """
+
+
+def _redact_nightly_text(value: str) -> str:
+    """Redact assignment and JSON-style credential values before persistence/logging."""
+    return _NIGHTLY_SECRET_RE.sub(
+        lambda match: f"{match.group('prefix')}{match.group('quote')}<redacted>{match.group('quote')}",
+        value or "",
+    )
+
+
+def _nightly_analyst_prompt(role: str, focus: str, evidence: str) -> str:
+    return f"""You are the read-only {role} analyst in a nightly multi-agent review of ceph-ai.
+
+Inspect the isolated repository and analyze only this focus: {focus}.
+Do not edit files, create files, commit, push, deploy, call Ceph, change configuration,
+or access credentials. This is an advisory report for a separate Planner and one Implementer.
+Return a concise report with: findings backed by exact files/functions, one or more bounded
+improvement candidates if justified, risks, and the smallest regression-test idea. Do not
+recommend more than one implementation candidate. If nothing is justified, say so clearly.
+
+Nightly task context (already redacted):
+---
+{evidence[:4_000]}
+---
+"""
+
+
+def _run_nightly_analyst(
+    repo: Path,
+    evidence: str,
+    role: str,
+    focus: str,
+    *,
+    provider: str,
+    model: str,
+    account_profile: str,
+    timeout_seconds: int,
+) -> tuple[str, str]:
+    """Run one bounded read-only analyst in its own temporary worktree."""
+    root = Path(tempfile.mkdtemp(prefix="ceph-ai-nightly-analysis-"))
+    worktree = root / "repo"
+    try:
+        _run(
+            ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
+            cwd=repo,
+            timeout=60,
+        )
+        config = RepairConfig(repo=repo, planner_account_profile=account_profile)
+        codex_home, claude_config_dir = _role_account_dirs(config, account_profile)
+        selected_provider, command = _provider_command(
+            provider,
+            worktree,
+            _nightly_analyst_prompt(role, focus, evidence),
+            timeout_seconds,
+            claude_config_dir=claude_config_dir,
+            codex_home=codex_home,
+            model=model,
+            mode="review",
+        )
+        result = _run(
+            command,
+            cwd=worktree,
+            timeout=timeout_seconds,
+            input_text=_nightly_analyst_prompt(role, focus, evidence),
+            check=False,
+        )
+        if result.returncode != 0:
+            details = _redact_nightly_text(result.stdout[-1200:])
+            raise RuntimeError(f"{selected_provider} exited with {result.returncode}: {details}")
+        status = _run(["git", "status", "--porcelain"], cwd=worktree, check=False, timeout=30)
+        if status.stdout.strip():
+            raise RuntimeError("analyst modified its read-only worktree")
+        report = _redact_nightly_text(result.stdout or "")
+        report = report.strip()[-NIGHTLY_ANALYSIS_REPORT_LIMIT:]
+        if not report:
+            raise RuntimeError("analyst returned an empty report")
+        return role, f"[{role} / {selected_provider}]\n{report}"
+    finally:
+        cleanup_ok = True
+        if worktree.exists():
+            cleanup = _run(
+                ["git", "worktree", "remove", "--force", str(worktree)],
+                cwd=repo,
+                check=False,
+                timeout=60,
+            )
+            cleanup_ok = cleanup.returncode == 0
+            if not cleanup_ok:
+                logger.error(
+                    "could not remove nightly analyst worktree %s; preserving it for safe cleanup: %s",
+                    worktree,
+                    _redact_nightly_text(cleanup.stdout[-1200:]),
+                )
+        if cleanup_ok:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def collect_nightly_multi_agent_analysis(repo: Path, evidence: str) -> tuple[list[str], list[str]]:
+    """Collect independent advisory reports without granting any agent write access."""
+    if not settings.ai_nightly_multi_agent_analysis_enabled:
+        return [], []
+    provider = settings.code_repair_planner_provider or settings.code_repair_provider
+    account_profile = _configured_account_profile(
+        settings.code_repair_planner_account_source,
+        settings.code_repair_planner_account_profile,
+    )
+    reports: list[str] = []
+    failures: list[str] = []
+    max_workers = min(settings.ai_nightly_multi_agent_max_parallel, len(NIGHTLY_ANALYSTS))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="nightly-analyst") as pool:
+        futures = {
+            pool.submit(
+                _run_nightly_analyst,
+                repo,
+                evidence,
+                role,
+                focus,
+                provider=provider,
+                model=settings.code_repair_planner_model,
+                account_profile=account_profile,
+                timeout_seconds=settings.ai_nightly_multi_agent_timeout_seconds,
+            ): role
+            for role, focus in NIGHTLY_ANALYSTS
+        }
+        for future in as_completed(futures):
+            role = futures[future]
+            try:
+                _, report = future.result()
+            except Exception as exc:
+                safe_error = _redact_nightly_text(str(exc))[:600]
+                failures.append(f"{role}: {safe_error}")
+                logger.warning("nightly analyst %s failed: %s", role, safe_error)
+            else:
+                reports.append(report)
+    reports.sort()
+    return reports, failures
+
+
+def _nightly_analysis_context(reports: list[str]) -> str:
+    if not reports:
+        return ""
+    context = "\n\n".join(reports)
+    return "\n\nIndependent read-only analyst reports (advisory; verify before changing):\n---\n" + context[:NIGHTLY_ANALYSIS_TOTAL_LIMIT] + "\n---"
 
 
 def _configured_account_profile(source: str, profile: str) -> str:
@@ -213,13 +383,28 @@ def _run_nightly_ai_improvement_locked(
     _save_nightly_state(state_path, state)
     send_code_repair_alert(
         "🌙 AI NIGHTLY IMPROVEMENT BẮT ĐẦU\n"
-        "Hai AI đang rà soát: ‘Cần nâng cấp gì cho phần AI của tool này?’\n"
+        "Các analyst read-only đang rà soát; sau đó một Planner/Implementer duy nhất mới quyết định và sửa.\n"
         "Phạm vi: AI/chat/router/giới hạn/quan sát/học; chỉ worktree + test, không đụng tài khoản hay cấu hình bí mật."
         + ("\n⚠️ Dashboard đã cho phép chạy hôm nay dù checkout có thay đổi chưa commit." if dirty_checkout else "")
     )
+    analysis_reports, analysis_failures = collect_nightly_multi_agent_analysis(
+        repo, NIGHTLY_IMPROVEMENT_EVIDENCE,
+    )
+    analysis_context = _nightly_analysis_context(analysis_reports)
+    state.update({
+        "analysis_status": (
+            "COMPLETED" if analysis_reports else
+            "FALLBACK_NO_REPORTS" if settings.ai_nightly_multi_agent_analysis_enabled else
+            "DISABLED"
+        ),
+        "analysis_reports": len(analysis_reports),
+        "analysis_failures": analysis_failures,
+    })
+    _save_nightly_state(state_path, state)
+    evidence = NIGHTLY_IMPROVEMENT_EVIDENCE + analysis_context
     repair_state = state_path.with_name("nightly-ai-improvement-repairs.json")
     result = run_repair(
-        NIGHTLY_IMPROVEMENT_EVIDENCE,
+        evidence,
         RepairConfig(
             repo=repo,
             provider=settings.code_repair_provider,
