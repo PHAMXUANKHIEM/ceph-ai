@@ -6,8 +6,8 @@
 
 **Ngày lập kế hoạch:** 2026-09-14
 
-**Trạng thái:** Chưa triển khai. Đây là tài liệu để đọc, review và thực hiện
-từng bước.
+**Trạng thái:** Đang triển khai từng lát cắt có test; RT-00 đến RT-03 đang được
+thực hiện, RT-04 trở đi chưa bắt đầu.
 
 ---
 
@@ -405,15 +405,37 @@ cho mỗi tier; không có loop chết; snapshot có `collected_at` tăng đều
 
 ### RT-03 — Warmup và lifecycle
 
-- [ ] Đưa warmup hiện tại về gọi collector/snapshot service thay vì mỗi page
-  loader một kiểu.
-- [ ] App startup không block chờ warmup; Dashboard trả UI ngay.
-- [ ] Khi cluster mới active, scheduler tự đăng ký; khi inactive, dừng poll.
-- [ ] Khi config cluster/credential/exec mode đổi, collector restart an toàn.
+- [~] Warmup startup đã đọc/hydrate shared persistent cluster snapshot thay vì
+  phát sinh thêm Ceph query; các page-cache warmer cũ vẫn giữ tạm cho đến khi
+  RT-05 chuyển Pools/PGs/Block Storage sang snapshot read model.
+- [x] App startup không block chờ warmup; Dashboard trả UI ngay. Warmup hiện
+  tại đã chạy daemon background thread và không chạy trong test.
+- [x] Khi cluster mới active, supervisor tự đăng ký trong tối đa 5 giây; khi
+  inactive, observed loop tự dừng qua lần refresh cấu hình kế tiếp.
+- [x] Khi config cluster/credential/exec mode đổi, collector đọc lại cấu hình
+  ở đầu poll kế tiếp; khi inactive supervisor gửi `stop_event` để loop thoát
+  nhanh và không chờ hết chu kỳ sleep.
 - [ ] Khi Watcher restart, snapshot disk vẫn đọc được; UI hiện tuổi dữ liệu và
   trạng thái stale thay vì trắng trang.
 - [x] Khi app có nhiều process/container, dùng lock liên process hoặc tách
   collector thành service độc lập; không dựa riêng vào `threading.Lock`.
+
+**Bằng chứng RT-03 slice hiện tại:**
+
+- `watcher/main.py` có `_run_observed_cluster_supervisor()` và registry chống
+  tạo loop trùng; supervisor phát hiện cluster active mới mà không cần restart
+  Watcher.
+- Cluster loop vẫn đọc lại cấu hình ở mỗi poll, nên thay đổi node/credential/
+  exec mode được áp dụng ở poll kế tiếp; supervisor truyền `stop_event` để
+  dừng hợp tác khi cluster bị tắt/xoá.
+- CRUD/toggle/edit/delete tại `dashboard/routes/clusters.py` không còn restart
+  Watcher; chỉ restart Worker ở các đường cần đồng bộ backup scheduler.
+- `dashboard/cache_warmup.py` đọc snapshot theo từng `cluster_id` trong daemon
+  thread; nếu chưa có snapshot thì chỉ ghi log chờ Watcher, không tự chạy SSH.
+- Test `test_reconcile_observed_cluster_threads_tracks_add_deactivate_and_reactivate`:
+  **pass**.
+- Test `test_run_observed_cluster_loop_honors_stop_event_before_poll`: **pass**.
+- Regression snapshot/collector/process-lock: **19 passed**.
 
 **Exit gate:** restart web, restart Watcher, restart cả stack và disable/enable
 cluster đều không tạo hai collector cùng cluster.

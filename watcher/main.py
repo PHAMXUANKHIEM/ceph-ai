@@ -63,6 +63,10 @@ OnTransition = Callable[[Optional[str], dict], None]
 _BACKGROUND_SCAN_LOCKS: dict[str, threading.Lock] = {}
 _BACKGROUND_SCAN_LOCKS_GUARD = threading.Lock()
 _WATCHER_PROCESS_LOCK_HANDLE = None
+# Cluster rows are cheap to enumerate compared with a Ceph health query.  A
+# short discovery cadence lets the Dashboard toggle/add a cluster without
+# restarting Watcher, while each cluster keeps its own normal poll cadence.
+_CLUSTER_DISCOVERY_INTERVAL_SECONDS = 5
 
 
 def _acquire_watcher_process_lock(lock_path: str | None = None):
@@ -294,6 +298,7 @@ def send_due_incident_reminders(now: datetime | None = None) -> int:
                 reminder=True,
                 diagnosis_text=incident.diagnosis_text,
                 rationale=action.rationale if action else None,
+                background=settings.telegram_ai_humanize_enabled,
             )
             incident.telegram_reminded_at = now
             sent += 1
@@ -769,7 +774,10 @@ def build_and_publish_incident(
         # swallows Telegram failures, so RabbitMQ publishing still proceeds.
         if not notification_muted:
             telegram_alerts.send_incident_alert(
-                ceph_code, check_detail.get("severity"), log_excerpt
+                ceph_code,
+                check_detail.get("severity"),
+                log_excerpt,
+                background=settings.telegram_ai_humanize_enabled,
             )
         envelopes.append(
             publisher.build_envelope(
@@ -1412,6 +1420,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
                 bot_token=cluster.telegram_bot_token if has_cluster_channel else None,
                 chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
                 enabled=cluster.telegram_enabled if has_cluster_channel else None,
+                background=settings.telegram_ai_humanize_enabled,
             )
         envelopes.append(
             publisher.build_envelope(
@@ -1458,7 +1467,81 @@ def _refresh_active_observed_cluster(cluster_id: str) -> Cluster | None:
         return current
 
 
-def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = None) -> None:
+def _reconcile_observed_cluster_threads(
+    active_clusters: list[Cluster],
+    thread_registry: dict[str, tuple[threading.Thread, threading.Event]],
+    *,
+    thread_factory: Callable[..., threading.Thread] = threading.Thread,
+) -> None:
+    """Start newly-active observed clusters and forget stopped ones.
+
+    The observed loop itself re-reads its Cluster row every poll and exits
+    when the row becomes inactive/deleted.  This reconciliation layer owns
+    only thread membership, which keeps add/reactivate operations idempotent
+    and avoids a second loop during the small hand-off window after a stop.
+    ``thread_factory`` is injectable so this lifecycle policy can be tested
+    without starting real polling threads.
+    """
+    active_by_id = {
+        cluster.id: cluster
+        for cluster in active_clusters
+        if not cluster.is_default
+    }
+
+    for cluster_id, (thread, stop_event) in list(thread_registry.items()):
+        if cluster_id not in active_by_id:
+            stop_event.set()
+        if cluster_id not in active_by_id and not thread.is_alive():
+            thread_registry.pop(cluster_id, None)
+
+    for cluster_id, cluster in active_by_id.items():
+        existing = thread_registry.get(cluster_id)
+        if existing is not None and existing[0].is_alive():
+            # The row may have been re-enabled before the old loop observed
+            # the stop request. Let that still-live loop continue rather than
+            # forcing an unnecessary stop/start gap.
+            existing[1].clear()
+            continue
+        stop_event = threading.Event()
+        thread = thread_factory(
+            target=run_observed_cluster_loop,
+            args=(cluster,),
+            kwargs={"stop_event": stop_event},
+            name=f"watcher-cluster-{cluster.name}",
+            daemon=True,
+        )
+        thread_registry[cluster_id] = (thread, stop_event)
+        thread.start()
+        logger.info(
+            "run_all_clusters: started observed-cluster loop for %r (id=%s)",
+            cluster.name,
+            cluster.id,
+        )
+
+
+def _run_observed_cluster_supervisor() -> None:
+    """Keep observed-cluster loop membership aligned with active DB rows."""
+    thread_registry: dict[str, tuple[threading.Thread, threading.Event]] = {}
+    while True:
+        try:
+            with db.SessionLocal() as session:
+                active_clusters = list_active_clusters(session)
+                session.expunge_all()
+            _reconcile_observed_cluster_threads(active_clusters, thread_registry)
+        except Exception:
+            # A transient DB failure must not kill the supervisor. Existing
+            # loops continue their own safe refresh/query cycle; the next
+            # discovery tick retries membership reconciliation.
+            logger.exception("run_all_clusters: observed-cluster discovery failed")
+        time.sleep(_CLUSTER_DISCOVERY_INTERVAL_SECONDS)
+
+
+def run_observed_cluster_loop(
+    cluster: Cluster,
+    max_iterations: Optional[int] = None,
+    *,
+    stop_event: threading.Event | None = None,
+) -> None:
     """Multi-cluster observability Phase 1: the loop for any cluster OTHER
     than the default one — core health poll + Incident creation + heartbeat,
     plus the read-only CRUSH structure/distribution and RBD volume-performance
@@ -1488,12 +1571,17 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        if stop_event is not None and stop_event.is_set():
+            logger.info("run_observed_cluster_loop: stop requested for cluster id=%s", cluster.id)
+            return
         poll_started_monotonic = time.monotonic()
         refreshed_cluster = _refresh_active_observed_cluster(cluster.id)
         if refreshed_cluster is None:
             logger.info("run_observed_cluster_loop: cluster id=%s is inactive or removed; stopping thread", cluster.id)
             return
         cluster = refreshed_cluster
+        if stop_event is not None and stop_event.is_set():
+            return
         mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
         try:
             health = query_cluster_health_with(
@@ -1562,6 +1650,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 last_status = current_status
                 last_checks = current_checks
 
+            if stop_event is not None and stop_event.is_set():
+                return
             volume_now = datetime.utcnow()
             if (
                 last_volume_scan_at is None
@@ -1580,6 +1670,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                     )
                 last_volume_scan_at = volume_now
 
+            if stop_event is not None and stop_event.is_set():
+                return
             trash_now = datetime.utcnow()
             if (
                 last_trash_capacity_scan_at is None
@@ -1594,6 +1686,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 last_trash_capacity_scan_at = trash_now
 
             now = datetime.utcnow()
+            if stop_event is not None and stop_event.is_set():
+                return
             if (
                 last_crush_scan_at is None
                 or (now - last_crush_scan_at).total_seconds() >= settings.crush_scan_interval_seconds
@@ -1629,6 +1723,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 last_crush_scan_at = now
 
             if settings.capacity_forecast_enabled and (
+                stop_event is None or not stop_event.is_set()
+            ) and (
                 last_capacity_forecast_scan_at is None
                 or (now - last_capacity_forecast_scan_at).total_seconds()
                 >= settings.capacity_forecast_scan_interval_seconds
@@ -1642,6 +1738,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 last_capacity_forecast_scan_at = now
 
             if (
+                stop_event is None or not stop_event.is_set()
+            ) and (
                 last_capability_scan_at is None
                 or (now - last_capability_scan_at).total_seconds()
                 >= settings.capability_inventory_scan_interval_seconds
@@ -1661,6 +1759,8 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
             # loop already covers every observed cluster's rows too — calling
             # it per observed cluster would be N identical redundant DELETEs.
             if settings.log_intel_enabled and (
+                stop_event is None or not stop_event.is_set()
+            ) and (
                 last_log_intel_scan_at is None
                 or (now - last_log_intel_scan_at).total_seconds()
                 >= settings.log_intel_scan_interval_seconds
@@ -1687,16 +1787,18 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
             logger.exception("run_observed_cluster_loop(%r): unexpected error during poll iteration", cluster.name)
 
         iterations += 1
-        time.sleep(max(0, settings.watcher_poll_interval_seconds))
+        if stop_event is not None:
+            stop_event.wait(max(0, settings.watcher_poll_interval_seconds))
+        else:
+            time.sleep(max(0, settings.watcher_poll_interval_seconds))
 
 
 def run_all_clusters() -> None:
     """Real production entrypoint (multi-cluster observability Phase 1):
     resolves the default cluster (seeding it from `.env` on first run, same
     as Dashboard/Worker — see shared/clusters.py::ensure_default_cluster),
-    starts one background thread per additional ACTIVE `Cluster` row
-    running `run_observed_cluster_loop`, then runs the default cluster's
-    own `run()` loop — unchanged in every way except tagging its writes
+    starts one background supervisor that tracks additional ACTIVE `Cluster`
+    rows, then runs the default cluster's own `run()` loop — unchanged in every way except tagging its writes
     with the default cluster's real id — on the main thread (blocking, so
     the process exits if and only if the default loop ever returns, same
     as before this function existed)."""
@@ -1707,8 +1809,6 @@ def run_all_clusters() -> None:
         return
     with db.SessionLocal() as session:
         default_cluster_id = get_default_cluster_id(session)
-        observed_clusters = [c for c in list_active_clusters(session) if not c.is_default]
-        session.expunge_all()
 
     vitastor_thread = threading.Thread(
         target=vitastor_monitor.run_all_clusters_loop,
@@ -1718,12 +1818,13 @@ def run_all_clusters() -> None:
     vitastor_thread.start()
     logger.info("run_all_clusters: started dynamic Vitastor monitoring loop")
 
-    for cluster in observed_clusters:
-        thread = threading.Thread(
-            target=run_observed_cluster_loop, args=(cluster,), name=f"watcher-cluster-{cluster.name}", daemon=True
-        )
-        thread.start()
-        logger.info("run_all_clusters: started observed-cluster loop for %r (id=%s)", cluster.name, cluster.id)
+    observed_supervisor_thread = threading.Thread(
+        target=_run_observed_cluster_supervisor,
+        name="watcher-cluster-supervisor",
+        daemon=True,
+    )
+    observed_supervisor_thread.start()
+    logger.info("run_all_clusters: started observed-cluster discovery supervisor")
 
     run(
         # Default-cluster AI incident creation is owned exclusively by

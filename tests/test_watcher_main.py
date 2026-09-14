@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 import threading
@@ -846,6 +847,77 @@ def test_refresh_active_observed_cluster_reads_current_connection_fields(isolate
         session.get(watcher_main.Cluster, cluster_id).is_active = False
         session.commit()
     assert watcher_main._refresh_active_observed_cluster(cluster_id) is None
+
+
+def test_reconcile_observed_cluster_threads_tracks_add_deactivate_and_reactivate():
+    class FakeThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            self.alive = True
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return self.alive
+
+    active_a = SimpleNamespace(id="cluster-a", name="cluster-a", is_default=False)
+    active_b = SimpleNamespace(id="cluster-b", name="cluster-b", is_default=False)
+    default = SimpleNamespace(id="default", name="default", is_default=True)
+    created = []
+
+    def make_thread(**kwargs):
+        thread = FakeThread(**kwargs)
+        created.append(thread)
+        return thread
+
+    registry = {}
+    watcher_main._reconcile_observed_cluster_threads(
+        [default, active_a], registry, thread_factory=make_thread
+    )
+    assert set(registry) == {"cluster-a"}
+    assert registry["cluster-a"][0].started is True
+
+    first_a, first_a_stop = registry["cluster-a"]
+    watcher_main._reconcile_observed_cluster_threads(
+        [active_a, active_b], registry, thread_factory=make_thread
+    )
+    assert set(registry) == {"cluster-a", "cluster-b"}
+    assert registry["cluster-a"][0] is first_a
+    assert len(created) == 2
+
+    first_a.alive = False
+    watcher_main._reconcile_observed_cluster_threads(
+        [active_b], registry, thread_factory=make_thread
+    )
+    assert set(registry) == {"cluster-b"}
+    assert first_a_stop.is_set() is True
+
+    watcher_main._reconcile_observed_cluster_threads(
+        [active_a, active_b], registry, thread_factory=make_thread
+    )
+    assert set(registry) == {"cluster-a", "cluster-b"}
+    assert registry["cluster-a"][0] is not first_a
+    assert len(created) == 3
+
+
+def test_run_observed_cluster_loop_honors_stop_event_before_poll(monkeypatch):
+    with db_module.SessionLocal() as session:
+        cluster = _make_observed_cluster(session)
+
+    stop_event = threading.Event()
+    stop_event.set()
+    query_calls = []
+    monkeypatch.setattr(
+        watcher_main,
+        "query_cluster_health_with",
+        lambda *args, **kwargs: query_calls.append(1),
+    )
+
+    watcher_main.run_observed_cluster_loop(cluster, max_iterations=1, stop_event=stop_event)
+
+    assert query_calls == []
 
 
 def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(monkeypatch):

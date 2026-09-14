@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
-from dashboard.routes.settings import restart_watcher, restart_worker
+from dashboard.routes.settings import restart_worker
 from dashboard.templating import make_templates
 from shared import db
 from shared.db import Base
@@ -366,34 +366,17 @@ async def create_cluster(
         )
         session.commit()
 
-    # `run_all_clusters()` (watcher/main.py) only ever enumerates the
-    # "Đang hoạt động" cluster list ONCE, at Watcher process startup — one
-    # background poll thread per cluster, started then and never again.
-    # Without restarting Watcher here, a newly-added cluster sits in the DB
-    # with no poll thread ever started for it: no heartbeat, no Incident,
-    # ever — the Dashboard's cluster selector would show it as if it were
-    # never actually being watched. Same "save = restart the process that
-    # reads this config" posture every other config page in this app already
-    # has (Alert Telegram, Settings' own "Kết nối cụm Ceph"). Worker's own
-    # scheduler (worker/backup/scheduler.py::build_scheduler()) has the
-    # exact same "enumerates clusters once, at its own startup" shape
-    # (multi-tenant remediation Phase 3) — restarted too so a cluster
-    # created with backup_enabled already set gets its jobs registered
-    # without a second, separate save.
-    watcher_result, worker_result = await asyncio.gather(
-        asyncio.to_thread(restart_watcher), asyncio.to_thread(restart_worker)
-    )
-    restart_failures = [
-        name for name, result in (("Watcher", watcher_result), ("Worker", worker_result))
-        if not result.get("restarted")
-    ]
-    if restart_failures:
+    # Watcher's cluster supervisor discovers this row without a process
+    # restart. Worker's scheduler still enumerates cluster rows at startup,
+    # so restart only Worker after the DB transaction succeeds.
+    worker_result = await asyncio.to_thread(restart_worker)
+    if not worker_result.get("restarted"):
         return templates.TemplateResponse(
             request, "clusters.html", _clusters_context(
                 user,
                 cluster_create_error=(
-                    f"Đã lưu cụm {submitted['name']!r}, nhưng không restart được "
-                    f"{', '.join(restart_failures)}. Cần restart thủ công để cấu hình có hiệu lực."
+                    f"Đã lưu cụm {submitted['name']!r}, nhưng không restart được Worker. "
+                    "Watcher sẽ tự phát hiện cụm; cần restart Worker thủ công để scheduler đồng bộ."
                 ),
             ),
         )
@@ -403,7 +386,7 @@ async def create_cluster(
         "clusters.html",
         _clusters_context(
             user,
-            cluster_create_success=f"Đã thêm cụm {submitted['name']!r} — Watcher/Worker đã khởi động lại để bắt đầu giám sát/backup ngay.",
+            cluster_create_success=f"Đã thêm cụm {submitted['name']!r} — Watcher sẽ tự giám sát, Worker đã được đồng bộ.",
         ),
     )
 
@@ -415,8 +398,9 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
     default cluster can never be a target here — deactivating it would stop
     Watcher's PRIMARY loop, including every secondary monitor and Worker's
     remediation, none of which this page controls; that stays a config
-    change on /settings' own "Kết nối cụm Ceph" section instead. Restarts
-    Watcher on success (see create_cluster()'s own comment for why)."""
+    change on /settings' own "Kết nối cụm Ceph" section instead. Watcher's
+    supervisor sees the active flag automatically; Worker is restarted because
+    its backup scheduler still registers jobs at process startup."""
     _require_admin_privilege(user)
 
     with db.SessionLocal() as session:
@@ -440,27 +424,22 @@ async def toggle_cluster_active(request: Request, cluster_id: str, user: str = D
         target.is_active = not target.is_active
         session.commit()
 
-    # Same reasoning as create_cluster() above — Watcher only enumerates
-    # "Đang hoạt động" clusters once at startup, so flipping is_active here
-    # has no real effect (poll thread doesn't start/stop) until Watcher
-    # restarts.
-    watcher_result, worker_result = await asyncio.gather(
-        asyncio.to_thread(restart_watcher), asyncio.to_thread(restart_worker)
-    )
-    failed = [name for name, result in (("Watcher", watcher_result), ("Worker", worker_result))
-              if not result.get("restarted")]
-    if failed:
+    # Watcher sees the active flag on its next discovery/refresh tick. Only
+    # Worker needs a restart because its scheduler still registers jobs at
+    # process startup.
+    worker_result = await asyncio.to_thread(restart_worker)
+    if not worker_result.get("restarted"):
         return templates.TemplateResponse(
             request, "clusters.html", _clusters_context(
                 user, cluster_toggle_error=(
-                    f"Đã đổi trạng thái cụm nhưng không restart được {', '.join(failed)}; "
-                    "cần restart thủ công để scheduler đồng bộ."
+                    "Đã đổi trạng thái cụm nhưng không restart được Worker; "
+                    "Watcher sẽ tự đồng bộ, cần restart Worker thủ công để scheduler đồng bộ."
                 )
             )
         )
     return templates.TemplateResponse(
         request, "clusters.html", _clusters_context(
-            user, cluster_toggle_success="Đã đổi trạng thái cụm và đồng bộ Watcher/Worker."
+            user, cluster_toggle_success="Đã đổi trạng thái cụm; Watcher tự đồng bộ, Worker đã được restart."
         )
     )
 
@@ -524,18 +503,15 @@ async def update_cluster_connection(
         for field, value in values.items():
             setattr(target, field, value)
         session.commit()
-    watcher_result, worker_result = await asyncio.gather(
-        asyncio.to_thread(restart_watcher), asyncio.to_thread(restart_worker)
-    )
-    failed = [label for label, result in (("Watcher", watcher_result), ("Worker", worker_result))
-              if not result.get("restarted")]
+    worker_result = await asyncio.to_thread(restart_worker)
+    failed = ["Worker"] if not worker_result.get("restarted") else []
     message = "Đã test và cập nhật kết nối cluster."
     if failed:
         return templates.TemplateResponse(request, "clusters.html", _clusters_context(
             user, cluster_toggle_error=message + f" Không restart được {', '.join(failed)}."
         ))
     return templates.TemplateResponse(request, "clusters.html", _clusters_context(
-        user, cluster_toggle_success=message + " Watcher/Worker đã được đồng bộ."
+        user, cluster_toggle_success=message + " Watcher sẽ tự nhận cấu hình mới; Worker đã được đồng bộ."
     ))
 
 
@@ -672,22 +648,17 @@ async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(
             status_code=409,
         )
 
-    # Same "config only takes effect after a restart" reasoning as
-    # create_cluster()/toggle_cluster_active() above — Watcher's poll
-    # thread and Worker's backup-scheduler jobs for this cluster_id both
-    # only ever get (de)registered once, at process startup. Skipping this
-    # would leave a deleted cluster's Worker backup job still firing —
+    # Watcher's supervisor removes the deleted cluster's poll loop on its next
+    # discovery tick. Worker's backup scheduler still needs a restart: without
+    # it, a deleted cluster's old job could continue firing —
     # worker/backup/cluster_scope.py::get_cluster() re-fetches by id and
     # returns None once the row is gone, and a None cluster means "the
     # DEFAULT cluster" everywhere else in that module — so a stale job
     # would silently start backing up the DEFAULT cluster's images under
-    # the deleted cluster's old schedule. A real data-safety bug, not just
-    # a cosmetic stale-UI one, so both restart unconditionally on success.
-    watcher_result, worker_result = await asyncio.gather(
-        asyncio.to_thread(restart_watcher), asyncio.to_thread(restart_worker)
-    )
-    failed = [name for name, result in (("Watcher", watcher_result), ("Worker", worker_result))
-              if not result.get("restarted")]
+    # the deleted cluster's old schedule. A real data-safety bug, not just a
+    # cosmetic stale-UI one, so restart Worker unconditionally on success.
+    worker_result = await asyncio.to_thread(restart_worker)
+    failed = ["Worker"] if not worker_result.get("restarted") else []
 
     return templates.TemplateResponse(
         request,
@@ -701,7 +672,7 @@ async def delete_cluster(request: Request, cluster_id: str, user: str = Depends(
                 f"{counts['backup_anomalies']} backup anomaly, {counts['heartbeats']} heartbeat. "
                 f"Tổng cộng {counts['all_records']} bản ghi liên quan. "
                 + (f"Không restart được {', '.join(failed)}; cần restart thủ công."
-                   if failed else "Watcher/Worker đã khởi động lại.")
+                   if failed else "Worker đã được đồng bộ; Watcher sẽ tự cập nhật.")
             ),
         ),
     )
@@ -826,10 +797,9 @@ async def update_cluster_backup_config(
         session.commit()
         cluster_name = cluster.name
 
-    # Not restart_watcher() -- backup config only affects Worker's own
-    # scheduler (worker/backup/scheduler.py::build_scheduler(), which
-    # enumerates clusters once at ITS OWN startup, same shape Watcher's
-    # poll-thread startup already has, see create_cluster()'s own comment).
+    # Do not restart Watcher here -- backup config only affects Worker's own
+    # scheduler (worker/backup/scheduler.py::build_scheduler()), while
+    # Watcher's supervisor owns cluster polling membership.
     worker_result = await asyncio.to_thread(restart_worker)
     if not worker_result.get("restarted"):
         return templates.TemplateResponse(
