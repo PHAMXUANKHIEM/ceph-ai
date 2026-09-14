@@ -67,6 +67,10 @@ _BLUESTORE_HEARTBEAT_RE = re.compile(
     r"osd\.(?P<peer_osd>\d+)",
     re.IGNORECASE,
 )
+_LARGE_OMAP_FIELD_RE = re.compile(
+    r"\b(?P<name>bucket|object|keys|threshold|shards|pg)=(?P<value>[^\s]*)",
+    re.IGNORECASE,
+)
 
 _INCIDENT_EXPLANATIONS = {
     "MON_DOWN": "Một Monitor (MON) đang không hoạt động; cụm có thể mất khả năng điều phối nếu không còn đủ MON.",
@@ -155,6 +159,18 @@ def _run_alert_in_background(name: str, callback) -> None:
         logger.exception("could not queue background Telegram alert: %s", name)
 
 
+def _large_omap_evidence_is_empty(value: str | None) -> bool:
+    """Recognize the collector's placeholder when no object was resolved."""
+    lines = [line.strip() for line in (value or "").splitlines() if line.strip()]
+    if len(lines) != 1 or not lines[0].startswith("LARGE_OMAP_EVIDENCE"):
+        return False
+    fields = {
+        match.group("name").lower(): match.group("value").strip()
+        for match in _LARGE_OMAP_FIELD_RE.finditer(lines[0])
+    }
+    return not any(fields.get(name) for name in ("bucket", "object", "keys", "shards", "pg"))
+
+
 def _translate_incident_log(ceph_code: str, log_excerpt: str | None) -> str:
     """Return a short deterministic Vietnamese explanation for an alert.
 
@@ -199,6 +215,37 @@ def _translate_incident_log(ceph_code: str, log_excerpt: str | None) -> str:
         return (
             "Ceph phát hiện OSD xử lý chậm trong BlueStore; cần kiểm tra độ trễ, "
             "mạng và log của các OSD liên quan trước khi kết luận nguyên nhân."
+        )
+    if code == "LARGE_OMAP_OBJECTS":
+        fields = {
+            match.group("name").lower(): match.group("value").strip()
+            for match in _LARGE_OMAP_FIELD_RE.finditer(raw)
+        }
+        evidence_values = [fields.get(name, "") for name in ("bucket", "object", "keys", "threshold", "shards", "pg")]
+        if not any(evidence_values):
+            return (
+                "Ceph phát hiện một object chỉ mục OMAP quá lớn trong quá trình deep-scrub, "
+                "nhưng hệ thống chưa thu thập được tên bucket, object hoặc các chỉ số liên quan. "
+                "Chưa đủ bằng chứng để xác định object nào; cần kiểm tra log deep-scrub và metadata RGW."
+            )
+        details = []
+        if fields.get("bucket"):
+            details.append(f"bucket {fields['bucket']}")
+        if fields.get("object"):
+            details.append(f"object {fields['object']}")
+        if fields.get("keys"):
+            details.append(f"{fields['keys']} key")
+        if fields.get("threshold"):
+            details.append(f"ngưỡng {fields['threshold']}")
+        if fields.get("shards"):
+            details.append(f"{fields['shards']} shard")
+        if fields.get("pg"):
+            details.append(f"PG {fields['pg']}")
+        detail_text = ", ".join(details)
+        return (
+            f"Ceph phát hiện object chỉ mục OMAP lớn ({detail_text}). "
+            "Điều này có thể làm các thao tác metadata của RGW chậm hơn; cần kiểm tra bucket "
+            "và chỉ lập kế hoạch reshard sau khi xác nhận đầy đủ evidence."
         )
     return _INCIDENT_EXPLANATIONS.get(
         code,
@@ -453,7 +500,9 @@ def send_incident_alert(
     excerpt = _compact_incident_excerpt(log_excerpt, _MAX_EXCERPT_CHARS)
     explanation = _translate_incident_log(ceph_code, log_excerpt)
     humanized = False
-    if _needs_humanization(log_excerpt):
+    if ceph_code.upper() == "LARGE_OMAP_OBJECTS" and _large_omap_evidence_is_empty(log_excerpt):
+        excerpt = "Chưa thu thập được chi tiết bucket/object cho cảnh báo này."
+    elif _needs_humanization(log_excerpt):
         compact_source = _compact_incident_excerpt(log_excerpt, _MAX_EXCERPT_CHARS)
         excerpt = _humanize_sync(log_excerpt, context=f"log gốc {ceph_code}")
         humanized = bool(excerpt and excerpt != compact_source)

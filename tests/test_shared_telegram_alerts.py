@@ -315,6 +315,51 @@ def test_bluesstore_slow_ops_explains_missing_osd_heartbeat(monkeypatch):
     assert "🔎 Bằng chứng kỹ thuật:" in calls[0]
 
 
+def test_large_omap_placeholder_is_explained_without_empty_key_values(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+    monkeypatch.setattr(
+        telegram_alerts,
+        "_humanize_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("placeholder must not call AI")),
+    )
+
+    telegram_alerts.send_incident_alert(
+        "LARGE_OMAP_OBJECTS",
+        "HEALTH_WARN",
+        "LARGE_OMAP_EVIDENCE bucket= object= keys= threshold= shards= pg=",
+    )
+
+    assert "object chỉ mục OMAP quá lớn" in calls[0]
+    assert "Chưa đủ bằng chứng để xác định object nào" in calls[0]
+    assert "bucket= object= keys=" not in calls[0]
+    assert "Chưa thu thập được chi tiết bucket/object" in calls[0]
+
+
+def test_large_omap_evidence_is_summarized_with_populated_fields(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert(
+        "LARGE_OMAP_OBJECTS",
+        "HEALTH_WARN",
+        "LARGE_OMAP_EVIDENCE bucket=test-bucket object=.dir.uuid keys=10922 threshold=2000 shards=32 pg=1.2",
+    )
+
+    assert "bucket test-bucket" in calls[0]
+    assert "object .dir.uuid" in calls[0]
+    assert "10922 key" in calls[0]
+    assert "PG 1.2" in calls[0]
+
+
 def test_unknown_incident_alert_still_has_human_explanation(monkeypatch):
     _configure_incident(monkeypatch)
     calls = []
