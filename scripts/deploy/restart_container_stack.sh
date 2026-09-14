@@ -50,7 +50,8 @@ systemctl restart ceph-ai-containers.service
 for _attempt in $(seq 1 24); do
   all_healthy=true
   for service in "${SERVICES[@]}"; do
-    status="$(podman inspect "ceph-ai_${service//-/_}_1" --format '{{.State.Healthcheck.Status}}' 2>/dev/null || true)"
+    status="$(podman inspect "ceph-ai_${service}_1" --format '{{.State.Healthcheck.Status}}' 2>/dev/null || true)"
+    # podman-compose preserves hyphens in service names.
     if [ "$status" != "healthy" ]; then
       all_healthy=false
       break
