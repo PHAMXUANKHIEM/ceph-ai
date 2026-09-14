@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChartNoAxesCombined, Gauge, HardDrive, PieChart, Server, SquareTerminal } from "lucide-react";
+import { ChartNoAxesCombined, Gauge, HardDrive, PieChart, RefreshCw, Server, SquareTerminal } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { CephHealthCard } from "./CephHealthCard";
 import { MetricPanel } from "./MetricPanel";
@@ -18,7 +18,13 @@ type DashboardHealth = {
   cached?: boolean;
   stale?: boolean;
   refreshing?: boolean;
+  age_seconds?: number | null;
   cache_age_seconds?: number;
+  cluster_id?: string;
+  generation?: number;
+  collected_at?: string | null;
+  health_available?: boolean;
+  last_error?: string | null;
 };
 
 const emptyHealth: DashboardHealth = {
@@ -41,15 +47,43 @@ const formatRate = (bytes: number | null) => {
   return Math.round(bytes) + " B/s";
 };
 const formatIops = (iops: number | null) => iops === null ? "—" : Math.round(iops).toLocaleString();
+const formatAge = (age: number | null | undefined) => {
+  if (age === null || age === undefined) return "chưa có snapshot";
+  if (age < 60) return `${Math.max(0, Math.round(age))} giây trước`;
+  const minutes = Math.floor(age / 60);
+  if (minutes < 60) return `${minutes} phút trước`;
+  return `${Math.floor(minutes / 60)} giờ trước`;
+};
 
 export function CephDashboard() {
   const [health, setHealth] = useState<DashboardHealth>(emptyHealth);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [refreshPending, setRefreshPending] = useState(false);
+
+  const requestRefresh = () => {
+    if (refreshPending) return;
+    setRefreshPending(true);
+    setLoadError(null);
+    const cluster = new URLSearchParams(window.location.search).get("cluster");
+    const url = cluster
+      ? "/api/dashboard/health/refresh?cluster=" + encodeURIComponent(cluster)
+      : "/api/dashboard/health/refresh";
+    fetch(url, { method: "POST", credentials: "same-origin" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+      })
+      .then(() => setReloadToken((value) => value + 1))
+      .catch((error: unknown) => {
+        setLoadError(error instanceof Error ? error.message : "Không thể yêu cầu đồng bộ");
+      })
+      .finally(() => setRefreshPending(false));
+  };
 
   useEffect(() => {
     let controller: AbortController | null = null;
     const load = () => {
+      if (document.hidden) return;
       controller?.abort();
       controller = new AbortController();
       const cluster = new URLSearchParams(window.location.search).get("cluster");
@@ -80,14 +114,17 @@ export function CephDashboard() {
       });
     };
     load();
-    // The API returns the persisted snapshot immediately and starts a
-    // single-flight refresh when its age crosses the refresh threshold. A
-    // short cache poll keeps that refresh independent from the SSH latency.
+    const onVisibilityChange = () => { if (!document.hidden) load(); };
+    // The API returns the persisted snapshot immediately. The Watcher owns
+    // normal collection; this short read-only poll only picks up new
+    // generations and freshness metadata.
     const timer = window.setInterval(load, 5_000);
     window.addEventListener("ceph-dashboard-refresh", load);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("ceph-dashboard-refresh", load);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       controller?.abort();
     };
   }, [reloadToken]);
@@ -110,6 +147,27 @@ export function CephDashboard() {
         <div className="dashboard-live-error" role="alert">
           <span><strong>Không tải được dữ liệu cụm đã chọn.</strong> {loadError}</span>
           <button type="button" onClick={() => setReloadToken((value) => value + 1)}>Thử lại</button>
+        </div>
+      )}
+      {health.refreshing && (
+        <div className="dashboard-live-syncing" role="status" aria-live="polite">
+          <RefreshCw size={15} className="dashboard-spin" aria-hidden="true" />
+          <span>Đang đồng bộ dữ liệu cụm…</span>
+        </div>
+      )}
+      {!health.refreshing && health.stale && (
+        <div className="dashboard-live-stale" role="status" aria-live="polite">
+          <span>
+            Dữ liệu đang cũ — {formatAge(health.age_seconds)}
+            {health.last_error && <><br />Lỗi đồng bộ gần nhất: {health.last_error}</>}
+          </span>
+            <button type="button" onClick={requestRefresh} disabled={refreshPending}>Đồng bộ lại</button>
+        </div>
+      )}
+      {!health.refreshing && !health.stale && health.last_error && (
+        <div className="dashboard-live-snapshot-error" role="status" aria-live="polite">
+          <span>Lần đồng bộ gần nhất thất bại: {health.last_error}</span>
+          <button type="button" onClick={requestRefresh} disabled={refreshPending}>Đồng bộ lại</button>
         </div>
       )}
       <section className="status-grid" aria-label="Ceph status overview">

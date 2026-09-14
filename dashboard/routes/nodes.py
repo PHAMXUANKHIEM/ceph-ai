@@ -9,6 +9,7 @@ from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared.cluster_nodes import configured_nodes as _configured_nodes
 from shared.cluster_nodes import resolve_ssh_creds
+from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
 from shared.object_storage_cache import get_or_load
 from watcher.node_metrics import NodeMetricsError, collect_node_metrics, collect_node_metrics_with
 from watcher.ceph_log import CephLogError, fetch_ceph_log, fetch_ceph_log_with
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = make_templates()
+INVENTORY_STALE_SECONDS = 90
 
 
 def _nodes_for_cluster(cluster):
@@ -29,7 +31,17 @@ def _nodes_for_cluster(cluster):
 @router.get("/nodes", response_class=HTMLResponse)
 async def nodes_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
-    nodes = _nodes_for_cluster(cluster)
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "nodes",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    snapshot_data = snapshot.get("nodes", {}) if snapshot else {}
+    nodes = snapshot_data.get("nodes") if isinstance(snapshot_data, dict) else None
+    # Configuration is a safe local fallback until the first Watcher inventory
+    # snapshot exists; it does not open an SSH session.
+    nodes = nodes if isinstance(nodes, list) else _nodes_for_cluster(cluster)
     requested_host = request.query_params.get("host")
     known_hosts = {n["host"] for n in nodes}
     if requested_host and requested_host not in known_hosts:
@@ -52,8 +64,42 @@ async def nodes_page(request: Request, user: str = Depends(require_login)):
             "selected_node": selected_node,
             "clusters": clusters,
             "selected_cluster": cluster,
+            "snapshot_meta": {
+                "collected_at": snapshot.get("collected_at") if snapshot else None,
+                "age_seconds": snapshot.get("age_seconds") if snapshot else None,
+                "stale": bool(snapshot.get("stale", True)) if snapshot else True,
+                "last_error": snapshot.get("last_error") if snapshot else None,
+            },
         },
     )
+
+
+@router.get("/api/nodes/summary")
+async def node_summary_api(request: Request, user: str = Depends(require_login)):
+    """Return the persisted cluster node inventory without opening SSH."""
+    cluster = selected_cluster(request)
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "nodes",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    data = snapshot.get("nodes", {}) if snapshot else {}
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "data": data,
+        "meta": {
+            "cluster_id": cluster.id,
+            "generation": snapshot.get("generation", 0) if snapshot else 0,
+            "collected_at": snapshot.get("collected_at") if snapshot else None,
+            "published_at": snapshot.get("published_at") if snapshot else None,
+            "age_seconds": snapshot.get("age_seconds") if snapshot else None,
+            "stale": bool(snapshot.get("stale", True)) if snapshot else True,
+            "available": bool(snapshot and snapshot.get("section_available", True)),
+            "last_error": snapshot.get("last_error") if snapshot else None,
+        },
+    }
 
 
 @router.get("/api/nodes/{host}/metrics")
@@ -77,8 +123,12 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
             "node-metrics",
             f"{cluster.id}:{host}",
             load_metrics,
-            ttl_seconds=300,
-            stale_ttl_seconds=1800,
+            # The browser polls this endpoint every 3 seconds. A five-minute
+            # TTL makes the chart repeat one sample for almost the whole
+            # visible window, so keep only a short deduplication window and
+            # refresh stale data in the background when possible.
+            ttl_seconds=2,
+            stale_ttl_seconds=10,
         )
     except NodeMetricsError as exc:
         logger.warning("node_metrics_api: %s", exc)

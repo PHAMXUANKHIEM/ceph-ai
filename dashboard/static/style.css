@@ -1664,17 +1664,24 @@ tbody tr:hover td { background: var(--bg-surface-2); }
    the same spot .chat-messages/.chat-input-bar normally occupy. */
 .chat-history-list-view { flex: 1 1 auto; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 16px; }
 .chat-history-list { display: flex; flex-direction: column; gap: 7px; }
-.chat-history-empty { margin: auto; text-align: center; padding: 24px; font-size: 13px; color: var(--text-faint); }
+.chat-history-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); margin: auto; text-align: center; padding: 24px; font-size: 13px; color: var(--text-faint); }
+.chat-history-empty p { margin: 0; }
+.chat-history-empty-icon { font-size: 26px; line-height: 1; opacity: .8; }
 .chat-history-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .chat-history-select-all { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; cursor: pointer; }
 .chat-history-select, .chat-history-select-all input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }
 .chat-history-select-all input:disabled { cursor: default; opacity: .5; }
+.chat-history-toast { padding: 9px 11px; border: 1px solid var(--healthy-border); border-radius: var(--radius-sm); background: var(--healthy-bg); color: var(--healthy); font-size: 11px; font-weight: 600; }
+#chat-history-delete-selected { border-color: var(--critical-border); }
+#chat-history-delete-selected:not(:disabled) { background: var(--critical); color: #fff; border-color: var(--critical); box-shadow: 0 0 0 1px var(--critical-border); }
+#chat-history-delete-selected:not(:disabled):hover { background: var(--critical); }
+#chat-history-delete-selected:disabled { background: var(--bg-surface-2); color: var(--text-faint); border-color: var(--border); opacity: .45; }
 
 .chat-history-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--space-3);
+  padding: var(--space-3);
   border-radius: 9px;
   border: 1px solid #273244;
   background: #111925;
@@ -1682,7 +1689,7 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   cursor: pointer;
 }
 .chat-history-row:hover { border-color: #344258; background: #151e2b; transform: translateY(-1px); }
-.chat-history-row.is-current { border-color: rgba(85,167,255,.45); box-shadow: inset 3px 0 var(--accent); }
+.chat-history-row.is-current { border-color: var(--healthy-border); background: var(--healthy-bg); box-shadow: inset 3px 0 var(--healthy); }
 .chat-history-row-main { flex: 1 1 auto; min-width: 0; }
 .chat-history-row-preview {
   margin: 0;
@@ -1692,22 +1699,25 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-history-row-meta { margin: 3px 0 0; font-size: 10px; color: var(--text-faint); }
+.chat-history-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin: 4px 0 0; font-size: 10px; color: var(--text-faint); }
+.chat-history-current-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 999px; background: var(--healthy-bg); color: var(--healthy); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.chat-history-current-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 2px var(--healthy-bg); }
 .chat-history-delete-btn {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  margin-left: var(--space-2);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   font-size: 12px;
   cursor: pointer;
 }
-.chat-history-delete-btn:hover { color: var(--critical); background: rgba(247, 86, 103, 0.12); }
+.chat-history-delete-btn:hover { color: var(--critical); background: var(--critical-bg); }
 
 .chat-settings-view { flex: 1 1 auto; overflow-y: auto; padding: 18px; }
 .chat-settings-form { display: flex; flex-direction: column; gap: 16px; }
@@ -3581,4 +3591,94 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   .cinder-backup-filters { align-items: stretch; }
   .cinder-backup-filters label { min-width: min(100%, 220px); flex: 1 1 100%; }
   .cinder-backup-delete-form { min-width: 0; }
+}
+/* Hide snapshot generation/age labels while keeping snapshot polling active. */
+#pg-snapshot-meta, #node-snapshot-meta, .pools-panel > div[role="status"] { display: none !important; }
+
+/* Keep every page indicator centered independently of the navigation controls.
+   This prevents different button labels, or a missing first/last button, from
+   shifting "Trang x / y" away from the visual center of its container. */
+.pagination,
+.action-policy-pagination,
+.pg-pagination,
+.trash-pagination,
+.volume-inventory-pagination,
+.object-storage-audit-pagination,
+.ai-cost-pagination,
+.cinder-backup-pagination,
+.crush-history-pagination,
+.bucket-overview-footer {
+  position: relative;
+}
+.page > .card > .card-footer:has(> span:first-child) {
+  position: relative;
+}
+.pagination,
+.action-policy-pagination,
+.pg-pagination,
+.trash-pagination,
+.volume-inventory-pagination,
+.object-storage-audit-pagination,
+.ai-cost-pagination,
+.cinder-backup-pagination,
+.crush-history-pagination {
+  justify-content: space-between;
+}
+.page > .card > .card-footer:has(> span:first-child) {
+  justify-content: space-between;
+}
+.pagination > .hint,
+#action-policy-page-status,
+#pg-page-status,
+#trash-page-status,
+#volume-inventory-page-status,
+.object-storage-audit-pagination > span,
+.ai-cost-pagination > span:first-child,
+.crush-history-pagination > .hint,
+.bucket-overview-page-status,
+.page > .card > .card-footer:has(> span:first-child) > span:first-child {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin: 0;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  white-space: nowrap;
+}
+.cinder-backup-pagination { justify-content: center; }
+
+@media (max-width: 680px) {
+  .pagination,
+  .action-policy-pagination,
+  .pg-pagination,
+  .trash-pagination,
+  .volume-inventory-pagination,
+  .object-storage-audit-pagination,
+  .ai-cost-pagination,
+  .crush-history-pagination,
+  .bucket-overview-footer {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .page > .card > .card-footer:has(> span:first-child) {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .pagination > .hint,
+  #action-policy-page-status,
+  #pg-page-status,
+  #trash-page-status,
+  #volume-inventory-page-status,
+  .object-storage-audit-pagination > span,
+  .ai-cost-pagination > span:first-child,
+  .crush-history-pagination > .hint,
+  .bucket-overview-page-status,
+  .page > .card > .card-footer:has(> span:first-child) > span:first-child {
+    position: static;
+    top: auto;
+    width: 100%;
+    transform: none;
+    order: -1;
+    white-space: normal;
+  }
 }

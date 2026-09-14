@@ -24,9 +24,12 @@ def resolve_cluster_selection(
 
 
 def selected_cluster(request: Request) -> Cluster:
-    """Return the active cluster selected by ``?cluster=`` or the session."""
+    """Return the active cluster selected by ``?cluster=``/``?cluster_id=`` or the session."""
     _clusters, cluster = resolve_cluster_selection(
-        request.query_params.get("cluster", "").strip(),
+        (
+            request.query_params.get("cluster_id", "").strip()
+            or request.query_params.get("cluster", "").strip()
+        ),
         request.session.get("selected_cluster_id", ""),
     )
     request.session["selected_cluster_id"] = cluster.id
@@ -36,7 +39,10 @@ def selected_cluster(request: Request) -> Cluster:
 def cluster_selection(request: Request) -> tuple[list[Cluster], Cluster]:
     """Return switcher choices and persist the selected cluster."""
     clusters, cluster = resolve_cluster_selection(
-        request.query_params.get("cluster", "").strip(),
+        (
+            request.query_params.get("cluster_id", "").strip()
+            or request.query_params.get("cluster", "").strip()
+        ),
         request.session.get("selected_cluster_id", ""),
     )
     request.session["selected_cluster_id"] = cluster.id

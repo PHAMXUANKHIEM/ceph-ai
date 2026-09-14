@@ -14,6 +14,7 @@ from dashboard.routes.auth import require_login
 from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.templating import make_templates
 from shared import audit, db
+from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
 from shared.object_storage_cache import (
     get_or_load,
@@ -32,6 +33,29 @@ templates = make_templates()
 POOL_CREATE_CEPH_CODE = "POOL_CREATE_REQUEST"
 POOL_ACTION_CEPH_CODE = "POOL_ACTION_REQUEST"
 CEPH_POOL_FLAG_NODELETE = 1 << 4
+INVENTORY_STALE_SECONDS = 90
+
+
+def _inventory_meta(snapshot: dict | None, cluster_id: str) -> dict:
+    return {
+        "cluster_id": cluster_id,
+        "generation": snapshot.get("generation", 0) if snapshot else 0,
+        "collected_at": snapshot.get("collected_at") if snapshot else None,
+        "published_at": snapshot.get("published_at") if snapshot else None,
+        "age_seconds": snapshot.get("age_seconds") if snapshot else None,
+        "stale": bool(snapshot.get("stale", True)) if snapshot else True,
+        "available": bool(snapshot and snapshot.get("section_available", True)),
+        "last_error": snapshot.get("last_error") if snapshot else None,
+        "partial_errors": snapshot.get("partial_errors", {}) if snapshot else {},
+    }
+
+
+def _inventory_api_response(snapshot: dict | None, section: str, cluster_id: str, default):
+    data = snapshot.get(section, default) if snapshot else default
+    if not isinstance(data, type(default)):
+        data = default
+    items = data if isinstance(data, list) else []
+    return {"items": items, "data": data, "total": len(items), "meta": _inventory_meta(snapshot, cluster_id)}
 
 
 def _uses_mocked_ceph_client() -> bool:
@@ -267,27 +291,62 @@ def _normalize_pg_rows(payload: dict | list, pool_names: dict[str, str] | None =
     return sorted(rows, key=lambda row: str(row["pgid"]))
 
 
+@router.get("/api/pools")
+async def pools_snapshot_api(request: Request, user: str = Depends(require_login)):
+    cluster = cluster_selection(request)[1]
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "pools",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    return _inventory_api_response(snapshot, "pools", cluster.id, [])
+
+
+@router.get("/api/pgs")
+async def pgs_snapshot_api(request: Request, user: str = Depends(require_login)):
+    cluster = cluster_selection(request)[1]
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "pgs",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    return _inventory_api_response(snapshot, "pgs", cluster.id, [])
+
+
 @router.get("/pgs", response_class=HTMLResponse)
 async def pgs_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     rows: list[dict] = []
     query_error: str | None = None
-    cache_key = f"{cluster.id}:inventory"
-    cache_loading = False
-    try:
-        rows = await asyncio.to_thread(
-            get_or_load,
-            "pgs",
-            cache_key,
-            lambda: _query_pg_rows(cluster),
-            stale_ttl_seconds=900,
-            background_on_miss=not _uses_mocked_ceph_client(),
-            fallback=[],
-        )
-        cache_loading = cache_is_refreshing("pgs", cache_key)
-    except CephQueryError as exc:
-        logger.warning("pgs_page: failed to query all PGs for cluster %s: %s", cluster.id, exc)
-        query_error = str(exc)
+    snapshot = read_section_snapshot(
+        cluster.id, "pgs", stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    cache_loading = snapshot is None
+    if snapshot is not None:
+        rows = snapshot.get("pgs", []) if isinstance(snapshot.get("pgs"), list) else []
+        # Keep the last good rows visible; the template renders this metadata
+        # as a warning instead of replacing the table with an empty error state.
+        query_error = None
+    elif _uses_mocked_ceph_client():
+        # Test and compatibility fallback only. Production reads the shared
+        # inventory snapshot and never starts a Ceph query from this route.
+        try:
+            cache_key = f"{cluster.id}:inventory"
+            rows = await asyncio.to_thread(
+                get_or_load,
+                "pgs",
+                cache_key,
+                lambda: _query_pg_rows(cluster),
+                stale_ttl_seconds=900,
+                background_on_miss=False,
+                fallback=[],
+            )
+            cache_loading = cache_is_refreshing("pgs", cache_key)
+        except CephQueryError as exc:
+            query_error = str(exc)
 
     state_counts = Counter(row["state"] for row in rows)
     pool_names = sorted({str(row["pool"]) for row in rows if row.get("pool") not in (None, "—")})
@@ -302,6 +361,7 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
             "state_counts": sorted(state_counts.items()),
             "query_error": query_error,
             "cache_loading": cache_loading,
+            "snapshot_meta": _inventory_meta(snapshot, cluster.id),
             "clusters": clusters,
             "selected_cluster": cluster,
         },
@@ -313,28 +373,31 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     rows: list[dict] = []
     query_error: str | None = None
-    cache_key = f"{cluster.id}:inventory"
-    cache_loading = False
-    try:
-        action_pending = request.query_params.get("create_success") == "1" or bool(
-            request.query_params.get("action_success", "").strip()
-        )
-        rows = await asyncio.to_thread(
-            _query_pool_rows if action_pending else
-            lambda selected: get_or_load(
+    snapshot = read_section_snapshot(
+        cluster.id, "pools", stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    cache_loading = snapshot is None
+    if snapshot is not None:
+        rows = snapshot.get("pools", []) if isinstance(snapshot.get("pools"), list) else []
+        query_error = snapshot.get("last_error")
+    elif _uses_mocked_ceph_client():
+        # Test and compatibility fallback only. Production reads the shared
+        # inventory snapshot and never starts a Ceph query from this route.
+        try:
+            cache_key = f"{cluster.id}:inventory"
+            rows = await asyncio.to_thread(
+                get_or_load,
                 "pools",
                 cache_key,
-                lambda: _query_pool_rows(selected),
+                lambda: _query_pool_rows(cluster),
                 stale_ttl_seconds=900,
-                background_on_miss=not action_pending,
+                background_on_miss=False,
                 fallback=[],
-            ),
-            cluster,
-        )
-        cache_loading = cache_is_refreshing("pools", cache_key)
-    except CephQueryError as exc:
-        logger.warning("pools_page: failed to query pools for cluster %s: %s", cluster.id, exc)
-        query_error = str(exc)
+            )
+            cache_loading = cache_is_refreshing("pools", cache_key)
+        except CephQueryError as exc:
+            query_error = str(exc)
 
     return templates.TemplateResponse(
         request,
@@ -350,7 +413,8 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
             "create_success": request.query_params.get("create_success") == "1",
             "action_success": request.query_params.get("action_success", "").strip() or None,
             "selected_pool": request.query_params.get("pool", "").strip() or None,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": snapshot.get("collected_at") if snapshot else None,
+            "snapshot_meta": _inventory_meta(snapshot, cluster.id),
         },
     )
 

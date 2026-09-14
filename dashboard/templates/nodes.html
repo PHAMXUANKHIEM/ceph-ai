@@ -11,9 +11,10 @@
 
   <main class="page">
     <div class="tabbed-page">
-    <nav class="tabbed-sidebar node-sidebar" id="node-selector">
+    <nav class="tabbed-sidebar node-sidebar" id="node-selector" data-cluster-id="{{ selected_cluster.id }}">
       <div class="node-sidebar-header">
         <span class="hint">Chọn node</span>
+        <span class="hint" id="node-snapshot-meta">{% if snapshot_meta.last_error %}Snapshot error: {{ snapshot_meta.last_error }}{% elif snapshot_meta.collected_at %}Snapshot generation {{ snapshot_meta.generation }} · {{ snapshot_meta.age_seconds|round(0) }}s{% if snapshot_meta.stale %} · stale{% endif %}{% endif %}</span>
         <span class="metrics-status" id="metrics-status">
           <span class="dot" aria-hidden="true"></span>
           <span id="metrics-status-text">—</span>
@@ -35,6 +36,7 @@
       {% else %}
         <p class="hint">Chưa cấu hình MON/OSD node nào — thêm ở <a href="/settings">Settings</a>.</p>
       {% endif %}
+      </div>
     </nav>
 
     <div class="tabbed-content">
@@ -46,7 +48,6 @@
           <span class="header-spinner" id="header-spinner" hidden aria-hidden="true"></span>
           <span class="header-loading-text" id="header-loading-text" hidden>Đang tải dữ liệu...</span>
         </div>
-        <p class="hint metrics-panel-desc">CPU / RAM / Disk I/O của node — đọc trực tiếp từ <code>/proc</code> qua SSH mỗi vài giây, không phải số liệu cluster-wide.</p>
       </div>
       <div class="card-body">
         <div class="metrics-stack" id="metrics-stack" data-host="{{ selected_host }}"></div>

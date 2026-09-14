@@ -111,6 +111,21 @@ def _loader_lock(namespace: str, key: str, *, timeout_seconds: float | None = _C
             handle.close()
 
 
+@contextmanager
+def key_lock(namespace: str, key: str, *, timeout_seconds: float | None = None):
+    """Hold the cross-process lock for one cache key.
+
+    Callers use this for work that must be serialized with other processes,
+    such as a network refresh followed by publishing its result.  The lock is
+    intentionally separate from the snapshot value key when the caller needs
+    to protect a longer operation than a single cache write.
+    """
+    with _loader_lock(namespace, key, timeout_seconds=timeout_seconds) as acquired:
+        if not acquired:
+            raise CacheLockError(f"could not acquire cache lock for {namespace}:{key}")
+        yield
+
+
 def _fresh_value(namespace: str, key: str, ttl_seconds: int):
     cache_key = (namespace, key)
     now = time()

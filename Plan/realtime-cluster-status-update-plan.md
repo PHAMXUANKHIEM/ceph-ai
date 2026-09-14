@@ -6,8 +6,8 @@
 
 **Ngày lập kế hoạch:** 2026-09-14
 
-**Trạng thái:** Đang triển khai từng lát cắt có test; RT-00 đến RT-03 đang được
-thực hiện, RT-04 trở đi chưa bắt đầu.
+**Trạng thái:** Đang triển khai từng lát cắt có test; RT-00 đến RT-04 đã có
+implementation, RT-05 đang hoàn thiện.
 
 ---
 
@@ -337,8 +337,9 @@ read_snapshot(cluster_id)
 publish_snapshot(cluster_id, sections, ...)
 ```
 
-- [ ] Bổ sung `mark_refreshing`, `is_refreshing` và `invalidate_snapshot` khi
-  lifecycle collector được triển khai.
+- [x] Bổ sung `mark_refreshing`, `is_refreshing` và `invalidate_snapshot`; trạng
+  thái refresh được lưu riêng theo `cluster_id`, có TTL chống marker bị kẹt,
+  và snapshot thành công tự đóng marker.
 - [x] Không xóa snapshot cũ nếu publish mới lỗi; publish chỉ thay thế cache sau
   khi payload mới đã được tạo.
 - [x] Không trả snapshot của cluster A cho request cluster B: key cache bắt buộc
@@ -352,7 +353,7 @@ publish_snapshot(cluster_id, sections, ...)
 - File mới: `shared/cluster_snapshot.py`.
 - Cache update: `shared/ceph_query_cache.py` với `store_versioned(...)`.
 - Test: `tests/test_cluster_snapshot.py` và `tests/test_ceph_query_cache.py`.
-- Lệnh kiểm tra trên server: `.venv/bin/pytest -q tests/test_ceph_query_cache.py tests/test_cluster_snapshot.py` → **14 passed**.
+- Lệnh kiểm tra trên server: `.venv/bin/pytest -q tests/test_cluster_snapshot.py tests/test_dashboard_health_api.py` → **17 passed**.
 
 Các mục lifecycle/refresh lock còn lại không được đánh dấu hoàn tất cho đến
 RT-02/RT-03.
@@ -375,9 +376,10 @@ concurrent writer, restart process và cluster isolation đạt.
   bị kéo vào cadence health.
 - [~] Ghi metrics nội bộ:
   - [x] `collection.duration_ms` trong snapshot;
-  - [ ] `collector_success_total`/`collector_failure_total`;
+  - [x] `collector_success_total`/`collector_failure_total`;
   - [x] `snapshot_age_seconds` được tính khi đọc snapshot;
-  - [ ] metrics chi tiết theo từng command/cephadm shell.
+  - [x] metrics chi tiết theo từng tier/command outcome trong
+    `cluster_snapshot_collector.get_metrics()`.
 - [x] Khi collector lỗi, ghi `last_error`/`partial_errors.health` trên payload
   cũ nếu còn snapshot; không ghi payload rỗng đè dữ liệu tốt.
 - [~] Khi Ceph trả payload một phần, contract đã có `partial_errors`; health
@@ -405,9 +407,8 @@ cho mỗi tier; không có loop chết; snapshot có `collected_at` tăng đều
 
 ### RT-03 — Warmup và lifecycle
 
-- [~] Warmup startup đã đọc/hydrate shared persistent cluster snapshot thay vì
-  phát sinh thêm Ceph query; các page-cache warmer cũ vẫn giữ tạm cho đến khi
-  RT-05 chuyển Pools/PGs/Block Storage sang snapshot read model.
+- [x] Warmup startup chỉ đọc/hydrate shared persistent cluster snapshot, không
+  còn gọi page-specific loader hoặc phát sinh thêm Ceph query.
 - [x] App startup không block chờ warmup; Dashboard trả UI ngay. Warmup hiện
   tại đã chạy daemon background thread và không chạy trong test.
 - [x] Khi cluster mới active, supervisor tự đăng ký trong tối đa 5 giây; khi
@@ -415,7 +416,7 @@ cho mỗi tier; không có loop chết; snapshot có `collected_at` tăng đều
 - [x] Khi config cluster/credential/exec mode đổi, collector đọc lại cấu hình
   ở đầu poll kế tiếp; khi inactive supervisor gửi `stop_event` để loop thoát
   nhanh và không chờ hết chu kỳ sleep.
-- [ ] Khi Watcher restart, snapshot disk vẫn đọc được; UI hiện tuổi dữ liệu và
+- [x] Khi Watcher restart, snapshot disk vẫn đọc được; UI hiện tuổi dữ liệu và
   trạng thái stale thay vì trắng trang.
 - [x] Khi app có nhiều process/container, dùng lock liên process hoặc tách
   collector thành service độc lập; không dựa riêng vào `threading.Lock`.
@@ -432,9 +433,13 @@ cho mỗi tier; không có loop chết; snapshot có `collected_at` tăng đều
   Watcher; chỉ restart Worker ở các đường cần đồng bộ backup scheduler.
 - `dashboard/cache_warmup.py` đọc snapshot theo từng `cluster_id` trong daemon
   thread; nếu chưa có snapshot thì chỉ ghi log chờ Watcher, không tự chạy SSH.
+  Lỗi đọc của một cluster được cô lập, không làm bỏ qua các cluster còn lại.
 - Test `test_reconcile_observed_cluster_threads_tracks_add_deactivate_and_reactivate`:
   **pass**.
 - Test `test_run_observed_cluster_loop_honors_stop_event_before_poll`: **pass**.
+- Test subprocess `test_persisted_snapshot_is_readable_after_process_restart`:
+  **pass**; a fresh Python process read the persisted snapshot from disk.
+- Test warmup snapshot/no-Ceph/failure-isolation: **3 passed**.
 - Regression snapshot/collector/process-lock: **19 passed**.
 
 **Exit gate:** restart web, restart Watcher, restart cả stack và disable/enable
@@ -442,50 +447,79 @@ cluster đều không tạo hai collector cùng cluster.
 
 ### RT-04 — Chuyển Dashboard health sang snapshot
 
-- [ ] Sửa `_load_dashboard_health_live()` để collector gọi, không để route gọi
-  live query trong request bình thường.
-- [ ] `/api/dashboard/health` chỉ đọc snapshot và trả:
+- [x] Bỏ `_load_dashboard_health_live()` khỏi đường request; collector gọi
+  `collect_and_publish_health()` cho lần refresh explicit.
+- [x] `/api/dashboard/health` chỉ đọc snapshot và trả:
   `collected_at`, `age_seconds`, `stale`, `refreshing`, `generation`.
-- [ ] Giữ endpoint trigger refresh thủ công cho operator, nhưng trigger phải
-  không block request và phải có lock.
-- [ ] Giảm hoặc bỏ ngưỡng 60 giây trong route; freshness do collector tier và
-  policy cấu hình quyết định.
-- [ ] Frontend hiển thị:
+- [x] Có endpoint `POST /api/dashboard/health/refresh` cho operator; trigger
+  chạy nền, single-flight theo `cluster_id`, không block request.
+- [x] Bỏ ngưỡng refresh 60 giây khỏi GET; freshness lấy từ snapshot collector
+  và stale policy.
+- [x] Frontend hiển thị:
   - `Đang đồng bộ dữ liệu cụm` khi refresh đang chạy;
   - `Cập nhật X giây trước` dựa trên `collected_at`;
   - `Dữ liệu đang cũ` khi stale;
   - lỗi lần refresh gần nhất nếu có.
-- [ ] Không tự tăng tuổi dữ liệu thành “now” ở client; chỉ dùng client clock để
-  đếm tương đối sau khi đã nhận `collected_at`, và phải reset khi snapshot mới.
+- [x] Không thay `collected_at` bằng giờ render; UI dùng `age_seconds` do API
+  tính từ thời điểm collector thu thập.
+
+**Bằng chứng RT-04 slice hiện tại:**
+
+- `dashboard/routes/incidents.py` đọc `shared.cluster_snapshot.read_snapshot`
+  và không còn gọi Ceph trong GET `/api/dashboard/health`.
+- `POST /api/dashboard/health/refresh` trả `202` ngay; worker nền gọi collector
+  và giữ lock theo cluster.
+- `ceph-health-dashboard/src/components/CephDashboard.tsx` hiển thị tuổi dữ
+  liệu, generation, trạng thái syncing/stale và nút refresh.
+- Regression API/collector/cache/warmup: **28 passed**; frontend build bằng
+  Node 20/Vite: **passed**.
 
 **Exit gate:** browser gọi API 5 giây nhưng Ceph collector chỉ chạy đúng cadence;
 health đổi được phản ánh trong SLA; reload trang không làm tăng số query bất
 thường.
 
-### RT-05 — Chuyển Pools/PGs/CRUSH/Nodes sang read snapshot
+### RT-05 — Chuyển Pools/PGs/CRUSH/Nodes sang read snapshot `[~]`
 
-- [ ] Tạo read model/API cho từng section:
+- [x] Tạo read model/API cho từng section:
   - `/api/pools?cluster_id=...`;
   - `/api/pgs?cluster_id=...`;
-  - `/api/crush-map?cluster_id=...`;
+  - `/api/crush-map/tree?cluster_id=...`;
   - `/api/nodes/summary?cluster_id=...`.
-- [ ] API trả pagination/filter trên snapshot đã lấy, không pagination sau khi
+- [~] API trả dữ liệu từ snapshot; pagination/filter hiện xử lý local ở frontend,
+  phần query pagination/filter contract thống nhất sẽ hoàn thiện cùng RT-07.
+- [x] Không pagination sau khi
   đã gọi Ceph trong request.
-- [ ] Giữ schema field hiện tại để giảm thay đổi UI; bổ sung metadata freshness.
-- [ ] Pools React bỏ `meta refresh`; dùng fetch API, giữ rows cũ trong lúc
+- [x] Giữ schema field hiện tại để giảm thay đổi UI; bổ sung metadata freshness.
+- [x] Pools React bỏ `meta refresh`; dùng fetch API, giữ rows cũ trong lúc
   refresh và cập nhật bảng khi generation đổi.
-- [ ] PGs/CRUSH/Nodes dùng cùng hook freshness và event handler, không tạo 4
-  cách polling riêng.
-- [ ] Full CRUSH map chỉ refresh khi có event/action hoặc inventory tier; không
+- [~] PGs/CRUSH/Nodes đọc snapshot và không mở SSH trong request; hook freshness
+  dùng chung và event handler sẽ hoàn thiện ở RT-06/RT-07.
+- [x] Full CRUSH map chỉ refresh khi có event/action hoặc inventory tier; không
   lấy lại mỗi lần người dùng mở/đóng tab.
-- [ ] Khi filter/search/pagination chỉ xử lý local snapshot nếu payload đủ nhỏ;
-  nếu payload lớn, API nhận cursor nhưng vẫn đọc từ store, không chạm Ceph.
+- [~] Filter/search/pagination hiện xử lý local snapshot, nên không chạm Ceph;
+  cursor pagination cho payload lớn sẽ hoàn thiện ở lát cắt sau.
+
+**Bằng chứng RT-05 slice hiện tại:**
+
+- `shared/cluster_snapshot.py` có section snapshot độc lập với generation và
+  freshness metadata.
+- `watcher/cluster_snapshot_collector.py` có inventory tier Pools/PGs/CRUSH/Nodes,
+  lock theo cluster và stale-if-error.
+- Các API `/api/pools`, `/api/pgs`, `/api/crush-map/tree` và
+  `/api/nodes/summary` đọc persistent snapshot; page routes production không
+  tự mở Ceph query.
+- Regression Pool/PG/CRUSH/Nodes/snapshot: **66 passed**; frontend build và
+  JavaScript syntax checks: **passed**.
 
 **Exit gate:** chuyển giữa Pools/PGs/CRUSH/Nodes không mở SSH; dữ liệu cũ hiển
 thị ngay; snapshot mới tự thay đúng section.
 
 ### RT-06 — WebSocket/SSE event bus
 
+- [~] Existing authenticated WebSocket polling now fingerprints shared
+  snapshot generations and emits cluster-scoped `snapshot_changed` events;
+  the complete broadcaster, mutation producers, debounce, and reconnect
+  protocol remain open.
 - [ ] Tạo broadcaster trong `dashboard/ws.py` hoặc module mới; map connection
   theo `cluster_id` và user session.
 - [ ] Auth WebSocket giống HTTP; session product Vitastor/cluster scope phải
@@ -505,6 +539,10 @@ không làm UI đứng; event cluster B không xuất hiện ở tab cluster A.
 
 ### RT-07 — Chuẩn hóa frontend status/freshness
 
+- [~] Health and Pools React pages now use abortable, sequence-safe reads;
+  hidden tabs stop polling, visibility resume triggers one fetch, and manual
+  health refresh buttons prevent duplicate requests. A shared hook/component
+  and equivalent treatment for every remaining section are still open.
 - [ ] Tạo một component/hook dùng chung, ví dụ `useClusterSnapshot()` hoặc
   `ClusterFreshnessBadge`.
 - [ ] Các trạng thái phải phân biệt:

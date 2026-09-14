@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from time import time
 
@@ -83,3 +86,59 @@ def test_snapshot_rejects_invalid_collected_at(monkeypatch, tmp_path):
     _isolate_cache(monkeypatch, tmp_path)
     with pytest.raises(ValueError):
         cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_OK"}, collected_at="yesterday")
+
+def test_first_section_error_is_unavailable(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    snapshot = cluster_snapshot.record_section_error(
+        "cluster-a", "pools", RuntimeError("Ceph unavailable"), empty_data=[]
+    )
+    assert snapshot["section_available"] is False
+    stored = cluster_snapshot.read_section_snapshot("cluster-a", "pools")
+    assert stored["section_available"] is False
+
+
+def test_refresh_lifecycle_is_persistent_and_invalidation_is_cluster_scoped(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_OK"})
+    cluster_snapshot.publish_snapshot("cluster-b", {"health": "HEALTH_WARN"})
+
+    assert cluster_snapshot.mark_refreshing("cluster-a") is True
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    assert cluster_snapshot.is_refreshing("cluster-a") is True
+    assert cluster_snapshot.read_snapshot("cluster-a")["refreshing"] is True
+    assert cluster_snapshot.is_refreshing("cluster-b") is False
+
+    assert cluster_snapshot.mark_refreshing("cluster-a", False) is False
+    assert cluster_snapshot.is_refreshing("cluster-a") is False
+    cluster_snapshot.invalidate_snapshot("cluster-a")
+    assert cluster_snapshot.read_snapshot("cluster-a") is None
+    assert cluster_snapshot.read_snapshot("cluster-b")["health"] == "HEALTH_WARN"
+
+
+def test_successful_publish_clears_refresh_marker(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    cluster_snapshot.mark_refreshing("cluster-a")
+    assert cluster_snapshot.is_refreshing("cluster-a") is True
+    cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_OK"})
+    assert cluster_snapshot.is_refreshing("cluster-a") is False
+    assert cluster_snapshot.read_snapshot("cluster-a")["refreshing"] is False
+
+
+def test_persisted_snapshot_is_readable_after_process_restart(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    cluster_snapshot.publish_snapshot("cluster-a", {"health": "HEALTH_WARN"})
+    child_env = os.environ.copy()
+    child_env["CEPH_AI_CACHE_DIR"] = str(tmp_path)
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from shared.cluster_snapshot import read_snapshot; "
+            "print(read_snapshot('cluster-a', max_stale_seconds=300)['health'])",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=child_env,
+    )
+    assert child.stdout.strip() == "HEALTH_WARN"

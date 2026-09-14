@@ -137,7 +137,10 @@ def test_api_tree_no_snapshot_yet(dashboard_client):
     _login(dashboard_client)
     response = dashboard_client.get("/api/crush-map/tree")
     assert response.status_code == 200
-    assert response.json() == {"state": "no_snapshot_yet"}
+    data = response.json()
+    assert data["state"] == "no_snapshot_yet"
+    assert data["meta"]["available"] is False
+    assert data["meta"]["cluster_id"]
 
 
 def test_second_cluster_page_and_tree_are_fully_scoped(dashboard_client):

@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import threading
+from time import monotonic
 from urllib.parse import urlencode
 from datetime import datetime, timedelta
 
@@ -31,14 +32,18 @@ from shared.models import (
     Action, ActionStatus, AuditEntry, BackupJob, Cluster, Incident, IncidentStatus,
     RemediationCase, WatcherHeartbeat,
 )
-from shared.ceph_query_cache import get_cached as get_persisted_cache
-from shared.ceph_query_cache import store as store_persisted_cache
+from shared.cluster_snapshot import (
+    DEFAULT_MAX_STALE_SECONDS,
+    is_refreshing,
+    mark_refreshing,
+    read_section_snapshot,
+    read_snapshot,
+)
 from watcher.ceph_client import (
     CephQueryError,
-    run_ceph_json_batch_command_with,
     run_ceph_json_command_with,
 )
-from watcher import incident_grouping
+from watcher import cluster_snapshot_collector, incident_grouping
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +54,10 @@ templates = make_templates()
 # interval rather than a fixed number of seconds, so it scales with
 # whatever watcher_poll_interval_seconds is configured to.
 HEARTBEAT_STALE_MULTIPLIER = 3
-_DASHBOARD_HEALTH_CACHE_NAMESPACE = "dashboard-health"
-# Refresh proactively while keeping the dashboard response fast.  This is
-# intentionally separate from the stale-warning threshold: a cache can be
-# due for refresh without being unusable to an operator.
-_DASHBOARD_HEALTH_REFRESH_SECONDS = 60
 _DASHBOARD_HEALTH_STALE_SECONDS = 180
-_DASHBOARD_HEALTH_MAX_STALE_SECONDS = 900
+_DASHBOARD_HEALTH_MAX_STALE_SECONDS = DEFAULT_MAX_STALE_SECONDS
 _DASHBOARD_HEALTH_REFRESH_LOCKS: dict[str, threading.Lock] = {}
 _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD = threading.Lock()
-_DASHBOARD_HEALTH_MON_PREFERENCES: dict[str, str] = {}
-_DASHBOARD_HEALTH_MON_PREFERENCES_GUARD = threading.Lock()
 CASE_VERDICTS = {
     "CORRECT": "Chẩn đoán/xử lý đúng",
     "FALSE_POSITIVE": "Cảnh báo sai",
@@ -68,24 +66,6 @@ CASE_VERDICTS = {
     "INCONCLUSIVE": "Chưa đủ bằng chứng",
 }
 ALERT_MUTE_HOURS = (1, 6, 24)
-
-
-def _ordered_dashboard_mon_nodes(cluster_id: str, mon_nodes: list[str]) -> list[str]:
-    """Put the last MON that answered first, retaining configured fallback order."""
-    nodes = list(dict.fromkeys(node.strip() for node in mon_nodes if node and node.strip()))
-    with _DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
-        preferred = _DASHBOARD_HEALTH_MON_PREFERENCES.get(cluster_id)
-    if preferred in nodes:
-        return [preferred, *[node for node in nodes if node != preferred]]
-    return nodes
-
-
-def _remember_dashboard_mon(cluster_id: str, host: str | None) -> None:
-    host = str(host or "").strip()
-    if not host:
-        return
-    with _DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
-        _DASHBOARD_HEALTH_MON_PREFERENCES[cluster_id] = host
 
 
 def _rca_evidence(raw: str | None) -> dict | None:
@@ -170,52 +150,10 @@ def _cached_node_inventory(mon_nodes, container_name, ssh_user, ssh_key_path, ex
     return None
 
 
-async def _load_dashboard_health_live(selected_cluster: Cluster) -> dict:
-    configured_mon_nodes = [node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()]
-    mon_nodes = _ordered_dashboard_mon_nodes(selected_cluster.id, configured_mon_nodes)
-    if not mon_nodes:
-        raise CephQueryError("Cụm chưa cấu hình MON node")
-    ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
-    inventory_command = "ceph orch host ls --format json" if exec_mode == "cephadm" else "ceph node ls --format json"
-    host, payloads = await asyncio.to_thread(
-        run_ceph_json_batch_command_with,
-        mon_nodes,
-        container_name,
-        ssh_user,
-        ssh_key_path,
-        exec_mode,
-        [
-            "ceph -s --format json",
-            "ceph osd perf --format json",
-            "ceph osd dump --format json",
-            inventory_command,
-        ],
-    )
-    payload = payloads[0] if payloads else None
-    # A failed/slow MON is automatically bypassed on the next refresh after
-    # the fallback succeeds. This makes the fix survive transient MON
-    # outages and avoids depending on a hand-maintained list order.
-    _remember_dashboard_mon(selected_cluster.id, host)
-    mon_nodes = _ordered_dashboard_mon_nodes(selected_cluster.id, configured_mon_nodes)
-    if not isinstance(payload, dict):
-        raise CephQueryError("ceph -s returned an unexpected response")
-
-    osd_perf = payloads[1] if len(payloads) > 1 else None
-    osd_dump = payloads[2] if len(payloads) > 2 else None
-    cluster_nodes = payloads[3] if len(payloads) > 3 else None
-    if osd_perf is None:
-        logger.info("dashboard_health: osd latency unavailable")
-    if osd_dump is None:
-        logger.info("dashboard_health: detailed OSD state unavailable")
-    if cluster_nodes is None:
-        logger.info("dashboard_health: server inventory unavailable")
-    return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
-
-
 def _dashboard_health_refresh_in_progress(cluster_id: str) -> bool:
     with _DASHBOARD_HEALTH_REFRESH_LOCKS_GUARD:
         lock = _DASHBOARD_HEALTH_REFRESH_LOCKS.get(cluster_id)
-    return bool(lock and lock.locked())
+    return bool(lock and lock.locked()) or is_refreshing(cluster_id)
 
 
 def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> bool:
@@ -223,17 +161,26 @@ def _schedule_dashboard_health_refresh(selected_cluster: Cluster) -> bool:
         lock = _DASHBOARD_HEALTH_REFRESH_LOCKS.setdefault(selected_cluster.id, threading.Lock())
     if not lock.acquire(blocking=False):
         return True
+    mark_refreshing(selected_cluster.id, True)
 
     async def refresh() -> None:
+        started = monotonic()
+        started_at = cluster_snapshot_collector.collection_timestamp()
         try:
-            store_persisted_cache(
-                _DASHBOARD_HEALTH_CACHE_NAMESPACE,
-                selected_cluster.id,
-                await _load_dashboard_health_live(selected_cluster),
+            configured_mon_nodes = [
+                node.strip() for node in selected_cluster.ceph_mon_nodes.split(",") if node.strip()
+            ]
+            await asyncio.to_thread(
+                cluster_snapshot_collector.collect_and_publish_health,
+                selected_cluster,
+                mon_nodes=configured_mon_nodes,
+                collection_started_monotonic=started,
+                collection_started_at=started_at,
             )
         except Exception as exc:
-            logger.info("dashboard_health(%s): background refresh failed: %s", selected_cluster.name, exc)
+            logger.info("dashboard_health(%s): snapshot refresh failed: %s", selected_cluster.name, exc)
         finally:
+            mark_refreshing(selected_cluster.id, False)
             lock.release()
 
     asyncio.create_task(refresh())
@@ -988,55 +935,114 @@ def _dashboard_health_payload(
     }
 
 
+def _dashboard_health_snapshot_response(
+    snapshot: dict | None,
+    selected_cluster: Cluster,
+) -> dict:
+    """Map one shared snapshot to the stable dashboard card response."""
+    raw_health = snapshot.get("health") if isinstance(snapshot, dict) else None
+    if isinstance(raw_health, dict):
+        # Watcher snapshots normally store the health result itself
+        # (``{"status": "HEALTH_WARN"}``), while older snapshots may contain
+        # the complete Ceph status object under ``health``. Accept both
+        # shapes so the dashboard remains compatible across generations.
+        status = raw_health if isinstance(raw_health.get("health"), dict) else {"health": raw_health}
+    else:
+        status = {}
+    status_section = read_section_snapshot(
+        selected_cluster.id,
+        "status",
+        stale_after_seconds=_DASHBOARD_HEALTH_STALE_SECONDS,
+        max_stale_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
+    )
+    nodes_section = read_section_snapshot(
+        selected_cluster.id,
+        "nodes",
+        stale_after_seconds=_DASHBOARD_HEALTH_STALE_SECONDS,
+        max_stale_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
+    )
+    node_data = nodes_section.get("nodes") if isinstance(nodes_section, dict) else None
+    cluster_nodes = node_data.get("nodes") if isinstance(node_data, dict) else node_data
+    if not isinstance(cluster_nodes, (dict, list)):
+        cluster_nodes = None
+    full_status = status_section.get("status") if isinstance(status_section, dict) else None
+    if isinstance(full_status, dict) and isinstance(full_status.get("health"), dict):
+        # Use the full ceph -s read model for all dashboard cards. Merge in
+        # the richer health-detail checks when the two collectors completed
+        # at slightly different times.
+        status = dict(full_status)
+        if isinstance(raw_health, dict) and isinstance(raw_health.get("checks"), dict):
+            full_health = status.get("health")
+            if isinstance(full_health, dict):
+                status["health"] = {**full_health, "checks": raw_health["checks"]}
+        payload = _dashboard_health_payload(
+            status, selected_cluster, cluster_nodes=cluster_nodes,
+        )
+    else:
+        payload = _dashboard_health_payload(
+            status, selected_cluster, cluster_nodes=cluster_nodes,
+        )
+    status_age = status_section.get("age_seconds") if isinstance(status_section, dict) else None
+    status_available = bool(status_section and status_section.get("section_available", True))
+    partial_errors = {}
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("partial_errors"), dict):
+        partial_errors.update(snapshot["partial_errors"])
+    if isinstance(status_section, dict) and isinstance(status_section.get("partial_errors"), dict):
+        partial_errors.update(status_section["partial_errors"])
+    payload.update(
+        {
+            "cluster_id": selected_cluster.id,
+            "cached": snapshot is not None,
+            "generation": snapshot.get("generation", 0) if snapshot else 0,
+            "collected_at": snapshot.get("collected_at") if snapshot else None,
+            "published_at": snapshot.get("published_at") if snapshot else None,
+            "age_seconds": snapshot.get("age_seconds") if snapshot else None,
+            "cache_age_seconds": snapshot.get("age_seconds") if snapshot else None,
+            "health_available": bool(snapshot.get("health_available", True)) if snapshot else False,
+            "stale": (
+                bool(snapshot.get("stale", True)) or not snapshot.get("health_available", True)
+            ) if snapshot else True,
+            "refreshing": _dashboard_health_refresh_in_progress(selected_cluster.id),
+            "last_error": snapshot.get("last_error") if snapshot else None,
+            "partial_errors": partial_errors,
+            "last_attempted_at": snapshot.get("last_attempted_at") if snapshot else None,
+            "status_available": status_available,
+            "status_stale": bool(status_section.get("stale", True)) if status_section else True,
+            "status_collected_at": status_section.get("collected_at") if status_section else None,
+            "status_age_seconds": status_age,
+        }
+    )
+    return payload
+
+
 @router.get("/api/dashboard/health")
 async def dashboard_health(request: Request, _user: str = Depends(require_login)):
-    """Paint the persisted health snapshot immediately, then refresh it."""
-    selected_cluster = None
-    try:
-        _clusters, selected_cluster = _resolve_selected_cluster(
-            request.query_params.get("cluster", "").strip(),
-            request.session.get("selected_cluster_id", ""),
-        )
-        cached = get_persisted_cache(
-            _DASHBOARD_HEALTH_CACHE_NAMESPACE,
-            selected_cluster.id,
-            max_age_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
-        )
-        if cached is not None:
-            payload, age_seconds = cached
-            if isinstance(payload, dict):
-                response = dict(payload)
-                response["cached"] = True
-                response["refreshing"] = _dashboard_health_refresh_in_progress(selected_cluster.id)
-                response["stale"] = age_seconds > _DASHBOARD_HEALTH_STALE_SECONDS
-                response["cache_age_seconds"] = round(age_seconds, 1)
-                if age_seconds > _DASHBOARD_HEALTH_REFRESH_SECONDS:
-                    response["refreshing"] = _schedule_dashboard_health_refresh(selected_cluster)
-                return response
+    """Return the latest shared snapshot without running a Ceph command."""
+    _clusters, selected_cluster = _resolve_selected_cluster(
+        request.query_params.get("cluster", "").strip(),
+        request.session.get("selected_cluster_id", ""),
+    )
+    snapshot = read_snapshot(
+        selected_cluster.id,
+        stale_after_seconds=_DASHBOARD_HEALTH_STALE_SECONDS,
+        max_stale_seconds=_DASHBOARD_HEALTH_MAX_STALE_SECONDS,
+    )
+    return _dashboard_health_snapshot_response(snapshot, selected_cluster)
 
-        # Never make the first dashboard paint wait for cephadm to start a
-        # transient shell container.  The browser polls this endpoint every
-        # 30 seconds; return a neutral loading snapshot while one refresh
-        # runs in the background.  Once it completes, the next poll gets the
-        # real values from the persistent cache.
-        _schedule_dashboard_health_refresh(selected_cluster)
-        return {
-            "health": "UNKNOWN",
-            "osds": {"up": None, "total": None},
-            "mons": {"up": None, "total": None},
-            "servers": {"online": None, "total": len(configured_nodes(selected_cluster))},
-            "utilization": {"percent": None, "bytes_used": None, "pools": None},
-            "metrics": {"latency_ms": None, "bandwidth_bps": None, "iops": None},
-            "placement_groups": "UNKNOWN",
-            "cached": False,
-            "stale": True,
-            "refreshing": True,
-            "cache_age_seconds": None,
-        }
-    except CephQueryError as exc:
-        cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
-        logger.warning("dashboard_health(%s): live Ceph query failed: %s", cluster_name, exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+@router.post("/api/dashboard/health/refresh", status_code=202)
+async def refresh_dashboard_health(request: Request, _user: str = Depends(require_login)):
+    """Queue an explicit operator refresh; never wait for Ceph in HTTP."""
+    _clusters, selected_cluster = _resolve_selected_cluster(
+        request.query_params.get("cluster", "").strip(),
+        request.session.get("selected_cluster_id", ""),
+    )
+    _schedule_dashboard_health_refresh(selected_cluster)
+    return {
+        "accepted": True,
+        "cluster_id": selected_cluster.id,
+        "refreshing": True,
+    }
 
 
 @router.get("/", response_class=HTMLResponse)

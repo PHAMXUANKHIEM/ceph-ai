@@ -12,23 +12,73 @@
   const previousButton = document.getElementById("pg-page-prev");
   const nextButton = document.getElementById("pg-page-next");
   const pageStatus = document.getElementById("pg-page-status");
+  const pageRoot = document.getElementById("pgs-page");
+  const totalCount = document.getElementById("pg-total-count");
+  const snapshotMeta = document.getElementById("pg-snapshot-meta");
 
   if (!table || !searchInput || !pgIdInput || !poolSelect || !resetButton || !result
       || !pagination || !previousButton || !nextButton || !pageStatus) return;
 
-  const rows = Array.from(table.querySelectorAll("tbody tr"));
+  let rows = Array.from(table.querySelectorAll("tbody tr"));
   const pageSize = 10;
   let currentPage = 1;
   const normalize = (value) => String(value || "").trim().toLocaleLowerCase("vi");
+  let lastGeneration = null;
 
   // Build the Pool dropdown from the rendered PG rows themselves. This is
   // deliberately independent of Ceph's pool-list response shape: any pool
   // visible in the table must always be available as one distinct option.
-  const poolNames = Array.from(new Set(
-    rows.map((row) => String(row.dataset.pool || "").trim()).filter((name) => name && name !== "—")
-  )).sort((left, right) => left.localeCompare(right, "vi", { numeric: true }));
-  poolSelect.replaceChildren(new Option("Tất cả pool", ""));
-  poolNames.forEach((poolName) => poolSelect.add(new Option(poolName, poolName)));
+  function rebuildPoolOptions() {
+    const poolNames = Array.from(new Set(
+      rows.map((row) => String(row.dataset.pool || "").trim()).filter((name) => name && name !== "—")
+    )).sort((left, right) => left.localeCompare(right, "vi", { numeric: true }));
+    const current = poolSelect.value;
+    poolSelect.replaceChildren(new Option("Tất cả pool", ""));
+    poolNames.forEach((poolName) => poolSelect.add(new Option(poolName, poolName)));
+    poolSelect.value = poolNames.includes(current) ? current : "";
+  }
+
+  function renderRows(nextRows) {
+    const tbody = table.querySelector("tbody");
+    if (!tbody) return;
+    tbody.replaceChildren();
+    nextRows.forEach((pg) => {
+      const row = document.createElement("tr");
+      row.dataset.pgid = pg.pgid || "—";
+      row.dataset.pool = pg.pool || "—";
+      const values = [
+        ["code", pg.pgid || "—"],
+        ["state", pg.state || "unknown"],
+        ["text", pg.pool || "—"],
+        ["code", `[${(pg.acting || []).join(", ")}]`],
+        ["code", `[${(pg.up || []).join(", ")}]`],
+        ["code", pg.primary || "—"],
+        ["text", pg.last_scrub || "—"],
+        ["text", pg.last_deep_scrub || "—"],
+      ];
+      values.forEach(([kind, value], index) => {
+        const cell = document.createElement("td");
+        if (index === 0 || index === 3 || index === 4 || index === 5) {
+          const content = document.createElement(kind === "code" ? "code" : "span");
+          content.textContent = value;
+          cell.appendChild(content);
+        } else {
+          cell.textContent = value;
+        }
+        if (index === 1) {
+          const chip = document.createElement("span");
+          chip.className = `pg-state-chip ${value === "active+clean" ? "is-clean" : "is-warning"}`;
+          chip.textContent = value;
+          cell.replaceChildren(chip);
+        }
+        row.appendChild(cell);
+      });
+      tbody.appendChild(row);
+    });
+    rows = Array.from(tbody.querySelectorAll("tr"));
+    rebuildPoolOptions();
+    render();
+  }
 
   function matchingRows() {
     const search = normalize(searchInput.value);
@@ -89,5 +139,41 @@
     searchInput.focus();
   });
 
+  rebuildPoolOptions();
   render();
+
+  function refreshSnapshot() {
+    if (document.hidden || !pageRoot) return;
+    const clusterId = pageRoot.dataset.clusterId;
+    fetch(`/api/pgs?cluster_id=${encodeURIComponent(clusterId)}`, { credentials: "same-origin" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then((payload) => {
+        const meta = payload.meta || {};
+        const generation = meta.generation == null ? null : meta.generation;
+        if (meta.available !== false && Array.isArray(payload.items) && generation !== lastGeneration) {
+          renderRows(payload.items);
+          lastGeneration = generation;
+        }
+        if (totalCount) totalCount.textContent = `${payload.total ?? 0} PGs`;
+        if (snapshotMeta) {
+          if (meta.last_error) {
+            snapshotMeta.textContent = `Snapshot error: ${meta.last_error}`;
+          } else if (meta.collected_at) {
+            snapshotMeta.textContent = `Snapshot generation ${meta.generation ?? 0} · ${Math.round(meta.age_seconds ?? 0)}s${meta.stale ? " · stale" : ""}`;
+          } else {
+            snapshotMeta.textContent = "No snapshot available";
+          }
+        }
+      })
+      .catch(() => {
+        // Keep the last good table visible during a transient snapshot error.
+      });
+  }
+
+  refreshSnapshot();
+  const refreshTimer = window.setInterval(refreshSnapshot, 10_000);
+  document.addEventListener("visibilitychange", refreshSnapshot);
 })();

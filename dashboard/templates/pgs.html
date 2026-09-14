@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Placement Groups — Ceph AIOps</title>
-  {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
+  <main class="page" id="pgs-page" data-cluster-id="{{ selected_cluster.id }}">
     <div>
         <section class="card">
           <div class="card-header">
             <div class="metrics-panel-title">
               <span class="node-ip">Placement Groups — {{ selected_cluster.name }}</span>
-              <span class="pg-total">{{ pgs|length }} PGs</span>
+              <span class="pg-total" id="pg-total-count">{{ pgs|length }} PGs</span>
+              <span class="hint" id="pg-snapshot-meta">{% if snapshot_meta.collected_at %}Snapshot generation {{ snapshot_meta.generation }} · {{ snapshot_meta.age_seconds|round(0) }}s{% if snapshot_meta.stale %} · stale{% endif %}{% if snapshot_meta.last_error %} · lỗi: {{ snapshot_meta.last_error }}{% endif %}{% endif %}</span>
             </div>
             <a href="/pgs?cluster={{ selected_cluster.id }}" class="btn btn-ghost btn-sm">Làm mới</a>
           </div>
@@ -29,7 +29,7 @@
             </div>
             {% endif %}
           </div>
-          {% if pgs %}
+          {% if pgs or cache_loading %}
           <div class="card-body pg-filter-panel" aria-label="Tìm kiếm và lọc Placement Groups">
             <label class="pg-filter-field pg-search-field">
               <span>Tìm kiếm</span>
@@ -54,7 +54,7 @@
           {% endif %}
           {% if query_error %}
           <div class="card-body"><p class="error">Không lấy được PG từ cluster: {{ query_error }}</p></div>
-          {% elif pgs %}
+          {% elif pgs or cache_loading %}
           <div class="card-body table-wrap">
             <table id="pg-list">
               <thead><tr><th>PG ID</th><th>State</th><th>Pool</th><th>Acting</th><th>Up</th><th>Primary</th><th>Last scrub</th><th>Last deep scrub</th></tr></thead>
@@ -82,7 +82,7 @@
             <span class="pg-page-size">10 PGs mỗi trang</span>
           </div>
           {% elif cache_loading %}
-          <div class="card-body"><div class="empty-state">Đang tải dữ liệu Placement Groups từ cụm… trang sẽ tự cập nhật.</div></div>
+          <div class="card-body"><div class="empty-state">Đang tải dữ liệu Placement Groups từ snapshot nền…</div></div>
           {% else %}
           <div class="card-body"><div class="empty-state">Cụm chưa có Placement Group nào.</div></div>
           {% endif %}

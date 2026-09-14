@@ -2,6 +2,7 @@ from datetime import datetime
 
 import dashboard.ws as ws_module
 from shared import db as db_module
+from shared.cluster_snapshot import publish_snapshot
 from shared.models import Incident, WatcherHeartbeat
 
 
@@ -54,3 +55,20 @@ def test_snapshot_does_not_change_when_heartbeat_recorded_without_incident_chang
     after = ws_module._snapshot()
 
     assert before == after
+
+
+def test_authenticated_websocket_receives_snapshot_change_notification(
+    dashboard_client, default_cluster_id, monkeypatch
+):
+    monkeypatch.setattr(ws_module, "POLL_INTERVAL_SECONDS", 0.05)
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+
+    with dashboard_client.websocket_connect("/ws/incidents") as websocket:
+        publish_snapshot(default_cluster_id, {"health": {"status": "HEALTH_WARN"}})
+        message = websocket.receive_json()
+
+    assert message == {
+        "event": "snapshot_changed",
+        "cluster_id": default_cluster_id,
+        "sections": ["health"],
+    }

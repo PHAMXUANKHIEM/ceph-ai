@@ -58,7 +58,6 @@ def _stub_restart_watcher(monkeypatch):
     /var/log/ceph-aiops-worker.log, one per unstubbed create/toggle) —
     disruptive (backup scheduler momentarily down each time) even though
     it self-healed back to exactly one live process afterward."""
-    monkeypatch.setattr(clusters_route, "restart_watcher", lambda: {"restarted": True, "new_pid": 1, "error": None})
     monkeypatch.setattr(clusters_route, "restart_worker", lambda: {"restarted": True, "new_pid": 1, "error": None})
 
 
@@ -226,11 +225,7 @@ def test_backup_config_saves_fields_and_restarts_worker_only(dashboard_client, m
     is what actually reads this config), never Watcher."""
     monkeypatch.setattr(clusters_route, "query_cluster_health_with", lambda *a, **kw: {"status": "HEALTH_OK"})
     _stub_restart_watcher(monkeypatch)
-    watcher_restarts = []
     worker_restarts = []
-    monkeypatch.setattr(
-        clusters_route, "restart_watcher", lambda: watcher_restarts.append(1) or {"restarted": True, "new_pid": 1, "error": None}
-    )
     monkeypatch.setattr(
         clusters_route, "restart_worker", lambda: worker_restarts.append(1) or {"restarted": True, "new_pid": 1, "error": None}
     )
@@ -238,7 +233,6 @@ def test_backup_config_saves_fields_and_restarts_worker_only(dashboard_client, m
     dashboard_client.post("/clusters/create", data=_cluster_form_data())
     with db_module.SessionLocal() as session:
         cluster_id = session.query(Cluster).filter_by(name="cluster-b").one().id
-    watcher_restarts.clear()
     worker_restarts.clear()
 
     response = dashboard_client.post(
@@ -261,7 +255,6 @@ def test_backup_config_saves_fields_and_restarts_worker_only(dashboard_client, m
     assert response.status_code == 200
     assert "Đã lưu cấu hình backup" in response.text
     assert worker_restarts == [1]
-    assert watcher_restarts == []  # backup config must never restart Watcher
     with db_module.SessionLocal() as session:
         saved = session.get(Cluster, cluster_id)
         assert saved.backup_enabled is True

@@ -1,5 +1,61 @@
 (function () {
   var stack = document.getElementById("metrics-stack");
+  var nodeSelector = document.getElementById("node-selector");
+  var nodeList = document.getElementById("node-list");
+  var nodeSnapshotMeta = document.getElementById("node-snapshot-meta");
+  var clusterId = nodeSelector ? nodeSelector.dataset.clusterId : "";
+  var inventoryRequestInFlight = false;
+
+  function refreshNodeInventory() {
+    if (!nodeSelector || !clusterId || document.hidden || inventoryRequestInFlight) return;
+    inventoryRequestInFlight = true;
+    fetch("/api/nodes/summary?cluster_id=" + encodeURIComponent(clusterId), { credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (payload) {
+        var meta = payload.meta || {};
+        var data = payload.data || {};
+        if (meta.available !== false && nodeList && Array.isArray(data.nodes)) {
+          nodeList.replaceChildren();
+          var selectedHost = stack ? stack.dataset.host : "";
+          data.nodes.forEach(function (node) {
+            if (!node || !node.host) return;
+            var link = document.createElement("a");
+            link.className = "tabbed-nav-item node-sidebar-item" + (node.host === selectedHost ? " active" : "");
+            link.dataset.host = node.host;
+            link.href = "/nodes?cluster=" + encodeURIComponent(clusterId) + "&host=" + encodeURIComponent(node.host);
+            var ip = document.createElement("span");
+            ip.className = "node-chip-ip";
+            ip.textContent = node.host;
+            link.appendChild(ip);
+            (Array.isArray(node.roles) ? node.roles : []).forEach(function (role) {
+              var badge = document.createElement("span");
+              badge.className = "role-badge role-badge-" + String(role).toLowerCase();
+              badge.textContent = role;
+              link.appendChild(badge);
+            });
+            nodeList.appendChild(link);
+          });
+        }
+        if (nodeSnapshotMeta) {
+          if (meta.last_error) nodeSnapshotMeta.textContent = "Snapshot error: " + meta.last_error;
+          else if (meta.collected_at) nodeSnapshotMeta.textContent = "Snapshot generation " + (meta.generation || 0) + " · " + Math.round(meta.age_seconds || 0) + "s" + (meta.stale ? " · stale" : "");
+          else nodeSnapshotMeta.textContent = "No snapshot available";
+        }
+      })
+      .catch(function () {
+        if (nodeSnapshotMeta) nodeSnapshotMeta.textContent = "Snapshot unavailable";
+      })
+      .finally(function () { inventoryRequestInFlight = false; });
+  }
+
+  if (nodeSelector && clusterId) {
+    refreshNodeInventory();
+    window.setInterval(refreshNodeInventory, 10_000);
+    document.addEventListener("visibilitychange", refreshNodeInventory);
+  }
   if (!stack) {
     return; // /nodes with no host selected, or not on this page at all
   }
@@ -186,7 +242,7 @@
       var firstLoad = this.timestamps.length === 0 && this.status !== "error";
       if (firstLoad) this.setLoadingUI(true);
 
-      fetch("/api/nodes/" + encodeURIComponent(host) + "/metrics", { credentials: "same-origin" })
+      fetch("/api/nodes/" + encodeURIComponent(host) + "/metrics?cluster_id=" + encodeURIComponent(clusterId), { credentials: "same-origin" })
         .then(function (response) {
           // require_login raises a 303 to /login on an expired session; fetch's
           // default redirect mode resolves that transparently, landing here as

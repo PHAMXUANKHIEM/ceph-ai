@@ -20,6 +20,7 @@ from dashboard.cluster_scope import cluster_selection, selected_cluster
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
 from shared import db
+from shared.cluster_snapshot import DEFAULT_MAX_STALE_SECONDS, read_section_snapshot
 from shared.models import CrushOsdDistribution, CrushStructureSnapshot
 
 router = APIRouter()
@@ -38,7 +39,28 @@ CRUSH_WEIGHT_SCALE = 65536
 
 DEFAULT_HISTORY_LIMIT = 10
 MAX_HISTORY_LIMIT = 10
-
+INVENTORY_STALE_SECONDS = 90
+def _crush_response_meta(
+    cluster_id: str,
+    *,
+    generation: int = 0,
+    collected_at: str | None = None,
+    published_at: str | None = None,
+    age_seconds: float | None = None,
+    stale: bool = True,
+    available: bool = False,
+    last_error: str | None = None,
+) -> dict:
+    return {
+        "cluster_id": cluster_id,
+        "generation": generation,
+        "collected_at": collected_at,
+        "published_at": published_at,
+        "age_seconds": age_seconds,
+        "stale": stale,
+        "available": available,
+        "last_error": last_error,
+    }
 
 def _require_admin_privilege(user: str) -> None:
     if not auth.is_admin_user(user):
@@ -218,6 +240,20 @@ async def crush_map_tree_api(request: Request, user: str = Depends(require_login
     _require_admin_privilege(user)
     cluster = selected_cluster(request)
 
+    snapshot = read_section_snapshot(
+        cluster.id,
+        "crush",
+        stale_after_seconds=INVENTORY_STALE_SECONDS,
+        max_stale_seconds=DEFAULT_MAX_STALE_SECONDS,
+    )
+    if snapshot is not None and isinstance(snapshot.get("crush"), dict):
+        response = dict(snapshot["crush"])
+        response["meta"] = _crush_response_meta(
+            cluster.id, generation=snapshot.get("generation", 0),
+            collected_at=snapshot.get("collected_at"), published_at=snapshot.get("published_at"),
+        )
+        return response
+
     with db.SessionLocal() as session:
         latest = (
             session.query(CrushStructureSnapshot)
@@ -229,8 +265,19 @@ async def crush_map_tree_api(request: Request, user: str = Depends(require_login
             .first()
         )
         if latest is None:
-            return {"state": "no_snapshot_yet"}
-        return _build_tree_response(latest, cluster.id, cluster.is_default)
+            return {
+                "state": "no_snapshot_yet",
+                "meta": _crush_response_meta(cluster.id),
+            }
+        collected_at = latest.created_at.isoformat() if latest.created_at else None
+        age_seconds = max(0.0, (datetime.utcnow() - latest.created_at).total_seconds()) if latest.created_at else None
+        response = _build_tree_response(latest, cluster.id, cluster.is_default)
+        response["meta"] = _crush_response_meta(
+            cluster.id, collected_at=collected_at, published_at=collected_at,
+            age_seconds=age_seconds, stale=age_seconds is None or age_seconds > INVENTORY_STALE_SECONDS,
+            available=True,
+        )
+        return response
 
 
 @router.get("/api/crush-map/history")

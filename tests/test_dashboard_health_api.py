@@ -1,8 +1,15 @@
 from dashboard.routes import incidents
-from shared import ceph_query_cache
+from shared import db
+from shared.cluster_snapshot import publish_snapshot
+from shared.models import Cluster
 
 
-def test_dashboard_health_api_uses_live_daemon_counts(dashboard_client, monkeypatch):
+def _default_cluster_id():
+    with db.SessionLocal() as session:
+        return session.query(Cluster).filter(Cluster.is_default.is_(True)).one().id
+
+
+def test_dashboard_health_api_reads_shared_snapshot_without_ceph_query(dashboard_client, monkeypatch):
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
     payload = {
         "health": {"status": "HEALTH_WARN"},
@@ -16,11 +23,14 @@ def test_dashboard_health_api_uses_live_daemon_counts(dashboard_client, monkeypa
         },
     }
 
-    def fake(*args):
-        assert args[-1] == "ceph -s"
-        return "10.20.1.112", payload
+    cluster_id = _default_cluster_id()
+    publish_snapshot(cluster_id, {"health": payload})
+    monkeypatch.setattr(
+        incidents,
+        "run_ceph_json_command_with",
+        lambda *args: (_ for _ in ()).throw(AssertionError("GET must not query Ceph")),
+    )
 
-    monkeypatch.setattr(incidents, "run_ceph_json_command_with", fake)
     response = dashboard_client.get("/api/dashboard/health")
 
     assert response.status_code == 200
@@ -30,32 +40,29 @@ def test_dashboard_health_api_uses_live_daemon_counts(dashboard_client, monkeypa
     assert body["health"] == "WARN"
     assert body["utilization"]["percent"] == 21
     assert body["placement_groups"] == "OKAY"
+    assert body["cluster_id"] == cluster_id
+    assert body["generation"] == 1
+    assert body["cached"] is True
+    assert body["stale"] is False
+    assert body["collected_at"]
+    assert body["age_seconds"] >= 0
 
 
-def test_dashboard_health_reuses_cached_ceph_status(dashboard_client, monkeypatch):
+def test_dashboard_health_get_does_not_schedule_implicit_refresh(dashboard_client, monkeypatch):
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
     calls = []
-    status = {"health": {"status": "HEALTH_OK"}, "monmap": {"mons": []}, "quorum_names": [],
-              "osdmap": {"num_osds": 0, "num_up_osds": 0, "num_pools": 0}, "pgmap": {}}
+    cluster_id = _default_cluster_id()
+    publish_snapshot(cluster_id, {"health": {"status": "HEALTH_OK", "checks": {}}})
+    monkeypatch.setattr(incidents, "_schedule_dashboard_health_refresh", lambda *_: calls.append(1))
 
-    def fake(*args):
-        calls.append(args[-1])
-        if args[-1] == "ceph -s":
-            return "mon1", status
-        return "mon1", {}
-
-    monkeypatch.setattr(incidents, "run_ceph_json_command_with", fake)
     assert dashboard_client.get("/api/dashboard/health").status_code == 200
     assert dashboard_client.get("/api/dashboard/health").status_code == 200
-    monkeypatch.setattr(ceph_query_cache, "_memory", {})
-    assert calls.count("ceph -s") == 1
-    assert calls.count("ceph osd perf") == 1
-    assert calls.count("ceph osd dump") == 1
-    assert calls.count("ceph node ls") == 1
-    assert dashboard_client.get("/api/dashboard/health").json()["cached"] is True
-    assert calls.count("ceph -s") == 1
-    assert calls.count("ceph osd perf") == 1
-    assert calls.count("ceph osd dump") == 1
+    assert calls == []
+
+    response = dashboard_client.post(f"/api/dashboard/health/refresh?cluster={cluster_id}")
+    assert response.status_code == 202
+    assert response.json() == {"accepted": True, "cluster_id": cluster_id, "refreshing": True}
+    assert calls == [1]
 
 
 def test_dashboard_health_payload_exposes_live_metrics_and_servers():
@@ -104,30 +111,46 @@ def test_dashboard_health_payload_prefers_per_osd_up_flags():
     assert body["osds"] == {"up": 3, "total": 3}
 
 
-def test_dashboard_health_api_never_returns_sample_counts_on_query_failure(dashboard_client, monkeypatch):
+def test_dashboard_health_api_returns_loading_state_when_snapshot_is_missing(dashboard_client, monkeypatch):
     dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
-    def fake(*args):
-        raise incidents.CephQueryError("all MON nodes failed")
-
-    monkeypatch.setattr(incidents, "run_ceph_json_command_with", fake)
+    monkeypatch.setattr(
+        incidents,
+        "run_ceph_json_command_with",
+        lambda *args: (_ for _ in ()).throw(AssertionError("GET must not query Ceph")),
+    )
     response = dashboard_client.get("/api/dashboard/health")
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "all MON nodes failed"
+    assert response.status_code == 200
+    body = response.json()
+    assert body["health"] == "UNKNOWN"
+    assert body["cached"] is False
+    assert body["generation"] == 0
+    assert body["stale"] is True
+    assert body["refreshing"] is False
 
 
-def test_dashboard_health_prefers_last_successful_mon():
-    cluster_id = "dashboard-mon-preference-test"
-    with incidents._DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
-        previous = incidents._DASHBOARD_HEALTH_MON_PREFERENCES.pop(cluster_id, None)
-    try:
-        incidents._remember_dashboard_mon(cluster_id, "10.0.0.2")
-        assert incidents._ordered_dashboard_mon_nodes(
-            cluster_id, ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-        ) == ["10.0.0.2", "10.0.0.1", "10.0.0.3"]
-    finally:
-        with incidents._DASHBOARD_HEALTH_MON_PREFERENCES_GUARD:
-            if previous is None:
-                incidents._DASHBOARD_HEALTH_MON_PREFERENCES.pop(cluster_id, None)
-            else:
-                incidents._DASHBOARD_HEALTH_MON_PREFERENCES[cluster_id] = previous
+def test_dashboard_health_api_surfaces_snapshot_refresh_error(dashboard_client):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    cluster_id = _default_cluster_id()
+    from watcher.cluster_snapshot_collector import publish_health_error
+
+    publish_health_error(cluster_id, "MON unreachable")
+
+    response = dashboard_client.get(f"/api/dashboard/health?cluster={cluster_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["health"] == "UNKNOWN"
+    assert body["health_available"] is False
+    assert body["stale"] is True
+    assert body["last_error"] == "MON unreachable"
+
+def test_dashboard_health_api_maps_flat_watcher_health_status(dashboard_client):
+    dashboard_client.post("/login", data={"username": "admin", "password": "admin"})
+    cluster_id = _default_cluster_id()
+    publish_snapshot(cluster_id, {"health": {"status": "HEALTH_WARN", "checks": {}}})
+
+    body = dashboard_client.get(f"/api/dashboard/health?cluster={cluster_id}").json()
+
+    assert body["health"] == "WARN"
+    assert body["health_available"] is True

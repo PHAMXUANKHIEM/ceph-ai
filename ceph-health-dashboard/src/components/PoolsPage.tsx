@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brush,
   ChevronDown,
@@ -10,6 +10,7 @@ import {
   Pencil,
   Plus,
   Search,
+  RefreshCw,
   Shield,
   ShieldOff,
   TrendingUp,
@@ -32,13 +33,22 @@ type PoolRow = {
 type PoolsBootstrap = {
   pools: PoolRow[];
   selectedPool?: string | null;
-  updatedAt: string;
-  updatedAgo: string;
+  updatedAt?: string | null;
+  snapshotMeta?: SnapshotMeta;
   isAdmin: boolean;
   clusterId: string;
   createSuccess?: boolean;
   actionSuccess?: string | null;
   queryError?: string | null;
+};
+
+type SnapshotMeta = {
+  generation?: number;
+  collected_at?: string | null;
+  age_seconds?: number | null;
+  stale?: boolean;
+  available?: boolean;
+  last_error?: string | null;
 };
 
 const POOLS_PER_PAGE = 10;
@@ -60,8 +70,11 @@ function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, on
 }
 
 export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
-  const rows = bootstrap.pools;
-  const initial = bootstrap.selectedPool || (rows.some((row) => row.name === "test") ? "test" : rows[0]?.name || "");
+  const [rows, setRows] = useState<PoolRow[]>(bootstrap.pools || []);
+  const [snapshotMeta, setSnapshotMeta] = useState<SnapshotMeta>(bootstrap.snapshotMeta || {});
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const lastGeneration = useRef<number | null>(bootstrap.snapshotMeta?.generation ?? null);
+  const initial = bootstrap.selectedPool || (bootstrap.pools.some((row) => row.name === "test") ? "test" : bootstrap.pools[0]?.name || "");
   const [selected, setSelected] = useState(initial);
   const [createOpen, setCreateOpen] = useState(false);
   const [modal, setModal] = useState<"metrics" | "edit" | "scrub" | "details" | "delete" | "protection" | null>(null);
@@ -80,6 +93,45 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   );
   const actionLabels: Record<string, string> = { edit_pool: "cập nhật", scrub_pool: "scrub", delete_pool: "xóa", set_pool_protection: "đổi trạng thái bảo vệ" };
   const openSelected = (value: typeof modal) => { if (selectedRow) setModal(value); };
+
+  useEffect(() => {
+    let activeController: AbortController | null = null;
+    lastGeneration.current = null;
+    let requestSequence = 0;
+    const onVisibilityChange = () => { if (!document.hidden) load(); };
+    const load = () => {
+      if (document.hidden) return;
+      activeController?.abort();
+      const controller = new AbortController();
+      activeController = controller;
+      const sequence = ++requestSequence;
+      fetch(`/api/pools?cluster_id=${encodeURIComponent(bootstrap.clusterId)}`, {
+        credentials: "same-origin", signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json() as Promise<{ items?: PoolRow[]; meta?: SnapshotMeta }>;
+        })
+        .then((payload) => {
+          if (sequence !== requestSequence) return;
+          setSnapshotError(null);
+          const generation = payload.meta?.generation ?? null;
+          if (payload.meta?.available !== false && Array.isArray(payload.items) && generation !== lastGeneration.current) {
+            setRows(payload.items);
+            lastGeneration.current = generation;
+          }
+          if (payload.meta) setSnapshotMeta(payload.meta);
+        })
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          setSnapshotError(error instanceof Error ? error.message : "Không thể tải snapshot Pools");
+        });
+    };
+    load();
+    const timer = window.setInterval(load, 10_000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); activeController?.abort(); };
+  }, [bootstrap.clusterId]);
 
   useEffect(() => {
     if (bootstrap.actionSuccess !== "set_pool_protection") return;
@@ -112,7 +164,8 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
           </nav>
         </header>
 
-        {bootstrap.queryError && <div className="mx-5 mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">Không lấy được dữ liệu Pool: {bootstrap.queryError}</div>}
+        {(bootstrap.queryError || snapshotError || snapshotMeta.last_error) && <div className="mx-5 mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">Không lấy được snapshot Pool: {bootstrap.queryError || snapshotError || snapshotMeta.last_error}</div>}
+        {snapshotMeta.collected_at && <div className="px-5 pt-3 text-xs text-slate-500" role="status" aria-live="polite"><RefreshCw size={13} className="mr-1 inline" />Snapshot generation {snapshotMeta.generation ?? 0} · {snapshotMeta.stale ? "stale" : "updated"} {snapshotMeta.age_seconds == null ? "" : `${Math.round(snapshotMeta.age_seconds)}s ago`}</div>}
         {bootstrap.createSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu tạo pool đã được gửi tới Worker.</div>}
         {bootstrap.actionSuccess && <div className="mx-5 mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Yêu cầu {actionLabels[bootstrap.actionSuccess] || bootstrap.actionSuccess} pool đã được gửi tới Worker.</div>}
 

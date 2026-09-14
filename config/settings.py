@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # and "none" modes.
     ceph_exec_mode: str = "docker"
     watcher_poll_interval_seconds: int = 15
+    # Slow read models for Pools/PGs/CRUSH/Nodes. Browser requests read the
+    # persisted section snapshots instead of starting their own Ceph queries.
+    dashboard_inventory_poll_interval_seconds: int = Field(default=60, gt=0)
     # Repeat Telegram notifications while an Incident remains unresolved.
     telegram_incident_reminder_interval_seconds: int = 3600
     telegram_health_status_interval_seconds: int = 600
@@ -503,6 +506,11 @@ class Settings(BaseSettings):
     # automatically instead of silently affecting later nightly runs.
     ai_nightly_improvement_override_date: str = ""
     ai_nightly_improvement_override_enabled: bool = False
+    # Phase 1 nightly multi-agent analysis: independent read-only analysts
+    # provide bounded evidence to the existing single-writer repair pipeline.
+    ai_nightly_multi_agent_analysis_enabled: bool = False
+    ai_nightly_multi_agent_max_parallel: int = Field(default=3, ge=1, le=3)
+    ai_nightly_multi_agent_timeout_seconds: int = Field(default=300, ge=30, le=900)
     ai_task_retention_days: int = Field(default=30, ge=1, le=3650)
     ai_task_max_records: int = Field(default=500, ge=10, le=10000)
     ceph_capability_learning_enabled: bool = False

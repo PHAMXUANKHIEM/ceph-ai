@@ -24,6 +24,8 @@
     return; // not on the CRUSH Map page
   }
 
+
+  var clusterId = treeEl.dataset.clusterId || "";
   function loadCollapsed() {
     try {
       var raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
@@ -182,6 +184,13 @@
 
     if (data.state === "no_snapshot_yet") {
       renderRules([]);
+      metaEl.hidden = false;
+      var noSnapshotMeta = data.meta || {};
+      var noSnapshotText = noSnapshotMeta.collected_at
+        ? "Snapshot lúc " + new Date(noSnapshotMeta.collected_at).toLocaleString("vi-VN")
+        : "Chưa có snapshot";
+      if (noSnapshotMeta.last_error) noSnapshotText += " · lỗi: " + noSnapshotMeta.last_error;
+      metaEl.textContent = noSnapshotText;
       noSnapshotEl.hidden = false;
       return;
     }
@@ -189,7 +198,14 @@
     renderRules(data.rules || []);
 
     metaEl.hidden = false;
-    metaEl.textContent = "Snapshot lúc " + new Date(data.created_at).toLocaleString("vi-VN");
+    var snapshotMeta = data.meta || {};
+    var collectedAt = snapshotMeta.collected_at || data.created_at;
+    var metaText = collectedAt
+      ? "Snapshot lúc " + new Date(collectedAt).toLocaleString("vi-VN")
+      : "Chưa có snapshot";
+    if (snapshotMeta.stale) metaText += " · stale";
+    if (snapshotMeta.last_error) metaText += " · lỗi: " + snapshotMeta.last_error;
+    metaEl.textContent = metaText;
 
     if (data.state === "empty_cluster") {
       emptyClusterEl.hidden = false;
@@ -226,7 +242,8 @@
       return;
     }
     requestInFlight = true;
-    fetch("/api/crush-map/tree", { credentials: "same-origin" })
+    var url = "/api/crush-map/tree?cluster_id=" + encodeURIComponent(clusterId);
+    fetch(url, { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
@@ -313,6 +330,8 @@
   }
 
   var CRUSH_WEIGHT_SCALE = 65536;
+  var treePageEl = document.getElementById("crush-map-tree");
+  var clusterId = treePageEl ? treePageEl.dataset.clusterId : "";
   var currentPage = 1;
   var pageCursors = [null];
   var requestInFlight = false;
@@ -326,7 +345,7 @@
   }
 
   function openDetail(id) {
-    fetch("/api/crush-map/history/" + encodeURIComponent(id), { credentials: "same-origin" })
+    fetch("/api/crush-map/history/" + encodeURIComponent(id) + "?cluster_id=" + encodeURIComponent(clusterId), { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
@@ -423,7 +442,7 @@
     requestInFlight = true;
     updatePagination(null);
     var before = pageCursors[page - 1];
-    var url = "/api/crush-map/history?limit=10" + (before ? "&before=" + encodeURIComponent(before) : "");
+    var url = "/api/crush-map/history?cluster_id=" + encodeURIComponent(clusterId) + "&limit=10" + (before ? "&before=" + encodeURIComponent(before) : "");
     fetch(url, { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
@@ -459,7 +478,7 @@
   purgeBtn.addEventListener("click", function () {
     if (!window.confirm("Xóa toàn bộ lịch sử thay đổi cấu trúc CRUSH của cluster này? Không thể hoàn tác.")) return;
     purgeBtn.disabled = true;
-    fetch("/api/crush-map/history/purge", {method: "POST", credentials: "same-origin"})
+    fetch("/api/crush-map/history/purge?cluster_id=" + encodeURIComponent(clusterId), {method: "POST", credentials: "same-origin"})
       .then(function (response) {
         if (!response.ok) return response.json().then(function (body) { throw new Error(body.detail || "Xóa thất bại"); });
         return response.json();

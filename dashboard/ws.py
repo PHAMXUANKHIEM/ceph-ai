@@ -5,6 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, or_
 
 from shared import db
+from shared.cluster_snapshot import read_section_snapshot, read_snapshot
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.models import Incident
 
@@ -15,15 +16,16 @@ POLL_INTERVAL_SECONDS = 2
 WS_POLICY_VIOLATION = 1008
 
 
-def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) -> tuple[int, object]:
+def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) -> tuple[object, ...]:
     """A cheap fingerprint of incident state for the selected cluster.
 
     Watcher heartbeat is deliberately excluded: it changes on every poll
     and used to trigger a full browser reload every few seconds even when
     the cluster state had not changed.
 
-    Polling the DB is a simple stand-in — there is no event bus wired from
-    Watcher/Worker directly to the Dashboard.
+    Snapshot generations are included so a Watcher publish can notify the
+    browser across process/container boundaries while this polling fallback
+    remains the transport of record.
     """
     with db.SessionLocal() as session:
         default_cluster = ensure_default_cluster(session)
@@ -35,7 +37,13 @@ def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) ->
         )
         count = session.query(func.count(Incident.id)).filter(cluster_filter).scalar()
         latest_updated = session.query(func.max(Incident.updated_at)).filter(cluster_filter).scalar()
-    return count, latest_updated
+    section_generations = []
+    health = read_snapshot(effective_id)
+    section_generations.append(("health", health.get("generation") if health else None))
+    for section in ("status", "pools", "pgs", "crush", "nodes"):
+        value = read_section_snapshot(effective_id, section)
+        section_generations.append((section, value.get("generation") if value else None))
+    return count, latest_updated, tuple(section_generations)
 
 
 @router.websocket("/ws/incidents")
@@ -65,9 +73,21 @@ async def incidents_ws(websocket: WebSocket) -> None:
                 logger.exception("incidents_ws: failed to poll DB, closing connection")
                 await websocket.close(code=1011)  # internal error
                 return
+            if current[:2] != last_seen[:2]:
+                await websocket.send_json({"event": "incidents_changed"})
+            if len(current) > 2 and len(last_seen) > 2 and current[2] != last_seen[2]:
+                changed_sections = [
+                    section for (section, generation), (_old_section, old_generation)
+                    in zip(current[2], last_seen[2])
+                    if generation != old_generation
+                ]
+                await websocket.send_json({
+                    "event": "snapshot_changed",
+                    "cluster_id": selected_id,
+                    "sections": changed_sections,
+                })
             if current != last_seen:
                 last_seen = current
-                await websocket.send_json({"event": "incidents_changed"})
     except WebSocketDisconnect:
         pass
     except Exception:

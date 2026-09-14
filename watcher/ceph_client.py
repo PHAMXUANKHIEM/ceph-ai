@@ -1630,3 +1630,57 @@ def _normalize_osd_tree(payload: dict | list) -> list[dict]:
             )
     osds.sort(key=lambda o: o["osd_id"] if isinstance(o["osd_id"], int) else -1)
     return osds
+def _parse_cluster_status_payload(raw_output: str) -> dict:
+    """Validate the full ``ceph -s`` JSON used by dashboard status cards."""
+    payload = json.loads(raw_output)
+    if not isinstance(payload, dict):
+        raise CephQueryError(f"unexpected cluster status payload shape: {raw_output[:200]!r}")
+    health = payload.get("health")
+    if not isinstance(health, dict) or not health.get("status"):
+        raise CephQueryError(f"unexpected cluster status payload shape: {raw_output[:200]!r}")
+    return payload
+
+
+def query_cluster_status() -> dict:
+    """Return the full read-only ``ceph -s`` payload for dashboard cards."""
+    nodes = get_mon_nodes()
+    if not nodes:
+        raise CephQueryError("no MON nodes configured (settings.ceph_mon_nodes is empty)")
+    return query_cluster_status_with(
+        nodes,
+        settings.ceph_container_name,
+        settings.ssh_user,
+        settings.ssh_key_path,
+        settings.ceph_exec_mode,
+    )
+
+
+def query_cluster_status_with(
+    mon_nodes: list[str],
+    container_name: str,
+    ssh_user: str,
+    ssh_key_path: str,
+    exec_mode: str = "docker",
+    update_sticky_fallback: bool = True,
+) -> dict:
+    """Query full cluster counters with the same MON fallback policy as health."""
+    if not mon_nodes:
+        raise CephQueryError("no MON nodes configured")
+
+    command = build_exec_command(exec_mode, container_name, "ceph -s --format json")
+    command_timeout = (
+        CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else COMMAND_TIMEOUT_SECONDS
+    )
+    global last_successful_mon_node
+    errors = []
+    for host in ordered_mon_nodes(mon_nodes):
+        try:
+            output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
+            payload = _parse_cluster_status_payload(output)
+            if update_sticky_fallback:
+                last_successful_mon_node = host
+            return payload
+        except Exception as exc:
+            logger.warning("query_cluster_status_with: %s failed: %s", host, exc)
+            errors.append(f"{host}: {exc}")
+    raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")

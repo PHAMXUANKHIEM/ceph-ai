@@ -67,6 +67,10 @@ _WATCHER_PROCESS_LOCK_HANDLE = None
 # short discovery cadence lets the Dashboard toggle/add a cluster without
 # restarting Watcher, while each cluster keeps its own normal poll cadence.
 _CLUSTER_DISCOVERY_INTERVAL_SECONDS = 5
+# ``ceph -s`` is more expensive than the health-detail poll, but its maps are
+# required by the dashboard's OSD/MON/pool/PG cards. Keep it independent and
+# refresh it often enough that the initial dashboard load is populated.
+_DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS = 15
 
 
 def _acquire_watcher_process_lock(lock_path: str | None = None):
@@ -885,11 +889,14 @@ def run(
     last_incident_reminder_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
+    last_inventory_scan_at: Optional[datetime] = None
+    last_status_snapshot_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         service_health.record_safe("watcher")
         poll_started_monotonic = time.monotonic()
+        poll_started_at = cluster_snapshot_collector.collection_timestamp()
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
         # query_cluster_health() itself succeeded) — so the generic except
         # below (Review Story 5.2) only records a FAILED heartbeat when the
@@ -902,15 +909,24 @@ def run(
         # stale dict instead of correctly seeing "no health data this tick".
         health: Optional[dict] = None
         try:
-            health = query_cluster_health()
-            try:
-                cluster_snapshot_collector.publish_health_snapshot(
-                    cluster_id,
-                    health,
-                    collection_started_monotonic=poll_started_monotonic,
-                )
-            except Exception:
-                logger.exception("run: failed to publish critical health snapshot")
+            with cluster_snapshot_collector.health_collection_lock(cluster_id):
+                try:
+                    health = query_cluster_health()
+                except CephQueryError as exc:
+                    try:
+                        cluster_snapshot_collector.publish_health_error(cluster_id, exc)
+                    except Exception:
+                        logger.exception("run: failed to record health snapshot error")
+                    raise
+                try:
+                    cluster_snapshot_collector.publish_health_snapshot(
+                        cluster_id,
+                        health,
+                        collection_started_monotonic=poll_started_monotonic,
+                        collection_started_at=poll_started_at,
+                    )
+                except Exception:
+                    logger.exception("run: failed to publish critical health snapshot")
             _record_heartbeat_safe(True, ceph_client.last_successful_mon_node, None, cluster_id=cluster_id)
             heartbeat_recorded = True
             current_status = health.get("status")
@@ -960,10 +976,6 @@ def run(
                 last_status = current_status
                 last_checks = current_checks
         except CephQueryError as exc:
-            try:
-                cluster_snapshot_collector.publish_health_error(cluster_id, exc)
-            except Exception:
-                logger.exception("run: failed to record health snapshot error")
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster_id)
             if "no MON nodes configured" in str(exc):
                 # 2026-07-28 (found on a real first-time install): expected,
@@ -989,6 +1001,54 @@ def run(
             if not heartbeat_recorded:
                 _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster_id)
             logger.exception("run: unexpected error during poll iteration")
+
+        # Pools/PGs are deliberately much slower than the critical health
+        # query. Keep their shared read models warm in one background scan so
+        # page requests never open SSH sessions of their own.
+        if max_iterations is None and cluster_id is not None:
+            status_now = datetime.utcnow()
+            if (
+                last_status_snapshot_scan_at is None
+                or (status_now - last_status_snapshot_scan_at).total_seconds()
+                >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
+            ):
+                def scan_status() -> None:
+                    try:
+                        with db.SessionLocal() as session:
+                            status_cluster = session.get(Cluster, cluster_id)
+                            if status_cluster is not None:
+                                session.expunge(status_cluster)
+                        if status_cluster is not None and status_cluster.is_active:
+                            cluster_snapshot_collector.collect_and_publish_status(status_cluster)
+                    except Exception:
+                        logger.exception("run: dashboard status snapshot collection failed")
+
+                _run_auxiliary_scan(
+                    f"status-{cluster_id}", scan_status, background=True,
+                )
+                last_status_snapshot_scan_at = status_now
+
+            inventory_now = datetime.utcnow()
+            if (
+                last_inventory_scan_at is None
+                or (inventory_now - last_inventory_scan_at).total_seconds()
+                >= settings.dashboard_inventory_poll_interval_seconds
+            ):
+                def scan_inventory() -> None:
+                    try:
+                        with db.SessionLocal() as session:
+                            inventory_cluster = session.get(Cluster, cluster_id)
+                            if inventory_cluster is not None:
+                                session.expunge(inventory_cluster)
+                        if inventory_cluster is not None and inventory_cluster.is_active:
+                            cluster_snapshot_collector.collect_and_publish_inventory(inventory_cluster)
+                    except Exception:
+                        logger.exception("run: inventory snapshot collection failed")
+
+                _run_auxiliary_scan(
+                    f"inventory-{cluster_id}", scan_inventory, background=True,
+                )
+                last_inventory_scan_at = inventory_now
 
         # 2026-07-28: Volume (RBD) performance/saturation check — its own
         # independent try/except, OUTSIDE the cluster-health try block
@@ -1568,6 +1628,8 @@ def run_observed_cluster_loop(
     last_capacity_forecast_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
+    last_inventory_scan_at: Optional[datetime] = None
+    last_status_snapshot_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
@@ -1584,28 +1646,41 @@ def run_observed_cluster_loop(
             return
         mon_nodes = [h.strip() for h in cluster.ceph_mon_nodes.split(",") if h.strip()]
         try:
-            health = query_cluster_health_with(
-                mon_nodes,
-                cluster.ceph_container_name,
-                cluster.ssh_user,
-                cluster.ssh_key_path,
-                cluster.ceph_exec_mode,
-                # Never overwrite the DEFAULT cluster's sticky MON-node
-                # fallback (watcher/ceph_client.py::query_cluster_health_with's
-                # own docstring) — this is a DIFFERENT cluster's poll.
-                update_sticky_fallback=False,
-            )
-            try:
-                cluster_snapshot_collector.publish_health_snapshot(
-                    cluster.id,
-                    health,
-                    collection_started_monotonic=poll_started_monotonic,
-                )
-            except Exception:
-                logger.exception(
-                    "run_observed_cluster_loop(%r): failed to publish critical health snapshot",
-                    cluster.name,
-                )
+            poll_started_at = cluster_snapshot_collector.collection_timestamp()
+            with cluster_snapshot_collector.health_collection_lock(cluster.id):
+                try:
+                    health = query_cluster_health_with(
+                        mon_nodes,
+                        cluster.ceph_container_name,
+                        cluster.ssh_user,
+                        cluster.ssh_key_path,
+                        cluster.ceph_exec_mode,
+                        # Never overwrite the DEFAULT cluster's sticky MON-node
+                        # fallback (watcher/ceph_client.py::query_cluster_health_with's
+                        # own docstring) — this is a DIFFERENT cluster's poll.
+                        update_sticky_fallback=False,
+                    )
+                except CephQueryError as exc:
+                    try:
+                        cluster_snapshot_collector.publish_health_error(cluster.id, exc)
+                    except Exception:
+                        logger.exception(
+                            "run_observed_cluster_loop(%r): failed to record health snapshot error",
+                            cluster.name,
+                        )
+                    raise
+                try:
+                    cluster_snapshot_collector.publish_health_snapshot(
+                        cluster.id,
+                        health,
+                        collection_started_monotonic=poll_started_monotonic,
+                        collection_started_at=poll_started_at,
+                    )
+                except Exception:
+                    logger.exception(
+                        "run_observed_cluster_loop(%r): failed to publish critical health snapshot",
+                        cluster.name,
+                    )
             # mon_node=None on success (unlike the default loop, which
             # passes ceph_client.last_successful_mon_node) — that global is
             # deliberately not updated for this cluster (see above), so
@@ -1773,18 +1848,47 @@ def run_observed_cluster_loop(
                     )
                 last_log_intel_scan_at = now
         except CephQueryError as exc:
-            try:
-                cluster_snapshot_collector.publish_health_error(cluster.id, exc)
-            except Exception:
-                logger.exception(
-                    "run_observed_cluster_loop(%r): failed to record health snapshot error",
-                    cluster.name,
-                )
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)
         except Exception:
             _record_heartbeat_safe(False, None, "unexpected error", cluster_id=cluster.id)
             logger.exception("run_observed_cluster_loop(%r): unexpected error during poll iteration", cluster.name)
+
+        if max_iterations is None:
+            status_now = datetime.utcnow()
+            if (
+                last_status_snapshot_scan_at is None
+                or (status_now - last_status_snapshot_scan_at).total_seconds()
+                >= _DASHBOARD_STATUS_SNAPSHOT_INTERVAL_SECONDS
+            ):
+                _run_auxiliary_scan(
+                    f"status-{cluster.id}",
+                    lambda status_cluster=cluster: cluster_snapshot_collector.collect_and_publish_status(
+                        status_cluster
+                    ),
+                    background=True,
+                )
+                last_status_snapshot_scan_at = status_now
+
+            inventory_now = datetime.utcnow()
+            if (
+                last_inventory_scan_at is None
+                or (inventory_now - last_inventory_scan_at).total_seconds()
+                >= settings.dashboard_inventory_poll_interval_seconds
+            ):
+                def scan_inventory(inventory_cluster=cluster) -> None:
+                    try:
+                        cluster_snapshot_collector.collect_and_publish_inventory(inventory_cluster)
+                    except Exception:
+                        logger.exception(
+                            "run_observed_cluster_loop(%r): inventory snapshot collection failed",
+                            inventory_cluster.name,
+                        )
+
+                _run_auxiliary_scan(
+                    f"inventory-{cluster.id}", scan_inventory, background=True,
+                )
+                last_inventory_scan_at = inventory_now
 
         iterations += 1
         if stop_event is not None:
