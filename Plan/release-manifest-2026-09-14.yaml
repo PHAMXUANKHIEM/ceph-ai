@@ -1,0 +1,82 @@
+release_id: ceph-ai-phase0-2026-09-14
+target:
+  host: 10.3.55.213
+  repository: /root/ceph-ai
+  branch: main
+  deployed: false
+status: pending_review
+
+application:
+  commit_sha: f8e2ab978361bb120bf98dae37d33d543cfa0347
+  rollback_candidate_sha: 5a9655a9076999a966e2d6a2863d0f1a986f2070
+  worktree: dirty
+  release_commit: f8e2ab978361bb120bf98dae37d33d543cfa0347
+  pushed_to_origin: false
+
+migrations:
+  alembic_head: ac17d9e0f5a0
+  upgrade_downgrade_tests: passed
+
+artifacts:
+  application_image: localhost/ceph-ai:local
+  rabbitmq_image: docker.io/library/rabbitmq:3.13-management
+  frontend_build: passed_with_node_20
+
+runtime:
+  systemd_units:
+    dashboard: disabled_inactive
+    worker: disabled_inactive
+    watcher: disabled_inactive
+  podman_compose_runtime: running_independently
+  watcher_container: healthy_but_not_owned_by_systemd
+  operator_approval_for_restart: required
+
+feature_flags:
+  global_autopilot_enabled: true
+  configured_cluster_autopilot_enabled: false
+  code_repair_auto_enabled: true
+  log_intelligence_enabled: true
+  log_intelligence_ai_enabled: true
+  note: Global autonomous flags require review before any release rollout.
+
+message_broker:
+  user: ceph_ai
+  vhost: /
+  credential_values_recorded: false
+  production_permission_update:
+    write_includes: amq.default
+    secret_values_exposed: false
+  integration_gate:
+    isolated_vhost: 3_passed
+    production_vhost: not_run_to_completion_shared_queue_has_live_consumers
+
+verification:
+  focused_feature_gate: 207_passed
+  broad_deterministic_gate_before_final_template_fix: 3175_passed_4_deselected
+  final_openstack_module_after_template_fix: 20_passed
+  python_compile: passed
+  diff_check: passed
+  frontend_build: passed
+  alembic_heads: one_head
+  realtime_foundation:
+    rt01_refresh_lifecycle: 17_snapshot_health_tests_passed
+    rt02_collector_metrics: 13_collector_health_tests_passed
+    rt03_process_restart_persistence: passed
+    rt06_snapshot_websocket_notification: 4_dashboard_ws_tests_passed
+    rt07_frontend_visibility_and_refresh_guard: node20_build_passed
+    combined_current_snapshot_gate: 24_passed
+
+deployment_gate:
+  deterministic_tests: pass_with_targeted_post_fix_verification
+  broker: pass_in_isolated_vhost
+  worktree_review: open_for_remaining_changes
+  runtime_ownership: blocked_pending_operator_decision
+  global_autonomy_flags: review_required
+  budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent
+  release_manifest: this_file
+  deploy: blocked
+
+rollback:
+  approved_sha: null
+  procedure: Plan/end-to-end-feature-completion-and-deployment-plan.md
+  automatic_rollback_enabled: false
