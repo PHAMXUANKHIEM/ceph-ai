@@ -35,9 +35,9 @@ relevant gates pass.
   independently managed Podman containers are running, including a healthy
   Watcher. This runtime ownership conflict must be resolved by an operator
   before any restart or rollout.
-- The deterministic release gate completed with `3175 passed, 4 deselected`
-  before the final OpenStack template correction; the previously failing
-  OpenStack module now passes `20 passed`.
+- The deterministic release gate completed with `3184 passed, 4 deselected,
+  23 warnings` on the clean candidate. The isolated RabbitMQ release gate
+  completed with `3 passed`.
 - The affected feature gate passes `207 passed`.
 - Python compilation, `git diff --check`, the Node 20 frontend production
   build, and the single Alembic-head check pass.

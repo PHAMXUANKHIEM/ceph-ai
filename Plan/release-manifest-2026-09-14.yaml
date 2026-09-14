@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 6fa440fcab8d8cd1c0e827ca9a82d86a212483ea
+  commit_sha: 7336594d532191cfef4768f9b0558a97aa58f4c3
   rollback_candidate_sha: 5a9655a9076999a966e2d6a2863d0f1a986f2070
   worktree: clean
-  release_commit: 6fa440fcab8d8cd1c0e827ca9a82d86a212483ea
+  release_commit: 7336594d532191cfef4768f9b0558a97aa58f4c3
   pushed_to_origin: false
 
 migrations:
@@ -52,7 +52,7 @@ message_broker:
 
 verification:
   focused_feature_gate: 207_passed
-  broad_deterministic_gate_before_final_template_fix: 3175_passed_4_deselected
+  broad_deterministic_gate: 3184_passed_4_deselected_23_warnings
   final_openstack_module_after_template_fix: 20_passed
   python_compile: passed
   diff_check: passed
@@ -67,8 +67,8 @@ verification:
     combined_current_snapshot_gate: 24_passed
 
 deployment_gate:
-  deterministic_tests: pass_with_targeted_post_fix_verification
-  broker: pass_in_isolated_vhost
+  deterministic_tests: passed
+  broker: passed_in_isolated_release_gate_vhost
   worktree_review: clean_candidate_pending_release_gate
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
