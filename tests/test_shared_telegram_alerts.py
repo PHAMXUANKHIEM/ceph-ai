@@ -65,6 +65,51 @@ def test_humanizer_rejects_machine_formatted_response(monkeypatch):
     assert result == "OSD 2 DOWN"
 
 
+def test_humanizer_rejects_numbered_list_response(monkeypatch):
+    _mock_humanizer_router(
+        monkeypatch,
+        "1. OSD 2 đang DOWN trên node 10.20.1.195.",
+    )
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN trên node 10.20.1.195", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN trên node 10.20.1.195"
+
+
+def test_humanizer_rejects_changed_protected_ceph_fact(monkeypatch):
+    _mock_humanizer_router(
+        monkeypatch,
+        "OSD 3 đang không hoạt động trên node 10.20.1.195.",
+    )
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN trên node 10.20.1.195", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN trên node 10.20.1.195"
+
+
+def test_humanizer_rejects_mixed_english_response(monkeypatch):
+    _mock_humanizer_router(
+        monkeypatch,
+        "OSD 2 is down trên node 10.20.1.195.",
+    )
+
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN trên node 10.20.1.195", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN trên node 10.20.1.195"
+
+
 def test_humanizer_rejects_english_only_response(monkeypatch):
     _mock_humanizer_router(monkeypatch, "OSD 2 is down.")
 

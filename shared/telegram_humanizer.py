@@ -37,11 +37,35 @@ quan sát được và không khẳng định nó là nguyên nhân gốc.
 
 _MACHINE_RESPONSE_RE = re.compile(
     r"(?:^\s*[\[{]|^\s*(?:json|yaml|yml|traceback|stack\s+trace)\b|"
-    r"^\s*[-*]\s+|^\s*[-*]?\s*[A-Za-z_][\w.-]*\s*[:=]\s*\S)",
+    r"^\s*(?:[-*]|\d+[.)])\s+|^\s*[-*]?\s*[A-Za-z_][\w.-]*\s*[:=]\s*\S)",
     re.IGNORECASE | re.MULTILINE,
 )
 _VIETNAMESE_LETTER_RE = re.compile(r"[À-ỹĐđ]")
 _SENTENCE_END_RE = re.compile(r"[.!?]+(?=\s|$)")
+_ENGLISH_WORD_RE = re.compile(
+    r"\b(?:is|are|was|were|the|and|or|from|with|failed|failure|please|"
+    r"check|this|that|must|should|cannot|could|would)\b",
+    re.IGNORECASE,
+)
+_PROTECTED_DAEMON_RE = re.compile(
+    r"\b(osd|pg|mon|mgr|mds|rgw)\s*[._-]?\s*(\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+_PROTECTED_IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_PROTECTED_CODE_RE = re.compile(
+    r"\b(?:OSD|PG|MON|MGR|RGW|POOL|HEALTH|BLUESTORE)"
+    r"(?:_[A-Z0-9]+)+\b"
+)
+_PROTECTED_VALUE_RE = re.compile(
+    r"\b(?:node|host|server|pool|image|volume)\s*[:=]\s*"
+    r"([A-Za-z0-9][A-Za-z0-9._/@:-]*)",
+    re.IGNORECASE,
+)
+_PROTECTED_QUANTITY_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:%|ms|s|sec|secs|seconds?|bytes?|"
+    r"KiB|MiB|GiB|TiB|KB|MB|GB|TB)\b",
+    re.IGNORECASE,
+)
 
 
 def _compact_input(value: str | None) -> str:
@@ -68,7 +92,21 @@ def _response_text(response) -> str:
     return str(content or "").strip()
 
 
-def _valid_response(value: str) -> bool:
+def _protected_facts(source_text: str | None) -> tuple[str, ...]:
+    """Extract facts that a humanized response must not alter or omit."""
+    source = source_text or ""
+    facts: set[str] = set(_PROTECTED_IP_RE.findall(source))
+    facts.update(
+        f"{daemon.lower()} {number}"
+        for daemon, number in _PROTECTED_DAEMON_RE.findall(source)
+    )
+    facts.update(_PROTECTED_CODE_RE.findall(source))
+    facts.update(match.group(1) for match in _PROTECTED_VALUE_RE.finditer(source))
+    facts.update(_PROTECTED_QUANTITY_RE.findall(source))
+    return tuple(sorted(facts, key=str.casefold))
+
+
+def _valid_response(value: str, *, protected_facts: tuple[str, ...] = ()) -> bool:
     """Accept only a short, human-readable Vietnamese paragraph.
 
     Prompt instructions are not a sufficient safety boundary: a provider can
@@ -85,8 +123,13 @@ def _valid_response(value: str) -> bool:
         return False
     if not _VIETNAMESE_LETTER_RE.search(text):
         return False
+    if _ENGLISH_WORD_RE.search(text):
+        return False
     sentence_count = len(_SENTENCE_END_RE.findall(text))
-    return 1 <= sentence_count <= 3
+    if not 1 <= sentence_count <= 3:
+        return False
+    normalized_response = " ".join(text.casefold().split())
+    return all(fact.casefold() in normalized_response for fact in protected_facts)
 
 
 async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:
@@ -124,7 +167,10 @@ async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:
             timeout=HUMANIZER_TIMEOUT_SECONDS + 1,
         )
         result = _response_text(response)
-        if not _valid_response(result):
+        if not _valid_response(
+            result,
+            protected_facts=_protected_facts(fallback),
+        ):
             logger.warning("telegram humanizer returned an empty or machine-formatted response")
             return fallback
         return result
