@@ -23,7 +23,11 @@ def _make_action(db_session) -> str:
     # NodeUpgradeGate.prepare_action_id/confirm_action_id/abort_action_id
     # are real FKs to actions.id — this fixture's SQLite enforces them, so
     # exclude_action_id tests need a real Action row, not a bare uuid4.
-    incident = Incident(ceph_code="NODE_OS_GATE", detected_at=datetime.utcnow())
+    incident = Incident(
+        ceph_code="NODE_OS_GATE",
+        dedupe_key=f"node-gate:{uuid.uuid4()}",
+        detected_at=datetime.utcnow(),
+    )
     db_session.add(incident)
     db_session.flush()
     action = Action(

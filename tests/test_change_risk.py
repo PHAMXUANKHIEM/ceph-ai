@@ -19,6 +19,7 @@ def _session():
 def _action(session, suffix, *, action_id="restart_osd_daemon", cluster_id=None):
     incident = Incident(
         ceph_code="OSD_DOWN", status="DIAGNOSING", detected_at=datetime.utcnow(),
+        dedupe_key=f"osd:{suffix}",
         cluster_id=cluster_id,
     )
     session.add(incident); session.flush()

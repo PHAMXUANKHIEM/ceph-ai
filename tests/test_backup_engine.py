@@ -35,9 +35,12 @@ def isolated_db(monkeypatch):
 
 def _make_incident_and_action(action_id: str = "rbd_backup_run", cluster_id: str | None = None) -> tuple[str, str]:
     with db_module.SessionLocal() as session:
+        incident_id = hashlib.sha1(f"{action_id}:{datetime.utcnow().timestamp()}".encode()).hexdigest()
         incident = Incident(
+            id=incident_id,
             cluster_id=cluster_id,
-            ceph_code="BACKUP_SCHEDULED", status=IncidentStatus.EXECUTING.value, detected_at=datetime.utcnow()
+            ceph_code="BACKUP_SCHEDULED", dedupe_key=f"backup:{incident_id}",
+            status=IncidentStatus.EXECUTING.value, detected_at=datetime.utcnow()
         )
         session.add(incident)
         session.flush()

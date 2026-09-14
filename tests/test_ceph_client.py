@@ -88,6 +88,7 @@ class FakeSSHClient:
 def fake_ssh(monkeypatch):
     FakeSSHClient.behavior = {}
     FakeSSHClient.calls = []
+    ceph_client.last_successful_mon_node = None
     FakeSSHClient.host_key_policies = []
     FakeSSHClient.saved_host_key_paths = []
     monkeypatch.setattr(ceph_client.paramiko, "SSHClient", FakeSSHClient)

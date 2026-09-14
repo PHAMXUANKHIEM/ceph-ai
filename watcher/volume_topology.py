@@ -22,7 +22,7 @@ MAX_DATA_OBJECT_SAMPLES = 2
 
 
 def _connection(cluster):
-    if cluster is None:
+    if cluster is None or not hasattr(cluster, "ceph_mon_nodes"):
         nodes = ceph_client.get_mon_nodes()
         ssh_user = settings.ssh_user
         ssh_key_path = settings.ssh_key_path

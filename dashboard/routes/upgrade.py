@@ -1238,6 +1238,7 @@ async def prepare_node_os_gate(
         incident = Incident(
             cluster_id=cluster_id,
             ceph_code=NODE_OS_GATE_CEPH_CODE,
+            dedupe_key=f"node-os-gate:{gate_id}:{NODE_OS_GATE_PREPARE_ACTION_ID}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Chuẩn bị node {host} để cài lại OS (mục tiêu Ceph {target_version}) bởi {user}",
             detected_at=datetime.utcnow(),
@@ -1352,6 +1353,7 @@ async def abort_node_os_gate(
         incident = Incident(
             cluster_id=cluster_id,
             ceph_code=NODE_OS_GATE_CEPH_CODE,
+            dedupe_key=f"node-os-gate:{gate_row.id}:{NODE_OS_GATE_ABORT_ACTION_ID}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Huỷ Chuẩn bị cho node {host} bởi {user}",
             detected_at=datetime.utcnow(),
@@ -1539,6 +1541,7 @@ async def confirm_node_os_gate(
         incident = Incident(
             cluster_id=cluster_id,
             ceph_code=NODE_OS_GATE_CEPH_CODE,
+            dedupe_key=f"node-os-gate:{gate_row.id}:{NODE_OS_GATE_RECOVER_ACTION_ID}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Xác nhận & Phục hồi node {host} (mục tiêu Ceph {target_version}) bởi {user}",
             detected_at=datetime.utcnow(),

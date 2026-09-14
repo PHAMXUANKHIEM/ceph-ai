@@ -239,6 +239,7 @@ def test_prompt_injection_via_diagnosis_text_still_bounded_by_closed_schema(isol
             # set, never construct an arbitrary shell command outside it.
             "action_id": "resync_ntp",
             "rationale": "'; rm -rf / #  <- attempted shell injection in rationale text",
+            "diagnosis_confidence": 1.0,
         }
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)

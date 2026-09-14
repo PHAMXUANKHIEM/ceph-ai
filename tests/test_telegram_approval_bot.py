@@ -15,6 +15,7 @@ def _pending_action(
             Incident(
                 id=incident_id, ceph_code="OSD_DOWN", status=IncidentStatus.PENDING_APPROVAL.value,
                 detected_at=datetime.utcnow(), cluster_id=cluster_id,
+                dedupe_key=f"telegram:{incident_id}",
             )
         )
         action = Action(
@@ -36,6 +37,7 @@ def _grace_action(incident_id: str) -> str:
         incident = Incident(
             id=incident_id, ceph_code="MON_CLOCK_SKEW",
             status=IncidentStatus.GRACE_PENDING.value, detected_at=datetime.utcnow(),
+            dedupe_key=f"telegram:{incident_id}",
         )
         session.add(incident); session.flush()
         action = Action(
@@ -255,7 +257,9 @@ def test_grace_notification_has_countdown_and_cancel_only(dashboard_client, monk
     assert len(calls) == 1
     text, buttons = calls[0]
     assert "Autopilot lab sẽ chạy" in text
-    assert buttons == [("🛑 Hủy Autopilot", f"cancelgrace:{action_id}")]
+    assert buttons == [
+        ("🛑 Hủy Autopilot", f"cancelgrace:local:{action_id}")
+    ]
     with db_module.SessionLocal() as session:
         assert json.loads(session.get(Action, action_id).telegram_message_ids) == {"incident": 901}
 

@@ -96,7 +96,7 @@ def _vault_backend_enabled(rows: list[dict]) -> bool:
 
 def _is_default_key_finding(finding: LogFinding, patterns: list[LogPattern]) -> bool:
     texts = [finding.title, finding.summary, finding.root_cause_hypothesis]
-    texts.extend(value for row in patterns for value in (row.template, row.sample_line))
+    texts.extend(row.sample_line for row in patterns)
     return any(_DEFAULT_KEY_RE.search(value or "") for value in texts)
 
 
@@ -190,7 +190,7 @@ def _rgw_orch_daemons(cluster: Cluster) -> tuple[list[dict], str | None]:
 
 def _is_vault_finding(finding: LogFinding, patterns: list[LogPattern]) -> bool:
     texts = [finding.title, finding.summary, finding.root_cause_hypothesis]
-    texts.extend(value for row in patterns for value in (row.template, row.sample_line))
+    texts.extend(row.sample_line for row in patterns)
     return any(_VAULT_RE.search(value or "") for value in texts)
 
 

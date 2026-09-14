@@ -18,6 +18,9 @@ _TELEGRAM_PATH_RE = re.compile(
     r"[^/\s]+"
     r"(/(?:sendMessage|editMessageText|getUpdates|answerCallbackQuery|setMyCommands)\b)"
 )
+_PRINTF_DIRECTIVE_RE = re.compile(
+    r"%(?:\d+\$)?[-+#0 ]*(?:\d+|\*)?(?:\.\d+|\.\*)?[hlL]?[diouxXeEfFgGcrsa%]"
+)
 
 _installed = False
 _previous_factory: Callable[..., logging.LogRecord] | None = None
@@ -31,7 +34,14 @@ def redact_log_text(value: str) -> str:
 
 def _redact_log_arg(value: Any) -> Any:
     if isinstance(value, str):
-        return redact_log_text(value)
+        # Arguments are rendered after the format string.  Use the generic
+        # marker here so a raw token cannot be confused with a literal value
+        # in an already-redacted printf argument.
+        return _TOKEN_RE.sub(_REDACTED, _TELEGRAM_PATH_RE.sub(
+            rf"\1{_REDACTED}\2", _TELEGRAM_URL_RE.sub(
+                rf"\1{_REDACTED}\2", value
+            )
+        ))
     if isinstance(value, tuple):
         return tuple(_redact_log_arg(item) for item in value)
     if isinstance(value, list):
@@ -41,13 +51,25 @@ def _redact_log_arg(value: Any) -> Any:
     return value
 
 
+def _redact_format_string(value: str) -> str:
+    """Redact literal format text without consuming printf directives."""
+    parts: list[str] = []
+    cursor = 0
+    for match in _PRINTF_DIRECTIVE_RE.finditer(value):
+        parts.append(redact_log_text(value[cursor:match.start()]))
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(redact_log_text(value[cursor:]))
+    return "".join(parts)
+
+
 def _redact_record(record: logging.LogRecord) -> logging.LogRecord:
     if record.args:
         # Keep the original argument shape. Uvicorn's access formatter, for
         # example, unpacks five positional fields from record.args; replacing
         # them with an already-rendered message causes its formatter to throw
         # on every request. Redacting each value preserves all formatters.
-        record.msg = redact_log_text(record.msg) if isinstance(record.msg, str) else record.msg
+        record.msg = _redact_format_string(record.msg) if isinstance(record.msg, str) else record.msg
         record.args = _redact_log_arg(record.args)
     elif isinstance(record.msg, str):
         record.msg = redact_log_text(record.msg)

@@ -225,12 +225,12 @@ def test_collector_refreshes_only_recent_volume_mappings(dashboard_client, defau
         ))
         session.commit()
 
-    monkeypatch.setattr(volume_topology, "map_volume", lambda cluster, pool, image: {
-        "pool": pool, "image": image, "image_id": "abc", "object_name": "rbd_header.abc",
+    monkeypatch.setattr(volume_topology, "map_volumes", lambda cluster, keys: [("rbd", "vm-a", {
+        "pool": "rbd", "image": "vm-a", "image_id": "abc", "object_name": "rbd_header.abc",
         "pgid": "1.2a", "acting_osds": [1, 2, 3], "primary_osd": 1,
         "pgids": ["1.2a"], "sampled_objects": ["rbd_data.abc.0000000000000000"],
         "data_object_count": 1, "mapping_scope": "data_sample",
-    })
+    })])
     cluster = SimpleNamespace()
     assert volume_topology.collect_and_store(default_cluster_id, cluster, now=now) == 1
 

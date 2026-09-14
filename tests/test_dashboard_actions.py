@@ -542,6 +542,7 @@ def _pending_patch_action(status: str, action_id: str = patch_route.PATCH_INSTAL
         incident = Incident(
             ceph_code=patch_route.CLUSTER_PATCH_CEPH_CODE,
             status=status,
+            dedupe_key=f"patch:{action_id}",
             detected_at=datetime.utcnow(),
         )
         session.add(incident)

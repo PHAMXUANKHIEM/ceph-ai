@@ -68,15 +68,21 @@ def test_incident_has_required_columns():
         "id",
         "cluster_id",
         "ceph_code",
+        "dedupe_key",
         "status",
         "severity",
         "log_excerpt",
             "diagnosis_text",
-            "signal_evidence_json",
-            "postmortem_json",
+        "signal_evidence_json",
+        "group_root_incident_id",
+        "postmortem_json",
             "postmortem_generated_at",
             "postmortem_prompt_version",
         "telegram_reminded_at",
+        "acknowledged_at",
+        "acknowledged_by",
+        "muted_until",
+        "muted_by",
         # 2026-08-20 (xác minh sau khắc phục, watcher/verify.py): mốc sớm
         # nhất được phép hỏi lại cụm, và số vòng chẩn đoán lại đã dùng.
         "verify_after",
@@ -84,6 +90,7 @@ def test_incident_has_required_columns():
         "detected_at",
         "created_at",
         "updated_at",
+        "failed_at",
     }
 
 

@@ -253,6 +253,11 @@ def test_second_scan_of_same_problem_adds_no_duplicate_anything(isolated_db, wir
     """Vấn đề kéo dài được quét lại: số đếm cộng dồn, nhưng KHÔNG đẻ thêm
     phát hiện / cảnh báo / Incident."""
     _scan(isolated_db)
+    # The collector advances from the last successful window and keeps a
+    # two-minute overlap.  Refresh the fixture so the second scan represents
+    # the same ongoing problem inside that overlap instead of replaying a
+    # five-minute-old snapshot outside the incremental window.
+    wired["raw"] = _raw_log(minutes_ago=1)
     _scan(isolated_db)
 
     with db_module.SessionLocal() as session:

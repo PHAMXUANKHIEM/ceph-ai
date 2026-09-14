@@ -101,11 +101,13 @@ def test_new_incident_inherits_active_same_code_mute(session_factory):
     with session_factory() as session:
         source = Incident(
             id="muted-source", ceph_code="OSD_DOWN", status="NEW",
+            dedupe_key="osd:source",
             detected_at=now - timedelta(minutes=1), muted_until=now + timedelta(hours=1),
             muted_by="admin",
         )
         fresh = Incident(
             id="muted-fresh", ceph_code="OSD_DOWN", status="NEW", detected_at=now,
+            dedupe_key="osd:fresh",
         )
         session.add_all([source, fresh])
         session.flush()
@@ -119,8 +121,8 @@ def test_acknowledge_alert_updates_whole_group_and_audits(session_factory, monke
     now = datetime(2026, 8, 28, 10, 0)
     with session_factory() as session:
         session.add_all([
-            Incident(id="ack-old", ceph_code="OSD_DOWN", status="NEW", detected_at=now - timedelta(minutes=1)),
-            Incident(id="ack-new", ceph_code="OSD_DOWN", status="NEW", detected_at=now),
+            Incident(id="ack-old", ceph_code="OSD_DOWN", status="NEW", dedupe_key="osd:ack-old", detected_at=now - timedelta(minutes=1)),
+            Incident(id="ack-new", ceph_code="OSD_DOWN", status="NEW", dedupe_key="osd:ack-new", detected_at=now),
         ])
         session.commit()
     monkeypatch.setattr(incidents_route.db, "SessionLocal", session_factory)

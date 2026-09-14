@@ -27,6 +27,7 @@ def _incident(session, incident_id, code, minutes, *, cluster_id=None, osd_id=No
         id=incident_id,
         cluster_id=cluster_id,
         ceph_code=code,
+        dedupe_key=f"osd:{osd_id}" if osd_id is not None else incident_id,
         status=IncidentStatus.NEW.value,
         detected_at=datetime(2026, 8, 28, 10, 0) + timedelta(minutes=minutes),
         log_excerpt=f"{code} osd.{osd_id} host=node-a" if osd_id is not None else code,
