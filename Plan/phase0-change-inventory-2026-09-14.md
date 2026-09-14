@@ -4,9 +4,9 @@ Target: `10.3.55.213:/root/ceph-ai`
 Branch: `main`
 Reviewed against: `f8e2ab979e1e276d3332ad80cf45cb198ad3034c`
 
-This inventory classifies the current dirty worktree. It is a review aid, not
-an approval to commit or deploy. Files with application behavior changes must
-be split from tests and documentation before release.
+This inventory classified the dirty worktree before release isolation. It is a
+review aid, not an approval to deploy. The verified application changes are
+now split into reviewed local commits.
 
 ## A. Realtime snapshot and dashboard foundation
 
@@ -128,9 +128,12 @@ commit.
 - The verified realtime foundation was isolated in commit
   `f8e2ab979e1e276d3332ad80cf45cb198ad3034c`.
 - No push or service restart was performed.
-- The remaining worktree is not yet suitable for deployment because migration,
-  incident/logging, UI navigation, and autonomous-worker changes still need
-  separate review and commits.
+- The worktree is now clean after separate commits for realtime foundation,
+  migrations, UI/navigation, incident/logging safety, and bounded nightly AI
+  analyst review.
+- The candidate is still not deployable until the release suite, runtime
+  ownership, global autonomous flags, budget state, and operator approval
+  gates pass.
 - Next release action: split groups A–E into reviewed commits, rerun the full
   release gate from the resulting clean candidate, and obtain operator review
   of runtime ownership and autonomous flags.

@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: f8e2ab978361bb120bf98dae37d33d543cfa0347
+  commit_sha: 6fa440fcab8d8cd1c0e827ca9a82d86a212483ea
   rollback_candidate_sha: 5a9655a9076999a966e2d6a2863d0f1a986f2070
-  worktree: dirty
-  release_commit: f8e2ab978361bb120bf98dae37d33d543cfa0347
+  worktree: clean
+  release_commit: 6fa440fcab8d8cd1c0e827ca9a82d86a212483ea
   pushed_to_origin: false
 
 migrations:
@@ -69,7 +69,7 @@ verification:
 deployment_gate:
   deterministic_tests: pass_with_targeted_post_fix_verification
   broker: pass_in_isolated_vhost
-  worktree_review: open_for_remaining_changes
+  worktree_review: clean_candidate_pending_release_gate
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent

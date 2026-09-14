@@ -28,8 +28,9 @@ relevant gates pass.
 
 ## 2. Current baseline
 
-- `main` contains local commits and a large uncommitted feature worktree; no
-  push or deployment has been performed.
+- `main` contains six reviewed local commits not pushed to `origin/main`; no
+  deployment has been performed.
+- The release-candidate worktree is clean.
 - The systemd Dashboard, Worker, and Watcher units are disabled/inactive, but
   independently managed Podman containers are running, including a healthy
   Watcher. This runtime ownership conflict must be resolved by an operator
