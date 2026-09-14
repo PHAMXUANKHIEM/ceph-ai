@@ -29,10 +29,11 @@ def upgrade() -> None:
     op.add_column("volume_osd_mappings", sa.Column(
         "mapping_scope", sa.String(length=32), nullable=False, server_default="header_legacy",
     ))
-    op.alter_column("volume_osd_mappings", "pgids_json", server_default=None)
-    op.alter_column("volume_osd_mappings", "sampled_objects_json", server_default=None)
-    op.alter_column("volume_osd_mappings", "data_object_count", server_default=None)
-    op.alter_column("volume_osd_mappings", "mapping_scope", server_default=None)
+    with op.batch_alter_table("volume_osd_mappings") as batch_op:
+        batch_op.alter_column("pgids_json", server_default=None)
+        batch_op.alter_column("sampled_objects_json", server_default=None)
+        batch_op.alter_column("data_object_count", server_default=None)
+        batch_op.alter_column("mapping_scope", server_default=None)
 
 
 def downgrade() -> None:

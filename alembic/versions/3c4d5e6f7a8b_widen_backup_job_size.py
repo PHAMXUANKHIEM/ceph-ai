@@ -15,20 +15,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.alter_column(
-        "backup_jobs",
-        "size_bytes",
-        existing_type=sa.Integer(),
-        type_=sa.BigInteger(),
-        existing_nullable=True,
-    )
+    with op.batch_alter_table("backup_jobs") as batch_op:
+        batch_op.alter_column(
+            "size_bytes",
+            existing_type=sa.Integer(),
+            type_=sa.BigInteger(),
+            existing_nullable=True,
+        )
 
 
 def downgrade() -> None:
-    op.alter_column(
-        "backup_jobs",
-        "size_bytes",
-        existing_type=sa.BigInteger(),
-        type_=sa.Integer(),
-        existing_nullable=True,
-    )
+    with op.batch_alter_table("backup_jobs") as batch_op:
+        batch_op.alter_column(
+            "size_bytes",
+            existing_type=sa.BigInteger(),
+            type_=sa.Integer(),
+            existing_nullable=True,
+        )
