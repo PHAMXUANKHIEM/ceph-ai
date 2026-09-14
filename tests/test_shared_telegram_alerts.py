@@ -1,6 +1,49 @@
+import asyncio
+
 import shared.telegram_alerts as telegram_alerts
+import shared.telegram_humanizer as telegram_humanizer
 from shared.telegram_client import TelegramSendError
 from datetime import datetime
+
+
+def test_humanizer_skips_disabled_router_without_building_client(monkeypatch):
+    monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", False)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_api_key", "configured")
+    monkeypatch.setattr(telegram_humanizer.settings, "router_base_url", "http://router")
+    monkeypatch.setattr(telegram_humanizer.settings, "router_model", "model")
+
+    def unexpected_client(*_args, **_kwargs):
+        raise AssertionError("disabled Router must not be called")
+
+    monkeypatch.setattr(telegram_humanizer, "build_router_client", unexpected_client)
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN"
+
+
+def test_humanizer_skips_router_without_model(monkeypatch):
+    monkeypatch.setattr(telegram_humanizer.settings, "telegram_ai_humanize_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_enabled", True)
+    monkeypatch.setattr(telegram_humanizer.settings, "router_api_key", "configured")
+    monkeypatch.setattr(telegram_humanizer.settings, "router_base_url", "http://router")
+    monkeypatch.setattr(telegram_humanizer.settings, "router_model", "")
+
+    def unexpected_client(*_args, **_kwargs):
+        raise AssertionError("Router without a model must not be called")
+
+    monkeypatch.setattr(telegram_humanizer, "build_router_client", unexpected_client)
+    result = asyncio.run(
+        telegram_humanizer.humanize_log_for_telegram(
+            "OSD 2 DOWN", context="log gốc OSD_DOWN"
+        )
+    )
+
+    assert result == "OSD 2 DOWN"
 
 
 def _configure_incident(monkeypatch, *, token="123:ABC", chat_id="-100999"):

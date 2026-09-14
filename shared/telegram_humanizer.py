@@ -70,6 +70,12 @@ async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:
     fallback = _compact_input(raw_text)
     if not fallback or not settings.telegram_ai_humanize_enabled:
         return fallback
+    if not settings.router_enabled:
+        logger.info("telegram humanizer skipped: router is disabled")
+        return fallback
+    if not str(settings.router_model or "").strip():
+        logger.warning("telegram humanizer skipped: router model is not configured")
+        return fallback
 
     client = None
     try:
