@@ -57,7 +57,7 @@ def test_incident_alert_skips_humanizer_for_clean_short_excerpt(monkeypatch):
 
     assert len(calls) == 1
     assert "Một Monitor đang không hoạt động." in calls[0]
-    assert "🔎 Chi tiết kỹ thuật:" in calls[0]
+    assert "🔎 Bằng chứng kỹ thuật:" in calls[0]
 
 
 def test_incident_alert_humanizes_machine_excerpt(monkeypatch):
@@ -292,7 +292,27 @@ def test_osd_down_alert_explains_deactivate_container_and_github_metadata(monkey
     assert "OSD 2 trên node 10.20.1.195 đang DOWN" in calls[0]
     assert "đã xoá container tạm phục vụ deactivate OSD" in calls[0]
     assert "không phải lỗi kết nối GitHub" in calls[0]
-    assert "📖 Giải thích chi tiết:" in calls[0]
+    assert "🔎 Bằng chứng kỹ thuật:" in calls[0]
+
+
+def test_bluesstore_slow_ops_explains_missing_osd_heartbeat(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+    excerpt = (
+        "--- 10.20.1.195 (osd.2) ---\n"
+        "osd.2 heartbeat_check: no reply from 10.20.1.153:6806 osd.1"
+    )
+
+    telegram_alerts.send_incident_alert("BLUESTORE_SLOW_OP_ALERT", "HEALTH_WARN", excerpt)
+
+    assert "OSD 2 trên node 10.20.1.195 không nhận được phản hồi heartbeat" in calls[0]
+    assert "OSD 1 tại 10.20.1.153:6806" in calls[0]
+    assert "chưa đủ để kết luận ổ đĩa đã hỏng" in calls[0]
+    assert "🔎 Bằng chứng kỹ thuật:" in calls[0]
 
 
 def test_unknown_incident_alert_still_has_human_explanation(monkeypatch):
@@ -305,7 +325,7 @@ def test_unknown_incident_alert_still_has_human_explanation(monkeypatch):
     telegram_alerts.send_incident_alert("NEW_CEPH_CHECK", "HEALTH_WARN", "raw detail")
 
     assert "📝 Diễn giải:" in calls[0]
-    assert "🔎 Chi tiết kỹ thuật:" in calls[0]
+    assert "🔎 Bằng chứng kỹ thuật:" in calls[0]
 
 
 def test_send_incident_alert_skips_when_not_configured(monkeypatch):

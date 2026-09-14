@@ -62,6 +62,11 @@ _INCIDENT_SEVERITY_PREFIX = {
 }
 
 _OSD_HOST_RE = re.compile(r"---\s*([^\s(]+)\s+\(osd\.(\d+)\)", re.IGNORECASE)
+_BLUESTORE_HEARTBEAT_RE = re.compile(
+    r"no reply from\s+(?P<peer_ip>[^\s:]+):(?P<peer_port>\d+)\s+"
+    r"osd\.(?P<peer_osd>\d+)",
+    re.IGNORECASE,
+)
 
 _INCIDENT_EXPLANATIONS = {
     "MON_DOWN": "Một Monitor (MON) đang không hoạt động; cụm có thể mất khả năng điều phối nếu không còn đủ MON.",
@@ -173,6 +178,28 @@ def _translate_incident_log(ceph_code: str, log_excerpt: str | None) -> str:
         if "ceph_git_repo" in lowered or "github.com/ceph/ceph" in lowered:
             explanation += " Đường dẫn GitHub trong metadata image chỉ là thông tin mã nguồn build, không phải lỗi kết nối GitHub."
         return explanation
+    if code == "BLUESTORE_SLOW_OP_ALERT":
+        local = _OSD_HOST_RE.search(raw)
+        heartbeat = _BLUESTORE_HEARTBEAT_RE.search(raw)
+        if heartbeat:
+            local_label = (
+                f"OSD {local.group(2)} trên node {local.group(1)}"
+                if local
+                else "Một OSD"
+            )
+            peer_label = (
+                f"OSD {heartbeat.group('peer_osd')} "
+                f"tại {heartbeat.group('peer_ip')}:{heartbeat.group('peer_port')}"
+            )
+            return (
+                f"{local_label} không nhận được phản hồi heartbeat từ {peer_label}. "
+                "Điều này cho thấy kết nối giữa hai OSD đang chậm hoặc mất phản hồi; "
+                "cần kiểm tra mạng và cả hai daemon OSD. Dấu hiệu này chưa đủ để kết luận ổ đĩa đã hỏng."
+            )
+        return (
+            "Ceph phát hiện OSD xử lý chậm trong BlueStore; cần kiểm tra độ trễ, "
+            "mạng và log của các OSD liên quan trước khi kết luận nguyên nhân."
+        )
     return _INCIDENT_EXPLANATIONS.get(
         code,
         "Ceph phát hiện một health check bất thường; phần Log gốc bên dưới là bằng chứng cần dùng để xác định nguyên nhân.",
@@ -427,13 +454,14 @@ def send_incident_alert(
     explanation = _translate_incident_log(ceph_code, log_excerpt)
     humanized = False
     if _needs_humanization(log_excerpt):
+        compact_source = _compact_incident_excerpt(log_excerpt, _MAX_EXCERPT_CHARS)
         excerpt = _humanize_sync(log_excerpt, context=f"log gốc {ceph_code}")
-        humanized = True
+        humanized = bool(excerpt and excerpt != compact_source)
     reminder_prefix = "🔁 NHẮC LẠI · " if reminder else ""
     text = f"{reminder_prefix}{prefix} Cụm Ceph: {ceph_code}"
     text += f"\n📝 Diễn giải: {explanation}"
     if excerpt:
-        detail_label = "📖 Giải thích chi tiết:" if humanized else "🔎 Chi tiết kỹ thuật:"
+        detail_label = "📖 Giải thích chi tiết:" if humanized else "🔎 Bằng chứng kỹ thuật:"
         text += f"\n{detail_label}\n{_compact_multiline(excerpt, _MAX_EXCERPT_CHARS)}"
     if reminder and diagnosis_text:
         text += f"\n🧠 Tóm tắt AI: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}"
