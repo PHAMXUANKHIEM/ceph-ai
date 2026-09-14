@@ -33,7 +33,11 @@ from shared.models import (
 )
 from shared.ceph_query_cache import get_cached as get_persisted_cache
 from shared.ceph_query_cache import store as store_persisted_cache
-from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
+from watcher.ceph_client import (
+    CephQueryError,
+    run_ceph_json_batch_command_with,
+    run_ceph_json_command_with,
+)
 from watcher import incident_grouping
 
 logger = logging.getLogger(__name__)
@@ -172,10 +176,22 @@ async def _load_dashboard_health_live(selected_cluster: Cluster) -> dict:
     if not mon_nodes:
         raise CephQueryError("Cụm chưa cấu hình MON node")
     ssh_user, ssh_key_path, exec_mode, container_name = resolve_ssh_creds(selected_cluster)
-    host, payload = await asyncio.to_thread(
-        _run_monitor_command, mon_nodes, container_name,
-        ssh_user, ssh_key_path, exec_mode, "ceph -s",
+    inventory_command = "ceph orch host ls --format json" if exec_mode == "cephadm" else "ceph node ls --format json"
+    host, payloads = await asyncio.to_thread(
+        run_ceph_json_batch_command_with,
+        mon_nodes,
+        container_name,
+        ssh_user,
+        ssh_key_path,
+        exec_mode,
+        [
+            "ceph -s --format json",
+            "ceph osd perf --format json",
+            "ceph osd dump --format json",
+            inventory_command,
+        ],
     )
+    payload = payloads[0] if payloads else None
     # A failed/slow MON is automatically bypassed on the next refresh after
     # the fallback succeeds. This makes the fix survive transient MON
     # outages and avoids depending on a hand-maintained list order.
@@ -184,36 +200,15 @@ async def _load_dashboard_health_live(selected_cluster: Cluster) -> dict:
     if not isinstance(payload, dict):
         raise CephQueryError("ceph -s returned an unexpected response")
 
-    perf_result, dump_result, nodes_result = await asyncio.gather(
-        asyncio.to_thread(
-            _run_monitor_command, mon_nodes, container_name,
-            ssh_user, ssh_key_path, exec_mode, "ceph osd perf",
-        ),
-        asyncio.to_thread(
-            _run_monitor_command, mon_nodes, container_name,
-            ssh_user, ssh_key_path, exec_mode, "ceph osd dump",
-        ),
-        asyncio.to_thread(
-            _cached_node_inventory, mon_nodes, container_name,
-            ssh_user, ssh_key_path, exec_mode,
-        ),
-        return_exceptions=True,
-    )
-    osd_perf = None
-    if isinstance(perf_result, Exception):
-        logger.info("dashboard_health: osd latency unavailable: %s", perf_result)
-    else:
-        _host, osd_perf = perf_result
-    osd_dump = None
-    if isinstance(dump_result, Exception):
-        logger.info("dashboard_health: detailed OSD state unavailable: %s", dump_result)
-    else:
-        _host, osd_dump = dump_result
-    cluster_nodes = None
-    if isinstance(nodes_result, Exception):
-        logger.info("dashboard_health: server inventory unavailable: %s", nodes_result)
-    elif nodes_result is not None:
-        _host, cluster_nodes = nodes_result
+    osd_perf = payloads[1] if len(payloads) > 1 else None
+    osd_dump = payloads[2] if len(payloads) > 2 else None
+    cluster_nodes = payloads[3] if len(payloads) > 3 else None
+    if osd_perf is None:
+        logger.info("dashboard_health: osd latency unavailable")
+    if osd_dump is None:
+        logger.info("dashboard_health: detailed OSD state unavailable")
+    if cluster_nodes is None:
+        logger.info("dashboard_health: server inventory unavailable")
     return _dashboard_health_payload(payload, selected_cluster, osd_perf, cluster_nodes, osd_dump)
 
 
@@ -1019,9 +1014,25 @@ async def dashboard_health(request: Request, _user: str = Depends(require_login)
                     response["refreshing"] = _schedule_dashboard_health_refresh(selected_cluster)
                 return response
 
-        payload = await _load_dashboard_health_live(selected_cluster)
-        store_persisted_cache(_DASHBOARD_HEALTH_CACHE_NAMESPACE, selected_cluster.id, payload)
-        return {**payload, "cached": False, "stale": False, "refreshing": False, "cache_age_seconds": 0}
+        # Never make the first dashboard paint wait for cephadm to start a
+        # transient shell container.  The browser polls this endpoint every
+        # 30 seconds; return a neutral loading snapshot while one refresh
+        # runs in the background.  Once it completes, the next poll gets the
+        # real values from the persistent cache.
+        _schedule_dashboard_health_refresh(selected_cluster)
+        return {
+            "health": "UNKNOWN",
+            "osds": {"up": None, "total": None},
+            "mons": {"up": None, "total": None},
+            "servers": {"online": None, "total": len(configured_nodes(selected_cluster))},
+            "utilization": {"percent": None, "bytes_used": None, "pools": None},
+            "metrics": {"latency_ms": None, "bandwidth_bps": None, "iops": None},
+            "placement_groups": "UNKNOWN",
+            "cached": False,
+            "stale": True,
+            "refreshing": True,
+            "cache_age_seconds": None,
+        }
     except CephQueryError as exc:
         cluster_name = selected_cluster.name if selected_cluster is not None else "đã chọn"
         logger.warning("dashboard_health(%s): live Ceph query failed: %s", cluster_name, exc)

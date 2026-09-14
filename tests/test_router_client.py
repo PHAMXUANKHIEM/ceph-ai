@@ -84,12 +84,13 @@ def isolated_db(monkeypatch):
     yield engine
 
 
-def _create_incident(incident_id: str) -> None:
+def _create_incident(incident_id: str, *, dedupe_key: str | None = None) -> None:
     with db_module.SessionLocal() as session:
         session.add(
             Incident(
                 id=incident_id,
                 ceph_code="MON_CLOCK_SKEW",
+                dedupe_key=dedupe_key,
                 status=IncidentStatus.DIAGNOSING.value,
                 detected_at=datetime.utcnow(),
             )
@@ -2912,8 +2913,8 @@ def test_poll_approved_actions_processes_pending_approved_rows_then_stops(isolat
     monkeypatch.setattr(router_client, "execute_command", fake_execute)
     monkeypatch.setattr(router_client.commands, "execute_command", fake_execute)
 
-    _create_incident("incident-8a")
-    _create_incident("incident-8b")
+    _create_incident("incident-8a", dedupe_key="test:8a")
+    _create_incident("incident-8b", dedupe_key="test:8b")
     with db_module.SessionLocal() as session:
         _approved_action(session, "incident-8a", nodes=["10.20.1.83"])
         _approved_action(session, "incident-8b", nodes=["10.20.1.78"])
@@ -3654,8 +3655,8 @@ def test_diagnose_incident_skips_duplicate_when_idempotency_key_collides(isolate
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
 
-    _create_incident("incident-collide-1")
-    _create_incident("incident-collide-2")
+    _create_incident("incident-collide-1", dedupe_key="test:collide:1")
+    _create_incident("incident-collide-2", dedupe_key="test:collide:2")
     envelope1 = dict(ENVELOPE, incident_id="incident-collide-1", nodes=["10.20.1.249"])
     envelope2 = dict(ENVELOPE, incident_id="incident-collide-2", nodes=["10.20.1.249"])
 
@@ -3680,7 +3681,7 @@ def test_diagnose_incident_allows_same_action_after_first_terminates(isolated_db
 
     monkeypatch.setattr(router_client, "_call_router", fake_call_router)
 
-    _create_incident("incident-seq-1")
+    _create_incident("incident-seq-1", dedupe_key="test:seq:1")
     envelope1 = dict(ENVELOPE, incident_id="incident-seq-1", nodes=["10.20.1.249"])
     asyncio.run(router_client.diagnose_incident("incident-seq-1", envelope1))
 
@@ -3689,7 +3690,7 @@ def test_diagnose_incident_allows_same_action_after_first_terminates(isolated_db
         first_action.status = ActionStatus.EXECUTED.value
         session.commit()
 
-    _create_incident("incident-seq-2")
+    _create_incident("incident-seq-2", dedupe_key="test:seq:2")
     envelope2 = dict(ENVELOPE, incident_id="incident-seq-2", nodes=["10.20.1.249"])
     asyncio.run(router_client.diagnose_incident("incident-seq-2", envelope2))
 

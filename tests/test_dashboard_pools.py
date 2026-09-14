@@ -96,7 +96,8 @@ def test_pools_react_component_contains_requested_toolbar_and_table():
     for heading in ("Pool Name", "Redundancy", "#PGs", "Crush Rule", "Used disk space", "Objects", "Read IOPS", "Write IOPS"):
         assert heading in source
     assert "1 selected" in source
-    assert "Rows per page:" in source
+    assert 'aria-label="Phân trang Pools"' in source
+    assert "Trang {currentPage} / {totalPages}" in source
     assert 'action="/pgs/pools/create"' in source
     assert 'name="cluster_id"' in source
 
@@ -106,8 +107,8 @@ def test_pools_react_component_limits_each_page_to_ten_rows():
     assert "const POOLS_PER_PAGE = 10;" in source
     assert "filteredRows.slice((currentPage - 1) * POOLS_PER_PAGE, currentPage * POOLS_PER_PAGE)" in source
     assert "paginatedRows.map" in source
-    assert 'aria-label="Previous page"' in source
-    assert 'aria-label="Next page"' in source
+    assert 'aria-label="Trang trước"' in source
+    assert 'aria-label="Trang sau"' in source
 
 
 def test_navigation_places_volume_performance_under_monitoring():

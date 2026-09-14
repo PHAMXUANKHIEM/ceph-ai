@@ -11,20 +11,70 @@
   const nextButton = document.getElementById("trash-page-next");
   const pageStatus = document.getElementById("trash-page-status");
 
+  function openTrashConfirmation(form) {
+    if (form.dataset.confirmOpen === "true") return;
+    form.dataset.confirmOpen = "true";
+
+    const target = form.dataset.confirmTarget || "Trash";
+    const dialog = document.createElement("dialog");
+    dialog.className = "trash-confirm-dialog";
+    dialog.setAttribute("aria-labelledby", "trash-confirm-title");
+    dialog.innerHTML = `
+      <div class="trash-confirm-bar">
+        <div class="trash-confirm-icon" aria-hidden="true">!</div>
+        <div class="trash-confirm-content">
+          <h2 id="trash-confirm-title">Xoá vĩnh viễn?</h2>
+          <p>Thao tác với <strong class="trash-confirm-target"></strong> sẽ bỏ qua TTL và watcher protection. Dữ liệu không thể khôi phục.</p>
+          <label class="trash-confirm-input-label" for="trash-confirm-input">Nhập chính xác <code>OK</code> để tiếp tục</label>
+          <input id="trash-confirm-input" class="trash-confirm-input" type="text" autocomplete="off" spellcheck="false">
+          <div class="trash-confirm-actions">
+            <button type="button" class="btn btn-ghost btn-sm" data-trash-confirm-cancel>Huỷ</button>
+            <button type="button" class="btn btn-danger btn-sm" data-trash-confirm-submit disabled>Xoá vĩnh viễn</button>
+          </div>
+        </div>
+      </div>`;
+    dialog.querySelector(".trash-confirm-target").textContent = target;
+    document.body.appendChild(dialog);
+
+    const input = dialog.querySelector(".trash-confirm-input");
+    const cancelButton = dialog.querySelector("[data-trash-confirm-cancel]");
+    const confirmButton = dialog.querySelector("[data-trash-confirm-submit]");
+    const originalButton = form.querySelector('button[type="submit"]');
+    let closed = false;
+
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      form.dataset.confirmOpen = "false";
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      if (originalButton) originalButton.focus();
+    };
+
+    input.addEventListener("input", () => {
+      confirmButton.disabled = input.value !== "OK";
+    });
+    cancelButton.addEventListener("click", close);
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close();
+    });
+    confirmButton.addEventListener("click", () => {
+      if (input.value !== "OK") return;
+      form.elements.confirmation.value = input.value;
+      if (originalButton) originalButton.disabled = true;
+      close();
+      HTMLFormElement.prototype.submit.call(form);
+    });
+
+    dialog.showModal();
+    input.focus();
+  }
+
   document.querySelectorAll(".trash-force-purge-form, .trash-force-remove-form").forEach((form) => {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const target = form.dataset.confirmTarget || "Trash";
-      if (!window.confirm(`XOÁ VĨNH VIỄN ${target}? Thao tác này bỏ qua TTL/watcher protection và không thể hoàn tác.`)) return;
-      const typed = window.prompt(`Nhập chính xác OK để xoá cưỡng bức ${target}:`, "");
-      if (typed !== "OK") {
-        window.alert("Không xoá: phải nhập chính xác OK.");
-        return;
-      }
-      form.elements.confirmation.value = typed;
-      const button = form.querySelector('button[type="submit"]');
-      if (button) button.disabled = true;
-      HTMLFormElement.prototype.submit.call(form);
+      openTrashConfirmation(form);
     });
   });
 

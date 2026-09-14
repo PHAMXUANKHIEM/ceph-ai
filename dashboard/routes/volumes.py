@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from dashboard import volume_perf_analysis
@@ -93,7 +94,9 @@ def _rbd_pools_for_request(request: Request) -> list[str]:
 
     try:
         return get_cached_ceph_query(
-            "rbd-pools", str(cluster.id), load_pools, ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+            "rbd-pools", str(cluster.id), load_pools,
+            ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+            stale_ttl_seconds=900,
         )
     except CephQueryError as exc:
         logger.warning("_rbd_pools_for_request: cluster %s discovery failed: %s", cluster.id, exc)
@@ -111,7 +114,9 @@ def _cached_rbd_trash(cluster, pool: str) -> list[dict]:
         )
 
     return get_cached_ceph_query(
-        "rbd-trash", f"{cluster.id}:{pool}", load_trash, ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+        "rbd-trash", f"{cluster.id}:{pool}", load_trash,
+        ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+        stale_ttl_seconds=900,
     )
 
 
@@ -124,7 +129,9 @@ def _cached_rbd_iostat(cluster, pool: str) -> list[dict]:
         )
 
     return get_cached_ceph_query(
-        "rbd-iostat", f"{cluster.id}:{pool}", load_iostat, ttl_seconds=_CEPH_IOSTAT_CACHE_TTL_SECONDS,
+        "rbd-iostat", f"{cluster.id}:{pool}", load_iostat,
+        ttl_seconds=_CEPH_IOSTAT_CACHE_TTL_SECONDS,
+        stale_ttl_seconds=900,
     )
 
 
@@ -137,7 +144,9 @@ def _cached_rbd_inventory(cluster, pool: str) -> list[dict]:
         )
 
     return get_cached_ceph_query(
-        "rbd-inventory", f"{cluster.id}:{pool}", load_inventory, ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+        "rbd-inventory", f"{cluster.id}:{pool}", load_inventory,
+        ttl_seconds=_CEPH_PAGE_CACHE_TTL_SECONDS,
+        stale_ttl_seconds=900,
     )
 
 
@@ -229,7 +238,10 @@ def _finish_trash_force_audit(audit_id: str, result: str, error: str | None = No
 
 
 _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
-_RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+# Ceph/RBD permits a leading underscore (the benchmark scratch image is
+# intentionally named `_ceph_aiops_perf_probe`). Keep the first-character
+# guard so an empty name or a leading CLI-like dash is still rejected.
+_RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _OPENSTACK_UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
@@ -244,6 +256,37 @@ _RBD_VOLUME_MUTATION_ACTION_IDS = (
     "cinder_attach_volume", "cinder_detach_volume",
     "cinder_create_snapshot",
 )
+_INFLIGHT_INCIDENT_UNIQUE_INDEX = "uq_incidents_inflight_cluster_code"
+
+
+def _is_inflight_incident_duplicate(error: IntegrityError) -> bool:
+    diagnostic = getattr(error.orig, "diag", None)
+    if getattr(diagnostic, "constraint_name", None) == _INFLIGHT_INCIDENT_UNIQUE_INDEX:
+        return True
+    # SQLite exposes the index name only in the text of the exception.
+    return _INFLIGHT_INCIDENT_UNIQUE_INDEX in str(error)
+
+
+def _rbd_mutation_dedupe_key(
+    action_id: str, pool: str, image: str, extra_params: dict | None,
+) -> str:
+    """Scope synthetic operator Incidents to the RBD resource they mutate."""
+    params = extra_params or {}
+    if action_id == "rbd_rename_volume":
+        names = sorted({image, str(params.get("new_image") or "")})
+        return f"rbd-volume:{pool}/{'/'.join(names)}"
+    return f"rbd-volume:{pool}/{image}"
+
+
+def _inflight_volume_actions(session, cluster):
+    return (
+        session.query(Action)
+        .join(Incident, Action.incident_id == Incident.id)
+        .filter(Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS))
+        .filter(Action.status.in_(_IN_FLIGHT_ACTION_STATUSES))
+        .filter(_cluster_row_filter(Incident.cluster_id, cluster))
+        .all()
+    )
 
 
 # 2026-07-28: same "own copy, not a cross-import" posture as
@@ -696,10 +739,7 @@ def _propose_rbd_volume_mutation(
         raise HTTPException(status_code=400, detail=f"Thông tin Volume không hợp lệ: {exc}") from exc
 
     with db.SessionLocal() as session:
-        in_flight = session.query(Action).filter(
-            Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS),
-            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-        ).all()
+        in_flight = _inflight_volume_actions(session, cluster)
         for existing in in_flight:
             try:
                 existing_params = json.loads(existing.action_params or "{}")
@@ -712,12 +752,22 @@ def _propose_rbd_volume_mutation(
         incident = Incident(
             cluster_id=cluster.id,
             ceph_code=ceph_code,
+            dedupe_key=_rbd_mutation_dedupe_key(action_id, pool, image, extra_params),
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"{rationale} — yêu cầu bởi {user}",
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi.",
+                ) from exc
+            raise
         action = Action(
             incident_id=incident.id,
             action_id=action_id,
@@ -759,10 +809,7 @@ def _propose_cinder_attachment_mutation(
     verb = "Gắn" if action_id == "cinder_attach_volume" else "Tháo"
     rationale = f"{verb} Cinder volume {volume_id} {'vào' if verb == 'Gắn' else 'khỏi'} Nova server {server_id}"
     with db.SessionLocal() as session:
-        for existing in session.query(Action).filter(
-            Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS),
-            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-        ).all():
+        for existing in _inflight_volume_actions(session, cluster):
             try:
                 existing_params = json.loads(existing.action_params or "{}")
             except (TypeError, ValueError):
@@ -771,11 +818,21 @@ def _propose_cinder_attachment_mutation(
                 raise HTTPException(status_code=409, detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi")
         incident = Incident(
             cluster_id=cluster.id, ceph_code=ceph_code,
+            dedupe_key=f"cinder-volume:{pool}/{image}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi.",
+                ) from exc
+            raise
         action = Action(
             incident_id=incident.id, action_id=action_id,
             classification=gate.classify_action(action_id).value,
@@ -816,10 +873,7 @@ def _propose_cinder_snapshot_create(
         + (" khi volume đang attached" if force else "")
     )
     with db.SessionLocal() as session:
-        for existing in session.query(Action).filter(
-            Action.action_id.in_(_RBD_VOLUME_MUTATION_ACTION_IDS),
-            Action.status.in_(_IN_FLIGHT_ACTION_STATUSES),
-        ).all():
+        for existing in _inflight_volume_actions(session, cluster):
             try:
                 existing_params = json.loads(existing.action_params or "{}")
             except (TypeError, ValueError):
@@ -828,11 +882,21 @@ def _propose_cinder_snapshot_create(
                 raise HTTPException(status_code=409, detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi")
         incident = Incident(
             cluster_id=cluster.id, ceph_code=CINDER_SNAPSHOT_CREATE_CEPH_CODE,
+            dedupe_key=f"cinder-volume:{pool}/{image}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"{rationale} — yêu cầu bởi {user}", detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Volume này đã có thay đổi đang chờ duyệt hoặc thực thi.",
+                ) from exc
+            raise
         action = Action(
             incident_id=incident.id, action_id="cinder_create_snapshot",
             classification=gate.classify_action("cinder_create_snapshot").value,
@@ -1455,6 +1519,7 @@ async def propose_vm_perf_benchmark(request: Request, user: str = Depends(requir
         incident = Incident(
             cluster_id=cluster.id,
             ceph_code=VM_PERF_BENCHMARK_CEPH_CODE,
+            dedupe_key=f"vm-perf:{vm_ip}/{device}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=(
                 f"Đề xuất đo read-only từ Controller {controller_ip} qua VM {vm_ip}, "
@@ -1463,7 +1528,16 @@ async def propose_vm_perf_benchmark(request: Request, user: str = Depends(requir
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Đã có một lượt đo VM đang chờ duyệt hoặc đang chạy.",
+                ) from exc
+            raise
         action = Action(
             incident_id=incident.id,
             action_id=VM_PERF_BENCHMARK_ACTION_ID,
@@ -1563,7 +1637,7 @@ async def propose_volume_perf_sweep(request: Request, pool: str, user: str = Dep
     parameter from the request, so there is no way to point this at a
     real volume even by a crafted request."""
     _require_admin_privilege(user)
-    _require_default_cluster_operation(request)
+    cluster = _require_default_cluster_operation(request)
     allowed_pools = set(ceph_client.configured_rbd_pools())
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
@@ -1595,7 +1669,9 @@ async def propose_volume_perf_sweep(request: Request, pool: str, user: str = Dep
 
     with db.SessionLocal() as session:
         incident = Incident(
+            cluster_id=cluster.id,
             ceph_code=VOLUME_PERF_SWEEP_CEPH_CODE,
+            dedupe_key=f"volume-perf-sweep:{pool}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=(
                 f"Đề xuất đo hiệu năng tối đa (load sweep) cho pool {pool} bởi {user} — dùng "
@@ -1604,7 +1680,16 @@ async def propose_volume_perf_sweep(request: Request, pool: str, user: str = Dep
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Đã có một lượt đo hiệu năng đang chờ duyệt hoặc đang chạy cho pool này.",
+                ) from exc
+            raise
 
         action = Action(
             incident_id=incident.id,
@@ -1765,7 +1850,7 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
     confirm flow does that.
     """
     _require_admin_privilege(user)
-    _require_default_cluster_operation(request)
+    cluster = _require_default_cluster_operation(request)
     allowed_pools = set(ceph_client.configured_rbd_pools())
     if pool not in allowed_pools:
         raise HTTPException(status_code=404, detail="Pool không nằm trong danh sách đã cấu hình")
@@ -1819,13 +1904,33 @@ async def propose_rbd_trash_remove(request: Request, pool: str, trash_id: str, u
                 )
 
         incident = Incident(
+            # This is an operator action on the default cluster, not a
+            # legacy unscoped row. Keeping the cluster explicit prevents a
+            # proposal from being mixed with another cluster's audit data.
+            cluster_id=cluster.id,
             ceph_code=RBD_TRASH_REMOVE_CEPH_CODE,
+            # ceph_code identifies the action family; the Trash target is
+            # the actual dedupe scope. Without this key, the DB's global
+            # in-flight Incident index rejects every second trash_id and
+            # different entries cannot be approved independently.
+            dedupe_key=f"rbd-trash:{pool}/{trash_id}",
             status=IncidentStatus.PENDING_APPROVAL.value,
             log_excerpt=f"Đề xuất xoá vĩnh viễn volume trong trash {pool}/{trash_id} bởi {user}",
             detected_at=datetime.utcnow(),
         )
         session.add(incident)
-        session.flush()  # assigns incident.id, needed by the Action FK below
+        try:
+            session.flush()  # assigns incident.id, needed by the Action FK below
+        except IntegrityError as exc:
+            session.rollback()
+            # The pre-check above gives the normal response. This catches a
+            # concurrent second click/request atomically at the DB boundary.
+            if _is_inflight_incident_duplicate(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Đã có một đề xuất xoá cho volume này đang chờ duyệt hoặc đã duyệt.",
+                ) from exc
+            raise
 
         action = Action(
             incident_id=incident.id,

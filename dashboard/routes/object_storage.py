@@ -215,7 +215,12 @@ def _capabilities(cluster) -> dict:
 
 
 def _cached_capabilities(cluster) -> dict:
-    return get_or_load("capabilities", f"{cluster.id}:capabilities", lambda: _capabilities(cluster))
+    return get_or_load(
+        "capabilities",
+        f"{cluster.id}:capabilities",
+        lambda: _capabilities(cluster),
+        stale_ttl_seconds=7200,
+    )
 
 
 _SECRET_PATTERN = re.compile(
@@ -981,6 +986,7 @@ def _cached_inventory(cluster, query: str, page: int, owner: str = "", quota: Qu
     return get_or_load(
         "buckets", key,
         lambda: _inventory(cluster, query, page, owner, quota, usage, sort, order),
+        stale_ttl_seconds=7200,
     )
 
 

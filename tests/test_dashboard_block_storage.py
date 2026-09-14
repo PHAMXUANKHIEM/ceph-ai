@@ -38,6 +38,8 @@ def test_block_storage_lists_name_pool_namespace_and_size(dashboard_client, monk
     assert "openstack" in response.text
     assert "10.0 GiB" in response.text
     assert "Default" in response.text
+    assert response.text.count("block-storage-trash-btn") == 1
+    assert "Namespace riêng — chưa hỗ trợ" in response.text
 
 
 def test_block_storage_overview_paginates_ten_volumes_per_page(dashboard_client, monkeypatch):

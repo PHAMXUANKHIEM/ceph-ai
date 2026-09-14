@@ -17,6 +17,7 @@ from config.settings import (
     settings,
 )
 from dashboard import telegram_approval_bot, telegram_chat
+from dashboard.cache_warmup import start as start_cache_warmup
 from dashboard.routes import (
     actions,
     ai_cost as ai_cost_routes,
@@ -121,6 +122,7 @@ async def _lifespan(_app: FastAPI):
         # Dashboard because a transient PostgreSQL saturation/timeout occurs
         # during deployment; database routes will report their normal 503.
         logger.exception("Dashboard startup: unable to sync default cluster from settings")
+    start_cache_warmup()
     dashboard_loop = asyncio.get_running_loop()
     telegram_listener_enabled = settings.telegram_listener_enabled
     if telegram_listener_enabled:

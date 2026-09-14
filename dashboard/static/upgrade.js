@@ -125,7 +125,7 @@
         : "Cephadm báo lỗi — xem chi tiết bên trên.";
     } else if (action.status === "EXECUTED") {
       setBadge("Hoàn tất", "success");
-      if (emptyText) emptyText.textContent = "Lần nâng cấp gần nhất đã hoàn tất.";
+      if (emptyText) emptyText.textContent = "Không có tiến trình nâng cấp nào đang chạy trên cụm hiện tại.";
     } else if (action.status === "APPROVED" || action.status === "PENDING_APPROVAL") {
       setBadge("Đang chờ xử lý", "idle");
       if (emptyText) emptyText.textContent = action.status === "APPROVED"

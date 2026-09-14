@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -12,7 +13,7 @@ from openai import AsyncOpenAI, APIError, APIConnectionError, AuthenticationErro
 from config.settings import settings
 from dashboard.routes import auth
 from shared.cluster_nodes import configured_nodes, resolve_ssh_creds
-from shared.codex_app_server import CodexAppServerError, codex_app_server
+from shared.codex_app_server import CodexAppServer, CodexAppServerError, codex_app_server
 from shared.claude_cli import ClaudeCLIError, run_claude_prompt
 from shared.ai_provider_runtime import refresh_chat_provider_flags
 from shared import db
@@ -1017,8 +1018,17 @@ def _run_tool(
     return result_text[:limit], is_error
 
 
-def _chat_uses_ai(history: list[dict], user_text: str, actor: str, cluster=None, allowed_tools: list[str] | None = None) -> bool:
-    return not auth.is_ceph_chat_restricted(actor) or is_ceph_scoped(user_text, history)
+def _chat_uses_ai(
+    history: list[dict],
+    user_text: str,
+    actor: str,
+    cluster=None,
+    allowed_tools: list[str] | None = None,
+    preferred_provider: str | None = None,
+    allow_unrestricted: bool = False,
+    **_kwargs,
+) -> bool:
+    return allow_unrestricted or not auth.is_ceph_chat_restricted(actor) or is_ceph_scoped(user_text, history)
 
 
 @observe_ai_call("ceph_chat", when=_chat_uses_ai)
@@ -1032,6 +1042,8 @@ async def run_chat_turn(
     timeout_seconds: float | None = None,
     max_tokens: int | None = None,
     provider_call_budget: Callable[[], Awaitable[None]] | None = None,
+    preferred_provider: str | None = None,
+    allow_unrestricted: bool = False,
 ) -> dict:
     """Runs one chat turn: sends `user_text` (plus prior `history`) to
     9router (OpenAI-compatible /v1/chat/completions), executing any
@@ -1057,7 +1069,7 @@ async def run_chat_turn(
     ceph_restricted = auth.is_ceph_chat_restricted(actor)
     ai_name = auth.chat_ai_name(actor)
     female_address = auth.chat_female_address(actor)
-    if ceph_restricted and not is_ceph_scoped(user_text, history):
+    if ceph_restricted and not allow_unrestricted and not is_ceph_scoped(user_text, history):
         return {
             "reply_text": with_romantic_address(OUT_OF_SCOPE_MESSAGE, ai_name, female_address),
             "proposal": None,
@@ -1065,7 +1077,8 @@ async def run_chat_turn(
         }
 
     actor_system_prompt = system_prompt(
-        ceph_restricted=ceph_restricted, ai_name=ai_name, female_address=female_address,
+        ceph_restricted=ceph_restricted and not allow_unrestricted,
+        ai_name=ai_name, female_address=female_address,
         cluster_name=getattr(cluster, "name", None),
     )
     outbound_history = [
@@ -1079,14 +1092,44 @@ async def run_chat_turn(
     outbound_user_text = redact_text(user_text)
 
     provider_errors: list[str] = []
+    claude_attempted = False
+    # Delegated sub-agents are independent turns. Prefer Claude for them when
+    # enabled because the Codex app-server adapter intentionally serializes
+    # turns through one shared process/tool handler. Codex remains a fallback.
+    if preferred_provider == "claude" and settings.claude_chat_enabled:
+        claude_attempted = True
+        try:
+            result = await _run_claude_chat_turn(
+                outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
+                allowed_tools, max_tool_iterations=max_tool_iterations,
+                timeout_seconds=timeout_seconds,
+                provider_call_budget=provider_call_budget,
+            )
+        except ChatTurnError as exc:
+            provider_errors.append(f"Claude call failed: {exc}")
+            logger.warning("%s; trying configured fallback", provider_errors[-1])
+        else:
+            result["reply_text"] = with_romantic_address(
+                _append_citation_footer(result["reply_text"], result.pop("citations", [])),
+                ai_name, female_address,
+            )
+            return result
+
     if settings.codex_chat_enabled:
+        delegated_codex_server = (
+            CodexAppServer() if preferred_provider == "claude" else codex_app_server
+        )
         try:
             if provider_call_budget is not None:
                 await provider_call_budget()
+            codex_kwargs = {}
+            if delegated_codex_server is not codex_app_server:
+                codex_kwargs["app_server"] = delegated_codex_server
             result = await _run_codex_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
                 allowed_tools, timeout_seconds=timeout_seconds,
                 max_tool_iterations=max_tool_iterations,
+                **codex_kwargs,
             )
         except ChatTurnError as exc:
             # Codex auth/quota failures must not block a configured Claude
@@ -1099,7 +1142,10 @@ async def run_chat_turn(
                 ai_name, female_address,
             )
             return result
-    if settings.claude_chat_enabled:
+        finally:
+            if delegated_codex_server is not codex_app_server:
+                await delegated_codex_server.close()
+    if settings.claude_chat_enabled and not claude_attempted:
         try:
             result = await _run_claude_chat_turn(
                 outbound_history, outbound_user_text, actor_system_prompt, actor, cluster,
@@ -1252,8 +1298,13 @@ async def run_chat_turn(
                 args = json.loads(call.function.arguments or "{}")
             except (TypeError, ValueError):
                 args = {}
-            result_text, is_error = _run_tool(
-                call.function.name, args, actor, cluster, allowed_tools=allowed_tool_names
+            result_text, is_error = await asyncio.to_thread(
+                _run_tool,
+                call.function.name,
+                args,
+                actor,
+                cluster,
+                allowed_tools=allowed_tool_names,
             )
             if not is_error:
                 tools_used.append(call.function.name)
@@ -1283,6 +1334,7 @@ async def _run_codex_chat_turn(
     history: list[dict], user_text: str, actor_system_prompt: str, actor: str, cluster=None,
     allowed_tools: list[str] | None = None, timeout_seconds: float | None = None,
     max_tool_iterations: int | None = None,
+    app_server: CodexAppServer | None = None,
 ) -> dict:
     """Run chat through Codex while retaining ceph-ai's guarded tools."""
     transcript = []
@@ -1312,8 +1364,12 @@ async def _run_codex_chat_turn(
                 return "Đề xuất đã tạo và đang chờ operator xác nhận trên giao diện.", True
             except (ChatToolError, TypeError, ValueError) as exc:
                 return f"Đề xuất không hợp lệ: {exc}", False
-        text, is_error = _run_tool(
-            name, args, actor, cluster,
+        text, is_error = await asyncio.to_thread(
+            _run_tool,
+            name,
+            args,
+            actor,
+            cluster,
             allowed_tools=set(allowed_tools) if allowed_tools is not None else None,
         )
         if not is_error:
@@ -1323,7 +1379,7 @@ async def _run_codex_chat_turn(
         return text, not is_error
 
     try:
-        result = await codex_app_server.run_turn(
+        result = await (app_server or codex_app_server).run_turn(
             prompt,
             [item for item in _tool_schemas(is_admin=auth.is_admin_user(actor), cluster=cluster)
              if allowed_tools is None or item["function"]["name"] in set(allowed_tools)],
@@ -1453,7 +1509,9 @@ async def _run_claude_chat_turn(
             if citations:
                 response["citations"] = citations
             return response
-        result_text, is_error = _run_tool(name, args, actor, cluster)
+        result_text, is_error = await asyncio.to_thread(
+            _run_tool, name, args, actor, cluster
+        )
         if not is_error:
             tools_used.append(name)
             citations.extend(_citations_from_result(result_text))

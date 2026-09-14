@@ -187,11 +187,15 @@ class Incident(Base):
         # read-before-insert check alone cannot prevent two processes from
         # creating/alerting the same still-active Ceph finding.  FAILED is
         # deliberately excluded: it remains historical evidence and is
-        # eligible for a later retry after the watcher cooldown.
+        # eligible for a later retry after the watcher cooldown.  Operator
+        # proposals may provide a resource-scoped dedupe_key: for example,
+        # two different RBD Trash entries share the synthetic ceph_code but
+        # must still have independent approval lifecycles.
         Index(
             "uq_incidents_inflight_cluster_code",
             text("COALESCE(cluster_id, '')"),
             "ceph_code",
+            text("COALESCE(dedupe_key, '')"),
             unique=True,
             sqlite_where=text(
                 "status IN ('NEW','DIAGNOSING','PENDING_APPROVAL','APPROVED','EXECUTING','GRACE_PENDING','VERIFYING')"
@@ -210,6 +214,11 @@ class Incident(Base):
     # unknown-cluster state. See shared/models.py::Cluster's docstring.
     cluster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("clusters.id"), nullable=True)
     ceph_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Optional resource-level key for synthetic/operator incidents. NULL
+    # preserves the original cluster+ceph_code dedupe semantics for watcher
+    # findings and legacy rows. It is deliberately not a FK: the key can be
+    # a stable composite such as ``rbd-trash:vms/123...``.
+    dedupe_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=IncidentStatus.NEW.value)
     # Ceph's own per-check severity (HEALTH_WARN/HEALTH_ERR) from
     # `ceph health detail --format json`'s checks[code]["severity"] —

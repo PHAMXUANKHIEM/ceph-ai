@@ -382,6 +382,71 @@ def test_telegram_dual_implementer_explicitly_enables_write_mode(monkeypatch):
     assert captured["mode"] == "implement"
 
 
+def test_dual_ai_ask_keeps_bounded_runtime_timeout(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"done", None
+
+    def fake_provider_command(provider, repo, prompt, timeout, **kwargs):
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    async def fake_wait_for(awaitable, timeout):
+        captured["timeout"] = timeout
+        return await awaitable
+
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+    monkeypatch.setattr(dual_module.asyncio, "wait_for", fake_wait_for)
+
+    import asyncio
+
+    asyncio.run(dual_module._ask("implementer", "prompt"))
+
+    assert captured["timeout"] == dual_module.DISCUSSION_TIMEOUT_SECONDS
+
+
+def test_single_full_ask_waits_until_provider_finishes_without_runtime_timeout(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            captured["stdin"] = input
+            return b"done", None
+
+    def fake_provider_command(provider, repo, prompt, timeout, **kwargs):
+        captured["mode"] = kwargs["mode"]
+        return "codex", ["codex", "exec", "-"]
+
+    async def fake_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    async def fail_wait_for(*_args, **_kwargs):
+        raise AssertionError("Single Full runtime must not be bounded by wait_for")
+
+    monkeypatch.setattr(dual_module, "_role_account_dirs", lambda config, profile: (Path("/tmp/codex"), Path("/tmp/claude")))
+    monkeypatch.setattr(dual_module, "_provider_command", fake_provider_command)
+    monkeypatch.setattr(dual_module.asyncio, "create_subprocess_exec", fake_subprocess_exec)
+    monkeypatch.setattr(dual_module.asyncio, "wait_for", fail_wait_for)
+
+    import asyncio
+
+    result = asyncio.run(dual_module._ask("implementer", "prompt", full_access=True))
+
+    assert captured["mode"] == "full-access"
+    assert captured["stdin"] == b"prompt"
+    assert result["content"] == "done"
+
+
 def test_dual_ai_ask_nonzero_quota_error_raises_exhausted_not_tokens_footer(monkeypatch):
     class FakeProcess:
         returncode = 1

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Block Storage — Ceph AIOps</title>
+  {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -14,6 +15,7 @@
         <span class="summary-chip">{{ total_images }} image{% if total_images != 1 %}s{% endif %}</span>
       </div>
       {% if error %}<div class="card-body"><p class="error">Không tải được Block Storage: {{ error }}</p></div>{% endif %}
+      {% if cache_loading %}<div class="card-body"><p class="hint">Đang tải dữ liệu Block Storage từ cụm… trang sẽ tự cập nhật.</p></div>{% endif %}
       {% if is_admin and create_pools %}
       <div class="card-body volume-inventory-create">
         <div><strong>Tạo volume mới</strong><span class="hint">Action RISKY, cần phê duyệt trước khi thực thi.</span></div>
@@ -35,15 +37,16 @@
           <span class="hint" id="block-storage-filter-result" role="status" aria-live="polite">{{ images|length }} kết quả</span>
           {% if total_pages > 1 %}<span class="hint">Trang {{ page }} / {{ total_pages }} · tối đa {{ overview_limit }} volume mỗi trang.</span>{% endif %}
         </form>
+        {% if is_admin %}<p id="block-storage-mutation-result" class="hint" hidden></p>{% endif %}
       </div>
       <div class="table-wrap">
         <table class="block-storage-table" id="block-storage-table">
-          <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th>Size</th></tr></thead>
+          <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th>Size</th>{% if is_admin %}<th>Thao tác</th>{% endif %}</tr></thead>
           <tbody>
           {% for image in images %}
-            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}&image={{ image.name }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td></tr>
+            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}&image={{ image.name }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td>{% if is_admin %}<td>{% if not image.namespace %}<button type="button" class="btn btn-reject btn-sm block-storage-trash-btn" data-pool="{{ image.pool }}" data-image="{{ image.name }}">Đề xuất xoá (Trash)</button>{% else %}<span class="hint">Namespace riêng — chưa hỗ trợ</span>{% endif %}</td>{% endif %}</tr>
           {% else %}
-            <tr class="empty-row"><td colspan="4"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
+            <tr class="empty-row"><td colspan="{{ 5 if is_admin else 4 }}"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
           {% endfor %}
           </tbody>
         </table>

@@ -7,8 +7,8 @@
 </head>
 <body>
   {% include "_nav.html" %}
-  <main class="page"><p><a class="btn btn-ghost btn-sm" href="/object-storage/users?cluster={{ selected_cluster.id }}">← S3 Users</a></p>
-    <section class="card"><div class="card-header"><div><h2>Quota &amp; Capability Editor</h2><p class="hint">Cluster: <strong>{{ selected_cluster.name }}</strong>. Chỉ scope/type/permission trong allowlist được chấp nhận.</p></div></div>
+  <main class="page">
+    <section class="card">
       <div class="card-body"><form id="s3-setting-form" class="audit-filters" data-cluster="{{ selected_cluster.id }}">
         <label>Thao tác<select id="s3-setting-action"><option value="quota_set">Đặt quota</option><option value="quota_enable">Bật quota</option><option value="quota_disable">Tắt quota</option><option value="cap_add">Thêm capability</option><option value="cap_remove">Gỡ capability</option></select></label>
         <label>UID<input id="s3-setting-uid" maxlength="128" required></label>

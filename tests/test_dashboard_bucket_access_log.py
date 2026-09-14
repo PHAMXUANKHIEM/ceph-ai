@@ -79,9 +79,8 @@ def test_page_lists_configured_rgw_hosts(dashboard_client, monkeypatch):
     response = dashboard_client.get("/bucket-access-log")
 
     assert response.status_code == 200
-    assert "10.20.1.90" in response.text
-    assert "10.20.1.91" in response.text
-    assert "10.20.1.150" not in response.text  # MON node, not RGW — must not appear
+    assert "Xem log" not in response.text
+    assert "bucket-access-log-form" not in response.text
 
 
 def test_page_shows_empty_state_when_no_rgw_configured(dashboard_client, monkeypatch):
@@ -91,7 +90,8 @@ def test_page_shows_empty_state_when_no_rgw_configured(dashboard_client, monkeyp
     response = dashboard_client.get("/bucket-access-log")
 
     assert response.status_code == 200
-    assert "Chưa cấu hình node RGW" in response.text
+    assert "Xem log" not in response.text
+    assert "bucket-access-log-form" not in response.text
 
 
 def test_api_returns_parsed_records_for_configured_rgw_host(dashboard_client, monkeypatch):
@@ -158,8 +158,8 @@ def test_page_uses_bucket_logging_name_without_duplicate_rgw_config(dashboard_cl
     assert "Bucket Logging" in response.text
     assert "Bucket Access Log —" not in response.text
     assert "<h2>Cấu hình RGW</h2>" not in response.text
-    assert "Requester" in response.text
-    assert "User-Agent" in response.text
+    assert "Requester" not in response.text
+    assert "User-Agent" not in response.text
     assert "chưa hỗ trợ native S3 Bucket Logging" not in response.text
     assert "HTTP access log của RGW Beast" not in response.text
     assert "Dữ liệu thu thập" not in response.text

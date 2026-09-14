@@ -49,8 +49,8 @@ def test_shared_navigation_seeds_every_non_permission_gated_group():
     for path in SHARED_NAV_PATHS:
         assert f'["{path}",' in source, f"shared navigation does not seed {path}"
 
-    assert '"/object-storage/user-settings"' in source
-    assert 'paths: ["/object-storage/buckets", "/object-storage/users", "/object-storage/user-settings", "/bucket-access-log"]' in source
+    assert '"/object-storage/user-settings"' not in source
+    assert 'paths: ["/object-storage/buckets", "/object-storage/users", "/bucket-access-log"]' in source
     assert 'paths: ["/block-storage", "/volume-performance", "/trash"]' in source
     assert 'if (path === "/volumes") link.textContent = "Volumes"' not in source
     assert '{ label: "Monitoring & Metrics", paths: ["/", "/nodes", "/crush-map"] }' in source
@@ -77,7 +77,7 @@ def test_compact_admin_pages_include_the_shared_permission_aware_navigation():
     for name in templates:
         source = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
         assert '{% include "_nav.html" %}' in source, f"{name} omits the shared navigation"
-def test_object_storage_quota_link_uses_admin_navigation_capability():
+def test_object_storage_quota_editor_is_not_added_to_global_navigation():
     source = APP_JS.read_text(encoding="utf-8")
-    assert 'linksByPath["/users"] || linksByPath["/clusters"]' in source
-    assert 'if (!linksByPath["/object-storage/user-settings"] && objectStorageAdmin)' in source
+    assert 'linksByPath["/object-storage/user-settings"]' not in source
+    assert 'Quota & Capabilities' not in source

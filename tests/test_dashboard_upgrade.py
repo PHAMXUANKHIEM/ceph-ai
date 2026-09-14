@@ -120,6 +120,40 @@ def test_get_upgrade_shows_current_version_and_suggested_target(dashboard_client
     assert 'value="19.2.0"' in response.text
 
 
+def test_upgrade_page_hides_completed_message_and_osd_flag_cleanup_controls(
+    dashboard_client, monkeypatch
+):
+    _set_cephadm(monkeypatch)
+    _stub_no_versions_or_progress(monkeypatch)
+    _login(dashboard_client)
+
+    with db_module.SessionLocal() as session:
+        incident = Incident(
+            ceph_code=upgrade_route.CLUSTER_UPGRADE_CEPH_CODE,
+            status=IncidentStatus.RESOLVED.value,
+            detected_at=datetime.utcnow(),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(
+            Action(
+                incident_id=incident.id,
+                action_id=upgrade_route.CLUSTER_UPGRADE_ACTION_ID,
+                classification="RISKY",
+                status=ActionStatus.EXECUTED.value,
+                action_params=json.dumps({"target_version": "19.2.0"}),
+            )
+        )
+        session.commit()
+
+    response = dashboard_client.get("/upgrade")
+
+    assert response.status_code == 200
+    assert "Lần nâng cấp gần nhất đã hoàn tất." not in response.text
+    assert "Cephadm chạy upgrade nền trong MGR." not in response.text
+    assert "Bỏ noout/noscrub/nodeep-scrub/nosnaptrim" not in response.text
+
+
 def test_propose_upgrade_creates_pending_action_and_synthetic_incident(dashboard_client, monkeypatch):
     _set_cephadm(monkeypatch)
     _stub_no_versions_or_progress(monkeypatch)

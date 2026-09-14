@@ -407,6 +407,55 @@ def test_finding_stays_open_while_its_patterns_still_occur(isolated_db, sent):
         assert session.get(LogFinding, finding_id).status == LogFindingStatus.OPEN.value
 
 
+def test_active_non_vault_rgw_finding_does_not_hit_vault_gate_or_resolve(
+    isolated_db, sent, monkeypatch,
+):
+    from watcher import ceph_finding_verifier
+    cluster_id, run_id = isolated_db
+    later = WINDOW_START + timedelta(days=1)
+    with db_module.SessionLocal() as session:
+        pattern = session.get(LogPattern, "pat-1")
+        pattern.daemon_type = "rgw"
+        pattern.template = "rgw frontends returned 503"
+        pattern.last_seen_at = later
+        session.commit()
+    finding_id = _make_open_finding(cluster_id, run_id, title="RGW 5xx spike")
+    monkeypatch.setattr(
+        ceph_finding_verifier, "verify_vault_recovery",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not run Vault gate")),
+    )
+
+    assert log_analysis.resolve_stale_findings(cluster_id, later) == 0
+    with db_module.SessionLocal() as session:
+        assert session.get(LogFinding, finding_id).status == LogFindingStatus.OPEN.value
+    assert sent["resolved"] == []
+    assert sent["recovery_pending"] == []
+
+
+def test_stale_non_vault_rgw_finding_resolves_without_not_vault_telegram_summary(
+    isolated_db, sent, monkeypatch,
+):
+    from watcher import ceph_finding_verifier
+    cluster_id, run_id = isolated_db
+    with db_module.SessionLocal() as session:
+        pattern = session.get(LogPattern, "pat-1")
+        pattern.daemon_type = "rgw"
+        pattern.template = "rgw frontends returned 503"
+        session.commit()
+    finding_id = _make_open_finding(cluster_id, run_id, title="RGW 5xx spike")
+    monkeypatch.setattr(
+        ceph_finding_verifier, "verify_vault_recovery",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not run Vault gate")),
+    )
+
+    assert log_analysis.resolve_stale_findings(cluster_id, WINDOW_START + timedelta(days=1)) == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(LogFinding, finding_id).status == LogFindingStatus.RESOLVED.value
+    assert sent["resolved"][0][1]["daemon_types"] == ["rgw"]
+    assert sent["resolved"][0][1]["verification_summary"] is None
+    assert sent["recovery_pending"] == []
+
+
 def test_rgw_vault_finding_only_resolves_after_live_recovery_gate(
     isolated_db, sent, monkeypatch,
 ):

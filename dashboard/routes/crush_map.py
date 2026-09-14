@@ -36,8 +36,8 @@ RECENT_CHANGE_HOURS = 24
 # implicitly rely on via the raw `ceph osd crush dump` weight field.
 CRUSH_WEIGHT_SCALE = 65536
 
-DEFAULT_HISTORY_LIMIT = 20
-MAX_HISTORY_LIMIT = 100
+DEFAULT_HISTORY_LIMIT = 10
+MAX_HISTORY_LIMIT = 10
 
 
 def _require_admin_privilege(user: str) -> None:
@@ -301,6 +301,26 @@ async def crush_map_history_api(
 
         next_before = f"{rows[-1].created_at.isoformat()}|{rows[-1].id}" if len(items) == limit else None
         return {"items": items, "next_before": next_before}
+
+
+@router.post("/api/crush-map/history/purge")
+async def crush_map_history_purge(request: Request, user: str = Depends(require_login)):
+    """Admin-only: remove every displayed history entry for the selected
+    cluster. The first baseline snapshot (without a diff) is kept so the
+    current CRUSH tree remains available after the history is cleared."""
+    _require_admin_privilege(user)
+    cluster = selected_cluster(request)
+    scope = and_(
+        CrushStructureSnapshot.diff_json.isnot(None),
+        or_(
+            CrushStructureSnapshot.cluster_id == cluster.id,
+            and_(cluster.is_default, CrushStructureSnapshot.cluster_id.is_(None)),
+        ),
+    )
+    with db.SessionLocal() as session:
+        deleted = session.query(CrushStructureSnapshot).filter(scope).delete(synchronize_session=False)
+        session.commit()
+    return {"deleted": deleted}
 
 
 @router.get("/api/crush-map/history/{snapshot_id}")

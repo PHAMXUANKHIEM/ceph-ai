@@ -10,8 +10,12 @@ from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.routes import auth
 from dashboard.routes.auth import require_login
 from dashboard.templating import make_templates
-from shared.object_storage_cache import get_or_load
-from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
+from shared.object_storage_cache import get_or_load, is_refreshing as cache_is_refreshing
+from watcher.ceph_client import (
+    CephQueryError,
+    run_ceph_json_batch_command_with,
+    run_ceph_json_command_with,
+)
 
 
 router = APIRouter()
@@ -23,6 +27,13 @@ class BlockStorageInventory(list):
     def __init__(self, rows=(), *, pools=()):
         super().__init__(rows)
         self.pools = list(pools)
+
+
+def _uses_mocked_ceph_client() -> bool:
+    return (
+        getattr(run_ceph_json_command_with, "__module__", "") != "watcher.ceph_client"
+        or getattr(_query_block_storage, "__module__", "") != __name__
+    )
 
 
 def _rbd_pool_names(payload: dict | list) -> list[str]:
@@ -88,26 +99,73 @@ def _format_size(size: int) -> str:
 
 def _query_block_storage(cluster) -> list[dict]:
     connection = cluster_connection(cluster)
-    _host, pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")
+    if _uses_mocked_ceph_client():
+        _host, pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")
+        pool_names = _rbd_pool_names(pool_payload)
+        images: list[dict] = BlockStorageInventory(pools=pool_names)
+        for pool in pool_names:
+            quoted_pool = shlex.quote(pool)
+            _host, namespace_payload = run_ceph_json_command_with(
+                *connection, f"rbd namespace list --pool {quoted_pool}"
+            )
+            for namespace in ["", *_namespace_names(namespace_payload)]:
+                namespace_arg = f" --namespace {shlex.quote(namespace)}" if namespace else ""
+                _host, image_payload = run_ceph_json_command_with(
+                    *connection, f"rbd ls --long --pool {quoted_pool}{namespace_arg}"
+                )
+                images.extend(_image_rows(image_payload, pool, namespace))
+        return BlockStorageInventory(
+            sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"])),
+            pools=pool_names,
+        )
+
+    _host, pool_frames = run_ceph_json_batch_command_with(
+        *connection, ["ceph osd pool ls detail --format json"]
+    )
+    pool_payload = pool_frames[0]
+    if pool_payload is None:
+        raise CephQueryError("Không lấy được danh sách pool RBD")
     pool_names = _rbd_pool_names(pool_payload)
     images: list[dict] = BlockStorageInventory(pools=pool_names)
-    for pool in pool_names:
+    namespace_commands = [
+        f"rbd namespace list --pool {shlex.quote(pool)} --format json"
+        for pool in pool_names
+    ]
+    _host, namespace_frames = run_ceph_json_batch_command_with(*connection, namespace_commands)
+    pool_namespaces: list[tuple[str, list[str]]] = []
+    for pool, namespace_payload in zip(pool_names, namespace_frames):
+        if namespace_payload is None:
+            raise CephQueryError(f"Không lấy được namespace của pool {pool}")
+        pool_namespaces.append((pool, ["", *_namespace_names(namespace_payload)]))
+
+    image_requests: list[tuple[str, str]] = []
+    image_commands: list[str] = []
+    for pool, namespaces in pool_namespaces:
         quoted_pool = shlex.quote(pool)
-        _host, namespace_payload = run_ceph_json_command_with(
-            *connection, f"rbd namespace list --pool {quoted_pool}"
-        )
-        for namespace in [""] + _namespace_names(namespace_payload):
+        for namespace in namespaces:
             namespace_arg = f" --namespace {shlex.quote(namespace)}" if namespace else ""
-            _host, image_payload = run_ceph_json_command_with(
-                *connection, f"rbd ls --long --pool {quoted_pool}{namespace_arg}"
+            image_requests.append((pool, namespace))
+            image_commands.append(
+                f"rbd ls --long --pool {quoted_pool}{namespace_arg} --format json"
             )
+    if image_commands:
+        _host, image_frames = run_ceph_json_batch_command_with(*connection, image_commands)
+        for (pool, namespace), image_payload in zip(image_requests, image_frames):
+            if image_payload is None:
+                raise CephQueryError(f"Không lấy được inventory của pool {pool}")
             images.extend(_image_rows(image_payload, pool, namespace))
-    return sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"]))
+    return BlockStorageInventory(
+        sorted(images, key=lambda item: (item["pool"], item["namespace"], item["name"])),
+        pools=pool_names,
+    )
 
 
 def _cached_block_storage(cluster) -> list[dict]:
     return get_or_load(
-        "block-storage", f"{cluster.id}:inventory", lambda: _query_block_storage(cluster)
+        "block-storage",
+        f"{cluster.id}:inventory",
+        lambda: _query_block_storage(cluster),
+        stale_ttl_seconds=1800,
     )
 
 
@@ -121,8 +179,19 @@ async def block_storage_page(
     total_pages = 1
     create_pools: list[str] = []
     error = None
+    cache_key = f"{cluster.id}:inventory"
+    cache_loading = False
     try:
-        images = await asyncio.to_thread(_cached_block_storage, cluster)
+        images = await asyncio.to_thread(
+            get_or_load,
+            "block-storage",
+            cache_key,
+            lambda: _query_block_storage(cluster),
+            stale_ttl_seconds=1800,
+            background_on_miss=not _uses_mocked_ceph_client(),
+            fallback=BlockStorageInventory(pools=[]),
+        )
+        cache_loading = cache_is_refreshing("block-storage", cache_key)
         total_images = len(images)
         create_pools = list(getattr(images, "pools", ())) or sorted({
             str(item["pool"]) for item in images if item.get("pool")
@@ -145,4 +214,5 @@ async def block_storage_page(
         "total_pages": total_pages,
         "create_pools": create_pools,
         "error": error,
+        "cache_loading": cache_loading,
     })

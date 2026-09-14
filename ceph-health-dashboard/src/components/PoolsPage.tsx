@@ -50,8 +50,8 @@ function ToolbarButton({ icon: Icon, label, danger = false, disabled = false, on
       onClick={onClick}
       disabled={disabled}
       className={danger
-        ? "inline-flex h-9 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-medium text-rose-600 transition hover:border-rose-300 hover:bg-rose-100"
-        : "inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-40"}
+        ? "btn btn-danger-outline btn-sm"
+        : "btn btn-ghost btn-sm"}
     >
       <Icon size={16} strokeWidth={1.8} aria-hidden="true" />
       {label}
@@ -95,7 +95,7 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
   }, [bootstrap.actionSuccess]);
 
   return (
-    <div className="pools-workspace min-h-[620px] font-sans">
+    <div className="pools-workspace min-h-[620px]">
       <section className="pools-panel overflow-hidden border">
         <header className="border-b border-slate-200 px-5 pt-5">
           <div className="flex items-center gap-2 pb-5">
@@ -181,15 +181,13 @@ export function PoolsPage({ bootstrap }: { bootstrap: PoolsBootstrap }) {
           </table>
         </div>
 
-        <footer className="flex flex-col gap-4 border-t border-slate-200 px-5 py-4 text-sm lg:flex-row lg:items-center lg:justify-between">
-          <div>{selected && <button type="button" onClick={() => setSelected("")} className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-slate-600 transition hover:bg-slate-200">1 selected <X size={14} /></button>}</div>
-          <div className="flex flex-wrap items-center justify-center gap-3 text-slate-600">
-            <span>Page</span><input value={currentPage} readOnly aria-label="Page number" className="h-8 w-10 rounded border border-slate-200 bg-white text-center outline-none focus:border-violet-400" /><span>of {totalPages}</span>
-            <label className="ml-2 inline-flex items-center gap-2">Rows per page:<select value={POOLS_PER_PAGE} disabled aria-label="Rows per page" className="h-8 rounded border border-slate-200 bg-white px-2 outline-none"><option value={POOLS_PER_PAGE}>{POOLS_PER_PAGE}</option></select></label>
-            <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1} aria-label="Previous page" className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300"><ChevronLeft size={16} /></button>
-            <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage === totalPages} aria-label="Next page" className="grid h-8 w-8 place-items-center rounded border border-slate-200 text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300"><ChevronRight size={16} /></button>
+        <footer className="pools-pagination" aria-label="Phân trang Pools">
+          <div className="pools-selected-summary">{selected && <button type="button" onClick={() => setSelected("")} className="btn btn-ghost btn-sm pools-selected-chip">1 selected <X size={14} /></button>}</div>
+          <div className="pools-pagination-controls">
+            <button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage === 1} aria-label="Trang trước" className="btn btn-ghost btn-sm">← Trang trước</button>
+            <span className="pools-pagination-status" role="status" aria-live="polite">Trang {currentPage} / {totalPages}</span>
+            <button type="button" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={currentPage === totalPages} aria-label="Trang sau" className="btn btn-ghost btn-sm">Trang sau →</button>
           </div>
-          <div className="text-right text-xs text-slate-400"><div>{bootstrap.updatedAgo}</div><time>{bootstrap.updatedAt}</time></div>
         </footer>
       </section>
       {createOpen && (

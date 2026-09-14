@@ -188,6 +188,26 @@ def test_run_calls_on_transition_only_when_status_changes(monkeypatch):
     ]
 
 
+def test_run_publishes_one_health_snapshot_from_the_existing_health_query(monkeypatch):
+    health = {"status": "HEALTH_WARN", "checks": {"OSD_DOWN": {}}}
+    published = []
+
+    monkeypatch.setattr(watcher_main, "query_cluster_health", lambda: health)
+    monkeypatch.setattr(watcher_main.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        watcher_main.cluster_snapshot_collector,
+        "publish_health_snapshot",
+        lambda cluster_id, payload, **kwargs: published.append((cluster_id, payload, kwargs)),
+    )
+
+    watcher_main.run(on_transition=lambda *_: None, max_iterations=1, cluster_id="cluster-a")
+
+    assert len(published) == 1
+    assert published[0][0] == "cluster-a"
+    assert published[0][1] is health
+    assert "collection_started_monotonic" in published[0][2]
+
+
 def test_run_fires_on_transition_when_checks_change_but_status_stays_same(monkeypatch):
     # Regression test: status stays HEALTH_WARN the whole time, but the
     # underlying check changes (MON_CLOCK_SKEW resolves, OSD_DOWN appears).
@@ -852,12 +872,18 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
     # creds/host, never the default cluster's, since that's exactly the
     # credential-mixup risk the whole feature exists to avoid.
     collect_calls = []
+    snapshot_calls = []
 
     def fake_run_command_on_node_with(host, command, ssh_user, ssh_key_path, timeout=None):
         collect_calls.append((host, ssh_user, ssh_key_path))
         return "osd log tail"
 
     monkeypatch.setattr(watcher_main.collector, "run_command_on_node_with", fake_run_command_on_node_with)
+    monkeypatch.setattr(
+        watcher_main.cluster_snapshot_collector,
+        "publish_health_snapshot",
+        lambda cluster_id, payload, **kwargs: snapshot_calls.append((cluster_id, payload)),
+    )
 
     with db_module.SessionLocal() as session:
         cluster = session.get(watcher_main.Cluster, cluster_id)
@@ -874,6 +900,9 @@ def test_run_observed_cluster_loop_tags_incident_and_heartbeat_with_cluster_id(m
         assert row.success is True
 
     assert collect_calls == [("10.30.1.20", "root", "/root/.ssh/key")]
+    assert snapshot_calls == [
+        (cluster_id, {"status": "HEALTH_WARN", "checks": {"OSD_DOWN": {"severity": "HEALTH_WARN"}}})
+    ]
     assert len(telegram_calls) == 1
     args, kwargs = telegram_calls[0]
     assert args[:2] == ("OSD_DOWN", "HEALTH_WARN")

@@ -9,6 +9,7 @@ QUEUE_NAME = "incidents"
 DLX_NAME = "incidents.dlx"
 DLQ_NAME = "incidents.dlq"
 DELEGATED_QUEUE_NAME = "ai.delegated.tasks"
+DELEGATED_EXCHANGE_NAME = "ai.delegated.tasks.exchange"
 DELEGATED_DLX_NAME = "ai.delegated.tasks.dlx"
 DELEGATED_DLQ_NAME = "ai.delegated.tasks.dlq"
 
@@ -51,6 +52,9 @@ async def declare_topology(channel: AbstractChannel):
 
 async def declare_delegated_topology(channel: AbstractChannel):
     """Declare the durable supervisor queue and its dead-letter queue."""
+    exchange = await channel.declare_exchange(
+        DELEGATED_EXCHANGE_NAME, aio_pika.ExchangeType.DIRECT, durable=True
+    )
     dlx = await channel.declare_exchange(
         DELEGATED_DLX_NAME, aio_pika.ExchangeType.DIRECT, durable=True
     )
@@ -64,6 +68,7 @@ async def declare_delegated_topology(channel: AbstractChannel):
             "x-dead-letter-routing-key": DELEGATED_QUEUE_NAME,
         },
     )
+    await queue.bind(exchange, routing_key=DELEGATED_QUEUE_NAME)
     return queue
 
 
@@ -74,7 +79,8 @@ async def publish_delegated_task(task_id: str) -> None:
         async with connection:
             channel = await connection.channel()
             queue = await declare_delegated_topology(channel)
-            await channel.default_exchange.publish(
+            exchange = await channel.get_exchange(DELEGATED_EXCHANGE_NAME)
+            await exchange.publish(
                 aio_pika.Message(
                     body=json.dumps({"task_id": task_id}).encode(),
                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT,

@@ -11,57 +11,6 @@
 
   <main class="page">
     <section class="card">
-      <div class="card-header"><h2>Xem log</h2></div>
-      <div class="card-body">
-        {% if rgw_hosts %}
-        <form class="audit-filters" id="bucket-access-log-form">
-          <label>RGW node
-            <select id="bal-host">
-              {% for node in rgw_hosts %}
-              <option value="{{ node.host }}">{{ node.host }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Tên Bucket (để trống = tất cả)
-            <input type="text" id="bal-bucket" value="{{ bucket }}" placeholder="vd: my-bucket" autocomplete="off">
-          </label>
-          <button type="submit" class="btn btn-primary btn-sm">Xem log</button>
-        </form>
-
-        <p class="hint" id="bal-status"></p>
-
-        <div id="bal-bucket-info-wrap" hidden>
-          <h3>Thông tin Bucket</h3>
-          <div class="table-wrap">
-            <table>
-              <tbody id="bal-bucket-info-body"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="table-wrap" id="bal-table-wrap" hidden>
-          <table>
-            <thead>
-              <tr>
-                <th>Thời gian</th>
-                <th>IP nguồn</th>
-                <th>Requester</th><th>User-Agent</th><th>Hành động</th>
-                <th>Method</th>
-                <th>Bucket</th>
-                <th>Object</th>
-                <th>Status</th><th>Kích thước</th><th>Latency</th>
-              </tr>
-            </thead>
-            <tbody id="bal-table-body"></tbody>
-          </table>
-        </div>
-        {% else %}
-        <p class="hint">Chưa cấu hình node RGW nào — cấu hình tại <a href="/settings">Settings</a>.</p>
-        {% endif %}
-      </div>
-    </section>
-
-    <section class="card">
       <div class="card-header"><div><h2>Lịch sử IP thao tác Bucket/Object</h2><p class="hint">Dữ liệu audit lưu bền, cập nhật gần thời gian thực (tối đa khoảng 15 giây).</p></div></div>
       <div class="card-body">
         <form class="audit-filters" id="bucket-access-history-form" data-cluster="{{ selected_cluster.id }}">

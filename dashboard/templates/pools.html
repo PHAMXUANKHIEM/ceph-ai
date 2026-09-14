@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pools — Ceph AIOps</title>
+  {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
   <link rel="stylesheet" href="/static/ceph-health/style.css?v={{ static_version }}">
 </head>
@@ -20,7 +21,8 @@
     "clusterId": selected_cluster.id,
     "createSuccess": create_success,
     "actionSuccess": action_success,
-    "queryError": query_error
+    "queryError": query_error,
+    "cacheLoading": cache_loading
   } | tojson }}</script>
   <script src="/static/app.js?v={{ static_version }}"></script>
   <script type="module" src="/static/ceph-health/app.js?v={{ static_version }}"></script>

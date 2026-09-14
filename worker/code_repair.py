@@ -376,7 +376,7 @@ def cleanup_stale_worktrees(repo: Path, branches: list[str]) -> list[str]:
     return removed
 
 
-def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int,
+def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int | None,
                       *, claude_config_dir: Path | None = None,
                       codex_home: Path | None = None,
                       model: str = "", mode: str = "implement") -> tuple[str, list[str]]:

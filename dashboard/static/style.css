@@ -122,6 +122,14 @@ code {
 .bucket-feature-tab.is-active { color: var(--accent); background: var(--accent-bg); }
 .bucket-feature-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bucket-feature-panel[hidden] { display: none; }
+.bucket-overview-footer { position: relative; justify-content: center; min-height: 50px; }
+.bucket-overview-page-status { color: var(--text-muted); font: 600 .72rem/1.3 var(--font-mono); }
+.bucket-overview-pagination { display: flex; justify-content: center; gap: var(--space-2); }
+@media (max-width: 620px) {
+  .bucket-overview-footer { flex-direction: column; gap: var(--space-2); }
+  .bucket-overview-pagination { order: 1; }
+  .bucket-overview-page-status { order: 2; }
+}
 
 /* AI cost detail uses the same card/table rhythm as the Bucket overview. */
 .ai-cost-card { overflow: hidden; border-color: rgba(79, 140, 255, .24); }
@@ -298,6 +306,71 @@ code {
 @media (max-width: 680px) {
   .upgrade-tracker-header { align-items: flex-start; gap: var(--space-2); }
   .upgrade-tracker-summary { grid-template-columns: 1fr; }
+}
+
+/* Centered confirmation bar for destructive Trash actions. */
+.trash-confirm-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-width: none;
+  padding: 0;
+  border: 1px solid var(--critical-border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, .58), 0 0 0 1px rgba(247, 86, 103, .08);
+}
+.trash-confirm-dialog::backdrop {
+  background: rgba(3, 6, 12, .76);
+  backdrop-filter: blur(4px);
+}
+.trash-confirm-bar {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: 22px;
+  border-top: 3px solid var(--critical);
+}
+.trash-confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--critical-border);
+  border-radius: 50%;
+  background: var(--critical-bg);
+  color: var(--critical);
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+.trash-confirm-content { min-width: 0; }
+.trash-confirm-content h2 { margin: 2px 0 6px; font-size: 1.05rem; }
+.trash-confirm-content p { margin: 0; color: var(--text-muted); font-size: .8rem; line-height: 1.55; }
+.trash-confirm-target { color: var(--text); overflow-wrap: anywhere; }
+.trash-confirm-input-label { display: block; margin-top: 17px; color: var(--text); font-size: .76rem; font-weight: 650; }
+.trash-confirm-input-label code { color: var(--warning); }
+.trash-confirm-input {
+  display: block;
+  width: 100%;
+  height: 40px;
+  margin-top: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: 600 .86rem var(--font-mono);
+  outline: none;
+}
+.trash-confirm-input:focus { border-color: var(--critical); box-shadow: 0 0 0 3px var(--critical-bg); }
+.trash-confirm-hint { margin-top: 6px !important; color: var(--text-faint) !important; font-size: .72rem !important; }
+.trash-confirm-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--border); }
+.trash-confirm-actions .btn-danger { padding: .42rem .75rem; font-size: .78rem; }
+
+@media (max-width: 520px) {
+  .trash-confirm-bar { grid-template-columns: 1fr; padding: 18px; }
+  .trash-confirm-icon { width: 36px; height: 36px; font-size: 1.1rem; }
+  .trash-confirm-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .trash-confirm-actions .btn { justify-content: center; }
 }
 
 /* ===== Per-host progress list (package-based cluster upgrade — no
@@ -1592,6 +1665,10 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 .chat-history-list-view { flex: 1 1 auto; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 16px; }
 .chat-history-list { display: flex; flex-direction: column; gap: 7px; }
 .chat-history-empty { margin: auto; text-align: center; padding: 24px; font-size: 13px; color: var(--text-faint); }
+.chat-history-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.chat-history-select-all { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; cursor: pointer; }
+.chat-history-select, .chat-history-select-all input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }
+.chat-history-select-all input:disabled { cursor: default; opacity: .5; }
 
 .chat-history-row {
   display: flex;
@@ -1602,6 +1679,7 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   border: 1px solid #273244;
   background: #111925;
   transition: border-color .15s ease, background .15s ease, transform .15s ease;
+  cursor: pointer;
 }
 .chat-history-row:hover { border-color: #344258; background: #151e2b; transform: translateY(-1px); }
 .chat-history-row.is-current { border-color: rgba(85,167,255,.45); box-shadow: inset 3px 0 var(--accent); }
@@ -3461,6 +3539,43 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   gap: 6px;
   align-items: center;
   margin-top: var(--space-4);
+}
+
+.crush-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.crush-history-columns,
+.crush-history-item {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+}
+.crush-history-columns {
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.crush-history-item { display: grid; }
+.crush-history-pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.crush-history-pagination .hint { margin: 0; min-width: 52px; text-align: center; }
+@media (max-width: 600px) {
+  .crush-history-toolbar { align-items: stretch; flex-direction: column; }
+  .crush-history-pagination { justify-content: space-between; }
+  .crush-history-columns,
+  .crush-history-item { grid-template-columns: minmax(140px, 1fr) minmax(0, 1fr); }
 }
 @media (max-width: 760px) {
   .cinder-backup-filters { align-items: stretch; }

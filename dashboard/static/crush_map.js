@@ -262,13 +262,47 @@
 })();
 
 (function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-crush-tab]"));
+  if (!tabs.length) return;
+  var panels = Array.prototype.slice.call(document.querySelectorAll(".crush-feature-panel, .bucket-feature-panel"));
+
+  function activate(tab) {
+    tabs.forEach(function (item) {
+      var active = item === tab;
+      item.classList.toggle("is-active", active);
+      item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach(function (panel) {
+      if (panel.id.indexOf("crush-") === 0) panel.hidden = panel.id !== tab.dataset.crushTab;
+    });
+  }
+
+  tabs.forEach(function (tab, index) {
+    tab.addEventListener("click", function () { activate(tab); });
+    tab.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      var offset = event.key === "ArrowRight" ? 1 : -1;
+      var next = tabs[(index + offset + tabs.length) % tabs.length];
+      activate(next);
+      next.focus();
+    });
+  });
+  activate(tabs[0]);
+})();
+
+(function () {
   // Change-history list + detail panel (FR-5/FR62) — independent of the
   // live tree poll above; loaded once, "Xem thêm" paginates via the
   // `before` cursor the API hands back.
 
   var listEl = document.getElementById("crush-history-list");
   var emptyEl = document.getElementById("crush-history-empty");
-  var loadMoreBtn = document.getElementById("crush-history-load-more");
+  var pageEl = document.getElementById("crush-history-page");
+  var prevBtn = document.getElementById("crush-history-prev");
+  var nextBtn = document.getElementById("crush-history-next");
+  var purgeBtn = document.getElementById("crush-history-purge");
   var detailEl = document.getElementById("crush-history-detail");
   var detailTitleEl = document.getElementById("crush-history-detail-title");
   var detailBodyEl = document.getElementById("crush-history-detail-body");
@@ -279,7 +313,9 @@
   }
 
   var CRUSH_WEIGHT_SCALE = 65536;
-  var nextBefore = null;
+  var currentPage = 1;
+  var pageCursors = [null];
+  var requestInFlight = false;
 
   function fmtTime(iso) {
     return new Date(iso).toLocaleString("vi-VN");
@@ -376,45 +412,74 @@
     });
   }
 
-  function loadPage(before) {
-    // Guards against a fast double-click on "Xem thêm" firing two requests
-    // for the same cursor, which would duplicate every item on that page
-    // (renderItems' append path has no dedup of its own).
-    if (loadMoreBtn.disabled) return;
-    loadMoreBtn.disabled = true;
+  function updatePagination(nextBefore) {
+    prevBtn.disabled = requestInFlight || currentPage <= 1;
+    nextBtn.disabled = requestInFlight || !nextBefore;
+    pageEl.textContent = "Trang " + currentPage;
+  }
 
-    var url = "/api/crush-map/history?limit=20" + (before ? "&before=" + encodeURIComponent(before) : "");
+  function loadPage(page) {
+    if (requestInFlight || page < 1 || (!pageCursors[page - 1] && page !== 1)) return;
+    requestInFlight = true;
+    updatePagination(null);
+    var before = pageCursors[page - 1];
+    var url = "/api/crush-map/history?limit=10" + (before ? "&before=" + encodeURIComponent(before) : "");
     fetch(url, { credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
       .then(function (data) {
-        renderItems(data.items, !!before);
-        nextBefore = data.next_before;
-        loadMoreBtn.hidden = !nextBefore;
-        loadMoreBtn.disabled = false;
-        if (!before) {
-          emptyEl.hidden = data.items.length > 0;
-          listEl.hidden = data.items.length === 0;
-        }
+        currentPage = page;
+        renderItems(data.items, false);
+        if (data.next_before) pageCursors[page] = data.next_before;
+        else pageCursors.length = page;
+        emptyEl.hidden = data.items.length > 0 || page !== 1;
+        listEl.hidden = data.items.length === 0;
+        updatePagination(data.next_before);
       })
       .catch(function () {
-        // Transient hiccup — history isn't live-critical like the tree,
-        // no retry loop; the admin can just reopen the page.
-        loadMoreBtn.disabled = false;
+        console.error("Không tải được lịch sử CRUSH Map");
+        updatePagination(pageCursors[page]);
+      })
+      .finally(function () {
+        requestInFlight = false;
+        updatePagination(pageCursors[currentPage]);
       });
   }
 
-  loadMoreBtn.addEventListener("click", function () {
-    if (nextBefore) {
-      loadPage(nextBefore);
-    }
+  prevBtn.addEventListener("click", function () {
+    loadPage(currentPage - 1);
+  });
+
+  nextBtn.addEventListener("click", function () {
+    loadPage(currentPage + 1);
+  });
+
+  purgeBtn.addEventListener("click", function () {
+    if (!window.confirm("Xóa toàn bộ lịch sử thay đổi cấu trúc CRUSH của cluster này? Không thể hoàn tác.")) return;
+    purgeBtn.disabled = true;
+    fetch("/api/crush-map/history/purge", {method: "POST", credentials: "same-origin"})
+      .then(function (response) {
+        if (!response.ok) return response.json().then(function (body) { throw new Error(body.detail || "Xóa thất bại"); });
+        return response.json();
+      })
+      .then(function (data) {
+        pageCursors = [null];
+        currentPage = 1;
+        loadPage(1);
+      })
+      .catch(function (error) {
+        window.alert("Không xóa được lịch sử CRUSH Map: " + error.message);
+      })
+      .finally(function () {
+        purgeBtn.disabled = false;
+      });
   });
 
   detailCloseBtn.addEventListener("click", function () {
     detailEl.hidden = true;
   });
 
-  loadPage(null);
+  loadPage(1);
 })();

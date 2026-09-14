@@ -30,6 +30,7 @@ triggered it.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -43,13 +44,55 @@ logger = logging.getLogger(__name__)
 # a slow-ops list) can run to several KB, well past what's useful to read
 # in a phone notification, and needlessly close to Telegram's own 4096-char
 # message limit once the rest of the text is added.
-_MAX_EXCERPT_CHARS = 320
+_MAX_EXCERPT_CHARS = 700
 _MAX_FOLLOWUP_FIELD_CHARS = 240
 
 _INCIDENT_SEVERITY_PREFIX = {
     "HEALTH_ERR": "\U0001f534 HEALTH_ERR",  # red circle
     "HEALTH_WARN": "\U0001f7e1 HEALTH_WARN",  # yellow circle
 }
+
+_OSD_HOST_RE = re.compile(r"---\s*([^\s(]+)\s+\(osd\.(\d+)\)", re.IGNORECASE)
+
+_INCIDENT_EXPLANATIONS = {
+    "MON_DOWN": "Một Monitor (MON) đang không hoạt động; cụm có thể mất khả năng điều phối nếu không còn đủ MON.",
+    "MGR_DOWN": "Một Manager (MGR) đang không hoạt động; dashboard và một số dịch vụ quản lý có thể bị ảnh hưởng.",
+    "PG_DEGRADED": "Một hoặc nhiều Placement Group (PG) chưa đủ bản sao; dữ liệu vẫn có thể truy cập nhưng đang thiếu dư thừa.",
+    "PG_AVAILABILITY": "Một hoặc nhiều PG có nguy cơ không phục vụ được dữ liệu; cần kiểm tra OSD và trạng thái PG ngay.",
+    "OSD_FULL": "OSD đã đầy hoặc gần đầy đến mức Ceph có thể chặn ghi dữ liệu.",
+    "OSD_NEARFULL": "OSD sắp đầy; cần kiểm tra dung lượng và kế hoạch cân bằng/mở rộng trước khi đầy.",
+    "MON_CLOCK_SKEW": "Thời gian giữa các Monitor bị lệch; cần kiểm tra đồng bộ NTP/chrony trên các node.",
+    "POOL_APP_NOT_ENABLED": "Pool chưa bật ứng dụng Ceph tương ứng (thường là rbd/cephfs/rgw); dữ liệu hiện có không đồng nghĩa pool đã được cấu hình đúng.",
+}
+
+
+def _translate_incident_log(ceph_code: str, log_excerpt: str | None) -> str:
+    """Return a short deterministic Vietnamese explanation for an alert.
+
+    This is intentionally not an AI call: the first alert must remain
+    available when providers are down, and the original excerpt is retained
+    separately as technical evidence below the explanation.
+    """
+    code = (ceph_code or "").upper()
+    raw = log_excerpt or ""
+    if code == "OSD_DOWN":
+        match = _OSD_HOST_RE.search(raw)
+        target = (
+            f"OSD {match.group(2)} trên node {match.group(1)}"
+            if match
+            else "Một OSD"
+        )
+        explanation = f"{target} đang DOWN, tức daemon OSD hiện không hoạt động hoặc chưa kết nối lại với cụm."
+        lowered = raw.lower()
+        if "container remove" in lowered and "deactivate" in lowered:
+            explanation += " Log cho thấy Podman đã xoá container tạm phục vụ deactivate OSD; đây là bước dọn dẹp, chưa phải nguyên nhân gốc."
+        if "ceph_git_repo" in lowered or "github.com/ceph/ceph" in lowered:
+            explanation += " Đường dẫn GitHub trong metadata image chỉ là thông tin mã nguồn build, không phải lỗi kết nối GitHub."
+        return explanation
+    return _INCIDENT_EXPLANATIONS.get(
+        code,
+        "Ceph phát hiện một health check bất thường; phần Log gốc bên dưới là bằng chứng cần dùng để xác định nguyên nhân.",
+    )
 
 
 def _with_cluster_prefix(text: str, cluster_name: str | None = None) -> str:
@@ -75,6 +118,28 @@ def _compact(value: str | None, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _compact_multiline(value: str | None, limit: int) -> str:
+    lines = [" ".join(line.split()) for line in (value or "").splitlines()]
+    text = "\n".join(line for line in lines if line)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _compact_incident_excerpt(value: str | None, limit: int) -> str:
+    marker = "Dung lượng chi tiết:"
+    raw = value or ""
+    if marker not in raw:
+        return _compact(raw, limit)
+    before, context = raw.split(marker, 1)
+    context_text = _compact_multiline(marker + context, limit)
+    remaining = limit - len(context_text) - 1
+    if remaining <= 20:
+        return context_text
+    before_text = _compact(before, remaining)
+    return f"{before_text}\n{context_text}" if before_text else context_text
 
 
 def _send(bot_token: str, chat_id: str, enabled: bool, text: str, cluster_name: str | None = None) -> bool:
@@ -253,11 +318,13 @@ def send_incident_alert(
     caller, unchanged) means "use the global settings.telegram_incident_*
     exactly as before this param existed"."""
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
-    excerpt = _compact(log_excerpt, _MAX_EXCERPT_CHARS)
+    excerpt = _compact_incident_excerpt(log_excerpt, _MAX_EXCERPT_CHARS)
+    explanation = _translate_incident_log(ceph_code, log_excerpt)
     reminder_prefix = "🔁 NHẮC LẠI · " if reminder else ""
     text = f"{reminder_prefix}{prefix} Cụm Ceph: {ceph_code}"
+    text += f"\n📝 Diễn giải: {explanation}"
     if excerpt:
-        text += f"\n{excerpt}"
+        text += f"\n🔎 Log gốc:\n{excerpt}"
     if reminder and diagnosis_text:
         text += f"\n🧠 Tóm tắt AI: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}"
     if reminder and rationale:
@@ -399,7 +466,11 @@ def send_node_forecast_alert(
     )
 
 
-def send_trash_capacity_alert(trash_bytes: int, total_bytes: int, ratio: float, entry_count: int) -> None:
+def send_trash_capacity_alert(
+    trash_bytes: int, total_bytes: int, ratio: float, entry_count: int, *,
+    cluster_name: str | None = None, bot_token: str | None = None,
+    chat_id: str | None = None, enabled: bool | None = None,
+) -> bool:
     """Send RBD Trash capacity warnings through the cluster Alert channel."""
     gib = 1024 ** 3
     text = "\n".join(
@@ -409,11 +480,12 @@ def send_trash_capacity_alert(trash_bytes: int, total_bytes: int, ratio: float, 
             "🔧 Đề xuất: kiểm tra các volume trong mục Trash và duyệt xoá vĩnh viễn những volume không còn cần khôi phục.",
         )
     )
-    _send(
-        settings.telegram_incident_bot_token,
-        settings.telegram_incident_chat_id,
-        settings.telegram_incident_enabled,
+    return _send(
+        settings.telegram_incident_bot_token if bot_token is None else bot_token,
+        settings.telegram_incident_chat_id if chat_id is None else chat_id,
+        settings.telegram_incident_enabled if enabled is None else enabled,
         text,
+        cluster_name,
     )
 
 
@@ -627,6 +699,7 @@ def send_log_finding_alert(
     chat_id: str | None = None,
     enabled: bool | None = None,
     daemon_types: list[str] | None = None,
+    rca_stage: str | None = None,
 ) -> None:
     """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
     (`watcher/log_analysis.py` chỉ gọi khi `dedupe_key` chưa có bản ghi nào
@@ -643,6 +716,8 @@ def send_log_finding_alert(
         f"{prefix} {source_icon}{source_label}: {_compact(title, 160)}",
         f"🎯 Tin cậy: {confidence}",
     ]
+    if rca_stage:
+        lines.append(f"🧭 Quy trình RCA: {_compact(rca_stage, 180)}")
     conclusion = root_cause or summary
     if conclusion:
         lines.append(f"🔎 Nhận định: {_compact(conclusion, 180)}")

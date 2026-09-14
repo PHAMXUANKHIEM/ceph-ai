@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -68,6 +69,10 @@ MCP_COMMAND_TIMEOUT_SECONDS = 10
 # SSH channel and can leave the remote `rbd` child re-parented to PID 1.
 RBD_IOSTAT_REMOTE_TIMEOUT_SECONDS = 8
 CEPHADM_KEYRING_TARGET = "/etc/ceph/ceph.client.admin.keyring"
+# Trash-capacity scans can inspect many images and run alongside the other
+# auxiliary watcher scans.  Ten seconds made every contended cephadm shell
+# fail with exit 1 and caused false "Trash is below threshold" readings.
+CEPHADM_LOCK_WAIT_SECONDS = 30
 CEPHADM_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
 
 
@@ -142,6 +147,21 @@ def ordered_mon_nodes(mon_nodes: list[str]) -> list[str]:
         return [last_successful_mon_node, *[node for node in nodes if node != last_successful_mon_node]]
     return nodes
 
+
+def _balanced_query_mon_nodes(mon_nodes: list[str], command: str, exec_mode: str) -> list[str]:
+    """Spread independent read queries across MONs without weakening fallback.
+
+    cephadm starts a transient shell container for every command, and the
+    host-local lock serializes those starts on one MON.  A stable hash keeps
+    retries deterministic while sending different pool/image queries to
+    different MONs; failures still fall through the complete ordered list.
+    Health polling intentionally keeps its sticky MON behavior separately.
+    """
+    nodes = ordered_mon_nodes(mon_nodes)
+    if exec_mode != "cephadm" or len(nodes) < 2:
+        return nodes
+    offset = int(hashlib.sha256(command.encode("utf-8")).hexdigest()[:8], 16) % len(nodes)
+    return nodes[offset:] + nodes[:offset]
 
 class CephQueryError(Exception):
     """Raised when no MON node could be reached and queried successfully."""
@@ -678,9 +698,23 @@ def _normalize_rbd_trash(
         # capacity. Open the trashed image by id and use the logical size
         # reported by `rbd info`; treating the absent list field as zero made
         # both the per-image and pool totals silently wrong.
-        info = query_json(
-            f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
-        )
+        try:
+            info = query_json(
+                f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
+            )
+        except CephQueryError as exc:
+            # Trash is mutable while it is being restored or purged. A
+            # listing can therefore contain an ID that disappears before
+            # its metadata is read. Do not discard the whole pool scan for
+            # that normal race; the next scan will see the authoritative list.
+            error_text = str(exc).lower()
+            if "no such file" in error_text or "not found" in error_text or "does not exist" in error_text:
+                logger.info(
+                    "query_rbd_trash: entry %s/%s disappeared during scan; skipping",
+                    pool, trash_id,
+                )
+                continue
+            raise
         if (
             not isinstance(info, dict)
             or "size" not in info
@@ -1001,15 +1035,20 @@ def _run_remote_command_with(
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
         # cephadm creates a transient Podman container per call. A
-        # non-blocking host lock prevents concurrent app processes from
-        # stampeding one MON; the caller's normal MON fallback then spreads
-        # work to another member of the quorum.
+        # bounded host lock prevents concurrent app processes from
+        # stampeding one MON without turning brief contention into a
+        # false MON failure.
         remote_command = command
+        remote_timeout = command_timeout
         if command.lstrip().startswith("cephadm shell"):
             remote_command = (
-                f"flock -n {shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
+                f"flock -w {CEPHADM_LOCK_WAIT_SECONDS} "
+                f"{shlex.quote(CEPHADM_REMOTE_LOCK_PATH)} {command}"
             )
-        _stdin, stdout, stderr = client.exec_command(remote_command, timeout=command_timeout)
+            # Waiting for a host-local cephadm lock is part of the command
+            # budget; do not let Paramiko time out while flock is waiting.
+            remote_timeout += CEPHADM_LOCK_WAIT_SECONDS
+        _stdin, stdout, stderr = client.exec_command(remote_command, timeout=remote_timeout)
         # Read output fully BEFORE checking exit status: if the remote command
         # writes more than the channel buffer holds, it blocks on write until
         # someone drains stdout — calling recv_exit_status() first would wait
@@ -1129,8 +1168,9 @@ def run_ceph_text_command_with(
         raise CephQueryError("no MON nodes configured for this cluster")
     command = build_exec_command(exec_mode, container_name, inner_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
+    query_nodes = _balanced_query_mon_nodes(mon_nodes, command, exec_mode)
     errors = []
-    for host in mon_nodes:
+    for host in query_nodes:
         try:
             return host, _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
         except Exception as exc:
@@ -1167,8 +1207,9 @@ def run_ceph_json_command_with(
     else:
         command = build_exec_command(exec_mode, container_name, formatted_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
+    query_nodes = _balanced_query_mon_nodes(mon_nodes, command, exec_mode)
     errors = []
-    for host in mon_nodes:
+    for host in query_nodes:
         try:
             output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
         except Exception as exc:
@@ -1205,8 +1246,9 @@ def run_ceph_json_batch_command_with(
     """Run bounded JSON commands in one remote Ceph shell."""
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured for this cluster")
+    query_nodes = _balanced_query_mon_nodes(mon_nodes, "\n".join(inner_commands), exec_mode)
     if not inner_commands:
-        return mon_nodes[0], []
+        return query_nodes[0], []
     frames = []
     for index, inner_command in enumerate(inner_commands):
         begin = f"__CEPH_AI_BATCH_{index}_BEGIN__"
@@ -1224,7 +1266,7 @@ def run_ceph_json_batch_command_with(
     command = build_exec_command(exec_mode, container_name, batch_inner_command)
     command_timeout = CEPHADM_COMMAND_TIMEOUT_SECONDS if exec_mode == "cephadm" else MCP_COMMAND_TIMEOUT_SECONDS
     errors = []
-    for host in mon_nodes:
+    for host in query_nodes:
         try:
             output = _run_remote_command_with(host, command, ssh_user, ssh_key_path, command_timeout)
         except Exception as exc:

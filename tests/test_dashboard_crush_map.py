@@ -90,6 +90,17 @@ def test_get_crush_map_page_for_admin(dashboard_client):
     response = dashboard_client.get("/crush-map")
     assert response.status_code == 200
     assert "CRUSH Map" in response.text
+    assert 'class="bucket-feature-tabs"' in response.text
+    assert 'data-crush-tab="crush-tree-panel"' in response.text
+    assert 'data-crush-tab="crush-rules-panel"' in response.text
+    assert 'data-crush-tab="crush-history-panel"' in response.text
+    assert "Thời gian ngày đổi" in response.text
+    assert "Thay đổi" in response.text
+    assert "10 cây thay đổi" not in response.text
+    assert "<h2>Lịch sử thay đổi cấu trúc</h2>" not in response.text
+    assert 'id="crush-tree-panel"' in response.text
+    assert 'id="crush-rules-panel"' in response.text
+    assert 'id="crush-history-panel"' in response.text
 
 
 def test_get_crush_map_page_rejects_non_admin(dashboard_client):
@@ -115,6 +126,7 @@ def test_api_endpoints_reject_non_admin(dashboard_client):
     _login_as_non_admin(dashboard_client)
     assert dashboard_client.get("/api/crush-map/tree").status_code == 403
     assert dashboard_client.get("/api/crush-map/history").status_code == 403
+    assert dashboard_client.post("/api/crush-map/history/purge").status_code == 403
     assert dashboard_client.get("/api/crush-map/history/some-id").status_code == 403
 
 
@@ -371,6 +383,34 @@ def test_api_history_pagination_with_before_cursor(dashboard_client):
     first_ids = {item["id"] for item in first_page["items"]}
     second_ids = {item["id"] for item in second_page["items"]}
     assert not (first_ids & second_ids)
+
+
+def test_api_history_purge_is_admin_and_scoped_to_selected_cluster(dashboard_client):
+    _login(dashboard_client)
+    default_baseline_id = _add_snapshot(_sample_tree(), diff=None)
+    default_history_id = _add_snapshot(
+        _sample_tree(), diff={"added": [], "removed": [], "reweighted": []}
+    )
+    with db_module.SessionLocal() as session:
+        second = Cluster(
+            name="cluster-2", ceph_mon_nodes="10.0.0.2",
+            ssh_user="ceph", ssh_key_path="/tmp/test-key", is_active=True,
+        )
+        session.add(second)
+        session.commit()
+        second_id = second.id
+    second_history_id = _add_snapshot(
+        _sample_tree(), diff={"added": [], "removed": [], "reweighted": []}, cluster_id=second_id
+    )
+
+    response = dashboard_client.post("/api/crush-map/history/purge")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    with db_module.SessionLocal() as session:
+        assert session.get(CrushStructureSnapshot, default_baseline_id) is not None
+        assert session.get(CrushStructureSnapshot, default_history_id) is None
+        assert session.get(CrushStructureSnapshot, second_history_id) is not None
 
 
 def test_api_history_detail_by_id(dashboard_client):

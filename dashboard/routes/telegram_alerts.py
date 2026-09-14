@@ -98,6 +98,15 @@ _CHANNELS: dict[str, dict] = {
         "restart": "watcher",
         "approval_enabled": False,
     },
+    "vault": {
+        "label": "Cảnh báo Vault — bảo mật",
+        "bot_token_field": "telegram_vault_bot_token",
+        "chat_id_field": "telegram_vault_chat_id",
+        "enabled_field": "telegram_vault_enabled",
+        "env_names": env_config.TELEGRAM_VAULT_ENV_NAMES,
+        "restart": "none",
+        "approval_enabled": False,
+    },
     "chatbox-ai": {
         "label": "Chatbox AI — Telegram hai chiều",
         "bot_token_field": "telegram_chatbox_bot_token",
@@ -204,7 +213,7 @@ def _context(
             # hình", not "tắt", even though `enabled` defaults True either
             # way.
             "status_label": (
-                "Chưa cấu hình" if not bot_token else "Đang bật" if enabled else "Đã tắt"
+                "Chưa cấu hình" if not bot_token or not getattr(settings, info["chat_id_field"]) else "Đang bật" if enabled else "Đã tắt"
             ),
             "error": errors.get(key),
             "success": successes.get(key),

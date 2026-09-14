@@ -138,6 +138,11 @@ TELEGRAM_RGW_ENV_NAMES: dict[str, str] = {
     "telegram_rgw_chat_id": "TELEGRAM_RGW_CHAT_ID",
     "telegram_rgw_enabled": "TELEGRAM_RGW_ENABLED",
 }
+TELEGRAM_VAULT_ENV_NAMES: dict[str, str] = {
+    "telegram_vault_bot_token": "TELEGRAM_VAULT_BOT_TOKEN",
+    "telegram_vault_chat_id": "TELEGRAM_VAULT_CHAT_ID",
+    "telegram_vault_enabled": "TELEGRAM_VAULT_ENABLED",
+}
 TELEGRAM_CHATBOX_ENV_NAMES: dict[str, str] = {
     "telegram_chatbox_bot_token": "TELEGRAM_CHATBOX_BOT_TOKEN",
     "telegram_chatbox_chat_id": "TELEGRAM_CHATBOX_CHAT_ID",

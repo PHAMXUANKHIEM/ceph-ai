@@ -825,6 +825,12 @@ def test_rbd_trash_move_and_restore_commands_are_guarded_and_post_checked():
             params={"pool_name": "vms", "trash_id": "--force", "image": "vm-restored"},
         )
 
+    scratch = commands_module.get_command(
+        "rbd_trash_move_volume",
+        params={"pool_name": "volumes", "image": "_ceph_aiops_perf_probe"},
+    )
+    assert scratch.startswith("rbd trash mv volumes/_ceph_aiops_perf_probe")
+
 
 def test_rbd_trash_purge_all_snapshots_validated_ids_and_post_checks():
     command = commands_module.get_command(

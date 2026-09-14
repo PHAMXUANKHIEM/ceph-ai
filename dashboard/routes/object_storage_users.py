@@ -230,7 +230,12 @@ def _inventory(cluster, query: str, page: int) -> dict:
 
 def _cached_inventory(cluster, query: str, page: int) -> dict:
     key = f"{cluster.id}:{query}:{page}"
-    return get_or_load("s3-users", key, lambda: _inventory(cluster, query, page))
+    return get_or_load(
+        "s3-users",
+        key,
+        lambda: _inventory(cluster, query, page),
+        stale_ttl_seconds=7200,
+    )
 
 
 def _detail(cluster, uid: str) -> dict:

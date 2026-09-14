@@ -11,7 +11,6 @@ from sqlalchemy import or_, text as sql_text
 
 from config.settings import settings
 from dashboard.chat_client import (
-    is_ceph_scoped,
     ChatTurnError,
     MAX_HISTORY_MESSAGES,
     MISSING_AI_CONFIG_MESSAGE,
@@ -498,6 +497,34 @@ async def list_chat_sessions(request: Request, user: str = Depends(require_login
         return {"sessions": summaries}
 
 
+@router.get("/api/chat/sessions/{session_id}")
+async def get_chat_session(session_id: str, request: Request, user: str = Depends(require_login)):
+    """Return one saved conversation for the history viewer.
+
+    The lookup is scoped to the logged-in actor and selected cluster so a
+    history id cannot be used to read another operator's or cluster's chat.
+    """
+    cluster = selected_cluster(request)
+    with db.SessionLocal() as session:
+        rows = (
+            session.query(ChatMessage)
+            .filter(
+                ChatMessage.session_id == session_id,
+                ChatMessage.actor == user,
+                _message_cluster_filter(cluster),
+            )
+            .order_by(ChatMessage.created_at.asc())
+            .limit(CHAT_WIDGET_HISTORY_LIMIT)
+            .all()
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Không tìm thấy đoạn chat")
+        return {
+            "session_id": session_id,
+            "messages": [_message_to_dict(message) for message in rows],
+        }
+
+
 @router.delete("/api/chat/sessions/{session_id}")
 async def delete_chat_session(session_id: str, request: Request, user: str = Depends(require_login)):
     """Permanently deletes every message in one session — the only
@@ -601,8 +628,6 @@ async def post_chat_message(
             {"role": m.role, "content": m.content}
             for m in reversed(recent_messages)
         ]
-        if mode == "delegate" and not is_ceph_scoped(text, history):
-            raise HTTPException(status_code=400, detail="Delegated task chỉ nhận yêu cầu liên quan đến Ceph")
         previous = recent_messages[0] if recent_messages else None
         pending_node_command_id = (
             previous.id
@@ -629,7 +654,7 @@ async def post_chat_message(
                 cluster_id=cluster.id,
                 role="assistant",
                 content=with_romantic_address(
-                    "Đã nhận việc. Supervisor đang tách thành các sub-agent Ceph độc lập; kết quả sẽ tự trả về trong phiên này.",
+                    "Đã nhận việc. Supervisor đang tách thành các sub-agent độc lập; kết quả sẽ tự trả về trong phiên này.",
                     ai_name,
                     female_address,
                 ),

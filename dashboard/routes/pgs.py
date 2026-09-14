@@ -15,7 +15,11 @@ from dashboard.cluster_scope import cluster_connection, cluster_selection
 from dashboard.templating import make_templates
 from shared import audit, db
 from shared.models import Action, ActionClassification, ActionStatus, Incident, IncidentStatus
-from shared.object_storage_cache import get_or_load, invalidate as invalidate_cluster_cache
+from shared.object_storage_cache import (
+    get_or_load,
+    invalidate as invalidate_cluster_cache,
+    is_refreshing as cache_is_refreshing,
+)
 from watcher import ceph_client
 from watcher.ceph_client import CephQueryError, run_ceph_json_command_with
 from worker.executor import commands as executor_commands
@@ -28,6 +32,14 @@ templates = make_templates()
 POOL_CREATE_CEPH_CODE = "POOL_CREATE_REQUEST"
 POOL_ACTION_CEPH_CODE = "POOL_ACTION_REQUEST"
 CEPH_POOL_FLAG_NODELETE = 1 << 4
+
+
+def _uses_mocked_ceph_client() -> bool:
+    functions = (
+        ceph_client.run_ceph_json_command,
+        run_ceph_json_command_with,
+    )
+    return any(getattr(function, "__module__", "") != "watcher.ceph_client" for function in functions)
 
 
 def _pool_names_by_id(payload: dict | list) -> dict[str, str]:
@@ -156,17 +168,33 @@ def _format_bytes(value) -> str:
 
 
 def _query_pool_rows(cluster) -> list[dict]:
-    commands = ("ceph osd pool ls detail", "ceph df detail", "ceph osd pool stats", "ceph osd crush rule dump")
+    if _uses_mocked_ceph_client():
+        commands = ("ceph osd pool ls detail", "ceph df detail", "ceph osd pool stats", "ceph osd crush rule dump")
+        connection = cluster_connection(cluster)
+
+        def fetch(command: str):
+            if cluster.is_default:
+                return ceph_client.run_ceph_json_command(command)[1]
+            return run_ceph_json_command_with(*connection, command)[1]
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            payloads = list(executor.map(fetch, commands))
+        rows = _normalize_pool_rows(*payloads)
+        for row in rows:
+            row["used"] = _format_bytes(row.pop("used_bytes"))
+        return rows
+
+    commands = (
+        "ceph osd pool ls detail --format json",
+        "ceph df detail --format json",
+        "ceph osd pool stats --format json",
+        "ceph osd crush rule dump --format json",
+    )
     connection = cluster_connection(cluster)
-
-    def fetch(command: str):
-        if cluster.is_default:
-            return ceph_client.run_ceph_json_command(command)[1]
-        return run_ceph_json_command_with(*connection, command)[1]
-
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        payloads = list(executor.map(fetch, commands))
+    _host, payloads = ceph_client.run_ceph_json_batch_command_with(*connection, list(commands))
+    if any(payload is None for payload in payloads):
+        raise CephQueryError("Một hoặc nhiều truy vấn Pool thất bại")
     rows = _normalize_pool_rows(*payloads)
     for row in rows:
         row["used"] = _format_bytes(row.pop("used_bytes"))
@@ -175,12 +203,25 @@ def _query_pool_rows(cluster) -> list[dict]:
 
 def _query_pg_rows(cluster) -> list[dict]:
     connection = cluster_connection(cluster)
-    if cluster.is_default:
-        pool_payload = ceph_client.run_ceph_json_command("ceph osd pool ls detail")[1]
-        pg_payload = ceph_client.run_ceph_json_command("ceph pg dump pgs")[1]
-    else:
-        pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")[1]
-        pg_payload = run_ceph_json_command_with(*connection, "ceph pg dump pgs")[1]
+    if _uses_mocked_ceph_client():
+        if cluster.is_default:
+            pool_payload = ceph_client.run_ceph_json_command("ceph osd pool ls detail")[1]
+            pg_payload = ceph_client.run_ceph_json_command("ceph pg dump pgs")[1]
+        else:
+            pool_payload = run_ceph_json_command_with(*connection, "ceph osd pool ls detail")[1]
+            pg_payload = run_ceph_json_command_with(*connection, "ceph pg dump pgs")[1]
+        return _normalize_pg_rows(pg_payload, _pool_names_by_id(pool_payload))
+
+    _host, payloads = ceph_client.run_ceph_json_batch_command_with(
+        *connection,
+        [
+            "ceph osd pool ls detail --format json",
+            "ceph pg dump pgs --format json",
+        ],
+    )
+    if any(payload is None for payload in payloads):
+        raise CephQueryError("Một hoặc nhiều truy vấn PG thất bại")
+    pool_payload, pg_payload = payloads
     return _normalize_pg_rows(pg_payload, _pool_names_by_id(pool_payload))
 
 
@@ -231,8 +272,19 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     rows: list[dict] = []
     query_error: str | None = None
+    cache_key = f"{cluster.id}:inventory"
+    cache_loading = False
     try:
-        rows = await asyncio.to_thread(get_or_load, "pgs", f"{cluster.id}:inventory", lambda: _query_pg_rows(cluster))
+        rows = await asyncio.to_thread(
+            get_or_load,
+            "pgs",
+            cache_key,
+            lambda: _query_pg_rows(cluster),
+            stale_ttl_seconds=900,
+            background_on_miss=not _uses_mocked_ceph_client(),
+            fallback=[],
+        )
+        cache_loading = cache_is_refreshing("pgs", cache_key)
     except CephQueryError as exc:
         logger.warning("pgs_page: failed to query all PGs for cluster %s: %s", cluster.id, exc)
         query_error = str(exc)
@@ -249,6 +301,7 @@ async def pgs_page(request: Request, user: str = Depends(require_login)):
             "pool_names": pool_names,
             "state_counts": sorted(state_counts.items()),
             "query_error": query_error,
+            "cache_loading": cache_loading,
             "clusters": clusters,
             "selected_cluster": cluster,
         },
@@ -260,15 +313,25 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
     clusters, cluster = cluster_selection(request)
     rows: list[dict] = []
     query_error: str | None = None
+    cache_key = f"{cluster.id}:inventory"
+    cache_loading = False
     try:
         action_pending = request.query_params.get("create_success") == "1" or bool(
             request.query_params.get("action_success", "").strip()
         )
         rows = await asyncio.to_thread(
             _query_pool_rows if action_pending else
-            lambda selected: get_or_load("pools", f"{selected.id}:inventory", lambda: _query_pool_rows(selected)),
+            lambda selected: get_or_load(
+                "pools",
+                cache_key,
+                lambda: _query_pool_rows(selected),
+                stale_ttl_seconds=900,
+                background_on_miss=not action_pending,
+                fallback=[],
+            ),
             cluster,
         )
+        cache_loading = cache_is_refreshing("pools", cache_key)
     except CephQueryError as exc:
         logger.warning("pools_page: failed to query pools for cluster %s: %s", cluster.id, exc)
         query_error = str(exc)
@@ -281,6 +344,7 @@ async def pools_page(request: Request, user: str = Depends(require_login)):
             "is_admin": auth.is_admin_user(user),
             "pools": rows,
             "query_error": query_error,
+            "cache_loading": cache_loading,
             "clusters": clusters,
             "selected_cluster": cluster,
             "create_success": request.query_params.get("create_success") == "1",

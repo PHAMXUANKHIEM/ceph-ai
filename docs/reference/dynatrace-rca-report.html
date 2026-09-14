@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Báo cáo: Giải pháp, kỹ thuật &amp; kiến trúc Dynatrace — Định hướng xây dựng hệ thống RCA</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --paper:#ffffff; --ink:#1c2430; --muted:#5b6673; --line:#e3e7ec;
+    --accent:#0d6efd; --accent-2:#6f42c1; --ok:#198754; --warn:#d97706; --bad:#dc3545;
+    --code:#f1f3f6; --nav:#0f172a; --nav-ink:#cbd5e1;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(--ink);background:var(--bg)}
+  .layout{display:grid;grid-template-columns:270px 1fr;min-height:100vh}
+  nav{background:var(--nav);color:var(--nav-ink);padding:24px 18px;position:sticky;top:0;height:100vh;overflow:auto}
+  nav h1{font-size:15px;color:#fff;margin:0 0 6px;letter-spacing:.3px}
+  nav .sub{font-size:12px;color:#94a3b8;margin-bottom:18px}
+  nav a{display:block;color:var(--nav-ink);text-decoration:none;font-size:13px;padding:5px 8px;border-radius:6px}
+  nav a:hover{background:#1e293b;color:#fff}
+  nav a.l2{padding-left:22px;font-size:12.5px;color:#94a3b8}
+  main{padding:36px 48px 80px;max-width:1150px}
+  header.hero{background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 60%,#6d28d9 100%);color:#fff;border-radius:16px;padding:34px 38px;margin-bottom:34px}
+  header.hero h1{margin:0 0 10px;font-size:28px;line-height:1.25}
+  header.hero p{margin:6px 0;color:#dbeafe;font-size:15px}
+  header.hero .meta{margin-top:14px;font-size:13px;color:#bfdbfe}
+  section{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:28px 32px;margin-bottom:26px}
+  h2{font-size:22px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid var(--line)}
+  h2 .num{color:var(--accent);margin-right:8px}
+  h3{font-size:17px;margin:26px 0 8px;color:#111827}
+  h4{font-size:15px;margin:18px 0 6px;color:#374151}
+  p{margin:8px 0}
+  ul,ol{margin:6px 0 10px;padding-left:24px}
+  li{margin:4px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0 18px;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;vertical-align:top;text-align:left}
+  th{background:#f1f5f9;font-weight:600}
+  tr:nth-child(even) td{background:#fafbfc}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+  code{background:var(--code);padding:1px 6px;border-radius:5px}
+  pre{background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:10px;overflow:auto;line-height:1.5}
+  pre code{background:none;padding:0;color:inherit}
+  .callout{border-left:4px solid var(--accent);background:#eff6ff;padding:12px 16px;border-radius:8px;margin:14px 0}
+  .callout.warn{border-color:var(--warn);background:#fffbeb}
+  .callout.ok{border-color:var(--ok);background:#ecfdf5}
+  .callout.purple{border-color:var(--accent-2);background:#f5f3ff}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:#fbfcfd}
+  .card h4{margin:0 0 6px}
+  .card p{margin:4px 0;font-size:14px;color:#374151}
+  .tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;background:#e0e7ff;color:#3730a3;margin-right:4px}
+  .tag.g{background:#dcfce7;color:#166534}.tag.o{background:#ffedd5;color:#9a3412}.tag.r{background:#fee2e2;color:#991b1b}.tag.p{background:#ede9fe;color:#5b21b6}
+  figure{margin:18px 0;text-align:center}
+  figure svg{max-width:100%;height:auto}
+  figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+  .kpi div{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kpi b{display:block;font-size:20px;color:var(--accent)}
+  .kpi span{font-size:12.5px;color:var(--muted)}
+  .small{font-size:13px;color:var(--muted)}
+  footer{color:var(--muted);font-size:13px;margin-top:20px}
+  .step{display:flex;gap:14px;margin:10px 0}
+  .step .n{flex:0 0 32px;height:32px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .step .b{flex:1}
+  .step .b b{display:block}
+  @media (max-width:1000px){.layout{grid-template-columns:1fr}nav{position:static;height:auto}main{padding:20px}.grid2,.grid3,.kpi{grid-template-columns:1fr}}
+  @media print{nav{display:none}.layout{grid-template-columns:1fr}section{break-inside:avoid;border:none}}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <h1>Dynatrace &amp; RCA</h1>
+  <div class="sub">Báo cáo tổng quan giải pháp, kỹ thuật, kiến trúc</div>
+  <a href="#tomtat">0. Tóm tắt điều hành</a>
+  <a href="#tongquan">1. Tổng quan giải pháp</a>
+  <a href="#kientruc">2. Kiến trúc tổng thể</a>
+  <a class="l2" href="#thuthap">2.1 Lớp thu thập</a>
+  <a class="l2" href="#openpipeline">2.2 OpenPipeline</a>
+  <a class="l2" href="#grail">2.3 Grail data lakehouse</a>
+  <a class="l2" href="#smartscape">2.4 Smartscape topology</a>
+  <a href="#mohinh">3. Mô hình dữ liệu</a>
+  <a href="#anomaly">4. Phát hiện bất thường</a>
+  <a href="#problem">5. Gộp sự kiện thành Problem</a>
+  <a href="#rca">6. Thuật toán RCA (Davis)</a>
+  <a href="#hypermodal">7. Hypermodal AI &amp; Agentic</a>
+  <a href="#baihoc">8. Bài học thiết kế rút ra</a>
+  <a href="#baitoan">9. Đặt bài toán RCA</a>
+  <a href="#vande">10. Các vấn đề khi xây dựng</a>
+  <a href="#yeucau">11. Yêu cầu hệ thống</a>
+  <a href="#danhgia">12. Đánh giá &amp; baseline</a>
+  <a href="#kiemthu">13. Phương pháp kiểm thử RCA</a>
+  <a href="#thietke">14. Kiến trúc tham chiếu hệ thống RCA</a>
+  <a class="l2" href="#thietke-tp">14.1 Thành phần</a>
+  <a class="l2" href="#thietke-graph">14.2 Mô hình đồ thị</a>
+  <a class="l2" href="#thietke-alg">14.3 Thuật toán RCA đề xuất</a>
+  <a class="l2" href="#thietke-stack">14.4 Công nghệ gợi ý</a>
+  <a class="l2" href="#roadmap">14.5 Lộ trình</a>
+  <a href="#usecase">15. Use case: Cloud Server trên OpenStack</a>
+  <a href="#ruiro">16. Rủi ro &amp; câu hỏi mở</a>
+  <a href="#nguon">17. Nguồn tham khảo</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>Dynatrace: Giải pháp, kỹ thuật và kiến trúc<br>Định hướng xây dựng hệ thống Root Cause Analysis (RCA)</h1>
+  <p>Báo cáo phân tích cách Dynatrace thu thập dữ liệu, xây dựng đồ thị phụ thuộc thời gian thực, phát hiện bất thường, gộp sự kiện thành "problem" và xác định nguyên nhân gốc bằng causal AI (Davis). Phần sau chuyển hóa các nguyên lý đó thành phát biểu bài toán, danh mục vấn đề, yêu cầu hệ thống, phương pháp đánh giá kèm baseline so sánh, phương pháp kiểm thử, kiến trúc tham chiếu và một use case thực tế (dịch vụ Cloud Server trên OpenStack) để tự xây một hệ thống RCA.</p>
+  <div class="meta">Ngày lập: 09/09/2026 · Nguồn: dynatrace.com, docs.dynatrace.com, blog kỹ thuật Dynatrace và tài liệu bên thứ ba (liệt kê ở mục 11)</div>
+</header>
+
+<!-- ============ 0 ============ -->
+<section id="tomtat">
+  <h2><span class="num">0.</span>Tóm tắt điều hành</h2>
+  <p>Dynatrace là nền tảng observability "all-in-one" (APM, hạ tầng, log, digital experience, security, business analytics) với điểm khác biệt cốt lõi là <b>RCA tự động, xác định (deterministic)</b> thay vì chỉ tương quan thống kê. Bốn trụ cột kỹ thuật tạo nên khả năng này:</p>
+  <div class="grid2">
+    <div class="card"><h4>1. OneAgent + PurePath</h4><p>Một agent duy nhất tự động cài đặt (auto-inject), tự phát hiện process/service, thu thập metric, log, trace code-level (PurePath) và đồng thời <b>tự khám phá topology</b> (ai gọi ai, chạy trên đâu).</p></div>
+    <div class="card"><h4>2. Smartscape</h4><p>Đồ thị phụ thuộc thời gian thực gồm node (host, process, service, K8s workload, cloud resource...) và edge có hướng (<code>calls</code>, <code>runs_on</code>, <code>is_part_of</code>...). Đây là "bản đồ nhân quả" mà AI đi trên đó.</p></div>
+    <div class="card"><h4>3. Grail</h4><p>Data lakehouse hợp nhất logs, metrics, traces, events, entity, business event trong một kho, truy vấn bằng DQL, schema-on-read, phân vùng theo bucket/retention.</p></div>
+    <div class="card"><h4>4. Davis AI (causal AI)</h4><p>Baseline đa chiều tự học → sinh <b>Davis event</b> → gộp event có chung nguyên nhân vào một <b>problem</b> theo thời gian + topology → phân tích fault-tree trên đồ thị để xếp hạng <b>root cause entity</b> và tính blast radius.</p></div>
+  </div>
+  <div class="callout ok"><b>Kết luận cho dự án RCA:</b> Thứ tạo nên Dynatrace không phải một mô hình ML "thông minh", mà là <b>mô hình dữ liệu có ngữ cảnh</b> (mọi tín hiệu đều gắn với một entity trong đồ thị phụ thuộc) cộng với <b>bộ luật gộp sự kiện</b> rõ ràng và <b>duyệt đồ thị nhân quả</b> có thể giải thích từng bước. Đây là những thứ có thể tái tạo được với công nghệ mở.</div>
+  <div class="kpi">
+    <div><b>5 phút</b><span>Cửa sổ gộp event mới vào problem (tính từ event đầu)</span></div>
+    <div><b>90 phút</b><span>Tuổi tối đa để problem còn nhận event mới</span></div>
+    <div><b>3/5 phút</b><span>Luật vi phạm mặc định: 3 phút vi phạm trong cửa sổ trượt 5 phút</span></div>
+    <div><b>7 / 14 ngày</b><span>Dữ liệu tham chiếu cho auto-adaptive threshold / seasonal baseline</span></div>
+  </div>
+</section>
+
+<!-- ============ 1 ============ -->
+<section id="tongquan">
+  <h2><span class="num">1.</span>Tổng quan giải pháp Dynatrace</h2>
+  <h3>1.1 Định vị</h3>
+  <p>Dynatrace tự định vị là nền tảng "AI-powered observability" hướng tới vận hành <b>preventive &amp; autonomous</b>: dùng deterministic AI để phát hiện, giải thích, dự đoán và tự động khắc phục. Nền tảng chạy trên một kho dữ liệu hợp nhất (Grail) và một mô hình phụ thuộc thời gian thực (Smartscape), phục vụ đồng thời nhiều đội (Ops, SRE, Dev, Security, Business).</p>
+  <h3>1.2 Các miền năng lực</h3>
+  <table>
+    <tr><th>Miền</th><th>Nội dung chính</th><th>Liên quan RCA</th></tr>
+    <tr><td>Application Observability</td><td>APM, distributed tracing (PurePath), profiling, service detection tự động</td><td>Nguồn quan hệ <code>calls</code> giữa service và bằng chứng code-level (method lỗi, GC, SQL chậm)</td></tr>
+    <tr><td>Infrastructure Observability</td><td>Host, process, container, Kubernetes, multi-cloud, network</td><td>Quan hệ dọc (service → process → host → K8s node), resource contention</td></tr>
+    <tr><td>Log Analytics</td><td>Ingest log mọi nguồn vào Grail, DQL, pattern (DPL)</td><td>Bằng chứng bổ sung; Davis gợi ý query log liên quan problem</td></tr>
+    <tr><td>Digital Experience</td><td>RUM, synthetic, session replay</td><td>Đo tác động thực tới người dùng (impact analysis)</td></tr>
+    <tr><td>Application Security / Threat</td><td>Phát hiện lỗ hổng runtime, forensics</td><td>Cùng dùng topology để xếp hạng rủi ro</td></tr>
+    <tr><td>Business Observability</td><td>Business event, business flow</td><td>Gắn problem với business flow bị ảnh hưởng</td></tr>
+    <tr><td>Software Delivery / Automation</td><td>Workflows, SLO, deployment events</td><td>Deployment/config change là root-cause candidate; auto-remediation</td></tr>
+    <tr><td>AI Observability</td><td>Giám sát LLM app, agent</td><td>Mở rộng entity model sang AI component</td></tr>
+  </table>
+  <h3>1.3 Bộ công nghệ lõi (tên thương hiệu)</h3>
+  <ul>
+    <li><b>OneAgent</b>: agent hợp nhất trên host, tự inject code module vào process.</li>
+    <li><b>ActiveGate</b>: proxy bảo mật/định tuyến và điểm thực thi giám sát từ xa (cloud API, K8s API, Prometheus, SNMP, synthetic).</li>
+    <li><b>PurePath</b> (thế hệ 4): công nghệ distributed trace code-level, hỗ trợ OpenTelemetry và W3C Trace Context.</li>
+    <li><b>OpenPipeline</b>: lớp ingest/xử lý/định tuyến/làm giàu dữ liệu trước khi vào Grail.</li>
+    <li><b>Grail</b>: data lakehouse cho observability; <b>DQL</b> là ngôn ngữ truy vấn.</li>
+    <li><b>Smartscape</b>: đồ thị phụ thuộc thời gian thực (nay lưu trong Grail, truy vấn bằng <code>smartscapeNodes</code>/<code>smartscapeEdges</code>).</li>
+    <li><b>Davis AI</b> (Dynatrace Intelligence): causal + predictive + generative (Davis CoPilot / Dynatrace Assist) + agentic AI.</li>
+    <li><b>AppEngine / AutomationEngine</b>: nền tảng app và workflow tự động chạy trên dữ liệu Grail.</li>
+  </ul>
+</section>
+
+<!-- ============ 2 ============ -->
+<section id="kientruc">
+  <h2><span class="num">2.</span>Kiến trúc tổng thể</h2>
+  <figure>
+    <svg viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial" font-size="13">
+      <defs><marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+      <!-- Layer boxes -->
+      <rect x="20" y="20" width="960" height="95" rx="10" fill="#f1f5f9" stroke="#cbd5e1"/>
+      <text x="35" y="42" font-weight="700" fill="#0f172a">LỚP NGUỒN DỮ LIỆU (môi trường được giám sát)</text>
+      <rect x="40" y="55" width="150" height="45" rx="8" fill="#fff" stroke="#94a3b8"/><text x="115" y="74" text-anchor="middle">OneAgent</text><text x="115" y="90" text-anchor="middle" font-size="11" fill="#64748b">host · process · code module</text>
+      <rect x="205" y="55" width="150" height="45" rx="8" fill="#fff" stroke="#94a3b8"/><text x="280" y="74" text-anchor="middle">OpenTelemetry</text><text x="280" y="90" text-anchor="middle" font-size="11" fill="#64748b">traces · metrics · logs</text>
+      <rect x="370" y="55" width="150" height="45" rx="8" fill="#fff" stroke="#94a3b8"/><text x="445" y="74" text-anchor="middle">Cloud / K8s API</text><text x="445" y="90" text-anchor="middle" font-size="11" fill="#64748b">AWS · Azure · GCP · kube-api</text>
+      <rect x="535" y="55" width="150" height="45" rx="8" fill="#fff" stroke="#94a3b8"/><text x="610" y="74" text-anchor="middle">RUM / Synthetic</text><text x="610" y="90" text-anchor="middle" font-size="11" fill="#64748b">browser · mobile · HTTP</text>
+      <rect x="700" y="55" width="130" height="45" rx="8" fill="#fff" stroke="#94a3b8"/><text x="765" y="74" text-anchor="middle">External events</text><text x="765" y="90" text-anchor="middle" font-size="11" fill="#64748b">CI/CD · ITSM · change</text>
+      <rect x="845" y="55" width="120" height="45" rx="8" fill="#fff" stroke="#94a3b8"/><text x="905" y="74" text-anchor="middle">Logs / Bizevents</text><text x="905" y="90" text-anchor="middle" font-size="11" fill="#64748b">API · Fluent · Kafka</text>
+
+      <!-- ActiveGate -->
+      <rect x="20" y="140" width="960" height="55" rx="10" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="35" y="162" font-weight="700" fill="#78350f">ActiveGate — proxy bảo mật, nén, định tuyến; thực thi giám sát từ xa (extensions, cloud API, K8s, Prometheus, synthetic)</text>
+      <text x="35" y="182" font-size="12" fill="#92400e">Mọi kết nối OneAgent ↔ ActiveGate ↔ Cluster đều TLS. Có Environment ActiveGate (SaaS) và Cluster ActiveGate.</text>
+
+      <!-- OpenPipeline -->
+      <rect x="20" y="220" width="960" height="55" rx="10" fill="#e0f2fe" stroke="#0284c7"/>
+      <text x="35" y="242" font-weight="700" fill="#0c4a6e">OpenPipeline — ingest mọi định dạng · routing · parse/processing · metric extraction · security context · làm giàu ngữ cảnh · gán bucket lưu trữ</text>
+      <text x="35" y="262" font-size="12" fill="#075985">Gắn mỗi record với entity/topology (dt.entity.*, smartscape id) để mọi tín hiệu đều có "địa chỉ" trong đồ thị.</text>
+
+      <!-- Grail + Smartscape -->
+      <rect x="20" y="300" width="620" height="100" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+      <text x="35" y="322" font-weight="700" fill="#064e3b">Grail — data lakehouse cho observability</text>
+      <text x="35" y="342" font-size="12" fill="#065f46">Buckets (retention) → Tables (logs · events · spans · metrics · bizevents) → Views (dt.entity.*)</text>
+      <text x="35" y="360" font-size="12" fill="#065f46">Schema-on-read · DQL · DPL · API ingest/query · tới 2.5 TB/ngày/tenant, 250 custom bucket</text>
+      <text x="35" y="385" font-size="12" fill="#065f46">Không index truyền thống: dữ liệu thô + ngữ cảnh, phân tích lúc truy vấn.</text>
+      <rect x="660" y="300" width="320" height="100" rx="10" fill="#f5f3ff" stroke="#8b5cf6"/>
+      <text x="675" y="322" font-weight="700" fill="#4c1d95">Smartscape (on Grail)</text>
+      <text x="675" y="342" font-size="12" fill="#5b21b6">Node: host, process, service, container,</text>
+      <text x="675" y="358" font-size="12" fill="#5b21b6">K8s (cluster/ns/workload/pod), cloud, DB...</text>
+      <text x="675" y="374" font-size="12" fill="#5b21b6">Edge có hướng: calls · runs_on · is_part_of ·</text>
+      <text x="675" y="390" font-size="12" fill="#5b21b6">belongs_to · contains · routes_to · same_as...</text>
+
+      <!-- Davis -->
+      <rect x="20" y="425" width="620" height="75" rx="10" fill="#fdf2f8" stroke="#db2777"/>
+      <text x="35" y="447" font-weight="700" fill="#831843">Davis AI (Dynatrace Intelligence)</text>
+      <text x="35" y="467" font-size="12" fill="#9d174d">Predictive: baseline đa chiều · auto-adaptive threshold · seasonal/forecast (AutoML)</text>
+      <text x="35" y="484" font-size="12" fill="#9d174d">Causal: event → problem correlation · fault-tree trên Smartscape · ranking root cause · impact tree</text>
+      <rect x="660" y="425" width="320" height="75" rx="10" fill="#fff7ed" stroke="#ea580c"/>
+      <text x="675" y="447" font-weight="700" fill="#7c2d12">Apps · Workflows · CoPilot / Agentic</text>
+      <text x="675" y="467" font-size="12" fill="#9a3412">Problems app, Notebooks, Dashboards, AutomationEngine,</text>
+      <text x="675" y="484" font-size="12" fill="#9a3412">NL→DQL, khuyến nghị khắc phục, tích hợp ITSM/ChatOps</text>
+
+      <!-- arrows -->
+      <line x1="500" y1="115" x2="500" y2="140" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="500" y1="195" x2="500" y2="220" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="330" y1="275" x2="330" y2="300" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="820" y1="275" x2="820" y2="300" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="330" y1="400" x2="330" y2="425" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="660" y1="350" x2="640" y2="350" stroke="#8b5cf6" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="820" y1="400" x2="820" y2="425" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="640" y1="462" x2="660" y2="462" stroke="#64748b" stroke-width="2" marker-end="url(#ar)"/>
+    </svg>
+    <figcaption>Hình 1. Luồng dữ liệu Dynatrace: nguồn → ActiveGate → OpenPipeline → Grail/Smartscape → Davis → Apps/Automation.</figcaption>
+  </figure>
+
+  <h3 id="thuthap">2.1 Lớp thu thập: OneAgent, PurePath, OpenTelemetry, cloud</h3>
+  <ul>
+    <li><b>OneAgent</b> cài một lần trên host (hoặc DaemonSet/Operator trên K8s). Nó gồm OS agent (host metric, process discovery, network), các <b>code module</b> tự inject vào runtime (Java, .NET, Node.js, Go, PHP, Python...), log module và network module. Không cần sửa code.</li>
+    <li>Nhờ ở trong process, OneAgent thấy được mọi kết nối ra/vào (socket, HTTP, DB, messaging) và <b>tự suy ra service, quan hệ gọi nhau, process chạy trên host nào</b>. Đây là nguồn chính của Smartscape. Trường <code>dt.smartscape_source.sender</code> ghi rõ ai phát hiện entity (osagent, codemodule, zagent...).</li>
+    <li><b>PurePath</b> là biểu diễn trace end-to-end với thời gian từng span, gắn metadata (status code, method, class, SQL). PurePath 4 hợp nhất span OneAgent và span OpenTelemetry (auto/custom instrumentation), tuân W3C Trace Context để nối trace qua các service do đội khác giám sát.</li>
+    <li><b>Agentless</b>: ActiveGate gọi cloud API (AWS, Azure, GCP), Kubernetes API, Prometheus, SNMP để lấy metric và <b>khám phá entity/quan hệ không cần agent</b> (VPC, security group, load balancer, K8s object với YAML đầy đủ).</li>
+    <li><b>External events</b>: CI/CD, ITSM, tool cấu hình gửi event (deployment, configuration change, annotation, custom info) qua API với <code>entitySelector</code> (ví dụ <code>type(HOST),tag(env:prod)</code>) để gắn vào entity. Đây là dữ liệu "what changed" cho RCA.</li>
+  </ul>
+
+  <h3 id="openpipeline">2.2 OpenPipeline</h3>
+  <p>Lớp xử lý luồng thống nhất trước khi ghi vào Grail. Chức năng chính: nhận dữ liệu mọi định dạng, <b>routing</b> theo điều kiện vào pipeline, <b>processing</b> (parse, mask dữ liệu nhạy cảm, đổi tên trường, trích metric từ log/event, trích business event), gán <b>security context</b> để phân quyền, và gán <b>bucket</b> lưu trữ. Quan trọng với RCA: OpenPipeline làm giàu record với ngữ cảnh topology (entity id, K8s metadata, tag) nên mọi log/metric/event đều truy vết được về một node trong Smartscape.</p>
+
+  <h3 id="grail">2.3 Grail data lakehouse</h3>
+  <table>
+    <tr><th>Khái niệm</th><th>Mô tả</th></tr>
+    <tr><td>Bucket</td><td>Đơn vị lưu trữ vật lý, phân theo loại record (logs, events, spans, metrics, bizevents) và <b>retention</b>. Bucket mặc định (<code>default_*</code>, <code>dt_*</code>) có retention cố định (ví dụ spans 10 ngày, security events 3 năm). Custom bucket: 1 ngày đến 10 năm, tối đa 250 bucket/môi trường.</td></tr>
+    <tr><td>Table</td><td>Lớp truy cập logic xuyên bucket: <code>logs</code>, <code>events</code>, <code>spans</code>, <code>metrics</code>, <code>bizevents</code>...</td></tr>
+    <tr><td>View</td><td>Bảng ảo lọc/biến đổi, ví dụ <code>dt.entity.host</code>, <code>dt.entity.service</code> cho entity classic; <code>smartscapeNodes</code>, <code>smartscapeEdges</code> cho topology mới.</td></tr>
+    <tr><td>Schema-on-read</td><td>Không cần định nghĩa schema trước; parse lúc truy vấn bằng DQL/DPL. Cho phép ingest nhanh, giữ nguyên ngữ cảnh.</td></tr>
+    <tr><td>DQL</td><td>Ngôn ngữ pipeline (<code>fetch logs | filter ... | summarize ... | join ...</code>), có lệnh đồ thị (<code>traverse</code>) và gọi Davis analyzer (forecast, anomaly).</td></tr>
+  </table>
+  <p>Giá trị với RCA: một câu truy vấn có thể nối event → entity → metric/log/trace trong cùng khung thời gian mà không cần ETL giữa nhiều kho.</p>
+
+  <h3 id="smartscape">2.4 Smartscape: đồ thị phụ thuộc thời gian thực</h3>
+  <p>Smartscape classic tổ chức 5 tầng: <b>Applications → Services → Processes → Hosts → Data centers</b>. Quan hệ <b>dọc</b> (vertical) nối các tầng (service chạy trên process nào, process trên host nào); quan hệ <b>ngang</b> (horizontal) là luồng gọi trong cùng tầng (service A gọi service B). Dữ liệu 72 giờ gần nhất; kết nối không có request trong 2 giờ được vẽ nét đứt.</p>
+  <p>Smartscape mới (on Grail) tổng quát hóa thành đồ thị node/edge đa miền, cập nhật liên tục, truy vấn native graph (multi-hop <code>traverse</code>) trên hàng triệu quan hệ và là "AI-ready context" cho Davis.</p>
+  <table>
+    <tr><th>Nhóm node</th><th>Ví dụ</th></tr>
+    <tr><td>Hạ tầng lõi</td><td>HOST, PROCESS_GROUP_INSTANCE, SERVICE, CONTAINER, DISK, NETWORK_INTERFACE</td></tr>
+    <tr><td>Kubernetes</td><td>K8S_CLUSTER, K8S_NAMESPACE, K8S_WORKLOAD, K8S_POD, K8S_NODE, K8S_SERVICE</td></tr>
+    <tr><td>Cloud</td><td>AWS_* (EC2, RDS, ELB, VPC...), AZURE_*, GCP_*</td></tr>
+    <tr><td>Khác</td><td>DB_* (database extension), BIZ_* (business), synthetic monitor/location, network device</td></tr>
+  </table>
+  <table>
+    <tr><th>Edge (có hướng, luôn có chiều ngược)</th><th>Ý nghĩa</th><th>Vai trò trong RCA</th></tr>
+    <tr><td><code>calls</code></td><td>Giao tiếp ngang (service → service, process → process)</td><td>Lan truyền lỗi/chậm theo chiều gọi; xác định upstream/downstream</td></tr>
+    <tr><td><code>runs_on</code></td><td>Liên kết dọc lỏng (service → process → host/pod)</td><td>Lỗi tài nguyên ở dưới giải thích triệu chứng ở trên</td></tr>
+    <tr><td><code>is_part_of</code> / <code>belongs_to</code></td><td>Thành phần / thuộc nhóm (pod ∈ workload ∈ namespace ∈ cluster)</td><td>Gộp triệu chứng cùng cụm; thay đổi manifest ở workload ảnh hưởng mọi pod</td></tr>
+    <tr><td><code>contains</code>, <code>is_attached_to</code>, <code>routes_to</code></td><td>Chứa, gắn độc quyền (disk↔host), định tuyến (LB → target)</td><td>Blast radius hạ tầng, mạng</td></tr>
+    <tr><td><code>uses</code>, <code>updates</code>, <code>monitors</code>, <code>sees</code></td><td>Sử dụng, thay đổi (nguồn sửa đích), giám sát</td><td>Nối deployment/config change với entity bị sửa</td></tr>
+    <tr><td><code>instance_of</code>, <code>same_as</code></td><td>Cá thể của kiểu; cùng một thực thể nhìn từ nhiều nguồn</td><td>Hợp nhất entity (OneAgent vs cloud API vs K8s)</td></tr>
+    <tr><td><code>balances</code> / <code>balanced_by</code></td><td>Cân bằng tải</td><td>Giải thích tác động một phần</td></tr>
+  </table>
+</section>
+
+<!-- ============ 3 ============ -->
+<section id="mohinh">
+  <h2><span class="num">3.</span>Mô hình dữ liệu Davis: Event và Problem</h2>
+  <p>Đây là phần đáng tham khảo nhất khi thiết kế hệ RCA vì nó chuẩn hóa "đơn vị bất thường" và "đơn vị sự cố". Trong Grail, cả hai đều là record trong bảng <code>events</code>, phân biệt bằng <code>event.kind</code>.</p>
+  <div class="grid2">
+    <div class="card">
+      <h4>Davis Event (<code>event.kind = DAVIS_EVENT</code>)</h4>
+      <p>Một bất thường đơn lẻ gắn với <b>một entity</b>: metric vượt ngưỡng, baseline suy giảm, process crash, deployment...</p>
+      <ul class="small">
+        <li><code>event.type</code>: AVAILABILITY_EVENT, PERFORMANCE_EVENT, ERROR_EVENT, RESOURCE_CONTENTION_EVENT, CUSTOM_ALERT, CUSTOM_ANNOTATION, CUSTOM_CONFIGURATION, CUSTOM_DEPLOYMENT, CUSTOM_INFO, MARKED_FOR_TERMINATION, WARNING</li>
+        <li><code>event.category</code>: INFO, AVAILABILITY, ERROR, SLOWDOWN, RESOURCE_CONTENTION, CUSTOM_ALERT, MONITORING_UNAVAILABLE</li>
+        <li><code>event.severity</code>: 1 (nặng nhất) → 5</li>
+        <li><code>event.status</code>: ACTIVE / CLOSED; <code>event.status_transition</code>: CREATED, UPDATED, REFRESHED, TIMED_OUT, RECOVERED</li>
+        <li><code>dt.smartscape_source.id / .type</code>: entity bị ảnh hưởng</li>
+        <li><code>dt.davis.is_rootcause_relevant</code>: có được xét làm root cause không</li>
+        <li><code>dt.davis.is_merging_allowed</code> (<code>dt.event.allow_davis_merge</code>): có được gộp vào problem không</li>
+        <li><code>event.start / event.end / timestamp</code> (ns UTC)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Davis Problem (<code>event.kind = DAVIS_PROBLEM</code>)</h4>
+      <p>Tập các event có <b>chung nguyên nhân gốc</b>, là đơn vị cảnh báo/ticket duy nhất.</p>
+      <ul class="small">
+        <li><code>display_id</code> (P-2307288), <code>event.id</code> ổn định qua các lần cập nhật</li>
+        <li><code>event.status</code>: ACTIVE / CLOSED; transition: CREATED, UPDATED, REFRESHED, RESOLVED, REOPENED, CLOSED</li>
+        <li><code>event.severity</code> = min severity của các event thành viên</li>
+        <li><code>dt.davis.impact_level</code>: Application, Services, Infrastructure, Environment, Synthetic</li>
+        <li><code>dt.davis.event_ids</code>: danh sách event thành viên</li>
+        <li><code>root_cause.smartscape_entity</code>: {id, type, name} của node nguyên nhân</li>
+        <li><code>smartscape.affected_entities</code>, <code>smartscape.related_entities</code></li>
+        <li><code>dt.davis.is_duplicate</code>, <code>duplicate_problem_ids</code>: xử lý trùng lặp</li>
+        <li><code>dt.duration_marker</code>: mốc thời lượng bậc thang (5 phút, 2 giờ, 7 ngày...)</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout"><b>Nguyên lý:</b> Event là <i>fact</i> gắn entity + thời gian + mức độ; Problem là <i>kết luận</i> gồm tập event, root cause entity, tập entity bị ảnh hưởng và mức tác động. Cả hai bất biến về id, thay đổi trạng thái được ghi thành bản mới (append-only) nên có thể replay lịch sử một problem.</div>
+</section>
+
+<!-- ============ 4 ============ -->
+<section id="anomaly">
+  <h2><span class="num">4.</span>Phát hiện bất thường (sinh Davis event)</h2>
+  <p>Dynatrace không dùng một thuật toán duy nhất mà chọn phương pháp theo bản chất tín hiệu. Tất cả đều tạo ra event có cùng schema ở mục 3.</p>
+  <table>
+    <tr><th>Phương pháp</th><th>Áp dụng cho</th><th>Cách tính</th><th>Chống nhiễu</th></tr>
+    <tr>
+      <td><b>Multi-dimensional baselining</b></td>
+      <td>Response time (median &amp; p90), error rate của application/service</td>
+      <td>Học baseline riêng cho từng tổ hợp chiều. Application: user action × geolocation (lục địa→quốc gia→vùng→thành phố) × browser × OS. Service: service method × method group. Ví dụ "USA–New York–Chrome: RT 2s, error 0%, load 2 action/phút". Tính "baseline cube" sau 2 giờ phát hiện, tính lại hàng ngày.</td>
+      <td>Cần ≥ 20% của một tuần dữ liệu mới cảnh báo; đánh giá trong cửa sổ trượt 5 phút (nhanh) và 15 phút (tin cậy hơn); alert kéo dài tối thiểu 5 phút; xét topology trước khi phát cảnh báo.</td>
+    </tr>
+    <tr>
+      <td><b>Prediction-based (seasonal)</b></td>
+      <td>Traffic / load của application &amp; service (phát hiện sụt/tăng bất thường)</td>
+      <td>Học mẫu ngày/tuần, cần đủ 1 tuần dữ liệu; dự đoán khoảng kỳ vọng rồi so sánh thực tế.</td>
+      <td>Chỉ báo khi lệch khỏi dải dự đoán đủ lâu.</td>
+    </tr>
+    <tr>
+      <td><b>Auto-adaptive threshold</b></td>
+      <td>Metric hạ tầng và metric tùy ý (CPU, memory, disk, custom) qua metric events</td>
+      <td>Tham chiếu 7 ngày, độ phân giải phút. Baseline = <b>p99</b>; độ dao động = <b>IQR (p25–p75)</b>; ngưỡng = baseline + n × IQR (n cấu hình). Cập nhật hàng ngày. Mỗi entity trong scope có ngưỡng riêng (5 host → 5 ngưỡng).</td>
+      <td>Luật vi phạm mặc định <b>3 phút trong cửa sổ trượt 5 phút</b> (không cần liên tiếp), cửa sổ tối đa 60 phút; có luật de-alert tương ứng. Giới hạn 100 cấu hình metric event / môi trường.</td>
+    </tr>
+    <tr>
+      <td><b>Seasonal baseline (Davis analyzer)</b></td>
+      <td>Chuỗi thời gian có tính mùa vụ</td>
+      <td>14 ngày dữ liệu phút; trích mẫu mùa vụ bằng <b>Fourier transform</b>; huấn luyện <b>quantile regression</b> (bền với outlier) với 3 nhóm feature: 10 điểm gần nhất (autoregressive), đặc trưng thời gian/ngày, thành phần mùa vụ. Dự báo one-step-ahead dải tin cậy mỗi phút; tham số tolerance 0.1–10 (mặc định 4). Huấn luyện lại hàng ngày theo từng tuple metric-dimension.</td>
+      <td>Cửa sổ trượt tới 60 phút; fallback về mô hình phân phối đơn giản nếu thiếu dữ liệu, thiếu biến thiên hoặc không có mùa vụ.</td>
+    </tr>
+    <tr>
+      <td><b>Forecast (AutoML)</b></td>
+      <td>Dự báo dung lượng, disk, SLO, capacity trong workflow/notebook</td>
+      <td>Tự chọn giữa <b>Sampling forecaster</b> (phát hiện mùa vụ giờ/ngày/tuần; mô phỏng 200 đường, 1–1000; trích quantile; cần ≥ 2 giờ cho mẫu giờ, ≥ 7 ngày cho mẫu tuần) và <b>Linear extrapolation</b> (hồi quy tuyến tính, residual chuẩn) làm fallback. Cần ≥ 14 điểm; horizon mặc định 100 (1–600); coverage 0.9.</td>
+      <td>Kiểm tra chất lượng bằng tỉ lệ std dự báo / std đầu vào.</td>
+    </tr>
+    <tr>
+      <td><b>Static threshold</b></td>
+      <td>Khi cần ngưỡng cố định (SLA, an toàn)</td>
+      <td>Người dùng đặt ngưỡng.</td>
+      <td>Cùng cơ chế cửa sổ trượt.</td>
+    </tr>
+    <tr>
+      <td><b>Point-in-time / availability</b></td>
+      <td>Process crash, host down, monitoring unavailable, K8s eviction</td>
+      <td>Phát hiện trực tiếp từ agent/K8s event.</td>
+      <td>Không cần baseline.</td>
+    </tr>
+  </table>
+  <div class="callout warn"><b>Nhận xét kỹ thuật:</b> Các thuật toán đều là thống kê cổ điển, giải thích được (percentile, IQR, Fourier, quantile regression, hồi quy tuyến tính). Sức mạnh nằm ở việc <b>baseline theo từng ngữ cảnh</b> (dimension, entity) và <b>luật thời gian</b> (sliding window, minimum duration, learning period) để cắt nhiễu, không phải ở độ phức tạp mô hình.</div>
+</section>
+
+<!-- ============ 5 ============ -->
+<section id="problem">
+  <h2><span class="num">5.</span>Gộp sự kiện thành Problem (event correlation)</h2>
+  <p>Mục tiêu: một sự cố → một problem, dù nó tạo ra hàng chục event trên nhiều entity. Dynatrace dùng đồng thời <b>ràng buộc thời gian</b> và <b>ràng buộc topology</b>.</p>
+  <figure>
+    <svg viewBox="0 0 1000 250" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial" font-size="13">
+      <defs><marker id="ar2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker></defs>
+      <!-- timeline -->
+      <line x1="60" y1="200" x2="960" y2="200" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar2)"/>
+      <text x="960" y="225" text-anchor="end" fill="#64748b">thời gian</text>
+      <!-- windows -->
+      <rect x="120" y="60" width="140" height="130" fill="#dbeafe" stroke="#3b82f6" stroke-dasharray="4 3"/>
+      <text x="190" y="52" text-anchor="middle" fill="#1d4ed8" font-size="12">Cửa sổ gộp 5 phút</text>
+      <rect x="120" y="120" width="85" height="70" fill="#fef9c3" stroke="#eab308" stroke-dasharray="3 3"/>
+      <text x="162" y="135" text-anchor="middle" fill="#854d0e" font-size="11">3 phút xử lý</text>
+      <rect x="120" y="30" width="640" height="15" fill="#fee2e2" stroke="#ef4444"/>
+      <text x="440" y="42" text-anchor="middle" fill="#991b1b" font-size="11">Tuổi tối đa nhận event mới: 90 phút</text>
+      <!-- events -->
+      <circle cx="120" cy="200" r="7" fill="#dc2626"/><text x="120" y="180" text-anchor="middle" font-size="12">E1 (svc A chậm)</text>
+      <circle cx="170" cy="200" r="7" fill="#dc2626"/><text x="170" y="165" text-anchor="middle" font-size="12">E2 (svc B lỗi)</text>
+      <circle cx="235" cy="200" r="7" fill="#dc2626"/><text x="235" y="180" text-anchor="middle" font-size="12">E3 (host CPU)</text>
+      <circle cx="420" cy="200" r="7" fill="#f97316"/><text x="420" y="180" text-anchor="middle" font-size="12">E4 muộn (cùng topology) → gộp</text>
+      <circle cx="850" cy="200" r="7" fill="#7c3aed"/><text x="850" y="180" text-anchor="middle" font-size="12">E5 sau 90' → problem mới</text>
+      <text x="60" y="235" fill="#334155" font-size="12">Problem P1 = {E1,E2,E3,E4}; cảnh báo phát sau 3 phút; giữ ACTIVE khi còn entity bất thường; đóng khi tất cả hồi phục.</text>
+    </svg>
+    <figcaption>Hình 2. Luật thời gian của Davis khi gộp event thành problem.</figcaption>
+  </figure>
+  <h3>5.1 Bộ luật gộp</h3>
+  <ol>
+    <li><b>Cửa sổ 5 phút:</b> event có <code>event.start</code> cách event đầu tiên của problem quá 5 phút sẽ tạo problem mới (trừ khi liên hệ topology được xác nhận trong quá trình phân tích).</li>
+    <li><b>Điều kiện topology:</b> chỉ gộp event của các entity có quan hệ phụ thuộc (dọc hoặc ngang) với nhau; "cùng thời điểm" là chưa đủ. Ví dụ Booking gọi Verification: khi Verification chậm kéo Booking chậm, tương quan thời gian thuần có thể đổ lỗi sai cho Booking; kiểm tra edge <code>calls</code> mới cho kết luận đúng.</li>
+    <li><b>Xử lý 3 phút:</b> problem mới ở trạng thái processing 3 phút để causal AI quyết định có gộp vào problem khác không, rồi mới alert.</li>
+    <li><b>Tuổi 90 phút:</b> sau 90 phút kể từ khi mở, problem không nhận event mới; event mới sinh problem mới (tránh problem "vô tận").</li>
+    <li><b>Vòng đời:</b> problem ACTIVE khi còn ít nhất một entity bất thường; event dùng cửa sổ quan sát <b>3-trong-5 phút</b> để giữ trạng thái active; đóng khi tất cả hồi phục; có thể REOPENED.</li>
+    <li><b>Trùng lặp:</b> vì dữ liệu tới bất đồng bộ, có thể sinh 2 problem cho cùng sự cố. Khi dữ liệu muộn tới, problem phụ được đánh <code>dt.davis.is_duplicate=true</code> và gộp. Dynatrace chấp nhận điều này để <b>cảnh báo nhanh nhất</b> thay vì chờ lâu hơn.</li>
+    <li><b>Dedup event:</b> event cùng semantic type, cùng nguồn, cùng khung thời gian được gộp thành một event (refresh) thay vì tạo mới.</li>
+    <li><b>Cờ điều khiển:</b> <code>dt.event.allow_davis_merge</code> và <code>dt.event.is_rootcause_relevant</code> cho phép nguồn ngoài quyết định event có tham gia gộp/RCA không.</li>
+  </ol>
+  <h3>5.2 Mức tác động (impact level)</h3>
+  <p>Problem được gán <code>impact_level</code> theo tầng cao nhất bị ảnh hưởng: Infrastructure &lt; Services &lt; Application (người dùng thật) / Synthetic / Environment. Đây là cơ sở để <b>ưu tiên theo tác động khách hàng</b> thay vì theo severity thô.</p>
+</section>
+
+<!-- ============ 6 ============ -->
+<section id="rca">
+  <h2><span class="num">6.</span>Thuật toán RCA của Davis (causal AI)</h2>
+  <p>Davis mô tả phương pháp là <b>fault-tree analysis</b> xác định, "cùng phương pháp NASA và FAA dùng", chạy trên đồ thị Smartscape và dữ liệu giao dịch (PurePath). Kết quả có thể tái lập từng bước, khác ML tương quan vốn không cho biết chiều nhân quả.</p>
+  <figure>
+    <svg viewBox="0 0 1000 400" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial" font-size="13">
+      <defs><marker id="ar3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker></defs>
+      <!-- left: topology -->
+      <text x="200" y="28" text-anchor="middle" font-weight="700">Đồ thị phụ thuộc (Smartscape)</text>
+      <rect x="130" y="45" width="140" height="38" rx="8" fill="#fee2e2" stroke="#ef4444"/><text x="200" y="69" text-anchor="middle">App "Shop" (chậm)</text>
+      <rect x="130" y="110" width="140" height="38" rx="8" fill="#fee2e2" stroke="#ef4444"/><text x="200" y="134" text-anchor="middle">svc Booking (chậm)</text>
+      <rect x="130" y="175" width="140" height="38" rx="8" fill="#fee2e2" stroke="#ef4444"/><text x="200" y="199" text-anchor="middle">svc Verification (chậm)</text>
+      <rect x="130" y="240" width="140" height="38" rx="8" fill="#fee2e2" stroke="#ef4444"/><text x="200" y="264" text-anchor="middle">process JVM (GC cao)</text>
+      <rect x="130" y="305" width="140" height="38" rx="8" fill="#fecaca" stroke="#b91c1c" stroke-width="3"/><text x="200" y="329" text-anchor="middle" font-weight="700">host-07 (CPU 100%)</text>
+      <rect x="300" y="305" width="150" height="38" rx="8" fill="#fef3c7" stroke="#f59e0b"/><text x="375" y="329" text-anchor="middle" font-size="12">Deployment v2.3 @host-07</text>
+      <line x1="200" y1="110" x2="200" y2="83" stroke="#475569" stroke-width="2" marker-end="url(#ar3)"/>
+      <line x1="200" y1="175" x2="200" y2="148" stroke="#475569" stroke-width="2" marker-end="url(#ar3)"/>
+      <line x1="200" y1="240" x2="200" y2="213" stroke="#475569" stroke-width="2" marker-end="url(#ar3)"/>
+      <line x1="200" y1="305" x2="200" y2="278" stroke="#475569" stroke-width="2" marker-end="url(#ar3)"/>
+      <line x1="300" y1="324" x2="272" y2="324" stroke="#f59e0b" stroke-width="2" marker-end="url(#ar3)"/>
+      <text x="40" y="100" font-size="11" fill="#64748b">calls ↑</text><text x="40" y="165" font-size="11" fill="#64748b">calls ↑</text>
+      <text x="40" y="230" font-size="11" fill="#64748b">runs_on ↑</text><text x="40" y="295" font-size="11" fill="#64748b">runs_on ↑</text>
+      <rect x="20" y="360" width="440" height="30" rx="6" fill="#f1f5f9"/><text x="240" y="380" text-anchor="middle" font-size="12">Root cause = host-07 + vertical stack; Deployment = change event liên quan</text>
+      <!-- right: steps -->
+      <text x="740" y="28" text-anchor="middle" font-weight="700">Các bước phân tích</text>
+      <g font-size="12.5">
+        <rect x="500" y="45" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="62">1. Event kích hoạt (baseline vi phạm) → xác định entity khởi điểm</text><text x="512" y="78" fill="#475569">Lấy tất cả Davis event ACTIVE trong cửa sổ thời gian</text>
+        <rect x="500" y="95" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="112">2. Mở rộng theo topology: dọc (runs_on, is_part_of) và ngang (calls)</text><text x="512" y="128" fill="#475569">Dùng PurePath để xác định phụ thuộc thực sự có giao dịch cùng thời điểm</text>
+        <rect x="500" y="145" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="162">3. Thăm từng entity liên quan, gom mọi finding (event, severity)</text><text x="512" y="178" fill="#475569">Kể cả event info: deployment, config change, K8s event/manifest change</text>
+        <rect x="500" y="195" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="212">4. Phân tích on-demand metric của entity bị ảnh hưởng</text><text x="512" y="228" fill="#475569">Phát hiện change point trong hàng nghìn metric liên quan topology</text>
+        <rect x="500" y="245" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="262">5. Xếp hạng root-cause candidate (fault tree)</text><text x="512" y="278" fill="#475569">Entity điểm cao nhất + vertical stack của nó = root cause; drill tới method/SQL/GC</text>
+        <rect x="500" y="295" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="312">6. Impact analysis song song</text><text x="512" y="328" fill="#475569">Entry-point service, blast radius, SLO, người dùng, business flow bị ảnh hưởng</text>
+        <rect x="500" y="345" width="480" height="40" rx="8" fill="#eff6ff" stroke="#93c5fd"/><text x="512" y="362">7. Xuất problem card + Visual Resolution Path + hành động gợi ý</text><text x="512" y="378" fill="#475569">Mọi bước có bằng chứng (event, chart, trace) và có thể tái lập</text>
+      </g>
+    </svg>
+    <figcaption>Hình 3. Ví dụ duyệt đồ thị nhân quả và quy trình 7 bước của Davis RCA.</figcaption>
+  </figure>
+
+  <h3>6.1 Nguyên lý cốt lõi</h3>
+  <ul>
+    <li><b>Ngữ cảnh trước, thời gian sau.</b> "Time correlation alone is not sufficient." Hai entity chỉ được coi là cùng problem khi tồn tại đường phụ thuộc giữa chúng trong Smartscape (và với service, có giao dịch thực sự đi qua đường đó trong khung thời gian).</li>
+    <li><b>Không có độ trễ học.</b> Mô hình ngữ cảnh dựa trên phụ thuộc đã biết (Smartscape, OneAgent, cloud integration), không cần huấn luyện tương quan từ lịch sử. Vì vậy RCA hoạt động ngay với service mới.</li>
+    <li><b>Fault tree trên đồ thị.</b> Từ triệu chứng ở đỉnh (application/entry service) đi xuống theo <code>calls</code> và <code>runs_on</code>, mỗi nhánh kiểm tra "entity này có bất thường không". Nút bất thường sâu nhất mà không còn nguyên nhân sâu hơn là root cause; các nút phía trên là hậu quả.</li>
+    <li><b>Ranking.</b> Tất cả bất thường liên quan đều được đưa vào và xếp hạng "contributor"; kết quả trình bày là root cause chính + toàn bộ vertical stack (host → process → service) để người vận hành thấy ngữ cảnh.</li>
+    <li><b>Change point trên metric.</b> Ngoài event có sẵn, RCA chủ động chạy phân tích metric của các entity trong tập ảnh hưởng để tìm thời điểm thay đổi đột ngột, nhằm bắt nguyên nhân chưa được baseline nào cảnh báo.</li>
+    <li><b>Event thay đổi là ứng viên hàng đầu.</b> Deployment, configuration change, K8s manifest change, pod eviction (ví dụ do vượt ephemeral storage) gắn với entity trong stack root cause được nêu là nguyên nhân với gợi ý rollback.</li>
+    <li><b>Giải thích được.</b> Mọi bước gắn với bằng chứng (event, chart baseline, trace, topology); Visual Resolution Path vẽ luồng service và timing từ root cause đến frontend.</li>
+  </ul>
+
+  <h3>6.2 Impact analysis</h3>
+  <p>Chạy song song với RCA, dựng "topology-induced impact tree": từ root cause đi ngược chiều <code>calls</code>/<code>runs_on</code> lên các entry-point service và application; tính số entity ảnh hưởng (blast radius), SLO bị vi phạm, số người dùng thực có thể ảnh hưởng, business flow liên quan. Đây là căn cứ xếp hạng problem trong hàng đợi xử lý.</p>
+
+  <h3>6.3 Frequent issue detection</h3>
+  <p>Davis nhận diện vấn đề lặp lại theo chu kỳ (ngày/tuần) trên một entity và hạ mức nhiễu: vấn đề "quen" không tạo alert mới ồn ào, nhưng vẫn được ghi để phân tích. Điều này bổ trợ cho baseline tự học, tránh alert storm theo lịch (batch job đêm, backup).</p>
+
+  <h3>6.4 Giới hạn được tài liệu thừa nhận</h3>
+  <ul>
+    <li>Chấp nhận thông tin chưa đầy đủ và problem trùng lặp tạm thời để alert nhanh.</li>
+    <li>Chất lượng RCA phụ thuộc độ đầy đủ của topology và event thay đổi được gửi vào; thiếu deployment event thì hệ chỉ chỉ ra entity, không chỉ ra "cái gì đã đổi".</li>
+    <li>Smartscape classic chỉ giữ quan hệ 72 giờ; quan hệ hiếm xảy ra có thể không hiện diện lúc phân tích.</li>
+  </ul>
+</section>
+
+<!-- ============ 7 ============ -->
+<section id="hypermodal">
+  <h2><span class="num">7.</span>Hypermodal AI: predictive + causal + generative + agentic</h2>
+  <div class="grid3">
+    <div class="card"><h4><span class="tag">Predictive</span></h4><p>ML/thống kê (AutoML chọn mô hình theo variance, seasonality, trend, noise): baseline, auto-adaptive threshold, seasonal quantile regression, sampling forecaster. Dùng cho anomaly detection, capacity, autoscaling.</p></div>
+    <div class="card"><h4><span class="tag r">Causal</span></h4><p>Xác định, dựa trên Smartscape + PurePath + event. Fault tree, ranking root cause, gộp anomaly, blast radius, xếp hạng rủi ro bảo mật, đánh giá tác động kinh doanh.</p></div>
+    <div class="card"><h4><span class="tag p">Generative</span></h4><p>Davis CoPilot / Dynatrace Assist: ngôn ngữ tự nhiên → DQL, dashboard, notebook, workflow code; giải thích problem; gợi ý khắc phục. Prompt được <b>làm giàu bởi kết quả causal/predictive</b> và trả lời trên dữ liệu Grail thực nên hạn chế ảo giác.</p></div>
+  </div>
+  <p><b>Agentic AI</b> (preview): các agent dùng kết quả của deterministic AI để đề xuất và thực thi hành động đã được duyệt dưới guardrail chính sách (mở ticket, thông báo, chạy runbook, rollback). Nguyên tắc: <b>LLM không phải nguồn sự thật</b>; nó là lớp giao tiếp và tổng hợp bên trên kết quả xác định.</p>
+  <div class="callout purple"><b>Áp dụng:</b> Thiết kế RCA của ta nên tách rõ "engine xác định" (baseline, gộp event, duyệt đồ thị) và "lớp LLM" (giải thích, sinh truy vấn, gợi ý). LLM chỉ được nhận input là problem card có cấu trúc và dữ liệu truy vấn được, không tự suy nguyên nhân từ log thô.</div>
+</section>
+
+<!-- ============ 8 ============ -->
+<section id="baihoc">
+  <h2><span class="num">8.</span>Bài học thiết kế rút ra cho hệ thống RCA</h2>
+  <ol>
+    <li><b>Entity-first.</b> Mọi tín hiệu (metric, log, trace, event) phải được gắn <code>entity_id</code> ngay lúc ingest. Không có địa chỉ trong đồ thị thì không thể suy nhân quả.</li>
+    <li><b>Đồ thị phụ thuộc là hạ tầng bắt buộc, không phải tính năng phụ.</b> Cần nguồn quan hệ thực (trace, K8s API, cloud API, service mesh, CMDB) và cập nhật liên tục với timestamp để truy vấn "topology tại thời điểm T".</li>
+    <li><b>Chuẩn hóa Event trước khi nghĩ đến AI.</b> Một schema event thống nhất (type, category, severity, entity, start/end, status, flags) là điểm hội tụ của mọi detector và mọi nguồn ngoài.</li>
+    <li><b>Baseline theo ngữ cảnh + luật thời gian.</b> Percentile/IQR/seasonal đơn giản nhưng tính riêng cho từng entity/dimension, kèm sliding window "k-trong-n phút", learning period và minimum duration.</li>
+    <li><b>Gộp bằng thời gian AND topology.</b> Luật 5 phút/90 phút/3 phút xử lý là điểm khởi đầu tốt; chấp nhận dedup hậu kỳ để alert nhanh.</li>
+    <li><b>RCA = duyệt đồ thị có hướng + xếp hạng, có bằng chứng.</b> Không dùng mô hình hộp đen để chọn root cause. Mỗi kết luận phải chỉ ra đường đi trong đồ thị và event/metric hỗ trợ.</li>
+    <li><b>Change events là dữ liệu hạng nhất.</b> Tích hợp CI/CD, GitOps, K8s audit, feature flag, IaC để "what changed" luôn có mặt.</li>
+    <li><b>Impact song song với cause.</b> Ưu tiên theo tác động người dùng/business, không theo severity kỹ thuật.</li>
+    <li><b>Append-only, replayable.</b> Lưu mọi phiên bản event/problem để audit, đánh giá độ chính xác RCA và huấn luyện luật.</li>
+    <li><b>LLM ở lớp trên cùng.</b> Grounding trên problem card và truy vấn dữ liệu; dùng để giải thích, tóm tắt, gợi ý, không để quyết định.</li>
+  </ol>
+</section>
+
+<!-- ============ 9 (NEW) ============ -->
+<section id="baitoan">
+  <h2><span class="num">9.</span>Đặt bài toán RCA</h2>
+  <p>Trước khi xây, cần phát biểu bài toán đủ chặt để mọi người hiểu cùng một "root cause" và để có thể đo được. Phát biểu dưới đây mô phỏng cách Dynatrace định nghĩa (event → problem → root cause entity + vertical stack), nhưng viết thành đầu vào/đầu ra tường minh.</p>
+
+  <h3>9.1 Phát biểu hình thức</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4>Đầu vào (tại thời điểm phân tích t)</h4>
+      <ul class="small">
+        <li><b>Đồ thị phụ thuộc</b> G(t) = (V, E): V là tập entity (service, process, host, pod, workload, DB, queue...), E là tập cạnh có hướng, có kiểu (<code>calls</code>, <code>runs_on</code>, <code>is_part_of</code>...) và có hiệu lực theo thời gian.</li>
+        <li><b>Chuỗi thời gian</b> M = {m<sub>v,k</sub>(τ)}: metric k của entity v (RT p50/p90, error rate, throughput, CPU, memory, restart...).</li>
+        <li><b>Tập event</b> Ev = {e = (entity, type, category, severity, start, end, evidence)} gồm event bất thường do detector sinh và event thay đổi (deployment, config, K8s event) từ nguồn ngoài.</li>
+        <li><b>Trace</b> T: mẫu giao dịch phân tán trong cửa sổ, dùng để xác nhận cạnh <code>calls</code> có lưu lượng thật.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Đầu ra</h4>
+      <ul class="small">
+        <li><b>Tập problem</b> P = {P<sub>i</sub>}: mỗi P<sub>i</sub> là một phân hoạch con của Ev sao cho các event trong cùng P<sub>i</sub> có chung nguyên nhân. Mục tiêu: một sự cố thực ↔ một problem.</li>
+        <li><b>Root cause</b> của P<sub>i</sub>: một entity r ∈ V (kèm vertical stack của r) và danh sách contributor xếp hạng [(v<sub>1</sub>, s<sub>1</sub>), (v<sub>2</sub>, s<sub>2</sub>), ...].</li>
+        <li><b>Nguyên nhân thay đổi</b> (nếu có): event thay đổi c ∈ Ev được gắn với r hoặc stack của r, giải thích "cái gì đã đổi".</li>
+        <li><b>Impact</b>: tập entity bị ảnh hưởng, entry point, impact level, ước lượng người dùng/SLO.</li>
+        <li><b>Bằng chứng</b>: đường đi trong G, event, metric trước/sau cho mỗi kết luận.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>9.2 Định nghĩa "root cause" dùng để gắn nhãn và đo</h3>
+  <p>Đây là điểm gây tranh cãi nhiều nhất trong thực tế, nên phải chốt bằng văn bản:</p>
+  <ul>
+    <li><b>Root cause entity</b>: entity bất thường sâu nhất trong chuỗi phụ thuộc mà nếu khắc phục tại đó thì toàn bộ triệu chứng trong problem biến mất. Nếu nhiều entity thỏa (ví dụ host và process trên host đó), lấy entity ở tầng thấp nhất và coi cả vertical stack là đúng.</li>
+    <li><b>Root cause change</b>: hành động (deploy, config, scale, kill...) xảy ra trước triệu chứng và tác động lên root cause entity hoặc stack của nó. Khi có, đây là câu trả lời "đầy đủ"; khi không có dữ liệu thay đổi, chỉ chấm điểm ở mức entity.</li>
+    <li><b>Contributor</b>: entity bất thường khác có góp phần làm nặng thêm (ví dụ retry storm) nhưng không phải nguồn.</li>
+    <li><b>Triệu chứng</b>: entity bất thường chỉ vì phụ thuộc vào root cause. Không được xếp là root cause.</li>
+  </ul>
+  <div class="callout"><b>Mức độ chấp nhận khi chấm điểm:</b> dự đoán được coi là đúng ở mức "entity" nếu trùng root cause entity hoặc nằm trong vertical stack của nó (cùng cách Dynatrace trình bày kết quả). Coi là đúng ở mức "change" nếu chỉ đúng event thay đổi. Báo cáo cả hai mức riêng rẽ.</div>
+
+  <h3>9.3 Phạm vi và giả định</h3>
+  <table>
+    <tr><th>Trong phạm vi (giai đoạn đầu)</th><th>Ngoài phạm vi / giai đoạn sau</th></tr>
+    <tr><td>Sự cố hiệu năng và sẵn sàng của hệ microservice trên Kubernetes và VM: chậm, lỗi, hết tài nguyên, crash, deploy hỏng, cấu hình sai, phụ thuộc bên ngoài lỗi</td><td>Sự cố bảo mật, sự cố dữ liệu sai (data quality), lỗi logic nghiệp vụ không để lại dấu vết telemetry</td></tr>
+    <tr><td>Nguyên nhân nằm trong tập entity được giám sát hoặc là dịch vụ ngoài được mô hình hóa như entity biên</td><td>Nguyên nhân hoàn toàn ngoài phạm vi quan sát (ISP, nhà cung cấp thứ ba không có tín hiệu)</td></tr>
+    <tr><td>Một hoặc vài sự cố đồng thời, có thể chồng lấn thời gian</td><td>Sự cố dây chuyền quy mô toàn hệ thống (region outage) chỉ cần phát hiện, không cần RCA chi tiết</td></tr>
+    <tr><td>Giả định: đồng hồ đồng bộ NTP (sai số &lt; 1 giây), trace context được lan truyền, resource attribute đủ để gắn entity</td><td>Nếu giả định vỡ, hệ phải báo "độ tin cậy thấp" thay vì đoán</td></tr>
+  </table>
+</section>
+
+<!-- ============ 10 (NEW) ============ -->
+<section id="vande">
+  <h2><span class="num">10.</span>Các vấn đề khi xây dựng hệ thống RCA</h2>
+  <p>Tập hợp những khó khăn thực tế gặp phải khi tái tạo một hệ như Davis. Mỗi vấn đề kèm cách Dynatrace né tránh (nếu có) và hướng xử lý đề xuất.</p>
+
+  <h3>10.1 Vấn đề về dữ liệu và topology</h3>
+  <table>
+    <tr><th>Vấn đề</th><th>Biểu hiện</th><th>Dynatrace xử lý</th><th>Hướng xử lý đề xuất</th></tr>
+    <tr><td><b>Topology thiếu hoặc sai</b></td><td>Service chưa instrument, gọi qua queue/cron/batch, DNS/LB che khuất đích thật; RCA "đứt mạch" hoặc gộp sai problem</td><td>OneAgent inject sâu mọi process, kết hợp cloud/K8s discovery, W3C trace context</td><td>Kết hợp 3 nguồn: OTel span (calls), eBPF (kết nối L4/L7 không cần sửa code), K8s/cloud API (dọc). Mô hình hóa queue/topic là entity với cạnh <code>produces</code>/<code>consumes</code>. Cho phép nhập quan hệ thủ công có TTL. Đo "độ phủ topology" như một KPI.</td></tr>
+    <tr><td><b>Gắn entity_id không nhất quán</b></td><td>Cùng một service xuất hiện dưới nhiều tên (service.name khác giữa OTel, log, K8s); baseline tách đôi, đồ thị nhân đôi</td><td>Hợp nhất qua <code>same_as</code>, nguồn phát hiện được ghi trong <code>dt.smartscape_source.sender</code></td><td>Quy ước đặt tên bắt buộc ở pipeline (namespace/workload/container), bảng alias, cạnh <code>same_as</code> khi phát hiện trùng theo IP:port, pod uid, container id</td></tr>
+    <tr><td><b>Dữ liệu tới muộn, lệch đồng hồ</b></td><td>Event từ host khác đến chậm 1–3 phút; thứ tự thời gian sai làm ranking "sớm nhất" sai; problem trùng</td><td>Chấp nhận trùng, dedup hậu kỳ bằng <code>is_duplicate</code>; cửa sổ xử lý 3 phút</td><td>Dùng event time thay ingest time, watermark trong stream processor, cho phép RCA chạy lại khi có dữ liệu mới (recompute idempotent), yêu cầu NTP</td></tr>
+    <tr><td><b>Bùng nổ cardinality</b></td><td>Baseline theo endpoint × pod × region tạo hàng triệu chuỗi; chi phí tính và lưu tăng vọt</td><td>Chỉ baseline một số chiều cố định (service method, method group; 4 chiều cho application)</td><td>Baseline ở mức service/endpoint, không ở mức pod; giới hạn số chiều; gom endpoint động (id trong path) bằng pattern; TTL cho chuỗi không hoạt động</td></tr>
+    <tr><td><b>Thiếu change events</b></td><td>RCA chỉ nói "service X bất thường" mà không nói "vì deploy v2.3"; người vận hành vẫn phải tự tra</td><td>Event API với entitySelector; K8s manifest change tự phát hiện</td><td>Bắt buộc CI/CD, GitOps (Argo CD, Flux), feature flag, IaC gửi event; tự phát hiện thay đổi từ K8s watch (image tag, env, replicas, resource limits) như một nguồn không phụ thuộc vào đội phát triển</td></tr>
+    <tr><td><b>Chi phí trace/log</b></td><td>Lưu 100% trace không khả thi; nhưng sampling đầu (head) làm mất trace lỗi hiếm</td><td>Bucket/retention, span 10 ngày mặc định, trích metric</td><td>Tail-based sampling ưu tiên lỗi/chậm; luôn giữ metric tổng hợp theo cạnh (RED metrics per edge) để topology và baseline không phụ thuộc sampling</td></tr>
+  </table>
+
+  <h3>10.2 Vấn đề về phát hiện bất thường</h3>
+  <table>
+    <tr><th>Vấn đề</th><th>Biểu hiện</th><th>Hướng xử lý</th></tr>
+    <tr><td><b>Cold start</b></td><td>Service mới không có baseline; hoặc alert sai vì baseline học từ 1 ngày</td><td>Trạng thái "learning" tường minh (như Dynatrace: 20% tuần cho RT/error, 1 tuần cho traffic); trong lúc học chỉ dùng availability và static threshold an toàn; kế thừa baseline từ service cùng workload/version trước</td></tr>
+    <tr><td><b>Concept drift</b></td><td>Sau deploy hoặc thay đổi lưu lượng, baseline cũ báo động liên tục hoặc "học" luôn trạng thái lỗi làm bình thường mới</td><td>Reset/tăng tốc học lại sau deployment event; loại bỏ khoảng thời gian có problem ACTIVE khỏi dữ liệu tham chiếu khi tính lại baseline hàng ngày</td></tr>
+    <tr><td><b>Mùa vụ và sự kiện lịch</b></td><td>Batch đêm, cuối tháng, khuyến mãi tạo bất thường "hợp lệ"</td><td>Seasonal baseline (14 ngày, mẫu ngày/tuần), frequent issue suppression, lịch bảo trì (maintenance window) tắt alert</td></tr>
+    <tr><td><b>Ngưỡng thấp vs. bỏ lọt</b></td><td>Nhạy quá sinh alert storm; ít nhạy bỏ lọt sự cố nhỏ nhưng lan rộng</td><td>Luật k-trong-n phút, minimum duration, tolerance cấu hình theo tier dịch vụ; đo false positive rate theo ngày làm KPI</td></tr>
+    <tr><td><b>Metric thưa, lưu lượng thấp</b></td><td>Error rate 1/3 request = 33% gây báo động</td><td>Ngưỡng tối thiểu về số mẫu (minimum traffic) trước khi đánh giá; dùng khoảng tin cậy nhị thức thay phần trăm thô</td></tr>
+  </table>
+
+  <h3>10.3 Vấn đề về gộp sự kiện và suy nhân quả</h3>
+  <table>
+    <tr><th>Vấn đề</th><th>Biểu hiện</th><th>Hướng xử lý</th></tr>
+    <tr><td><b>Nhiều sự cố đồng thời</b></td><td>Hai sự cố độc lập trong cùng 5 phút bị gộp thành một problem; hoặc một sự cố bị tách đôi</td><td>Ưu tiên điều kiện topology hơn thời gian; chỉ gộp theo thời gian thuần khi entity nằm trong cùng thành phần liên thông của đồ thị bất thường; cho phép người dùng split/merge và học từ đó</td></tr>
+    <tr><td><b>Chiều nhân quả mơ hồ</b></td><td>Vòng gọi (A→B→A), retry storm làm downstream quá tải; upstream chậm do downstream hay ngược lại?</td><td>Dùng thời điểm bắt đầu bất thường trên từng cạnh (edge-level RED metrics) để phá vòng; ưu tiên hướng "callee bất thường trước caller"; đánh dấu retry/timeout riêng</td></tr>
+    <tr><td><b>Hạ tầng dùng chung (noisy neighbor)</b></td><td>Một pod ngốn CPU làm nhiều service trên cùng node chậm; topology <code>calls</code> không giải thích được</td><td>Luôn mở rộng theo cạnh dọc (<code>runs_on</code> node/host) và cạnh ngang giữa các pod cùng node; xét resource contention event ở node như ứng viên</td></tr>
+    <tr><td><b>Root cause không có event</b></td><td>Nguyên nhân là DB chậm nhưng detector chưa cấu hình cho DB; chỉ thấy triệu chứng ở service</td><td>Change-point on-demand trên metric của mọi entity trong fault tree (như Davis); mở rộng tập metric vàng theo loại entity</td></tr>
+    <tr><td><b>Nguyên nhân ngoài phạm vi</b></td><td>API bên thứ ba lỗi; trong đồ thị chỉ thấy service gọi ra ngoài bị timeout</td><td>Mô hình hóa "external endpoint" là entity biên có metric RED từ phía client; kết luận "root cause = phụ thuộc ngoài X" thay vì đổ lỗi cho service gọi</td></tr>
+    <tr><td><b>Giải thích được</b></td><td>Người vận hành không tin kết quả nếu không thấy vì sao</td><td>Mỗi kết luận kèm đường đi trong đồ thị, event, chart trước/sau; không dùng mô hình hộp đen để chọn root cause; điểm số thành phần hiển thị được</td></tr>
+    <tr><td><b>Alert nhanh vs. đúng</b></td><td>Chờ đủ dữ liệu thì RCA đúng hơn nhưng alert muộn</td><td>Hai pha: alert sớm với "root cause sơ bộ, độ tin cậy X"; cập nhật problem card khi có dữ liệu mới (versioned). Đo cả time-to-alert và time-to-stable-RCA</td></tr>
+  </table>
+
+  <h3>10.4 Vấn đề tổ chức và vận hành</h3>
+  <ul>
+    <li><b>Thiếu ground truth:</b> postmortem lịch sử ít, nhãn không thống nhất. Cần đầu tư fault injection và quy trình gắn nhãn (mục 12).</li>
+    <li><b>Niềm tin và adoption:</b> vài lần RCA sai sẽ khiến đội vận hành bỏ qua. Bắt đầu ở chế độ shadow (gợi ý, không alert), công bố độ chính xác đo được, thu feedback ngay trên problem card.</li>
+    <li><b>Sở hữu dữ liệu:</b> topology cần đội platform, change events cần đội CI/CD, instrument cần đội phát triển. Phải có chuẩn (naming, resource attributes, event API) và cơ chế bắt buộc ở pipeline.</li>
+    <li><b>Đa tenant, phân quyền:</b> problem card lộ topology của hệ thống khác. Cần security context ở mức entity như Dynatrace.</li>
+    <li><b>Chi phí vận hành engine:</b> stream processor, graph store, batch baseline hàng ngày. Cần định cỡ theo số entity, số chuỗi, tốc độ event.</li>
+  </ul>
+</section>
+
+<!-- ============ 11 (NEW) ============ -->
+<section id="yeucau">
+  <h2><span class="num">11.</span>Yêu cầu xây dựng hệ thống RCA</h2>
+  <p>Yêu cầu được viết theo dạng kiểm chứng được (có số đo). Giá trị số là đề xuất khởi điểm dựa trên tham số của Dynatrace và có thể hiệu chỉnh sau giai đoạn thử nghiệm.</p>
+
+  <h3>11.1 Yêu cầu chức năng</h3>
+  <table>
+    <tr><th>Mã</th><th>Yêu cầu</th><th>Tiêu chí chấp nhận</th></tr>
+    <tr><td>FR-01</td><td>Thu nhận metric, log, trace, event từ OTel, K8s, cloud, CI/CD, log shipper</td><td>Mọi loại tín hiệu trong phạm vi đều vào được pipeline qua OTLP hoặc API; có tài liệu schema</td></tr>
+    <tr><td>FR-02</td><td>Gắn entity_id cho mọi record tại ingest</td><td>≥ 95% span/log/metric có entity_id hợp lệ; record không gắn được được đưa vào hàng đợi "unresolved" có báo cáo</td></tr>
+    <tr><td>FR-03</td><td>Tự xây và duy trì đồ thị phụ thuộc có thời gian</td><td>Cạnh <code>calls</code> sinh từ trace/eBPF trong ≤ 2 phút kể từ khi xuất hiện lưu lượng; cạnh dọc từ K8s/cloud; hết hạn sau TTL cấu hình (mặc định 72 giờ); truy vấn được "đồ thị tại thời điểm T"</td></tr>
+    <tr><td>FR-04</td><td>Phát hiện bất thường theo entity và sinh event theo schema chuẩn</td><td>Hỗ trợ tối thiểu: auto-adaptive threshold, static threshold, availability/crash, seasonal baseline; event có type, category, severity, entity, start/end, evidence</td></tr>
+    <tr><td>FR-05</td><td>Nhận event thay đổi từ bên ngoài</td><td>API nhận deployment/config/annotation với entity selector; tự phát hiện thay đổi manifest K8s (image, env, replicas, limits)</td></tr>
+    <tr><td>FR-06</td><td>Gộp event thành problem theo thời gian và topology</td><td>Luật 5 phút / 3 phút xử lý / 90 phút tuổi; điều kiện kết nối đồ thị; đánh dấu và gộp trùng lặp; hỗ trợ split/merge thủ công</td></tr>
+    <tr><td>FR-07</td><td>Xác định root cause entity, vertical stack, contributor xếp hạng, change event liên quan</td><td>Mỗi problem có root cause hoặc trạng thái "không xác định" kèm lý do; contributor có điểm thành phần</td></tr>
+    <tr><td>FR-08</td><td>Phân tích impact</td><td>Tập entity ảnh hưởng, entry point, impact level, SLO liên quan; blast radius cập nhật khi problem tiến triển</td></tr>
+    <tr><td>FR-09</td><td>Bằng chứng và giải thích</td><td>Problem card chứa đường đi trong đồ thị, event, chart trước/sau cho mọi kết luận; không có kết luận thiếu bằng chứng</td></tr>
+    <tr><td>FR-10</td><td>Vòng đời problem</td><td>ACTIVE/CLOSED, transition CREATED/UPDATED/RESOLVED/REOPENED; mọi phiên bản được lưu (append-only) và replay được</td></tr>
+    <tr><td>FR-11</td><td>Thông báo và tích hợp</td><td>Slack/Teams/email/webhook, ITSM (Jira/ServiceNow), PagerDuty; một problem → một thông báo (cập nhật cùng thread)</td></tr>
+    <tr><td>FR-12</td><td>Phản hồi người dùng</td><td>Đánh dấu root cause đúng/sai, chọn root cause thực; dữ liệu phản hồi truy vấn được để đánh giá</td></tr>
+    <tr><td>FR-13</td><td>Truy vấn ad-hoc</td><td>Ngôn ngữ truy vấn (SQL hoặc DSL) nối event ↔ entity ↔ metric/log/trace theo khung thời gian</td></tr>
+    <tr><td>FR-14 (sau)</td><td>Trợ lý ngôn ngữ tự nhiên</td><td>Tóm tắt, sinh truy vấn, gợi ý runbook; chỉ dựa trên problem card và dữ liệu truy vấn; trích dẫn evidence id</td></tr>
+  </table>
+
+  <h3>11.2 Yêu cầu phi chức năng</h3>
+  <table>
+    <tr><th>Mã</th><th>Nhóm</th><th>Yêu cầu</th></tr>
+    <tr><td>NFR-01</td><td>Độ trễ phát hiện</td><td>Event được sinh trong ≤ 1 phút sau khi luật vi phạm thỏa; problem mở và thông báo trong ≤ 3 phút sau event đầu tiên</td></tr>
+    <tr><td>NFR-02</td><td>Độ trễ RCA</td><td>Root cause sơ bộ có mặt lúc thông báo; RCA ổn định (không đổi root cause) trong ≤ 10 phút với ≥ 90% problem</td></tr>
+    <tr><td>NFR-03</td><td>Quy mô</td><td>Định cỡ theo: số entity (ví dụ 10.000), số cạnh (100.000), số chuỗi baseline (500.000), tốc độ span (ví dụ 50.000/giây sau sampling), event (1.000/phút lúc cao điểm). Kiến trúc phải scale ngang ở pipeline và detector</td></tr>
+    <tr><td>NFR-04</td><td>Tính xác định</td><td>Cùng đầu vào → cùng problem và root cause (replay cho kết quả giống); ranking không dùng ngẫu nhiên không có seed</td></tr>
+    <tr><td>NFR-05</td><td>Độ sẵn sàng</td><td>Engine RCA ≥ 99,9%; mất engine không làm mất dữ liệu (Kafka làm buffer); tự bắt kịp sau khi hồi phục</td></tr>
+    <tr><td>NFR-06</td><td>Chống nhiễu</td><td>Tỉ lệ nén alert (số event / số problem) ≥ 5; false positive problem ≤ 1/ngày/100 service trong trạng thái ổn định</td></tr>
+    <tr><td>NFR-07</td><td>Lưu trữ</td><td>Retention theo bucket: span 7–14 ngày, log 30 ngày, metric 13 tháng (downsample), event/problem 2 năm; PII được mask tại pipeline</td></tr>
+    <tr><td>NFR-08</td><td>Bảo mật, phân quyền</td><td>Security context theo entity/namespace/team; audit log truy vấn; TLS mọi kết nối</td></tr>
+    <tr><td>NFR-09</td><td>Khả năng mở rộng</td><td>Thêm loại entity/cạnh/detector không sửa engine lõi (plugin/config); schema event có version</td></tr>
+    <tr><td>NFR-10</td><td>Quan sát chính nó</td><td>Engine xuất metric về độ phủ entity_id, số cạnh, số event, độ trễ, tỉ lệ trùng, kết quả feedback</td></tr>
+  </table>
+
+  <h3>11.3 Yêu cầu về dữ liệu đầu vào (điều kiện tiên quyết cho đội ứng dụng/platform)</h3>
+  <ul>
+    <li>Resource attributes bắt buộc: <code>service.name</code>, <code>service.namespace</code>, <code>service.version</code>, <code>deployment.environment</code>, <code>k8s.namespace.name</code>, <code>k8s.pod.uid</code>, <code>k8s.node.name</code>, <code>host.id</code>, <code>cloud.resource_id</code> (khi có).</li>
+    <li>Trace context W3C được lan truyền qua HTTP/gRPC/messaging; với queue, gắn trace context vào message header.</li>
+    <li>Đồng bộ thời gian NTP trên mọi node; pipeline ghi cả event time và ingest time.</li>
+    <li>CI/CD gửi deployment event (service, version, commit, người duyệt, link) vào API trong ≤ 30 giây sau khi rollout bắt đầu và khi kết thúc.</li>
+    <li>Danh mục dịch vụ (service catalog) có owner, tier, SLO để tính impact và định tuyến thông báo.</li>
+  </ul>
+</section>
+
+<!-- ============ 12 (NEW) ============ -->
+<section id="danhgia">
+  <h2><span class="num">12.</span>Phương pháp đánh giá hệ thống RCA và baseline</h2>
+  <p>Không thể cải tiến thứ không đo được. Phần này định nghĩa: ground truth lấy từ đâu, đo bằng chỉ số gì, so với baseline nào, theo quy trình nào. Thiết kế lấy cảm hứng từ các benchmark RCA cho microservice trong nghiên cứu (RCAEval, PetShop, các bộ dữ liệu trên Sock Shop/Train-Ticket) và từ cách Dynatrace tách "phát hiện" khỏi "nhân quả".</p>
+
+  <h3>12.1 Ba lớp đánh giá</h3>
+  <div class="grid3">
+    <div class="card"><h4><span class="tag g">Lớp 1</span> Phát hiện &amp; gộp</h4><p>Hệ có phát hiện đúng sự cố không, đúng lúc không, và có gộp thành một problem không? Đo trên event/problem so với danh sách sự cố thật.</p></div>
+    <div class="card"><h4><span class="tag r">Lớp 2</span> Nhân quả</h4><p>Root cause entity/change có đúng không, đứng hạng mấy, bao lâu thì ổn định, giải thích có đủ không? Đo trên problem có nhãn root cause.</p></div>
+    <div class="card"><h4><span class="tag p">Lớp 3</span> Giá trị vận hành</h4><p>MTTR, thời gian điều tra, tỉ lệ RCA được người vận hành xác nhận, số alert mỗi người mỗi tuần. Đo trên production theo thời gian.</p></div>
+  </div>
+
+  <h3>12.2 Nguồn ground truth</h3>
+  <table>
+    <tr><th>Nguồn</th><th>Cách tạo</th><th>Ưu điểm</th><th>Hạn chế</th></tr>
+    <tr><td><b>A. Fault injection có kiểm soát</b> (chính, giai đoạn đầu)</td><td>Trên staging chạy ứng dụng mẫu (Sock Shop, Train-Ticket, hoặc bản sao hệ thống thật) với Chaos Mesh / LitmusChaos / stress-ng: CPU/memory hog, network delay/loss, pod kill, disk full, DB slow query, deploy phiên bản lỗi, sai config, giới hạn tài nguyên quá thấp. Mỗi lần tiêm ghi lại (entity, loại lỗi, t_start, t_end) tự động thành nhãn.</td><td>Nhãn chính xác, lặp lại được, phủ đủ loại lỗi, kiểm soát được số sự cố đồng thời</td><td>Không phản ánh đủ độ phức tạp production; lỗi "nhân tạo" dễ hơn thực tế</td></tr>
+    <tr><td><b>B. Sự cố lịch sử có postmortem</b></td><td>Trích từ incident/postmortem 6–12 tháng gần nhất; hai người gắn nhãn độc lập theo định nghĩa mục 9.2; ghi mức đồng thuận (Cohen's kappa)</td><td>Thực tế nhất</td><td>Ít (thường vài chục), thiếu telemetry cũ, nhãn mơ hồ</td></tr>
+    <tr><td><b>C. Shadow mode trên production</b></td><td>Chạy hệ song song không alert; với mỗi problem người trực đánh dấu đúng/sai/không rõ trên problem card</td><td>Dữ liệu liên tục, đúng phân phối thật</td><td>Nhãn thiên lệch (chỉ nhãn thứ hệ phát hiện được), tốn công người</td></tr>
+    <tr><td><b>D. Mô phỏng trên đồ thị</b></td><td>Sinh đồ thị và lan truyền lỗi tổng hợp để kiểm tra thuật toán correlation/ranking ở quy mô lớn (10.000 entity, nhiều sự cố chồng lấn)</td><td>Rẻ, kiểm thử biên và quy mô</td><td>Chỉ kiểm thử logic, không kiểm thử detector</td></tr>
+  </table>
+  <p><b>Kích cỡ khuyến nghị:</b> bộ fault injection tối thiểu 150–300 sự cố, phân tầng theo loại lỗi (≥ 20 mỗi loại), theo vị trí trong đồ thị (lá, trung gian, gốc, hạ tầng dùng chung), có ≥ 20% ca hai sự cố đồng thời và ≥ 20% ca có deployment event kèm theo. Tách bộ hiệu chỉnh (tune) và bộ kiểm tra (held-out) theo tỉ lệ 60/40, không dùng bộ kiểm tra để chỉnh tham số.</p>
+
+  <h3>12.3 Chỉ số đánh giá</h3>
+  <h4>Lớp 1: phát hiện và gộp</h4>
+  <table>
+    <tr><th>Chỉ số</th><th>Định nghĩa</th><th>Mục tiêu khởi điểm</th></tr>
+    <tr><td>Detection recall</td><td>Số sự cố thật có ít nhất một problem chồng lấn thời gian và entity / tổng sự cố thật</td><td>≥ 90%</td></tr>
+    <tr><td>Detection precision</td><td>Số problem khớp sự cố thật / tổng problem</td><td>≥ 80% (fault injection); false positive ≤ 1/ngày/100 service (production ổn định)</td></tr>
+    <tr><td>Time-to-detect (TTD)</td><td>t(problem mở) − t(bắt đầu tiêm lỗi); báo trung vị và p90</td><td>Trung vị ≤ 3 phút, p90 ≤ 6 phút</td></tr>
+    <tr><td>Tỉ lệ nén alert</td><td>Số event / số problem</td><td>≥ 5</td></tr>
+    <tr><td>Fragmentation</td><td>Số problem trung bình cho một sự cố thật (lý tưởng 1,0)</td><td>≤ 1,3 sau dedup</td></tr>
+    <tr><td>Over-merge rate</td><td>Tỉ lệ problem chứa event của ≥ 2 sự cố độc lập</td><td>≤ 10% trong ca đồng thời</td></tr>
+    <tr><td>Duplicate rate</td><td>Tỉ lệ problem bị đánh <code>is_duplicate</code></td><td>Theo dõi; không nên &gt; 20%</td></tr>
+  </table>
+  <h4>Lớp 2: nhân quả</h4>
+  <table>
+    <tr><th>Chỉ số</th><th>Định nghĩa</th><th>Mục tiêu khởi điểm</th></tr>
+    <tr><td>AC@k (Top-k accuracy)</td><td>Tỉ lệ problem có root cause thật nằm trong k ứng viên đầu; tính riêng ở mức "entity/stack" và mức "change"</td><td>AC@1 ≥ 70%, AC@3 ≥ 90% (entity); AC@1 ≥ 60% (change, khi có dữ liệu thay đổi)</td></tr>
+    <tr><td>MRR</td><td>Trung bình 1/rank của root cause thật</td><td>≥ 0,8</td></tr>
+    <tr><td>Avg@5</td><td>Trung bình AC@1..AC@5, phản ánh chất lượng cả danh sách</td><td>≥ 0,85</td></tr>
+    <tr><td>Time-to-stable-RCA</td><td>Thời điểm root cause không còn đổi − t(bắt đầu lỗi)</td><td>Trung vị ≤ 8 phút</td></tr>
+    <tr><td>Impact precision/recall</td><td>So tập entity ảnh hưởng dự đoán với tập thực sự suy giảm (từ metric)</td><td>≥ 80% / ≥ 80%</td></tr>
+    <tr><td>Explanation completeness</td><td>Tỉ lệ kết luận có đủ bằng chứng (đường đi, event, chart); chấm bởi người</td><td>100% có đường đi; ≥ 90% có change hoặc metric evidence</td></tr>
+    <tr><td>Stability</td><td>Replay cùng dữ liệu cho cùng kết quả</td><td>100%</td></tr>
+    <tr><td>Phân tích theo lát cắt</td><td>Mọi chỉ số trên báo riêng theo loại lỗi, vị trí trong đồ thị, có/không change event, một/nhiều sự cố</td><td>Không lát cắt nào AC@1 &lt; 50%</td></tr>
+  </table>
+  <h4>Lớp 3: giá trị vận hành (production, so sánh trước/sau theo quý)</h4>
+  <ul>
+    <li>MTTR và thời gian điều tra (từ alert đến xác định nguyên nhân) theo trung vị và p90.</li>
+    <li>Tỉ lệ problem được người trực đánh dấu "root cause đúng" (mục tiêu tăng dần, ≥ 70% sau 2 quý).</li>
+    <li>Số alert mỗi người trực mỗi tuần và tỉ lệ alert bị bỏ qua.</li>
+    <li>Tỉ lệ problem được xử lý tự động (workflow) không cần người.</li>
+  </ul>
+
+  <h3>12.4 Baseline để so sánh</h3>
+  <p>Từ "baseline" ở đây nghĩa là <b>phương pháp đối chứng</b>: hệ RCA phải thắng các cách làm đơn giản này trên cùng bộ dữ liệu, nếu không thì độ phức tạp không đáng. Xếp theo độ mạnh tăng dần.</p>
+  <table>
+    <tr><th>Baseline</th><th>Cách hoạt động</th><th>Ý nghĩa khi so sánh</th></tr>
+    <tr><td><b>B0. Ngẫu nhiên</b></td><td>Chọn root cause ngẫu nhiên trong tập entity bất thường</td><td>Sàn dưới; AC@1 ≈ 1/số entity bất thường</td></tr>
+    <tr><td><b>B1. Sớm nhất</b></td><td>Entity có event bất thường sớm nhất là root cause</td><td>Kiểm tra giá trị của topology so với thời gian thuần; nhạy với lệch đồng hồ</td></tr>
+    <tr><td><b>B2. Nặng nhất</b></td><td>Entity có severity cao nhất / nhiều event nhất</td><td>Tương đương cách nhiều đội đang làm thủ công với alert count</td></tr>
+    <tr><td><b>B3. Tương quan thời gian không topology</b></td><td>Gộp mọi event trong cửa sổ 5 phút thành một problem; root cause = B1 hoặc B2</td><td>Chính là "correlation" mà Dynatrace phản bác; đo trực tiếp lợi ích của điều kiện topology (over-merge, AC@1)</td></tr>
+    <tr><td><b>B4. Ngưỡng tĩnh</b></td><td>Detector dùng ngưỡng cố định (CPU &gt; 80%, error &gt; 5%) thay baseline tự học</td><td>Đối chứng cho Lớp 1: baseline tự học phải giảm false positive và tăng recall</td></tr>
+    <tr><td><b>B5. Random walk / PageRank trên đồ thị bất thường</b></td><td>Xây đồ thị con các entity bất thường, trọng số cạnh theo tương quan metric, chạy random walk ngược chiều phụ thuộc (kiểu MonitorRank, MicroRCA)</td><td>Baseline học thuật phổ biến; nếu fault tree xác định không thắng được thì cần xem lại luật ranking</td></tr>
+    <tr><td><b>B6. Sâu nhất trong fault tree, không change event</b></td><td>Phiên bản rút gọn của chính hệ thống (ablation): bỏ trọng số change event, bỏ change-point on-demand</td><td>Đo đóng góp của từng thành phần (ablation study)</td></tr>
+  </table>
+  <div class="callout ok"><b>Điều kiện thành công của giai đoạn P3:</b> trên bộ kiểm tra held-out, hệ RCA đầy đủ phải đạt AC@1 cao hơn B3 ít nhất 20 điểm phần trăm và cao hơn B5 ít nhất 5 điểm, over-merge thấp hơn B3 ít nhất một nửa, đồng thời không kém B1/B2 ở bất kỳ lát cắt nào.</div>
+
+  <h3>12.5 Baseline cho phát hiện bất thường (tham số khởi điểm và cách hiệu chỉnh)</h3>
+  <p>Nếu "baseline" được hiểu theo nghĩa của Dynatrace (đường tham chiếu để phát hiện bất thường), đây là cấu hình khởi điểm và cách đánh giá riêng lớp detector trước khi bàn đến RCA.</p>
+  <table>
+    <tr><th>Tín hiệu</th><th>Phương pháp khởi điểm</th><th>Tham số</th><th>Cách kiểm tra</th></tr>
+    <tr><td>Response time (p50, p90) theo service/endpoint</td><td>Auto-adaptive: tham chiếu 7 ngày, phút; ngưỡng = p99 + n×IQR</td><td>n = 1 (nhạy) đến 3 (ít nhạy); vi phạm 3/5 phút; de-alert 5/5 phút; learning ≥ 20% tuần</td><td>Replay 2 tuần dữ liệu production: đếm event/ngày, so với ticket thật; điều chỉnh n để false positive ≤ mục tiêu mà recall sự cố ≥ 90%</td></tr>
+    <tr><td>Error rate</td><td>Auto-adaptive như trên + ngưỡng tối thiểu số mẫu</td><td>Tối thiểu 10 request/phút mới đánh giá; ngưỡng tuyệt đối sàn (ví dụ ≥ 1%)</td><td>Kiểm tra riêng service lưu lượng thấp</td></tr>
+    <tr><td>Throughput / traffic</td><td>Seasonal baseline 14 ngày, dải tin cậy quantile</td><td>Tolerance 4 (mặc định), cửa sổ vi phạm 10/15 phút cho sụt giảm</td><td>Đánh dấu ngày lễ/khuyến mãi để loại khỏi FP</td></tr>
+    <tr><td>CPU, memory, disk, restart</td><td>Auto-adaptive p99 + n×IQR; static cho ngưỡng an toàn (disk ≥ 95%)</td><td>Theo entity; n = 2</td><td>Kết hợp fault injection CPU/memory hog để đo TTD</td></tr>
+    <tr><td>Availability</td><td>Point-in-time từ K8s event, health check, agent heartbeat</td><td>Không baseline; xác nhận 2 lần liên tiếp để tránh nhấp nháy</td><td>Pod kill trong fault injection</td></tr>
+  </table>
+  <p><b>Chỉ số riêng cho detector:</b> precision/recall event so với khoảng lỗi được tiêm, TTD của event, số event/ngày trong trạng thái ổn định, tỉ lệ event "nhấp nháy" (mở đóng &lt; 5 phút), và tỉ lệ chuỗi đang ở trạng thái learning.</p>
+
+  <h3>12.6 Quy trình đánh giá</h3>
+  <ol>
+    <li><b>Chuẩn bị bộ dữ liệu:</b> chạy fault injection theo kế hoạch phân tầng, lưu toàn bộ telemetry thô (span, metric, log, K8s event, deployment event) và nhãn vào kho đánh giá; bổ sung sự cố lịch sử có nhãn.</li>
+    <li><b>Replay offline:</b> vì engine xác định, phát lại telemetry theo event time qua pipeline vào engine với cấu hình cần đánh giá; xuất problem card theo thời gian. Chạy cùng dữ liệu cho B0–B6.</li>
+    <li><b>Chấm điểm tự động:</b> script khớp problem với sự cố nhãn (chồng lấn thời gian và entity), tính toàn bộ chỉ số mục 12.3, kèm khoảng tin cậy bootstrap và bảng theo lát cắt.</li>
+    <li><b>Ablation:</b> tắt lần lượt topology, change events, change-point on-demand, seasonal baseline để đo đóng góp.</li>
+    <li><b>Đánh giá định tính:</b> 20–30 problem card được 2 kỹ sư vận hành chấm về tính giải thích được và hành động gợi ý (thang 1–5).</li>
+    <li><b>Shadow mode 4–8 tuần trên production:</b> thu feedback đúng/sai; tính tỉ lệ xác nhận, false positive/ngày, tỉ lệ trùng; so với ticket thực.</li>
+    <li><b>Quyết định go/no-go</b> theo tiêu chí mục 12.4 và NFR; sau đó bật alert cho một nhóm dịch vụ, mở rộng dần.</li>
+    <li><b>Đánh giá liên tục:</b> mỗi quý chạy lại bộ fault injection (regression), cập nhật bộ nhãn từ postmortem mới, theo dõi Lớp 3 trên dashboard riêng.</li>
+  </ol>
+  <div class="callout warn"><b>Bẫy cần tránh khi đánh giá:</b> (1) chỉ đo AC@1 mà bỏ over-merge, dẫn tới hệ "đúng root cause" nhưng gộp cả hệ thống vào một problem; (2) dùng bộ tune để báo kết quả; (3) chỉ tiêm lỗi ở lá đồ thị (dễ) mà không tiêm ở hạ tầng dùng chung; (4) không ghi lại phiên bản cấu hình detector/engine cùng kết quả, làm mất khả năng so sánh giữa các lần.</div>
+</section>
+
+<!-- ============ 13 (NEW) ============ -->
+<section id="kiemthu">
+  <h2><span class="num">13.</span>Phương pháp kiểm thử hệ thống RCA</h2>
+  <p>Mục 12 trả lời "hệ tốt đến đâu"; mục này trả lời "làm sao biết hệ chạy đúng như thiết kế, và không hỏng khi sửa". Điểm thuận lợi lớn: engine RCA là <b>xác định</b> (cùng đầu vào cho cùng đầu ra), nên có thể kiểm thử như phần mềm thông thường bằng dữ liệu cố định và kết quả kỳ vọng, thay vì chỉ đo thống kê.</p>
+
+  <h3>13.1 Kim tự tháp kiểm thử cho RCA</h3>
+  <figure>
+    <svg viewBox="0 0 1000 330" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial" font-size="13">
+      <polygon points="500,20 940,300 60,300" fill="#f8fafc" stroke="#cbd5e1"/>
+      <g>
+        <polygon points="500,20 560,60 440,60" fill="#fecaca" stroke="#ef4444"/><text x="500" y="52" text-anchor="middle" font-size="11" font-weight="700">L6 Production</text>
+        <polygon points="440,60 560,60 620,100 380,100" fill="#fed7aa" stroke="#f97316"/><text x="500" y="85" text-anchor="middle" font-size="12" font-weight="700">L5 Shadow / Canary</text>
+        <polygon points="380,100 620,100 680,140 320,140" fill="#fef08a" stroke="#eab308"/><text x="500" y="125" text-anchor="middle" font-size="12" font-weight="700">L4 End-to-end fault injection</text>
+        <polygon points="320,140 680,140 740,180 260,180" fill="#bbf7d0" stroke="#22c55e"/><text x="500" y="165" text-anchor="middle" font-size="12" font-weight="700">L3 Replay / Golden regression</text>
+        <polygon points="260,180 740,180 800,220 200,220" fill="#bfdbfe" stroke="#3b82f6"/><text x="500" y="205" text-anchor="middle" font-size="12" font-weight="700">L2 Component / Integration (pipeline, topology builder, detector, correlator)</text>
+        <polygon points="200,220 800,220 860,260 140,260" fill="#ddd6fe" stroke="#8b5cf6"/><text x="500" y="245" text-anchor="middle" font-size="12" font-weight="700">L1 Unit + Property-based (luật, ranking, duyệt đồ thị, tính baseline)</text>
+        <polygon points="140,260 860,260 900,300 100,300" fill="#e2e8f0" stroke="#94a3b8"/><text x="500" y="285" text-anchor="middle" font-size="12" font-weight="700">L0 Bộ sinh dữ liệu tổng hợp + fixture chuẩn (nền cho mọi tầng)</text>
+      </g>
+      <g font-size="11.5" fill="#475569">
+        <text x="930" y="52">Ít, chậm, tốn kém</text>
+        <text x="930" y="290">Nhiều, nhanh, chạy mỗi commit</text>
+      </g>
+    </svg>
+    <figcaption>Hình 5. Kim tự tháp kiểm thử: càng lên cao càng gần thực tế nhưng càng chậm và ít; nền tảng là bộ sinh dữ liệu tổng hợp dùng chung.</figcaption>
+  </figure>
+
+  <h3>13.2 L0: Bộ sinh dữ liệu tổng hợp và fixture</h3>
+  <p>Đây là khoản đầu tư quan trọng nhất cho kiểm thử. Một công cụ nội bộ (CLI/thư viện) sinh ra bộ dữ liệu đầy đủ từ một <b>kịch bản khai báo</b>, để mọi tầng kiểm thử dùng chung định dạng.</p>
+  <div class="grid2">
+    <div>
+<pre><code># scenario: db_slow_cascades_to_frontend.yaml
+topology:
+  nodes: [frontend, checkout, payment, orders-db, node-1, node-2]
+  edges:
+    - [frontend, calls, checkout]
+    - [checkout, calls, payment]
+    - [checkout, calls, orders-db]
+    - [checkout, runs_on, node-1]
+    - [payment, runs_on, node-2]
+    - [orders-db, runs_on, node-2]
+normal:                      # hành vi nền 7 ngày
+  rt_ms: {frontend: 120, checkout: 60, payment: 40, orders-db: 8}
+  error_rate: 0.002
+  seasonality: daily        # đỉnh 10h-16h
+faults:
+  - at: "day7 10:00"  duration: 12m
+    target: orders-db  type: latency  factor: 8
+    propagate: upstream       # checkout, frontend chậm theo
+change_events:
+  - at: "day7 09:58"  target: orders-db
+    type: CUSTOM_CONFIGURATION  note: "max_connections 200->50"
+noise:
+  clock_skew_s: {node-2: 1.5}
+  ingest_delay_s: {payment: 90}
+expected:
+  problems: 1
+  root_cause: orders-db          # hoặc stack [orders-db, node-2]
+  root_cause_change: "max_connections 200->50"
+  impacted: [checkout, frontend]
+  not_root_cause: [payment, node-1]
+  ttd_max: 4m</code></pre>
+    </div>
+    <div>
+      <p><b>Đầu ra của bộ sinh:</b></p>
+      <ul class="small">
+        <li>Span OTLP với trace context nối đúng theo cạnh <code>calls</code>, RT/error theo phân phối cấu hình, có mùa vụ và nhiễu.</li>
+        <li>Metric theo phút cho mọi entity (RED, CPU, memory) khớp với span.</li>
+        <li>K8s object/event, deployment event theo <code>change_events</code>.</li>
+        <li>Đồ thị kỳ vọng (nodes/edges) để so với topology builder.</li>
+        <li>File <code>expected</code> để chấm tự động.</li>
+      </ul>
+      <p><b>Yêu cầu với bộ sinh:</b> có seed để tái lập; mô phỏng được lan truyền lỗi theo chiều gọi (upstream chậm khi downstream chậm, có độ trễ và suy giảm), retry storm, noisy neighbor qua cạnh <code>runs_on</code>; tiêm được nhiễu thực tế (lệch đồng hồ, dữ liệu tới muộn, mất mẫu, sampling).</p>
+      <p><b>Fixture chuẩn:</b> bộ 30–50 kịch bản nhỏ được commit vào repo làm hợp đồng hành vi; mọi thay đổi engine phải chạy lại toàn bộ.</p>
+    </div>
+  </div>
+
+  <h3>13.3 L1: Unit test và property-based test</h3>
+  <table>
+    <tr><th>Thành phần</th><th>Ca kiểm thử tiêu biểu</th><th>Thuộc tính bất biến (property-based)</th></tr>
+    <tr><td>Tính baseline (p99 + n×IQR, seasonal)</td><td>Chuỗi hằng → ngưỡng = giá trị + 0; chuỗi có outlier đơn lẻ → ngưỡng không bị kéo quá 1 IQR; thiếu dữ liệu → trạng thái learning; mùa vụ ngày → dải rộng đúng giờ cao điểm</td><td>Đơn điệu: tăng n thì ngưỡng không giảm; bất biến với dịch chuyển thời gian; nhân chuỗi với hằng dương thì ngưỡng nhân tương ứng</td></tr>
+    <tr><td>Luật vi phạm k-trong-n</td><td>Đúng 3 phút vi phạm không liên tiếp trong 5 → mở event; 2/5 → không; hồi phục 5/5 → đóng; event nhấp nháy → refresh không tạo mới</td><td>Không bao giờ có 2 event ACTIVE cùng (entity, type); mọi event đóng có end ≥ start</td></tr>
+    <tr><td>Correlator (gộp problem)</td><td>Hai event cách 4 phút cùng thành phần liên thông → 1 problem; cách 6 phút không liên hệ topology → 2 problem; event sau 90 phút → problem mới; event có <code>allow_merge=false</code> → không gộp</td><td>Phân hoạch: mỗi event thuộc đúng 1 problem không trùng; bất biến với thứ tự đến của event (sau khi hết cửa sổ xử lý)</td></tr>
+    <tr><td>Duyệt fault tree</td><td>Chuỗi A→B→C, chỉ C bất thường → root cause C; vòng A→B→A → không lặp vô hạn, phá vòng theo thời gian; đồ thị ngắt kết nối → hai cây riêng</td><td>Kết thúc trong độ sâu D; tập entity thăm ⊆ thành phần liên thông; root cause luôn thuộc tập bất thường hoặc có change-point</td></tr>
+    <tr><td>Ranking</td><td>Entity sâu hơn thắng entity nông hơn khi cùng severity; có change event thắng không có; điểm thành phần cộng đúng trọng số</td><td>Xác định: cùng đầu vào → cùng thứ tự; đổi tên entity không đổi thứ hạng; thêm entity không liên quan không đổi top-1</td></tr>
+    <tr><td>Impact tree</td><td>Root cause ở DB → impact gồm mọi service upstream có suy giảm; service upstream không suy giảm không nằm trong impact</td><td>Impact ∩ root cause stack = ∅; impact_level là tầng cao nhất</td></tr>
+    <tr><td>Truy vấn topology theo thời gian</td><td>Cạnh hết hạn TTL không xuất hiện tại T sau đó; cạnh <code>same_as</code> hợp nhất đúng</td><td>Đồ thị tại T chỉ phụ thuộc dữ liệu có timestamp ≤ T</td></tr>
+  </table>
+
+  <h3>13.4 L2: Kiểm thử thành phần và tích hợp</h3>
+  <ul>
+    <li><b>Pipeline enrichment:</b> đưa OTLP với resource attributes mẫu (đủ, thiếu, sai tên) → kiểm tra entity_id gán đúng, record thiếu vào hàng đợi unresolved, PII được mask, event time và ingest time đều có.</li>
+    <li><b>Topology builder:</b> nạp span từ kịch bản L0 → so đồ thị sinh ra với đồ thị kỳ vọng (precision/recall cạnh phải 100% trên dữ liệu sạch; với sampling 10% vẫn ≥ 95% cạnh có lưu lượng đáng kể); kiểm tra TTL, cạnh dọc từ K8s object, hợp nhất entity trùng.</li>
+    <li><b>Detector trên chuỗi tổng hợp:</b> chuỗi có mùa vụ 14 ngày + bất thường tiêm tại thời điểm biết trước → event mở trong ≤ 3 phút, không event trong 14 ngày nền (false positive = 0 trên dữ liệu sạch, ≤ ngưỡng cho dữ liệu có nhiễu).</li>
+    <li><b>Hợp đồng schema:</b> mọi event/problem xuất ra được kiểm tra bằng JSON Schema có version; thay đổi schema phải kèm migration test.</li>
+    <li><b>Tích hợp ngoài:</b> API nhận deployment event (hợp lệ, thiếu entity selector, selector không khớp), webhook thông báo (một problem → một thread, cập nhật không tạo thông báo mới), ITSM ticket.</li>
+    <li><b>Kháng lỗi:</b> tắt engine 10 phút rồi bật → bắt kịp từ Kafka, không mất/không trùng event; dữ liệu đến trễ 3 phút → problem trùng được đánh <code>is_duplicate</code> và gộp.</li>
+  </ul>
+
+  <h3>13.5 L3: Kiểm thử hồi quy bằng replay (golden tests)</h3>
+  <p>Mỗi kịch bản (tổng hợp ở L0 hoặc telemetry thật đã ghi lại) được phát lại qua engine; kết quả (danh sách problem, root cause, contributor, impact, timeline) so với <b>golden output</b> đã duyệt.</p>
+  <ol>
+    <li>Kho kịch bản gồm: fixture tổng hợp, mọi ca fault injection đã chạy (mục 12.2 A), và sự cố production đáng chú ý (đặc biệt các ca RCA từng sai, sau khi sửa phải có test giữ).</li>
+    <li>So khớp có dung sai: root cause đúng ở mức entity hoặc stack; thời gian mở problem ±1 phút; tập impact so theo Jaccard ≥ 0,9. Khác biệt lớn hơn → fail, in diff đọc được.</li>
+    <li>Chạy trong CI mỗi pull request cho fixture nhỏ (phút), chạy đêm cho toàn kho (giờ). Kết quả tổng hợp thành bảng AC@k, over-merge theo phiên bản để thấy xu hướng.</li>
+    <li>Khi thay đổi cố ý (đổi trọng số ranking), cập nhật golden qua quy trình duyệt, không cập nhật tự động.</li>
+    <li>Kiểm thử tính xác định: chạy replay 3 lần, so byte-level problem card (trừ trường timestamp sinh); khác nhau → fail.</li>
+  </ol>
+
+  <h3>13.6 L4: Kiểm thử đầu-cuối bằng fault injection</h3>
+  <h4>Môi trường</h4>
+  <ul>
+    <li>Cụm Kubernetes riêng cho kiểm thử, chạy ứng dụng mẫu nhiều service (Sock Shop, Train-Ticket, OpenTelemetry Demo) và/hoặc bản sao thu nhỏ hệ thống thật, có load generator tạo lưu lượng nền có mùa vụ (k6, Locust).</li>
+    <li>Toàn bộ stack RCA (collector, pipeline, store, engine, UI) triển khai như production, cấu hình như production.</li>
+    <li>Công cụ tiêm lỗi: Chaos Mesh hoặc LitmusChaos (pod kill, network delay/loss/partition, CPU/memory stress, IO delay, DNS lỗi, time skew), stress-ng trên node, script deploy phiên bản lỗi (Argo CD/Helm), thay đổi ConfigMap/limits.</li>
+    <li>Thời gian nền trước khi tiêm: ít nhất 7 ngày để baseline học (hoặc nạp sẵn baseline từ dữ liệu tổng hợp để rút ngắn).</li>
+  </ul>
+  <h4>Danh mục ca kiểm thử đầu-cuối (mỗi ca có kết quả kỳ vọng)</h4>
+  <table>
+    <tr><th>Mã</th><th>Kịch bản tiêm</th><th>Problem kỳ vọng</th><th>Root cause kỳ vọng</th><th>Điều kiện pass thêm</th></tr>
+    <tr><td>E2E-01</td><td>CPU stress trên node chạy 3 pod của 2 service</td><td>1</td><td>Node (resource contention); stack gồm pod trên node</td><td>Cả 2 service upstream trong impact; service khác trên node khác không bị đổ lỗi</td></tr>
+    <tr><td>E2E-02</td><td>Network delay 500 ms vào DB</td><td>1</td><td>DB (hoặc cạnh gọi DB) </td><td>Service gọi DB là impact, không phải root cause</td></tr>
+    <tr><td>E2E-03</td><td>Deploy phiên bản lỗi của service trung gian (error 30%)</td><td>1</td><td>Service đó; change = deployment event</td><td>Gợi ý rollback đúng phiên bản; AC@1 mức change</td></tr>
+    <tr><td>E2E-04</td><td>Memory leak dần trong 40 phút dẫn tới OOMKill</td><td>1</td><td>Pod/workload bị OOM</td><td>Phát hiện trước OOMKill nhờ baseline memory hoặc ít nhất tại thời điểm restart</td></tr>
+    <tr><td>E2E-05</td><td>Giảm ConfigMap pool size của service A</td><td>1</td><td>Service A; change = config event / K8s manifest change</td><td>Không cần CI/CD gửi event, hệ tự phát hiện từ K8s watch</td></tr>
+    <tr><td>E2E-06</td><td>Hai lỗi độc lập cùng lúc ở hai nhánh không liên quan</td><td>2</td><td>Hai root cause riêng</td><td>Over-merge = 0</td></tr>
+    <tr><td>E2E-07</td><td>Lỗi thứ hai xảy ra sau lỗi thứ nhất 20 phút, cùng nhánh</td><td>1 hoặc 2 (ghi rõ trong golden)</td><td>Theo luật 5'/90' và topology</td><td>Kết quả nhất quán với luật đã đặc tả</td></tr>
+    <tr><td>E2E-08</td><td>Pod kill liên tục (CrashLoopBackOff)</td><td>1</td><td>Workload; event availability + K8s event</td><td>TTD ≤ 2 phút</td></tr>
+    <tr><td>E2E-09</td><td>Endpoint bên ngoài (mock) trả lỗi timeout</td><td>1</td><td>External endpoint entity</td><td>Service gọi ra không bị gán root cause</td></tr>
+    <tr><td>E2E-10</td><td>Retry storm: downstream chậm nhẹ, upstream retry ×3 làm downstream quá tải</td><td>1</td><td>Downstream (nguồn chậm ban đầu); upstream là contributor</td><td>Contributor có trong danh sách với điểm thấp hơn</td></tr>
+    <tr><td>E2E-11</td><td>Lệch đồng hồ 2 phút trên một node + lỗi ở node đó</td><td>1</td><td>Không đổi so với ca không lệch</td><td>Root cause không bị đảo sang service "sớm hơn" giả</td></tr>
+    <tr><td>E2E-12</td><td>Không tiêm gì trong 24 giờ có lưu lượng mùa vụ</td><td>0</td><td>—</td><td>False positive = 0; là ca kiểm soát bắt buộc</td></tr>
+    <tr><td>E2E-13</td><td>Bảo trì có lịch (maintenance window) + restart service</td><td>0 hoặc problem bị suppress</td><td>—</td><td>Không thông báo</td></tr>
+    <tr><td>E2E-14</td><td>Lỗi trên service chưa được instrument (chỉ có eBPF/K8s)</td><td>1</td><td>Service đó ở mức entity</td><td>Kiểm tra độ phủ topology từ eBPF</td></tr>
+    <tr><td>E2E-15</td><td>Disk đầy trên node chạy DB</td><td>1</td><td>Disk/node; stack gồm DB</td><td>Static threshold an toàn kích hoạt</td></tr>
+  </table>
+  <p>Mỗi ca chạy ít nhất 3 lần ở các thời điểm khác nhau trong ngày (thấp điểm, cao điểm, giao mùa vụ) để bắt lỗi phụ thuộc baseline. Toàn bộ telemetry của mỗi lần chạy được lưu để đưa vào kho replay L3.</p>
+
+  <h3>13.7 Kiểm thử hiệu năng và quy mô</h3>
+  <table>
+    <tr><th>Loại</th><th>Cách làm</th><th>Tiêu chí</th></tr>
+    <tr><td>Tải ổn định</td><td>Bộ sinh L0 phát tốc độ span/metric/event theo định cỡ NFR-03 trong 24 giờ</td><td>Độ trễ event ≤ 1 phút, problem ≤ 3 phút; không tăng backlog Kafka; bộ nhớ engine ổn định</td></tr>
+    <tr><td>Alert storm</td><td>Tiêm lỗi hạ tầng dùng chung sinh 5.000 event trong 2 phút</td><td>Vẫn gộp thành ít problem; RCA hoàn tất ≤ 5 phút; không mất event</td></tr>
+    <tr><td>Đồ thị lớn</td><td>Mô phỏng 50.000 entity, 500.000 cạnh; chạy fault tree từ 100 điểm khởi đầu</td><td>Mỗi RCA ≤ 10 giây; bộ nhớ trong giới hạn</td></tr>
+    <tr><td>Baseline hàng ngày</td><td>500.000 chuỗi tính lại</td><td>Hoàn tất trong cửa sổ đêm (ví dụ ≤ 2 giờ), có thể chạy song song</td></tr>
+    <tr><td>Soak</td><td>Chạy 7 ngày liên tục với tải và lỗi ngẫu nhiên</td><td>Không rò bộ nhớ, không tích tụ problem "kẹt" ACTIVE</td></tr>
+  </table>
+
+  <h3>13.8 L5–L6: Shadow, canary và kiểm thử trên production</h3>
+  <ul>
+    <li><b>Shadow mode:</b> engine chạy trên dữ liệu production thật nhưng không thông báo; so problem sinh ra với incident/ticket thật hàng tuần; người trực đánh dấu đúng/sai. Tiêu chí ra khỏi shadow theo mục 12.4.</li>
+    <li><b>Canary theo nhóm dịch vụ:</b> bật thông báo cho một nhóm dịch vụ ít rủi ro; theo dõi false positive/ngày, tỉ lệ xác nhận; mở rộng theo từng nhóm.</li>
+    <li><b>Game day có kiểm soát:</b> định kỳ (hàng quý) tiêm lỗi đã duyệt vào production ở giờ thấp điểm với kill switch; đo TTD, AC@1, thời gian điều tra của người trực có và không có problem card (A/B giữa hai kíp).</li>
+    <li><b>Phiên bản song song:</b> khi nâng engine, chạy phiên bản mới ở chế độ shadow bên cạnh phiên bản cũ trên cùng luồng dữ liệu, so kết quả (diff problem/root cause) trước khi chuyển.</li>
+    <li><b>Kill switch và rollback:</b> kiểm thử định kỳ việc tắt thông báo toàn cục và quay về phiên bản trước trong ≤ 5 phút.</li>
+  </ul>
+
+  <h3>13.9 Kiểm thử phần trợ lý ngôn ngữ tự nhiên (nếu có)</h3>
+  <ul>
+    <li>Bộ câu hỏi chuẩn với câu trả lời kỳ vọng dựa trên problem card cố định; chấm bằng người và bằng LLM-judge có rubric (đúng sự thật, có trích dẫn evidence id, không suy diễn ngoài dữ liệu).</li>
+    <li>Kiểm thử "không bịa": problem card thiếu change event → trợ lý phải nói không có dữ liệu thay đổi, không đoán nguyên nhân.</li>
+    <li>Kiểm thử truy vấn sinh ra: DQL/SQL phải chạy được, chỉ đọc, đúng khung thời gian và entity của problem.</li>
+    <li>Kiểm thử an toàn: câu hỏi cố ý đưa chỉ dẫn trong log (prompt injection) không làm trợ lý thay đổi root cause hay thực thi hành động.</li>
+  </ul>
+
+  <h3>13.10 Ma trận truy vết yêu cầu ↔ kiểm thử</h3>
+  <table>
+    <tr><th>Yêu cầu</th><th>Tầng kiểm thử</th><th>Ca tiêu biểu</th></tr>
+    <tr><td>FR-02 gắn entity_id ≥ 95%</td><td>L2</td><td>Pipeline với attributes đủ/thiếu; báo cáo unresolved</td></tr>
+    <tr><td>FR-03 topology có thời gian</td><td>L1, L2</td><td>Truy vấn tại T; so đồ thị sinh với đồ thị kỳ vọng; TTL</td></tr>
+    <tr><td>FR-04 detector sinh event</td><td>L1, L2, L4</td><td>Property test baseline; chuỗi tổng hợp; E2E-04, E2E-12</td></tr>
+    <tr><td>FR-05 change events</td><td>L2, L4</td><td>API deployment; E2E-03, E2E-05</td></tr>
+    <tr><td>FR-06 gộp problem</td><td>L1, L3, L4</td><td>Luật 5'/90'; golden; E2E-06, E2E-07</td></tr>
+    <tr><td>FR-07 root cause + ranking</td><td>L1, L3, L4</td><td>Ranking properties; golden; E2E-01..11</td></tr>
+    <tr><td>FR-09 bằng chứng</td><td>L3</td><td>Schema check: mọi kết luận có evidence</td></tr>
+    <tr><td>FR-10 vòng đời, replay</td><td>L2, L3</td><td>Kháng lỗi; tính xác định 3 lần</td></tr>
+    <tr><td>NFR-01/02 độ trễ</td><td>L4, hiệu năng</td><td>TTD trong E2E; tải ổn định</td></tr>
+    <tr><td>NFR-04 xác định</td><td>L1, L3</td><td>Property; replay byte-level</td></tr>
+    <tr><td>NFR-06 chống nhiễu</td><td>L4, L5</td><td>E2E-12, E2E-13; false positive/ngày trong shadow</td></tr>
+    <tr><td>NFR-03 quy mô</td><td>Hiệu năng</td><td>Đồ thị lớn, alert storm, soak</td></tr>
+  </table>
+  <div class="callout ok"><b>Định nghĩa "xong" cho một thay đổi engine:</b> unit và property test xanh; fixture L0 golden xanh; kho replay đêm không giảm AC@1 quá 1 điểm và không tăng over-merge; ít nhất một ca E2E liên quan chạy lại pass; golden mới (nếu có) được duyệt bởi người thứ hai.</div>
+</section>
+
+<!-- ============ 14 ============ -->
+<section id="thietke">
+  <h2><span class="num">14.</span>Kiến trúc tham chiếu hệ thống RCA (theo tư tưởng Dynatrace)</h2>
+  <figure>
+    <svg viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial" font-size="13">
+      <defs><marker id="ar4" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker></defs>
+      <!-- Sources -->
+      <rect x="20" y="20" width="960" height="70" rx="10" fill="#f1f5f9" stroke="#cbd5e1"/>
+      <text x="35" y="42" font-weight="700">A. Nguồn tín hiệu</text>
+      <g font-size="12">
+        <rect x="35" y="52" width="130" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="100" y="72" text-anchor="middle">OTel SDK/auto-instr</text>
+        <rect x="175" y="52" width="130" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="240" y="72" text-anchor="middle">eBPF / node agent</text>
+        <rect x="315" y="52" width="130" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="380" y="72" text-anchor="middle">K8s API / audit</text>
+        <rect x="455" y="52" width="130" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="520" y="72" text-anchor="middle">Cloud API / CMDB</text>
+        <rect x="595" y="52" width="130" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="660" y="72" text-anchor="middle">Logs (Fluent Bit)</text>
+        <rect x="735" y="52" width="115" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="792" y="72" text-anchor="middle">CI/CD · GitOps</text>
+        <rect x="860" y="52" width="105" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="912" y="72" text-anchor="middle">Synthetic/RUM</text>
+      </g>
+      <!-- Pipeline -->
+      <rect x="20" y="115" width="960" height="60" rx="10" fill="#e0f2fe" stroke="#0284c7"/>
+      <text x="35" y="137" font-weight="700" fill="#0c4a6e">B. Ingest &amp; Enrichment Pipeline (OTel Collector + Kafka + stream processor)</text>
+      <text x="35" y="160" font-size="12" fill="#075985">Chuẩn hóa OTLP · resolve entity_id (resource attrs → entity registry) · mask PII · trích metric từ log · gán bucket/retention · fan-out tới store &amp; detector</text>
+      <!-- Stores -->
+      <rect x="20" y="200" width="300" height="110" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+      <text x="35" y="222" font-weight="700" fill="#064e3b">C1. Telemetry store</text>
+      <text x="35" y="242" font-size="12" fill="#065f46">ClickHouse (logs/spans/events) +</text>
+      <text x="35" y="258" font-size="12" fill="#065f46">TSDB (metrics) hoặc lakehouse</text>
+      <text x="35" y="274" font-size="12" fill="#065f46">(Iceberg/Parquet + Trino). Retention</text>
+      <text x="35" y="290" font-size="12" fill="#065f46">theo bucket, schema-on-read cho log.</text>
+      <rect x="350" y="200" width="300" height="110" rx="10" fill="#f5f3ff" stroke="#8b5cf6"/>
+      <text x="365" y="222" font-weight="700" fill="#4c1d95">C2. Topology graph store</text>
+      <text x="365" y="242" font-size="12" fill="#5b21b6">Entity registry + edge store có thời gian</text>
+      <text x="365" y="258" font-size="12" fill="#5b21b6">(valid_from/valid_to). Neo4j / Memgraph /</text>
+      <text x="365" y="274" font-size="12" fill="#5b21b6">ArangoDB hoặc bảng nodes/edges trong</text>
+      <text x="365" y="290" font-size="12" fill="#5b21b6">ClickHouse + graph lib in-memory.</text>
+      <rect x="680" y="200" width="300" height="110" rx="10" fill="#fdf2f8" stroke="#db2777"/>
+      <text x="695" y="222" font-weight="700" fill="#831843">C3. Event &amp; Problem store</text>
+      <text x="695" y="242" font-size="12" fill="#9d174d">Bảng events append-only theo schema</text>
+      <text x="695" y="258" font-size="12" fill="#9d174d">Davis-like (kind, type, category, severity,</text>
+      <text x="695" y="274" font-size="12" fill="#9d174d">entity, start/end, flags). Problem = tập</text>
+      <text x="695" y="290" font-size="12" fill="#9d174d">event + root cause + impact, versioned.</text>
+      <!-- Engines -->
+      <rect x="20" y="335" width="300" height="110" rx="10" fill="#fff7ed" stroke="#ea580c"/>
+      <text x="35" y="357" font-weight="700" fill="#7c2d12">D1. Topology builder</text>
+      <text x="35" y="377" font-size="12" fill="#9a3412">Từ span (client→server = calls), resource</text>
+      <text x="35" y="393" font-size="12" fill="#9a3412">attrs (pod/node/host = runs_on), K8s</text>
+      <text x="35" y="409" font-size="12" fill="#9a3412">owner refs (is_part_of), cloud API, CMDB.</text>
+      <text x="35" y="425" font-size="12" fill="#9a3412">Hợp nhất entity trùng (same_as). TTL edge.</text>
+      <rect x="350" y="335" width="300" height="110" rx="10" fill="#fff7ed" stroke="#ea580c"/>
+      <text x="365" y="357" font-weight="700" fill="#7c2d12">D2. Anomaly detectors → Events</text>
+      <text x="365" y="377" font-size="12" fill="#9a3412">Baseline per entity/dimension (p50/p90 RT,</text>
+      <text x="365" y="393" font-size="12" fill="#9a3412">error rate), auto-adaptive p99+n·IQR (7d),</text>
+      <text x="365" y="409" font-size="12" fill="#9a3412">seasonal quantile (14d), static, availability,</text>
+      <text x="365" y="425" font-size="12" fill="#9a3412">change events. Luật k-trong-n phút.</text>
+      <rect x="680" y="335" width="300" height="110" rx="10" fill="#fff7ed" stroke="#ea580c"/>
+      <text x="695" y="357" font-weight="700" fill="#7c2d12">D3. Correlation + RCA engine</text>
+      <text x="695" y="377" font-size="12" fill="#9a3412">Gộp event theo cửa sổ 5'/90' + kết nối đồ</text>
+      <text x="695" y="393" font-size="12" fill="#9a3412">thị → problem. Duyệt fault tree, change-</text>
+      <text x="695" y="409" font-size="12" fill="#9a3412">point on-demand, ranking, impact tree,</text>
+      <text x="695" y="425" font-size="12" fill="#9a3412">dedup, problem card có bằng chứng.</text>
+      <!-- Top -->
+      <rect x="20" y="470" width="960" height="70" rx="10" fill="#0f172a"/>
+      <text x="35" y="494" font-weight="700" fill="#fff">E. Trải nghiệm &amp; tự động hóa</text>
+      <text x="35" y="516" font-size="12" fill="#cbd5e1">Problems UI (resolution path, impact) · Query layer (SQL/DQL-like) · LLM assistant grounded trên problem card &amp; truy vấn · Workflow: ticket, ChatOps, runbook, rollback · Feedback loop (đánh dấu RCA đúng/sai)</text>
+      <!-- arrows -->
+      <line x1="500" y1="90" x2="500" y2="115" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="170" y1="175" x2="170" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="500" y1="175" x2="500" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="830" y1="175" x2="830" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="170" y1="335" x2="170" y2="310" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="320" y1="390" x2="350" y2="390" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="650" y1="390" x2="680" y2="390" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="500" y1="335" x2="500" y2="310" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="830" y1="335" x2="830" y2="310" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+      <line x1="500" y1="445" x2="500" y2="470" stroke="#475569" stroke-width="2" marker-end="url(#ar4)"/>
+    </svg>
+    <figcaption>Hình 4. Kiến trúc tham chiếu hệ RCA: 5 lớp, ánh xạ 1-1 với các khối của Dynatrace (OneAgent/OTel → OpenPipeline → Grail/Smartscape → Davis → Apps).</figcaption>
+  </figure>
+
+  <h3 id="thietke-tp">14.1 Thành phần và trách nhiệm</h3>
+  <table>
+    <tr><th>Thành phần</th><th>Tương ứng Dynatrace</th><th>Trách nhiệm</th><th>Đầu ra</th></tr>
+    <tr><td>Collectors</td><td>OneAgent, ActiveGate</td><td>OTel auto-instrumentation (Java/.NET/Node/Python/Go), eBPF cho service map không cần sửa code, K8s watcher, cloud discovery, log shipper, webhook CI/CD</td><td>OTLP traces/metrics/logs, K8s objects/events, change events</td></tr>
+    <tr><td>Enrichment pipeline</td><td>OpenPipeline</td><td>Resolve <code>entity_id</code> từ resource attributes (service.name, k8s.pod.uid, host.id, cloud.resource_id); chuẩn hóa; PII masking; routing; retention</td><td>Record đã gắn entity, ghi song song vào store và Kafka topic cho detector</td></tr>
+    <tr><td>Telemetry store</td><td>Grail</td><td>Lưu logs/spans/events (ClickHouse), metrics (TSDB/ClickHouse), truy vấn ad-hoc</td><td>SQL/API truy vấn theo entity + time range</td></tr>
+    <tr><td>Topology builder + graph store</td><td>Smartscape</td><td>Sinh node/edge từ span (client span → server span = <code>calls</code>), resource attrs (<code>runs_on</code>), K8s ownerReferences (<code>is_part_of</code>), cloud API (<code>routes_to</code>, <code>is_attached_to</code>); hợp nhất entity (<code>same_as</code>); edge có valid_from/valid_to và TTL (ví dụ 72h không có traffic thì hết hạn)</td><td>Đồ thị truy vấn được "tại thời điểm T"</td></tr>
+    <tr><td>Anomaly detectors</td><td>Davis predictive</td><td>Chạy stream/batch theo entity: baseline đa chiều, auto-adaptive, seasonal, static, availability; sinh event theo schema chuẩn</td><td>Events (ACTIVE/CLOSED, refresh)</td></tr>
+    <tr><td>Correlation + RCA engine</td><td>Davis causal</td><td>Gộp event thành problem; fault tree; change-point on-demand; ranking; impact; dedup; giải thích</td><td>Problem card (JSON) + resolution path</td></tr>
+    <tr><td>Experience &amp; automation</td><td>Problems app, Workflows, CoPilot</td><td>UI, notification, ticket, runbook, LLM assistant grounded, feedback</td><td>Alert đúng người, hành động, dữ liệu đánh giá</td></tr>
+  </table>
+
+  <h3 id="thietke-graph">14.2 Mô hình đồ thị và event đề xuất</h3>
+  <div class="grid2">
+    <div>
+<pre><code>-- Entity registry
+entities(entity_id, type, name, attrs JSON,
+         first_seen, last_seen, sources[])
+
+-- Edge có thời gian (bi-temporal đơn giản)
+edges(src_id, rel, dst_id, valid_from, valid_to,
+      source, confidence)
+-- rel ∈ {calls, runs_on, is_part_of, belongs_to,
+--        contains, routes_to, uses, updates,
+--        same_as, balances}
+
+-- Truy vấn topology tại T
+SELECT * FROM edges
+WHERE valid_from &lt;= T AND (valid_to IS NULL OR valid_to &gt; T)</code></pre>
+    </div>
+    <div>
+<pre><code>// Event (append-only)
+{
+  "event_id": "...", "kind": "EVENT|PROBLEM",
+  "type": "PERFORMANCE_EVENT|ERROR_EVENT|AVAILABILITY_EVENT|
+           RESOURCE_CONTENTION_EVENT|CUSTOM_DEPLOYMENT|
+           CUSTOM_CONFIGURATION|CUSTOM_INFO|CUSTOM_ALERT",
+  "category": "SLOWDOWN|ERROR|AVAILABILITY|RESOURCE|INFO",
+  "severity": 1..5,
+  "entity_id": "SERVICE-abc", "entity_type": "SERVICE",
+  "start": ts, "end": ts|null, "status": "ACTIVE|CLOSED",
+  "transition": "CREATED|UPDATED|REFRESHED|RECOVERED|TIMED_OUT",
+  "is_rootcause_relevant": true, "allow_merge": true,
+  "evidence": { "metric": "...", "baseline": ..., "observed": ...,
+                "window": "3/5m", "chart_ref": "..." },
+  "source": "detector:auto_adaptive_v1"
+}</code></pre>
+    </div>
+  </div>
+
+  <h3 id="thietke-alg">14.3 Thuật toán RCA đề xuất (phiên bản có thể triển khai)</h3>
+  <div class="step"><div class="n">1</div><div class="b"><b>Sinh event</b> Detector theo entity phát event khi luật k-trong-n phút vi phạm (mặc định 3/5). Event cùng type+entity còn ACTIVE thì REFRESH thay vì tạo mới. Event đóng khi hồi phục đủ m phút (de-alert).</div></div>
+  <div class="step"><div class="n">2</div><div class="b"><b>Gộp thành problem (correlator)</b> Với mỗi event mới E(entity e, start t): tìm problem ACTIVE P có tuổi &lt; 90 phút mà (a) |t − P.first_start| ≤ 5 phút HOẶC (b) tồn tại đường trong đồ thị tại thời điểm t giữa e và một entity của P với độ dài ≤ L (ví dụ 3 hop, chỉ theo <code>calls</code>/<code>runs_on</code>/<code>is_part_of</code>). Nếu nhiều P thỏa, chọn P có kết nối topology mạnh nhất; nếu không có, mở P mới ở trạng thái PROCESSING 3 phút. Sau 3 phút, nếu P mới kết nối được với P khác thì gộp và đánh <code>is_duplicate</code>.</div></div>
+  <div class="step"><div class="n">3</div><div class="b"><b>Xây fault tree</b> Lấy tập entity ảnh hưởng A = entity của mọi event trong P. Mở rộng theo chiều phụ thuộc xuống dưới (từ x đi theo <code>calls</code> ra downstream, <code>runs_on</code> xuống process/host/pod, <code>is_part_of</code> lên workload/node) tới độ sâu D. Với entity mới không có event, chạy <b>change-point detection on-demand</b> (ví dụ CUSUM/PELT hoặc so sánh cửa sổ trước/sau với ngưỡng z) trên metric vàng (RT, error, throughput, CPU, mem, restart) trong [P.start − 15', now]; nếu có change point thì thêm event suy diễn (severity thấp, source=rca_probe).</div></div>
+  <div class="step"><div class="n">4</div><div class="b"><b>Xếp hạng root cause</b> Điểm của entity x = w1·(độ sâu trong cây: càng ở "dưới/downstream" càng cao) + w2·(sớm nhất về thời gian) + w3·(severity/category: availability &gt; resource &gt; error &gt; slowdown) + w4·(có change event: deployment/config/K8s eviction trong [P.start − 30', P.start + 5']) + w5·(số entity phía trên phụ thuộc vào x mà cũng bất thường) − w6·(x có nguyên nhân sâu hơn cũng bất thường). Root cause = x có điểm cao nhất; trình bày cùng vertical stack của x. Giữ danh sách contributor xếp hạng.</div></div>
+  <div class="step"><div class="n">5</div><div class="b"><b>Impact tree</b> Từ root cause đi ngược chiều phụ thuộc lên các entry-point service/application; tính blast radius, SLO liên quan, ước lượng người dùng/request bị ảnh hưởng, business flow gắn tag. Gán <code>impact_level</code> = tầng cao nhất.</div></div>
+  <div class="step"><div class="n">6</div><div class="b"><b>Problem card</b> JSON có cấu trúc: root cause, stack, danh sách contributor với bằng chứng (event, metric trước/sau, change event, đường đi trong đồ thị), impact, timeline, hành động gợi ý (rollback deployment X, scale workload Y, xem log query Z). Ghi phiên bản mỗi lần cập nhật.</div></div>
+  <div class="step"><div class="n">7</div><div class="b"><b>Lớp LLM (tùy chọn)</b> Nhận problem card + quyền truy vấn store để: viết tóm tắt tiếng Việt cho người vận hành, sinh truy vấn log liên quan, đề xuất runbook. Không được thay đổi root cause đã tính; mọi câu trả lời phải trích dẫn evidence id.</div></div>
+  <div class="step"><div class="n">8</div><div class="b"><b>Vòng phản hồi</b> Người dùng đánh dấu root cause đúng/sai, chọn contributor đúng. Dùng để hiệu chỉnh trọng số w1..w6, độ sâu D, hop L và tham số detector; đồng thời làm bộ dữ liệu đánh giá precision/recall RCA.</div></div>
+
+  <h3 id="thietke-stack">14.4 Công nghệ gợi ý (open source, không bắt buộc)</h3>
+  <table>
+    <tr><th>Lớp</th><th>Lựa chọn</th><th>Ghi chú</th></tr>
+    <tr><td>Instrumentation</td><td>OpenTelemetry SDK/auto-instrumentation, OTel Operator (K8s), eBPF (Beyla/Odigos/Pixie hoặc Cilium Hubble) cho service map không cần sửa code</td><td>Thay vai OneAgent code module; eBPF bù phần "tự phát hiện" cho service chưa instrument</td></tr>
+    <tr><td>Thu thập/định tuyến</td><td>OTel Collector (gateway) + Kafka/Redpanda</td><td>Thay ActiveGate + OpenPipeline; processor <code>k8sattributes</code>, <code>resourcedetection</code>, transform, filter</td></tr>
+    <tr><td>Lưu trữ telemetry</td><td>ClickHouse (spans/logs/events/metrics) hoặc SigNoz/Uptrace làm nền; tùy chọn Iceberg + Trino cho lưu dài hạn</td><td>Thay Grail; ClickHouse hỗ trợ schema-on-read cho JSON log và truy vấn nhanh theo entity</td></tr>
+    <tr><td>Đồ thị</td><td>Neo4j / Memgraph / ArangoDB; hoặc bảng nodes/edges trong ClickHouse + NetworkX/igraph trong engine</td><td>Yêu cầu: truy vấn multi-hop theo thời gian; quy mô hàng trăm nghìn edge thì graph DB thuần tiện hơn</td></tr>
+    <tr><td>Stream/batch detector</td><td>Flink hoặc Kafka Streams cho luật k-trong-n; job Python (pandas/statsmodels/darts) tính baseline hàng ngày</td><td>Tách "tính baseline" (batch) và "đánh giá vi phạm" (stream) như Dynatrace</td></tr>
+    <tr><td>Change-point</td><td><code>ruptures</code> (PELT), CUSUM, Bayesian online CPD</td><td>Dùng on-demand trong RCA, không chạy liên tục</td></tr>
+    <tr><td>Event/Problem store</td><td>PostgreSQL (versioned) hoặc ClickHouse events table</td><td>Append-only, id ổn định</td></tr>
+    <tr><td>UI/Alerting</td><td>Grafana + plugin riêng, hoặc web app nội bộ; Alertmanager/PagerDuty/Slack/Jira</td><td>Cần view "resolution path" trên đồ thị</td></tr>
+    <tr><td>LLM assistant</td><td>Mô hình bất kỳ qua API, RAG trên problem card + schema truy vấn; tool-calling để chạy SQL đọc</td><td>Grounding bắt buộc, không tự do suy diễn</td></tr>
+  </table>
+
+  <h3 id="roadmap">14.5 Lộ trình triển khai đề xuất</h3>
+  <table>
+    <tr><th>Giai đoạn</th><th>Mục tiêu</th><th>Deliverable</th><th>Tiêu chí</th></tr>
+    <tr><td><b>P0 — Nền dữ liệu</b> (6–8 tuần)</td><td>Entity-first ingest</td><td>OTel Collector + enrichment gắn entity_id; ClickHouse; entity registry; topology builder từ span/K8s (calls, runs_on, is_part_of)</td><td>≥ 95% span/log có entity_id; service map tự sinh khớp thực tế</td></tr>
+    <tr><td><b>P1 — Event hóa</b> (4–6 tuần)</td><td>Detector sinh event chuẩn</td><td>Schema event; auto-adaptive threshold (7d, p99+n·IQR, 3/5 phút); availability/K8s events; ingest deployment event từ CI/CD</td><td>Alert giảm nhiễu so với ngưỡng tĩnh; mỗi alert là một event có entity</td></tr>
+    <tr><td><b>P2 — Problem</b> (4 tuần)</td><td>Gộp event</td><td>Correlator 5'/90'/3' + topology; dedup; problem store; UI danh sách problem</td><td>Một sự cố → một problem trong ≥ 80% trường hợp thử nghiệm</td></tr>
+    <tr><td><b>P3 — RCA</b> (6–8 tuần)</td><td>Root cause + impact</td><td>Fault tree, change-point on-demand, ranking, impact tree, problem card, resolution path</td><td>Root cause top-1 đúng ≥ 70% trên bộ sự cố gắn nhãn; top-3 ≥ 90%</td></tr>
+    <tr><td><b>P4 — Baseline nâng cao</b> (4–6 tuần)</td><td>Giảm false positive</td><td>Baseline đa chiều cho RT/error theo endpoint; seasonal quantile; frequent issue suppression</td><td>False positive giảm đo được; learning period rõ</td></tr>
+    <tr><td><b>P5 — Trợ lý &amp; tự động hóa</b> (liên tục)</td><td>Hành động</td><td>LLM tóm tắt/gợi ý grounded; workflow ticket/rollback; feedback loop hiệu chỉnh trọng số</td><td>MTTR giảm; tỉ lệ RCA được xác nhận tăng theo thời gian</td></tr>
+  </table>
+</section>
+
+<!-- ============ 15 (NEW) ============ -->
+<section id="usecase">
+  <h2><span class="num">15.</span>Use case thực tế: RCA cho dịch vụ Cloud Server trên Public Cloud (backend business + OpenStack)</h2>
+  <p>Áp dụng toàn bộ nguyên lý ở các mục trước vào một bài toán cụ thể: dịch vụ <b>Cloud Server</b> (máy chủ ảo bán cho khách hàng) trên Public Cloud. Lớp <b>backend business</b> (portal, API, đặt hàng, provisioning, billing, quota) gọi xuống <b>OpenStack</b> (Keystone, Nova, Neutron, Cinder, Glance, Placement) và OpenStack điều khiển hạ tầng vật lý (hypervisor KVM, Ceph, OVN/OVS, RabbitMQ, MariaDB Galera). Đặc thù IaaS khác microservice web thuần ở ba điểm: luồng bất đồng bộ qua message queue, quan hệ nhiều-nhiều giữa VM khách và hạ tầng dùng chung, và sự cố hạ tầng vật lý là nguyên nhân phổ biến.</p>
+
+  <h3>15.1 Mô hình hệ thống và các tầng</h3>
+  <figure>
+    <svg viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI,Arial" font-size="12">
+      <defs><marker id="ar5" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker></defs>
+      <!-- T1 customer -->
+      <rect x="20" y="15" width="960" height="50" rx="10" fill="#f1f5f9" stroke="#cbd5e1"/>
+      <text x="35" y="35" font-weight="700">T1. Khách hàng &amp; kênh</text>
+      <rect x="230" y="25" width="150" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="305" y="45" text-anchor="middle">Web Portal (RUM)</text>
+      <rect x="400" y="25" width="150" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="475" y="45" text-anchor="middle">Public API / CLI</text>
+      <rect x="570" y="25" width="150" height="30" rx="6" fill="#fff" stroke="#94a3b8"/><text x="645" y="45" text-anchor="middle">Synthetic "Create VM"</text>
+      <!-- T2 business -->
+      <rect x="20" y="80" width="960" height="85" rx="10" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="35" y="100" font-weight="700" fill="#1e3a8a">T2. Backend business (K8s, OTel)</text>
+      <g>
+        <rect x="35" y="110" width="120" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="95" y="128" text-anchor="middle">api-gateway</text><text x="95" y="145" text-anchor="middle" fill="#64748b" font-size="11">auth, rate limit</text>
+        <rect x="170" y="110" width="120" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="230" y="128" text-anchor="middle">order-svc</text><text x="230" y="145" text-anchor="middle" fill="#64748b" font-size="11">đơn hàng, trạng thái</text>
+        <rect x="305" y="110" width="130" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="370" y="128" text-anchor="middle">provisioning-svc</text><text x="370" y="145" text-anchor="middle" fill="#64748b" font-size="11">workflow tạo/sửa/xóa VM</text>
+        <rect x="450" y="110" width="110" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="505" y="128" text-anchor="middle">quota-svc</text><text x="505" y="145" text-anchor="middle" fill="#64748b" font-size="11">hạn mức</text>
+        <rect x="575" y="110" width="110" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="630" y="128" text-anchor="middle">billing-svc</text><text x="630" y="145" text-anchor="middle" fill="#64748b" font-size="11">tính phí, hóa đơn</text>
+        <rect x="700" y="110" width="120" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="760" y="128" text-anchor="middle">inventory-svc</text><text x="760" y="145" text-anchor="middle" fill="#64748b" font-size="11">catalog, region/AZ</text>
+        <rect x="835" y="110" width="130" height="45" rx="6" fill="#fff" stroke="#60a5fa"/><text x="900" y="128" text-anchor="middle">PostgreSQL · Redis</text><text x="900" y="145" text-anchor="middle" fill="#64748b" font-size="11">Kafka (job queue)</text>
+      </g>
+      <!-- T3 OpenStack API -->
+      <rect x="20" y="180" width="960" height="85" rx="10" fill="#fdf4ff" stroke="#c026d3"/>
+      <text x="35" y="200" font-weight="700" fill="#701a75">T3. OpenStack control plane — API &amp; dịch vụ</text>
+      <g>
+        <rect x="35" y="210" width="105" height="45" rx="6" fill="#fff" stroke="#d946ef"/><text x="87" y="228" text-anchor="middle">keystone</text><text x="87" y="245" text-anchor="middle" fill="#64748b" font-size="11">token, project</text>
+        <rect x="150" y="210" width="200" height="45" rx="6" fill="#fff" stroke="#d946ef"/><text x="250" y="228" text-anchor="middle">nova-api · conductor · scheduler</text><text x="250" y="245" text-anchor="middle" fill="#64748b" font-size="11">placement</text>
+        <rect x="360" y="210" width="150" height="45" rx="6" fill="#fff" stroke="#d946ef"/><text x="435" y="228" text-anchor="middle">neutron-server</text><text x="435" y="245" text-anchor="middle" fill="#64748b" font-size="11">port, network, SG</text>
+        <rect x="520" y="210" width="150" height="45" rx="6" fill="#fff" stroke="#d946ef"/><text x="595" y="228" text-anchor="middle">cinder-api · scheduler · volume</text><text x="595" y="245" text-anchor="middle" fill="#64748b" font-size="11">volume, snapshot</text>
+        <rect x="680" y="210" width="110" height="45" rx="6" fill="#fff" stroke="#d946ef"/><text x="735" y="228" text-anchor="middle">glance-api</text><text x="735" y="245" text-anchor="middle" fill="#64748b" font-size="11">image</text>
+        <rect x="800" y="210" width="165" height="45" rx="6" fill="#fff" stroke="#d946ef"/><text x="882" y="228" text-anchor="middle">HAProxy · memcached</text><text x="882" y="245" text-anchor="middle" fill="#64748b" font-size="11">VIP, cache token</text>
+      </g>
+      <!-- T4 control-plane infra -->
+      <rect x="20" y="280" width="960" height="65" rx="10" fill="#fff7ed" stroke="#f97316"/>
+      <text x="35" y="300" font-weight="700" fill="#7c2d12">T4. Hạ tầng control plane dùng chung</text>
+      <rect x="230" y="308" width="200" height="30" rx="6" fill="#fff" stroke="#fb923c"/><text x="330" y="328" text-anchor="middle">RabbitMQ cluster (oslo.messaging)</text>
+      <rect x="450" y="308" width="180" height="30" rx="6" fill="#fff" stroke="#fb923c"/><text x="540" y="328" text-anchor="middle">MariaDB Galera (3 node)</text>
+      <rect x="650" y="308" width="150" height="30" rx="6" fill="#fff" stroke="#fb923c"/><text x="725" y="328" text-anchor="middle">OVN northd / SB DB</text>
+      <!-- T5 data plane -->
+      <rect x="20" y="360" width="960" height="110" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+      <text x="35" y="380" font-weight="700" fill="#064e3b">T5. Data plane — compute, storage, network</text>
+      <g>
+        <rect x="35" y="392" width="290" height="68" rx="6" fill="#fff" stroke="#34d399"/><text x="180" y="410" text-anchor="middle" font-weight="600">Compute node (hypervisor) × N</text><text x="180" y="427" text-anchor="middle" fill="#64748b" font-size="11">nova-compute · libvirt/KVM · ovn-controller · OVS</text><text x="180" y="444" text-anchor="middle" fill="#64748b" font-size="11">VM khách (instance) chạy trên đây · local disk · NIC</text>
+        <rect x="345" y="392" width="290" height="68" rx="6" fill="#fff" stroke="#34d399"/><text x="490" y="410" text-anchor="middle" font-weight="600">Ceph cluster</text><text x="490" y="427" text-anchor="middle" fill="#64748b" font-size="11">mon · mgr · OSD × M · pools (volumes, images, vms)</text><text x="490" y="444" text-anchor="middle" fill="#64748b" font-size="11">RBD backend cho Cinder/Glance/Nova ephemeral</text>
+        <rect x="655" y="392" width="310" height="68" rx="6" fill="#fff" stroke="#34d399"/><text x="810" y="410" text-anchor="middle" font-weight="600">Network node / gateway</text><text x="810" y="427" text-anchor="middle" fill="#64748b" font-size="11">OVN gateway chassis · L3/NAT · DHCP · metadata</text><text x="810" y="444" text-anchor="middle" fill="#64748b" font-size="11">Floating IP, router khách</text>
+      </g>
+      <!-- T6 physical -->
+      <rect x="20" y="485" width="960" height="50" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+      <text x="35" y="505" font-weight="700" fill="#334155">T6. Vật lý &amp; vị trí</text>
+      <text x="230" y="512" fill="#475569">Server (BMC/IPMI, SMART, RAM ECC) · Switch leaf/spine · Rack · Availability Zone · Region · Nguồn điện/làm mát</text>
+      <!-- arrows -->
+      <line x1="475" y1="65" x2="475" y2="80" stroke="#475569" stroke-width="2" marker-end="url(#ar5)"/>
+      <line x1="370" y1="165" x2="370" y2="180" stroke="#475569" stroke-width="2" marker-end="url(#ar5)"/>
+      <line x1="500" y1="265" x2="500" y2="280" stroke="#475569" stroke-width="2" marker-end="url(#ar5)"/>
+      <line x1="330" y1="345" x2="330" y2="360" stroke="#475569" stroke-width="2" marker-end="url(#ar5)"/>
+      <line x1="500" y1="470" x2="500" y2="485" stroke="#475569" stroke-width="2" marker-end="url(#ar5)"/>
+      <text x="990" y="560" text-anchor="end" fill="#64748b" font-size="11">T2→T3: REST + X-Openstack-Request-Id · T3→T5: RPC qua RabbitMQ (bất đồng bộ) · Cinder/Glance/Nova → Ceph: librbd</text>
+      <text x="990" y="580" text-anchor="end" fill="#64748b" font-size="11">Mỗi VM khách: runs_on hypervisor · attached volume backed_by Ceph pool · port on OVN logical switch · in AZ/rack</text>
+    </svg>
+    <figcaption>Hình 6. Sáu tầng của dịch vụ Cloud Server. Sự cố ở T4–T6 lan lên T2–T1 qua hai đường: luồng điều khiển (API/RPC) và luồng dữ liệu (VM khách chạy trên hạ tầng bị lỗi).</figcaption>
+  </figure>
+
+  <h3>15.2 Mô hình entity và quan hệ (Smartscape cho IaaS)</h3>
+  <p>Điểm khác biệt lớn so với hệ web: ngoài "service", ta phải mô hình hóa <b>tài nguyên khách hàng</b> (VM, volume, port, floating IP) và <b>tài nguyên vật lý</b> (hypervisor, OSD, switch) làm entity hạng nhất, vì root cause thường nằm ở đó và impact phải đếm được theo khách hàng.</p>
+  <table>
+    <tr><th>Nhóm</th><th>Entity</th><th>Nguồn khám phá</th><th>Metric vàng / event</th></tr>
+    <tr><td>Business (T2)</td><td>BIZ_SERVICE (api-gateway, order-svc, provisioning-svc, quota-svc, billing-svc), BIZ_DB, BIZ_QUEUE, K8S_POD/WORKLOAD/NODE</td><td>OTel span, K8s API</td><td>RT p50/p90, error rate, throughput theo endpoint; độ dài hàng đợi job; thời gian xử lý workflow</td></tr>
+    <tr><td>Luồng nghiệp vụ</td><td>BIZ_FLOW: "Create Cloud Server", "Resize", "Attach Volume", "Delete", "Reboot", "Assign Floating IP"</td><td>Định nghĩa thủ công + trace</td><td>Success rate, time-to-ACTIVE (p50/p90), số đơn kẹt &gt; N phút</td></tr>
+    <tr><td>OpenStack service (T3)</td><td>OS_SERVICE: keystone, nova-api, nova-conductor, nova-scheduler, placement, neutron-server, cinder-api/scheduler/volume, glance-api; OS_ENDPOINT (HAProxy VIP)</td><td>Keystone catalog, <code>openstack compute service list</code>, <code>network agent list</code>, <code>volume service list</code>, K8s/Kolla</td><td>API RT/5xx theo resource, RPC timeout, "state up/down", số worker bận, HAProxy backend down</td></tr>
+    <tr><td>Control-plane infra (T4)</td><td>MQ_CLUSTER / MQ_NODE / MQ_QUEUE (RabbitMQ), DB_CLUSTER / DB_NODE (Galera), MEMCACHED_NODE, OVN_NORTHD, OVN_SB_DB</td><td>rabbitmq-exporter, mysqld-exporter, ovn exporter</td><td>Queue depth, unacked, partition, connection churn; wsrep cluster size/state, flow control, slow query; cache hit; SB DB lag</td></tr>
+    <tr><td>Compute (T5)</td><td>HYPERVISOR (= HOST + nova-compute + libvirt + ovn-controller), VM_INSTANCE (khách), LOCAL_DISK, NIC</td><td>Placement resource provider, nova hypervisor list, libvirt exporter, node-exporter, nova notifications</td><td>CPU steal, load, memory/swap, disk IO wait, NIC errors/drops, số VM, allocation ratio; per-VM: cpu, io, net, "instance state", power state</td></tr>
+    <tr><td>Storage (T5)</td><td>CEPH_CLUSTER, CEPH_MON, CEPH_OSD, CEPH_POOL, VOLUME (Cinder), IMAGE (Glance)</td><td>ceph mgr prometheus module, cinder/glance API</td><td>HEALTH_WARN/ERR, OSD up/in, PG degraded/recovering, op latency (apply/commit), slow ops, pool full ratio; volume status error/attaching stuck</td></tr>
+    <tr><td>Network (T5)</td><td>OVN_CHASSIS (compute/gateway), LOGICAL_SWITCH/ROUTER, PORT, FLOATING_IP, SECURITY_GROUP</td><td>neutron API, ovn-sbctl, ovs exporter</td><td>Agent alive, port binding failed, DHCP lease fail, gateway failover, packet drop, flow install latency</td></tr>
+    <tr><td>Vật lý (T6)</td><td>SERVER (BMC), SWITCH, SWITCH_PORT, RACK, AZ, REGION</td><td>IPMI/Redfish, SNMP/gNMI, CMDB</td><td>Sensor, PSU, ECC, SMART, link down, CRC errors, nhiệt độ</td></tr>
+    <tr><td>Ngoài</td><td>EXTERNAL: IdP/SSO, payment gateway, DNS, NTP upstream</td><td>Cấu hình</td><td>RT/error từ phía client</td></tr>
+  </table>
+  <h4>Cạnh (edge) đặc thù IaaS</h4>
+  <table>
+    <tr><th>Cạnh</th><th>Ví dụ</th><th>Nguồn</th><th>Vai trò RCA</th></tr>
+    <tr><td><code>calls</code></td><td>provisioning-svc → nova-api; nova-api → keystone; cinder-volume → ceph mon</td><td>OTel span, HAProxy log, API log với request-id</td><td>Lan truyền lỗi/chậm đồng bộ</td></tr>
+    <tr><td><code>publishes_to</code> / <code>consumes_from</code></td><td>nova-api → MQ_QUEUE(compute.hv-12) → nova-compute@hv-12; nova-conductor ↔ queue conductor</td><td>Cấu hình oslo.messaging + rabbitmq queue names, notifications</td><td>Mô hình hóa luồng RPC bất đồng bộ; queue là entity trung gian</td></tr>
+    <tr><td><code>uses</code></td><td>nova-api → DB_CLUSTER(nova); keystone → MEMCACHED; neutron-server → OVN_NB_DB</td><td>Cấu hình, kết nối TCP (eBPF)</td><td>Phụ thuộc hạ tầng control plane dùng chung</td></tr>
+    <tr><td><code>runs_on</code></td><td>VM_INSTANCE → HYPERVISOR; nova-compute → HYPERVISOR; OSD → SERVER; pod → K8s node</td><td>nova server show (OS-EXT-SRV-ATTR:host), ceph osd tree, K8s</td><td>Trục dọc chính; noisy neighbor; lỗi hardware</td></tr>
+    <tr><td><code>is_attached_to</code></td><td>VOLUME → VM_INSTANCE; PORT → VM_INSTANCE; FLOATING_IP → PORT</td><td>cinder/neutron API</td><td>Impact theo khách hàng</td></tr>
+    <tr><td><code>backed_by</code></td><td>VOLUME → CEPH_POOL(volumes); IMAGE → CEPH_POOL(images); CEPH_POOL → OSD set (theo PG)</td><td>cinder backend config, ceph pg dump</td><td>Ceph OSD down → volume chậm → VM IO wait</td></tr>
+    <tr><td><code>bound_to</code></td><td>PORT → OVN_CHASSIS; LOGICAL_ROUTER → gateway chassis</td><td>ovn-sbctl, neutron port binding</td><td>Mạng khách mất khi chassis lỗi</td></tr>
+    <tr><td><code>is_part_of</code></td><td>HYPERVISOR → RACK → AZ → REGION; OSD → CEPH_CLUSTER; MQ_NODE → MQ_CLUSTER; VM → PROJECT (tenant)</td><td>CMDB, placement aggregates, keystone</td><td>Gộp theo miền lỗi (rack/AZ), đếm khách hàng</td></tr>
+    <tr><td><code>connected_to</code></td><td>SERVER NIC → SWITCH_PORT</td><td>LLDP/CMDB</td><td>Switch lỗi → nhiều hypervisor mất mạng</td></tr>
+    <tr><td><code>scheduled_by</code></td><td>VM_INSTANCE → nova-scheduler/placement (tại thời điểm tạo)</td><td>nova notifications</td><td>Lỗi NoValidHost, capacity</td></tr>
+  </table>
+  <div class="callout"><b>Hợp nhất entity (<code>same_as</code>):</b> một hypervisor xuất hiện với 4 tên: hostname (node-exporter), nova hypervisor_hostname, placement resource provider uuid, ovn chassis name, BMC. Pipeline phải ánh xạ tất cả về một HYPERVISOR entity; tương tự VM khách có nova uuid, libvirt domain name (instance-0000abcd), port id, tên trong billing.</div>
+
+  <h3>15.3 Nguồn dữ liệu và cách nối ngữ cảnh</h3>
+  <table>
+    <tr><th>Tầng</th><th>Nguồn</th><th>Cách thu</th><th>Khóa nối</th></tr>
+    <tr><td>T2</td><td>OTel trace/metric/log của backend; RUM portal; synthetic "tạo VM nhỏ mỗi 5 phút ở mỗi AZ"</td><td>OTel SDK/auto-instr, Collector</td><td>trace_id; <b>order_id</b>; <b>X-Openstack-Request-Id</b> mà backend gửi/đọc khi gọi OpenStack; instance uuid, project id gắn vào span attribute</td></tr>
+    <tr><td>T3</td><td>API log (nova-api, neutron, cinder, glance, keystone) có <code>req-xxxx</code> và <code>global_request_id</code>; oslo.messaging RPC log; <b>OpenStack notifications</b> (versioned notifications: <code>instance.create.start/end/error</code>, <code>instance.update</code>, <code>volume.attach.end</code>, <code>port.create.end</code>, <code>compute.exception</code>); openstack-exporter (service state, quota, hypervisor stats); HAProxy stats</td><td>Fluent Bit parse log; consumer notification topic trên RabbitMQ → event; Prometheus scrape</td><td><code>global_request_id</code> lan từ nova sang neutron/cinder/glance (truyền qua header); instance uuid; project id; host</td></tr>
+    <tr><td>T4</td><td>rabbitmq-exporter (queue depth, unacked, partitions, memory alarm), mysqld-exporter + wsrep status, memcached exporter, OVN exporter (SB DB lag, northd loop time)</td><td>Prometheus</td><td>node name → entity; queue name → consumer service</td></tr>
+    <tr><td>T5</td><td>node-exporter, libvirt-exporter (per-domain cpu/io/net), nova-compute log, ovn-controller log, ceph mgr prometheus + ceph health/crash, ovs exporter</td><td>Prometheus, Fluent Bit</td><td>hostname; libvirt domain → nova uuid; osd id → server</td></tr>
+    <tr><td>T6</td><td>IPMI/Redfish (sensor, SEL log), SNMP/gNMI switch, SMART, CMDB (rack/AZ)</td><td>ipmi-exporter, snmp-exporter, đồng bộ CMDB</td><td>BMC serial ↔ hostname; LLDP neighbor ↔ switch port</td></tr>
+    <tr><td>Thay đổi</td><td>Deploy backend (Argo CD), thay đổi OpenStack config (Kolla-Ansible/OpenStack-Ansible run, git commit của inventory), patch hypervisor, live migration/evacuate, thay đổi flavor/aggregate, bảo trì có lịch, thay đĩa/thay switch</td><td>Webhook CI/CD; hook sau Ansible run; nova notifications (<code>instance.live_migration.*</code>); lịch bảo trì (calendar/ITSM)</td><td>entity selector: service, host, rack, AZ</td></tr>
+  </table>
+  <div class="callout ok"><b>Xương sống của trace xuyên tầng là <code>X-Openstack-Request-Id</code>/<code>global_request_id</code>.</b> Backend tạo request-id, gửi kèm khi gọi nova; nova ghi vào log và lan sang neutron/cinder/glance; notification cũng mang request-id. Pipeline nối: span backend (trace_id) ↔ request-id ↔ log các dịch vụ OpenStack ↔ notification ↔ instance uuid. Nhờ đó một đơn "Create Cloud Server" trở thành một PurePath xuyên T2–T5 dù bước T3→T5 là RPC bất đồng bộ.</div>
+
+  <h3>15.4 Luồng nghiệp vụ "Create Cloud Server" và các điểm hỏng</h3>
+  <table>
+    <tr><th>Bước</th><th>Thành phần</th><th>Lỗi điển hình</th><th>Tín hiệu</th></tr>
+    <tr><td>1. Đặt hàng, kiểm quota, tính phí</td><td>api-gateway → order-svc → quota-svc, billing-svc</td><td>Bug deploy, DB Postgres chậm, Redis đầy</td><td>5xx/RT backend, đơn kẹt ở trạng thái PENDING</td></tr>
+    <tr><td>2. Xác thực với OpenStack</td><td>provisioning-svc → keystone (token) → memcached, Galera</td><td>memcached down → keystone chậm; Galera flow control</td><td>keystone RT tăng, 401/503; mọi API OpenStack chậm đồng loạt</td></tr>
+    <tr><td>3. Tạo port, security group</td><td>nova-api → neutron-server → OVN NB DB</td><td>OVN NB/SB lag, neutron-server worker hết</td><td>port.create chậm, 500; instance ở BUILD lâu</td></tr>
+    <tr><td>4. Chọn host</td><td>nova-scheduler → placement</td><td>Hết capacity AZ, filter sai sau đổi aggregate, placement inventory lệch</td><td><code>NoValidHost</code>, instance ERROR ngay, thời gian scheduling tăng</td></tr>
+    <tr><td>5. RPC tới compute</td><td>nova-conductor → RabbitMQ → nova-compute@hv</td><td>RabbitMQ partition, queue tồn, nova-compute down nhưng vẫn "up" tạm</td><td>Instance kẹt BUILD/scheduling, RPC timeout (MessagingTimeout), unacked tăng</td></tr>
+    <tr><td>6. Lấy image, tạo disk</td><td>nova-compute → glance → Ceph (images/vms pool)</td><td>Ceph OSD down/slow, pool near full, glance-api chậm, image lớn</td><td>spawn time tăng, "block_device_mapping" lâu, Ceph slow ops</td></tr>
+    <tr><td>7. Tạo/gắn volume</td><td>cinder-volume → Ceph (volumes pool) → nova-compute attach</td><td>cinder-volume service down, RBD lock, Ceph degraded</td><td>volume status <code>error</code>/<code>attaching</code> kẹt; instance ERROR</td></tr>
+    <tr><td>8. Cắm mạng, DHCP, metadata</td><td>ovn-controller@hv, gateway chassis, metadata agent</td><td>ovn-controller mất kết nối SB, gateway failover, metadata timeout</td><td>Port binding failed; VM ACTIVE nhưng không có IP/cloud-init fail; synthetic không SSH được</td></tr>
+    <tr><td>9. ACTIVE, cập nhật đơn, billing</td><td>notification → provisioning-svc → order-svc, billing-svc</td><td>Consumer notification lỗi, Kafka lag</td><td>VM đã ACTIVE ở OpenStack nhưng đơn vẫn PROVISIONING (lệch trạng thái)</td></tr>
+  </table>
+
+  <h3>15.5 Detector và event cho miền IaaS</h3>
+  <ul>
+    <li><b>Business flow SLI</b>: success rate và time-to-ACTIVE của "Create Cloud Server" theo AZ và flavor, baseline đa chiều (AZ × flavor group), vi phạm 3/5 phút. Đây là event "triệu chứng đỉnh" tương đương application event của Dynatrace.</li>
+    <li><b>Backend</b>: RT/error theo endpoint (auto-adaptive), pod restart, Kafka lag, Postgres connection saturation.</li>
+    <li><b>OpenStack API</b>: 5xx rate và RT theo (service, resource, method) từ HAProxy/API log; <code>MessagingTimeout</code> count từ log; service state down từ exporter (availability event); số instance ERROR mới/phút theo AZ và theo lỗi (NoValidHost, PortBindingFailed, BuildAbort).</li>
+    <li><b>Notification → event</b>: mọi <code>*.error</code> notification thành ERROR_EVENT gắn instance và host; <code>compute.exception</code> thành event trên hypervisor; live migration/evacuate thành CUSTOM_INFO (change event).</li>
+    <li><b>RabbitMQ</b>: partition (availability), queue depth/unacked auto-adaptive theo queue, memory alarm (static), connection churn.</li>
+    <li><b>Galera</b>: wsrep_cluster_size &lt; 3 (availability), flow control paused &gt; ngưỡng, slow query, connections saturation.</li>
+    <li><b>Ceph</b>: HEALTH_ERR/WARN (availability với phân loại), OSD down/out, PG degraded/undersized, op latency auto-adaptive theo pool, pool full ratio static 85/95%.</li>
+    <li><b>Hypervisor</b>: CPU steal, load/nCPU, memory pressure, IO wait, NIC errors auto-adaptive theo host; nova-compute service down; libvirt không phản hồi; số VM trên host thay đổi đột ngột (evacuate).</li>
+    <li><b>VM khách</b>: không alert từng VM cho khách (quá nhiều), nhưng tính <b>metric tổng hợp theo hypervisor</b>: tỉ lệ VM có CPU steal &gt; X, IO wait cao; VM state chuyển ERROR/SHUTOFF bất thường thành event gắn VM và hypervisor.</li>
+    <li><b>Mạng</b>: ovn-controller/agent alive, SB DB lag, port binding failed count, gateway failover event, switch port link down/CRC (T6).</li>
+    <li><b>Vật lý</b>: IPMI SEL critical, ECC uncorrectable, SMART fail, PSU lost, nhiệt độ: availability/warning event gắn SERVER, tự động lan lên HYPERVISOR qua <code>same_as</code>.</li>
+  </ul>
+
+  <h3>15.6 Điều chỉnh luật gộp và RCA cho IaaS</h3>
+  <table>
+    <tr><th>Đặc thù</th><th>Điều chỉnh</th></tr>
+    <tr><td>Luồng bất đồng bộ qua RabbitMQ</td><td>Cạnh <code>publishes_to</code>/<code>consumes_from</code> được duyệt như <code>calls</code> trong fault tree; MQ_QUEUE và MQ_CLUSTER là ứng viên root cause; event "RPC timeout" ở producer được coi là triệu chứng nếu consumer hoặc MQ có event sớm hơn</td></tr>
+    <tr><td>Hạ tầng dùng chung fan-in lớn (1 hypervisor → 50 VM; 1 OSD → nghìn volume; 1 Galera → mọi API)</td><td>Trọng số ranking w5 (số entity phía trên bất thường) rất mạnh: entity dùng chung có nhiều "con" bất thường được ưu tiên; ngược lại, khi chỉ một VM trên hypervisor bất thường thì không đổ lỗi hypervisor</td></tr>
+    <tr><td>Miền lỗi vật lý (rack, AZ, switch)</td><td>Bước "mở rộng theo <code>is_part_of</code>/<code>connected_to</code>" khi ≥ k hypervisor cùng rack/switch bất thường trong 5 phút → nâng root cause lên RACK/SWITCH; problem gộp theo miền lỗi thay vì từng host</td></tr>
+    <tr><td>Trạng thái tài nguyên (instance ERROR, volume error) là dữ liệu chính, không chỉ metric</td><td>Coi state transition bất thường là event; RCA dùng lý do lỗi (fault message, NoValidHost, PortBindingFailed) để rẽ nhánh fault tree tới đúng dịch vụ (scheduler/placement, neutron/OVN, cinder/Ceph)</td></tr>
+    <tr><td>Tuổi problem 90 phút không đủ cho sự cố Ceph recovery kéo dài</td><td>Cho phép cấu hình tuổi tối đa theo loại root cause (Ceph/hardware: 6 giờ) nhưng vẫn không gộp event mới không liên hệ topology</td></tr>
+    <tr><td>Bảo trì và live migration có lịch</td><td>Maintenance window theo host/rack/AZ suppress event; live migration là change event, VM bị "restart" trong lúc đó không mở problem</td></tr>
+    <tr><td>Impact phải đếm theo khách</td><td>Impact tree đi theo <code>runs_on</code>/<code>is_attached_to</code>/<code>bound_to</code> ngược lên VM → PROJECT → khách hàng; problem card báo: số VM, số project, số đơn đang tạo bị ảnh hưởng, SLA tier cao nhất, AZ</td></tr>
+    <tr><td>Hai đường lan truyền: điều khiển và dữ liệu</td><td>Một sự cố Ceph vừa làm "Create VM" thất bại (đường điều khiển) vừa làm VM đang chạy IO chậm (đường dữ liệu). Cả hai loại triệu chứng phải gộp vào một problem nhờ cùng root cause CEPH_POOL/OSD</td></tr>
+  </table>
+
+  <h3>15.7 Kịch bản sự cố điển hình và fault tree</h3>
+  <table>
+    <tr><th>#</th><th>Kịch bản</th><th>Triệu chứng đỉnh (T1–T2)</th><th>Chuỗi lan truyền</th><th>Root cause kỳ vọng</th><th>Change liên quan</th></tr>
+    <tr><td>S1</td><td>RabbitMQ network partition</td><td>Create VM kẹt BUILD toàn region; đơn PROVISIONING tăng</td><td>MQ partition → RPC timeout ở nova-conductor/neutron → instance không tới compute → provisioning-svc timeout → order kẹt</td><td>MQ_CLUSTER (node bị tách)</td><td>Patch OS trên MQ node / thay đổi mạng management</td></tr>
+    <tr><td>S2</td><td>Ceph OSD host mất điện, PG degraded, recovery ngốn IO</td><td>Create VM chậm gấp 5; khách phàn nàn VM chậm IO; attach volume timeout</td><td>SERVER down → 12 OSD down → PG degraded/recovery → op latency pool volumes/images tăng → glance download/cinder create chậm; VM đang chạy IO wait cao</td><td>SERVER (ceph-host-03) → OSD set; hiển thị stack Ceph</td><td>IPMI PSU lost event</td></tr>
+    <tr><td>S3</td><td>Galera flow control do node chậm đĩa</td><td>Mọi API OpenStack 5xx/RT tăng; portal lỗi tạo/xóa/sửa</td><td>DB_NODE-2 disk latency → wsrep flow control → DB writes chậm toàn cluster → nova/neutron/cinder API chậm → backend timeout</td><td>DB_NODE-2 (stack: LOCAL_DISK)</td><td>SMART pre-fail</td></tr>
+    <tr><td>S4</td><td>Hết capacity AZ-1 sau khuyến mãi</td><td>Create VM lỗi ngay ở AZ-1 với flavor lớn; AZ-2 bình thường</td><td>placement không còn inventory → scheduler NoValidHost → instance ERROR → provisioning-svc trả lỗi</td><td>AZ-1 capacity (entity AZ, category RESOURCE) </td><td>Không có; kèm forecast dung lượng</td></tr>
+    <tr><td>S5</td><td>ovn-controller trên hv-21 mất kết nối SB DB</td><td>Chỉ VM tạo mới trên hv-21 không có mạng; VM cũ trên hv-21 mất kết nối</td><td>ovn-controller lỗi → port binding failed → VM ACTIVE không IP → synthetic SSH fail; VM cũ drop traffic</td><td>HYPERVISOR hv-21 (component ovn-controller)</td><td>Nâng cấp OVN package trên hv-21</td></tr>
+    <tr><td>S6</td><td>Deploy provisioning-svc v3.4 lỗi mapping flavor</td><td>Create VM lỗi 400 với một số flavor; OpenStack hoàn toàn bình thường</td><td>Chỉ backend bất thường; không có event ở T3–T6</td><td>provisioning-svc; change = deployment</td><td>Argo CD sync v3.4</td></tr>
+    <tr><td>S7</td><td>Noisy neighbor: một VM khách chạy benchmark IO trên hv-08</td><td>Khách khác trên hv-08 phàn nàn chậm; không lỗi API</td><td>VM-x IO 100% → hypervisor IO wait cao → các VM khác steal/IO wait tăng</td><td>HYPERVISOR hv-08 (resource contention) với contributor VM-x</td><td>Không có; gợi ý live-migrate hoặc QoS</td></tr>
+    <tr><td>S8</td><td>Switch leaf rack-07 lỗi optic một uplink</td><td>VM ở 16 hypervisor rack-07 mất gói; Ceph OSD trong rack cũng slow</td><td>SWITCH_PORT CRC → 16 HYPERVISOR NIC errors + OSD slow ops → VM khách và volume chậm</td><td>SWITCH leaf-07 (nâng từ nhiều host nhờ luật miền lỗi)</td><td>Không có</td></tr>
+    <tr><td>S9</td><td>Keystone chậm do memcached node đầy bộ nhớ</td><td>Mọi thao tác trên portal chậm 3–5 giây; không lỗi</td><td>memcached evictions → token validation miss → Galera đọc nhiều → keystone RT tăng → mọi API chậm</td><td>MEMCACHED_NODE</td><td>Đổi cấu hình token TTL</td></tr>
+    <tr><td>S10</td><td>Consumer notification của provisioning-svc lỗi</td><td>VM đã ACTIVE nhưng đơn vẫn "đang tạo", khách không được bàn giao; billing không bắt đầu</td><td>Chỉ backend; OpenStack OK; Kafka lag tăng</td><td>provisioning-svc consumer (pod) </td><td>Rolling restart K8s node</td></tr>
+  </table>
+
+  <h4>Diễn giải chi tiết kịch bản S2 (Ceph host mất điện)</h4>
+  <div class="step"><div class="n">1</div><div class="b"><b>Event đầu tiên (T+0s):</b> IPMI SEL "PSU lost" trên SERVER ceph-host-03 → AVAILABILITY_EVENT severity 1; 12 CEPH_OSD trên đó down (ceph health) → 12 event, gộp thành một event "OSD set down" trên SERVER nhờ dedup cùng nguồn/cùng thời điểm và <code>runs_on</code>.</div></div>
+  <div class="step"><div class="n">2</div><div class="b"><b>T+40s:</b> CEPH_CLUSTER HEALTH_WARN, PG degraded; op latency pool <code>volumes</code>, <code>images</code> vượt auto-adaptive threshold → RESOURCE_CONTENTION_EVENT trên hai CEPH_POOL. Correlator gộp vào cùng problem vì OSD → POOL có cạnh <code>backed_by</code> và trong cửa sổ 5 phút.</div></div>
+  <div class="step"><div class="n">3</div><div class="b"><b>T+3 phút:</b> Baseline "Create Cloud Server time-to-ACTIVE" ở cả 2 AZ vi phạm (spawn chậm do glance download từ pool images); cinder attach timeout tăng; đồng thời metric tổng hợp "tỉ lệ VM IO wait cao" trên 40 hypervisor tăng. Tất cả các entity này có đường tới CEPH_POOL qua <code>backed_by</code>/<code>uses</code>, nên gộp vào cùng problem P-1042 dù đã qua 5 phút kể từ event đầu.</div></div>
+  <div class="step"><div class="n">4</div><div class="b"><b>Fault tree:</b> từ BIZ_FLOW → provisioning-svc → nova-compute@* → glance/cinder → CEPH_POOL → CEPH_OSD ×12 → SERVER ceph-host-03 → (IPMI PSU event). Ranking: ceph-host-03 sâu nhất, sớm nhất, severity 1, có 12 entity con bất thường, có change/hardware event; điểm cao nhất. Root cause = SERVER ceph-host-03, stack hiển thị OSD set và pools bị ảnh hưởng.</div></div>
+  <div class="step"><div class="n">5</div><div class="b"><b>Impact:</b> 2 AZ, 38 đơn tạo VM đang kẹt, 1.900 volume trên pool bị chậm thuộc 312 project, 3 khách SLA Gold; business flow "Create Cloud Server" và "Attach Volume" suy giảm. Gợi ý hành động: kiểm tra nguồn ceph-host-03, cân nhắc <code>ceph osd set norebalance</code> giảm recovery IO, thông báo khách bị ảnh hưởng theo danh sách project.</div></div>
+
+  <h4>Ví dụ problem card (rút gọn)</h4>
+<pre><code>{
+  "display_id": "P-1042", "status": "ACTIVE", "severity": 1,
+  "impact_level": "APPLICATION",
+  "start": "2026-09-08T02:14:05Z",
+  "root_cause": {
+    "entity": {"id": "SERVER-ceph-host-03", "type": "SERVER", "name": "ceph-host-03"},
+    "stack": ["CEPH_OSD-[41..52]", "CEPH_POOL-volumes", "CEPH_POOL-images", "CEPH_CLUSTER-prod-a"],
+    "change_or_fault_event": {"type": "AVAILABILITY_EVENT", "source": "ipmi", "name": "PSU1 lost", "at": "02:14:05Z"},
+    "score": {"depth": 0.95, "earliest": 1.0, "severity": 1.0, "change": 0.9, "fanin": 0.98, "deeper_cause": 0.0}
+  },
+  "contributors": [
+    {"entity": "CEPH_CLUSTER-prod-a", "reason": "recovery IO", "score": 0.61},
+    {"entity": "GLANCE-api", "reason": "image download slow (symptom)", "score": 0.22}
+  ],
+  "impact": {
+    "business_flows": ["Create Cloud Server", "Attach Volume"],
+    "az": ["az-1", "az-2"], "orders_stuck": 38, "volumes_degraded": 1900,
+    "projects": 312, "sla_gold_customers": 3, "hypervisors_with_io_wait": 40
+  },
+  "evidence": [
+    {"kind": "event", "id": "ev-77a1", "entity": "SERVER-ceph-host-03", "name": "PSU1 lost"},
+    {"kind": "metric", "entity": "CEPH_POOL-volumes", "metric": "op_latency_p99", "before_ms": 4, "after_ms": 86},
+    {"kind": "path", "nodes": ["BIZ_FLOW-create-vm", "provisioning-svc", "nova-compute@hv-*", "cinder-volume", "CEPH_POOL-volumes", "CEPH_OSD-41", "SERVER-ceph-host-03"]},
+    {"kind": "trace", "request_id": "req-9f3c...", "note": "block_device_mapping 210s"}
+  ],
+  "suggested_actions": ["Kiểm tra nguồn/PSU ceph-host-03", "ceph osd set norebalance tạm thời", "Thông báo 312 project"],
+  "event_ids": ["ev-77a1", "ev-77a2", "..."], "is_duplicate": false
+}</code></pre>
+
+  <h3>15.8 Fault injection và kiểm thử riêng cho use case</h3>
+  <table>
+    <tr><th>Mã</th><th>Tiêm lỗi (môi trường staging OpenStack)</th><th>Root cause kỳ vọng</th><th>Ghi chú</th></tr>
+    <tr><td>OS-01</td><td>iptables chặn port 25672/5672 giữa 2 MQ node → partition</td><td>MQ_CLUSTER</td><td>Kiểm tra gộp toàn bộ RPC timeout vào một problem</td></tr>
+    <tr><td>OS-02</td><td><code>systemctl stop ceph-osd@*</code> trên một host Ceph</td><td>SERVER/OSD set</td><td>Cả đường điều khiển và dữ liệu phải chung problem</td></tr>
+    <tr><td>OS-03</td><td>Tiêm IO latency (dm-delay/fio) vào đĩa của 1 Galera node</td><td>DB_NODE</td><td>Flow control lan toàn API</td></tr>
+    <tr><td>OS-04</td><td>Đặt <code>reserved_host_memory_mb</code> cực lớn trên các host AZ-1 hoặc disable host</td><td>AZ capacity</td><td>NoValidHost; đổi chiều rẽ nhánh theo fault message</td></tr>
+    <tr><td>OS-05</td><td><code>systemctl stop ovn-controller</code> trên 1 hypervisor</td><td>HYPERVISOR (component)</td><td>Chỉ VM trên host đó bị ảnh hưởng</td></tr>
+    <tr><td>OS-06</td><td>Deploy phiên bản backend cố ý lỗi mapping flavor</td><td>provisioning-svc + deployment</td><td>OpenStack phải không bị đổ lỗi</td></tr>
+    <tr><td>OS-07</td><td>Chạy fio trong một VM trên hypervisor có 5 VM khác</td><td>HYPERVISOR + contributor VM</td><td>Noisy neighbor</td></tr>
+    <tr><td>OS-08</td><td>tc netem drop 5% trên uplink của nhiều host cùng rack (mô phỏng switch)</td><td>SWITCH/RACK</td><td>Luật nâng miền lỗi</td></tr>
+    <tr><td>OS-09</td><td>Giới hạn memory memcached về rất nhỏ</td><td>MEMCACHED_NODE</td><td>Chậm không lỗi</td></tr>
+    <tr><td>OS-10</td><td>Dừng consumer notification của backend</td><td>provisioning-svc consumer</td><td>Lệch trạng thái đơn/VM</td></tr>
+    <tr><td>OS-11</td><td>Live migration có lịch 20 VM</td><td>Không problem</td><td>Ca kiểm soát: change event, maintenance window</td></tr>
+    <tr><td>OS-12</td><td>24 giờ không tiêm, có synthetic và tải nền</td><td>Không problem</td><td>False positive = 0</td></tr>
+  </table>
+  <p><b>KPI nghiệp vụ dùng cho Lớp 3 (mục 12):</b> Create VM success rate và time-to-ACTIVE theo AZ; MTTR sự cố hạ tầng dùng chung; số khách bị ảnh hưởng được thông báo chủ động trước khi họ báo; thời gian từ sự cố hardware đến xác định danh sách VM ảnh hưởng (mục tiêu ≤ 5 phút).</p>
+
+  <h3>15.9 Lộ trình riêng cho use case</h3>
+  <table>
+    <tr><th>Giai đoạn</th><th>Việc chính</th><th>Kết quả</th></tr>
+    <tr><td>U0. Nền ngữ cảnh (6 tuần)</td><td>Entity registry cho HYPERVISOR/VM/VOLUME/OSD/POOL/MQ/DB/AZ/RACK từ OpenStack API, Ceph, CMDB; hợp nhất tên; cạnh <code>runs_on</code>, <code>is_attached_to</code>, <code>backed_by</code>, <code>is_part_of</code>, <code>uses</code>; đồng bộ 1 phút</td><td>Truy vấn được "VM nào trên hypervisor X", "volume nào trên pool Y", "host nào trong rack Z" tại thời điểm T</td></tr>
+    <tr><td>U1. Trace xuyên tầng (4 tuần)</td><td>Backend truyền và ghi request-id; parse API log OpenStack; consumer notification → event; OTel cho backend</td><td>Một đơn Create VM xem được end-to-end</td></tr>
+    <tr><td>U2. Detector (4 tuần)</td><td>Business flow SLI baseline; OpenStack API/RPC; MQ, Galera, Ceph, hypervisor, IPMI, switch; change events từ Argo CD, Ansible, lịch bảo trì</td><td>Event chuẩn cho mọi tầng; alert giảm nhiễu so với hiện tại</td></tr>
+    <tr><td>U3. Problem + RCA (6 tuần)</td><td>Correlator với cạnh MQ; luật miền lỗi rack/AZ; fault tree rẽ nhánh theo fault message; impact theo project/khách</td><td>10 kịch bản S1–S10 pass trên staging; shadow mode production</td></tr>
+    <tr><td>U4. Vận hành (liên tục)</td><td>Thông báo chủ động khách bị ảnh hưởng; runbook tự động (disable host, norebalance, live-migrate); forecast capacity AZ; feedback loop</td><td>MTTR và số khách bị ảnh hưởng không được báo giảm theo quý</td></tr>
+  </table>
+  <div class="callout warn"><b>Rủi ro riêng của use case:</b> (1) Tải truy vấn OpenStack API để đồng bộ topology có thể làm nặng control plane, cần dùng notifications thay polling khi có thể; (2) libvirt/Ceph exporter ở quy mô nghìn host sinh cardinality lớn, chỉ giữ metric tổng hợp theo hypervisor cho VM; (3) dữ liệu khách hàng (tên VM, IP) trong problem card cần mask theo quyền; (4) OpenStack có nhiều phiên bản notification/log format, parser phải có test theo phiên bản.</div>
+</section>
+
+<!-- ============ 16 ============ -->
+<section id="ruiro">
+  <h2><span class="num">16.</span>Rủi ro, đánh đổi và câu hỏi mở</h2>
+  <table>
+    <tr><th>Rủi ro / đánh đổi</th><th>Cách Dynatrace xử lý</th><th>Khuyến nghị cho ta</th></tr>
+    <tr><td>Topology thiếu (service chưa instrument, gọi qua queue, batch)</td><td>OneAgent inject sâu + cloud/K8s discovery + OTel</td><td>Bổ sung eBPF; mô hình hóa queue/topic là entity trung gian (<code>produces</code>/<code>consumes</code>); cho phép nhập quan hệ thủ công từ CMDB</td></tr>
+    <tr><td>Alert nhanh vs. problem trùng</td><td>Chấp nhận trùng, dedup hậu kỳ với <code>is_duplicate</code></td><td>Giữ nguyên tắc này; UI phải gộp hiển thị</td></tr>
+    <tr><td>Baseline sai do dữ liệu thưa/mới</td><td>Learning period (20% tuần, 1 tuần cho traffic), adapted baseline cho service mới</td><td>Định nghĩa trạng thái "learning" rõ ràng, không alert trong giai đoạn đó, trừ availability</td></tr>
+    <tr><td>Chi phí lưu trữ trace/log</td><td>Bucket/retention, sampling ở PurePath, metric extraction</td><td>Tail-based sampling giữ trace lỗi/chậm; trích metric từ log sớm; retention ngắn cho span</td></tr>
+    <tr><td>Giải thích được vs. độ chính xác</td><td>Ưu tiên deterministic, có thể tái lập</td><td>Không dùng ML hộp đen chọn root cause; nếu dùng học máy, chỉ để hiệu chỉnh trọng số ranking</td></tr>
+    <tr><td>LLM ảo giác</td><td>Prompt được làm giàu bằng kết quả causal/predictive, trả lời trên dữ liệu Grail</td><td>LLM chỉ đọc problem card + truy vấn; bắt buộc trích dẫn evidence</td></tr>
+    <tr><td>Quy mô đồ thị</td><td>Smartscape on Grail, native traverse trên hàng triệu edge</td><td>Bắt đầu bằng bảng edges + in-memory graph theo namespace; chuyển graph DB khi &gt; vài trăm nghìn edge</td></tr>
+  </table>
+  <h4>Câu hỏi cần chốt trước khi thiết kế chi tiết (bổ sung cho mục 9–15)</h4>
+  <ul>
+    <li>Phạm vi môi trường đích: Kubernetes thuần, VM truyền thống, hay hỗn hợp? Điều này quyết định nguồn topology chính.</li>
+    <li>Mức độ được phép can thiệp vào ứng dụng (OTel SDK) hay phải hoàn toàn agentless (eBPF)?</li>
+    <li>Change events có sẵn từ CI/CD, GitOps không? Nếu không, RCA chỉ dừng ở "entity nào" chứ chưa tới "cái gì đã đổi".</li>
+    <li>Yêu cầu lưu trữ/retention và ngân sách hạ tầng cho trace/log.</li>
+    <li>Có bộ sự cố lịch sử đã gắn nhãn root cause để đo precision/recall không?</li>
+  </ul>
+</section>
+
+<!-- ============ 17 ============ -->
+<section id="nguon">
+  <h2><span class="num">17.</span>Nguồn tham khảo</h2>
+  <ul class="small">
+    <li>Dynatrace homepage &amp; platform: <a href="https://www.dynatrace.com/">dynatrace.com</a>, <a href="https://www.dynatrace.com/platform/root-cause-analysis/">Root-cause analysis</a>, <a href="https://www.dynatrace.com/platform/artificial-intelligence/">Artificial intelligence</a>, <a href="https://www.dynatrace.com/platform/purepath/">PurePath</a></li>
+    <li>Docs — Davis / Dynatrace Intelligence: <a href="https://docs.dynatrace.com/docs/platform/davis-ai">Davis AI</a>, <a href="https://docs.dynatrace.com/docs/platform/davis-ai/root-cause-analysis/root-cause-analysis-concepts">Root cause analysis concepts</a>, <a href="https://docs.dynatrace.com/docs/dynatrace-intelligence/root-cause-analysis/event-analysis-and-correlation">Event analysis and correlation</a>, <a href="https://docs.dynatrace.com/docs/platform/davis-ai/anomaly-detection">Anomaly detection</a>, <a href="https://docs.dynatrace.com/docs/platform/davis-ai/anomaly-detection/concepts/automated-multidimensional-baselining">Automated multi-dimensional baselining</a>, <a href="https://docs.dynatrace.com/docs/platform/davis-ai/anomaly-detection/metric-events/auto-adaptive-threshold">Auto-adaptive thresholds</a>, <a href="https://docs.dynatrace.com/docs/discover-dynatrace/platform/davis-ai/ai-models/seasonal-baseline">Seasonal baseline</a>, <a href="https://docs.dynatrace.com/docs/platform/davis-ai/ai-models/forecast-analysis">Forecast analysis</a></li>
+    <li>Docs — Data model: <a href="https://docs.dynatrace.com/docs/semantic-dictionary/model/davis">Semantic dictionary: Davis</a>, <a href="https://docs.dynatrace.com/docs/semantic-dictionary/model/smartscape">Semantic dictionary: Smartscape</a>, <a href="https://docs.dynatrace.com/docs/platform/grail">Grail</a>, <a href="https://docs.dynatrace.com/docs/platform/grail/data-model">Grail data model</a>, <a href="https://docs.dynatrace.com/docs/platform/smartscape">Smartscape</a>, <a href="https://docs.dynatrace.com/docs/platform/openpipeline">OpenPipeline</a>, <a href="https://docs.dynatrace.com/docs/ingest-from/dynatrace-activegate">ActiveGate</a></li>
+    <li>Blog Dynatrace: <a href="https://www.dynatrace.com/news/blog/build-trust-with-dynatrace-ai-driven-root-cause-and-impact-analysis/">Build trust with AI-driven root cause and impact analysis</a>, <a href="https://www.dynatrace.com/news/blog/transform-your-operations-with-davis-ai-root-cause-analysis/">Transform your operations with Davis AI RCA</a>, <a href="https://www.dynatrace.com/news/blog/root-cause-analysis-in-kubernetes-with-davis-ai/">RCA for Kubernetes</a>, <a href="https://www.dynatrace.com/news/blog/enhanced-root-cause-analysis-using-events/">Enhanced RCA using events</a>, <a href="https://www.dynatrace.com/news/blog/new-smartscape-make-better-decisions-with-real-time-dependency-graph-of-digital-systems/">The new Smartscape</a>, <a href="https://www.dynatrace.com/news/blog/dynatrace-extends-observability-for-opentelemetry-service-mesh-serverless-apps-with-purepath4-distributed-tracing/">PurePath 4</a>, <a href="https://www.dynatrace.com/news/blog/hypermodal-ai-dynatrace-expands-davis-ai-with-davis-copilot/">Hypermodal AI &amp; Davis CoPilot</a></li>
+    <li>OpenStack (cho use case mục 15): <a href="https://docs.openstack.org/nova/latest/reference/notifications.html">Nova versioned notifications</a>, <a href="https://docs.openstack.org/oslo.middleware/latest/reference/request_id.html">oslo.middleware request_id / global_request_id</a>, <a href="https://docs.openstack.org/oslo.messaging/latest/">oslo.messaging (RabbitMQ RPC)</a>, <a href="https://docs.ceph.com/en/latest/mgr/prometheus/">Ceph Prometheus module</a>, <a href="https://github.com/openstack-exporter/openstack-exporter">openstack-exporter</a>, <a href="https://docs.openstack.org/placement/latest/">Placement</a></li>
+    <li>Khác: <a href="https://dynatrace.awsworkshop.io/50_operate/20_how_davis_works.html">How Davis works (AWS workshop)</a>, <a href="https://www.devopsschool.com/blog/dynatrace-architecture-and-components-a-comprehensive-guide/">Dynatrace architecture and components (DevOpsSchool)</a>, <a href="https://webeyez.com/insights/guides/dynatrace-auto-adaptive-threshold-guide">Auto-adaptive threshold guide (Webeyez)</a></li>
+  </ul>
+  <footer>Báo cáo tổng hợp từ tài liệu công khai tại thời điểm 09/09/2026. Các con số tham số (5/90/3 phút, 7/14 ngày, p99, IQR, 3-trong-5) lấy trực tiếp từ tài liệu Dynatrace; các mục 9–15 (đặt bài toán, vấn đề, yêu cầu, đánh giá, kiểm thử, kiến trúc tham chiếu, use case Cloud Server) là đề xuất của nhóm, không phải mô tả nội bộ Dynatrace.</footer>
+</section>
+</main>
+</div>
+</body>
+</html>

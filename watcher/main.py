@@ -1,9 +1,12 @@
 import asyncio
+import fcntl
 import functools
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Callable, Optional
 
 from sqlalchemy import func, or_
@@ -16,6 +19,7 @@ from watcher import (
     capacity_forecast,
     capacity_evidence,
     ceph_client,
+    cluster_snapshot_collector,
     collector,
     crush_distribution_monitor,
     crush_skew_monitor,
@@ -58,6 +62,30 @@ OnTransition = Callable[[Optional[str], dict], None]
 
 _BACKGROUND_SCAN_LOCKS: dict[str, threading.Lock] = {}
 _BACKGROUND_SCAN_LOCKS_GUARD = threading.Lock()
+_WATCHER_PROCESS_LOCK_HANDLE = None
+
+
+def _acquire_watcher_process_lock(lock_path: str | None = None):
+    """Acquire the process-wide Watcher singleton lock, non-blocking."""
+    path = Path(lock_path) if lock_path else Path(
+        os.environ.get("CEPH_AI_RUNTIME_DIR", "/run/ceph-ai")
+    ) / "watcher.lock"
+    try:
+        path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        handle = path.open("a+")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return None
+        return handle
+    except OSError:
+        logger.exception("watcher: failed to create/acquire process singleton lock at %s", path)
+        return None
 
 
 def _run_auxiliary_scan(name: str, callback: Callable[[], None], *, background: bool) -> None:
@@ -107,6 +135,25 @@ _RECOVERABLE_STATUSES = {
     IncidentStatus.VERIFYING.value,
     IncidentStatus.FAILED.value,
 }
+
+# Operator-created volume/performance proposals are synthetic Incidents used
+# only to carry an approval-gated Action. Keep this an explicit set: a broad
+# RBD_/CINDER_ prefix would also swallow a future real Ceph health code and
+# prevent that health Incident from ever being auto-resolved.
+_OPERATOR_VOLUME_CEPH_CODES = frozenset({
+    "RBD_TRASH_REMOVE",
+    "RBD_TRASH_PURGE_ALL",
+    "RBD_VOLUME_CREATE",
+    "RBD_VOLUME_RESIZE",
+    "RBD_VOLUME_RENAME",
+    "RBD_VOLUME_TRASH_MOVE",
+    "RBD_VOLUME_TRASH_RESTORE",
+    "CINDER_VOLUME_ATTACH",
+    "CINDER_VOLUME_DETACH",
+    "CINDER_SNAPSHOT_CREATE",
+    "VOLUME_PERF_SWEEP",
+    "VM_PERF_BENCHMARK",
+})
 
 # FAILED remains visible/open until Ceph confirms recovery, but it is not an
 # in-flight remediation.  Let a fresh Watcher transition create a new attempt
@@ -272,6 +319,15 @@ async def _publish_all(envelopes: list[dict]) -> None:
         await publisher.publish_incident(envelope)
 
 
+def _append_capacity_context(log_excerpt: str | None, signal_evidence_json: str | None) -> str | None:
+    context = capacity_evidence.format_capacity_alert_context(signal_evidence_json)
+    if not context:
+        return log_excerpt
+    if log_excerpt:
+        return f"{log_excerpt}\n{context}"
+    return context
+
+
 def _resolve_recovered_incidents(
     current_codes: set[str], cluster_id: str | None = None, include_legacy_null: bool = True
 ) -> None:
@@ -335,6 +391,12 @@ def _resolve_recovered_incidents(
                 # Synthetic lab incidents have their own lifecycle. They do
                 # not represent a live Ceph health check and must not be
                 # auto-resolved on the next healthy poll.
+                continue
+            if incident.ceph_code in _OPERATOR_VOLUME_CEPH_CODES:
+                # Dashboard volume/Trash/Cinder proposals use synthetic
+                # ceph_code values to attach audit entries. They are not
+                # health checks and must remain pending until approval or
+                # explicit rejection/execution.
                 continue
             if incident.ceph_code.startswith(PERFORMANCE_RCA_PREFIX):
                 # Performance RCA owns this candidate's lifecycle. It is
@@ -518,6 +580,7 @@ def build_and_publish_incident(
     # có Incident nào đang mở cho cùng `ceph_code` chưa -- nên mỗi lần
     # restart là một loạt Incident + Telegram trùng lặp cho đúng những vấn
     # đề đang mở sẵn. Lọc ra trước, một truy vấn cho cả lượt.
+    retry_dedupe_keys: dict[str, str] = {}
     with db.SessionLocal() as session:
         query = session.query(Incident.ceph_code).filter(
             Incident.status.in_(_IN_FLIGHT_DEDUPE_STATUSES)
@@ -592,6 +655,9 @@ def build_and_publish_incident(
                     break
             if retryable:
                 already_open_codes.discard("OSD_DOWN")
+                retry_dedupe_keys["OSD_DOWN"] = (
+                    "osd-down-retry:" + ",".join(sorted(row.id for row in open_osd_rows))
+                )
 
         # An idempotent SAFE repair can be deliberately undone while its
         # previous action is still waiting in VERIFYING.  The new health
@@ -651,6 +717,7 @@ def build_and_publish_incident(
         signal_evidence_json = capacity_evidence.collect_capacity_evidence(
             ceph_code, check_detail
         )
+        log_excerpt = _append_capacity_context(log_excerpt, signal_evidence_json)
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -664,6 +731,7 @@ def build_and_publish_incident(
                 # with Incident.status, this codebase's own lifecycle state.
                 severity=check_detail.get("severity"),
                 cluster_id=cluster_id,
+                dedupe_key=retry_dedupe_keys.get(ceph_code),
                 signal_evidence_json=signal_evidence_json,
             )
             session.add(incident)
@@ -813,6 +881,7 @@ def run(
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         service_health.record_safe("watcher")
+        poll_started_monotonic = time.monotonic()
         # Tracks whether THIS iteration already recorded a heartbeat (i.e.
         # query_cluster_health() itself succeeded) — so the generic except
         # below (Review Story 5.2) only records a FAILED heartbeat when the
@@ -826,6 +895,14 @@ def run(
         health: Optional[dict] = None
         try:
             health = query_cluster_health()
+            try:
+                cluster_snapshot_collector.publish_health_snapshot(
+                    cluster_id,
+                    health,
+                    collection_started_monotonic=poll_started_monotonic,
+                )
+            except Exception:
+                logger.exception("run: failed to publish critical health snapshot")
             _record_heartbeat_safe(True, ceph_client.last_successful_mon_node, None, cluster_id=cluster_id)
             heartbeat_recorded = True
             current_status = health.get("status")
@@ -875,6 +952,10 @@ def run(
                 last_status = current_status
                 last_checks = current_checks
         except CephQueryError as exc:
+            try:
+                cluster_snapshot_collector.publish_health_error(cluster_id, exc)
+            except Exception:
+                logger.exception("run: failed to record health snapshot error")
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster_id)
             if "no MON nodes configured" in str(exc):
                 # 2026-07-28 (found on a real first-time install): expected,
@@ -1282,6 +1363,7 @@ def _build_and_publish_incident_for_observed_cluster(cluster: Cluster, health: d
         signal_evidence_json = capacity_evidence.collect_capacity_evidence(
             ceph_code, check_detail, cluster=cluster
         )
+        log_excerpt = _append_capacity_context(log_excerpt, signal_evidence_json)
 
         with db.SessionLocal() as session:
             incident = Incident(
@@ -1399,12 +1481,14 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
     last_crush_scan_at: Optional[datetime] = None
     last_volume_scan_at: Optional[datetime] = None
     last_volume_topology_scan_at: Optional[datetime] = None
+    last_trash_capacity_scan_at: Optional[datetime] = None
     last_capacity_forecast_scan_at: Optional[datetime] = None
     last_capability_scan_at: Optional[datetime] = None
     last_log_intel_scan_at: Optional[datetime] = None
     last_health_status_sent_at: Optional[datetime] = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
+        poll_started_monotonic = time.monotonic()
         refreshed_cluster = _refresh_active_observed_cluster(cluster.id)
         if refreshed_cluster is None:
             logger.info("run_observed_cluster_loop: cluster id=%s is inactive or removed; stopping thread", cluster.id)
@@ -1423,6 +1507,17 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                 # own docstring) — this is a DIFFERENT cluster's poll.
                 update_sticky_fallback=False,
             )
+            try:
+                cluster_snapshot_collector.publish_health_snapshot(
+                    cluster.id,
+                    health,
+                    collection_started_monotonic=poll_started_monotonic,
+                )
+            except Exception:
+                logger.exception(
+                    "run_observed_cluster_loop(%r): failed to publish critical health snapshot",
+                    cluster.name,
+                )
             # mon_node=None on success (unlike the default loop, which
             # passes ceph_client.last_successful_mon_node) — that global is
             # deliberately not updated for this cluster (see above), so
@@ -1484,6 +1579,19 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                         "run_observed_cluster_loop(%r): volume saturation check failed", cluster.name
                     )
                 last_volume_scan_at = volume_now
+
+            trash_now = datetime.utcnow()
+            if (
+                last_trash_capacity_scan_at is None
+                or (trash_now - last_trash_capacity_scan_at).total_seconds()
+                >= getattr(settings, "trash_capacity_scan_interval_seconds", 300)
+            ):
+                _run_auxiliary_scan(
+                    f"trash-{cluster.id}",
+                    lambda: trash_capacity_monitor.check_and_alert(cluster),
+                    background=True,
+                )
+                last_trash_capacity_scan_at = trash_now
 
             now = datetime.utcnow()
             if (
@@ -1565,6 +1673,13 @@ def run_observed_cluster_loop(cluster: Cluster, max_iterations: Optional[int] = 
                     )
                 last_log_intel_scan_at = now
         except CephQueryError as exc:
+            try:
+                cluster_snapshot_collector.publish_health_error(cluster.id, exc)
+            except Exception:
+                logger.exception(
+                    "run_observed_cluster_loop(%r): failed to record health snapshot error",
+                    cluster.name,
+                )
             _record_heartbeat_safe(False, None, str(exc), cluster_id=cluster.id)
             logger.warning("run_observed_cluster_loop(%r): %s", cluster.name, exc)
         except Exception:
@@ -1585,6 +1700,11 @@ def run_all_clusters() -> None:
     with the default cluster's real id — on the main thread (blocking, so
     the process exits if and only if the default loop ever returns, same
     as before this function existed)."""
+    global _WATCHER_PROCESS_LOCK_HANDLE
+    _WATCHER_PROCESS_LOCK_HANDLE = _acquire_watcher_process_lock()
+    if _WATCHER_PROCESS_LOCK_HANDLE is None:
+        logger.error("run_all_clusters: another Watcher process is already running or lock is unavailable")
+        return
     with db.SessionLocal() as session:
         default_cluster_id = get_default_cluster_id(session)
         observed_clusters = [c for c in list_active_clusters(session) if not c.is_default]

@@ -1,9 +1,5 @@
 (function () {
   var form = document.getElementById("bucket-access-log-form");
-  if (!form) {
-    return; // no RGW node configured, or not on this page
-  }
-
   var hostSelect = document.getElementById("bal-host");
   var bucketInput = document.getElementById("bal-bucket");
   var statusEl = document.getElementById("bal-status");
@@ -155,10 +151,12 @@
       });
   }
 
-  form.addEventListener("submit", function (event) {
-    event.preventDefault();
-    loadLog();
-  });
+  if (form) {
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      loadLog();
+    });
+  }
 
   var historyForm = document.getElementById("bucket-access-history-form");
   if (historyForm) {

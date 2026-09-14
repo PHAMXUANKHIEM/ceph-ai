@@ -1295,6 +1295,21 @@ def test_propose_trash_remove_allows_different_trash_id_after_existing_proposal(
         "/volumes/vms/trash/other-id/propose", follow_redirects=False
     )
     assert response.status_code == 303  # a different trash_id is not a duplicate
+    with db_module.SessionLocal() as session:
+        actions = (
+            session.query(Action)
+            .filter(Action.action_id == "rbd_trash_remove")
+            .order_by(Action.created_at.asc())
+            .all()
+        )
+        assert len(actions) == 2
+        incidents = [session.get(Incident, action.incident_id) for action in actions]
+        assert [incident.dedupe_key for incident in incidents] == [
+            "rbd-trash:vms/1234567890ab",
+            "rbd-trash:vms/other-id",
+        ]
+        assert len({incident.id for incident in incidents}) == 2
+        assert all(incident.cluster_id for incident in incidents)
 
 
 def test_propose_trash_remove_sets_target_nodes_to_a_single_mon_node(dashboard_client, monkeypatch):
@@ -2046,6 +2061,25 @@ def test_propose_trash_move_blocks_dependencies_and_creates_risky_action(dashboa
         action = session.get(Action, proposed.json()["action_id"])
         assert action.action_id == "rbd_trash_move_volume"
         assert action.classification == "RISKY"
+
+
+def test_propose_trash_move_accepts_ceph_scratch_image_with_leading_underscore(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/_ceph_aiops_perf_probe/trash", json={}
+    )
+
+    assert response.status_code == 201
+    with db_module.SessionLocal() as session:
+        action = session.get(Action, response.json()["action_id"])
+        assert json.loads(action.action_params) == {
+            "pool_name": "vms", "image": "_ceph_aiops_perf_probe"
+        }
 
 
 def test_propose_trash_move_blocks_running_backup(dashboard_client, monkeypatch):

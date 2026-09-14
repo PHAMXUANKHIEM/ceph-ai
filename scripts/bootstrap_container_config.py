@@ -59,7 +59,7 @@ def _configure_container_rabbitmq(values: dict) -> None:
     ).stdout.splitlines()
     if not any(line.split() and line.split()[0] == username for line in users):
         subprocess.run(["podman", "exec", "rabbitmq", "rabbitmqctl", "add_user", username, password], check=True)
-    resource_pattern = r"^(incidents|incidents\.dlx|incidents\.dlq|ai\.delegated\.tasks|ai\.delegated\.tasks\.dlx|ai\.delegated\.tasks\.dlq)$"
+    resource_pattern = r"^(incidents|incidents\.dlx|incidents\.dlq|ai\.delegated\.tasks|ai\.delegated\.tasks\.exchange|ai\.delegated\.tasks\.dlx|ai\.delegated\.tasks\.dlq)$"
     subprocess.run(
         ["podman", "exec", "rabbitmq", "rabbitmqctl", "set_permissions", "-p", "/", username,
          resource_pattern, resource_pattern, resource_pattern],

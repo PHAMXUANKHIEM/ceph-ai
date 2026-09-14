@@ -10,6 +10,8 @@
   var formEl = document.getElementById("chat-form");
   var historyListViewEl = document.getElementById("chat-history-list-view");
   var historyListEl = document.getElementById("chat-history-list");
+  var historySelectAllEl = document.getElementById("chat-history-select-all");
+  var historyDeleteSelectedBtn = document.getElementById("chat-history-delete-selected");
   var settingsViewEl = document.getElementById("chat-settings-view");
   var settingsFormEl = document.getElementById("chat-settings-form");
   var aiNameInputEl = document.getElementById("chat-ai-name");
@@ -17,7 +19,6 @@
   var settingsSuccessEl = document.getElementById("chat-settings-success");
   var panelAiNameEl = document.getElementById("chat-panel-ai-name");
   var modeSelectEl = document.getElementById("chat-mode-select");
-  var modeHintEl = document.getElementById("chat-mode-hint");
   if (!panelEl || !bodyEl || !messagesEl || !formEl) {
     return; // not on a page with the chat panel
   }
@@ -787,10 +788,27 @@
   // Three view modes, tracked in `historyMode`:
   //   "closed" — normal live chat (.chat-messages + .chat-form visible)
   //   "list"   — browsing past sessions (.chat-history-list-view visible),
-  //              each row deletable but not openable — no read-only
-  //              transcript view of a past session exists in this UI.
+  //              each row can be opened or selected for deletion.
 
   var historyMode = "closed";
+  var selectedHistorySessions = Object.create(null);
+
+  function updateHistorySelection() {
+    var checkboxes = historyListEl.querySelectorAll(".chat-history-select");
+    var selectableCount = checkboxes.length;
+    var selectedCount = Object.keys(selectedHistorySessions).length;
+    if (historyDeleteSelectedBtn) {
+      historyDeleteSelectedBtn.disabled = selectedCount === 0;
+      historyDeleteSelectedBtn.textContent = selectedCount
+        ? "Xoá đã chọn (" + selectedCount + ")"
+        : "Xoá đã chọn";
+    }
+    if (historySelectAllEl) {
+      historySelectAllEl.checked = selectableCount > 0 && selectedCount === selectableCount;
+      historySelectAllEl.indeterminate = selectedCount > 0 && selectedCount < selectableCount;
+      historySelectAllEl.disabled = selectableCount === 0;
+    }
+  }
 
   function applyViewMode(mode) {
     historyMode = mode;
@@ -812,6 +830,24 @@
     var row = document.createElement("div");
     row.className = "chat-history-row" + (entry.is_current ? " is-current" : "");
     row.dataset.sessionId = entry.session_id || "";
+
+    if (entry.session_id) {
+      var selectEl = document.createElement("input");
+      selectEl.type = "checkbox";
+      selectEl.className = "chat-history-select";
+      selectEl.dataset.sessionId = entry.session_id;
+      selectEl.setAttribute("aria-label", "Chọn đoạn chat này");
+      selectEl.addEventListener("change", function () {
+        if (selectEl.checked) selectedHistorySessions[entry.session_id] = true;
+        else delete selectedHistorySessions[entry.session_id];
+        updateHistorySelection();
+      });
+      row.appendChild(selectEl);
+      row.addEventListener("click", function (event) {
+        if (event.target.closest("button, input")) return;
+        openHistorySession(entry.session_id);
+      });
+    }
 
     var main = document.createElement("div");
     main.className = "chat-history-row-main";
@@ -846,14 +882,17 @@
 
   function renderHistoryList(sessions) {
     while (historyListEl.firstChild) historyListEl.removeChild(historyListEl.firstChild);
+    selectedHistorySessions = Object.create(null);
     if (!sessions.length) {
       var empty = document.createElement("p");
       empty.className = "chat-history-empty";
       empty.textContent = "Chưa có đoạn chat nào.";
       historyListEl.appendChild(empty);
+      updateHistorySelection();
       return;
     }
     sessions.forEach(function (entry) { historyListEl.appendChild(buildHistoryRow(entry)); });
+    updateHistorySelection();
   }
 
   function openHistoryList() {
@@ -874,6 +913,30 @@
       });
   }
 
+  function openHistorySession(sessionId) {
+    clearError();
+    fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), { credentials: "same-origin" })
+      .then(handleAuthRedirect)
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        currentSessionId = data.session_id || sessionId;
+        activeDelegatedTasks = {};
+        setDualProcessing(false);
+        resetToEmptyState();
+        (data.messages || []).forEach(function (message) { messagesEl.appendChild(buildMessage(message)); });
+        scrollToBottom();
+        applyViewMode("closed");
+        inputEl.focus();
+      })
+      .catch(function (err) {
+        if (err.message === "unauthenticated") return;
+        showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
+      });
+  }
+
   function closeHistoryView() {
     applyViewMode("closed");
     // Reload whatever's actually current — it may have changed (a new
@@ -882,8 +945,10 @@
     loadHistory();
   }
 
-  function deleteHistorySession(sessionId, rowEl) {
-    if (!window.confirm("Xoá vĩnh viễn đoạn chat này? Không thể hoàn tác.")) return;
+  function deleteHistorySession(sessionId, rowEl, skipConfirm) {
+    if (!skipConfirm && !window.confirm("Xoá vĩnh viễn đoạn chat này? Không thể hoàn tác.")) return Promise.resolve(false);
+    var deleteBtn = rowEl && rowEl.querySelector(".chat-history-delete-btn");
+    if (deleteBtn) deleteBtn.disabled = true;
     fetch(apiPrefix + "/sessions/" + encodeURIComponent(sessionId), {
       method: "DELETE",
       credentials: "same-origin",
@@ -902,6 +967,8 @@
           empty.textContent = "Chưa có đoạn chat nào.";
           historyListEl.appendChild(empty);
         }
+        delete selectedHistorySessions[sessionId];
+        updateHistorySelection();
         if (wasCurrent) {
           // The live view (if reopened) must not keep pointing at a
           // session that no longer exists — closeHistoryView()'s
@@ -909,11 +976,26 @@
           // the empty state if nothing's left.
           currentSessionId = null;
         }
+        return true;
       })
       .catch(function (err) {
+        if (deleteBtn) deleteBtn.disabled = false;
         if (err.message === "unauthenticated") return;
         showError(err instanceof TypeError ? NETWORK_ERROR_MESSAGE : err.message);
+        return false;
       });
+  }
+
+  function deleteSelectedHistorySessions() {
+    var sessionIds = Object.keys(selectedHistorySessions);
+    if (!sessionIds.length) return;
+    if (!window.confirm("Xoá vĩnh viễn " + sessionIds.length + " đoạn chat đã chọn? Không thể hoàn tác.")) return;
+    var rows = Array.prototype.slice.call(historyListEl.querySelectorAll(".chat-history-row"));
+    if (historyDeleteSelectedBtn) historyDeleteSelectedBtn.disabled = true;
+    Promise.all(sessionIds.map(function (sessionId) {
+      var row = rows.find(function (item) { return item.dataset.sessionId === sessionId; });
+      return deleteHistorySession(sessionId, row, true);
+    })).then(updateHistorySelection);
   }
 
   if (historyBtn) {
@@ -997,6 +1079,20 @@
       deleteHistorySession(delBtn.dataset.sessionId, delBtn.closest(".chat-history-row"));
     }
   });
+  if (historySelectAllEl) {
+    historySelectAllEl.addEventListener("change", function () {
+      var checkboxes = historyListEl.querySelectorAll(".chat-history-select");
+      checkboxes.forEach(function (checkbox) {
+        checkbox.checked = historySelectAllEl.checked;
+        if (checkbox.checked) selectedHistorySessions[checkbox.dataset.sessionId] = true;
+        else delete selectedHistorySessions[checkbox.dataset.sessionId];
+      });
+      updateHistorySelection();
+    });
+  }
+  if (historyDeleteSelectedBtn) {
+    historyDeleteSelectedBtn.addEventListener("click", deleteSelectedHistorySessions);
+  }
 
   // --- minimize / restore (thu nhỏ / phóng to) --------------------------------
 
@@ -1061,10 +1157,7 @@
     if (!modeSelectEl) return;
     var dual = modeSelectEl.value === "dual";
     var delegated = modeSelectEl.value === "delegate";
-    if (modeHintEl) modeHintEl.textContent = dual
-      ? "Hỏi / Planner bên trái · Trả lời / Implementer bên phải · chỉ hiển thị ý chính."
-      : (delegated ? "Supervisor tách việc cho các agent Ceph độc lập rồi tự tổng hợp kết quả." : "Dùng AI đang cấu hình trong hệ thống.");
-    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc điều tra cụm Ceph..." : "Nhập câu hỏi về cụm Ceph...");
+    inputEl.placeholder = dual ? "Nhập yêu cầu để hai AI trao đổi..." : (delegated ? "Giao việc cho các agent độc lập..." : "Nhập câu hỏi về cụm Ceph...");
   }
   if (modeSelectEl) {
     modeSelectEl.addEventListener("change", updateChatMode);

@@ -1,4 +1,7 @@
 import json
+from contextlib import contextmanager
+
+import pytest
 
 from shared import ceph_query_cache
 
@@ -54,3 +57,48 @@ def test_get_cached_reads_persisted_value_and_reports_its_age(monkeypatch, tmp_p
     value, age_seconds = cached
     assert value == {"health": "OK"}
     assert age_seconds >= 0
+
+
+def test_versioned_store_reports_persistence_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    monkeypatch.setattr(ceph_query_cache, "_write", lambda *args, **kwargs: False)
+
+    with pytest.raises(ceph_query_cache.CachePersistenceError):
+        ceph_query_cache.store_versioned("cluster-snapshot", "cluster", {"health": "OK"})
+
+
+def test_update_value_preserves_generation_and_cache_age(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    first = ceph_query_cache.store_versioned("cluster-snapshot", "cluster", {"health": "OK"})
+
+    updated = ceph_query_cache.update_value(
+        "cluster-snapshot", "cluster", {"last_error": "MON unreachable"}
+    )
+
+    assert updated is not None
+    assert updated["generation"] == first["generation"]
+    assert updated["last_error"] == "MON unreachable"
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    assert ceph_query_cache.get_cached("cluster-snapshot", "cluster")[0]["last_error"] == "MON unreachable"
+
+
+def test_get_or_load_does_not_load_without_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+
+    @contextmanager
+    def unavailable_lock(*args, **kwargs):
+        yield False
+
+    calls = []
+    monkeypatch.setattr(ceph_query_cache, "_loader_lock", unavailable_lock)
+
+    with pytest.raises(ceph_query_cache.CacheLockError):
+        ceph_query_cache.get_or_load(
+            "cluster-snapshot",
+            "cluster",
+            lambda: calls.append("loaded") or {"health": "OK"},
+        )
+    assert calls == []

@@ -15,7 +15,7 @@
       <div class="card-body">
         <p class="hint">Các kênh ở đây là cấu hình toàn hệ thống và fallback của cụm mặc định. Kênh riêng của cluster phụ được cấu hình tại <a href="/clusters">Clusters</a>.</p>
         <p class="hint">
-          7 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
+          8 kênh Telegram <strong>hoàn toàn độc lập</strong> — mỗi kênh có Bot Token + Chat ID riêng, bật/tắt
           bằng chính việc điền hay để trống Chat ID (không có công tắc riêng). <strong>Yêu cầu phê duyệt
           (Duyệt/Từ chối)</strong> áp dụng cho ba kênh vận hành Backup/Lỗi cụm/Phần cứng. Kênh Dự báo RBD,
           RGW và Code Repair chỉ nhận thông báo, không cấp quyền phê duyệt. Với ba kênh vận hành, hễ một kênh
@@ -125,6 +125,14 @@
             giống nhau với mọi bot. Hãy tạo một group/channel Telegram riêng, thêm bot Code Repair vào đó,
             lấy Chat ID âm (thường bắt đầu bằng <code>-100</code>) rồi điền tại đây.
             <a href="/telegram-alerts/help#code-repair-private-chat" target="_blank" rel="noopener">Xem hướng dẫn chi tiết →</a>
+          </p>
+          {% endif %}
+          {% if ch.key == 'vault' %}
+          <p class="hint">
+            Kênh <strong>chỉ dành cho Vault</strong>, hoàn toàn không nhận cảnh báo RGW/Incident/Backup/Hardware
+            và không có quyền Duyệt/Từ chối. Monitor kiểm tra SEALED, token sắp hết hạn, ROOT TOKEN,
+            audit log bị tắt và mất kết nối/TLS lỗi. Cấu hình Vault dùng <code>VAULT_ADDR</code> và
+            <code>VAULT_TOKEN_FILE</code> trong file cấu hình server.
           </p>
           {% endif %}
           {% if ch.key == 'chatbox-ai' %}

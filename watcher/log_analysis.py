@@ -36,6 +36,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 
@@ -92,7 +93,7 @@ _INCIDENT_DIAGNOSIS_ACTION_IDS = _load_incident_diagnosis_action_ids()
 
 # Tăng khi prompt/schema đổi -- lưu vào LogFinding.prompt_version để một
 # kết luận cũ luôn truy được về đúng phiên bản prompt đã sinh ra nó.
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2-ceph-rca-knowledge"
 
 TOOL_NAME = "report_log_analysis"
 MAX_TOKENS = 8192
@@ -122,6 +123,21 @@ _RGW_DEFAULT_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+
+def _load_rca_knowledge() -> str:
+    """Load trusted RCA guidance without mixing it with untrusted log data."""
+    path = Path(__file__).resolve().parents[1] / "docs" / "ceph-ai-rca-knowledge.md"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("log_analysis: RCA knowledge unavailable at %s: %s", path, exc)
+        return "RCA knowledge unavailable; rely only on the supplied evidence and live tools."
+    return text[:16000]
+
+
+RCA_KNOWLEDGE = _load_rca_knowledge()
+
 SYSTEM_PROMPT = (
     "You are an expert Ceph storage SRE performing root-cause analysis on "
     "aggregated log evidence from one Ceph cluster.\n\n"
@@ -149,11 +165,22 @@ SYSTEM_PROMPT = (
     "cause is worse than admitting the evidence does not support one.\n"
     "5. If the patterns are unremarkable, answer verdict=NO_FINDING. Do "
     "not manufacture a problem to seem useful.\n\n"
+    "MANDATORY RCA PIPELINE FOR EVERY DAEMON TYPE (MON/MGR/OSD/PG/RGW/Vault/LB):\n"
+    "Before returning FINDING, process evidence in this order: evidence completeness -> "
+    "entity/host normalization -> dependency/topology hypothesis -> time plus topology "
+    "correlation -> root-cause ranking -> impact and missing-evidence statement. Do not "
+    "skip this for non-RGW errors. A pattern group count of zero or an unresolved host "
+    "mapping means INSUFFICIENT_EVIDENCE, never a guessed root cause.\n\n"
     "Write `title`, `summary`, `root_cause_hypothesis` and "
     "`recommended_manual_steps` in Vietnamese, for an operator to read. "
     "For every FINDING, recommended_manual_steps MUST start with the single "
     "best remediation supported by the evidence, followed by safer alternatives "
     "or verification steps. Never return a FINDING without a useful recommendation."
+    "\n\nTRUSTED RCA REFERENCE KNOWLEDGE:\n"
+    "The following is a method reference supplied by the operator. It is not "
+    "log evidence, must not be cited as evidence, and must not override the "
+    "actual cluster data. Apply it only to structure the analysis:\n\n"
+    + RCA_KNOWLEDGE
 )
 
 
@@ -367,6 +394,22 @@ def _cluster_context(cluster_id: str) -> str:
             f"Phiên bản Ceph: {version}{mixed}. "
             f"Chế độ triển khai: {snapshot.deployment_mode or 'không rõ'}."
         )
+
+
+def _topology_context(cluster: Cluster | None) -> str:
+    """Đưa inventory topology của đúng cluster vào mọi phiên RCA.
+
+    Đây là context tin cậy để chuẩn hóa host/role; model vẫn phải đối chiếu
+    với evidence thực tế và không được xem inventory là bằng chứng lỗi.
+    """
+    nodes = configured_nodes(cluster)
+    if not nodes:
+        return "Topology Ceph đã cấu hình: chưa biết/chưa có inventory."
+    rendered = "; ".join(
+        f"{node['host']} roles={','.join(node['roles'])}"
+        for node in nodes
+    )
+    return "Topology Ceph đã cấu hình (inventory, cần đối chiếu live): " + rendered
 
 
 @observe_ai_call("log_rca")
@@ -708,7 +751,7 @@ def analyze_window(
 
     user_content = _build_user_content(
         results, window_start, window_end, ingest_status,
-        _cluster_context(cluster_id), allowed,
+        _cluster_context(cluster_id) + "\n" + _topology_context(cluster), allowed,
     )
 
     try:
@@ -862,6 +905,9 @@ def analyze_window(
         alert_payload = {
             "title": finding.title or "(không tiêu đề)",
             "severity": finding.severity,
+            "verdict": finding.verdict,
+            "evidence_pattern_ids": validated["evidence_pattern_ids"],
+            "rca_stage": "EVIDENCE → ENTITY/HOST → TOPOLOGY → CORRELATION → ROOT_CAUSE",
             "confidence": finding.confidence,
             "summary": finding.summary,
             "root_cause": finding.root_cause_hypothesis,
@@ -903,6 +949,15 @@ _RECOVERY_PENDING_NOTIFY_INTERVAL = timedelta(minutes=10)
 def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster | None) -> None:
     """Best-effort như mọi đường gửi cảnh báo khác trong codebase này: lỗi
     gửi Telegram không bao giờ được làm hỏng lần phân tích đã hoàn tất."""
+    if payload.get("verdict") != LogFindingVerdict.FINDING.value:
+        logger.info(
+            "log_analysis: không gửi Telegram vì verdict=%s (chưa đủ bằng chứng/no finding)",
+            payload.get("verdict"),
+        )
+        return
+    if not payload.get("evidence_pattern_ids"):
+        logger.info("log_analysis: không gửi Telegram vì không có evidence_pattern_ids")
+        return
     if payload["severity"] not in _ALERTABLE_SEVERITIES:
         return
     try:
@@ -925,6 +980,7 @@ def _maybe_alert(payload: dict, evidence_templates: list[str], cluster: Cluster 
             chat_id=cluster.telegram_chat_id if has_cluster_channel else None,
             enabled=cluster.telegram_enabled if has_cluster_channel else None,
             daemon_types=payload.get("affected_daemons"),
+            rca_stage=payload.get("rca_stage"),
         )
     except Exception:
         logger.exception("log_analysis: gửi cảnh báo Telegram thất bại")
@@ -948,7 +1004,7 @@ def resolve_stale_findings(
     Trả về số bản ghi đã chuyển sang RESOLVED.
     """
     resolved_items: list[tuple[str, list[str], str | None]] = []
-    pending_items: list[tuple[str, str, tuple[str, ...]]] = []
+    pending_items: list[tuple[str, str, tuple[str, ...], str]] = []
     with db.SessionLocal() as session:
         open_findings = (
             session.query(LogFinding)
@@ -974,36 +1030,46 @@ def resolve_stale_findings(
             )
             verification_summary = None
             if "rgw" in daemon_types:
-                from watcher.ceph_finding_verifier import verify_vault_recovery
-                live_cluster = cluster or session.get(Cluster, cluster_id)
-                if live_cluster is None:
-                    continue
-                verification = verify_vault_recovery(finding, patterns, live_cluster)
-                if not verification.eligible_for_learning:
-                    previous_code = finding.recovery_check_code
-                    should_notify = (
-                        finding.recovery_notified_at is None
-                        or previous_code != verification.code
-                        or finding.recovery_notified_at <= window_start - _RECOVERY_PENDING_NOTIFY_INTERVAL
-                    )
+                from watcher.ceph_finding_verifier import (
+                    needs_rgw_recovery_gate,
+                    verify_vault_recovery,
+                )
+                if not needs_rgw_recovery_gate(finding, patterns):
+                    if still_active:
+                        continue
+                    finding.recovery_check_code = None
+                    finding.recovery_check_summary = None
+                    finding.recovery_checked_at = window_start
+                else:
+                    live_cluster = cluster or session.get(Cluster, cluster_id)
+                    if live_cluster is None:
+                        continue
+                    verification = verify_vault_recovery(finding, patterns, live_cluster)
+                    if not verification.eligible_for_learning:
+                        previous_code = finding.recovery_check_code
+                        should_notify = (
+                            finding.recovery_notified_at is None
+                            or previous_code != verification.code
+                            or finding.recovery_notified_at <= window_start - _RECOVERY_PENDING_NOTIFY_INTERVAL
+                        )
+                        finding.recovery_check_code = verification.code
+                        finding.recovery_check_summary = verification.summary
+                        finding.recovery_checked_at = window_start
+                        if should_notify:
+                            finding.recovery_notified_at = window_start
+                            pending_items.append((
+                                finding.title or "(không tiêu đề)", verification.summary,
+                                verification.live_facts, verification.code,
+                            ))
+                        logger.warning(
+                            "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
+                            finding.id, verification.code, verification.summary,
+                        )
+                        continue
+                    verification_summary = f"{verification.code}: {verification.summary}"
                     finding.recovery_check_code = verification.code
                     finding.recovery_check_summary = verification.summary
                     finding.recovery_checked_at = window_start
-                    if should_notify:
-                        finding.recovery_notified_at = window_start
-                        pending_items.append((
-                            finding.title or "(không tiêu đề)", verification.summary,
-                            verification.live_facts, verification.code,
-                        ))
-                    logger.warning(
-                        "log_analysis: giữ finding RGW %s OPEN; recovery gate=%s — %s",
-                        finding.id, verification.code, verification.summary,
-                    )
-                    continue
-                verification_summary = f"{verification.code}: {verification.summary}"
-                finding.recovery_check_code = verification.code
-                finding.recovery_check_summary = verification.summary
-                finding.recovery_checked_at = window_start
             elif still_active:
                 continue
 

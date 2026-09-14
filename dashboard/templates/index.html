@@ -237,13 +237,16 @@
         <option value="single">Chat trực tiếp</option>
         <option value="delegate">Giao việc / nhiều agent</option>
       </select>
-      <span id="chat-mode-hint">Dùng AI đang cấu hình trong hệ thống.</span>
     </div>
     <div class="chat-panel-body" id="chat-panel-body">
       <div class="chat-history-list-view" id="chat-history-list-view" hidden>
         <div class="chat-view-header">
           <span class="chat-view-icon" aria-hidden="true">↶</span>
           <div><span class="chat-view-eyebrow">Chat / Lịch sử</span><h3>Lịch sử đoạn chat</h3><p>Xem và quản lý các phiên trò chuyện gần đây.</p></div>
+        </div>
+        <div class="chat-history-toolbar">
+          <label class="chat-history-select-all"><input type="checkbox" id="chat-history-select-all"> Chọn tất cả</label>
+          <button type="button" class="btn btn-danger-outline btn-sm" id="chat-history-delete-selected" disabled>Xoá đã chọn</button>
         </div>
         <div class="chat-history-list" id="chat-history-list"></div>
       </div>

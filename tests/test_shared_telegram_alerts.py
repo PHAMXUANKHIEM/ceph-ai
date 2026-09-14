@@ -40,6 +40,39 @@ def test_send_incident_alert_sends_when_configured(monkeypatch):
     assert "HEALTH_ERR" in text
 
 
+def test_osd_down_alert_explains_deactivate_container_and_github_metadata(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+    excerpt = (
+        "--- 10.20.1.195 (osd.2) ---\n"
+        "container remove osd-2-deactivate\n"
+        "CEPH_GIT_REPO=https://github.com/ceph/ceph.git"
+    )
+
+    telegram_alerts.send_incident_alert("OSD_DOWN", "HEALTH_WARN", excerpt)
+
+    assert "OSD 2 trên node 10.20.1.195 đang DOWN" in calls[0]
+    assert "đã xoá container tạm phục vụ deactivate OSD" in calls[0]
+    assert "không phải lỗi kết nối GitHub" in calls[0]
+    assert "🔎 Log gốc:" in calls[0]
+
+
+def test_unknown_incident_alert_still_has_human_explanation(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("NEW_CEPH_CHECK", "HEALTH_WARN", "raw detail")
+
+    assert "📝 Diễn giải:" in calls[0]
+    assert "🔎 Log gốc:" in calls[0]
+
+
 def test_send_incident_alert_skips_when_not_configured(monkeypatch):
     _configure_incident(monkeypatch, token="", chat_id="")
     calls = []
@@ -96,6 +129,29 @@ def test_send_incident_alert_compacts_multiline_metrics(monkeypatch):
     telegram_alerts.send_incident_alert("SLOW_OPS", "HEALTH_WARN", "IOPS: 10\n\n latency:   25 ms")
 
     assert "IOPS: 10 latency: 25 ms" in calls[0]
+
+
+def test_send_capacity_incident_keeps_pool_osd_node_context(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+    excerpt = (
+        ("raw ceph health detail line " * 80)
+        + "\nDung lượng chi tiết:\n"
+        + "- Toàn cụm: 81.78% đã dùng\n"
+        + "- Pool áp lực: volumes 94.00%\n"
+        + "- OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%"
+    )
+
+    telegram_alerts.send_incident_alert("POOL_NEARFULL", "HEALTH_WARN", excerpt)
+
+    assert len(calls[0]) < 1000
+    assert "Dung lượng chi tiết:" in calls[0]
+    assert "Pool áp lực: volumes 94.00%" in calls[0]
+    assert "OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%" in calls[0]
 
 
 def test_send_incident_alert_swallows_send_failure(monkeypatch):

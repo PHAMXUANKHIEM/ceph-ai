@@ -145,6 +145,18 @@ services:
       timeout: 5s
       retries: 3
 
+  vault-monitor:
+    <<: *app
+    command: ["python", "-m", "watcher.vault_monitor"]
+    volumes:
+      - ./:/app:ro
+      - /var/lib/ceph-ai:/var/lib/ceph-ai:rw
+      - /etc/ceph-ai-secrets:/etc/ceph-ai-secrets:ro
+    environment:
+      CEPH_AI_ENV_FILE: /var/lib/ceph-ai/config/.env
+      VAULT_MONITOR_SERVICE: "true"
+    restart: unless-stopped
+
   worker:
     <<: *app
     command: ["python", "-m", "worker.main"]

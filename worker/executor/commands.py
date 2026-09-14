@@ -210,7 +210,10 @@ _OSD_ID_RANGE = (0, 9999)
 # `[A-Za-z0-9_-]` class alone would still accept "--force", since every one
 # of those characters is individually allowed).
 _TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+# RBD image names may start with `_` (including the tool-owned benchmark
+# scratch image `_ceph_aiops_perf_probe`); still reject leading `-` so an
+# image value can never be interpreted as a CLI option.
+_RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _RBD_SIZE_MIB_RANGE = (1, 64 * 1024 * 1024)
 
 

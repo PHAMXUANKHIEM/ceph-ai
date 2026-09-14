@@ -44,7 +44,22 @@
 (function () {
   var capabilityStatus = document.getElementById("object-storage-capability-status");
   if (!capabilityStatus) return;
+  var capabilityPanel = document.getElementById("object-storage-capability-panel");
+  var unavailableList = document.getElementById("object-storage-unavailable-features");
   var source = document.getElementById("bucket-create-form");
+  function showUnavailable(items) {
+    if (!capabilityPanel || !unavailableList) return;
+    while (unavailableList.firstChild) unavailableList.removeChild(unavailableList.firstChild);
+    items.forEach(function (item) {
+      var row = document.createElement("li");
+      row.textContent = item;
+      unavailableList.appendChild(row);
+    });
+    capabilityPanel.hidden = items.length === 0;
+  }
+  function addUnavailable(items, label, reason) {
+    if (reason) items.push(label + ": " + reason);
+  }
   function disableForm(id, reason) {
     var form = document.getElementById(id);
     if (!form) return;
@@ -53,10 +68,19 @@
   fetch("/api/object-storage/capabilities?cluster=" + encodeURIComponent(source.dataset.cluster))
     .then(function (response) { return response.ok ? response.json() : response.json().then(function (body) { throw new Error(body.detail || "Không đọc được capability"); }); })
     .then(function (data) {
-      capabilityStatus.textContent = "Ceph " + data.ceph_version + " (" + data.ceph_release + ") · Chỉ các tính năng tương thích bên dưới được phép thao tác.";
       var create = data.bucket_create;
       var governance = data.bucket_governance;
       var lifecycle = data.lifecycle;
+      var unavailable = [];
+      addUnavailable(unavailable, "Placement target", create.placement_unavailable_reason);
+      if (!governance.object_lock_at_create || !governance.default_retention) {
+        addUnavailable(unavailable, "Object Lock và retention", governance.object_lock_unavailable_reason);
+      }
+      addUnavailable(unavailable, "Bucket versioning", governance.versioning_unavailable_reason);
+      addUnavailable(unavailable, "Lifecycle Policy", lifecycle.supported ? null : lifecycle.unavailable_reason);
+      if (lifecycle.supported) addUnavailable(unavailable, "Lifecycle Transition", lifecycle.transition_unavailable_reason);
+      addUnavailable(unavailable, "Bucket Policy & ACL", data.bucket_policy_acl.unavailable_reason);
+      showUnavailable(unavailable);
       if (!create.placement_supported) {
         ["bucket-create-api-name", "bucket-create-placement"].forEach(function (id) { document.getElementById(id).disabled = true; });
         document.getElementById("bucket-create-placement-label").title = create.placement_unavailable_reason;
@@ -81,6 +105,7 @@
       }
     })
     .catch(function (error) {
+      if (capabilityPanel) capabilityPanel.hidden = false;
       capabilityStatus.textContent = "Không xác định được phiên bản/capability Ceph: " + error.message + ". Các thao tác ghi đã bị khóa.";
       ["bucket-create-form", "bucket-governance-form", "bucket-lifecycle-form", "bucket-policy-form", "bucket-delete-form"].forEach(function (id) { disableForm(id, error.message); });
     });

@@ -499,12 +499,12 @@ def test_query_cluster_health_with_cephadm_mode_uses_shell_and_longer_timeout(fa
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert captured_commands == ["cephadm shell -- ceph health detail --format json"]
+    assert captured_commands == [f"flock -w {ceph_client.CEPHADM_LOCK_WAIT_SECONDS} {ceph_client.CEPHADM_REMOTE_LOCK_PATH} cephadm shell -- ceph health detail --format json"]
     # cephadm shell spins up a fresh container per call — needs more headroom
     # than the docker/podman default (see CEPHADM_COMMAND_TIMEOUT_SECONDS).
     from watcher.ceph_client import CEPHADM_COMMAND_TIMEOUT_SECONDS, COMMAND_TIMEOUT_SECONDS
 
-    assert captured_timeouts == [CEPHADM_COMMAND_TIMEOUT_SECONDS]
+    assert captured_timeouts == [CEPHADM_COMMAND_TIMEOUT_SECONDS + ceph_client.CEPHADM_LOCK_WAIT_SECONDS]
     assert CEPHADM_COMMAND_TIMEOUT_SECONDS > COMMAND_TIMEOUT_SECONDS
 
 
@@ -1365,6 +1365,24 @@ def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
 
     with pytest.raises(CephQueryError, match="incomplete capacity metadata"):
         query_rbd_trash("vms")
+
+
+def test_query_rbd_trash_skips_entry_removed_during_scan(fake_ssh, monkeypatch):
+    monkeypatch.setattr(ceph_client.settings, "ceph_mon_nodes", "10.20.1.150")
+    calls = []
+
+    def routed_exec(self, command, timeout=None):
+        calls.append(command)
+        if len(calls) == 1:
+            return None, _FakeStream(json.dumps([{"id": "gone123", "name": "gone-disk"}])), _FakeStream("")
+        raise CephQueryError("All MON nodes failed: rbd: error opening image: (2) No such file or directory")
+
+    monkeypatch.setattr(FakeSSHClient, "exec_command", routed_exec)
+    fake_ssh.behavior = {"10.20.1.150": {}}
+
+    # The stale listing entry is a normal restore/purge race, not a pool-wide
+    # Trash failure.
+    assert query_rbd_trash("vms") == []
 
 
 def test_query_rbd_trash_returns_empty_list_for_unexpected_shape(fake_ssh, monkeypatch):

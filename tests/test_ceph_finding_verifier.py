@@ -40,6 +40,20 @@ def _cluster():
     )
 
 
+def test_rgw_recovery_gate_predicate_only_matches_vault_or_default_key():
+    assert verifier.needs_rgw_recovery_gate(
+        _finding(), [_pattern("Vault token file '/etc/ceph/vault-token' not found")]
+    )
+    assert verifier.needs_rgw_recovery_gate(
+        _finding(title="RGW default key broken", summary="default encryption key is AES256"),
+        [_pattern("failed to decode rgw_crypt_default_encryption_key")],
+    )
+    assert not verifier.needs_rgw_recovery_gate(
+        _finding(title="RGW 5xx spike", summary="frontend errors", root_cause_hypothesis="load"),
+        [_pattern("rgw frontends returned 503")],
+    )
+
+
 def test_missing_vault_token_is_external_config_not_learning(monkeypatch):
     monkeypatch.setattr(verifier, "_health", lambda cluster: ("HEALTH_WARN", None))
     monkeypatch.setattr(verifier, "_stat_token", lambda host, path, cluster: "MISSING")

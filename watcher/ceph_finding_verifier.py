@@ -194,6 +194,11 @@ def _is_vault_finding(finding: LogFinding, patterns: list[LogPattern]) -> bool:
     return any(_VAULT_RE.search(value or "") for value in texts)
 
 
+def needs_rgw_recovery_gate(finding: LogFinding, patterns: list[LogPattern]) -> bool:
+    """Return whether stale RGW finding resolution needs live RGW verification."""
+    return _is_default_key_finding(finding, patterns) or _is_vault_finding(finding, patterns)
+
+
 def _health(cluster: Cluster) -> tuple[str | None, str | None]:
     ssh_user, ssh_key, exec_mode, container = resolve_ssh_creds(cluster)
     mons = [value.strip() for value in cluster.ceph_mon_nodes.split(",") if value.strip()]

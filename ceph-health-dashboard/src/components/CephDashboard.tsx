@@ -112,12 +112,6 @@ export function CephDashboard() {
           <button type="button" onClick={() => setReloadToken((value) => value + 1)}>Thử lại</button>
         </div>
       )}
-      {(health.stale || health.refreshing) && (
-        <div className={health.stale ? "dashboard-live-stale" : "dashboard-live-syncing"} role="status">
-          <strong>{health.stale ? "Dữ liệu cụm đang cũ" : "Đang đồng bộ dữ liệu cụm"}</strong>
-          <span>Snapshot gần nhất cách đây {Math.round(health.cache_age_seconds ?? 0)} giây; {health.refreshing ? "đang làm mới nền." : "chưa có bản mới."}</span>
-        </div>
-      )}
       <section className="status-grid" aria-label="Ceph status overview">
         <CephHealthCard value={health.health} />
         {statusCards.map((card) => <StatusCard key={card.title} {...card} />)}

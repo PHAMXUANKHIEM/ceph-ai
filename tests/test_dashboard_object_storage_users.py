@@ -333,7 +333,7 @@ def test_quota_capability_editor_page_is_admin_only(dashboard_client):
     response = dashboard_client.get("/object-storage/user-settings")
     assert response.status_code == 200
     assert 'id="s3-setting-form"' in response.text
-    assert "Quota &amp; Capability Editor" in response.text
+    assert "Quota &amp; Capability Editor" not in response.text
 
     original = route.auth.is_admin_user
     route.auth.is_admin_user = lambda user: False

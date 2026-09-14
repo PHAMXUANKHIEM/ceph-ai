@@ -73,7 +73,13 @@ async def node_metrics_api(request: Request, host: str, user: str = Depends(requ
                 return collect_node_metrics(host)
             ssh_user, ssh_key_path, _mode, _container = resolve_ssh_creds(cluster)
             return collect_node_metrics_with(host, ssh_user, ssh_key_path)
-        metrics = get_or_load("node-metrics", f"{cluster.id}:{host}", load_metrics, ttl_seconds=300)
+        metrics = get_or_load(
+            "node-metrics",
+            f"{cluster.id}:{host}",
+            load_metrics,
+            ttl_seconds=300,
+            stale_ttl_seconds=1800,
+        )
     except NodeMetricsError as exc:
         logger.warning("node_metrics_api: %s", exc)
         raise HTTPException(status_code=502, detail=f"Không lấy được metrics từ node: {exc}")

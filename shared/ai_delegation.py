@@ -32,8 +32,15 @@ def _cluster_snapshot(cluster) -> SimpleNamespace:
 MAX_SUBTASKS = 4
 MAX_PROMPT_CHARS = 50_000
 MAX_RESULT_CHARS = 12_000
-TASK_LEASE_SECONDS = 3_600
+# Keep crash recovery comfortably below the normal delegated task timeout.
+# A redelivered RabbitMQ message is ACKed when another execution owner still
+# holds this lease, so this value is also the upper bound before the watchdog
+# can reclaim a task after a Worker crash.
+# Keep it below the configured task timeout as well as below five minutes.
+TASK_LEASE_SECONDS = max(30, min(300, settings.delegated_ai_task_timeout_seconds // 3))
 SUBTASK_LEASE_SECONDS = 1_800
+MAX_SUBTASK_ATTEMPTS = 2
+SUBTASK_RETRY_BACKOFF_SECONDS = 1.0
 DISPATCH_RETRY_SECONDS = 60
 WORKER_INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
 _SUBTASK_SEMAPHORE = asyncio.Semaphore(settings.delegated_ai_max_parallel_subtasks)
@@ -55,9 +62,10 @@ class _ProviderCallBudget:
         self.owner = owner
         self._lock = asyncio.Lock()
 
-    async def reserve(self) -> None:
+    async def _reserve(self, *, keep_slots: int) -> None:
         async with self._lock:
             if self.task_id is not None:
+                call_limit = max(0, self.limit - keep_slots)
                 # The DB counter is authoritative so a task reclaimed by a
                 # fresh Worker cannot receive a new budget after a crash.
                 with db.SessionLocal() as session:
@@ -69,7 +77,7 @@ class _ProviderCallBudget:
                             DelegatedAITask.status.in_(
                                 ("PLANNING", "RUNNING", "AGGREGATING")
                             ),
-                            DelegatedAITask.provider_call_count < self.limit,
+                            DelegatedAITask.provider_call_count < call_limit,
                         )
                         .values(
                             provider_call_count=DelegatedAITask.provider_call_count + 1,
@@ -83,11 +91,19 @@ class _ProviderCallBudget:
                     )
                 self.remaining = max(0, self.remaining - 1)
                 return
-            if self.remaining <= 0:
+            if self.remaining <= keep_slots:
                 raise DelegatedProviderCallBudgetError(
                     "Delegated task đã đạt giới hạn tổng số lượt gọi AI"
                 )
             self.remaining -= 1
+
+    async def reserve(self) -> None:
+        """Reserve a sub-agent provider call while keeping one final slot."""
+        await self._reserve(keep_slots=1)
+
+    async def reserve_aggregate(self) -> None:
+        """Reserve the final synthesis call."""
+        await self._reserve(keep_slots=0)
 
 
 def _now() -> datetime:
@@ -193,10 +209,14 @@ def _claim_subtask(task_id: str, subtask_id: str, cluster_id: str, owner: str):
                     DelegatedAITask.lease_until > now,
                 ),
                 or_(
-                    DelegatedAISubtask.status.in_(("QUEUED", "FAILED")),
+                    and_(
+                        DelegatedAISubtask.status.in_(("QUEUED", "FAILED")),
+                        DelegatedAISubtask.attempt < MAX_SUBTASK_ATTEMPTS,
+                    ),
                     and_(
                         DelegatedAISubtask.status == "RUNNING",
                         or_(DelegatedAISubtask.lease_until.is_(None), DelegatedAISubtask.lease_until < now),
+                        DelegatedAISubtask.attempt < MAX_SUBTASK_ATTEMPTS,
                     ),
                 ),
             )
@@ -206,6 +226,10 @@ def _claim_subtask(task_id: str, subtask_id: str, cluster_id: str, owner: str):
                 lease_until=_lease_deadline(SUBTASK_LEASE_SECONDS),
                 attempt=DelegatedAISubtask.attempt + 1,
                 started_at=now,
+                finished_at=None,
+                result_text=None,
+                tools_used_json=None,
+                error=None,
                 updated_at=now,
             )
         )
@@ -323,7 +347,24 @@ def claim_tasks_for_dispatch(limit: int = 100) -> list[str]:
                     update(DelegatedAISubtask)
                     .where(
                         DelegatedAISubtask.task_id == task_id,
-                        DelegatedAISubtask.status != "COMPLETED",
+                        DelegatedAISubtask.status.not_in(("COMPLETED", "CANCELLED")),
+                        DelegatedAISubtask.attempt >= MAX_SUBTASK_ATTEMPTS,
+                    )
+                    .values(
+                        status="FAILED",
+                        execution_owner=None,
+                        lease_until=None,
+                        finished_at=now,
+                        error="Worker mất lease sau khi sub-agent đã hết số lần thử",
+                        updated_at=now,
+                    )
+                )
+                session.execute(
+                    update(DelegatedAISubtask)
+                    .where(
+                        DelegatedAISubtask.task_id == task_id,
+                        DelegatedAISubtask.status.not_in(("COMPLETED", "CANCELLED")),
+                        DelegatedAISubtask.attempt < MAX_SUBTASK_ATTEMPTS,
                     )
                     .values(
                         status="QUEUED",
@@ -338,7 +379,7 @@ def claim_tasks_for_dispatch(limit: int = 100) -> list[str]:
 
 
 def build_plan(prompt: str) -> list[dict]:
-    """Build a bounded Ceph plan from the request.
+    """Build a bounded plan from the request.
 
     The first implementation is intentionally deterministic: it cannot be
     prompt-injected into creating arbitrary tools or an unbounded DAG. The
@@ -346,6 +387,18 @@ def build_plan(prompt: str) -> list[dict]:
     executed independently, and synthesized only after all evidence returns.
     """
     text = (prompt or "").lower()
+    ceph_terms = (
+        "ceph", "osd", "pg", "pool", "rbd", "mon", "cluster", "node", "host",
+        "cpu", "ram", "memory", "process", "load", "iops", "latency", "throughput",
+        "volume", "snapshot", "performance", "chậm", "lỗi", "sự cố", "incident", "log",
+        "journal", "history", "nguyên nhân", "dung lượng",
+    )
+    if not any(word in text for word in ceph_terms):
+        return [{
+            "role": "general_analysis",
+            "objective": "Phân tích yêu cầu gốc, giải quyết bằng kiến thức và suy luận phù hợp; nêu rõ giả định và phần còn thiếu.",
+            "tools": [],
+        }]
     plan = [
         {
             "role": "cluster_health",
@@ -430,7 +483,7 @@ async def _run_subtask(
     role, objective, tools, cluster, owner = claimed
 
     agent_prompt = (
-        "Bạn là một sub-agent độc lập trong hệ thống điều tra Ceph.\n"
+        "Bạn là một sub-agent độc lập trong hệ thống giao việc AI.\n"
         f"Vai trò: {role}.\n"
         f"Nhiệm vụ riêng: {objective}\n"
         "Chỉ dùng các tool được cấp trong lượt này. Không đề xuất hoặc thực hiện thay đổi cấu hình, "
@@ -453,6 +506,8 @@ async def _run_subtask(
                 timeout_seconds=settings.delegated_ai_provider_timeout_seconds,
                 max_tokens=settings.delegated_ai_max_output_tokens,
                 provider_call_budget=call_budget.reserve,
+                preferred_provider="claude",
+                allow_unrestricted=True,
             )
         content = str(result.get("reply_text") or "(agent không trả kết quả)")[:min(MAX_RESULT_CHARS, settings.delegated_ai_max_result_chars)]
         _set_subtask_owned(
@@ -508,7 +563,7 @@ async def _aggregate(
                 f"{body[:min(MAX_RESULT_CHARS, settings.delegated_ai_max_result_chars)]}"
             )
     synthesis_prompt = (
-        "Bạn là lead agent tổng hợp điều tra Ceph. Đây là các báo cáo từ những agent độc lập; "
+        "Bạn là lead agent tổng hợp kết quả giao việc. Đây là các báo cáo từ những agent độc lập; "
         "không gọi tool và không bịa số liệu. Hãy trả lời operator bằng tiếng Việt, phân biệt rõ "
         "evidence đã kiểm chứng với giả thuyết, nêu kết luận ưu tiên, tác động, và các bước tiếp theo. "
         "Không tự ý tuyên bố đã sửa gì.\n\n"
@@ -526,7 +581,9 @@ async def _aggregate(
         max_tool_iterations=1,
         timeout_seconds=settings.delegated_ai_provider_timeout_seconds,
         max_tokens=settings.delegated_ai_max_output_tokens,
-        provider_call_budget=call_budget.reserve,
+        provider_call_budget=call_budget.reserve_aggregate,
+        preferred_provider="claude",
+        allow_unrestricted=True,
     )
     return str(result.get("reply_text") or "Không tổng hợp được kết quả")[:min(MAX_RESULT_CHARS, settings.delegated_ai_max_result_chars)]
 
@@ -544,10 +601,28 @@ async def _execute_claimed_task(
     subtask_ids = _make_subtasks(task_id, build_plan(prompt))
     if not _set_task_owned(task_id, owner, status="RUNNING", expected_status="PLANNING"):
         return
-    await asyncio.gather(*(
-        _run_subtask(subtask_id, task_id, prompt, actor, cluster_id, owner, call_budget)
-        for subtask_id in subtask_ids
-    ))
+    pending_subtask_ids = list(subtask_ids)
+    for attempt_round in range(MAX_SUBTASK_ATTEMPTS):
+        if not pending_subtask_ids:
+            break
+        await asyncio.gather(*(
+            _run_subtask(subtask_id, task_id, prompt, actor, cluster_id, owner, call_budget)
+            for subtask_id in pending_subtask_ids
+        ))
+        with db.SessionLocal() as session:
+            pending_subtask_ids = [
+                row.id
+                for row in session.query(DelegatedAISubtask)
+                .filter(DelegatedAISubtask.task_id == task_id)
+                .all()
+                if row.status in ("QUEUED", "FAILED") and row.attempt < MAX_SUBTASK_ATTEMPTS
+            ]
+        if pending_subtask_ids and attempt_round + 1 < MAX_SUBTASK_ATTEMPTS:
+            logger.info(
+                "retrying %d failed/queued delegated subtasks for task %s",
+                len(pending_subtask_ids), task_id,
+            )
+            await asyncio.sleep(SUBTASK_RETRY_BACKOFF_SECONDS * (2 ** attempt_round))
     with db.SessionLocal() as session:
         task = session.get(DelegatedAITask, task_id)
         cluster = session.get(Cluster, cluster_id)

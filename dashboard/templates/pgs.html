@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Placement Groups — Ceph AIOps</title>
+  {% if cache_loading %}<meta http-equiv="refresh" content="3">{% endif %}
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
 <body>
@@ -20,7 +21,6 @@
             <a href="/pgs?cluster={{ selected_cluster.id }}" class="btn btn-ghost btn-sm">Làm mới</a>
           </div>
           <div class="card-body">
-            <p class="hint">Toàn bộ Placement Groups hiện có trên cụm, tự động cập nhật khi tải trang.</p>
             {% if state_counts %}
             <div class="pg-summary">
               {% for state, count in state_counts %}
@@ -81,6 +81,8 @@
             <button id="pg-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button>
             <span class="pg-page-size">10 PGs mỗi trang</span>
           </div>
+          {% elif cache_loading %}
+          <div class="card-body"><div class="empty-state">Đang tải dữ liệu Placement Groups từ cụm… trang sẽ tự cập nhật.</div></div>
           {% else %}
           <div class="card-body"><div class="empty-state">Cụm chưa có Placement Group nào.</div></div>
           {% endif %}

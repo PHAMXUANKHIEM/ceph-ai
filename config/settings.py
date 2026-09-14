@@ -262,7 +262,10 @@ class Settings(BaseSettings):
     delegated_ai_max_tool_iterations: int = Field(default=3, ge=1, le=6)
     delegated_ai_task_timeout_seconds: int = Field(default=900, ge=60, le=3600)
     delegated_ai_provider_timeout_seconds: float = Field(default=90.0, ge=10.0, le=300.0)
-    delegated_ai_max_provider_calls: int = Field(default=12, ge=1, le=50)
+    # Worst-case bounded execution: 4 subtasks x 2 attempts x 3 provider
+    # turns, plus one final synthesis turn. The supervisor also reserves the
+    # synthesis slot while sub-agents are running.
+    delegated_ai_max_provider_calls: int = Field(default=25, ge=1, le=50)
     delegated_ai_max_output_tokens: int = Field(default=1024, ge=256, le=2048)
     delegated_ai_max_parallel_subtasks: int = Field(default=2, ge=1, le=4)
     delegated_ai_max_active_tasks: int = Field(default=2, ge=1, le=10)
@@ -507,6 +510,16 @@ class Settings(BaseSettings):
     telegram_rgw_bot_token: str = ""
     telegram_rgw_chat_id: str = ""
     telegram_rgw_enabled: bool = True
+    # Dedicated HashiCorp Vault security monitor and independent Telegram channel.
+    vault_addr: str = ""
+    vault_token_file: str = "/etc/ceph-ai-secrets/vault.token"
+    vault_monitor_enabled: bool = True
+    vault_poll_interval_seconds: int = 60
+    vault_token_expiry_warning_seconds: int = 86400
+    vault_tls_verify: bool = True
+    telegram_vault_bot_token: str = ""
+    telegram_vault_chat_id: str = ""
+    telegram_vault_enabled: bool = True
     # Dedicated two-way Telegram channel for the Dashboard Chatbox AI.
     # This channel is intentionally separate from alert/approval channels;
     # its chat id is the allow-list for incoming operator messages.

@@ -270,6 +270,32 @@ def test_cluster_upgrade_incident_is_never_auto_resolved_by_recovery(isolated_db
         assert session.get(Incident, real_failed_id).status == IncidentStatus.RESOLVED.value
 
 
+def test_operator_volume_trash_proposal_is_not_cancelled_by_health_recovery(isolated_db):
+    # Regression found live: RBD_VOLUME_TRASH_MOVE is an operator-created
+    # synthetic Incident, not a code emitted by `ceph health detail`. The
+    # generic recovery pass used to resolve it on the next healthy poll and
+    # auto-reject the still-pending trash proposal before approval.
+    pending_id = _seed_incident("RBD_VOLUME_TRASH_MOVE", IncidentStatus.PENDING_APPROVAL.value)
+    with db_module.SessionLocal() as session:
+        incident = session.get(Incident, pending_id)
+        action = Action(
+            incident_id=incident.id,
+            action_id="rbd_trash_move_volume",
+            classification=ActionClassification.RISKY.value,
+            status=ActionStatus.PENDING_APPROVAL.value,
+            action_params='{"pool_name":"volumes","image":"_ceph_aiops_perf_probe"}',
+        )
+        session.add(action)
+        session.commit()
+        action_id = action.id
+
+    watcher_main._resolve_recovered_incidents(set())
+
+    with db_module.SessionLocal() as session:
+        assert session.get(Incident, pending_id).status == IncidentStatus.PENDING_APPROVAL.value
+        assert session.get(Action, action_id).status == ActionStatus.PENDING_APPROVAL.value
+
+
 def test_volume_saturated_incident_is_never_auto_resolved_by_recovery(isolated_db):
     # 2026-07-28: same bug class as CHAT_REQUEST/CLUSTER_UPGRADE above —
     # watcher/volume_monitor.py's synthetic Incidents (ceph_code prefixed
@@ -428,6 +454,37 @@ def test_capacity_incident_freezes_structured_metric_evidence(isolated_db, monke
     with db_module.SessionLocal() as session:
         incident = session.query(Incident).filter_by(ceph_code="OSD_NEARFULL").one()
         assert incident.signal_evidence_json == snapshot
+        assert "Toàn cụm: 91.20%" in incident.log_excerpt
+
+
+def test_capacity_incident_alert_names_pool_osd_and_node(isolated_db, monkeypatch):
+    published = []
+    monkeypatch.setattr(watcher_main.publisher, "publish_incident", _record_async(published))
+    monkeypatch.setattr(
+        watcher_main.collector,
+        "collect_relevant_logs",
+        lambda *a, **k: (["10.20.1.153"], "nearfull"),
+    )
+    snapshot = (
+        '{"source":"ceph_capacity_snapshot","cluster":{"used_percent":81.78},'
+        '"pools":[{"pool":"volumes","used_percent":94.0}],'
+        '"osds":[{"osd_id":1,"host":"rnd-khiempx-lab-ceph2","used_percent":87.26}]}'
+    )
+    monkeypatch.setattr(
+        watcher_main.capacity_evidence, "collect_capacity_evidence", lambda *a, **k: snapshot
+    )
+
+    watcher_main.build_and_publish_incident(None, {
+        "status": "HEALTH_WARN",
+        "checks": {"POOL_NEARFULL": {"severity": "HEALTH_WARN"}},
+    })
+
+    with db_module.SessionLocal() as session:
+        incident = session.query(Incident).filter_by(ceph_code="POOL_NEARFULL").one()
+        assert "Pool áp lực: volumes 94.00%" in incident.log_excerpt
+        assert "OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%" in incident.log_excerpt
+    assert "Pool áp lực: volumes 94.00%" in published[0]["log_excerpt"]
+    assert "OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%" in published[0]["log_excerpt"]
 
 
 def test_failed_incident_does_not_permanently_block_a_fresh_remediation_attempt(
