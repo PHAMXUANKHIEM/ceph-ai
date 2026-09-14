@@ -29,14 +29,19 @@ triggered it.
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import re
+import threading
+from queue import Queue
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from config.settings import settings
 from shared.notification_channels import enqueue_external_alert
 from shared.telegram_client import TelegramSendError, send_telegram_message
+from shared.telegram_humanizer import humanize_log_for_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,10 @@ logger = logging.getLogger(__name__)
 # message limit once the rest of the text is added.
 _MAX_EXCERPT_CHARS = 700
 _MAX_FOLLOWUP_FIELD_CHARS = 240
+
+_BACKGROUND_ALERT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="telegram-alert"
+)
 
 _INCIDENT_SEVERITY_PREFIX = {
     "HEALTH_ERR": "\U0001f534 HEALTH_ERR",  # red circle
@@ -64,6 +73,81 @@ _INCIDENT_EXPLANATIONS = {
     "MON_CLOCK_SKEW": "Thời gian giữa các Monitor bị lệch; cần kiểm tra đồng bộ NTP/chrony trên các node.",
     "POOL_APP_NOT_ENABLED": "Pool chưa bật ứng dụng Ceph tương ứng (thường là rbd/cephfs/rgw); dữ liệu hiện có không đồng nghĩa pool đã được cấu hình đúng.",
 }
+
+_MACHINE_LOG_RE = re.compile(
+    r"(?:traceback|stack trace|exception|container\s+(?:remove|create)|"
+    r"(?:^|\n)\s*[-*]?\s*[A-Za-z_][\w.-]*\s*[:=]|[{}\[\]])",
+    re.IGNORECASE,
+)
+
+
+def _humanize_sync(raw_text: str | None, *, context: str) -> str:
+    """Bridge the async humanizer into this module's sync alert API.
+
+    Watcher sends AI-enriched alerts from a background executor, so this
+    bounded provider wait cannot block the Ceph polling loop. Direct callers
+    retain the synchronous API and still receive the deterministic fallback
+    when the router is unavailable.
+    """
+    fallback = _compact_incident_excerpt(raw_text, _MAX_EXCERPT_CHARS)
+    if not fallback or not getattr(settings, "telegram_ai_humanize_enabled", False):
+        return fallback
+
+    async def invoke() -> str:
+        return await humanize_log_for_telegram(fallback, context=context)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            return asyncio.run(invoke()) or fallback
+        except Exception as exc:
+            logger.warning("telegram humanizer bridge failed: %s", exc)
+            return fallback
+
+    result_queue: Queue[tuple[str | None, BaseException | None]] = Queue(maxsize=1)
+
+    def run_in_thread() -> None:
+        try:
+            result_queue.put((asyncio.run(invoke()), None))
+        except BaseException as exc:
+            result_queue.put((None, exc))
+
+    thread = threading.Thread(target=run_in_thread, name="telegram-humanizer", daemon=True)
+    thread.start()
+    thread.join(10.0)
+    if thread.is_alive():
+        logger.warning("telegram humanizer bridge timed out")
+        return fallback
+    try:
+        value, error = result_queue.get_nowait()
+    except Exception:
+        logger.warning("telegram humanizer bridge returned no result")
+        return fallback
+    if error is not None or not value:
+        if error is not None:
+            logger.warning("telegram humanizer bridge failed: %s", error)
+        return fallback
+    return value
+
+
+def _needs_humanization(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and (len(text) > 240 or bool(_MACHINE_LOG_RE.search(text)))
+
+
+def _run_alert_in_background(name: str, callback) -> None:
+    """Queue the complete humanize-then-send operation away from Watcher."""
+    def run() -> None:
+        try:
+            callback()
+        except Exception:
+            logger.exception("background Telegram alert failed: %s", name)
+
+    try:
+        _BACKGROUND_ALERT_EXECUTOR.submit(run)
+    except Exception:
+        logger.exception("could not queue background Telegram alert: %s", name)
 
 
 def _translate_incident_log(ceph_code: str, log_excerpt: str | None) -> str:
@@ -294,6 +378,8 @@ def send_incident_alert(
     reminder: bool = False,
     diagnosis_text: str | None = None,
     rationale: str | None = None,
+    *,
+    background: bool = False,
 ) -> None:
     """Called once per newly-created cluster-health Incident
     (watcher/main.py::build_and_publish_incident, one call per `ceph
@@ -317,14 +403,34 @@ def send_incident_alert(
     just that chat instead of the 3 global ones. `None` (every other
     caller, unchanged) means "use the global settings.telegram_incident_*
     exactly as before this param existed"."""
+    if background:
+        _run_alert_in_background(
+            "incident",
+            lambda: send_incident_alert(
+                ceph_code,
+                severity,
+                log_excerpt,
+                cluster_name,
+                bot_token,
+                chat_id,
+                enabled,
+                reminder,
+                diagnosis_text,
+                rationale,
+                background=False,
+            ),
+        )
+        return
+
     prefix = _INCIDENT_SEVERITY_PREFIX.get(severity or "", f"⚠️ {severity or 'SỰ CỐ'}")
     excerpt = _compact_incident_excerpt(log_excerpt, _MAX_EXCERPT_CHARS)
     explanation = _translate_incident_log(ceph_code, log_excerpt)
+    excerpt = _humanize_sync(log_excerpt, context=f"log gốc {ceph_code}")
     reminder_prefix = "🔁 NHẮC LẠI · " if reminder else ""
     text = f"{reminder_prefix}{prefix} Cụm Ceph: {ceph_code}"
     text += f"\n📝 Diễn giải: {explanation}"
     if excerpt:
-        text += f"\n🔎 Log gốc:\n{excerpt}"
+        text += f"\n📖 Giải thích chi tiết:\n{_compact_multiline(excerpt, _MAX_EXCERPT_CHARS)}"
     if reminder and diagnosis_text:
         text += f"\n🧠 Tóm tắt AI: {_compact(diagnosis_text, _MAX_FOLLOWUP_FIELD_CHARS)}"
     if reminder and rationale:
@@ -700,6 +806,7 @@ def send_log_finding_alert(
     enabled: bool | None = None,
     daemon_types: list[str] | None = None,
     rca_stage: str | None = None,
+    background: bool = False,
 ) -> None:
     """Gửi MỘT lần cho mỗi phát hiện log THỰC SỰ MỚI
     (`watcher/log_analysis.py` chỉ gọi khi `dedupe_key` chưa có bản ghi nào
@@ -708,6 +815,31 @@ def send_log_finding_alert(
 
     Telegram is deliberately a short on-call signal. Full summary, evidence,
     commands and every recommendation remain in the Dashboard."""
+    if background:
+        _run_alert_in_background(
+            "log-finding",
+            lambda: send_log_finding_alert(
+                title,
+                severity,
+                confidence,
+                summary,
+                root_cause,
+                evidence_templates,
+                recommended_action_id,
+                validation_notes,
+                operator_commands=operator_commands,
+                recommended_steps=recommended_steps,
+                cluster_name=cluster_name,
+                bot_token=bot_token,
+                chat_id=chat_id,
+                enabled=enabled,
+                daemon_types=daemon_types,
+                rca_stage=rca_stage,
+                background=False,
+            ),
+        )
+        return
+
     prefix = _LOG_FINDING_SEVERITY_PREFIX.get(severity, f"⚠️ {severity}")
     daemon_set = {value.strip().lower() for value in (daemon_types or []) if isinstance(value, str)}
     source_label = "Cảnh báo RGW do AI phân tích" if "rgw" in daemon_set else "Phát hiện từ log"
@@ -720,6 +852,8 @@ def send_log_finding_alert(
         lines.append(f"🧭 Quy trình RCA: {_compact(rca_stage, 180)}")
     conclusion = root_cause or summary
     if conclusion:
+        if _needs_humanization(conclusion):
+            conclusion = _humanize_sync(conclusion, context=f"root cause từ log {title}")
         lines.append(f"🔎 Nhận định: {_compact(conclusion, 180)}")
     clean_steps = [str(value).strip() for value in (recommended_steps or []) if str(value).strip()]
     if clean_steps:

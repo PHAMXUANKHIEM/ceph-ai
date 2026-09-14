@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     # distinguish "not configured yet" from "configured but temporarily
     # unreachable" without treating a blank api_key as the only signal.
     router_enabled: bool = False
+    # Optional AI pass for Telegram alerts. It is best-effort and falls back
+    # to the deterministic explanation/raw excerpt when disabled or failing.
+    telegram_ai_humanize_enabled: bool = True
 
     # Optional unit prices used only by the read-only AI Cost dashboard. The
     # telemetry layer stores content-free sizes, so the dashboard labels token
