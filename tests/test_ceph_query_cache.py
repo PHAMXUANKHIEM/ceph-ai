@@ -102,3 +102,42 @@ def test_get_or_load_does_not_load_without_lock(monkeypatch, tmp_path):
             lambda: calls.append("loaded") or {"health": "OK"},
         )
     assert calls == []
+
+
+def test_cache_never_hands_out_an_object_it_still_owns(monkeypatch, tmp_path):
+    """`_memory` giữ text đã serialize thay vì object đã parse, nên mỗi lần
+    đọc là một lần parse mới — vừa rẻ hơn deepcopy ~4 lần, vừa khiến việc
+    alias vào cache trở thành bất khả thi. Test này chốt tính chất đó: caller
+    sửa thứ mình nhận được thì lần đọc sau vẫn phải sạch."""
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+
+    published = ceph_query_cache.store_versioned(
+        "cluster-snapshot", "cluster", {"pools": [{"name": "rbd"}]}
+    )
+    published["pools"][0]["name"] = "ĐÃ BỊ SỬA"
+
+    first, _age = ceph_query_cache.get_cached("cluster-snapshot", "cluster")
+    assert first["pools"][0]["name"] == "rbd"
+    first["pools"][0]["name"] = "SỬA LẦN HAI"
+
+    second, _age = ceph_query_cache.get_cached("cluster-snapshot", "cluster", prefer_disk=True)
+    assert second["pools"][0]["name"] == "rbd"
+
+    updated = ceph_query_cache.update_value("cluster-snapshot", "cluster", {"note": "x"})
+    updated["pools"][0]["name"] = "SỬA LẦN BA"
+    third, _age = ceph_query_cache.get_cached("cluster-snapshot", "cluster")
+    assert third["pools"][0]["name"] == "rbd"
+    assert third["note"] == "x"
+
+
+def test_store_does_not_alias_the_callers_value(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+
+    source = {"nodes": [{"host": "node-a"}]}
+    ceph_query_cache.store("inventory", "cluster", source)
+    source["nodes"][0]["host"] = "ĐÃ BỊ SỬA"
+
+    cached, _age = ceph_query_cache.get_cached("inventory", "cluster")
+    assert cached["nodes"][0]["host"] == "node-a"

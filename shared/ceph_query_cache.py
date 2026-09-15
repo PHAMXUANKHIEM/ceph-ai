@@ -6,7 +6,6 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from copy import deepcopy
 from pathlib import Path
 from threading import RLock
 from time import monotonic, sleep, time
@@ -15,7 +14,8 @@ from typing import Callable, Dict, Tuple, TypeVar
 
 T = TypeVar("T")
 _lock = RLock()
-_memory: Dict[Tuple[str, str], Tuple[float, object]] = {}
+# (created_at, serialized record) — xem `_load_entry` về lý do giữ text.
+_memory: Dict[Tuple[str, str], Tuple[float, str]] = {}
 _cache_dir = Path(os.environ.get("CEPH_AI_CACHE_DIR", "/var/lib/ceph-ai/cache"))
 _MAX_STALE_SECONDS = 900
 _CACHE_LOCK_TIMEOUT_SECONDS = 5.0
@@ -39,30 +39,51 @@ def _path(namespace: str, key: str) -> Path:
     return _cache_dir / f"{safe_namespace}-{digest}.json"
 
 
-def _read(namespace: str, key: str):
+_DECODE_ERRORS = (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError, OSError)
+
+
+def _decode_value(text: str):
+    """Deserialize one record's value into an object owned by the caller."""
+    return json.loads(text)["value"]
+
+
+def _read_entry(namespace: str, key: str):
+    """Return (created_at, serialized record, freshly decoded value)."""
     try:
-        record = json.loads(_path(namespace, key).read_text(encoding="utf-8"))
-        created_at = float(record["created_at"])
-        return created_at, record["value"]
-    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
+        text = _path(namespace, key).read_text(encoding="utf-8")
+        record = json.loads(text)
+        return float(record["created_at"]), text, record["value"]
+    except _DECODE_ERRORS:
         return None
 
 
-def _write(namespace: str, key: str, created_at: float, value: object) -> bool:
+def _read(namespace: str, key: str):
+    entry = _read_entry(namespace, key)
+    if entry is None:
+        return None
+    created_at, _text, value = entry
+    return created_at, value
+
+
+def _write(namespace: str, key: str, created_at: float, value: object) -> str | None:
+    """Persist one record and return the exact text written.
+
+    Callers reuse that text to populate the in-memory cache: the value has to
+    be serialized for disk anyway, so keeping the serialized form costs
+    nothing extra and removes the need to deep-copy the value.
+    """
     try:
+        text = json.dumps({"created_at": created_at, "value": value}, separators=(",", ":"))
         _cache_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         destination = _path(namespace, key)
         temporary = destination.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps({"created_at": created_at, "value": value}, separators=(",", ":")),
-            encoding="utf-8",
-        )
+        temporary.write_text(text, encoding="utf-8")
         temporary.chmod(0o600)
         os.replace(temporary, destination)
-        return True
+        return text
     except (OSError, TypeError, ValueError):
         # Cache failures must never make the live Ceph page unavailable.
-        return False
+        return None
 
 
 
@@ -126,34 +147,62 @@ def key_lock(namespace: str, key: str, *, timeout_seconds: float | None = None):
         yield
 
 
-def _fresh_value(namespace: str, key: str, ttl_seconds: int):
+def _load_entry(namespace: str, key: str, *, prefer_disk: bool = False):
+    """Return (created_at, a value owned by the caller), or None.
+
+    `_memory` holds each record's SERIALIZED text, not a parsed object. The
+    cache must hand every caller an independent object, and re-parsing the
+    text is roughly four times cheaper than deep-copying a parsed one — the
+    old `deepcopy` cost more than reading the file from disk. Storing text
+    also makes aliasing structurally impossible, so no caller can corrupt
+    the cache by mutating what it received.
+
+    Must be called with `_lock` held.
+    """
     cache_key = (namespace, key)
-    now = time()
-    with _lock:
-        cached = _memory.get(cache_key)
+    cached = _memory.get(cache_key)
+    if prefer_disk:
+        entry = _read_entry(namespace, key)
+        if entry is not None:
+            created_at, text, value = entry
+            _memory[cache_key] = (created_at, text)
+            return created_at, value
+        if not _path(namespace, key).exists():
+            _memory.pop(cache_key, None)
+            return None
+    else:
         if cached is not None and not _path(namespace, key).exists():
             _memory.pop(cache_key, None)
             cached = None
-        cached = cached or _read(namespace, key)
-        if cached is not None:
-            created_at, value = cached
-            _memory[cache_key] = cached
+        if cached is None:
+            entry = _read_entry(namespace, key)
+            if entry is None:
+                return None
+            created_at, text, value = entry
+            _memory[cache_key] = (created_at, text)
+            return created_at, value
+    if cached is None:
+        return None
+    created_at, text = cached
+    return created_at, _decode_value(text)
+
+
+def _fresh_value(namespace: str, key: str, ttl_seconds: int):
+    now = time()
+    with _lock:
+        entry = _load_entry(namespace, key)
+        if entry is not None:
+            created_at, value = entry
             if now - created_at < ttl_seconds:
-                return deepcopy(value)
+                return value
     return _MISSING
 
 
 def _stale_value(namespace: str, key: str):
-    cache_key = (namespace, key)
     with _lock:
-        cached = _memory.get(cache_key)
-        if cached is not None and not _path(namespace, key).exists():
-            _memory.pop(cache_key, None)
-            cached = None
-        cached = cached or _read(namespace, key)
-        if cached is not None and time() - cached[0] < _MAX_STALE_SECONDS:
-            _memory[cache_key] = cached
-            return deepcopy(cached[1])
+        entry = _load_entry(namespace, key)
+        if entry is not None and time() - entry[0] < _MAX_STALE_SECONDS:
+            return entry[1]
     return _MISSING
 
 
@@ -165,30 +214,16 @@ def get_cached(
     prefer_disk: bool = False,
 ) -> tuple[object, float] | None:
     """Return a cached value and its age without invoking a loader."""
-    cache_key = (namespace, key)
     now = time()
     with _lock:
-        cached = _memory.get(cache_key)
-        if prefer_disk:
-            persisted = _read(namespace, key)
-            if persisted is not None:
-                cached = persisted
-            elif not _path(namespace, key).exists():
-                _memory.pop(cache_key, None)
-                cached = None
-        else:
-            if cached is not None and not _path(namespace, key).exists():
-                _memory.pop(cache_key, None)
-                cached = None
-            cached = cached or _read(namespace, key)
-        if cached is None:
+        entry = _load_entry(namespace, key, prefer_disk=prefer_disk)
+        if entry is None:
             return None
-        created_at, value = cached
+        created_at, value = entry
         age_seconds = max(0.0, now - created_at)
         if max_age_seconds is not None and age_seconds > max_age_seconds:
             return None
-        _memory[cache_key] = cached
-        return deepcopy(value), age_seconds
+        return value, age_seconds
 
 
 def store(namespace: str, key: str, value: object) -> None:
@@ -199,8 +234,9 @@ def store(namespace: str, key: str, value: object) -> None:
         created_at = time()
         cache_key = (namespace, key)
         with _lock:
-            if _write(namespace, key, created_at, value):
-                _memory[cache_key] = (created_at, deepcopy(value))
+            text = _write(namespace, key, created_at, value)
+            if text:
+                _memory[cache_key] = (created_at, text)
 
 
 def store_versioned(namespace: str, key: str, value: dict) -> dict:
@@ -221,15 +257,18 @@ def store_versioned(namespace: str, key: str, value: dict) -> dict:
             previous_generation = int(previous_value.get("generation", 0)) if isinstance(previous_value, dict) else 0
         except (TypeError, ValueError):
             previous_generation = 0
-        stored = deepcopy(value)
+        # Bản sao nông là đủ: chỉ thêm một khóa ở tầng trên, và `_memory`
+        # giữ text nên không còn đường nào alias vào cache.
+        stored = dict(value)
         stored["generation"] = max(0, previous_generation) + 1
         created_at = time()
         cache_key = (namespace, key)
         with _lock:
-            if not _write(namespace, key, created_at, stored):
+            text = _write(namespace, key, created_at, stored)
+            if not text:
                 raise CachePersistenceError(f"could not persist cache value for {namespace}:{key}")
-            _memory[cache_key] = (created_at, deepcopy(stored))
-        return deepcopy(stored)
+            _memory[cache_key] = (created_at, text)
+        return stored
 
 
 def update_value(namespace: str, key: str, updates: dict) -> dict | None:
@@ -247,13 +286,15 @@ def update_value(namespace: str, key: str, updates: dict) -> dict | None:
         if previous is None or not isinstance(previous[1], dict):
             return None
         created_at, previous_value = previous
-        stored = deepcopy(previous_value)
-        stored.update(deepcopy(updates))
+        # `_read` vừa parse ra một object mới, không ai khác giữ tham chiếu.
+        stored = previous_value
+        stored.update(updates)
         with _lock:
-            if not _write(namespace, key, created_at, stored):
+            text = _write(namespace, key, created_at, stored)
+            if not text:
                 raise CachePersistenceError(f"could not persist cache value for {namespace}:{key}")
-            _memory[(namespace, key)] = (created_at, deepcopy(stored))
-        return deepcopy(stored)
+            _memory[(namespace, key)] = (created_at, text)
+        return stored
 
 
 def _refresh(
@@ -317,8 +358,9 @@ def get_or_load(
                 value = loader()
                 created_at = time()
                 with _lock:
-                    if _write(namespace, key, created_at, value):
-                        _memory[cache_key] = (created_at, deepcopy(value))
+                    text = _write(namespace, key, created_at, value)
+                    if text:
+                        _memory[cache_key] = (created_at, text)
                 return value
 
         # The lock owner may have filled the cache just after our timeout.
