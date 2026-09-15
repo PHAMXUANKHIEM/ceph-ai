@@ -141,6 +141,31 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     assert "old-disk" not in response.text
 
 
+def test_trash_page_does_not_invent_allocated_size_when_ceph_cannot_report_it(
+    dashboard_client, monkeypatch
+):
+    _configure_pools(monkeypatch)
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_trash",
+        lambda pool: [{**_fake_trash_entry(name=f"{pool}-deleted"), "used_size_bytes": None}]
+        if pool == "vms"
+        else [],
+    )
+    monkeypatch.setattr(
+        volumes_route.ceph_client,
+        "query_rbd_trash_with",
+        lambda pool, *args: [],
+    )
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash?pool=vms")
+
+    assert response.status_code == 200
+    assert "1.0 GiB" in response.text
+    assert "Đã dùng: —" in response.text
+
+
 def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
     monkeypatch.setattr(
@@ -2003,6 +2028,18 @@ def test_propose_trash_move_blocks_dependencies_and_creates_risky_action(dashboa
         action = session.get(Action, proposed.json()["action_id"])
         assert action.action_id == "rbd_trash_move_volume"
         assert action.classification == "RISKY"
+
+
+def test_propose_trash_move_accepts_ceph_internal_image_name(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    _stub_volume_mutation_preflight(monkeypatch)
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/api/volumes/vms/inventory/_ceph_aiops_perf_probe/trash", json={}
+    )
+
+    assert response.status_code == 201
 
 
 def test_propose_trash_move_blocks_running_backup(dashboard_client, monkeypatch):

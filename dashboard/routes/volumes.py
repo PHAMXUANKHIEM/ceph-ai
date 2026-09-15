@@ -154,7 +154,10 @@ VM_PERF_BENCHMARK_CEPH_CODE = "VM_PERF_BENCHMARK"
 VM_PERF_BENCHMARK_ACTION_ID = "vm_perf_benchmark"
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 _VM_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]+$")
-_RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+# Ceph-created/internal images may begin with `_` (for example
+# `_ceph_aiops_perf_probe`); a leading `-` remains forbidden so the value
+# cannot be interpreted as a CLI option.
+_RBD_IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _OPENSTACK_UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
@@ -284,7 +287,12 @@ def _volumes_page_context(
             rows = result
             try:
                 retention_rows = [_trash_retention(dict(row)) for row in rows]
-                total_used_size_bytes = sum(max(0, int(row.get("used_size_bytes") or 0)) for row in rows)
+                used_sizes = [row.get("used_size_bytes") for row in rows]
+                total_used_size_bytes = (
+                    sum(max(0, int(value)) for value in used_sizes)
+                    if all(value is not None for value in used_sizes)
+                    else None
+                )
                 total_provisioned_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
                 trash_pool_summaries.append(
                     {
@@ -292,7 +300,7 @@ def _volumes_page_context(
                         "entry_count": len(rows),
                         "eligible_count": sum(1 for retention in retention_rows if retention["purge_eligible"]),
                         "total_used_size_bytes": total_used_size_bytes,
-                        "total_used_size_human": _format_bytes(total_used_size_bytes),
+                        "total_used_size_human": _format_optional_bytes(total_used_size_bytes),
                         "total_provisioned_size_bytes": total_provisioned_size_bytes,
                         "total_provisioned_size_human": _format_bytes(total_provisioned_size_bytes),
                         "error": None,
@@ -304,7 +312,7 @@ def _volumes_page_context(
                     item = dict(row)
                     item["pool"] = trash_pool
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
-                    item["used_size_human"] = _format_bytes(item.get("used_size_bytes", 0))
+                    item["used_size_human"] = _format_optional_bytes(item.get("used_size_bytes"))
                     item.update(_trash_retention(item))
                     trash_entries.append(item)
             except (TypeError, ValueError) as exc:
@@ -347,6 +355,10 @@ def _format_bytes(value: int | float) -> str:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
     return "0 B"
+
+
+def _format_optional_bytes(value: int | float | None) -> str:
+    return "—" if value is None else _format_bytes(value)
 
 
 def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:

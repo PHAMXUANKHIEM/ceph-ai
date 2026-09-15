@@ -19,6 +19,7 @@ def check_trash_capacity() -> dict:
     total_trash_bytes = 0
     entry_count = 0
     scanned_pools: list[str] = []
+    usage_known = True
     for pool in pools:
         try:
             entries = ceph_client.query_rbd_trash(pool)
@@ -27,19 +28,27 @@ def check_trash_capacity() -> dict:
             continue
         scanned_pools.append(pool)
         entry_count += len(entries)
-        total_trash_bytes += sum(max(0, int(entry.get("used_size_bytes", 0))) for entry in entries)
+        for entry in entries:
+            used_size = entry.get("used_size_bytes")
+            if used_size is None:
+                usage_known = False
+                continue
+            total_trash_bytes += max(0, int(used_size))
 
     _host, df = ceph_client.run_ceph_json_command("ceph df")
     stats = df.get("stats", {}) if isinstance(df, dict) else {}
     total_bytes = max(0, int(stats.get("total_bytes") or 0))
-    ratio = total_trash_bytes / total_bytes if total_bytes else 0.0
+    # Never treat an unavailable per-image allocation value as zero: that
+    # would make a large Trash silently look harmless to the capacity alert.
+    ratio = total_trash_bytes / total_bytes if total_bytes and usage_known else 0.0
     return {
-        "trash_bytes": total_trash_bytes,
+        "trash_bytes": total_trash_bytes if usage_known else None,
         "total_bytes": total_bytes,
         "ratio": ratio,
         "entry_count": entry_count,
         "pools": scanned_pools,
-        "over_threshold": bool(total_bytes and ratio > TRASH_CAPACITY_RATIO_THRESHOLD),
+        "usage_known": usage_known,
+        "over_threshold": bool(usage_known and total_bytes and ratio > TRASH_CAPACITY_RATIO_THRESHOLD),
     }
 
 
