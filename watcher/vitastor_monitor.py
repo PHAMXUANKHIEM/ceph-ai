@@ -338,7 +338,12 @@ def poll_cluster_once(cluster: VitastorCluster) -> str:
     except VitastorConnectionError as exc:
         current = "UNREACHABLE"
         if previous != current:
-            send_vitastor_alert(cluster.name, current, f"Không kết nối được management host {cluster.management_host}: {exc}")
+            # `ssh_failure_message` đã nêu tên host và việc cần làm; bọc thêm
+            # tiền tố chỉ khiến câu lặp tên host hai lần.
+            detail = str(exc)
+            if cluster.management_host not in detail:
+                detail = f"Không kết nối được management host {cluster.management_host}: {detail}"
+            send_vitastor_alert(cluster.name, current, detail)
         cache["checked_at"] = checked_at
         cache["monitor_error"] = str(exc)
         _persist(cluster.id, cache, current)

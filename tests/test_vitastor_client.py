@@ -139,3 +139,37 @@ def test_query_dashboard_keeps_detail_command_failures_best_effort(monkeypatch, 
     assert result["status"]["osd_up"] == 2
     assert result["pools"] == []
     assert "flag unavailable" in result["errors"]["pools"]
+
+
+def test_unpinned_host_key_error_tells_the_operator_what_to_do():
+    """Cảnh báo Telegram trước đây đưa nguyên văn chuỗi paramiko lên kênh
+    tiếng Việt, và không nói rằng đây là việc cần làm chứ không phải sự cố
+    của cụm — RejectPolicy từ chối node chưa pin là đúng thiết kế."""
+    message = client.ssh_failure_message(
+        "10.3.54.152",
+        client.paramiko.SSHException("Server '10.3.54.152' not found in known_hosts"),
+    )
+
+    assert "not found in known_hosts" not in message
+    assert "Chưa pin SSH host key cho 10.3.54.152" in message
+    assert "Node SSH host keys" in message
+
+
+def test_changed_host_key_warns_instead_of_telling_operator_to_repin():
+    # Không cần key thật: nhánh này nhận diện bằng kiểu exception và không
+    # đụng tới key material, nên câu trả lời không bao giờ lộ key ra Telegram.
+    class Key:
+        pass
+
+    message = client.ssh_failure_message(
+        "10.3.54.152", client.paramiko.BadHostKeyException("10.3.54.152", Key(), Key())
+    )
+
+    assert "khác với key đang được pin" in message
+    assert "kiểm tra đường mạng trước khi pin đè" in message
+
+
+def test_other_ssh_failures_keep_their_original_detail():
+    message = client.ssh_failure_message("10.3.54.152", OSError("timed out"))
+
+    assert message == "Không SSH được tới 10.3.54.152: timed out"

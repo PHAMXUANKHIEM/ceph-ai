@@ -144,6 +144,15 @@ _INCIDENT_TITLES = {
     "DEVICE_HEALTH_TOOMANY": "Quá nhiều ổ đĩa được dự đoán sắp hỏng cùng lúc",
 }
 
+# Thuộc tính duy nhất trong sự kiện podman nói lên được sự cố; phần còn lại
+# là nhãn build của image.
+_CONTAINER_ATTRIBUTES_KEPT = {"name", "pod", "health_status", "exit_code"}
+# Khối "(k=v, k=v, ...)"; chấp nhận cả trường hợp log đã bị cắt mất ngoặc đóng.
+_CONTAINER_ATTRS_RE = re.compile(r"\((?=[^()]*=)([^()]*?)(?:\)|$)")
+_IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]+")
+_MONOTONIC_CLOCK_RE = re.compile(r"\s*\bm=\+[0-9.]+")
+_LONG_HEX_ID_RE = re.compile(r"\b[0-9a-f]{32,}\b")
+
 _MACHINE_LOG_RE = re.compile(
     r"(?:traceback|stack trace|exception|container\s+(?:remove|create)|"
     r"(?:^|\n)\s*[-*]?\s*[A-Za-z_][\w.-]*\s*[:=]|[{}\[\]])",
@@ -422,9 +431,36 @@ def _compact_multiline(value: str | None, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _strip_container_label_noise(value: str) -> str:
+    """Bỏ nhãn image của container khỏi khối bằng chứng.
+
+    Log podman đính kèm toàn bộ label của image vào mỗi sự kiện: digest
+    sha256, id 64 ký tự hex, đồng hồ monotonic, `org.label-schema.*`,
+    `GANESHA_REPO_BASEURL`. Không thứ nào trong đó là bằng chứng của sự cố,
+    nhưng chúng chiếm gần hết 700 ký tự cho phép và đẩy phần có nghĩa —
+    OSD nào, container nào, sự kiện gì, lúc mấy giờ — ra ngoài.
+
+    Chạy tất định, không cần router: đây là đường DUY NHẤT còn lại khi
+    humanizer bị tắt.
+    """
+    def _keep_known_attributes(match: re.Match) -> str:
+        kept = []
+        for part in match.group(1).split(","):
+            key, separator, attribute = part.partition("=")
+            if separator and key.strip().lower() in _CONTAINER_ATTRIBUTES_KEPT:
+                kept.append(f"{key.strip()}={attribute.strip()}")
+        return f" ({', '.join(kept)})" if kept else ""
+
+    text = _CONTAINER_ATTRS_RE.sub(_keep_known_attributes, value)
+    text = _IMAGE_DIGEST_RE.sub("", text)
+    text = _MONOTONIC_CLOCK_RE.sub("", text)
+    text = _LONG_HEX_ID_RE.sub(lambda match: match.group(0)[:12], text)
+    return text
+
+
 def _compact_incident_excerpt(value: str | None, limit: int) -> str:
     marker = "Dung lượng chi tiết:"
-    raw = value or ""
+    raw = _strip_container_label_noise(value or "")
     if marker not in raw:
         return _compact(raw, limit)
     before, context = raw.split(marker, 1)

@@ -238,6 +238,65 @@ def test_humanizer_skips_router_without_model(monkeypatch):
     assert result == "OSD 2 DOWN"
 
 
+_PODMAN_EVENT_LOG = (
+    "--- 10.20.1.39 (osd.0) ---\n"
+    "Sep 15 15:31:21 rnd-khiempx-lab-ceph1.novalocal podman[100895]: "
+    "2026-09-15 15:31:21.200235759 +0700 +07 m=+5.670333057 container died "
+    "602ce1459defd9401535b4c94c98091d62800a6b2678af17596c352fd50bae52 "
+    "(image=quay.io/ceph/ceph@sha256:09ee90f6f3e0c7b9954f71d214ee05e9bbaaaea3716b1dd619603283b829f8b8, "
+    "name=ceph-7174a09e-7a72-11f1-b25e-fa163ec4d544-osd-0-deactivate, "
+    "GANESHA_REPO_BASEURL=https://buildlogs.centos.org/centos/$releasever-stream/storage/, "
+    "org.label-schema.vendor=CentOS, "
+    "org.opencontainers.image.authors=Ceph Release Team <ceph-maintainers@ceph.io>, "
+    "org.label-schema.license=GPLv2, org.label-schema.schema-version=1.0)"
+)
+
+
+def test_container_image_labels_are_stripped_from_the_evidence_block(monkeypatch):
+    """Nhãn build của image chiếm gần hết 700 ký tự cho phép và đẩy phần có
+    nghĩa ra ngoài. Bộ lọc này chạy tất định — khi humanizer bị tắt (router
+    chưa cấu hình) thì đây là đường duy nhất còn lại."""
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", False, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("BLUESTORE_SLOW_OP_ALERT", "HEALTH_WARN", _PODMAN_EVENT_LOG)
+
+    evidence = calls[0].split("🔎 Bằng chứng kỹ thuật:\n", 1)[1]
+    # Phần nhiễu biến mất...
+    for noise in ("org.label-schema", "GANESHA_REPO_BASEURL", "sha256:", "m=+", "ceph-maintainers"):
+        assert noise not in evidence
+    # ...phần là bằng chứng thật thì còn nguyên.
+    assert "10.20.1.39 (osd.0)" in evidence
+    assert "container died" in evidence
+    assert "name=ceph-7174a09e-7a72-11f1-b25e-fa163ec4d544-osd-0-deactivate" in evidence
+    assert "602ce1459def" in evidence  # id rút còn 12 ký tự như podman vẫn hiển thị
+    assert "…" not in evidence  # không còn bị cắt cụt vì hết chỗ
+
+
+def test_noise_filter_leaves_capacity_evidence_untouched(monkeypatch):
+    """Khối "Dung lượng chi tiết:" có bố cục nhiều dòng riêng; bộ lọc chỉ
+    được nhắm vào log container, không đụng tới nó."""
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+    excerpt = (
+        "Dung lượng chi tiết:\n"
+        "- Pool áp lực: volumes 94.00%\n"
+        "- OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%"
+    )
+
+    telegram_alerts.send_incident_alert("POOL_NEARFULL", "HEALTH_WARN", excerpt)
+
+    assert "Pool áp lực: volumes 94.00%" in calls[0]
+    assert "OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%" in calls[0]
+
+
 def test_every_prose_field_is_reflowed_to_one_paragraph(monkeypatch):
     """`_natural` là chốt duy nhất: một chuỗi do monitor sinh ra, có xuống
     dòng và khoảng trắng thừa, không được lên Telegram ở dạng thô."""

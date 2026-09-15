@@ -74,6 +74,32 @@ def _write_host_keys_atomically(host_keys: paramiko.HostKeys) -> None:
             pass
 
 
+def ssh_failure_message(host: str, exc: Exception) -> str:
+    """Nói cho người trực biết PHẢI LÀM GÌ, thay vì ném chuỗi paramiko ra.
+
+    `RejectPolicy` là chủ đích: không có trust-on-first-use, một node lạ phải
+    được operator xác minh rồi pin tay. Nhưng "Server 'x' not found in
+    known_hosts" thì vừa là tiếng Anh, vừa không nói ra rằng đó là việc cần
+    làm chứ không phải sự cố của cụm.
+    """
+    if isinstance(exc, paramiko.BadHostKeyException):
+        return (
+            f"SSH host key của {host} khác với key đang được pin. Nếu node vừa "
+            "cài lại, hãy xác minh key mới từ console của node rồi pin lại ở "
+            "Vitastor → Cài đặt → Node SSH host keys. Nếu node không có gì thay "
+            "đổi thì dừng lại và kiểm tra đường mạng trước khi pin đè."
+        )
+    detail = str(exc)
+    if "not found in known_hosts" in detail:
+        return (
+            f"Chưa pin SSH host key cho {host} nên hệ thống từ chối kết nối. "
+            "Đây là chủ đích: node lạ không được tự động tin. Hãy lấy host key "
+            "từ console của node rồi thêm ở Vitastor → Cài đặt → Node SSH host "
+            "keys, cụm sẽ được giám sát lại ngay sau đó."
+        )
+    return f"Không SSH được tới {host}: {detail}"
+
+
 def provision_host_key(host: str, public_key: str) -> str:
     """Pin an operator-verified node host key; never use trust-on-first-use.
 
@@ -177,7 +203,7 @@ def query_logs(
         if status != 0: raise VitastorConnectionError(f"{management_host}: journalctl thoát mã {status}: {error.strip()}")
         return output[-500_000:]
     except (OSError, paramiko.SSHException) as exc:
-        raise VitastorConnectionError(f"Không SSH được tới {management_host}: {exc}") from exc
+        raise VitastorConnectionError(ssh_failure_message(management_host, exc)) from exc
     finally:
         client.close()
 
@@ -235,7 +261,7 @@ def query_status(
             raise VitastorConnectionError("Dữ liệu status Vitastor không đúng định dạng")
         return payload
     except (OSError, paramiko.SSHException) as exc:
-        raise VitastorConnectionError(f"Không SSH được tới {management_host}: {exc}") from exc
+        raise VitastorConnectionError(ssh_failure_message(management_host, exc)) from exc
     finally:
         client.close()
 
@@ -317,7 +343,7 @@ def query_dashboard(
             raise VitastorConnectionError("Dữ liệu status Vitastor không đúng định dạng")
         return result
     except (OSError, paramiko.SSHException) as exc:
-        raise VitastorConnectionError(f"Không SSH được tới {management_host}: {exc}") from exc
+        raise VitastorConnectionError(ssh_failure_message(management_host, exc)) from exc
     finally:
         client.close()
 
