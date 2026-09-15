@@ -81,6 +81,23 @@ def test_deploy_rejects_unsafe_version(dashboard_client):
     assert response.json()["detail"] == "Phiên bản Vitastor không hợp lệ"
 
 
+def test_deploy_rejects_osd_network_that_excludes_a_node(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/vitastor/deploy-cluster/propose",
+        json={
+            **_deploy_payload(),
+            "osd_network": "10.20.1.0/24",
+            "nodes": [{"host": "10.20.1.10", "roles": ["mon"], "disks": []},
+                      {"host": "10.20.2.11", "roles": ["osd"], "disks": ["/dev/nvme0n1"]}],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "không bao phủ node" in response.json()["detail"]
+
+
 def test_failed_deploy_can_create_approval_gated_resume(dashboard_client, monkeypatch):
     source_id = "failed-deploy-1"
     params = _deploy_payload()

@@ -375,9 +375,19 @@ def test_periodic_health_status_names_each_open_check(monkeypatch):
     telegram_alerts.send_periodic_health_status("HEALTH_WARN", ["OSD_DOWN", "POOL_NEARFULL"])
 
     assert "✅ Không có cảnh báo nào đang mở." in calls[0]
-    assert "⚠️ Đang mở 2 cảnh báo: " in calls[1]
-    assert "Một OSD đã ngừng hoạt động (OSD_DOWN)" in calls[1]
-    assert "Pool sắp đầy (POOL_NEARFULL)" in calls[1]
+    # Mỗi cảnh báo một dòng — gộp một dòng thì trên điện thoại chỉ là khối chữ.
+    assert "⚠️ Đang mở 2 cảnh báo:\n" in calls[1]
+    assert "\n• Một OSD đã ngừng hoạt động (OSD_DOWN)" in calls[1]
+    assert "\n• Pool sắp đầy (POOL_NEARFULL)" in calls[1]
+
+
+def test_auth_health_checks_have_vietnamese_titles():
+    for code in (
+        "AUTH_INSECURE_CLIENT_KEY_TYPE",
+        "AUTH_INSECURE_KEYS_ALLOWED",
+        "AUTH_INSECURE_GLOBAL_ID_RECLAIM",
+    ):
+        assert not telegram_alerts._incident_title(code).startswith("Cảnh báo Ceph:")
 
 
 def test_periodic_health_status_caps_a_long_check_list(monkeypatch):
@@ -393,8 +403,9 @@ def test_periodic_health_status_caps_a_long_check_list(monkeypatch):
         ["OSD_DOWN", "PG_DEGRADED", "POOL_NEARFULL", "RECENT_CRASH", "SLOW_OPS", "TOO_MANY_PGS"],
     )
 
-    assert "⚠️ Đang mở 6 cảnh báo: " in calls[0]
-    assert calls[0].rstrip().endswith("và 2 cảnh báo khác")
+    assert "⚠️ Đang mở 6 cảnh báo:\n" in calls[0]
+    assert calls[0].rstrip().endswith("• và 2 cảnh báo khác")
+    assert calls[0].count("\n• ") == 5  # 4 mục + dòng "còn lại"
 
 
 def _capture_external_alerts(monkeypatch):

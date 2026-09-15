@@ -1,6 +1,7 @@
 """Deploy/delete workflows for Vitastor, independent from Ceph actions."""
 
 import asyncio
+import ipaddress
 import json
 import re
 from datetime import datetime
@@ -224,6 +225,18 @@ async def propose_deploy(request: Request, user: str = Depends(require_vitastor_
     nodes = _validate_nodes(body.get("nodes"))
     params = {"nodes": nodes, "version": version, "ssh_user": str(body.get("ssh_user") or "").strip(), "ssh_key_path": str(body.get("ssh_key_path") or "").strip(), "etcd_prefix": str(body.get("etcd_prefix") or "/vitastor").strip(), "osd_network": str(body.get("osd_network") or "").strip(), "install_packages": bool(body.get("install_packages"))}
     if not params["ssh_user"] or not params["ssh_key_path"] or not params["osd_network"]: raise HTTPException(400, "SSH user, SSH key và OSD network là bắt buộc")
+    try:
+        osd_network = ipaddress.ip_network(params["osd_network"], strict=False)
+    except ValueError as exc:
+        raise HTTPException(400, "OSD network không phải CIDR hợp lệ") from exc
+    outside_network = [
+        node["host"] for node in nodes
+        if "." in node["host"]
+        and all(part.isdigit() for part in node["host"].split("."))
+        and ipaddress.ip_address(node["host"]) not in osd_network
+    ]
+    if outside_network:
+        raise HTTPException(400, "OSD network không bao phủ node: " + ", ".join(outside_network))
     disks = ", ".join(f"{n['host']}: {', '.join(n['disks'])}" for n in nodes if n["disks"])
     version_text = version or "bản mới nhất từ repository"
     package_step = f"Cấu hình repo chính thức và cài Vitastor {version_text} + etcd" if params["install_packages"] else f"Kiểm tra Vitastor {version_text} và etcd đã được cài sẵn"

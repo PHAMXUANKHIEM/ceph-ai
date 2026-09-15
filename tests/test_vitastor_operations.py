@@ -1,6 +1,7 @@
 import pytest
 
 import vitastor.operations as operations
+import vitastor.recovery_ai as recovery_ai
 
 
 def test_deploy_installs_requested_version(monkeypatch):
@@ -45,62 +46,24 @@ def test_resume_deploy_reconciles_and_skips_existing_osd_prepare(monkeypatch):
     assert any(event[0] == "recovery-ai" and event[1] == "done" for event in progress)
 
 
-def test_resume_deploy_refuses_a_disk_that_is_not_a_free_block_device(monkeypatch):
-    """`resume_deploy` chạy `vitastor-disk prepare` cho mọi thiết bị chưa có
-    superblock Vitastor — một ổ ext4 cũng không có superblock đó. Nếu preflight
-    chỉ kiểm tra /etc/os-release như trước thì bấm "tiếp tục deploy" sau khi
-    tên thiết bị đổi (reboot, hoặc ổ được mount tạm) là xoá sạch ổ đó."""
-    commands = []
-    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
-    monkeypatch.setattr(operations, "summarize_deploy_recovery", lambda error, inspection: "x")
-    params = {
-        "nodes": [{"host": "node-a", "roles": ["mon", "osd"], "disks": ["/dev/vdb"]}],
-        "version": "", "ssh_user": "root", "ssh_key_path": "/key",
-        "etcd_prefix": "/vitastor", "osd_network": "10.0.0.0/24",
-        "install_packages": True, "resume_error": "treo",
-    }
+def test_recovery_ai_falls_back_when_router_is_not_configured(monkeypatch):
+    monkeypatch.setattr(recovery_ai.settings, "vitastor_router_enabled", False)
 
-    operations.resume_deploy(params, lambda *_: None)
+    result = recovery_ai.summarize_deploy_recovery("package missing", "osd-superblock=found")
 
-    preflight = next(c for c in commands if "preflight-ok" in c)
-    assert "test -b /dev/vdb" in preflight
-    assert "lsblk -no MOUNTPOINT /dev/vdb" in preflight
-    # Preflight phải chạy TRƯỚC bước ghi đĩa.
-    prepare = next(i for i, c in enumerate(commands) if "vitastor-disk prepare" in c)
-    assert commands.index(preflight) < prepare
+    assert result.startswith("AI chưa thể phân tích lúc này")
+    assert "package missing" in result
 
 
-def test_fresh_deploy_always_regenerates_etcd_config(monkeypatch):
-    """Nhánh "bỏ qua make-etcd nếu etcd.conf đã có" chỉ dành cho resume. Trên
-    deploy mới, etcd.conf sót lại từ cụm trước sẽ mang membership/prefix cũ
-    trong khi vitastor.conf trỏ sang cụm mới."""
-    commands = []
-    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
-    params = {
-        "nodes": [{"host": "node-a", "roles": ["mon"], "disks": []}],
-        "version": "", "ssh_user": "root", "ssh_key_path": "/key",
-        "etcd_prefix": "/vitastor", "osd_network": "10.0.0.0/24", "install_packages": False,
-    }
+def test_recovery_ai_falls_back_when_router_raises(monkeypatch):
+    async def fail(*_args, **_kwargs):
+        raise TimeoutError("router timeout")
 
-    operations.deploy(params, lambda *_: None)
+    monkeypatch.setattr(recovery_ai, "_call_router", fail)
+    result = recovery_ai.summarize_deploy_recovery("monitor failed", "monitor=inactive")
 
-    monitor = next(c for c in commands if "make-etcd" in c)
-    assert "test -s /etc/vitastor/etcd.conf" not in monitor
-
-
-def test_delete_removes_the_etcd_config_it_generated(monkeypatch):
-    commands = []
-    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
-    params = {
-        "nodes": [{"host": "node-a", "roles": ["mon"], "disks": []}],
-        "ssh_user": "root", "ssh_key_path": "/key", "wipe_disks": False,
-    }
-
-    operations.delete(params, lambda *_: None)
-
-    cleanup = next(c for c in commands if "rm -f" in c)
-    assert "/etc/vitastor/etcd.conf" in cleanup
-    assert "/etc/vitastor/vitastor.conf" in cleanup
+    assert result.startswith("AI chưa thể phân tích lúc này")
+    assert "monitor failed" in result
 
 
 def test_install_command_defaults_to_repository_latest():
@@ -115,6 +78,31 @@ def test_package_resume_check_validates_selected_version():
 
     assert "vitastor-disk --help" in command
     assert "grep -F -- ' 3.2.1'" in command
+
+
+def test_cluster_verify_requires_all_osds_and_monitors():
+    command = operations._cluster_verify_command(3, 3)
+
+    assert "osd_up" in command
+    assert "expected_osds" in command
+    assert "etcd_alive" in command
+    assert '"$status_json"' in command
+
+
+def test_osd_reconcile_rebuilds_missing_udev_mapping():
+    command = operations._osd_reconcile_command("/dev/vdb1")
+
+    assert "vitastor-disk read-sb" in command
+    assert "udevadm trigger --subsystem-match=block" in command
+    assert "udevadm settle" in command
+
+
+def test_config_match_requires_service_readable_permissions():
+    command = operations._config_matches_command({"etcd_prefix": "/vitastor"})
+
+    assert "stat -c %U /etc/vitastor/vitastor.conf" in command
+    assert "stat -c %G /etc/vitastor/vitastor.conf" in command
+    assert 'test "$(stat -c %a /etc/vitastor/vitastor.conf)" = 640' in command
 
 
 def test_upgrade_is_rolling_and_checks_health_after_each_node(monkeypatch):

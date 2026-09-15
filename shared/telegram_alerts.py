@@ -142,6 +142,10 @@ _INCIDENT_TITLES = {
     "CEPHADM_STRAY_DAEMON": "Có daemon không do cephadm quản lý",
     "CEPHADM_STRAY_HOST": "Có node không do cephadm quản lý",
     "CEPHADM_FAILED_DAEMON": "Có daemon cephadm khởi động thất bại",
+    "AUTH_INSECURE_CLIENT_KEY_TYPE": "Có client dùng loại khoá xác thực không an toàn",
+    "AUTH_INSECURE_KEYS_ALLOWED": "Cụm đang cho phép khoá xác thực không an toàn",
+    "AUTH_INSECURE_GLOBAL_ID_RECLAIM": "Có client lấy lại global_id theo cách không an toàn",
+    "AUTH_INSECURE_GLOBAL_ID_RECLAIM_ALLOWED": "Cụm đang cho phép lấy lại global_id không an toàn",
     "DEVICE_HEALTH": "Ceph dự đoán có ổ đĩa sắp hỏng",
     "DEVICE_HEALTH_IN_USE": "Ổ đĩa được dự đoán sắp hỏng vẫn đang được dùng",
     "DEVICE_HEALTH_TOOMANY": "Quá nhiều ổ đĩa được dự đoán sắp hỏng cùng lúc",
@@ -740,10 +744,13 @@ def send_periodic_health_status(
     if not codes:
         details = "✅ Không có cảnh báo nào đang mở."
     else:
-        shown = [_incident_title(code) for code in codes[:4]]
+        # Mỗi cảnh báo một dòng: gộp chúng vào một dòng ngăn bằng dấu chấm
+        # phẩy thì trên điện thoại chỉ còn là một khối chữ chạy dài.
+        lines = [f"⚠️ Đang mở {len(codes)} cảnh báo:"]
+        lines.extend(f"• {_incident_title(code)}" for code in codes[:4])
         if len(codes) > 4:
-            shown.append(f"và {len(codes) - 4} cảnh báo khác")
-        details = f"⚠️ Đang mở {len(codes)} cảnh báo: " + "; ".join(shown)
+            lines.append(f"• và {len(codes) - 4} cảnh báo khác")
+        details = "\n".join(lines)
     _send(
         bot_token if bot_token is not None else settings.telegram_incident_bot_token,
         chat_id if chat_id is not None else settings.telegram_incident_chat_id,

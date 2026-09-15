@@ -28,6 +28,14 @@ from shared.db import Base, make_engine
 from shared.models import Cluster
 
 
+if os.environ.get("CEPH_AI_ALLOW_LIVE_TEST_DB", "").lower() not in {"1", "true", "yes"}:
+    # Some legacy tests use the module-level SessionLocal rather than the
+    # per-test dashboard_client engine. Create the same model schema on the
+    # isolated file database so those tests stay hermetic without relying on
+    # whatever tables happen to exist in the operator's real DB.
+    Base.metadata.create_all(db_module.engine)
+
+
 def pytest_sessionfinish(session, exitstatus):
     shutil.rmtree(_TEST_DATABASE_ROOT, ignore_errors=True)
 
@@ -230,6 +238,12 @@ def dashboard_client(monkeypatch):
     monkeypatch.setattr(db_module, "SessionLocal", sessionmaker(bind=test_engine, autoflush=False, autocommit=False))
     monkeypatch.setattr(settings, "dashboard_username", TEST_USERNAME)
     monkeypatch.setattr(settings, "dashboard_password_hash", _TEST_PASSWORD_HASH)
+    # A deterministic fake channel makes dashboard approval tests exercise the
+    # production Telegram-owned approval layout without sending any network
+    # request; listener/delivery tests override these values explicitly.
+    monkeypatch.setattr(settings, "telegram_incident_bot_token", "test-incident-token", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_chat_id", "-1000000000000", raising=False)
+    monkeypatch.setattr(settings, "telegram_incident_enabled", True, raising=False)
 
     from dashboard.app import app
     from dashboard.routes import auth as auth_module
