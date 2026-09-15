@@ -7,11 +7,11 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 21157129e23da76ddf3c05f05c16ffcb1cbe7c3b
-  rollback_candidate_sha: 5a9655a9076999a966e2d6a2863d0f1a986f2070
+  commit_sha: 0a3b5a122ffff20ccea2a21dca5343229986e6a8
+  rollback_candidate_sha: 0ef851ecfee2d62c1bbb3428650b249d453a15ac
   worktree: clean
-  release_commit: 21157129e23da76ddf3c05f05c16ffcb1cbe7c3b
-  pushed_to_origin: false
+  release_commit: 0a3b5a122ffff20ccea2a21dca5343229986e6a8
+  pushed_to_origin: true
 
 migrations:
   alembic_head: ac17d9e0f5a0
@@ -51,13 +51,13 @@ message_broker:
     production_vhost: not_run_to_completion_shared_queue_has_live_consumers
 
 verification:
-  focused_feature_gate: 339_passed_3_deselected_3_warnings
-  broad_deterministic_gate: 3207_passed_4_deselected_23_warnings
+  focused_feature_gate: 290_passed_1_warning
+  broad_deterministic_gate: 3261_passed_4_deselected_23_warnings
   broad_gate_environment: production_code_repair_lock_isolated_to_temporary_gate_lock
   final_openstack_module_after_template_fix: 20_passed
   python_compile: passed
   diff_check: passed
-  frontend_build: passed
+  frontend_build: passed_with_node_20
   alembic_heads: one_head
   realtime_foundation:
     rt01_refresh_lifecycle: 17_snapshot_health_tests_passed
@@ -66,6 +66,8 @@ verification:
     rt06_snapshot_websocket_notification: 4_dashboard_ws_tests_passed
     rt07_frontend_visibility_and_refresh_guard: node20_build_passed
     combined_current_snapshot_gate: 24_passed
+  vitastor_snapshot_alert_gate: 175_passed_1_warning
+  rbd_inventory_gate: 115_passed_1_warning
 
 deployment_gate:
   deterministic_tests: passed
