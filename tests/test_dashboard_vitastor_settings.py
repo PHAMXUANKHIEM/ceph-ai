@@ -17,6 +17,7 @@ def test_settings_contains_cluster_ai_telegram_and_database_panels(dashboard_cli
     assert 'data-panel="telegram"' in response.text
     assert 'data-panel="database"' in response.text
     assert 'data-panel="process-logs"' in response.text
+    assert 'data-panel="host-keys"' in response.text
     assert "Vitastor Watcher" in response.text
     assert "Vitastor Worker" in response.text
     assert 'action="/vitastor/settings/cluster/create"' in response.text
@@ -24,6 +25,37 @@ def test_settings_contains_cluster_ai_telegram_and_database_panels(dashboard_cli
     assert 'action="/vitastor/settings/telegram"' in response.text
     assert 'id="vita-codex-login"' in response.text
     assert 'id="vita-claude-login"' in response.text
+
+
+def test_host_key_settings_can_save_and_delete_key(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(route, "provision_host_key", lambda host, key: calls.append(("save", host, key)) or "ssh-ed25519")
+    monkeypatch.setattr(route, "remove_host_key", lambda host: calls.append(("delete", host)) or True)
+    _login(dashboard_client)
+
+    saved = dashboard_client.post("/vitastor/settings/host-keys/save", data={
+        "host": "10.3.54.152", "host_key": "ssh-ed25519 AAAAverified",
+    })
+    deleted = dashboard_client.post("/vitastor/settings/host-keys/delete", data={"host": "10.3.54.152"})
+
+    assert saved.status_code == 200
+    assert "Đã lưu host key ssh-ed25519 cho 10.3.54.152" in saved.text
+    assert deleted.status_code == 200
+    assert "Đã xoá host key của 10.3.54.152" in deleted.text
+    assert calls == [
+        ("save", "10.3.54.152", "ssh-ed25519 AAAAverified"),
+        ("delete", "10.3.54.152"),
+    ]
+
+
+def test_host_key_settings_prefills_host_from_deploy_error_link(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/vitastor/settings?section=host-keys&host=10.3.54.152")
+
+    assert response.status_code == 200
+    assert 'data-panel="host-keys"' in response.text
+    assert 'value="10.3.54.152"' in response.text
 
 
 def test_vitastor_process_logs_can_filter_watcher_output(dashboard_client, monkeypatch, tmp_path):

@@ -55,7 +55,15 @@ from shared.claude_cli import (
     install_claude_cli, run_claude_prompt, start_claude_login,
     submit_claude_authentication_code,
 )
-from vitastor.client import VALID_EXEC_MODES, VitastorConnectionError, query_status
+from vitastor.client import (
+    VALID_EXEC_MODES,
+    VitastorConnectionError,
+    VitastorHostKeyProvisionError,
+    list_host_keys,
+    provision_host_key,
+    query_status,
+    remove_host_key,
+)
 
 router = APIRouter(prefix="/vitastor", tags=["vitastor-chat"])
 templates = make_templates()
@@ -175,6 +183,12 @@ def _settings_context(user: str, **messages) -> dict:
     with db.SessionLocal() as session:
         clusters = session.query(VitastorCluster).order_by(VitastorCluster.created_at.desc()).all()
         session.expunge_all()
+    try:
+        host_keys = list_host_keys()
+        host_key_error = None
+    except VitastorHostKeyProvisionError as exc:
+        host_keys = []
+        host_key_error = str(exc)
     context = {
         "user": user, "providers": PROVIDER_PRESETS,
         "provider": settings.vitastor_router_provider,
@@ -191,6 +205,9 @@ def _settings_context(user: str, **messages) -> dict:
         "telegram_chat_id": settings.telegram_incident_chat_id,
         "telegram_connected": bool(settings.telegram_incident_bot_token and settings.telegram_incident_chat_id),
         "telegram_enabled": settings.telegram_incident_enabled,
+        "vitastor_host_keys": host_keys,
+        "host_key_error": host_key_error,
+        "host_key_values": messages.pop("host_key_values", None) or {},
     }
     context.update(_database_form_values())
     if database_values:
@@ -203,7 +220,12 @@ def _settings_context(user: str, **messages) -> dict:
 async def settings_page(request: Request, user: str = Depends(require_vitastor_login)):
     _require_admin(user)
     section = request.query_params.get("section", "cluster")
-    return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(user, active_section=section if section in {"cluster", "ai", "telegram", "database", "process-logs"} else "cluster"))
+    allowed_sections = {"cluster", "ai", "telegram", "database", "process-logs", "host-keys"}
+    return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(
+        user,
+        active_section=section if section in allowed_sections else "cluster",
+        host_key_values={"host": request.query_params.get("host", "")},
+    ))
 
 
 @router.get("/settings/process-logs")
@@ -216,6 +238,58 @@ async def process_logs(name: str = "watcher", keyword: str = "", user: str = Dep
         raise HTTPException(400, "Từ khóa lọc không hợp lệ")
     lines = await asyncio.to_thread(_tail_vitastor_process_log, name, keyword)
     return {"name": name, "keyword": keyword, "lines": lines, "count": len(lines)}
+
+
+@router.post("/settings/host-keys/save", response_class=HTMLResponse)
+async def save_host_key(
+    request: Request,
+    user: str = Depends(require_vitastor_login),
+    host: str = Form(""),
+    host_key: str = Form(""),
+):
+    """Pin an operator-verified Vitastor node host key from Settings."""
+    _require_admin(user)
+    host = host.strip()
+    host_key = host_key.strip()
+    error = None
+    if not host or not host_key:
+        error = "Cần nhập node host và SSH host public key đã xác minh."
+    else:
+        try:
+            key_type = await asyncio.to_thread(provision_host_key, host, host_key)
+        except VitastorHostKeyProvisionError as exc:
+            error = str(exc)
+    return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(
+        user,
+        active_section="host-keys",
+        host_key_error=error,
+        host_key_success=None if error else f"Đã lưu host key {key_type} cho {host}.",
+        host_key_values={"host": host},
+    ))
+
+
+@router.post("/settings/host-keys/delete", response_class=HTMLResponse)
+async def delete_host_key(
+    request: Request,
+    user: str = Depends(require_vitastor_login),
+    host: str = Form(""),
+):
+    """Remove one pinned host key so a verified replacement can be stored."""
+    _require_admin(user)
+    host = host.strip()
+    try:
+        removed = await asyncio.to_thread(remove_host_key, host)
+        message = f"Đã xoá host key của {host}." if removed else f"Không tìm thấy host key của {host}."
+        error = None
+    except VitastorHostKeyProvisionError as exc:
+        message, error = None, str(exc)
+    return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(
+        user,
+        active_section="host-keys",
+        host_key_error=error,
+        host_key_success=message,
+        host_key_values={"host": host},
+    ))
 
 
 @router.post("/settings/telegram", response_class=HTMLResponse)

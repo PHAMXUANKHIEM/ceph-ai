@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import fcntl
 import json
 import os
@@ -110,6 +111,48 @@ def provision_host_key(host: str, public_key: str) -> str:
         except OSError as exc:
             raise VitastorHostKeyProvisionError("Không thể lưu SSH host key") from exc
     return entry.key.get_name()
+
+
+def list_host_keys() -> list[dict[str, str]]:
+    """Return the pinned Vitastor node keys without exposing key material."""
+    if not os.path.exists(KNOWN_HOSTS_PATH):
+        return []
+    try:
+        host_keys = paramiko.HostKeys()
+        host_keys.load(KNOWN_HOSTS_PATH)
+    except (OSError, paramiko.SSHException) as exc:
+        raise VitastorHostKeyProvisionError("Không đọc được kho SSH host key Vitastor") from exc
+    result = []
+    for host, keys in sorted(host_keys.items()):
+        for key_type, key in sorted(keys.items()):
+            result.append({
+                "host": host,
+                "key_type": key_type,
+                "fingerprint": "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode("ascii").rstrip("="),
+            })
+    return result
+
+
+def remove_host_key(host: str) -> bool:
+    """Remove one pinned Vitastor node key; never alter other hosts."""
+    host = str(host or "").strip()
+    if not _HOST_RE.fullmatch(host):
+        raise VitastorHostKeyProvisionError("IP/hostname không hợp lệ")
+    with _host_keys_lock():
+        if not os.path.exists(KNOWN_HOSTS_PATH):
+            return False
+        host_keys = paramiko.HostKeys()
+        try:
+            host_keys.load(KNOWN_HOSTS_PATH)
+        except (OSError, paramiko.SSHException) as exc:
+            raise VitastorHostKeyProvisionError("Không đọc được kho SSH host key Vitastor") from exc
+        removed = host_keys.pop(host, None) is not None
+        if removed:
+            try:
+                _write_host_keys_atomically(host_keys)
+            except OSError as exc:
+                raise VitastorHostKeyProvisionError("Không thể lưu kho SSH host key Vitastor") from exc
+        return removed
 
 
 def query_logs(
