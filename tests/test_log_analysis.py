@@ -67,7 +67,7 @@ def test_ai_commands_allow_ceph_remediation_but_reject_shell_and_destructive():
 
 def test_rgw_finding_uses_dedicated_ai_alert_label(monkeypatch):
     sent = []
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: sent.append(args))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append(args))
     monkeypatch.setattr(settings, "telegram_rgw_bot_token", "rgw-token")
     monkeypatch.setattr(settings, "telegram_rgw_chat_id", "rgw-chat")
     monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
@@ -117,7 +117,7 @@ def test_log_finding_alert_uses_background_delivery(monkeypatch):
 
 def test_generic_finding_notification_is_concise_too(monkeypatch):
     sent = []
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: sent.append(args))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: sent.append(args))
     telegram_alerts.send_log_finding_alert(
         "OSD chậm", "WARNING", "HIGH", "Latency tăng", "Disk nghẽn",
         evidence_templates=["osd.<ID> slow request"],

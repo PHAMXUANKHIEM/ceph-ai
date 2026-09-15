@@ -43,7 +43,7 @@ def test_incident_alert_skips_humanizer_for_clean_short_excerpt(monkeypatch):
     monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_chat_id", "chat")
     monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True)
     calls = []
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args[3]))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: calls.append(args[3]))
 
     def unexpected_humanizer(*_args, **_kwargs):
         raise AssertionError("clean short excerpts must not call the humanizer")
@@ -65,7 +65,7 @@ def test_incident_alert_humanizes_machine_excerpt(monkeypatch):
     monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_chat_id", "chat")
     monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True)
     calls = []
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args[3]))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: calls.append(args[3]))
     seen = []
     monkeypatch.setattr(
         telegram_alerts,
@@ -236,6 +236,190 @@ def test_humanizer_skips_router_without_model(monkeypatch):
     )
 
     assert result == "OSD 2 DOWN"
+
+
+def test_every_prose_field_is_reflowed_to_one_paragraph(monkeypatch):
+    """`_natural` là chốt duy nhất: một chuỗi do monitor sinh ra, có xuống
+    dòng và khoảng trắng thừa, không được lên Telegram ở dạng thô."""
+    _configure_node(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_node_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_node_alert("10.0.0.5", "CPU 95%\n\n   RAM    60%\n")
+
+    assert "🟠 Node 10.0.0.5: CPU 95% RAM 60%" in calls[0]
+
+
+def test_synchronous_watcher_alerts_never_call_the_router(monkeypatch):
+    """Các sender này chạy thẳng trong vòng quét của Watcher. Một lần gọi
+    humanizer treo tới ~9 giây, nên chốt `_natural` chỉ chuẩn hoá chứ không
+    được đụng tới router ở những đường này."""
+    _configure_node(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_node_enabled", True, raising=False)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", True, raising=False)
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *_args: None)
+
+    def unexpected_humanizer(*_args, **_kwargs):
+        raise AssertionError("đường quét đồng bộ không được gọi humanizer")
+
+    monkeypatch.setattr(telegram_alerts, "_humanize_sync", unexpected_humanizer)
+
+    # Chuỗi kiểu máy (`degraded=0`) — đủ để `_needs_humanization` kêu True.
+    telegram_alerts.send_node_alert("10.0.0.5", "status: DOWN, degraded=0")
+    telegram_alerts.send_osd_latency_alert(2, "node1", "latency: 512 ms")
+    telegram_alerts.send_crush_skew_alert("USE", "osd.3", "skew=1.8")
+    telegram_alerts.send_database_size_alert("size=95%")
+    telegram_alerts.send_vitastor_alert("vita", "WARNING", "Data integrity: degraded=0 bytes")
+
+
+def test_incident_headline_names_the_problem_and_keeps_the_code(monkeypatch):
+    """Tiêu đề cũ là mã thô ("Cụm Ceph: PG_NOT_DEEP_SCRUBBED"). Chỉ 8 mã có
+    câu Diễn giải riêng, phần còn lại rơi vào một câu chung chung — nên với
+    đa số cảnh báo thật, người trực không đọc được chuyện gì đang xảy ra."""
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert(
+        "PG_NOT_DEEP_SCRUBBED", "HEALTH_WARN", "12 pgs not deep-scrubbed in time"
+    )
+
+    assert "🟡 HEALTH_WARN · Có Placement Group quá hạn deep-scrub (PG_NOT_DEEP_SCRUBBED)" in calls[0]
+
+
+def test_unknown_ceph_code_headline_stays_readable(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("WEIRD_NEW_CHECK", "HEALTH_WARN", "something odd")
+
+    assert "🟡 HEALTH_WARN · Cảnh báo Ceph: WEIRD_NEW_CHECK" in calls[0]
+
+
+def test_periodic_health_status_names_each_open_check(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_periodic_health_status("HEALTH_OK", [])
+    telegram_alerts.send_periodic_health_status("HEALTH_WARN", ["OSD_DOWN", "POOL_NEARFULL"])
+
+    assert "✅ Không có cảnh báo nào đang mở." in calls[0]
+    assert "⚠️ Đang mở 2 cảnh báo: " in calls[1]
+    assert "Một OSD đã ngừng hoạt động (OSD_DOWN)" in calls[1]
+    assert "Pool sắp đầy (POOL_NEARFULL)" in calls[1]
+
+
+def test_periodic_health_status_caps_a_long_check_list(monkeypatch):
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_periodic_health_status(
+        "HEALTH_WARN",
+        ["OSD_DOWN", "PG_DEGRADED", "POOL_NEARFULL", "RECENT_CRASH", "SLOW_OPS", "TOO_MANY_PGS"],
+    )
+
+    assert "⚠️ Đang mở 6 cảnh báo: " in calls[0]
+    assert calls[0].rstrip().endswith("và 2 cảnh báo khác")
+
+
+def _capture_external_alerts(monkeypatch):
+    """Bắt payload gửi ra webhook/Slack/email của shared.notification_channels."""
+    sent = []
+    monkeypatch.setattr(
+        telegram_alerts, "enqueue_external_alert", lambda **kwargs: sent.append(kwargs) or True
+    )
+    monkeypatch.setattr(telegram_alerts, "send_telegram_message", lambda *_args: None)
+    return sent
+
+
+def test_external_alert_category_does_not_depend_on_message_wording(monkeypatch):
+    """Trước đây category được đoán bằng cách dò chuỗi trong tin nhắn đã
+    dựng: một cảnh báo cụm có chữ "log daemon" bị xếp nhầm vào
+    log-intelligence, có chữ "node " thì thành hardware. Nó vừa sai, vừa
+    khoá cứng cách phân loại vào câu chữ — sửa lời văn cho tự nhiên hơn là
+    alert lặng lẽ đổi kênh."""
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    sent = _capture_external_alerts(monkeypatch)
+
+    telegram_alerts.send_ai_unavailable_alert("OSD_DOWN", "HEALTH_ERR")
+
+    assert sent[0]["category"] == "incident"
+    assert sent[0]["severity"] == "critical"
+
+
+def test_external_alert_category_is_per_sender(monkeypatch):
+    _configure_incident(monkeypatch)
+    _configure_node(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_incident_enabled", True, raising=False)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_node_enabled", True, raising=False)
+    sent = _capture_external_alerts(monkeypatch)
+
+    telegram_alerts.send_node_alert("10.0.0.5", "CPU 95%")
+    telegram_alerts.send_capacity_threshold_alert("pool", "volumes", 96.0, 95, 96, 100)
+    telegram_alerts.send_capacity_recovery_alert("pool", "volumes", 70.0, 90, 0)
+    telegram_alerts.send_log_finding_alert("RGW key invalid", "CRITICAL", "HIGH", "x", "y")
+
+    assert [(item["category"], item["severity"]) for item in sent] == [
+        ("hardware", "warning"),
+        ("capacity", "critical"),
+        ("capacity", "info"),
+        ("log-intelligence", "critical"),
+    ]
+
+
+def test_ai_prose_is_cut_at_a_sentence_boundary_not_mid_word(monkeypatch):
+    """Humanizer trả về tối đa 3 câu; cắt cứng theo số ký tự là dựng lại
+    đúng câu cụt mà humanizer vừa loại bỏ."""
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+    diagnosis = (
+        "Ceph ghi nhận osd.7 trên node ceph-node03 đã dừng hoạt động từ khoảng 08:12 "
+        "sáng nay và không còn phản hồi heartbeat với các OSD còn lại trong cụm. "
+        "Toàn cụm đang ở trạng thái HEALTH_WARN với khoảng 2,17% dữ liệu thiếu bản "
+        "sao và 12 nhóm dữ liệu đang suy giảm. Đây là thông tin quan sát được từ log, "
+        "chưa đủ căn cứ để khẳng định nguyên nhân gốc là hỏng ổ đĩa."
+    )
+    assert len(diagnosis) > telegram_alerts._MAX_FOLLOWUP_FIELD_CHARS
+
+    telegram_alerts.send_ai_incident_alert("OSD_DOWN", "HEALTH_WARN", diagnosis, "Kiểm tra daemon.")
+
+    line = next(line for line in calls[0].splitlines() if line.startswith("🧠 Ý kiến AI:"))
+    assert len(line) < len(diagnosis)  # vẫn bị rút gọn
+    assert line.endswith(".") and "…" not in line
+
+
+def test_short_ai_prose_is_not_truncated(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_ai_incident_alert(
+        "OSD_DOWN", "HEALTH_WARN", "osd.7 đã dừng hoạt động.", "Kiểm tra daemon."
+    )
+
+    assert "🧠 Ý kiến AI: osd.7 đã dừng hoạt động." in calls[0]
 
 
 def _configure_incident(monkeypatch, *, token="123:ABC", chat_id="-100999"):
@@ -489,7 +673,9 @@ def test_send_volume_forecast_alert_uses_dedicated_channel_and_auditable_format(
     assert "CẢNH BÁO SỚM RBD VOLUME" in text
     assert "volumes/vm-disk" in text
     assert "24.00 ms sau 6 giờ" in text
-    assert "Confidence: 84.0%" in text
+    assert "Độ tin cậy: 84.0%" in text
+    assert "📊 Chỉ số: Độ trễ ghi" in text
+    assert "🔬 Mô hình dự báo: seasonal-trend-v1" in text
     assert "seasonal-trend-v1" in text
     assert "không tự chỉnh QoS hoặc resize" in text
 
@@ -574,8 +760,40 @@ def test_successful_restart_sends_explicit_ok_notification(monkeypatch):
     )
 
     assert "✅ Khởi động lại thành công" in calls[0]
-    assert "10.3.53.1" in calls[0]
+    assert "🎯 Đối tượng: 10.3.53.1" in calls[0]
     assert "đang xác minh Ceph" in calls[0]
+
+
+def test_auto_remediation_alert_renders_node_list_without_json_syntax(monkeypatch):
+    # `Action.target_nodes` được lưu bằng json.dumps(list); in thẳng lên
+    # Telegram thì người trực nhận được `["10.3.53.1", "10.3.53.2"]`.
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_auto_remediation_alert(
+        "OSD_DOWN", None, None, None, True,
+        target_nodes='["10.3.53.1", "10.3.53.2"]',
+    )
+
+    assert "🎯 Đối tượng: 10.3.53.1, 10.3.53.2" in calls[0]
+    assert "[" not in calls[0] and '"' not in calls[0]
+
+
+def test_auto_remediation_alert_keeps_unparsable_target_nodes_readable(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_auto_remediation_alert(
+        "OSD_DOWN", None, None, None, True, target_nodes="ceph-node03",
+    )
+
+    assert "🎯 Đối tượng: ceph-node03" in calls[0]
 
 
 def test_update_failure_alert_contains_error_ai_summary_and_rollback(monkeypatch):
@@ -724,7 +942,7 @@ def test_incident_and_node_channels_are_independent(monkeypatch):
 
 
 def test_log_finding_alert_is_short_and_keeps_only_first_recommendation(monkeypatch):
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: calls.append(args))
     calls = []
     telegram_alerts.send_log_finding_alert(
         "RGW key invalid", "WARNING", "HIGH", "Key is AES256", "Sai định dạng",
@@ -740,7 +958,7 @@ def test_log_finding_alert_is_short_and_keeps_only_first_recommendation(monkeypa
 
 
 def test_pending_default_key_alert_includes_best_option(monkeypatch):
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: calls.append(args))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: calls.append(args))
     calls = []
     telegram_alerts.send_log_finding_recovery_pending_alert(
         "RGW key invalid", "still invalid", ("ceph_health=HEALTH_OK",),

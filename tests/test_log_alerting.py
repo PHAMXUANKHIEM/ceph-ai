@@ -39,7 +39,7 @@ WINDOW_END = datetime(2026, 8, 19, 11, 0)
 
 def test_real_rgw_recovery_telegram_formatters_route_and_render(monkeypatch):
     delivered = []
-    monkeypatch.setattr(telegram_alerts, "_send", lambda *args: delivered.append(args))
+    monkeypatch.setattr(telegram_alerts, "_send", lambda *args, **kwargs: delivered.append(args))
     monkeypatch.setattr(settings, "telegram_rgw_bot_token", "rgw-token")
     monkeypatch.setattr(settings, "telegram_rgw_chat_id", "rgw-chat")
     monkeypatch.setattr(settings, "telegram_rgw_enabled", True)
