@@ -20,11 +20,101 @@ def test_deploy_installs_requested_version(monkeypatch):
     assert "make-etcd --copy no" in commands[4]
 
 
+def test_resume_deploy_reconciles_and_skips_existing_osd_prepare(monkeypatch):
+    commands = []
+    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "OSD superblock found")
+    monkeypatch.setattr(operations, "summarize_deploy_recovery", lambda error, inspection: "Đã đối chiếu xong")
+    progress = []
+    params = {
+        "nodes": [
+            {"host": "node-a", "roles": ["mon", "osd"], "disks": ["/dev/vdb"]},
+            {"host": "node-b", "roles": ["mon"], "disks": []},
+        ],
+        "version": "", "ssh_user": "root", "ssh_key_path": "/key",
+        "etcd_prefix": "/vitastor", "osd_network": "10.0.0.0/24",
+        "install_packages": True, "resume_error": "make-etcd bị treo",
+        "resume_progress": [{"id": "packages", "status": "done"}],
+    }
+
+    operations.resume_deploy(params, lambda *event: progress.append(event))
+
+    assert any("make-etcd --copy no" in command for command in commands)
+    assert any("read-sb --force" in command for command in commands)
+    osd_command = next(command for command in commands if "read-sb --force" in command and "systemctl start vitastor.target" in command)
+    assert "if test \"$found\" = 0" in osd_command
+    assert any(event[0] == "recovery-ai" and event[1] == "done" for event in progress)
+
+
+def test_resume_deploy_refuses_a_disk_that_is_not_a_free_block_device(monkeypatch):
+    """`resume_deploy` chạy `vitastor-disk prepare` cho mọi thiết bị chưa có
+    superblock Vitastor — một ổ ext4 cũng không có superblock đó. Nếu preflight
+    chỉ kiểm tra /etc/os-release như trước thì bấm "tiếp tục deploy" sau khi
+    tên thiết bị đổi (reboot, hoặc ổ được mount tạm) là xoá sạch ổ đó."""
+    commands = []
+    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
+    monkeypatch.setattr(operations, "summarize_deploy_recovery", lambda error, inspection: "x")
+    params = {
+        "nodes": [{"host": "node-a", "roles": ["mon", "osd"], "disks": ["/dev/vdb"]}],
+        "version": "", "ssh_user": "root", "ssh_key_path": "/key",
+        "etcd_prefix": "/vitastor", "osd_network": "10.0.0.0/24",
+        "install_packages": True, "resume_error": "treo",
+    }
+
+    operations.resume_deploy(params, lambda *_: None)
+
+    preflight = next(c for c in commands if "preflight-ok" in c)
+    assert "test -b /dev/vdb" in preflight
+    assert "lsblk -no MOUNTPOINT /dev/vdb" in preflight
+    # Preflight phải chạy TRƯỚC bước ghi đĩa.
+    prepare = next(i for i, c in enumerate(commands) if "vitastor-disk prepare" in c)
+    assert commands.index(preflight) < prepare
+
+
+def test_fresh_deploy_always_regenerates_etcd_config(monkeypatch):
+    """Nhánh "bỏ qua make-etcd nếu etcd.conf đã có" chỉ dành cho resume. Trên
+    deploy mới, etcd.conf sót lại từ cụm trước sẽ mang membership/prefix cũ
+    trong khi vitastor.conf trỏ sang cụm mới."""
+    commands = []
+    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
+    params = {
+        "nodes": [{"host": "node-a", "roles": ["mon"], "disks": []}],
+        "version": "", "ssh_user": "root", "ssh_key_path": "/key",
+        "etcd_prefix": "/vitastor", "osd_network": "10.0.0.0/24", "install_packages": False,
+    }
+
+    operations.deploy(params, lambda *_: None)
+
+    monitor = next(c for c in commands if "make-etcd" in c)
+    assert "test -s /etc/vitastor/etcd.conf" not in monitor
+
+
+def test_delete_removes_the_etcd_config_it_generated(monkeypatch):
+    commands = []
+    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
+    params = {
+        "nodes": [{"host": "node-a", "roles": ["mon"], "disks": []}],
+        "ssh_user": "root", "ssh_key_path": "/key", "wipe_disks": False,
+    }
+
+    operations.delete(params, lambda *_: None)
+
+    cleanup = next(c for c in commands if "rm -f" in c)
+    assert "/etc/vitastor/etcd.conf" in cleanup
+    assert "/etc/vitastor/vitastor.conf" in cleanup
+
+
 def test_install_command_defaults_to_repository_latest():
     command = operations._install_command("")
 
     assert "apt-get install -y vitastor etcd" in command
     assert "package_manager install -y vitastor etcd" in command
+
+
+def test_package_resume_check_validates_selected_version():
+    command = operations._package_ready_command("3.2.1")
+
+    assert "vitastor-disk --help" in command
+    assert "grep -F -- ' 3.2.1'" in command
 
 
 def test_upgrade_is_rolling_and_checks_health_after_each_node(monkeypatch):

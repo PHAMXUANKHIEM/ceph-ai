@@ -18,7 +18,8 @@ from dashboard.templating import make_templates
 from shared import db
 from shared.models import VitastorCluster, VitastorOperation
 from vitastor.client import VitastorHostKeyProvisionError, provision_host_key
-from vitastor.operations import backup, delete, deploy, upgrade
+from vitastor.operations import backup, delete, deploy, resume_deploy, upgrade
+from vitastor.recovery_ai import summarize_deploy_recovery
 
 router = APIRouter(prefix="/vitastor", tags=["vitastor-lifecycle"])
 templates = make_templates()
@@ -57,7 +58,8 @@ def _require_admin(user: str) -> None:
 
 def _latest(operation: str):
     with db.SessionLocal() as session:
-        row = session.query(VitastorOperation).filter_by(operation=operation).order_by(VitastorOperation.created_at.desc()).first()
+        operations = ("deploy", "deploy_resume") if operation == "deploy" else (operation,)
+        row = session.query(VitastorOperation).filter(VitastorOperation.operation.in_(operations)).order_by(VitastorOperation.created_at.desc()).first()
         if row:
             session.expunge(row)
         return row
@@ -173,15 +175,16 @@ def _execute(operation_id: str) -> None:
             current = session.get(VitastorOperation, operation_id)
             current.progress_json = json.dumps(list(steps.values())); session.commit()
     try:
-        handlers = {"deploy": deploy, "delete": delete, "upgrade": upgrade, "backup": backup}
+        handlers = {"deploy": deploy, "deploy_resume": resume_deploy, "delete": delete, "upgrade": upgrade, "backup": backup}
         if operation not in handlers:
             raise RuntimeError(f"Thao tác Vitastor không được hỗ trợ: {operation}")
         handlers[operation](params, progress)
         with db.SessionLocal() as session:
             row = session.get(VitastorOperation, operation_id)
-            if operation == "deploy":
+            if operation in {"deploy", "deploy_resume"}:
                 monitors = [n["host"] for n in params["nodes"] if "mon" in n["roles"]]
-                cluster = VitastorCluster(name=row.cluster_name, management_host=monitors[0], etcd_address=",".join(f"{h}:2379" for h in monitors), etcd_prefix=params["etcd_prefix"], config_path="/etc/vitastor/vitastor.conf", ssh_user=params["ssh_user"], ssh_key_path=params["ssh_key_path"], exec_mode="none", container_name="", is_active=True, last_status_json=json.dumps({"deployment": params}), last_checked_at=datetime.utcnow(), created_by=row.requested_by)
+                deployment = {key: value for key, value in params.items() if key not in {"resume_from", "resume_error", "resume_progress"}}
+                cluster = VitastorCluster(name=row.cluster_name, management_host=monitors[0], etcd_address=",".join(f"http://{h}:2379" for h in monitors), etcd_prefix=params["etcd_prefix"], config_path="/etc/vitastor/vitastor.conf", ssh_user=params["ssh_user"], ssh_key_path=params["ssh_key_path"], exec_mode="none", container_name="", is_active=True, last_status_json=json.dumps({"deployment": deployment}), last_checked_at=datetime.utcnow(), created_by=row.requested_by)
                 session.add(cluster); session.flush(); row.cluster_id = cluster.id
             elif operation == "delete":
                 cluster = session.get(VitastorCluster, row.cluster_id)
@@ -189,10 +192,13 @@ def _execute(operation_id: str) -> None:
             row.status, row.finished_at = "SUCCESS", datetime.utcnow(); session.commit()
     except Exception as exc:
         error_message = str(exc)
-        if operation == "deploy":
+        if operation in {"deploy", "deploy_resume"}:
             error_message += " | Deploy có thể đã thay đổi một phần; giữ nguyên package/dữ liệu để kiểm tra thủ công, không tự rollback."
         elif operation == "upgrade":
             error_message += " | Upgrade đã dừng tại node lỗi; package các node trước đó không được tự rollback."
+        if operation == "deploy_resume":
+            ai_summary = summarize_deploy_recovery(error_message, json.dumps(steps, ensure_ascii=False))
+            progress("recovery-ai", "done", "AI phân tích lỗi resume: " + ai_summary)
         progress("error", "failed", error_message)
         with db.SessionLocal() as session:
             row = session.get(VitastorOperation, operation_id)
@@ -223,6 +229,39 @@ async def propose_deploy(request: Request, user: str = Depends(require_vitastor_
     package_step = f"Cấu hình repo chính thức và cài Vitastor {version_text} + etcd" if params["install_packages"] else f"Kiểm tra Vitastor {version_text} và etcd đã được cài sẵn"
     plan = f"DEPLOY CỤM VITASTOR {name}\nMonitor: {', '.join(n['host'] for n in nodes if 'mon' in n['roles'])}\nOSD: {disks}\n\n1. Preflight SSH/thiết bị (chỉ đọc)\n2. {package_step}\n3. Ghi vitastor.conf\n4. Khởi tạo Etcd và monitor\n5. vitastor-disk prepare (GHI VĨNH VIỄN lên thiết bị)\n6. Kiểm tra vitastor-cli status"
     return _create_operation("deploy", name, params, plan, user)
+
+
+@router.post("/operations/{operation_id}/resume")
+async def resume_operation(operation_id: str, background: BackgroundTasks, user: str = Depends(require_vitastor_login)):
+    """Create an approval-gated reconciliation run for a failed deploy."""
+    _require_admin(user)
+    with db.SessionLocal() as session:
+        source = session.get(VitastorOperation, operation_id)
+        if not source or source.operation not in {"deploy", "deploy_resume"}:
+            raise HTTPException(404, "Không tìm thấy deploy Vitastor để tiếp tục")
+        if source.status != "FAILED":
+            raise HTTPException(409, "Chỉ có deploy Vitastor đã thất bại mới được tiếp tục")
+        try:
+            params = json.loads(source.params_json)
+            prior_progress = json.loads(source.progress_json or "[]")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(500, "Dữ liệu deploy thất bại không hợp lệ") from exc
+        if not isinstance(params, dict) or not isinstance(prior_progress, list):
+            raise HTTPException(500, "Dữ liệu deploy thất bại không hợp lệ")
+        params["resume_from"] = source.id
+        params["resume_error"] = source.error_message or "Không có lỗi được lưu"
+        params["resume_progress"] = prior_progress
+        name = source.cluster_name
+    plan = (
+        f"RESUME DEPLOY CỤM VITASTOR {name}\n"
+        "1. AI phân tích lỗi và kết quả kiểm tra hiện tại\n"
+        "2. Đối chiếu lại SSH, package và vitastor.conf\n"
+        "3. Tiếp tục Etcd/monitor từ trạng thái đã xác minh\n"
+        "4. Chỉ prepare thiết bị OSD chưa có superblock Vitastor\n"
+        "5. Kiểm tra trạng thái cụm\n\n"
+        "Lưu ý: hệ thống không chạy lại bước đã xác minh hoàn tất và không tự purge/rollback disk."
+    )
+    return _create_operation("deploy_resume", name, params, plan, user)
 
 
 @router.post("/deploy-cluster/provision-host-key")

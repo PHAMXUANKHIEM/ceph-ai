@@ -81,6 +81,35 @@ def test_deploy_rejects_unsafe_version(dashboard_client):
     assert response.json()["detail"] == "Phiên bản Vitastor không hợp lệ"
 
 
+def test_failed_deploy_can_create_approval_gated_resume(dashboard_client, monkeypatch):
+    source_id = "failed-deploy-1"
+    params = _deploy_payload()
+    with db.SessionLocal() as session:
+        session.add(VitastorOperation(
+            id=source_id, operation="deploy", status="FAILED", cluster_name="vita-prod",
+            params_json=json.dumps(params), plan_text="plan", progress_json=json.dumps([
+                {"id": "preflight", "status": "done"},
+                {"id": "packages", "status": "done"},
+            ]), error_message="make-etcd bị treo", requested_by="admin",
+        ))
+        session.commit()
+    _login(dashboard_client)
+    page = dashboard_client.get("/vitastor/deploy-cluster")
+    assert page.status_code == 200
+    assert f'data-vita-resume="{source_id}"' in page.text
+    calls = []
+    monkeypatch.setattr(route, "_create_operation", lambda operation, name, values, plan, user, cluster_id=None: calls.append((operation, values, plan)) or {"operation_id": "resume-1", "status": "PENDING_APPROVAL"})
+
+    response = dashboard_client.post(f"/vitastor/operations/{source_id}/resume")
+
+    assert response.status_code == 200
+    assert calls[0][0] == "deploy_resume"
+    assert calls[0][1]["resume_from"] == source_id
+    assert calls[0][1]["resume_error"] == "make-etcd bị treo"
+    assert calls[0][1]["resume_progress"][0]["id"] == "preflight"
+    assert "AI phân tích" in calls[0][2]
+
+
 def test_vitastor_provision_host_key_route_requires_admin_and_calls_pinner(dashboard_client, monkeypatch):
     calls = []
     monkeypatch.setattr(route, "provision_host_key", lambda host, key: calls.append((host, key)) or "ssh-ed25519")

@@ -13,6 +13,7 @@ import paramiko
 
 from vitastor.client import CONNECT_TIMEOUT_SECONDS, KNOWN_HOSTS_PATH
 from vitastor.client import normalize_status, query_status
+from vitastor.recovery_ai import summarize_deploy_recovery
 
 COMMAND_TIMEOUT_SECONDS = 1800
 
@@ -43,7 +44,227 @@ def _run(host: str, ssh_user: str, ssh_key_path: str, command: str) -> str:
 
 def _config_command(config: dict) -> str:
     encoded = base64.b64encode(json.dumps(config, indent=2).encode()).decode()
-    return f"install -d -m 0755 /etc/vitastor && echo {shlex.quote(encoded)} | base64 -d > /etc/vitastor/vitastor.conf && chmod 0600 /etc/vitastor/vitastor.conf"
+    return (
+        f"install -d -m 0755 /etc/vitastor && echo {shlex.quote(encoded)} | "
+        "base64 -d > /etc/vitastor/vitastor.conf && "
+        "chown vitastor:vitastor /etc/vitastor/vitastor.conf && "
+        "chmod 0640 /etc/vitastor/vitastor.conf"
+    )
+
+
+def _deploy_config(params: dict) -> dict:
+    """Build the URL-shaped config required by make-etcd and Vitastor CLI."""
+    monitors = [node["host"] for node in params["nodes"] if "mon" in node["roles"]]
+    return {
+        "etcd_address": [f"http://{host}:2379" for host in monitors],
+        "etcd_prefix": params["etcd_prefix"],
+        "osd_network": params["osd_network"],
+    }
+
+
+def _config_matches_command(config: dict) -> str:
+    """Read-only check for the fields owned by the deploy workflow."""
+    encoded = base64.b64encode(json.dumps(config, separators=(",", ":")).encode()).decode()
+    return (
+        "set -eu; test -s /etc/vitastor/vitastor.conf; "
+        "python3 -c "
+        + shlex.quote(
+            "import base64,json,sys; "
+            "actual=json.load(open('/etc/vitastor/vitastor.conf')); "
+            "expected=json.loads(base64.b64decode(sys.argv[1])); "
+            "sys.exit(0 if all(actual.get(k)==v for k,v in expected.items()) else 1)"
+        )
+        + " "
+        + shlex.quote(encoded)
+    )
+
+
+def _preflight_command(disks: list[str]) -> str:
+    """Device safety gate that must run before anything can write to a disk.
+
+    `vitastor-disk prepare` wipes its target. A path that is not a block
+    device, or that is mounted, means the name no longer points at the disk
+    the operator chose — device names shift across reboots, and a disk can be
+    in use for something else entirely — so the whole step is refused.
+    """
+    checks = ["test -r /etc/os-release"]
+    for disk in disks:
+        q = shlex.quote(disk)
+        checks.append(f"test -b {q} && test -z \"$(lsblk -no MOUNTPOINT {q} | tr -d ' ')\"")
+    return "set -eu; " + "; ".join(checks) + "; echo preflight-ok"
+
+
+def _monitor_setup_command(*, reuse_existing_etcd: bool) -> str:
+    """Bring up etcd and the monitor.
+
+    `reuse_existing_etcd` belongs to `resume_deploy` ALONE: there, an already
+    generated etcd.conf is the state a failed deploy left behind and rerunning
+    make-etcd would undo it. A fresh `deploy` must never reuse it — `delete()`
+    is not the only way a cluster goes away, so leftover etcd.conf on a node
+    can still carry a previous cluster's membership and prefix while the new
+    vitastor.conf points somewhere else entirely.
+    """
+    if reuse_existing_etcd:
+        bootstrap = (
+            "if test -s /etc/vitastor/etcd.conf && "
+            "test -f /etc/systemd/system/vitastor-etcd.service; then "
+            "systemctl daemon-reload; "
+            "else /usr/lib/vitastor/mon/make-etcd --copy no; fi; "
+        )
+    else:
+        bootstrap = "/usr/lib/vitastor/mon/make-etcd --copy no; "
+    return (
+        "set -eu; "
+        + bootstrap
+        + "systemctl enable --now vitastor-etcd vitastor-mon; "
+        "test \"$(systemctl show -p ActiveState --value vitastor-etcd)\" = active; "
+        "test \"$(systemctl show -p SubState --value vitastor-etcd)\" = running; "
+        "test \"$(systemctl show -p ActiveState --value vitastor-mon)\" = active; "
+        "test \"$(systemctl show -p SubState --value vitastor-mon)\" = running"
+    )
+
+
+def _package_ready_command(version: str = "") -> str:
+    """Verify binaries and, when requested, the exact installed release."""
+    version = str(version or "").strip()
+    version_check = ""
+    if version:
+        version_check = (
+            " vitastor-disk --help 2>&1 | head -1 | "
+            + "grep -F -- "
+            + shlex.quote(" " + version)
+            + " >/dev/null;"
+        )
+    return (
+        "set -eu; command -v vitastor-cli >/dev/null; "
+        "test -f /usr/lib/vitastor/mon/make-etcd;"
+        + version_check
+        + " echo packages-ready"
+    )
+
+
+def _osd_reconcile_command(disk: str) -> str:
+    """Skip prepare only when the target already has a valid Vitastor SB."""
+    q = shlex.quote(disk)
+    return (
+        "set -eu; found=0; "
+        f"for candidate in {q} $(lsblk -nrpo NAME {q} 2>/dev/null || true); do "
+        "if vitastor-disk read-sb --force \"$candidate\" >/dev/null 2>&1; then "
+        "echo \"OSD superblock found on $candidate; skipping prepare\"; found=1; break; fi; "
+        "done; "
+        "if test \"$found\" = 0; then vitastor-disk prepare --dry-run " + q + "; "
+        "vitastor-disk prepare " + q + "; fi; "
+        "systemctl start vitastor.target; "
+        "test \"$(systemctl show -p ActiveState --value vitastor.target)\" = active; "
+        "test \"$(systemctl show -p SubState --value vitastor.target)\" = active; "
+        "systemctl list-units --type=service --state=running --no-legend 'vitastor-osd@*.service' | grep -q ."
+    )
+
+
+def _inspection_line(host: str, label: str, result: str) -> str:
+    return f"{host}: {label} — {result.strip()[-500:]}"
+
+
+def _recovery_snapshot_command(nodes: list[dict]) -> str:
+    """Collect a bounded, read-only state snapshot before any resume writes."""
+    disks = [disk for node in nodes for disk in node.get("disks", [])]
+    disk_checks = []
+    for disk in disks:
+        q = shlex.quote(disk)
+        disk_checks.append(
+            f"found=0; for candidate in {q} $(lsblk -nrpo NAME {q} 2>/dev/null || true); do "
+            f"if vitastor-disk read-sb --force \"$candidate\" >/dev/null 2>&1; then "
+            f"echo osd-superblock=\"$candidate\"; found=1; break; fi; done; "
+            "test \"$found\" = 1 || echo osd-superblock=none"
+        )
+    return (
+        "set +e; "
+        "if command -v vitastor-cli >/dev/null && test -f /usr/lib/vitastor/mon/make-etcd; "
+        "then echo packages=ready; else echo packages=missing; fi; "
+        "if test -s /etc/vitastor/vitastor.conf; then echo config=present; else echo config=missing; fi; "
+        "systemctl is-active --quiet vitastor-etcd && echo etcd=active || echo etcd=inactive; "
+        "systemctl is-active --quiet vitastor-mon && echo monitor=active || echo monitor=inactive; "
+        + ("; ".join(disk_checks) if disk_checks else "echo osd-superblock=not-applicable")
+    )
+
+
+def resume_deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
+    """Reconcile a failed deploy and continue only from verified state.
+
+    Every check is idempotent and read-only until the exact missing step is
+    identified. OSD preparation is the sole write-sensitive step and is
+    skipped when its superblock is already readable.
+    """
+    nodes = params["nodes"]
+    ssh_user, ssh_key = params["ssh_user"], params["ssh_key_path"]
+    monitors = [node["host"] for node in nodes if "mon" in node["roles"]]
+    config = _deploy_config(params)
+    inspection: list[str] = []
+    prior_progress = params.get("resume_progress") or []
+    if isinstance(prior_progress, list):
+        completed = [
+            str(item.get("id"))
+            for item in prior_progress
+            if isinstance(item, dict) and item.get("status") == "done"
+        ]
+        if completed:
+            inspection.append("Lịch sử operation ghi nhận đã xong: " + ", ".join(completed))
+
+    progress("reconcile", "running", "Đối chiếu trạng thái deploy hiện tại và nhờ AI phân tích lỗi")
+    for node in nodes:
+        snapshot = _run(node["host"], ssh_user, ssh_key, _recovery_snapshot_command([node]))
+        inspection.append(_inspection_line(node["host"], "snapshot chỉ đọc", snapshot))
+    ai_summary = summarize_deploy_recovery(
+        str(params.get("resume_error") or "Không có lỗi được lưu"),
+        "\n".join(inspection),
+    )
+    progress("recovery-ai", "done", "AI phân tích trước khi tiếp tục: " + ai_summary)
+    for node in nodes:
+        host = node["host"]
+        try:
+            output = _run(host, ssh_user, ssh_key, _preflight_command(node.get("disks", [])))
+            inspection.append(_inspection_line(host, "preflight", "đã hoàn tất; " + output))
+        except Exception as exc:
+            inspection.append(_inspection_line(host, "preflight", f"chưa đạt: {exc}"))
+            raise
+
+    for node in nodes:
+        host = node["host"]
+        try:
+            output = _run(host, ssh_user, ssh_key, _package_ready_command(params.get("version", "")))
+            inspection.append(_inspection_line(host, "packages", "đã hoàn tất; " + output))
+        except Exception:
+            if not params.get("install_packages"):
+                raise
+            output = _run(host, ssh_user, ssh_key, _install_command(params.get("version", "")))
+            inspection.append(_inspection_line(host, "packages", "đã cài tiếp; " + output))
+    progress("packages", "done", "Package đã được xác minh; chỉ cài bổ sung node còn thiếu")
+
+    for node in nodes:
+        host = node["host"]
+        try:
+            output = _run(host, ssh_user, ssh_key, _config_matches_command(config))
+            inspection.append(_inspection_line(host, "config", "đã khớp; " + output))
+        except Exception:
+            output = _run(host, ssh_user, ssh_key, "set -eu; " + _config_command(config))
+            inspection.append(_inspection_line(host, "config", "đã ghi bổ sung; " + output))
+    progress("config", "done", "Cấu hình đã được đối chiếu và bổ sung khi cần")
+
+    for host in monitors:
+        output = _run(host, ssh_user, ssh_key, _monitor_setup_command(reuse_existing_etcd=True))
+        inspection.append(_inspection_line(host, "monitors", "đã hoạt động; " + output))
+    progress("monitors", "done", "Etcd và monitor đã được đối chiếu/khởi động tiếp")
+
+    for node in nodes:
+        for disk in node.get("disks", []):
+            output = _run(node["host"], ssh_user, ssh_key, _osd_reconcile_command(disk))
+            state = "OSD đã có superblock, bỏ qua prepare" if "superblock found" in output else "OSD được prepare tiếp"
+            inspection.append(_inspection_line(node["host"], f"osd {disk}", state))
+    progress("osds", "done", "OSD đã được kiểm tra; chỉ prepare thiết bị chưa có superblock")
+
+    output = _run(monitors[0], ssh_user, ssh_key, "vitastor-cli --json --no-color status")
+    inspection.append(_inspection_line(monitors[0], "verify", "cluster status đã phản hồi; " + output))
+    progress("verify", "done", "Cụm phản hồi vitastor-cli status; resume hoàn tất")
 
 
 def _install_command(version: str) -> str:
@@ -96,24 +317,18 @@ def deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
     nodes = params["nodes"]
     ssh_user, ssh_key = params["ssh_user"], params["ssh_key_path"]
     monitors = [n["host"] for n in nodes if "mon" in n["roles"]]
-    etcd_addresses = [f"{host}:2379" for host in monitors]
-    config = {"etcd_address": etcd_addresses, "etcd_prefix": params["etcd_prefix"], "osd_network": params["osd_network"]}
+    config = _deploy_config(params)
 
     progress("preflight", "running", "Kiểm tra SSH và thiết bị")
     for node in nodes:
-        disks = node.get("disks", [])
-        checks = ["test -r /etc/os-release"]
-        for disk in disks:
-            q = shlex.quote(disk)
-            checks.append(f"test -b {q} && test -z \"$(lsblk -no MOUNTPOINT {q} | tr -d ' ')\"")
-        _run(node["host"], ssh_user, ssh_key, "set -eu; " + "; ".join(checks))
+        _run(node["host"], ssh_user, ssh_key, _preflight_command(node.get("disks", [])))
     progress("preflight", "done", "Kiểm tra an toàn hoàn tất")
 
     progress("packages", "running", "Cấu hình repository chính thức và kiểm tra/cài gói Vitastor, Etcd")
     for node in nodes:
         if params.get("install_packages"):
             _run(node["host"], ssh_user, ssh_key, _install_command(params.get("version", "")))
-        _run(node["host"], ssh_user, ssh_key, "command -v vitastor-cli >/dev/null && test -f /usr/lib/vitastor/mon/make-etcd")
+        _run(node["host"], ssh_user, ssh_key, _package_ready_command(params.get("version", "")))
     progress("packages", "done", "Binary Vitastor sẵn sàng")
 
     progress("config", "running", "Ghi cấu hình Vitastor đồng nhất")
@@ -126,7 +341,7 @@ def deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
         # ``make-etcd`` asks an interactive copy question by default.  The
         # dashboard already invokes it once per monitor, so nested copying is
         # unnecessary and would block a non-interactive SSH session forever.
-        _run(host, ssh_user, ssh_key, "set -eu; /usr/lib/vitastor/mon/make-etcd --copy no; systemctl enable --now vitastor-etcd vitastor-mon")
+        _run(host, ssh_user, ssh_key, _monitor_setup_command(reuse_existing_etcd=False))
     progress("monitors", "done", "Etcd và monitor đã khởi động")
 
     progress("osds", "running", "Chuẩn bị thiết bị OSD — thao tác ghi dữ liệu")
@@ -135,7 +350,14 @@ def deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
         if not disks:
             continue
         quoted = " ".join(shlex.quote(disk) for disk in disks)
-        _run(node["host"], ssh_user, ssh_key, f"set -eu; vitastor-disk prepare --dry-run {quoted}; vitastor-disk prepare {quoted}; systemctl start vitastor.target")
+        _run(
+            node["host"], ssh_user, ssh_key,
+            f"set -eu; vitastor-disk prepare --dry-run {quoted}; vitastor-disk prepare {quoted}; "
+            "systemctl start vitastor.target; "
+            "test \"$(systemctl show -p ActiveState --value vitastor.target)\" = active; "
+            "test \"$(systemctl show -p SubState --value vitastor.target)\" = active; "
+            "systemctl list-units --type=service --state=running --no-legend 'vitastor-osd@*.service' | grep -q .",
+        )
     progress("osds", "done", "OSD đã được khởi tạo")
 
     progress("verify", "running", "Kiểm tra trạng thái cụm")
@@ -185,7 +407,9 @@ def delete(params: dict, progress: Callable[[str, str, str], None]) -> None:
             "osd_units=\"$(systemctl list-unit-files --type=service --no-legend 'vitastor-osd@*.service' | awk '{print $1}')\"; "
             "for unit in vitastor.target vitastor-mon vitastor-etcd $osd_units; do "
             "if systemctl is-enabled --quiet \"$unit\" 2>/dev/null; then systemctl disable \"$unit\"; fi; "
-            "done; rm -f /etc/vitastor/vitastor.conf",
+            # etcd.conf mang membership + prefix của CỤM NÀY; để lại thì node
+            # còn một mảnh cấu hình không khớp với bất kỳ cụm nào đang tồn tại.
+            "done; rm -f /etc/vitastor/vitastor.conf /etc/vitastor/etcd.conf",
         )
     progress("cleanup", "done", "Đã xoá cấu hình cụm")
 
