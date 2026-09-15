@@ -1,4 +1,5 @@
 import fcntl
+import base64
 import hashlib
 import json
 import logging
@@ -992,7 +993,7 @@ def list_host_keys() -> list[dict[str, str]]:
             result.append({
                 "host": host,
                 "key_type": key_type,
-                "fingerprint": ":".join(f"{value:02x}" for value in key.get_fingerprint()),
+                "fingerprint": "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode("ascii").rstrip("="),
             })
     return result
 

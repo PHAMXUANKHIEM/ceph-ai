@@ -242,7 +242,10 @@
         : (step.status === "done" || step.status === "failed") ? step.finished_at_display : null;
       var timeSpan = clockText ? "<span class=\"deploy-log-time\">[" + clockText + "]</span> " : "";
       line.innerHTML = timeSpan + glyph + " " + escapeHtml(step.label || step.step);
-      if (step.message) {
+      var duplicateHostMessage = (step.hosts || []).some(function (h) {
+        return h.message && h.message === step.message;
+      });
+      if (step.message && !duplicateHostMessage) {
         line.innerHTML += " — " + escapeHtml(step.message);
       }
       logBox.appendChild(line);
@@ -258,7 +261,10 @@
       }
       if (step.status === "failed" && step.message && HOST_KEY_PROVISION_RE.test(step.message)) {
         var failedHost = (step.hosts || []).filter(function (h) { return h.status === "failed"; })[0];
-        if (failedHost) renderProvisionHostKeyControl(failedHost.host);
+        if (failedHost) renderProvisionHostKeyControl(
+          failedHost.host,
+          /does not match/.test(step.message)
+        );
       }
       if (step.status === "running") runningStep = step;
     });
@@ -296,12 +302,14 @@
     return div.innerHTML;
   }
 
-  function renderProvisionHostKeyControl(host) {
+  function renderProvisionHostKeyControl(host, changed) {
     var box = document.createElement("p");
     box.className = "deploy-log-line status-failed";
     box.style.marginLeft = "1.5em";
     box.appendChild(document.createTextNode(
-      "⚠ Node " + host + " chưa có host key tin cậy. Hãy xác minh fingerprint rồi nhập key trong Settings. "
+      (changed
+        ? "⚠ Node " + host + " đang có host key cũ không khớp với key hiện tại. Hãy xác minh fingerprint rồi cập nhật key trong Settings. "
+        : "⚠ Node " + host + " chưa có host key tin cậy. Hãy xác minh fingerprint rồi nhập key trong Settings. ")
     ));
 
     if (!initialState.is_admin) {
@@ -313,7 +321,9 @@
     }
     var link = document.createElement("a");
     link.href = "/settings?section=ceph-host-keys&host=" + encodeURIComponent(host);
-    link.textContent = "Mở Settings để nhập host key cho " + host;
+    link.textContent = changed
+      ? "Mở Settings để cập nhật host key cho " + host
+      : "Mở Settings để nhập host key cho " + host;
     box.appendChild(link);
     logBox.appendChild(box);
   }

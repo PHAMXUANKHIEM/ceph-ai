@@ -366,7 +366,7 @@ def test_list_host_keys_returns_fingerprint_without_key_material(tmp_path, monke
 
     assert rows[0]["host"] == "10.3.55.98"
     assert rows[0]["key_type"] == "ssh-ed25519"
-    assert rows[0]["fingerprint"]
+    assert rows[0]["fingerprint"].startswith("SHA256:")
     assert "AAAAC3" not in str(rows[0])
 
 
