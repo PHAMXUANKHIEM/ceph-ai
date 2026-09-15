@@ -46,6 +46,7 @@
 <option value="full_qcow2">Full QCOW2 export</option>
 <option value="incremental_qcow2">Incremental QCOW2 layer</option>
 <option value="raw">RAW export bằng vitastor-cli dd</option>
+<option value="metadata_cluster">Metadata toàn bộ cụm (etcd + config + inventory)</option>
 <option value="metadata_etcd">Metadata etcd snapshot</option>
 <option value="metadata_antietcd">Metadata antietcd dump</option>
 </select>
@@ -56,12 +57,12 @@
 <label>Tên snapshot<input id="vb-snapshot" placeholder="backup-20260813">
 </label>
 </div>
-<label id="vb-destination-field">File đích trên management host<input id="vb-destination" placeholder="/backup/vitastor/vm-100.qcow2">
+<label id="vb-destination-field">File/thư mục đích trên management host<input id="vb-destination" placeholder="/backup/vitastor/vm-100.qcow2">
 </label>
 <label id="vb-backing-field" hidden>QCOW2 backing file của lần trước<input id="vb-backing" placeholder="/backup/vitastor/vm-100-base.qcow2">
 </label>
 <div class="vitastor-live-notice">
-<strong>Lưu ý:</strong> snapshot chỉ nằm trong chính cụm nên không bảo vệ khi mất toàn bộ cụm. Full/RAW/metadata phải trỏ tới filesystem hoặc mount backup bên ngoài có đủ dung lượng. Với database hoặc nhiều disk, cần guest freeze/quiesce từ nền tảng VM trước khi chạy để đạt application consistency.</div>
+<strong>Lưu ý:</strong> snapshot chỉ nằm trong chính cụm nên không bảo vệ khi mất toàn bộ cụm. Full/RAW/metadata phải trỏ tới filesystem hoặc mount backup bên ngoài có đủ dung lượng. Metadata toàn bộ cụm sẽ tạo thư mục timestamp chứa snapshot etcd, cấu hình, inventory và checksum; không chứa block data. Khi phục hồi không được prepare hoặc wipe lại OSD disk. Với database hoặc nhiều disk, cần guest freeze/quiesce từ nền tảng VM trước khi chạy để đạt application consistency.</div>
 <p class="error" id="vb-error" hidden>
 </p>
 <button class="btn btn-primary">Tạo kế hoạch backup</button>
@@ -114,6 +115,11 @@
 <td>etcd / antietcd</td>
 <td>Pool, PG, inode và cấu hình cụm; không chứa block data</td>
 <td>Restore metadata bằng công cụ tương ứng</td>
+</tr>
+<tr>
+<td>Metadata toàn bộ cụm</td>
+<td>Snapshot etcd, vitastor.conf, trạng thái, pool/OSD/user inventory và SHA256SUMS</td>
+<td>Restore etcd snapshot, giữ nguyên OSD disk, rồi khởi động monitor/OSD cũ</td>
 </tr>
 </tbody>
 </table>

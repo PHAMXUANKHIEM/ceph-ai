@@ -163,6 +163,46 @@ def test_nightly_analysis_redacts_assignment_and_json_secrets():
     assert redacted.count("<redacted>") == 3
 
 
+def test_nightly_analyst_uses_budget_guard_and_cli_telemetry(monkeypatch, tmp_path):
+    budget_calls = []
+    telemetry_calls = []
+
+    monkeypatch.setattr(supervisor, "_role_account_dirs", lambda config, profile: (tmp_path, tmp_path))
+    monkeypatch.setattr(supervisor, "_provider_command", lambda *args, **kwargs: ("claude", ["claude"]))
+    monkeypatch.setattr(
+        supervisor,
+        "check_ai_budget",
+        lambda provider, model, input_chars: budget_calls.append((provider, model, input_chars)) or "reservation-1",
+    )
+    monkeypatch.setattr(supervisor, "record_ai_attempt", lambda **values: telemetry_calls.append(values))
+
+    def fake_run(args, **kwargs):
+        if args[:3] == ["git", "worktree", "add"]:
+            Path(args[4]).mkdir(parents=True)
+            return SimpleNamespace(returncode=0, stdout="")
+        if args == ["claude"]:
+            return SimpleNamespace(returncode=0, stdout="bounded report")
+        if args[:3] == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        if args[:3] == ["git", "worktree", "remove"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(supervisor, "_run", fake_run)
+    role, report = supervisor._run_nightly_analyst(
+        tmp_path, "nightly evidence", "ai_product", "AI behavior",
+        provider="claude", model="sonnet", account_profile="configured", timeout_seconds=30,
+    )
+
+    assert role == "ai_product"
+    assert "bounded report" in report
+    assert budget_calls == [("claude", "sonnet", budget_calls[0][2])]
+    assert telemetry_calls[0]["reservation_id"] == "reservation-1"
+    assert telemetry_calls[0]["feature"] == "nightly_multi_agent_analysis"
+    assert telemetry_calls[0]["status"] == "SUCCESS"
+    assert telemetry_calls[0]["output_chars"] == len("bounded report")
+
+
 def test_nightly_due_is_idempotent_when_systemd_starts_late():
     now = datetime(2026, 8, 30, 20, 15, tzinfo=timezone.utc)
 

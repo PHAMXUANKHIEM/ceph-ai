@@ -89,6 +89,29 @@ def test_metadata_etcd_backup_uses_snapshot_save(monkeypatch):
     assert any("etcdctl --endpoints=10.0.0.1:2379 snapshot save /backup/etcd.db" in command for command in commands)
 
 
+def test_cluster_metadata_backup_is_timestamped_and_contains_recovery_artifacts(monkeypatch):
+    commands = []
+    monkeypatch.setattr(operations, "_assert_healthy", lambda params: None)
+    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "/backup/vitastor/metadata/20260914T093015Z")
+    params = {
+        "method": "metadata_cluster", "destination": "/backup/vitastor/metadata",
+        "management_host": "node-a", "ssh_user": "root", "ssh_key_path": "/key",
+        "config_path": "/etc/vitastor/vitastor.conf",
+        "etcd_address": "10.0.0.1:2379,10.0.0.2:2379", "etcd_prefix": "/vitastor",
+        "exec_mode": "none", "container_name": "",
+    }
+
+    operations.backup(params, lambda *_: None)
+
+    bundle = commands[-1]
+    assert "snapshot save \"$tmp/etcd-snapshot.db\"" in bundle
+    assert 'cp -- /etc/vitastor/vitastor.conf "$tmp/vitastor.conf"' in bundle
+    for artifact in ("status.json", "df.json", "pools.json", "osds.json", "osd-tree.txt", "users.json", "SHA256SUMS"):
+        assert f"$tmp/{artifact}" in bundle
+    assert 'mv "$tmp" "$final"' in bundle
+    assert "vitastor-disk" not in bundle
+
+
 def test_qemu_uri_preserves_custom_etcd_prefix():
     uri = operations._qemu_uri({
         "etcd_address": "10.0.0.1:2379", "etcd_prefix": "/custom",

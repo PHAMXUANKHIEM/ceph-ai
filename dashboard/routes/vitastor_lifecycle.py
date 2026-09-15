@@ -23,7 +23,7 @@ DISK_RE = re.compile(r"^/dev/[A-Za-z0-9._/+:-]+$")
 VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+:~_-]{0,63}$")
 IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 SNAPSHOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-BACKUP_METHODS = {"snapshot", "full_qcow2", "incremental_qcow2", "raw", "metadata_etcd", "metadata_antietcd"}
+BACKUP_METHODS = {"snapshot", "full_qcow2", "incremental_qcow2", "raw", "metadata_cluster", "metadata_etcd", "metadata_antietcd"}
 IN_FLIGHT = ("PENDING_APPROVAL", "RUNNING")
 
 
@@ -305,7 +305,7 @@ async def propose_backup(request: Request, user: str = Depends(require_vitastor_
         cluster = _active_cluster(session, cluster_id)
         if not cluster:
             raise HTTPException(404, "Không tìm thấy cụm đang hoạt động")
-        if method in {"metadata_etcd", "metadata_antietcd"} and not cluster.etcd_address:
+        if method in {"metadata_cluster", "metadata_etcd", "metadata_antietcd"} and not cluster.etcd_address:
             raise HTTPException(400, "Backup metadata cần Etcd address rõ ràng trong cấu hình cụm")
         params = {
             "method": method, "image": image, "snapshot": snapshot,
@@ -319,11 +319,21 @@ async def propose_backup(request: Request, user: str = Depends(require_vitastor_
     labels = {
         "snapshot": "Snapshot CoW trong cụm", "full_qcow2": "Full QCOW2",
         "incremental_qcow2": "Incremental QCOW2 layer", "raw": "RAW image",
+        "metadata_cluster": "Backup metadata toàn bộ cụm",
         "metadata_etcd": "Snapshot metadata etcd", "metadata_antietcd": "Dump metadata antietcd",
     }
-    detail = f"Image: {image}@{snapshot}" if image_method else "Toàn bộ metadata key-value"
+    detail = f"Image: {image}@{snapshot}" if image_method else (
+        "Snapshot etcd + vitastor.conf + status/df/pool/OSD/user inventory + SHA256SUMS"
+        if method == "metadata_cluster" else "Toàn bộ metadata key-value"
+    )
     target = "Giữ trong cụm (không phải off-cluster backup)" if method == "snapshot" else destination
-    plan = f"BACKUP VITASTOR — {name}\nKiểu: {labels[method]}\n{detail}\nĐích: {target}\n\n1. Kiểm tra cụm HEALTHY và công cụ cần thiết\n2. {'Tạo snapshot live trước khi export' if image_method else 'Chụp metadata nhất quán'}\n3. {'Hoàn tất snapshot nội bộ' if method == 'snapshot' else 'Export và xác minh file có dữ liệu'}"
+    final_step = (
+        "Tạo thư mục timestamp, ghi manifest và xác minh checksum toàn bộ bundle"
+        if method == "metadata_cluster" else
+        "Hoàn tất snapshot nội bộ" if method == "snapshot" else
+        "Export và xác minh file có dữ liệu"
+    )
+    plan = f"BACKUP VITASTOR — {name}\nKiểu: {labels[method]}\n{detail}\nĐích: {target}\n\n1. Kiểm tra cụm HEALTHY và công cụ cần thiết\n2. {'Tạo snapshot live trước khi export' if image_method else 'Chụp metadata nhất quán'}\n3. {final_step}\n\nLưu ý: Metadata backup không chứa block data; khi phục hồi phải giữ nguyên OSD disk và không chạy vitastor-disk prepare."
     return _create_operation("backup", name, params, plan, user, cluster_id)
 
 

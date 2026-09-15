@@ -198,8 +198,11 @@ def upgrade(params: dict, progress: Callable[[str, str, str], None]) -> None:
     progress("verify", "done", "Upgrade hoàn tất: " + "; ".join(versions))
 
 
-def _vitastor_cli(params: dict) -> str:
-    args = ["vitastor-cli", "--no-color"]
+def _vitastor_cli(params: dict, *, json_output: bool = False) -> str:
+    args = ["vitastor-cli"]
+    if json_output:
+        args.append("--json")
+    args.append("--no-color")
     if params.get("config_path"):
         args += ["--config_path", params["config_path"]]
     else:
@@ -209,6 +212,52 @@ def _vitastor_cli(params: dict) -> str:
     if mode in {"docker", "podman"}:
         command = f"{mode} exec {shlex.quote(params['container_name'])} {command}"
     return command
+
+
+def _metadata_bundle_command(params: dict) -> str:
+    """Build an atomic, timestamped cluster-metadata backup on the remote host.
+
+    The etcd snapshot is the authoritative Vitastor metadata backup.  The
+    accompanying CLI exports and configuration make the backup auditable and
+    reduce recovery time without touching any OSD device or block data.
+    """
+    base = shlex.quote(params["destination"])
+    endpoint = shlex.quote(params["etcd_address"])
+    config_path = shlex.quote(params.get("config_path") or "/etc/vitastor/vitastor.conf")
+    cli = _vitastor_cli(params, json_output=True)
+    return (
+        "set -eu; "
+        f"base={base}; "
+        "stamp=$(date -u +%Y%m%dT%H%M%SZ); "
+        "final=\"$base/$stamp\"; "
+        "test ! -e \"$final\"; "
+        "tmp=\"$base/.metadata-$stamp-$$\"; "
+        "umask 077; mkdir \"$tmp\"; "
+        "trap 'rm -rf -- \"$tmp\"' EXIT; "
+        f"ETCDCTL_API=3 etcdctl --endpoints={endpoint} snapshot save \"$tmp/etcd-snapshot.db\"; "
+        "ETCDCTL_API=3 etcdctl snapshot status \"$tmp/etcd-snapshot.db\" -w json > \"$tmp/etcd-snapshot-status.json\"; "
+        f"{cli} status > \"$tmp/status.json\"; "
+        f"{cli} df > \"$tmp/df.json\"; "
+        f"{cli} ls-pools --detail > \"$tmp/pools.json\"; "
+        f"{cli} ls-osd -l > \"$tmp/osds.json\"; "
+        f"{_vitastor_cli(params)} osd-tree > \"$tmp/osd-tree.txt\"; "
+        f"{cli} ls-user > \"$tmp/users.json\" 2>/dev/null || true; "
+        f"test -r {config_path}; cp -- {config_path} \"$tmp/vitastor.conf\"; "
+        "chmod 0600 \"$tmp/vitastor.conf\"; "
+        "printf '%s\\n' "
+        "  'backup_type=vitastor-cluster-metadata' "
+        "  \"created_at=$stamp\" "
+        f"  {shlex.quote('etcd_endpoints=' + params['etcd_address'])} "
+        f"  {shlex.quote('etcd_prefix=' + params.get('etcd_prefix', '/vitastor'))} "
+        "  'restore_scope=metadata-only; keep existing OSD disks intact' "
+        "> \"$tmp/backup-info.txt\"; "
+        "sha256sum \"$tmp\"/* > \"$tmp/SHA256SUMS\"; "
+        "(cd \"$tmp\" && sha256sum -c SHA256SUMS); "
+        "test -s \"$tmp/etcd-snapshot.db\"; "
+        "mv \"$tmp\" \"$final\"; "
+        "trap - EXIT; "
+        "printf '%s\\n' \"$final\""
+    )
 
 
 def _qemu_uri(params: dict, image: str, skip_parents: bool = False) -> str:
@@ -233,17 +282,20 @@ def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
 
     progress("preflight", "running", "Kiểm tra cụm và công cụ backup")
     _assert_healthy(params)
-    tools = "command -v vitastor-cli >/dev/null"
+    tools = "set -eu; command -v vitastor-cli >/dev/null"
     if method in {"full_qcow2", "incremental_qcow2"}:
         tools += "; command -v qemu-img >/dev/null"
-    elif method == "metadata_etcd":
+    elif method in {"metadata_etcd", "metadata_cluster"}:
         tools += "; command -v etcdctl >/dev/null"
     elif method == "metadata_antietcd":
         tools += "; command -v npm >/dev/null"
     if method != "snapshot":
         destination = shlex.quote(params["destination"])
         parent = shlex.quote(posixpath.dirname(params["destination"]) or "/")
-        tools += f"; test -d {parent}; test -w {parent}; test ! -e {destination}"
+        if method == "metadata_cluster":
+            tools += f"; test -d {parent}; test -w {parent}; mkdir -p {destination}; test -d {destination}; test -w {destination}"
+        else:
+            tools += f"; test -d {parent}; test -w {parent}; test ! -e {destination}"
     if method == "incremental_qcow2":
         tools += f"; test -s {shlex.quote(params['backing_file'])}"
     _run(host, user, key, tools)
@@ -284,6 +336,13 @@ def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
             else:
                 progress("cleanup", "done", f"Đã dọn snapshot tạm {snapshot_image}")
             raise
+    elif method == "metadata_cluster":
+        progress("export", "running", "Chụp snapshot etcd và export metadata cụm")
+        _run(host, user, key, _metadata_bundle_command(params))
+        progress("export", "done", "Đã lưu snapshot etcd, cấu hình và inventory cụm")
+        progress("verify", "running", "Xác minh checksum toàn bộ metadata backup")
+        progress("verify", "done", "Metadata backup đã được xác minh và đóng gói atomic")
+        return
     elif method == "metadata_etcd":
         destination = shlex.quote(params["destination"])
         endpoint = shlex.quote(params["etcd_address"].split(",")[0])

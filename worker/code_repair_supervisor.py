@@ -38,6 +38,8 @@ from worker.code_repair import (
     _run,
 )
 from worker import ceph_capability_learning as ceph_learning
+from shared.ai_budget import AIBudgetError, check as check_ai_budget
+from shared.ai_observability import record_ai_attempt
 from shared import service_health
 from shared.telegram_alerts import send_code_repair_alert
 
@@ -126,6 +128,12 @@ def _run_nightly_analyst(
     """Run one bounded read-only analyst in its own temporary worktree."""
     root = Path(tempfile.mkdtemp(prefix="ceph-ai-nightly-analysis-"))
     worktree = root / "repo"
+    prompt = _nightly_analyst_prompt(role, focus, evidence)
+    model_id = model.strip() or "default"
+    started = time.monotonic()
+    budget_checked = False
+    reservation_id: str | None = None
+    result = None
     try:
         _run(
             ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
@@ -137,18 +145,20 @@ def _run_nightly_analyst(
         selected_provider, command = _provider_command(
             provider,
             worktree,
-            _nightly_analyst_prompt(role, focus, evidence),
+            prompt,
             timeout_seconds,
             claude_config_dir=claude_config_dir,
             codex_home=codex_home,
             model=model,
             mode="review",
         )
+        reservation_id = check_ai_budget(selected_provider, model_id, len(prompt))
+        budget_checked = True
         result = _run(
             command,
             cwd=worktree,
             timeout=timeout_seconds,
-            input_text=_nightly_analyst_prompt(role, focus, evidence),
+            input_text=prompt,
             check=False,
         )
         if result.returncode != 0:
@@ -161,7 +171,44 @@ def _run_nightly_analyst(
         report = report.strip()[-NIGHTLY_ANALYSIS_REPORT_LIMIT:]
         if not report:
             raise RuntimeError("analyst returned an empty report")
+        record_ai_attempt(
+            reservation_id=reservation_id,
+            feature="nightly_multi_agent_analysis",
+            provider=selected_provider,
+            model_id=model_id,
+            status="SUCCESS",
+            latency_ms=round((time.monotonic() - started) * 1000),
+            input_chars=len(prompt),
+            output_chars=len(result.stdout or ""),
+        )
         return role, f"[{role} / {selected_provider}]\n{report}"
+    except AIBudgetError:
+        record_ai_attempt(
+            reservation_id=None,
+            feature="nightly_multi_agent_analysis",
+            provider=locals().get("selected_provider", provider),
+            model_id=model_id,
+            status="ERROR",
+            latency_ms=round((time.monotonic() - started) * 1000),
+            input_chars=0,
+            output_chars=0,
+            error_type="AIBudgetError",
+        )
+        raise
+    except Exception as exc:
+        if budget_checked:
+            record_ai_attempt(
+                reservation_id=reservation_id,
+                feature="nightly_multi_agent_analysis",
+                provider=locals().get("selected_provider", provider),
+                model_id=model_id,
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=len(getattr(result, "stdout", "") or ""),
+                error_type=type(exc).__name__,
+            )
+        raise
     finally:
         cleanup_ok = True
         if worktree.exists():
