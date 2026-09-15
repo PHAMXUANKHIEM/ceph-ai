@@ -17,6 +17,7 @@ def test_deploy_installs_requested_version(monkeypatch):
     assert "apt-get install -y vitastor=3.0.16 etcd" in commands[1]
     assert "https://vitastor.io/debian/pubkey.gpg" in commands[1]
     assert "sources.list.d/vitastor.list" in commands[1]
+    assert "make-etcd --copy no" in commands[4]
 
 
 def test_install_command_defaults_to_repository_latest():

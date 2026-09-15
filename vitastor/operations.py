@@ -123,7 +123,10 @@ def deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
 
     progress("monitors", "running", "Khởi tạo Etcd và monitor")
     for host in monitors:
-        _run(host, ssh_user, ssh_key, "set -eu; /usr/lib/vitastor/mon/make-etcd; systemctl enable --now vitastor-etcd vitastor-mon")
+        # ``make-etcd`` asks an interactive copy question by default.  The
+        # dashboard already invokes it once per monitor, so nested copying is
+        # unnecessary and would block a non-interactive SSH session forever.
+        _run(host, ssh_user, ssh_key, "set -eu; /usr/lib/vitastor/mon/make-etcd --copy no; systemctl enable --now vitastor-etcd vitastor-mon")
     progress("monitors", "done", "Etcd và monitor đã khởi động")
 
     progress("osds", "running", "Chuẩn bị thiết bị OSD — thao tác ghi dữ liệu")
