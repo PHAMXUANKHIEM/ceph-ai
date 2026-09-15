@@ -20,6 +20,33 @@ def test_container_mode_requires_container_name():
         client._cli_command("10.0.0.10:2379/v3", exec_mode="podman")
 
 
+def test_provision_host_key_pins_verified_key_and_preserves_other_hosts(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text(
+        "10.0.0.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    )
+    monkeypatch.setattr(client, "KNOWN_HOSTS_PATH", str(known_hosts))
+    replacement = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D"
+
+    assert client.provision_host_key("10.0.0.10", replacement) == "ssh-ed25519"
+    stored = known_hosts.read_text()
+    assert "10.0.0.10" in stored
+    assert "10.0.0.11" in stored
+    assert known_hosts.stat().st_mode & 0o777 == 0o600
+
+
+def test_provision_host_key_rejects_invalid_key_without_overwriting(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    original = "10.0.0.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    known_hosts.write_text(original)
+    monkeypatch.setattr(client, "KNOWN_HOSTS_PATH", str(known_hosts))
+
+    with pytest.raises(client.VitastorHostKeyProvisionError):
+        client.provision_host_key("10.0.0.10", "ssh-ed25519 invalid-base64")
+
+    assert known_hosts.read_text() == original
+
+
 def test_query_status_parses_json(monkeypatch, tmp_path):
     class Channel:
         def recv_exit_status(self): return 0

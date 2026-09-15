@@ -2,6 +2,7 @@ import json
 
 from shared import db
 from shared.models import VitastorCluster, VitastorOperation
+from config.settings import settings
 import dashboard.routes.vitastor_lifecycle as route
 
 
@@ -18,6 +19,23 @@ def _deploy_payload():
             {"host": "10.20.1.11", "roles": ["osd"], "disks": ["/dev/nvme0n1"]},
         ],
     }
+
+
+def test_deploy_page_prefills_dashboard_ssh_identity(dashboard_client, monkeypatch, tmp_path):
+    key_file = tmp_path / "dashboard_key"
+    key_file.write_text("fake private key\n", encoding="utf-8")
+    public_key = "ssh-ed25519 AAAAfakepubkey dashboard@test"
+    (tmp_path / "dashboard_key.pub").write_text(public_key + "\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "ssh_key_path", str(key_file), raising=False)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/vitastor/deploy-cluster")
+
+    assert response.status_code == 200
+    assert f'value="{settings.ssh_user or "root"}"' in response.text
+    assert f'value="{settings.ssh_key_path or ""}"' in response.text
+    assert "private key" in response.text
+    assert public_key in response.text
 
 
 def test_deploy_requires_preview_then_explicit_execute(dashboard_client, monkeypatch):
@@ -41,6 +59,38 @@ def test_deploy_requires_preview_then_explicit_execute(dashboard_client, monkeyp
         assert session.get(VitastorOperation, operation_id).status == "SUCCESS"
         cluster = session.query(VitastorCluster).filter_by(name="vita-prod").one()
         assert "deployment" in json.loads(cluster.last_status_json)
+
+
+def test_vitastor_provision_host_key_route_requires_admin_and_calls_pinner(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(route, "provision_host_key", lambda host, key: calls.append((host, key)) or "ssh-ed25519")
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/vitastor/deploy-cluster/provision-host-key",
+        json={"host": "10.0.0.10", "host_key": "ssh-ed25519 AAAAverified"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert calls == [("10.0.0.10", "ssh-ed25519 AAAAverified")]
+
+
+def test_failed_deploy_page_keeps_error_for_host_key_recovery(dashboard_client):
+    _login(dashboard_client)
+    with db.SessionLocal() as session:
+        session.add(VitastorOperation(
+            operation="deploy", status="FAILED", cluster_name="vita-prod",
+            params_json="{}", plan_text="plan", progress_json="[]",
+            error_message="Không SSH được tới 10.0.0.10: Server '10.0.0.10' not found in known_hosts",
+            requested_by="admin",
+        ))
+        session.commit()
+
+    response = dashboard_client.get("/vitastor/deploy-cluster")
+
+    assert response.status_code == 200
+    assert "not found in known_hosts" in response.text
 
 
 def test_operation_execute_is_one_shot(dashboard_client, monkeypatch):

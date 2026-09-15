@@ -1,19 +1,23 @@
 """Deploy/delete workflows for Vitastor, independent from Ceph actions."""
 
+import asyncio
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import exists, or_
 from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
+from config.settings import settings
 from dashboard.routes import auth
 from dashboard.routes.vitastor import require_vitastor_login
 from dashboard.templating import make_templates
 from shared import db
 from shared.models import VitastorCluster, VitastorOperation
+from vitastor.client import VitastorHostKeyProvisionError, provision_host_key
 from vitastor.operations import backup, delete, deploy, upgrade
 
 router = APIRouter(prefix="/vitastor", tags=["vitastor-lifecycle"])
@@ -25,6 +29,17 @@ IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 SNAPSHOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BACKUP_METHODS = {"snapshot", "full_qcow2", "incremental_qcow2", "raw", "metadata_cluster", "metadata_etcd", "metadata_antietcd"}
 IN_FLIGHT = ("PENDING_APPROVAL", "RUNNING")
+
+
+def _dashboard_ssh_public_key() -> str:
+    """Return the dashboard SSH public key without ever reading the private key."""
+    key_path = str(settings.ssh_key_path or "").strip()
+    if not key_path:
+        return ""
+    try:
+        return Path(f"{key_path}.pub").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
 
 
 def _active_cluster(session, cluster_id: str):
@@ -52,7 +67,13 @@ def _context(user: str, operation: str) -> dict:
     with db.SessionLocal() as session:
         clusters = session.query(VitastorCluster).order_by(VitastorCluster.name).all()
         session.expunge_all()
-    return {"user": user, "is_admin": True, "operation": row, "progress": json.loads(row.progress_json) if row else [], "clusters": clusters}
+    return {
+        "user": user, "is_admin": True, "operation": row,
+        "progress": json.loads(row.progress_json) if row else [], "clusters": clusters,
+        "dashboard_ssh_user": settings.ssh_user,
+        "dashboard_ssh_key_path": settings.ssh_key_path,
+        "dashboard_ssh_public_key": _dashboard_ssh_public_key(),
+    }
 
 
 def _validate_nodes(raw) -> list[dict]:
@@ -197,6 +218,28 @@ async def propose_deploy(request: Request, user: str = Depends(require_vitastor_
     package_step = "Cài gói vitastor + etcd bằng package manager" if params["install_packages"] else "Kiểm tra gói vitastor + etcd đã được cài sẵn"
     plan = f"DEPLOY CỤM VITASTOR {name}\nMonitor: {', '.join(n['host'] for n in nodes if 'mon' in n['roles'])}\nOSD: {disks}\n\n1. Preflight SSH/thiết bị (chỉ đọc)\n2. {package_step}\n3. Ghi vitastor.conf\n4. Khởi tạo Etcd và monitor\n5. vitastor-disk prepare (GHI VĨNH VIỄN lên thiết bị)\n6. Kiểm tra vitastor-cli status"
     return _create_operation("deploy", name, params, plan, user)
+
+
+@router.post("/deploy-cluster/provision-host-key")
+async def provision_vitastor_host_key(request: Request, user: str = Depends(require_vitastor_login)):
+    """Store only an operator-verified node host key for future SSH checks."""
+    _require_admin(user)
+    body = await request.json()
+    host = str(body.get("host") or "").strip()
+    host_key = str(body.get("host_key") or "").strip()
+    if not host or not host_key:
+        raise HTTPException(400, "Cần địa chỉ node và SSH host public key đã xác minh")
+    try:
+        key_type = await asyncio.to_thread(provision_host_key, host, host_key)
+    except VitastorHostKeyProvisionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return JSONResponse({
+        "success": True,
+        "message": (
+            f"Đã lưu SSH host key {key_type} đã xác minh cho {host}. "
+            "Hãy tạo lại kế hoạch Deploy rồi Execute lại."
+        ),
+    })
 
 
 @router.get("/delete-cluster", response_class=HTMLResponse)

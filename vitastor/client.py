@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import base64
+import fcntl
 import json
 import os
 import shlex
 import re
+import tempfile
+from contextlib import contextmanager
 
 import paramiko
+from paramiko.hostkeys import HostKeyEntry, InvalidHostKey
 
 CONNECT_TIMEOUT_SECONDS = 3
 COMMAND_TIMEOUT_SECONDS = 15
-KNOWN_HOSTS_PATH = os.path.expanduser("~/.ssh/vitastor_aiops_known_hosts")
+_DEFAULT_KNOWN_HOSTS_PATH = (
+    "/var/lib/ceph-ai/ssh/vitastor_known_hosts"
+    if os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() == "true"
+    else os.path.expanduser("~/.ssh/vitastor_aiops_known_hosts")
+)
+KNOWN_HOSTS_PATH = os.environ.get("CEPH_AI_VITASTOR_KNOWN_HOSTS_PATH", _DEFAULT_KNOWN_HOSTS_PATH)
 VALID_EXEC_MODES = {"none", "docker", "podman"}
 LOG_SOURCES = {
     "all": ("vitastor-mon", "vitastor-osd*", "vitastor.target", "vitastor-etcd"),
@@ -25,6 +35,81 @@ _DURATION_RE = re.compile(r"^([0-9.]+)(ns|µs|us|ms|s)$")
 
 class VitastorConnectionError(RuntimeError):
     pass
+
+
+class VitastorHostKeyProvisionError(ValueError):
+    """Raised when an operator-supplied Vitastor host key cannot be pinned."""
+
+
+_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
+
+
+@contextmanager
+def _host_keys_lock():
+    directory = os.path.dirname(KNOWN_HOSTS_PATH) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    lock_path = f"{KNOWN_HOSTS_PATH}.lock"
+    with open(lock_path, "a+") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_host_keys_atomically(host_keys: paramiko.HostKeys) -> None:
+    directory = os.path.dirname(KNOWN_HOSTS_PATH) or "."
+    fd, temporary_path = tempfile.mkstemp(prefix=".vitastor_known_hosts.", dir=directory)
+    try:
+        os.close(fd)
+        host_keys.save(temporary_path)
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, KNOWN_HOSTS_PATH)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def provision_host_key(host: str, public_key: str) -> str:
+    """Pin an operator-verified node host key; never use trust-on-first-use.
+
+    ``public_key`` must be obtained and checked outside the Dashboard, for
+    example from the node console or a separately trusted administrator host.
+    Replacing an existing entry is deliberate so an operator can recover a
+    node after reinstalling it without disabling host-key verification.
+    """
+    if not _HOST_RE.fullmatch(str(host or "").strip()):
+        raise VitastorHostKeyProvisionError("IP/hostname không hợp lệ")
+    parts = str(public_key or "").strip().split()
+    if len(parts) < 2 or not re.fullmatch(r"(?:ssh|ecdsa)-[A-Za-z0-9@._+-]+", parts[0]):
+        raise VitastorHostKeyProvisionError("SSH host public key không hợp lệ")
+    try:
+        # Validate the base64 key before modifying the trust store. Paramiko
+        # performs the key-type-specific validation below as well.
+        base64.b64decode(parts[1], validate=True)
+        entry = HostKeyEntry.from_line(f"{host} {parts[0]} {parts[1]}")
+    except (TypeError, ValueError, InvalidHostKey) as exc:
+        raise VitastorHostKeyProvisionError("SSH host public key không hợp lệ") from exc
+    if entry is None or entry.key is None:
+        raise VitastorHostKeyProvisionError("Loại SSH host key không được hỗ trợ")
+
+    with _host_keys_lock():
+        host_keys = paramiko.HostKeys()
+        if os.path.exists(KNOWN_HOSTS_PATH):
+            try:
+                host_keys.load(KNOWN_HOSTS_PATH)
+            except (OSError, paramiko.SSHException) as exc:
+                raise VitastorHostKeyProvisionError("Không đọc được kho SSH host key hiện tại") from exc
+        host_keys.pop(host, None)
+        host_keys.add(host, entry.key.get_name(), entry.key)
+        try:
+            _write_host_keys_atomically(host_keys)
+        except OSError as exc:
+            raise VitastorHostKeyProvisionError("Không thể lưu SSH host key") from exc
+    return entry.key.get_name()
 
 
 def query_logs(
