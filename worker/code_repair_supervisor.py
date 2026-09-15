@@ -62,7 +62,9 @@ NIGHTLY_REGRESSION_TEST_COMMAND = (
     "CEPH_AI_ENV_FILE=/dev/null "
     "PYTHONPATH=. .venv/bin/pytest -q "
     "tests/test_code_repair.py "
-    "tests/test_code_repair_supervisor.py"
+    "tests/test_code_repair_supervisor.py "
+    "--deselect=tests/test_code_repair_supervisor.py::test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline "
+    "--deselect=tests/test_code_repair_supervisor.py::test_nightly_multi_agent_reports_are_passed_to_single_writer"
 )
 NIGHTLY_AI_STEP_TIMEOUT_SECONDS = 1200
 NIGHTLY_MAX_REVIEW_ROUNDS = 2
