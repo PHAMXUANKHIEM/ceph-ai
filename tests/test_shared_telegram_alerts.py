@@ -309,7 +309,8 @@ def test_every_prose_field_is_reflowed_to_one_paragraph(monkeypatch):
 
     telegram_alerts.send_node_alert("10.0.0.5", "CPU 95%\n\n   RAM    60%\n")
 
-    assert "🟠 Node 10.0.0.5: CPU 95% RAM 60%" in calls[0]
+    # Hai dòng riêng thành hai câu, không dính liền thành "CPU 95% RAM 60%".
+    assert "🟠 Node 10.0.0.5: CPU 95%. RAM 60%" in calls[0]
 
 
 def test_synchronous_watcher_alerts_never_call_the_router(monkeypatch):
@@ -1038,3 +1039,75 @@ def test_pending_default_key_alert_includes_best_option(monkeypatch):
     assert "Gợi ý tốt nhất" in text
     assert "Vault SSE-S3" in text
     assert "Phương án khác" in text
+
+
+_MON_ROCKSDB_LOG = """--- 10.3.53.1 (mon.rnd-khiempx-lab-ceph1) ---
+Cumulative WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Cumulative stall: 00:00:0.000 H:M:S, 0.0 percent
+Interval writes: 0 writes, 0 keys, 0 commit groups, ingest: 0.00 MB, 0.00 MB/s
+Interval WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB
+Interval stall: 00:00:0.000 H:M:S, 0.0 percent
+** Compaction Stats [default] **
+Level Files Size Score Read(GB) Rn(GB) Rnp1(GB) Write(GB) Wnew(GB) W-Amp
+------------------------------------------------------------------------
+mon.rnd-khiempx-lab-ceph1 cho phép client dùng khoá xác thực không an toàn"""
+
+
+def test_rocksdb_statistics_are_stripped_from_mon_evidence(monkeypatch):
+    """Log MON định kỳ nhả nguyên bảng thống kê RocksDB. Không dòng nào nói
+    gì về health check đang cảnh báo, nhưng chúng dài hàng nghìn ký tự và
+    đẩy dòng bằng chứng thật ra ngoài giới hạn 700 ký tự."""
+    _configure_incident(monkeypatch)
+    monkeypatch.setattr(telegram_alerts.settings, "telegram_ai_humanize_enabled", False, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("AUTH_INSECURE_KEYS_ALLOWED", "HEALTH_WARN", _MON_ROCKSDB_LOG)
+
+    for noise in ("Compaction Stats", "Cumulative WAL", "Interval stall", "W-Amp", "-----"):
+        assert noise not in calls[0]
+    assert "cho phép client dùng khoá xác thực không an toàn" in calls[0]
+
+
+def test_generic_explanation_is_dropped_when_the_title_already_says_it(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("AUTH_INSECURE_KEYS_ALLOWED", "HEALTH_WARN", "chi tiết")
+    telegram_alerts.send_incident_alert("NEW_CEPH_CHECK", "HEALTH_WARN", "chi tiết")
+
+    assert "📝 Diễn giải:" not in calls[0]  # tiêu đề đã nói rõ
+    assert "📝 Diễn giải:" in calls[1]      # mã lạ thì vẫn cần một câu
+
+
+def test_log_anomaly_is_not_described_as_a_ceph_health_check(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert("LOG_ANOMALY:81b4f2d560ac", "", "rgw keystore error x3")
+
+    assert "Bất thường phát hiện từ log (LOG_ANOMALY:81b4f2d560ac)" in calls[0]
+    assert "không phải một health check của Ceph" in calls[0]
+
+
+def test_multiline_rationale_does_not_run_two_sentences_together(monkeypatch):
+    _configure_incident(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        telegram_alerts, "send_telegram_message", lambda token, chat_id, text: calls.append(text)
+    )
+
+    telegram_alerts.send_incident_alert(
+        "LOG_ANOMALY:81b4f2d5", "", "chi tiết", reminder=True,
+        rationale="RGW không truy xuất được khóa mã hóa mặc định\nPhát hiện ba lỗi liên tiếp.",
+    )
+
+    assert "khóa mã hóa mặc định. Phát hiện ba lỗi liên tiếp." in calls[0]

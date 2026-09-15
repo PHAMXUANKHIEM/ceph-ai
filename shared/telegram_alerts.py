@@ -157,8 +157,22 @@ _CONTAINER_ATTRIBUTES_KEPT = {"name", "pod", "health_status", "exit_code"}
 # Khối "(k=v, k=v, ...)"; chấp nhận cả trường hợp log đã bị cắt mất ngoặc đóng.
 _CONTAINER_ATTRS_RE = re.compile(r"\((?=[^()]*=)([^()]*?)(?:\)|$)")
 _IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]+")
+# Log của MON định kỳ nhả nguyên bảng thống kê RocksDB. Không dòng nào trong
+# đó nói gì về health check đang cảnh báo, nhưng chúng dài hàng nghìn ký tự
+# và đẩy phần bằng chứng thật ra khỏi giới hạn.
+_ROCKSDB_STATS_LINE_RE = re.compile(
+    r"^\s*(?:\*\*\s|-{6,}|L\d+\s+\d|Sum\s+\d|Int\s+\d|Level\s+Files\s+Size|"
+    r"(?:Cumulative|Interval)\s+(?:writes|WAL|stall|compaction)\b|"
+    r"Uptime\(secs\)|Flush\(GB\)|AddFile\(|Stalls\(count\)|"
+    r"Block\s+cache\b|Sum\s+of\b)",
+    re.IGNORECASE,
+)
 _MONOTONIC_CLOCK_RE = re.compile(r"\s*\bm=\+[0-9.]+")
 _LONG_HEX_ID_RE = re.compile(r"\b[0-9a-f]{32,}\b")
+
+# watcher/log_analysis.py sinh mã nội bộ dạng LOG_ANOMALY:<hash>; không phải
+# health check của Ceph nên không dùng chung câu diễn giải với chúng.
+_LOG_ANOMALY_PREFIX = "LOG_ANOMALY:"
 
 _MACHINE_LOG_RE = re.compile(
     r"(?:traceback|stack trace|exception|container\s+(?:remove|create)|"
@@ -326,10 +340,17 @@ def _translate_incident_log(ceph_code: str, log_excerpt: str | None) -> str:
             "Điều này có thể làm các thao tác metadata của RGW chậm hơn; cần kiểm tra bucket "
             "và chỉ lập kế hoạch reshard sau khi xác nhận đầy đủ evidence."
         )
-    return _INCIDENT_EXPLANATIONS.get(
-        code,
-        "Ceph phát hiện một health check bất thường; phần Log gốc bên dưới là bằng chứng cần dùng để xác định nguyên nhân.",
-    )
+    if code in _INCIDENT_EXPLANATIONS:
+        return _INCIDENT_EXPLANATIONS[code]
+    if code.startswith(_LOG_ANOMALY_PREFIX):
+        return (
+            "Đây là bất thường do AI phát hiện khi đọc log, không phải một health "
+            "check của Ceph; cần đối chiếu với log gốc trước khi kết luận."
+        )
+    if _has_specific_title(code):
+        # Tiêu đề đã nói rõ vấn đề; thêm một câu chung chung chỉ là chữ thừa.
+        return ""
+    return "Ceph phát hiện một health check bất thường; phần Log gốc bên dưới là bằng chứng cần dùng để xác định nguyên nhân."
 
 
 def _incident_title(ceph_code: str | None) -> str:
@@ -337,8 +358,16 @@ def _incident_title(ceph_code: str | None) -> str:
     code = (ceph_code or "").strip()
     if not code:
         return "Health check bất thường"
+    if code.upper().startswith(_LOG_ANOMALY_PREFIX):
+        # Mã nội bộ dạng LOG_ANOMALY:<hash>, không phải health check của Ceph.
+        return f"Bất thường phát hiện từ log ({code})"
     title = _INCIDENT_TITLES.get(code.upper())
     return f"{title} ({code})" if title else f"Cảnh báo Ceph: {code}"
+
+
+def _has_specific_title(ceph_code: str | None) -> bool:
+    code = (ceph_code or "").strip().upper()
+    return bool(code) and (code in _INCIDENT_TITLES or code.startswith(_LOG_ANOMALY_PREFIX))
 
 
 def _with_cluster_prefix(text: str, cluster_name: str | None = None) -> str:
@@ -405,6 +434,27 @@ def _readable_nodes(value: str | None) -> str:
     return _compact(str(parsed), _MAX_FOLLOWUP_FIELD_CHARS)
 
 
+def _join_lines(value: str) -> str:
+    """Gộp văn bản nhiều dòng thành một đoạn mà không dính câu vào nhau.
+
+    Nhiều trường được dựng theo từng dòng, dòng đầu là một tiêu đề KHÔNG có
+    dấu chấm cuối. Gộp bằng khoảng trắng thì ra "…khóa mã hóa mặc định Phát
+    hiện ba lỗi…" — hai câu dính liền, đọc như lỗi hiển thị.
+    """
+    paragraph = ""
+    for line in value.splitlines():
+        line = " ".join(line.split())
+        if not line:
+            continue
+        if not paragraph:
+            paragraph = line
+        elif paragraph[-1] in ".!?:;,":
+            paragraph += " " + line
+        else:
+            paragraph += ". " + line
+    return paragraph
+
+
 def _natural(
     value: str | None,
     *,
@@ -424,11 +474,11 @@ def _natural(
     Watcher sẽ chặn vòng poll, còn đặt trên một câu vốn do AI viết bằng
     tiếng Việt thì chỉ là chạy LLM lên đầu ra của LLM.
     """
-    text = " ".join(str(value or "").split())
+    text = _join_lines(str(value or ""))
     if not text:
         return ""
     if humanize_context and _needs_humanization(text):
-        text = " ".join(_humanize_sync(text, context=humanize_context).split())
+        text = _join_lines(_humanize_sync(text, context=humanize_context))
     return _compact_sentence(text, limit)
 
 
@@ -460,7 +510,9 @@ def _strip_container_label_noise(value: str) -> str:
                 kept.append(f"{key.strip()}={attribute.strip()}")
         return f" ({', '.join(kept)})" if kept else ""
 
-    text = _CONTAINER_ATTRS_RE.sub(_keep_known_attributes, value)
+    kept = [line for line in value.splitlines() if not _ROCKSDB_STATS_LINE_RE.match(line)]
+    text = "\n".join(kept)
+    text = _CONTAINER_ATTRS_RE.sub(_keep_known_attributes, text)
     text = _IMAGE_DIGEST_RE.sub("", text)
     text = _MONOTONIC_CLOCK_RE.sub("", text)
     text = _LONG_HEX_ID_RE.sub(lambda match: match.group(0)[:12], text)
@@ -710,7 +762,8 @@ def send_incident_alert(
         humanized = bool(excerpt and excerpt != compact_source)
     reminder_prefix = "🔁 NHẮC LẠI · " if reminder else ""
     text = f"{reminder_prefix}{prefix} · {_incident_title(ceph_code)}"
-    text += f"\n📝 Diễn giải: {explanation}"
+    if explanation:
+        text += f"\n📝 Diễn giải: {explanation}"
     if excerpt:
         detail_label = "📖 Giải thích chi tiết:" if humanized else "🔎 Bằng chứng kỹ thuật:"
         text += f"\n{detail_label}\n{_compact_multiline(excerpt, _MAX_EXCERPT_CHARS)}"
