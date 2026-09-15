@@ -66,6 +66,27 @@ OPERATIONAL_TELEMETRY_RETRY_SECONDS = 3.0
 INCIDENT_CONTEXT_CHARS_PER_ESTIMATED_TOKEN = 2
 
 
+def _live_action_target_safety_reason(cluster: Cluster | None, nodes: list[str], ssh_key_path: str | None) -> str | None:
+    """Reject test/stale action targets before opening a production SSH session."""
+    if os.environ.get("CEPH_AI_CONTAINERIZED", "").lower() != "true":
+        return None
+    allowed_hosts = {row["host"] for row in configured_nodes(cluster)}
+    unexpected = [host for host in nodes if host not in allowed_hosts]
+    if unexpected:
+        return (
+            "target node không thuộc cấu hình cluster hiện tại: "
+            + ", ".join(unexpected)
+        )
+    if not ssh_key_path:
+        return "cluster chưa cấu hình SSH key"
+    try:
+        key_path = Path(ssh_key_path).resolve()
+        key_path.relative_to(Path("/tmp"))
+    except ValueError:
+        return None
+    return f"SSH key path không hợp lệ cho production: {ssh_key_path}"
+
+
 def _read_operational_status(connection):
     """Read live Ceph status, tolerating a short MON election window.
 
@@ -3113,6 +3134,15 @@ def _execute_approved_action(action_pk: str) -> None:
             "(incident %s) — marking FAILED instead of guessing",
             action_pk,
             incident_id,
+        )
+        _record_approved_execution_result(action_pk, command=None, succeeded=False)
+        return
+    safety_reason = _live_action_target_safety_reason(cluster, nodes, ssh_key_path)
+    if safety_reason:
+        logger.error(
+            "_execute_approved_action: blocked unsafe target for action %s: %s",
+            action_pk,
+            safety_reason,
         )
         _record_approved_execution_result(action_pk, command=None, succeeded=False)
         return

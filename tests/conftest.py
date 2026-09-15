@@ -1,3 +1,18 @@
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+# Tests are often run on the same host as the live services.  Force the
+# default SQLAlchemy engine onto a per-process SQLite database before any
+# application module is imported; otherwise tests that use the default
+# SessionLocal can create real Incident/Action rows for the live Worker.
+# A live database is an explicit opt-in for migration/integration work only.
+_TEST_DATABASE_ROOT = Path(tempfile.mkdtemp(prefix="ceph-ai-test-db-"))
+if os.environ.get("CEPH_AI_ALLOW_LIVE_TEST_DB", "").lower() not in {"1", "true", "yes"}:
+    os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DATABASE_ROOT / 'test.db'}"
+    os.environ["CEPH_AI_ENV_FILE"] = "/dev/null"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -11,6 +26,10 @@ from shared import db as db_module
 from shared import env_config
 from shared.db import Base, make_engine
 from shared.models import Cluster
+
+
+def pytest_sessionfinish(session, exitstatus):
+    shutil.rmtree(_TEST_DATABASE_ROOT, ignore_errors=True)
 
 # Fixed test credentials — the fixture pins Settings to these values so tests
 # never depend on whatever a real .env happens to contain (e.g. after a
