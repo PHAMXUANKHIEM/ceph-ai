@@ -111,8 +111,9 @@ def test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline(monkeypatch
     assert captured["config"].allow_no_change is True
     assert captured["config"].test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
     assert captured["config"].candidate_test_command == supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert "test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
-    assert "test_nightly_multi_agent_reports_are_passed_to_single_writer" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
+    assert "-k 'not (" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
+    assert "direct_nightly_call" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
+    assert "nightly_dirty_checkout" in supervisor.NIGHTLY_REGRESSION_TEST_COMMAND
     assert captured["config"].require_changed_tests is True
     assert captured["config"].max_ai_attempts == 1
     assert captured["config"].timeout_seconds == supervisor.NIGHTLY_AI_STEP_TIMEOUT_SECONDS

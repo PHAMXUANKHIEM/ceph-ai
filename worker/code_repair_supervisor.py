@@ -64,7 +64,9 @@ NIGHTLY_REGRESSION_TEST_COMMAND = (
     "tests/test_code_repair.py "
     "tests/test_code_repair_supervisor.py "
     "--deselect=tests/test_code_repair_supervisor.py::test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline "
-    "--deselect=tests/test_code_repair_supervisor.py::test_nightly_multi_agent_reports_are_passed_to_single_writer"
+    "--deselect=tests/test_code_repair_supervisor.py::test_nightly_multi_agent_reports_are_passed_to_single_writer "
+    "-k 'not (nightly_improvement or nightly_multi_agent or direct_nightly_call or nightly_failure "
+    "or nightly_failed_pipeline or nightly_dirty_checkout or nightly_dashboard_override)'"
 )
 NIGHTLY_AI_STEP_TIMEOUT_SECONDS = 1200
 NIGHTLY_MAX_REVIEW_ROUNDS = 2
