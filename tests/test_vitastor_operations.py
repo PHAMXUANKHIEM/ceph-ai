@@ -103,10 +103,14 @@ def test_cluster_metadata_backup_is_timestamped_and_contains_recovery_artifacts(
 
     operations.backup(params, lambda *_: None)
 
+    preflight = commands[0]
+    assert "existing_parent" in preflight
+    assert "mkdir -p /backup/vitastor/metadata" in preflight
+    assert "test \"$existing_parent\" != /" in preflight
     bundle = commands[-1]
     assert "snapshot save \"$tmp/etcd-snapshot.db\"" in bundle
     assert 'cp -- /etc/vitastor/vitastor.conf "$tmp/vitastor.conf"' in bundle
-    for artifact in ("status.json", "df.json", "pools.json", "osds.json", "osd-tree.txt", "users.json", "SHA256SUMS"):
+    for artifact in ("status.json", "df.json", "pools.json", "images.json", "osds.json", "osd-tree.txt", "users.json", "SHA256SUMS"):
         assert f"$tmp/{artifact}" in bundle
     assert 'mv "$tmp" "$final"' in bundle
     assert "vitastor-disk" not in bundle

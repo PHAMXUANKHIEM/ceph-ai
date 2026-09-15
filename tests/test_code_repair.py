@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from worker import code_repair
+from shared.ai_budget import AIBudgetExceededError
 
 
 def test_extract_latest_error_uses_newest_log_and_redacts_secret(tmp_path):
@@ -282,6 +283,56 @@ def test_planner_prompt_is_sent_to_claude_stdin(monkeypatch, tmp_path):
     assert result.status == "NO_CHANGE"
     claude_call = next(kwargs for args, kwargs in calls if args == ["claude", "-p"])
     assert "Planner/Reviewer" in claude_call["input_text"]
+
+
+def test_cli_ai_command_uses_budget_and_records_telemetry(monkeypatch, tmp_path):
+    budget_calls = []
+    telemetry_calls = []
+    monkeypatch.setattr(
+        code_repair,
+        "check_ai_budget",
+        lambda provider, model, input_chars: budget_calls.append((provider, model, input_chars)) or "reservation-1",
+    )
+    monkeypatch.setattr(code_repair, "record_ai_attempt", lambda **values: telemetry_calls.append(values))
+    monkeypatch.setattr(
+        code_repair,
+        "_run",
+        lambda *args, **kwargs: type("Result", (), {"stdout": "plan output", "returncode": 0})(),
+    )
+
+    result = code_repair._run_ai_command(
+        ["codex", "exec"], cwd=tmp_path, prompt="review prompt",
+        provider="codex", model="gpt-5.5", timeout=30, task_kind="nightly-ai-improvement",
+    )
+
+    assert result.returncode == 0
+    assert budget_calls == [("codex", "gpt-5.5", len("review prompt"))]
+    assert len(telemetry_calls) == 1
+    assert telemetry_calls[0]["reservation_id"] == "reservation-1"
+    assert telemetry_calls[0]["feature"] == "nightly_code_repair"
+    assert telemetry_calls[0]["provider"] == "codex"
+    assert telemetry_calls[0]["model_id"] == "gpt-5.5"
+    assert telemetry_calls[0]["status"] == "SUCCESS"
+    assert telemetry_calls[0]["input_chars"] == len("review prompt")
+    assert telemetry_calls[0]["output_chars"] == len("plan output")
+
+
+def test_cli_ai_command_does_not_run_when_budget_rejects(monkeypatch, tmp_path):
+    error = AIBudgetExceededError("daily", 1.0, 2.0, 1.0)
+    telemetry_calls = []
+    monkeypatch.setattr(code_repair, "check_ai_budget", lambda *args: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(code_repair, "record_ai_attempt", lambda **values: telemetry_calls.append(values))
+    monkeypatch.setattr(code_repair, "_run", lambda *args, **kwargs: pytest.fail("provider must not run"))
+
+    with pytest.raises(AIBudgetExceededError):
+        code_repair._run_ai_command(
+            ["codex", "exec"], cwd=tmp_path, prompt="review prompt",
+            provider="codex", model="gpt-5.5", timeout=30, task_kind="application-repair",
+        )
+
+    assert len(telemetry_calls) == 1
+    assert telemetry_calls[0]["status"] == "ERROR"
+    assert telemetry_calls[0]["input_chars"] == 0
 
 def test_claude_provider_uses_dashboard_account_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(code_repair.shutil, "which", lambda name: f"/bin/{name}")

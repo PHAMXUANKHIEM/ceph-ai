@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings as app_settings
+from shared.ai_budget import AIBudgetError, check as check_ai_budget
+from shared.ai_observability import record_ai_attempt
 from shared.telegram_alerts import send_code_repair_alert
 
 
@@ -210,6 +212,68 @@ def _run(args: list[str], *, cwd: Path, timeout: int = 300, input_text: str | No
     if check and result.returncode != 0:
         raise RepairError(f"{shlex.join(args)} failed ({result.returncode}):\n{result.stdout[-6000:]}")
     return result
+
+
+def _run_ai_command(
+    command: list[str], *, cwd: Path, prompt: str, provider: str,
+    model: str, timeout: int, task_kind: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one CLI AI turn with the shared budget guard and content-free telemetry."""
+    feature = "nightly_code_repair" if task_kind == "nightly-ai-improvement" else "code_repair"
+    model_id = (model or "").strip() or "default"
+    started = time.monotonic()
+    budget_checked = False
+    reservation_id: str | None = None
+    result: subprocess.CompletedProcess[str] | None = None
+    try:
+        reservation_id = check_ai_budget(provider, model_id, len(prompt))
+        budget_checked = True
+        result = _run(
+            command,
+            cwd=cwd,
+            timeout=timeout,
+            input_text=prompt,
+            check=False,
+        )
+        record_ai_attempt(
+            reservation_id=reservation_id,
+            feature=feature,
+            provider=provider,
+            model_id=model_id,
+            status="SUCCESS" if result.returncode == 0 else "ERROR",
+            latency_ms=round((time.monotonic() - started) * 1000),
+            input_chars=len(prompt),
+            output_chars=len(result.stdout or ""),
+            error_type=None if result.returncode == 0 else "ProviderProcessError",
+        )
+        return result
+    except AIBudgetError as exc:
+        record_ai_attempt(
+            reservation_id=None,
+            feature=feature,
+            provider=provider,
+            model_id=model_id,
+            status="ERROR",
+            latency_ms=round((time.monotonic() - started) * 1000),
+            input_chars=0,
+            output_chars=0,
+            error_type=type(exc).__name__,
+        )
+        raise
+    except Exception as exc:
+        if budget_checked:
+            record_ai_attempt(
+                reservation_id=reservation_id,
+                feature=feature,
+                provider=provider,
+                model_id=model_id,
+                status="ERROR",
+                latency_ms=round((time.monotonic() - started) * 1000),
+                input_chars=len(prompt),
+                output_chars=len(getattr(result, "stdout", "") or ""),
+                error_type=type(exc).__name__,
+            )
+        raise
 
 
 def extract_latest_error(paths: list[Path], *, max_chars: int = 16_000) -> str | None:
@@ -647,9 +711,10 @@ Additional task constraints:
             content=planner_prompt, provider=planner_provider, model=config.planner_model,
         )
         notifier.update(15, f"{planner_provider} đang phân tích và lập kế hoạch (Planner/Reviewer)")
-        planner = _run(
-            planner_command, cwd=planner_worktree, timeout=config.timeout_seconds,
-            input_text=planner_prompt, check=False,
+        planner = _run_ai_command(
+            planner_command, cwd=planner_worktree, prompt=planner_prompt,
+            provider=planner_provider, model=config.planner_model,
+            timeout=config.timeout_seconds, task_kind=config.task_kind,
         )
         _record_transcript(
             config, speaker="Planner/Reviewer", event="plan", direction="from_ai",
@@ -705,8 +770,11 @@ Observed application failure (credentials already redacted):
                 content=attempt_prompt, provider=provider, model=config.implementer_model,
             )
             notifier.update(15 + ai_attempt * 10, f"{provider} đang sửa code, vòng {ai_attempt}/{config.max_ai_attempts}")
-            ai = _run(command, cwd=worktree, timeout=config.timeout_seconds,
-                      input_text=attempt_prompt, check=False)
+            ai = _run_ai_command(
+                command, cwd=worktree, prompt=attempt_prompt,
+                provider=provider, model=config.implementer_model,
+                timeout=config.timeout_seconds, task_kind=config.task_kind,
+            )
             _record_transcript(
                 config, speaker="Implementer", event="implementation", direction="from_ai",
                 content=ai.stdout, provider=provider, model=config.implementer_model,
@@ -791,9 +859,10 @@ If changes are needed, list precise actionable corrections before that line.
                 content=review_prompt, provider=reviewer_provider, model=config.planner_model,
             )
             notifier.update(58, f"{reviewer_provider} đang review candidate ({review_round}/{config.max_review_rounds})")
-            review = _run(
-                reviewer_command, cwd=worktree, timeout=config.timeout_seconds,
-                input_text=review_prompt, check=False,
+            review = _run_ai_command(
+                reviewer_command, cwd=worktree, prompt=review_prompt,
+                provider=reviewer_provider, model=config.planner_model,
+                timeout=config.timeout_seconds, task_kind=config.task_kind,
             )
             _record_transcript(
                 config, speaker="Planner/Reviewer", event="review", direction="from_ai",
@@ -825,9 +894,10 @@ If changes are needed, list precise actionable corrections before that line.
                 config, speaker="Implementer", event="review-fix", direction="to_ai",
                 content=prompt + feedback, provider=provider, model=config.implementer_model,
             )
-            fix = _run(
-                command, cwd=worktree, timeout=config.timeout_seconds,
-                input_text=prompt + feedback, check=False,
+            fix = _run_ai_command(
+                command, cwd=worktree, prompt=prompt + feedback,
+                provider=provider, model=config.implementer_model,
+                timeout=config.timeout_seconds, task_kind=config.task_kind,
             )
             _record_transcript(
                 config, speaker="Implementer", event="review-fix", direction="from_ai",

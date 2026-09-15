@@ -239,6 +239,7 @@ def _metadata_bundle_command(params: dict) -> str:
         f"{cli} status > \"$tmp/status.json\"; "
         f"{cli} df > \"$tmp/df.json\"; "
         f"{cli} ls-pools --detail > \"$tmp/pools.json\"; "
+        f"{cli} ls -l > \"$tmp/images.json\"; "
         f"{cli} ls-osd -l > \"$tmp/osds.json\"; "
         f"{_vitastor_cli(params)} osd-tree > \"$tmp/osd-tree.txt\"; "
         f"{cli} ls-user > \"$tmp/users.json\" 2>/dev/null || true; "
@@ -293,7 +294,15 @@ def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
         destination = shlex.quote(params["destination"])
         parent = shlex.quote(posixpath.dirname(params["destination"]) or "/")
         if method == "metadata_cluster":
-            tools += f"; test -d {parent}; test -w {parent}; mkdir -p {destination}; test -d {destination}; test -w {destination}"
+            tools += (
+                f"; existing_parent={destination}; "
+                f"if test ! -d {destination}; then existing_parent={parent}; "
+                "while [ \"$existing_parent\" != / ] && [ ! -d \"$existing_parent\" ]; do "
+                "existing_parent=$(dirname \"$existing_parent\"); done; fi; "
+                "test \"$existing_parent\" != /; test -d \"$existing_parent\"; "
+                "test -w \"$existing_parent\"; "
+                f"mkdir -p {destination}; test -d {destination}; test -w {destination}"
+            )
         else:
             tools += f"; test -d {parent}; test -w {parent}; test ! -e {destination}"
     if method == "incremental_qcow2":

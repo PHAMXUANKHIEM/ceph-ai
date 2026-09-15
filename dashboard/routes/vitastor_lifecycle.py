@@ -323,7 +323,7 @@ async def propose_backup(request: Request, user: str = Depends(require_vitastor_
         "metadata_etcd": "Snapshot metadata etcd", "metadata_antietcd": "Dump metadata antietcd",
     }
     detail = f"Image: {image}@{snapshot}" if image_method else (
-        "Snapshot etcd + vitastor.conf + status/df/pool/OSD/user inventory + SHA256SUMS"
+        "Snapshot etcd + vitastor.conf + status/df/pool/image/OSD/user inventory + SHA256SUMS"
         if method == "metadata_cluster" else "Toàn bộ metadata key-value"
     )
     target = "Giữ trong cụm (không phải off-cluster backup)" if method == "snapshot" else destination
