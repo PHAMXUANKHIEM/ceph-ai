@@ -92,7 +92,14 @@ def _preflight_command(disks: list[str]) -> str:
 
 
 def _monitor_setup_command(*, reuse_existing_etcd: bool) -> str:
-    """Bootstrap a fresh monitor or reconcile an interrupted setup."""
+    """Bootstrap a fresh monitor, or reconcile an interrupted setup.
+
+    `reuse_existing_etcd` belongs to `resume_deploy` alone: an etcd.conf that
+    is already there is the state a failed deploy left behind, and rerunning
+    make-etcd would undo it. A fresh `deploy` must always regenerate — a
+    leftover etcd.conf can still carry a previous cluster's membership and
+    prefix while the new vitastor.conf points somewhere else.
+    """
     if reuse_existing_etcd:
         bootstrap = (
             "if test -s /etc/vitastor/etcd.conf && "
@@ -106,22 +113,6 @@ def _monitor_setup_command(*, reuse_existing_etcd: bool) -> str:
         "set -eu; "
         + bootstrap
         + "systemctl enable --now vitastor-etcd vitastor-mon; "
-        "test \"$(systemctl show -p ActiveState --value vitastor-etcd)\" = active; "
-        "test \"$(systemctl show -p SubState --value vitastor-etcd)\" = running; "
-        "test \"$(systemctl show -p ActiveState --value vitastor-mon)\" = active; "
-        "test \"$(systemctl show -p SubState --value vitastor-mon)\" = running"
-    )
-
-
-def _monitor_reconcile_command() -> str:
-    """Continue monitor setup without rerunning an already completed make-etcd."""
-    return (
-        "set -eu; "
-        "if test -s /etc/vitastor/etcd.conf && "
-        "test -f /etc/systemd/system/vitastor-etcd.service; then "
-        "systemctl daemon-reload; "
-        "else /usr/lib/vitastor/mon/make-etcd --copy no; fi; "
-        "systemctl enable --now vitastor-etcd vitastor-mon; "
         "test \"$(systemctl show -p ActiveState --value vitastor-etcd)\" = active; "
         "test \"$(systemctl show -p SubState --value vitastor-etcd)\" = running; "
         "test \"$(systemctl show -p ActiveState --value vitastor-mon)\" = active; "
@@ -293,7 +284,7 @@ def resume_deploy(params: dict, progress: Callable[[str, str, str], None]) -> No
         _run(host, ssh_user, ssh_key, _restart_config_dependents_command())
 
     for host in monitors:
-        output = _run(host, ssh_user, ssh_key, _monitor_reconcile_command())
+        output = _run(host, ssh_user, ssh_key, _monitor_setup_command(reuse_existing_etcd=True))
         inspection.append(_inspection_line(host, "monitors", "đã hoạt động; " + output))
     progress("monitors", "done", "Etcd và monitor đã được đối chiếu/khởi động tiếp")
 
