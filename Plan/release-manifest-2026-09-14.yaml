@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 7336594d532191cfef4768f9b0558a97aa58f4c3
+  commit_sha: 9aef95a459a01b4c477e70069efb19de199b20dd
   rollback_candidate_sha: 5a9655a9076999a966e2d6a2863d0f1a986f2070
   worktree: clean
-  release_commit: 7336594d532191cfef4768f9b0558a97aa58f4c3
+  release_commit: 9aef95a459a01b4c477e70069efb19de199b20dd
   pushed_to_origin: false
 
 migrations:
@@ -51,8 +51,9 @@ message_broker:
     production_vhost: not_run_to_completion_shared_queue_has_live_consumers
 
 verification:
-  focused_feature_gate: 207_passed
-  broad_deterministic_gate: 3184_passed_4_deselected_23_warnings
+  focused_feature_gate: 339_passed_3_deselected_3_warnings
+  broad_deterministic_gate: 3207_passed_4_deselected_23_warnings
+  broad_gate_environment: production_code_repair_lock_isolated_to_temporary_gate_lock
   final_openstack_module_after_template_fix: 20_passed
   python_compile: passed
   diff_check: passed
@@ -69,7 +70,7 @@ verification:
 deployment_gate:
   deterministic_tests: passed
   broker: passed_in_isolated_release_gate_vhost
-  worktree_review: clean_candidate_pending_release_gate
+  worktree_review: clean_candidate_release_gate_passed
   runtime_ownership: blocked_pending_operator_decision
   global_autonomy_flags: review_required
   budget_observation: watcher_log_reports_monthly_ai_budget_at_159_5_percent
