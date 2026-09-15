@@ -64,6 +64,7 @@ from vitastor.client import (
     query_status,
     remove_host_key,
 )
+from vitastor.identity import same_cluster
 
 router = APIRouter(prefix="/vitastor", tags=["vitastor-chat"])
 templates = make_templates()
@@ -339,10 +340,21 @@ async def save_cluster_connection(
         except VitastorConnectionError as exc: error = f"Không kết nối được tới cụm Vitastor: {exc}"
     if not error:
         with db.SessionLocal() as session:
-            if session.query(VitastorCluster).filter_by(name=values["name"]).first(): error = f"Tên cụm {values['name']!r} đã tồn tại."
+            name_conflict = session.query(VitastorCluster).filter_by(name=values["name"]).first()
+            existing = next((row for row in session.query(VitastorCluster).all() if same_cluster(row, values)), None)
+            if name_conflict is not None and (existing is None or name_conflict.id != existing.id):
+                error = f"Tên cụm {values['name']!r} đã tồn tại."
             else:
                 from datetime import datetime
-                session.add(VitastorCluster(**values, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user)); session.commit()
+                if existing is not None:
+                    for key, value in values.items():
+                        setattr(existing, key, value)
+                    existing.is_active = True
+                    existing.last_status_json = json.dumps(status)
+                    existing.last_checked_at = datetime.utcnow()
+                else:
+                    session.add(VitastorCluster(**values, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user))
+                session.commit()
     return templates.TemplateResponse(request, "vitastor/settings.html", _settings_context(user, active_section="cluster", cluster_error=error, cluster_success=None if error else f"Đã kết nối cụm {values['name']!r}.", cluster_values=values))
 
 

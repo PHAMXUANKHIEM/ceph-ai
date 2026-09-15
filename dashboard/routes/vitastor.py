@@ -14,6 +14,7 @@ from shared import db
 from shared.models import VitastorAnomalyEvent, VitastorCluster, VitastorDiagnosticRun, VitastorMetricSample, VitastorOsdMetricSample
 from vitastor.client import LOG_SOURCES, VitastorConnectionError, normalize_etcd, normalize_status, query_dashboard, query_logs
 from vitastor.diagnosis import diagnose
+from vitastor.identity import same_cluster
 
 router = APIRouter(prefix="/vitastor", tags=["vitastor"])
 templates = make_templates()
@@ -348,9 +349,19 @@ async def create_vitastor_cluster(
     probe.last_status_json = json.dumps(cached)
     probe.last_checked_at = datetime.utcnow()
     with db.SessionLocal() as session:
-        if session.query(VitastorCluster).filter(VitastorCluster.name == values["name"]).first():
+        name_conflict = session.query(VitastorCluster).filter(VitastorCluster.name == values["name"]).first()
+        existing = next((row for row in session.query(VitastorCluster).all() if same_cluster(row, values)), None)
+        if name_conflict is not None and (existing is None or name_conflict.id != existing.id):
             raise HTTPException(status_code=409, detail="Tên cụm Vitastor đã tồn tại")
-        session.add(probe)
+        if existing is not None:
+            for key, value in values.items():
+                setattr(existing, key, value)
+            existing.is_active = True
+            existing.last_status_json = probe.last_status_json
+            existing.last_checked_at = probe.last_checked_at
+            cluster_id = existing.id
+        else:
+            session.add(probe)
+            cluster_id = probe.id
         session.commit()
-        cluster_id = probe.id
     return {"ok": True, "cluster_id": cluster_id}

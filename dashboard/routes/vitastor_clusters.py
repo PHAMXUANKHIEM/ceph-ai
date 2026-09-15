@@ -14,6 +14,7 @@ from config.settings import settings
 from shared import db
 from shared.models import VitastorActionStatus, VitastorCluster, VitastorOperation, VitastorRemediationAction
 from vitastor.client import VALID_EXEC_MODES, VitastorConnectionError, query_status
+from vitastor.identity import same_cluster
 from vitastor.operations import VitastorOperationError, backup as vitastor_backup
 
 router = APIRouter(prefix="/vitastor/clusters", tags=["vitastor-clusters"])
@@ -107,9 +108,13 @@ async def create_cluster(
     except VitastorConnectionError as exc:
         return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error=f"Không kết nối được tới cụm Vitastor: {exc}", form_values=submitted))
 
+    with db.SessionLocal() as session:
+        existing = next((row for row in session.query(VitastorCluster).all() if same_cluster(row, submitted)), None)
+        existing_id = existing.id if existing else ""
+
     metadata_backup_path = settings.vitastor_initial_metadata_backup_path
     metadata_backup_location = ""
-    if submitted["exec_mode"] == "none":
+    if submitted["exec_mode"] == "none" and not existing_id:
         metadata_params = {
             "method": "metadata_cluster", "destination": metadata_backup_path,
             "cluster_name": submitted["name"],
@@ -132,7 +137,9 @@ async def create_cluster(
                 ),
             )
     with db.SessionLocal() as session:
-        if session.query(VitastorCluster).filter_by(name=submitted["name"]).first():
+        name_conflict = session.query(VitastorCluster).filter_by(name=submitted["name"]).first()
+        existing = session.get(VitastorCluster, existing_id) if existing_id else None
+        if name_conflict is not None and (existing is None or name_conflict.id != existing.id):
             return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error=f"Tên cụm {submitted['name']!r} đã tồn tại.", form_values=submitted))
         status = dict(status)
         if metadata_backup_location:
@@ -140,9 +147,18 @@ async def create_cluster(
                 "path": str(metadata_backup_location).splitlines()[-1],
                 "created_at": datetime.utcnow().isoformat() + "Z",
             }
-        session.add(VitastorCluster(**submitted, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user))
+        if existing is not None:
+            for key, value in submitted.items():
+                setattr(existing, key, value)
+            existing.is_active = True
+            existing.last_status_json = json.dumps(status)
+            existing.last_checked_at = datetime.utcnow()
+        else:
+            session.add(VitastorCluster(**submitted, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user))
         session.commit()
-    success = f"Đã lưu metadata ban đầu tại {metadata_backup_location!r}. Đã kết nối và thêm cụm Vitastor {submitted['name']!r}." if metadata_backup_location else f"Đã kết nối và thêm cụm Vitastor {submitted['name']!r}."
+    action = "cập nhật/đổi tên" if existing_id else "thêm"
+    suffix = f" Đã lưu metadata ban đầu tại {metadata_backup_location!r}." if metadata_backup_location else ""
+    success = f"Đã kết nối và {action} cụm Vitastor {submitted['name']!r}.{suffix}"
     return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, success=success))
 
 

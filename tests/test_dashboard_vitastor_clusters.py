@@ -98,6 +98,31 @@ def test_duplicate_name_is_rejected_before_connection_or_metadata_backup(dashboa
     assert "đã tồn tại" in response.text
 
 
+def test_same_backend_with_new_name_updates_existing_record(dashboard_client, monkeypatch):
+    backups = []
+    monkeypatch.setattr(route, "query_status", lambda *_: {"cluster": {"osd": "3 / 3 up"}})
+    monkeypatch.setattr(route, "vitastor_backup", lambda params, _progress: backups.append(params) or "/backup/first")
+    _login(dashboard_client)
+
+    first = dashboard_client.post("/vitastor/clusters/create", data=_form(name="old-name"))
+    assert first.status_code == 200
+    with db_module.SessionLocal() as session:
+        original_id = session.query(VitastorCluster).one().id
+
+    second = dashboard_client.post(
+        "/vitastor/clusters/create",
+        data=_form(name="new-name", etcd_address="http://10.0.0.11:2379/v3,10.0.0.10:2379"),
+    )
+
+    assert "cập nhật/đổi tên" in second.text
+    with db_module.SessionLocal() as session:
+        rows = session.query(VitastorCluster).all()
+        assert len(rows) == 1
+        assert rows[0].id == original_id
+        assert rows[0].name == "new-name"
+    assert len(backups) == 1
+
+
 def test_failed_connection_is_not_saved(dashboard_client, monkeypatch):
     def fail(*_args): raise route.VitastorConnectionError("timeout")
     monkeypatch.setattr(route, "query_status", fail)

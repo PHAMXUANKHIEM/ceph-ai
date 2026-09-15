@@ -19,6 +19,7 @@ from dashboard.templating import make_templates
 from shared import db
 from shared.models import VitastorCluster, VitastorOperation
 from vitastor.client import VitastorHostKeyProvisionError, provision_host_key
+from vitastor.identity import same_cluster
 from vitastor.operations import backup, delete, deploy, resume_deploy, upgrade
 from vitastor.recovery_ai import summarize_deploy_recovery
 
@@ -185,8 +186,27 @@ def _execute(operation_id: str) -> None:
             if operation in {"deploy", "deploy_resume"}:
                 monitors = [n["host"] for n in params["nodes"] if "mon" in n["roles"]]
                 deployment = {key: value for key, value in params.items() if key not in {"resume_from", "resume_error", "resume_progress"}}
-                cluster = VitastorCluster(name=row.cluster_name, management_host=monitors[0], etcd_address=",".join(f"http://{h}:2379" for h in monitors), etcd_prefix=params["etcd_prefix"], config_path="/etc/vitastor/vitastor.conf", ssh_user=params["ssh_user"], ssh_key_path=params["ssh_key_path"], exec_mode="none", container_name="", is_active=True, last_status_json=json.dumps({"deployment": deployment}), last_checked_at=datetime.utcnow(), created_by=row.requested_by)
-                session.add(cluster); session.flush(); row.cluster_id = cluster.id
+                cluster_values = {
+                    "name": row.cluster_name, "management_host": monitors[0],
+                    "etcd_address": ",".join(f"http://{h}:2379" for h in monitors),
+                    "etcd_prefix": params["etcd_prefix"], "config_path": "/etc/vitastor/vitastor.conf",
+                    "ssh_user": params["ssh_user"], "ssh_key_path": params["ssh_key_path"],
+                    "exec_mode": "none", "container_name": "",
+                }
+                existing = next((item for item in session.query(VitastorCluster).all() if same_cluster(item, cluster_values)), None)
+                name_conflict = session.query(VitastorCluster).filter_by(name=row.cluster_name).first()
+                if name_conflict is not None and (existing is None or name_conflict.id != existing.id):
+                    raise RuntimeError(f"Tên cụm Vitastor {row.cluster_name!r} đã được dùng cho một cụm khác")
+                if existing is None:
+                    existing = VitastorCluster(**cluster_values, is_active=True, last_status_json=json.dumps({"deployment": deployment}), last_checked_at=datetime.utcnow(), created_by=row.requested_by)
+                    session.add(existing); session.flush()
+                else:
+                    for key, value in cluster_values.items():
+                        setattr(existing, key, value)
+                    existing.is_active = True
+                    existing.last_status_json = json.dumps({"deployment": deployment})
+                    existing.last_checked_at = datetime.utcnow()
+                row.cluster_id = existing.id
             elif operation == "delete":
                 cluster = session.get(VitastorCluster, row.cluster_id)
                 if cluster: session.delete(cluster)
