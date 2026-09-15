@@ -30,7 +30,8 @@
         <label>Container name (Docker/Podman)<input name="container_name" value="{{ form_values.container_name or '' }}"></label>
         <label>SSH user<input name="ssh_user" required value="{{ form_values.ssh_user or '' }}" placeholder="root"></label>
         <label>SSH key path<input name="ssh_key_path" required value="{{ form_values.ssh_key_path or '' }}" placeholder="/root/.ssh/vitastor_aiops"></label>
-        <button class="btn btn-primary">Kiểm tra kết nối &amp; Thêm cụm</button>
+        <p class="hint">Với Vitastor native, sau khi xác thực cụm hệ thống sẽ tự lưu metadata ban đầu trước khi ghi kết nối. Mặc định lưu tại <code>{{ metadata_backup_path }}</code> trên management host; không lưu block data và không chạm vào OSD disk.</p>
+        <button class="btn btn-primary">Kiểm tra, backup metadata &amp; thêm cụm</button>
       </form>
     </section>
   </main>

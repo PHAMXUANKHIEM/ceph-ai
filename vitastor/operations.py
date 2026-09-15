@@ -224,12 +224,17 @@ def _metadata_bundle_command(params: dict) -> str:
     base = shlex.quote(params["destination"])
     endpoint = shlex.quote(params["etcd_address"])
     config_path = shlex.quote(params.get("config_path") or "/etc/vitastor/vitastor.conf")
+    cluster_name = params.get("cluster_name")
+    cluster_name_line = (
+        f"  {shlex.quote('cluster_name=' + str(cluster_name))} "
+        if cluster_name else ""
+    )
     cli = _vitastor_cli(params, json_output=True)
     return (
         "set -eu; "
         f"base={base}; "
         "stamp=$(date -u +%Y%m%dT%H%M%SZ); "
-        "final=\"$base/$stamp\"; "
+        "final=\"$base/${stamp}-$$\"; "
         "test ! -e \"$final\"; "
         "tmp=\"$base/.metadata-$stamp-$$\"; "
         "umask 077; mkdir \"$tmp\"; "
@@ -247,6 +252,7 @@ def _metadata_bundle_command(params: dict) -> str:
         "chmod 0600 \"$tmp/vitastor.conf\"; "
         "printf '%s\\n' "
         "  'backup_type=vitastor-cluster-metadata' "
+        f"{cluster_name_line}"
         "  \"created_at=$stamp\" "
         f"  {shlex.quote('etcd_endpoints=' + params['etcd_address'])} "
         f"  {shlex.quote('etcd_prefix=' + params.get('etcd_prefix', '/vitastor'))} "
@@ -275,7 +281,7 @@ def _qemu_uri(params: dict, image: str, skip_parents: bool = False) -> str:
     return shlex.quote(uri)
 
 
-def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
+def backup(params: dict, progress: Callable[[str, str, str], None]) -> str | None:
     """Create native snapshots or export image/metadata backups on the management host."""
     host, user, key = params["management_host"], params["ssh_user"], params["ssh_key_path"]
     method = params["method"]
@@ -347,11 +353,11 @@ def backup(params: dict, progress: Callable[[str, str, str], None]) -> None:
             raise
     elif method == "metadata_cluster":
         progress("export", "running", "Chụp snapshot etcd và export metadata cụm")
-        _run(host, user, key, _metadata_bundle_command(params))
+        bundle_output = _run(host, user, key, _metadata_bundle_command(params))
         progress("export", "done", "Đã lưu snapshot etcd, cấu hình và inventory cụm")
         progress("verify", "running", "Xác minh checksum toàn bộ metadata backup")
         progress("verify", "done", "Metadata backup đã được xác minh và đóng gói atomic")
-        return
+        return bundle_output.splitlines()[-1] if bundle_output.strip() else None
     elif method == "metadata_etcd":
         destination = shlex.quote(params["destination"])
         endpoint = shlex.quote(params["etcd_address"].split(",")[0])

@@ -113,6 +113,13 @@ class RepairConfig:
     running_stale_seconds: int = 3600
     notify_telegram: bool = True
     transcript_file: Path | None = None
+    # Environment keys to remove when testing an older candidate revision.
+    # This prevents newer runtime-only settings from breaking Settings() in
+    # a candidate worktree that intentionally starts at origin/main.
+    test_env_unset: tuple[str, ...] = ()
+    # Optional Settings env file override for candidate tests.  ``env -u``
+    # alone cannot remove values that Pydantic reloads from CEPH_AI_ENV_FILE.
+    test_env_file: str = ""
     # A proactive improvement task may correctly conclude that no small,
     # testable upgrade is warranted.  Normal repair tasks must still fail
     # closed when no patch is produced.
@@ -603,11 +610,20 @@ def _validate_proactive_test_changes(worktree: Path, files: list[str]) -> None:
         raise RepairError("proactive improvement phải bổ sung ít nhất một test_* regression mới")
 
 
-def _focused_test_command(files: list[str]) -> str | None:
+def _focused_test_command(
+    files: list[str], *, unset_env: tuple[str, ...] = (), env_file: str = "",
+) -> str | None:
     tests = _changed_test_files(files)
     if not tests:
         return None
-    return "PYTHONPATH=. .venv/bin/pytest -q " + " ".join(shlex.quote(path) for path in tests)
+    env_prefix = ""
+    if unset_env or env_file:
+        env_parts = ["env"]
+        env_parts.extend(f"-u {shlex.quote(name)}" for name in unset_env)
+        if env_file:
+            env_parts.append(f"CEPH_AI_ENV_FILE={shlex.quote(env_file)}")
+        env_prefix = " ".join(env_parts) + " "
+    return env_prefix + "PYTHONPATH=. .venv/bin/pytest -q " + " ".join(shlex.quote(path) for path in tests)
 
 
 _INFRA_TEST_RE = re.compile(
@@ -672,7 +688,6 @@ def run_repair(evidence: str, config: RepairConfig, *, force: bool = False) -> R
         _run(["git", "fetch", config.remote, config.base_branch], cwd=config.repo)
         notifier.update(10, "Đã lấy source mới nhất, đang tạo worktree phân tích cô lập")
         _run(["git", "worktree", "add", "--detach", str(planner_worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)
-        os.symlink(config.repo / ".venv", planner_worktree / ".venv", target_is_directory=True)
         planner_provider_spec = config.planner_provider or config.provider
         implementer_provider_spec = config.implementer_provider or config.provider
         planner_codex_home, planner_claude_config_dir = _role_account_dirs(
@@ -722,8 +737,12 @@ Additional task constraints:
         )
         if planner.returncode != 0:
             raise RepairError(f"{planner_provider} planner failed ({planner.returncode}):\n{planner.stdout[-6000:]}")
-        if _worktree_status(planner_worktree).strip():
-            raise RepairError("Planner/Reviewer phải chạy read-only nhưng đã làm thay đổi worktree")
+        planner_status = _worktree_status(planner_worktree)
+        if planner_status.strip():
+            raise RepairError(
+                "Planner/Reviewer phải chạy read-only nhưng đã làm thay đổi worktree:\n"
+                f"{planner_status[:2000]}"
+            )
         plan = planner.stdout[-16_000:].strip()
         if not plan:
             raise RepairError("Planner/Reviewer không trả về kế hoạch")
@@ -784,7 +803,9 @@ Observed application failure (credentials already redacted):
             result.changed_files = _validate_changes(worktree)
             if config.require_changed_tests:
                 _validate_proactive_test_changes(worktree, result.changed_files)
-            focused_command = _focused_test_command(result.changed_files)
+            focused_command = _focused_test_command(
+                result.changed_files, unset_env=config.test_env_unset, env_file=config.test_env_file,
+            )
             if focused_command:
                 notifier.update(40, "Patch hợp lệ; đang chạy test theo phạm vi thay đổi")
                 focused = _run(["bash", "-lc", focused_command], cwd=worktree,
@@ -908,7 +929,9 @@ If changes are needed, list precise actionable corrections before that line.
             result.changed_files = _validate_changes(worktree)
             if config.require_changed_tests:
                 _validate_proactive_test_changes(worktree, result.changed_files)
-            correction_focused_command = _focused_test_command(result.changed_files)
+            correction_focused_command = _focused_test_command(
+                result.changed_files, unset_env=config.test_env_unset, env_file=config.test_env_file,
+            )
             if correction_focused_command:
                 notifier.update(60, "Implementer đã sửa theo review; đang chạy lại test theo phạm vi thay đổi")
                 correction_focused = _run(

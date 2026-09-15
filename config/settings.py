@@ -574,6 +574,10 @@ class Settings(BaseSettings):
     # trip, so there's no reason to space it out).
     telegram_approval_scan_interval_seconds: int = 10
     # Independent read-only Vitastor health poll used for Telegram alerts.
+    # Native Vitastor cluster registration takes a metadata snapshot before
+    # the connection is persisted. The path is on the configured management
+    # host and should normally be an independently mounted backup filesystem.
+    vitastor_initial_metadata_backup_path: str = "/var/backups/vitastor/metadata"
     vitastor_poll_interval_seconds: int = 60
     vitastor_metric_retention_days: int = 30
     vitastor_capacity_warning_percent: float = 85.0

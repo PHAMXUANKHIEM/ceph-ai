@@ -231,6 +231,20 @@ def test_focused_test_command_uses_only_changed_test_files():
     )
 
 
+def test_focused_test_command_can_unset_newer_runtime_settings():
+    command = code_repair._focused_test_command(
+        ["tests/test_code_repair.py"],
+        unset_env=("AI_NIGHTLY_MULTI_AGENT_ANALYSIS_ENABLED", "AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL"),
+        env_file="/dev/null",
+    )
+    assert command == (
+        "env -u AI_NIGHTLY_MULTI_AGENT_ANALYSIS_ENABLED "
+        "-u AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL "
+        "CEPH_AI_ENV_FILE=/dev/null "
+        "PYTHONPATH=. .venv/bin/pytest -q tests/test_code_repair.py"
+    )
+
+
 def test_transcript_records_bounded_jsonl_event(tmp_path):
     transcript = tmp_path / "transcript.jsonl"
     config = code_repair.RepairConfig(repo=tmp_path, transcript_file=transcript)

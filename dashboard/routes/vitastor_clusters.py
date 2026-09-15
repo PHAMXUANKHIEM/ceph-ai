@@ -10,9 +10,11 @@ from fastapi.responses import HTMLResponse
 from dashboard.routes import auth
 from dashboard.routes.vitastor import require_vitastor_login
 from dashboard.templating import make_templates
+from config.settings import settings
 from shared import db
 from shared.models import VitastorActionStatus, VitastorCluster, VitastorOperation, VitastorRemediationAction
 from vitastor.client import VALID_EXEC_MODES, VitastorConnectionError, query_status
+from vitastor.operations import VitastorOperationError, backup as vitastor_backup
 
 router = APIRouter(prefix="/vitastor/clusters", tags=["vitastor-clusters"])
 templates = make_templates()
@@ -33,7 +35,11 @@ def _context(user: str, *, error: str | None = None, success: str | None = None,
     with db.SessionLocal() as session:
         clusters = session.query(VitastorCluster).order_by(VitastorCluster.created_at.desc()).all()
         session.expunge_all()
-    return {"user": user, "clusters": clusters, "error": error, "success": success, "form_values": form_values or {}, "exec_modes": sorted(VALID_EXEC_MODES)}
+    return {
+        "user": user, "clusters": clusters, "error": error, "success": success,
+        "form_values": form_values or {}, "exec_modes": sorted(VALID_EXEC_MODES),
+        "metadata_backup_path": settings.vitastor_initial_metadata_backup_path,
+    }
 
 
 def _connection_args(cluster: VitastorCluster) -> tuple:
@@ -83,18 +89,61 @@ async def create_cluster(
         error = "Kiểu chạy Vitastor không hợp lệ."
     elif submitted["exec_mode"] != "none" and not submitted["container_name"]:
         error = "Chạy bằng container cần khai báo tên container."
+    elif submitted["exec_mode"] == "none" and (
+        not settings.vitastor_initial_metadata_backup_path.startswith("/")
+        or "\x00" in settings.vitastor_initial_metadata_backup_path
+    ):
+        error = "Đường dẫn backup metadata Vitastor native trong cấu hình không hợp lệ."
     if error:
         return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error=error, form_values=submitted))
+    with db.SessionLocal() as session:
+        if session.query(VitastorCluster).filter_by(name=submitted["name"]).first():
+            return templates.TemplateResponse(
+                request, "vitastor/clusters.html",
+                _context(user, error=f"Tên cụm {submitted['name']!r} đã tồn tại.", form_values=submitted),
+            )
     try:
         status = await asyncio.to_thread(query_status, submitted["management_host"], submitted["ssh_user"], submitted["ssh_key_path"], submitted["etcd_address"], submitted["etcd_prefix"], submitted["config_path"], submitted["exec_mode"], submitted["container_name"])
     except VitastorConnectionError as exc:
         return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error=f"Không kết nối được tới cụm Vitastor: {exc}", form_values=submitted))
+
+    metadata_backup_path = settings.vitastor_initial_metadata_backup_path
+    metadata_backup_location = ""
+    if submitted["exec_mode"] == "none":
+        metadata_params = {
+            "method": "metadata_cluster", "destination": metadata_backup_path,
+            "cluster_name": submitted["name"],
+            "management_host": submitted["management_host"], "ssh_user": submitted["ssh_user"],
+            "ssh_key_path": submitted["ssh_key_path"], "etcd_address": submitted["etcd_address"],
+            "etcd_prefix": submitted["etcd_prefix"], "config_path": submitted["config_path"],
+            "exec_mode": "none", "container_name": "",
+        }
+        try:
+            metadata_backup_location = await asyncio.to_thread(
+                vitastor_backup, metadata_params, lambda *_event: None,
+            ) or metadata_backup_path
+        except (VitastorConnectionError, VitastorOperationError, OSError) as exc:
+            return templates.TemplateResponse(
+                request, "vitastor/clusters.html",
+                _context(
+                    user,
+                    error=f"Không lưu được metadata ban đầu của cụm Vitastor: {exc}",
+                    form_values=submitted,
+                ),
+            )
     with db.SessionLocal() as session:
         if session.query(VitastorCluster).filter_by(name=submitted["name"]).first():
             return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, error=f"Tên cụm {submitted['name']!r} đã tồn tại.", form_values=submitted))
+        status = dict(status)
+        if metadata_backup_location:
+            status["initial_metadata_backup"] = {
+                "path": str(metadata_backup_location).splitlines()[-1],
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            }
         session.add(VitastorCluster(**submitted, is_active=True, last_status_json=json.dumps(status), last_checked_at=datetime.utcnow(), created_by=user))
         session.commit()
-    return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, success=f"Đã kết nối và thêm cụm Vitastor {submitted['name']!r}."))
+    success = f"Đã lưu metadata ban đầu tại {metadata_backup_location!r}. Đã kết nối và thêm cụm Vitastor {submitted['name']!r}." if metadata_backup_location else f"Đã kết nối và thêm cụm Vitastor {submitted['name']!r}."
+    return templates.TemplateResponse(request, "vitastor/clusters.html", _context(user, success=success))
 
 
 @router.post("/{cluster_id}/check", response_class=HTMLResponse)

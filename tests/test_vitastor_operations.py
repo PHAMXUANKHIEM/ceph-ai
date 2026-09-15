@@ -113,6 +113,7 @@ def test_cluster_metadata_backup_is_timestamped_and_contains_recovery_artifacts(
     for artifact in ("status.json", "df.json", "pools.json", "images.json", "osds.json", "osd-tree.txt", "users.json", "SHA256SUMS"):
         assert f"$tmp/{artifact}" in bundle
     assert 'mv "$tmp" "$final"' in bundle
+    assert 'final="$base/${stamp}-$$"' in bundle
     assert "vitastor-disk" not in bundle
 
 

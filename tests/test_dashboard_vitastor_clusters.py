@@ -1,3 +1,6 @@
+import pytest
+import json
+
 from shared import db as db_module
 from shared.models import VitastorActionStatus, VitastorCluster, VitastorOperation, VitastorRemediationAction
 import dashboard.routes.vitastor_clusters as route
@@ -16,6 +19,11 @@ def _form(**overrides):
     }
     values.update(overrides)
     return values
+
+
+@pytest.fixture(autouse=True)
+def disable_real_initial_metadata_backup(monkeypatch):
+    monkeypatch.setattr(route, "vitastor_backup", lambda *_args: None)
 
 
 def test_admin_sees_independent_cluster_page(dashboard_client):
@@ -39,6 +47,55 @@ def test_create_tests_connection_before_saving(dashboard_client, monkeypatch):
         row = session.query(VitastorCluster).one()
         assert row.etcd_prefix == "/vitastor"
         assert "3 / 3 up" in row.last_status_json
+
+
+def test_create_native_saves_initial_metadata_before_persisting_cluster(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(route, "query_status", lambda *args: calls.append(("status", args)) or {"cluster": {"osd": "3 / 3 up"}})
+    monkeypatch.setattr(route, "vitastor_backup", lambda params, _progress: calls.append(("backup", params)) or "/var/backups/vitastor/metadata/20260915T100000Z")
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/vitastor/clusters/create", data=_form())
+
+    assert response.status_code == 200
+    assert "Đã lưu metadata ban đầu" in response.text
+    assert [call[0] for call in calls] == ["status", "backup"]
+    assert calls[1][1]["method"] == "metadata_cluster"
+    assert calls[1][1]["destination"] == "/var/backups/vitastor/metadata"
+    with db_module.SessionLocal() as session:
+        row = session.query(VitastorCluster).one()
+        saved = json.loads(row.last_status_json)
+        assert saved["initial_metadata_backup"]["path"].endswith("20260915T100000Z")
+
+
+def test_initial_metadata_backup_failure_does_not_persist_cluster(dashboard_client, monkeypatch):
+    monkeypatch.setattr(route, "query_status", lambda *_: {"cluster": {"osd": "3 / 3 up"}})
+    monkeypatch.setattr(route, "vitastor_backup", lambda *_: (_ for _ in ()).throw(route.VitastorOperationError("metadata destination unavailable")))
+    _login(dashboard_client)
+
+    response = dashboard_client.post("/vitastor/clusters/create", data=_form())
+
+    assert "Không lưu được metadata ban đầu" in response.text
+    with db_module.SessionLocal() as session:
+        assert session.query(VitastorCluster).count() == 0
+
+
+def test_duplicate_name_is_rejected_before_connection_or_metadata_backup(dashboard_client, monkeypatch):
+    _login(dashboard_client)
+    with db_module.SessionLocal() as session:
+        session.add(VitastorCluster(
+            name="vita-lab", management_host="10.0.0.20", etcd_address="10.0.0.10:2379",
+            etcd_prefix="/vitastor", config_path="", ssh_user="root",
+            ssh_key_path="/root/.ssh/vitastor", exec_mode="none", container_name="",
+            created_by="admin",
+        ))
+        session.commit()
+    monkeypatch.setattr(route, "query_status", lambda *_: (_ for _ in ()).throw(AssertionError("status must not run")))
+    monkeypatch.setattr(route, "vitastor_backup", lambda *_: (_ for _ in ()).throw(AssertionError("backup must not run")))
+
+    response = dashboard_client.post("/vitastor/clusters/create", data=_form())
+
+    assert "đã tồn tại" in response.text
 
 
 def test_failed_connection_is_not_saved(dashboard_client, monkeypatch):

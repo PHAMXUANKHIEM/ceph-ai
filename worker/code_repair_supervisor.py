@@ -49,7 +49,16 @@ NIGHTLY_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 NIGHTLY_IMPROVEMENT_EVIDENCE = (
     "Scheduled nightly review: Cần nâng cấp gì cho phần AI của tool này?"
 )
+NIGHTLY_TEST_ENV_UNSET = (
+    "AI_NIGHTLY_MULTI_AGENT_ANALYSIS_ENABLED",
+    "AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL",
+    "AI_NIGHTLY_MULTI_AGENT_TIMEOUT_SECONDS",
+)
 NIGHTLY_REGRESSION_TEST_COMMAND = (
+    "env -u AI_NIGHTLY_MULTI_AGENT_ANALYSIS_ENABLED "
+    "-u AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL "
+    "-u AI_NIGHTLY_MULTI_AGENT_TIMEOUT_SECONDS "
+    "CEPH_AI_ENV_FILE=/dev/null "
     "PYTHONPATH=. .venv/bin/pytest -q "
     "tests/test_code_repair.py "
     "tests/test_code_repair_supervisor.py"
@@ -471,6 +480,8 @@ def _run_nightly_ai_improvement_locked(
             test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
             candidate_test_command=NIGHTLY_REGRESSION_TEST_COMMAND,
             require_changed_tests=True,
+            test_env_unset=NIGHTLY_TEST_ENV_UNSET,
+            test_env_file="/dev/null",
             timeout_seconds=min(settings.code_repair_timeout_seconds, NIGHTLY_AI_STEP_TIMEOUT_SECONDS),
             push=settings.code_repair_push,
             deploy_staging=settings.code_repair_deploy_staging,
