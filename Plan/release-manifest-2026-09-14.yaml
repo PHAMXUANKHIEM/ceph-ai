@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 9aef95a459a01b4c477e70069efb19de199b20dd
+  commit_sha: 21157129e23da76ddf3c05f05c16ffcb1cbe7c3b
   rollback_candidate_sha: 5a9655a9076999a966e2d6a2863d0f1a986f2070
   worktree: clean
-  release_commit: 9aef95a459a01b4c477e70069efb19de199b20dd
+  release_commit: 21157129e23da76ddf3c05f05c16ffcb1cbe7c3b
   pushed_to_origin: false
 
 migrations:
