@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config.settings import settings
 from shared import db
@@ -90,7 +90,13 @@ def _period_start(now: datetime, period: str) -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-def _spent_since(session, start: datetime) -> tuple[float, int]:
+def _reservation_timeout_seconds() -> int:
+    return max(60, int(getattr(settings, "ai_cost_budget_reservation_timeout_seconds", 7200)))
+
+
+def _spent_since(session, start: datetime, *, now: datetime | None = None) -> tuple[float, int]:
+    now = now or datetime.utcnow()
+    reservation_cutoff = now - timedelta(seconds=_reservation_timeout_seconds())
     rows = session.query(AIInvocation).filter(AIInvocation.created_at >= start).all()
     spent = 0.0
     unpriced = 0
@@ -98,6 +104,8 @@ def _spent_since(session, start: datetime) -> tuple[float, int]:
         # A rejected call never reached a provider and must not poison future
         # hard-budget checks as an unknown-priced historical invocation.
         if row.error_type in {"AIBudgetUnpricedError", "AIBudgetConfigurationError"}:
+            continue
+        if row.status == "RESERVED" and row.created_at < reservation_cutoff:
             continue
         cost = _record_cost(row)
         if cost is None:
@@ -107,13 +115,26 @@ def _spent_since(session, start: datetime) -> tuple[float, int]:
     return spent, unpriced
 
 
+def _expire_stale_reservations(session, now: datetime) -> None:
+    cutoff = now - timedelta(seconds=_reservation_timeout_seconds())
+    rows = (
+        session.query(AIInvocation)
+        .filter(AIInvocation.status == "RESERVED", AIInvocation.created_at < cutoff)
+        .all()
+    )
+    for row in rows:
+        row.status = "ERROR"
+        row.error_type = "AIBudgetReservationExpired"
+        row.latency_ms = max(0, round((now - row.created_at).total_seconds() * 1000))
+
+
 def status(*, now: datetime | None = None) -> dict:
     """Return current daily/monthly budget status without reading content."""
     now = now or datetime.utcnow()
     daily_limit, monthly_limit = _budget_limits()
     with db.SessionLocal() as session:
-        daily_spent, daily_unpriced = _spent_since(session, _period_start(now, "daily"))
-        monthly_spent, monthly_unpriced = _spent_since(session, _period_start(now, "monthly"))
+        daily_spent, daily_unpriced = _spent_since(session, _period_start(now, "daily"), now=now)
+        monthly_spent, monthly_unpriced = _spent_since(session, _period_start(now, "monthly"), now=now)
 
     def period(spent: float, limit: float) -> dict:
         percent = (spent / limit * 100) if limit else None
@@ -165,12 +186,13 @@ def _reserve_hard_budget(
                     "Bảng khóa AI Budget chưa được migrate đầy đủ; chưa gọi provider"
                 )
             lock_by_period = {row.period: row for row in lock_rows}
+            _expire_stale_reservations(session, now)
             for period_name, limit, period_start in active_periods:
                 lock_row = lock_by_period[period_name]
                 if lock_row.period_start != period_start:
                     lock_row.period_start = period_start
                     lock_row.updated_at = now
-                spent, unpriced = _spent_since(session, period_start)
+                spent, unpriced = _spent_since(session, period_start, now=now)
                 if unpriced:
                     raise AIBudgetUnpricedError(
                         provider, model_id,
@@ -219,7 +241,7 @@ def check(
                 continue
             try:
                 with db.SessionLocal() as session:
-                    spent, _ = _spent_since(session, _period_start(now, period_name))
+                    spent, _ = _spent_since(session, _period_start(now, period_name), now=now)
             except Exception:
                 # Soft mode is advisory: a temporary telemetry DB outage must
                 # not make an otherwise configured AI provider unavailable.

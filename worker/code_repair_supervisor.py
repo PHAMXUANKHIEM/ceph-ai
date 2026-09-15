@@ -35,6 +35,7 @@ from worker.code_repair import (
     run_repair,
     _provider_command,
     _role_account_dirs,
+    _ai_process_environment,
     _run,
 )
 from worker import ceph_capability_learning as ceph_learning
@@ -163,13 +164,15 @@ def _run_nightly_analyst(
         )
         reservation_id = check_ai_budget(selected_provider, model_id, len(prompt))
         budget_checked = True
-        result = _run(
-            command,
-            cwd=worktree,
-            timeout=timeout_seconds,
-            input_text=prompt,
-            check=False,
-        )
+        with _ai_process_environment() as ai_env:
+            result = _run(
+                command,
+                cwd=worktree,
+                timeout=timeout_seconds,
+                input_text=prompt,
+                check=False,
+                env=ai_env,
+            )
         if result.returncode != 0:
             details = _redact_nightly_text(result.stdout[-1200:])
             raise RuntimeError(f"{selected_provider} exited with {result.returncode}: {details}")

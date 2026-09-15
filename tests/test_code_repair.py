@@ -424,3 +424,15 @@ def test_progress_notifier_sends_start_periodic_and_success(monkeypatch):
     assert any("45%" in message and "đang chạy test" in message for message in messages)
     assert "THÀNH CÔNG" in messages[-1]
     assert "100%" in messages[-1]
+
+
+def test_ai_process_environment_excludes_application_secrets(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example")
+
+    with code_repair._ai_process_environment() as environment:
+        assert "DATABASE_URL" not in environment
+        assert "TELEGRAM_BOT_TOKEN" not in environment
+        assert environment["HTTPS_PROXY"] == "http://proxy.example"
+        assert environment["HOME"] != code_repair.os.environ.get("HOME")

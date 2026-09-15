@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared import db
+import shared.ai_budget as ai_budget
 import shared.ai_observability as ai_observability
 from shared.ai_observability import mark_ai_provider, observe_ai_call
 from shared.db import Base
@@ -271,3 +272,29 @@ def test_soft_budget_fails_open_when_telemetry_db_is_down(monkeypatch):
         return "ok"
 
     assert asyncio.run(call()) == "ok"
+
+
+def test_stale_hard_budget_reservation_is_expired(monkeypatch):
+    sessions = _session_factory()
+    monkeypatch.setattr(db, "SessionLocal", sessions)
+    monkeypatch.setattr("shared.ai_budget.settings.ai_cost_daily_budget_usd", 1.0)
+    monkeypatch.setattr("shared.ai_budget.settings.ai_cost_monthly_budget_usd", 0.0)
+    monkeypatch.setattr("shared.ai_budget.settings.ai_cost_budget_hard_limit", True)
+    monkeypatch.setattr("shared.ai_budget.settings.ai_cost_budget_reservation_timeout_seconds", 60)
+    now = datetime(2026, 8, 28, 12, 0)
+    with sessions() as session:
+        session.add(AIBudgetLock(period="daily", period_start=datetime(1970, 1, 1), updated_at=now))
+        session.add(AIInvocation(
+            id="stale-reservation", feature="__budget_reservation__", provider="codex",
+            model_id="gpt-5.6-sol", status="RESERVED", latency_ms=0,
+            input_chars=4000, output_chars=8192, created_at=datetime(2026, 8, 28, 11, 58),
+        ))
+        session.commit()
+
+    reservation_id = ai_budget.check("codex", "gpt-5.6-sol", 4, now=now)
+
+    assert reservation_id
+    with sessions() as session:
+        stale = session.get(AIInvocation, "stale-reservation")
+        assert stale.status == "ERROR"
+        assert stale.error_type == "AIBudgetReservationExpired"

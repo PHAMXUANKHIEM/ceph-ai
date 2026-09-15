@@ -245,6 +245,10 @@ class Settings(BaseSettings):
     # Reserved output tokens used before a call, since output usage is not
     # known until the provider returns. This is deliberately conservative.
     ai_cost_budget_reserve_output_tokens: int = Field(default=2048, ge=0, le=100000)
+    # A crashed worker can leave a hard-budget reservation unfinished. Keep
+    # active reservations long enough for the slowest configured provider,
+    # then exclude them from future accounting.
+    ai_cost_budget_reservation_timeout_seconds: int = Field(default=7200, ge=60, le=86400)
     # Hard input-context ceiling for incident diagnosis. This bounds the
     # highest-volume AI path even when a log collector or related-incident
     # query returns unexpectedly large evidence; output/schema reasoning keeps

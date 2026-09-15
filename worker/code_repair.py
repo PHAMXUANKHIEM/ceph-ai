@@ -8,6 +8,7 @@ controller that is deciding whether the deployment succeeded.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -48,6 +49,29 @@ class RepairError(RuntimeError):
 
 
 DEFAULT_REPAIR_REVIEW_ROUNDS = 2
+
+_AI_ENV_ALLOWLIST = (
+    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+)
+
+
+@contextmanager
+def _ai_process_environment():
+    """Yield a minimal environment for provider CLIs."""
+    isolated_home = Path(tempfile.mkdtemp(prefix="ceph-ai-ai-home-"))
+    environment = {
+        name: os.environ[name]
+        for name in _AI_ENV_ALLOWLIST
+        if os.environ.get(name) is not None
+    }
+    environment["HOME"] = str(isolated_home)
+    environment["TMPDIR"] = str(isolated_home)
+    try:
+        yield environment
+    finally:
+        shutil.rmtree(isolated_home, ignore_errors=True)
 
 
 def summarize_evidence(evidence: str, *, max_chars: int = 360) -> str:
@@ -235,13 +259,15 @@ def _run_ai_command(
     try:
         reservation_id = check_ai_budget(provider, model_id, len(prompt))
         budget_checked = True
-        result = _run(
-            command,
-            cwd=cwd,
-            timeout=timeout,
-            input_text=prompt,
-            check=False,
-        )
+        with _ai_process_environment() as ai_env:
+            result = _run(
+                command,
+                cwd=cwd,
+                timeout=timeout,
+                input_text=prompt,
+                check=False,
+                env=ai_env,
+            )
         record_ai_attempt(
             reservation_id=reservation_id,
             feature=feature,
@@ -468,7 +494,8 @@ def _provider_command(provider: str, worktree: Path, prompt: str, timeout: int |
             status_command = [codex, "login", "status"]
             if codex_home:
                 status_command = ["env", f"CODEX_HOME={codex_home}", *status_command]
-            status = _run(status_command, cwd=worktree, check=False, timeout=15)
+            with _ai_process_environment() as ai_env:
+                status = _run(status_command, cwd=worktree, check=False, timeout=15, env=ai_env)
             if status.returncode == 0:
                 provider = "codex"
             elif claude:
