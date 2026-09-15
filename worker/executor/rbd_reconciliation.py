@@ -68,7 +68,13 @@ def reconcile(action_id: str, params: dict, output: str) -> None:
         raise ExecutorError("RBD purge post-check still contains trash IDs: " + ", ".join(still_present))
 
 
-def reconciliation_command(action_id: str, params: dict) -> str:
+def reconciliation_command(
+    action_id: str,
+    params: dict,
+    *,
+    exec_mode: str | None = None,
+    container_name: str = "",
+) -> str:
     """Build a validated read-only command for recovery after Worker restart."""
     if action_id not in RBD_RECONCILED_ACTION_IDS:
         raise ExecutorError(f"action {action_id!r} does not support RBD reconciliation")
@@ -78,7 +84,13 @@ def reconciliation_command(action_id: str, params: dict) -> str:
     commands.get_command(action_id, params=params)
     pool = shlex.quote(params["pool_name"])
     if action_id == "rbd_rename_volume":
-        return f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
-    if action_id in {"rbd_create_volume", "rbd_resize_volume", "rbd_trash_restore_volume"}:
-        return f"rbd info {pool}/{shlex.quote(params['image'])} --format json"
-    return f"rbd trash ls {pool} --format json"
+        command = f"rbd info {pool}/{shlex.quote(params['new_image'])} --format json"
+    elif action_id in {"rbd_create_volume", "rbd_resize_volume", "rbd_trash_restore_volume"}:
+        command = f"rbd info {pool}/{shlex.quote(params['image'])} --format json"
+    else:
+        command = f"rbd trash ls {pool} --format json"
+    if exec_mode is None:
+        return command
+    return commands.wrap_ceph_runtime_command(
+        command, exec_mode=exec_mode, container_name=container_name
+    )
