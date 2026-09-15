@@ -215,6 +215,8 @@
               <td><code>{{ summary.pool }}</code></td>
               {% if summary.error %}
               <td colspan="3"><span class="error">Không đọc được: {{ summary.error }}</span></td>
+              {% elif summary.entry_count is none %}
+              <td colspan="3"><span class="hint">Chọn “Xem Trash” để tải dữ liệu của pool này</span></td>
               {% else %}
               <td>{{ summary.entry_count }}</td><td>{{ summary.total_used_size_human }}</td><td>{{ summary.total_provisioned_size_human }}</td>
               {% endif %}

@@ -379,6 +379,24 @@ def _volumes_page_context(
     vm_perf_action: Action | None = None
     if selected_view == "trash":
         cluster = _cluster_for_request(request)
+        # The landing page only needs the list of RBD pools.  A full Trash
+        # scan is expensive: each entry requires an additional `rbd info`
+        # and `rados ls` command over SSH to calculate its logical and used
+        # size.  Do that work only after the operator selects one pool.
+        trash_pools = [pool] if pool else []
+        if not pool:
+            trash_pool_summaries = [
+                {
+                    "pool": trash_pool,
+                    "entry_count": None,
+                    "total_used_size_bytes": None,
+                    "total_used_size_human": "—",
+                    "total_provisioned_size_bytes": None,
+                    "total_provisioned_size_human": "—",
+                    "error": None,
+                }
+                for trash_pool in pools
+            ]
         def fetch_trash(trash_pool: str):
             return _cached_rbd_trash(cluster, trash_pool)
 
@@ -386,9 +404,9 @@ def _volumes_page_context(
         # fan-out so large installations do not create an unbounded number
         # of SSH sessions, while avoiding the old N x timeout page latency.
         results: dict[str, list[dict] | CephQueryError] = {}
-        max_workers = min(8, max(1, len(pools)))
+        max_workers = min(8, max(1, len(trash_pools)))
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="trash-pool") as executor:
-            futures = {executor.submit(fetch_trash, trash_pool): trash_pool for trash_pool in pools}
+            futures = {executor.submit(fetch_trash, trash_pool): trash_pool for trash_pool in trash_pools}
             for future in as_completed(futures):
                 trash_pool = futures[future]
                 try:
@@ -398,7 +416,7 @@ def _volumes_page_context(
 
         # Render in configured pool order even though requests completed out
         # of order, so parallelism never makes the UI jump around.
-        for trash_pool in pools:
+        for trash_pool in trash_pools:
             result = results[trash_pool]
             if isinstance(result, CephQueryError):
                 logger.warning("_volumes_page_context: failed to query trash for pool %r: %s", trash_pool, result)

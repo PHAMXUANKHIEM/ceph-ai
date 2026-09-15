@@ -122,13 +122,13 @@ def test_legacy_volumes_trash_url_redirects_to_top_level_trash(dashboard_client,
 
 def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
+    calls = []
 
-    def fake_query(pool):
-        if pool == "vms":
-            return [_fake_trash_entry(), _fake_trash_entry("id-2", "old-disk-2")]
-        return []
+    def fail_if_trash_is_scanned(pool):
+        calls.append(pool)
+        raise AssertionError("Trash must be loaded only after a pool is selected")
 
-    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fake_query)
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fail_if_trash_is_scanned)
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
@@ -136,26 +136,21 @@ def test_trash_landing_shows_each_pool_count_and_total_size(dashboard_client, mo
     assert response.status_code == 200
     assert 'href="/trash?pool=vms"' in response.text
     assert 'href="/trash?pool=backups"' in response.text
-    assert "512.0 MiB" in response.text
-    assert "2.0 GiB" in response.text
+    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
+    assert calls == []
     assert "old-disk" not in response.text
 
 
 def test_trash_landing_shows_purge_all_for_each_non_empty_pool(dashboard_client, monkeypatch):
     _configure_pools(monkeypatch)
-    monkeypatch.setattr(
-        volumes_route.ceph_client,
-        "query_rbd_trash",
-        lambda pool: [_fake_trash_entry(name=f"{pool}-deleted")],
-    )
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", lambda pool: pytest.fail("unexpected scan"))
     _login(dashboard_client)
 
     response = dashboard_client.get("/trash")
 
     assert response.status_code == 200
-    assert response.text.count("Xoá vĩnh viễn tất cả (1)</button>") == 2
-    assert 'action="/volumes/vms/trash/purge-all"' in response.text
-    assert 'action="/volumes/backups/trash/purge-all"' in response.text
+    assert "Xoá vĩnh viễn tất cả" not in response.text
+    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
 
 
 def test_trash_pool_page_only_lists_selected_pools_entries(dashboard_client, monkeypatch):
@@ -1111,6 +1106,24 @@ def test_volumes_page_shows_trash_entries(dashboard_client, monkeypatch):
     assert 'name="confirmation"' in response.text
     assert 'action="/volumes/vms/trash/1234567890ab/force-remove"' in response.text
     assert "bỏ qua TTL" in response.text
+
+
+def test_trash_landing_page_does_not_scan_every_pool(dashboard_client, monkeypatch):
+    _configure_pools(monkeypatch)
+    calls = []
+
+    def fail_if_trash_is_scanned(pool):
+        calls.append(pool)
+        raise AssertionError("Trash must be loaded only after a pool is selected")
+
+    monkeypatch.setattr(volumes_route.ceph_client, "query_rbd_trash", fail_if_trash_is_scanned)
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/trash")
+
+    assert response.status_code == 200
+    assert calls == []
+    assert "Chọn “Xem Trash” để tải dữ liệu của pool này" in response.text
 
 
 def test_trash_page_hides_purge_all_from_non_admin(dashboard_client, monkeypatch):
