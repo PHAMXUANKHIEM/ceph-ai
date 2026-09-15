@@ -8,6 +8,7 @@ different freshness/timestamp shape.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import time
 from typing import Mapping
 
 from shared import ceph_query_cache
@@ -259,6 +260,49 @@ def record_section_error(
     )
 
 
+def _fingerprint_by_key(
+    namespace: str, storage_key: str, *, max_stale_seconds: int
+) -> tuple[int, int] | None:
+    marker = ceph_query_cache.fingerprint(namespace, storage_key)
+    if marker is None:
+        return None
+    mtime_ns, _size = marker
+    if max(0.0, time() - mtime_ns / 1_000_000_000) > max_stale_seconds:
+        # Cùng ngữ nghĩa với read_*: quá hạn thì coi như không có snapshot.
+        return None
+    return marker
+
+
+def snapshot_fingerprint(
+    cluster_id: str, *, max_stale_seconds: int = DEFAULT_MAX_STALE_SECONDS
+) -> tuple[int, int] | None:
+    """Phát hiện thay đổi mà không phải đọc payload.
+
+    Poller của WebSocket chỉ cần biết "có gì đổi không", nhưng trước đây nó
+    đọc trọn snapshot rồi lấy đúng một số `generation` — deserialize và
+    deep-copy vài chục KB PG/pool/crush mỗi 2 giây cho MỖI tab đang mở, tất
+    cả nằm trong một lock toàn cục.
+    """
+    return _fingerprint_by_key(
+        SNAPSHOT_NAMESPACE, _key(cluster_id), max_stale_seconds=max_stale_seconds
+    )
+
+
+def section_snapshot_fingerprint(
+    cluster_id: str, section: str, *, max_stale_seconds: int = DEFAULT_MAX_STALE_SECONDS
+) -> tuple[int, int] | None:
+    """Như `snapshot_fingerprint` nhưng cho một section."""
+    normalized_id = _key(cluster_id)
+    normalized_section = str(section or "").strip()
+    if not normalized_section:
+        raise ValueError("section is required")
+    return _fingerprint_by_key(
+        SECTION_SNAPSHOT_NAMESPACE,
+        f"{normalized_id}:{normalized_section}",
+        max_stale_seconds=max_stale_seconds,
+    )
+
+
 def read_snapshot(
     cluster_id: str,
     *,
@@ -273,9 +317,11 @@ def read_snapshot(
     """
     if stale_after_seconds < 0 or max_stale_seconds < stale_after_seconds:
         raise ValueError("stale thresholds are invalid")
+    normalized_id = _key(cluster_id)
     return _read_snapshot_by_key(
         SNAPSHOT_NAMESPACE,
-        _key(cluster_id),
+        normalized_id,
+        cluster_id=normalized_id,
         stale_after_seconds=stale_after_seconds,
         max_stale_seconds=max_stale_seconds,
     )
@@ -296,6 +342,7 @@ def read_section_snapshot(
     return _read_snapshot_by_key(
         SECTION_SNAPSHOT_NAMESPACE,
         f"{normalized_id}:{normalized_section}",
+        cluster_id=normalized_id,
         stale_after_seconds=stale_after_seconds,
         max_stale_seconds=max_stale_seconds,
     )
@@ -305,6 +352,7 @@ def _read_snapshot_by_key(
     namespace: str,
     storage_key: str,
     *,
+    cluster_id: str,
     stale_after_seconds: int,
     max_stale_seconds: int,
 ) -> dict | None:
@@ -322,7 +370,10 @@ def _read_snapshot_by_key(
         return None
     snapshot["age_seconds"] = round(age_seconds, 1)
     snapshot["stale"] = age_seconds > stale_after_seconds
-    snapshot["refreshing"] = is_refreshing(storage_key)
+    # Cờ refresh được ghi theo CLUSTER, không theo từng section. Trước đây
+    # chỗ này truyền `storage_key` ("<cluster>:<section>") nên mọi section
+    # snapshot vĩnh viễn báo refreshing=False.
+    snapshot["refreshing"] = is_refreshing(cluster_id)
     snapshot.setdefault("partial_errors", {})
     snapshot.setdefault("last_attempted_at", snapshot.get("collected_at"))
     return snapshot

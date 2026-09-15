@@ -142,3 +142,43 @@ def test_persisted_snapshot_is_readable_after_process_restart(monkeypatch, tmp_p
         env=child_env,
     )
     assert child.stdout.strip() == "HEALTH_WARN"
+
+
+def test_section_snapshot_reports_the_cluster_refresh_state(monkeypatch, tmp_path):
+    """Cờ refresh được ghi theo cluster, không theo section. Trước đây
+    `_read_snapshot_by_key` tra cứu bằng storage key "<cluster>:<section>"
+    nên mọi section snapshot vĩnh viễn báo refreshing=False — chỉ báo "đang
+    cập nhật" của Pools/PGs/CRUSH/Nodes không bao giờ sáng."""
+    _isolate_cache(monkeypatch, tmp_path)
+    cluster_snapshot.publish_section_snapshot("cluster-a", "pools", [{"name": "rbd"}])
+    cluster_snapshot.mark_refreshing("cluster-a", True)
+
+    assert cluster_snapshot.read_section_snapshot("cluster-a", "pools")["refreshing"] is True
+    assert cluster_snapshot.read_snapshot("cluster-a") is None  # health chưa publish
+
+    cluster_snapshot.mark_refreshing("cluster-a", False)
+    assert cluster_snapshot.read_section_snapshot("cluster-a", "pools")["refreshing"] is False
+
+
+def test_fingerprint_changes_on_publish_without_reading_the_payload(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    assert cluster_snapshot.snapshot_fingerprint("cluster-a") is None
+    assert cluster_snapshot.section_snapshot_fingerprint("cluster-a", "pools") is None
+
+    cluster_snapshot.publish_section_snapshot("cluster-a", "pools", [{"name": "rbd"}])
+    before = cluster_snapshot.section_snapshot_fingerprint("cluster-a", "pools")
+    assert before is not None
+
+    cluster_snapshot.publish_section_snapshot("cluster-a", "pools", [{"name": "volumes"}])
+    assert cluster_snapshot.section_snapshot_fingerprint("cluster-a", "pools") != before
+    # Section khác không đổi theo.
+    assert cluster_snapshot.section_snapshot_fingerprint("cluster-a", "pgs") is None
+
+
+def test_fingerprint_expires_with_the_same_window_as_a_read(monkeypatch, tmp_path):
+    _isolate_cache(monkeypatch, tmp_path)
+    cluster_snapshot.publish_section_snapshot("cluster-a", "pools", [{"name": "rbd"}])
+
+    assert cluster_snapshot.section_snapshot_fingerprint(
+        "cluster-a", "pools", max_stale_seconds=0
+    ) is None

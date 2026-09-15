@@ -6,7 +6,7 @@ from sqlalchemy import func, or_
 
 from shared import db
 from shared.cluster_events import read_latest_event
-from shared.cluster_snapshot import read_section_snapshot, read_snapshot
+from shared.cluster_snapshot import section_snapshot_fingerprint, snapshot_fingerprint
 from shared.clusters import ensure_default_cluster, list_active_clusters
 from shared.models import Incident
 
@@ -24,9 +24,13 @@ def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) ->
     and used to trigger a full browser reload every few seconds even when
     the cluster state had not changed.
 
-    Snapshot generations are included so a Watcher publish can notify the
-    browser across process/container boundaries while this polling fallback
-    remains the transport of record.
+    Snapshot changes are included so a Watcher publish can notify the browser
+    across process/container boundaries while this polling fallback remains
+    the transport of record. They are detected with a `stat`-based
+    fingerprint, not by reading the snapshots: this runs every
+    POLL_INTERVAL_SECONDS for EVERY open tab, and reading six full payloads
+    to compare six integers meant deserializing and deep-copying tens of KB
+    of PG/pool/CRUSH data per tab per poll, all inside one global cache lock.
     """
     with db.SessionLocal() as session:
         default_cluster = ensure_default_cluster(session)
@@ -38,13 +42,10 @@ def _snapshot(cluster_id: str | None = None, is_default_cluster: bool = True) ->
         )
         count = session.query(func.count(Incident.id)).filter(cluster_filter).scalar()
         latest_updated = session.query(func.max(Incident.updated_at)).filter(cluster_filter).scalar()
-    section_generations = []
-    health = read_snapshot(effective_id)
-    section_generations.append(("health", health.get("generation") if health else None))
+    section_versions = [("health", snapshot_fingerprint(effective_id))]
     for section in ("status", "pools", "pgs", "crush", "nodes"):
-        value = read_section_snapshot(effective_id, section)
-        section_generations.append((section, value.get("generation") if value else None))
-    return count, latest_updated, tuple(section_generations)
+        section_versions.append((section, section_snapshot_fingerprint(effective_id, section)))
+    return count, latest_updated, tuple(section_versions)
 
 
 @router.websocket("/ws/incidents")

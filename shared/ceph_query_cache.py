@@ -336,6 +336,24 @@ def get_or_load(
         raise
 
 
+def fingerprint(namespace: str, key: str) -> tuple[int, int] | None:
+    """Cheap change signal for one cached record: (mtime_ns, size).
+
+    `_write` publishes through `os.replace` of a fresh temp file, so any new
+    value lands with a new mtime. That makes a single `stat` enough to answer
+    "did this change?" — around a thousand times cheaper than reading and
+    deserializing the record, which matters for pollers that only need to
+    detect a change rather than consume the payload.
+
+    Returns None when the record does not exist.
+    """
+    try:
+        stat_result = _path(namespace, key).stat()
+    except OSError:
+        return None
+    return (stat_result.st_mtime_ns, stat_result.st_size)
+
+
 def invalidate(namespace: str, key: str) -> None:
     """Remove one cache entry after a confirmed mutation."""
     # Wait for an in-flight loader to finish, then remove its result. This

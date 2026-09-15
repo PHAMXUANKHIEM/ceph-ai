@@ -90,3 +90,26 @@ def test_cluster_state_websocket_receives_scoped_event(
     assert message["cluster_id"] == default_cluster_id
     assert message["sections"] == ["pools"]
     assert isinstance(message["generation"], int)
+
+
+def test_poller_detects_changes_without_deserializing_snapshots(
+    dashboard_client, default_cluster_id, monkeypatch
+):
+    """`_snapshot` chạy mỗi POLL_INTERVAL_SECONDS cho MỖI tab đang mở. Trước
+    đây nó đọc trọn 6 snapshot chỉ để so 6 số `generation`, tức deserialize
+    và deep-copy vài chục KB PG/pool/CRUSH mỗi lượt, trong một lock toàn cục.
+    Nếu có ai đọc payload trở lại, test này sẽ nổ."""
+    from shared import ceph_query_cache
+
+    # Chặn ở TẦNG CACHE chứ không ở hàm read_*: mọi đường đọc payload đều
+    # phải đi qua get_cached, còn fingerprint chỉ gọi stat().
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("poller không được deserialize payload snapshot")
+
+    monkeypatch.setattr(ceph_query_cache, "get_cached", _forbidden)
+
+    before = ws_module._snapshot()
+    publish_snapshot(default_cluster_id, {"health": {"status": "HEALTH_WARN"}})
+    after = ws_module._snapshot()
+
+    assert before != after
