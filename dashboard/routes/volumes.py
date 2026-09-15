@@ -436,7 +436,12 @@ def _volumes_page_context(
             rows = result
             try:
                 retention_rows = [_trash_retention(dict(row)) for row in rows]
-                total_used_size_bytes = sum(max(0, int(row.get("used_size_bytes") or 0)) for row in rows)
+                used_sizes = [row.get("used_size_bytes") for row in rows]
+                total_used_size_bytes = (
+                    sum(max(0, int(value)) for value in used_sizes)
+                    if all(value is not None for value in used_sizes)
+                    else None
+                )
                 total_provisioned_size_bytes = sum(max(0, int(row.get("size_bytes") or 0)) for row in rows)
                 trash_pool_summaries.append(
                     {
@@ -444,7 +449,7 @@ def _volumes_page_context(
                         "entry_count": len(rows),
                         "eligible_count": sum(1 for retention in retention_rows if retention["purge_eligible"]),
                         "total_used_size_bytes": total_used_size_bytes,
-                        "total_used_size_human": _format_bytes(total_used_size_bytes),
+                        "total_used_size_human": _format_optional_bytes(total_used_size_bytes),
                         "total_provisioned_size_bytes": total_provisioned_size_bytes,
                         "total_provisioned_size_human": _format_bytes(total_provisioned_size_bytes),
                         "error": None,
@@ -456,7 +461,7 @@ def _volumes_page_context(
                     item = dict(row)
                     item["pool"] = trash_pool
                     item["size_human"] = _format_bytes(item.get("size_bytes", 0))
-                    item["used_size_human"] = _format_bytes(item.get("used_size_bytes", 0))
+                    item["used_size_human"] = _format_optional_bytes(item.get("used_size_bytes"))
                     item.update(_trash_retention(item))
                     trash_entries.append(item)
             except (TypeError, ValueError) as exc:
@@ -500,6 +505,10 @@ def _format_bytes(value: int | float) -> str:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
     return "0 B"
+
+
+def _format_optional_bytes(value: int | float | None) -> str:
+    return "—" if value is None else _format_bytes(value)
 
 
 def _trash_retention(entry: dict, *, now: datetime | None = None) -> dict:

@@ -617,24 +617,7 @@ class TrashEntry(TypedDict):
     deletion_time: str
     status: str
     size_bytes: int
-    used_size_bytes: int
-
-
-def _rbd_trash_used_size_command(pool: str, block_prefix: str, object_size: int) -> str:
-    """Return a read-only command that sums bytes in this image's RADOS objects.
-
-    ``rbd du`` cannot see images after they have moved to trash.  The block
-    prefix from ``rbd info --image-id`` is still stable, however, so summing
-    the matching object sizes gives the allocated (thin-provisioned) data
-    bytes instead of the image's advertised capacity.
-    """
-    pool_arg = shlex.quote(pool)
-    prefix_arg = shlex.quote(f"{block_prefix}.")
-    script = (
-        f"rados --pool {pool_arg} ls --object-prefix {prefix_arg} | "
-        f"awk 'END {{ print NR * {object_size} }}'"
-    )
-    return f"sh -c {shlex.quote(script)}"
+    used_size_bytes: int | None
 
 
 def query_rbd_trash(pool: str) -> list[TrashEntry]:
@@ -653,7 +636,6 @@ def query_rbd_trash(pool: str) -> list[TrashEntry]:
         pool,
         payload,
         lambda command: run_ceph_json_command(command)[1],
-        lambda command: run_ceph_text_command(command)[1],
     )
 
 
@@ -671,7 +653,6 @@ def query_rbd_trash_with(
         pool,
         payload,
         lambda command: run_ceph_json_command_with(*connection, command)[1],
-        lambda command: run_ceph_text_command_with(*connection, command)[1],
     )
 
 
@@ -679,7 +660,6 @@ def _normalize_rbd_trash(
     pool: str,
     payload: dict | list,
     query_json: Callable[[str], dict | list],
-    query_text: Callable[[str], str],
 ) -> list[TrashEntry]:
     if not isinstance(payload, list):
         logger.warning(
@@ -697,8 +677,10 @@ def _normalize_rbd_trash(
             continue
         # Ceph's `rbd trash ls --long --format json` does not include image
         # capacity. Open the trashed image by id and use the logical size
-        # reported by `rbd info`; treating the absent list field as zero made
-        # both the per-image and pool totals silently wrong.
+        # reported by `rbd info`. Do not fake allocated usage by multiplying
+        # object count by object_size: RBD is thin-provisioned and the final
+        # object can be partial, while `rados ls` does not support the object
+        # prefix filter this code previously assumed.
         try:
             info = query_json(
                 f"rbd info --pool {shlex.quote(pool)} --image-id {shlex.quote(str(trash_id))}"
@@ -719,34 +701,26 @@ def _normalize_rbd_trash(
         if (
             not isinstance(info, dict)
             or "size" not in info
-            or not info.get("block_name_prefix")
-            or not info.get("object_size")
         ):
             raise CephQueryError(
                 f"rbd info returned incomplete capacity metadata for trash image {pool}/{trash_id}"
             )
         try:
-            used_size = max(
-                0,
-                int(
-                    query_text(
-                        _rbd_trash_used_size_command(
-                            pool, str(info["block_name_prefix"]), int(info["object_size"])
-                        )
-                    ).strip()
-                    or 0
-                ),
-            )
+            provisioned_size = max(0, int(_as_float(info["size"])))
         except (TypeError, ValueError) as exc:
-            raise CephQueryError(f"invalid allocated size for trash image {pool}/{trash_id}") from exc
+            raise CephQueryError(f"invalid logical size for trash image {pool}/{trash_id}") from exc
         entries.append(
             TrashEntry(
                 id=str(trash_id),
                 name=str(entry.get("name") or "?"),
                 deletion_time=str(entry.get("deleted_at") or ""),
                 status=str(entry.get("status") or ""),
-                size_bytes=max(0, int(_as_float(info["size"]))),
-                used_size_bytes=used_size,
+                size_bytes=provisioned_size,
+                # Ceph does not expose an exact per-image allocated byte
+                # count for an image that is already in Trash through the
+                # supported `rbd trash ls`/`rbd info` commands. `None` is
+                # intentional; the UI must show “—”, never a false number.
+                used_size_bytes=None,
             )
         )
     return entries

@@ -207,6 +207,7 @@
     <section class="card">
       <div class="card-header"><h2>Trash theo Pool</h2></div>
       <div class="card-body">
+        <p class="hint metrics-panel-desc">Dung lượng logic là capacity đã provision. Ceph không cung cấp chính xác allocated bytes theo từng image đã nằm trong Trash, nên cột “Đã dùng” hiển thị “—” thay vì một con số ước lượng sai.</p>
         {% if trash_pool_summaries %}
         <div class="table-wrap"><table id="trash-pool-list">
           <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Đã dùng</th><th>Logic</th><th>Thao tác</th></tr></thead>

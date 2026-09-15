@@ -48,6 +48,7 @@ def check_trash_capacity(cluster=None) -> dict:
     entry_count = 0
     scanned_pools: list[str] = []
     errors: list[str] = []
+    usage_known = True
     for pool in pools:
         try:
             entries = (
@@ -63,9 +64,14 @@ def check_trash_capacity(cluster=None) -> dict:
         entry_count += len(entries)
         for entry in entries:
             try:
-                used_size = int(entry.get("used_size_bytes", 0) or 0)
+                raw_used_size = entry.get("used_size_bytes")
+                if raw_used_size is None:
+                    usage_known = False
+                    continue
+                used_size = int(raw_used_size)
             except (TypeError, ValueError):
                 errors.append(f"{pool}: Trash entry có used_size_bytes không hợp lệ")
+                usage_known = False
                 continue
             total_trash_bytes += max(0, used_size)
 
@@ -86,20 +92,25 @@ def check_trash_capacity(cluster=None) -> dict:
         errors.append("ceph df: total_bytes không hợp lệ")
     if total_bytes <= 0:
         errors.append("ceph df: total_bytes bằng 0, không thể xác định tỷ lệ Trash")
+    if not usage_known:
+        errors.append("Trash: không xác định được allocated bytes của mọi image")
     measurement_complete = not errors and len(scanned_pools) == len(pools)
-    ratio = total_trash_bytes / total_bytes if total_bytes else 0.0
+    # Do not turn an unknown allocated size into zero and falsely clear an
+    # existing threshold alert.
+    ratio = total_trash_bytes / total_bytes if total_bytes and usage_known else 0.0
     return {
-        "trash_bytes": total_trash_bytes,
+        "trash_bytes": total_trash_bytes if usage_known else None,
         "total_bytes": total_bytes,
         "ratio": ratio,
         "entry_count": entry_count,
         "pools": scanned_pools,
         "errors": errors,
         "measurement_complete": measurement_complete,
+        "usage_known": usage_known,
         # Never call an incomplete/partial scan "under threshold".  The
         # caller deliberately ignores its state transition below.
         "over_threshold": bool(
-            measurement_complete and total_bytes and ratio > TRASH_CAPACITY_RATIO_THRESHOLD
+            measurement_complete and usage_known and total_bytes and ratio > TRASH_CAPACITY_RATIO_THRESHOLD
         ),
     }
 

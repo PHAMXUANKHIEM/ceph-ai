@@ -20,6 +20,28 @@ def test_check_trash_capacity_aggregates_all_pools(monkeypatch):
     assert result["ratio"] == 0.25
     assert result["entry_count"] == 2
     assert result["over_threshold"] is True
+    assert result["usage_known"] is True
+
+
+def test_check_trash_capacity_does_not_treat_unknown_usage_as_zero(monkeypatch):
+    monkeypatch.setattr(monitor.ceph_client, "configured_rbd_pools", lambda: ["vms"])
+    monkeypatch.setattr(
+        monitor.ceph_client,
+        "query_rbd_trash",
+        lambda pool: [{"size_bytes": 10_000, "used_size_bytes": None}],
+    )
+    monkeypatch.setattr(
+        monitor.ceph_client,
+        "run_ceph_json_command",
+        lambda command: ("mon-a", {"stats": {"total_bytes": 100}}),
+    )
+
+    result = monitor.check_trash_capacity()
+
+    assert result["trash_bytes"] is None
+    assert result["usage_known"] is False
+    assert result["ratio"] == 0.0
+    assert result["over_threshold"] is False
 
 
 def test_alert_sent_only_when_crossing_above_twenty_percent(monkeypatch):

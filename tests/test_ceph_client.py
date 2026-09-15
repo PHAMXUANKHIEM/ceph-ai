@@ -1358,11 +1358,12 @@ def test_query_rbd_trash_parses_list_shaped_response(fake_ssh, monkeypatch):
             "deletion_time": "Mon Jul 28 10:00:00 2026",
             "status": "expired",
             "size_bytes": 1073741824,
-            "used_size_bytes": 268435456,
+            "used_size_bytes": None,
         }
     ]
     assert "rbd trash ls --long vms --format json" in commands[0]
     assert "rbd info --pool vms --image-id 1234567890ab --format json" in commands[1]
+    assert len(commands) == 2
 
 
 def test_query_rbd_trash_rejects_info_without_size(fake_ssh, monkeypatch):
@@ -1433,7 +1434,7 @@ def test_query_rbd_trash_skips_entries_without_an_id(fake_ssh, monkeypatch):
     assert len(entries) == 1
     assert entries[0]["id"] == "abc123"
     assert entries[0]["size_bytes"] == 4096
-    assert entries[0]["used_size_bytes"] == 1024
+    assert entries[0]["used_size_bytes"] is None
 
 
 # --- force_purge_rbd_trash (2026-07-28, "Xoá tất cả trash" button — bulk,
