@@ -210,9 +210,9 @@ _OSD_ID_RANGE = (0, 9999)
 # `[A-Za-z0-9_-]` class alone would still accept "--force", since every one
 # of those characters is individually allowed).
 _TRASH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-# RBD image names may start with `_` (including the tool-owned benchmark
-# scratch image `_ceph_aiops_perf_probe`); still reject leading `-` so an
-# image value can never be interpreted as a CLI option.
+# Ceph-generated/internal images may begin with an underscore (for example
+# `_ceph_aiops_perf_probe`).  Keep rejecting a leading dash so an image name
+# can never be interpreted as a CLI option.
 _RBD_IMAGE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _RBD_SIZE_MIB_RANGE = (1, 64 * 1024 * 1024)
 
@@ -612,6 +612,64 @@ _MANAGEMENT_COMMAND_BUILDERS = {
     "cinder_detach_volume": _cinder_detach_volume_command,
     "cinder_create_snapshot": _cinder_create_snapshot_command,
 }
+
+# These actions invoke the Ceph CLI on the target node.  A cephadm host does
+# not normally expose ``ceph``/``rbd`` in the host PATH; they must run inside
+# ``cephadm shell``.  Keep this list explicit so arbitrary commands (notably
+# execute_node_command and OpenStack/Cinder commands) are never wrapped by
+# accident.
+_CEPH_RUNTIME_ACTION_IDS = frozenset({
+    "crash_archive_all",
+    "edit_pool",
+    "scrub_pool",
+    "set_pool_protection",
+    "create_pool",
+    "delete_pool",
+    "set_pool_size",
+    "set_pool_pg_num",
+    "mark_osd_out",
+    "mark_osd_in",
+    "mark_osd_down",
+    "enable_pool_application",
+    "finalize_pacific_osd_release",
+    "finalize_osd_release",
+    "rbd_trash_remove",
+    "rbd_create_volume",
+    "rbd_resize_volume",
+    "rbd_rename_volume",
+    "rbd_trash_move_volume",
+    "rbd_trash_restore_volume",
+    "rbd_trash_purge_all",
+    "evacuate_predicted_failing_osd",
+})
+
+
+def wrap_ceph_runtime_command(
+    inner_command: str, *, exec_mode: str, container_name: str = ""
+) -> str:
+    """Run a Ceph CLI command using the cluster's actual deployment mode.
+
+    The command is deliberately executed through ``sh -lc`` inside the
+    runtime.  Without that subshell, a compound command containing ``&&``
+    would execute its first half in the container and its second half on the
+    SSH host because the remote shell parses the operator first.
+    """
+    if exec_mode == "none":
+        return inner_command
+    if exec_mode == "cephadm":
+        return f"cephadm shell -- bash -lc {shlex.quote(inner_command)}"
+    if exec_mode in {"docker", "podman"}:
+        if not container_name:
+            raise ExecutorError(
+                f"ceph_exec_mode={exec_mode!r} requires a configured Ceph container name"
+            )
+        return (
+            f"{exec_mode} exec {shlex.quote(container_name)} sh -lc "
+            f"{shlex.quote(inner_command)}"
+        )
+    raise ExecutorError(
+        f"unknown ceph_exec_mode: {exec_mode!r} (expected docker, podman, cephadm, or none)"
+    )
 
 _INCIDENT_PARAMETER_COMMAND_BUILDERS = {
     "finalize_osd_release": _finalize_osd_release_command,
@@ -1441,24 +1499,23 @@ _BACKUP_COMMAND_BUILDERS = {
 }
 
 
-def get_command(action_id: str, host: str | None = None, params: dict | None = None) -> str:
+def get_command(
+    action_id: str,
+    host: str | None = None,
+    params: dict | None = None,
+    *,
+    exec_mode: str | None = None,
+    container_name: str = "",
+) -> str:
     """No command defined -> ExecutorError, never a silent no-op or a guess
     at what to run — an unrecognized action_id must never execute anything.
 
-    2026-08-10 (multi-tenant remediation Phase 1) — deliberately still reads
-    `settings.ceph_exec_mode` directly, not cluster-parameterized: the every-
-    day SAFE-remediation loop (`_restart_osd_daemon_command`, every plain
-    `COMMANDS[...]` entry) never branches on exec_mode at all — Ceph CLI
-    commands assume `ceph-common` is installed on the target host (same
-    assumption `_phase_cephadm_bootstrap`'s `ensure_ceph_common` step makes),
-    regardless of how the daemons themselves are deployed. Only
-    `bluestore_omap_quick_fix` (RISKY-only, proposed from a dedicated
-    Dashboard OSD picker) and the Cluster Upgrade action_ids (their own
-    Upgrade-page-only flow, explicitly deferred to a later multi-tenant
-    phase) branch on it — neither has a cluster-scoped caller yet, so
-    threading a `cluster` param through here now would be untestable dead
-    code; revisit alongside whichever phase makes those two flows
-    cluster-aware.
+    `exec_mode` and `container_name` are optional because command previews and
+    non-Ceph actions do not need runtime wrapping. Execution paths that know
+    the originating Cluster must pass them explicitly; otherwise a cephadm
+    action would incorrectly assume that `ceph`/`rbd` is installed on the SSH
+    host itself. Only the explicit `_CEPH_RUNTIME_ACTION_IDS` allowlist is
+    wrapped, so arbitrary node commands and OpenStack commands are untouched.
 
     `host` is used by restart_osd_daemon and both package-based Cluster
     Upgrade action_ids (systemd unit names must be discovered per-host —
@@ -1480,28 +1537,35 @@ def get_command(action_id: str, host: str | None = None, params: dict | None = N
     restart_osd_daemon, never a guess.
     """
     if action_id == "restart_osd_daemon":
-        return _restart_osd_daemon_command(host, params)
-    if action_id in _MANAGEMENT_COMMAND_BUILDERS:
-        return _MANAGEMENT_COMMAND_BUILDERS[action_id](params or {})
-    if action_id in _INCIDENT_PARAMETER_COMMAND_BUILDERS:
-        return _INCIDENT_PARAMETER_COMMAND_BUILDERS[action_id](params or {})
-    if action_id in _DEVICE_HEALTH_COMMAND_BUILDERS:
-        return _DEVICE_HEALTH_COMMAND_BUILDERS[action_id](params or {})
-    if action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS:
-        return _CLUSTER_UPGRADE_COMMAND_BUILDERS[action_id](host, params or {})
-    if action_id in _PATCH_COMMAND_BUILDERS:
-        return _PATCH_COMMAND_BUILDERS[action_id](host, params or {})
-    if action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS:
-        return _CLUSTER_DEPLOY_COMMAND_BUILDERS[action_id](host, params or {})
-    if action_id in _VOLUME_PERF_COMMAND_BUILDERS:
-        return _VOLUME_PERF_COMMAND_BUILDERS[action_id](host, params or {})
-    if action_id in _BACKUP_COMMAND_BUILDERS:
-        return _BACKUP_COMMAND_BUILDERS[action_id](host, params or {})
-    if action_id in _BLUESTORE_COMMAND_BUILDERS:
-        return _BLUESTORE_COMMAND_BUILDERS[action_id](host, params or {})
-    if action_id not in COMMANDS:
+        command = _restart_osd_daemon_command(host, params)
+    elif action_id in _MANAGEMENT_COMMAND_BUILDERS:
+        command = _MANAGEMENT_COMMAND_BUILDERS[action_id](params or {})
+    elif action_id in _INCIDENT_PARAMETER_COMMAND_BUILDERS:
+        command = _INCIDENT_PARAMETER_COMMAND_BUILDERS[action_id](params or {})
+    elif action_id in _DEVICE_HEALTH_COMMAND_BUILDERS:
+        command = _DEVICE_HEALTH_COMMAND_BUILDERS[action_id](params or {})
+    elif action_id in _CLUSTER_UPGRADE_COMMAND_BUILDERS:
+        command = _CLUSTER_UPGRADE_COMMAND_BUILDERS[action_id](host, params or {})
+    elif action_id in _PATCH_COMMAND_BUILDERS:
+        command = _PATCH_COMMAND_BUILDERS[action_id](host, params or {})
+    elif action_id in _CLUSTER_DEPLOY_COMMAND_BUILDERS:
+        command = _CLUSTER_DEPLOY_COMMAND_BUILDERS[action_id](host, params or {})
+    elif action_id in _VOLUME_PERF_COMMAND_BUILDERS:
+        command = _VOLUME_PERF_COMMAND_BUILDERS[action_id](host, params or {})
+    elif action_id in _BACKUP_COMMAND_BUILDERS:
+        command = _BACKUP_COMMAND_BUILDERS[action_id](host, params or {})
+    elif action_id in _BLUESTORE_COMMAND_BUILDERS:
+        command = _BLUESTORE_COMMAND_BUILDERS[action_id](host, params or {})
+    elif action_id in COMMANDS:
+        command = COMMANDS[action_id]
+    else:
         raise ExecutorError(f"no Command defined for action_id={action_id!r}")
-    return COMMANDS[action_id]
+
+    if exec_mode is not None and action_id in _CEPH_RUNTIME_ACTION_IDS:
+        return wrap_ceph_runtime_command(
+            command, exec_mode=exec_mode, container_name=container_name
+        )
+    return command
 
 
 def has_command(action_id: str) -> bool:

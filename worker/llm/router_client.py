@@ -1776,6 +1776,12 @@ def _maybe_execute_safe_action(
     # cluster's Incident never silently runs against the wrong credentials.
     ssh_user = envelope.get("ssh_user") or None
     ssh_key_path = envelope.get("ssh_key_path") or None
+    # Ceph CLI binaries are commonly available only inside the deployment
+    # runtime (for example, ``rbd`` is not on the host PATH in cephadm).
+    # Preserve the originating cluster's runtime information in the command
+    # builder as well as its SSH credentials.
+    ceph_exec_mode = envelope.get("ceph_exec_mode") or settings.ceph_exec_mode
+    ceph_container_name = envelope.get("ceph_container_name") or settings.ceph_container_name
 
     executed_any = False
     all_succeeded = True
@@ -1790,7 +1796,13 @@ def _maybe_execute_safe_action(
 
     for host in nodes:
         try:
-            command = commands.get_command(action_id, host, action_params)
+            command = commands.get_command(
+                action_id,
+                host,
+                action_params,
+                exec_mode=ceph_exec_mode,
+                container_name=ceph_container_name,
+            )
         except ExecutorError:
             logger.exception(
                 "diagnose_incident: no Command for action_id=%s on host=%s (incident %s) "
@@ -2860,6 +2872,7 @@ def _reconcile_stuck_rbd_actions_once(
         )
         for action, incident in rows:
             cluster = session.get(Cluster, incident.cluster_id) if incident.cluster_id else None
+            cluster_ssh_user, cluster_ssh_key, cluster_exec_mode, cluster_container = resolve_ssh_creds(cluster)
             try:
                 params = json.loads(action.action_params or "{}")
                 nodes = json.loads(action.target_nodes or "[]")
@@ -2870,8 +2883,10 @@ def _reconcile_stuck_rbd_actions_once(
                 "action_id": action.action_id,
                 "params": params,
                 "host": nodes[0] if isinstance(nodes, list) and nodes else None,
-                "ssh_user": cluster.ssh_user if cluster is not None else None,
-                "ssh_key_path": cluster.ssh_key_path if cluster is not None else None,
+                "ssh_user": cluster_ssh_user,
+                "ssh_key_path": cluster_ssh_key,
+                "exec_mode": cluster_exec_mode,
+                "container_name": cluster_container,
             })
 
     resolved: list[str] = []
@@ -2879,7 +2894,12 @@ def _reconcile_stuck_rbd_actions_once(
         if not item["host"]:
             continue
         try:
-            command = rbd_reconciliation.reconciliation_command(item["action_id"], item["params"])
+            command = rbd_reconciliation.reconciliation_command(
+                item["action_id"],
+                item["params"],
+                exec_mode=item["exec_mode"],
+                container_name=item["container_name"],
+            )
             output = execute_command(
                 item["host"], command, user=item["ssh_user"], key_path=item["ssh_key_path"]
             )
@@ -3111,11 +3131,7 @@ def _execute_approved_action(action_pk: str) -> None:
         cluster = None
         if incident is not None and incident.cluster_id is not None:
             cluster = session.get(Cluster, incident.cluster_id)
-            ssh_user = cluster.ssh_user if cluster is not None else None
-            ssh_key_path = cluster.ssh_key_path if cluster is not None else None
-        else:
-            ssh_user = None
-            ssh_key_path = None
+        ssh_user, ssh_key_path, ceph_exec_mode, ceph_container_name = resolve_ssh_creds(cluster)
         # 2026-08-11 (multi-tenant remediation Phase 3): captured here too
         # (not re-derived below) for worker/backup/engine.py's dispatch —
         # same "None means the default cluster" semantics as ssh_user/
@@ -3297,7 +3313,13 @@ def _execute_approved_action(action_pk: str) -> None:
     for node_index, host in enumerate(nodes, start=1):
 
         try:
-            command = commands.get_command(action_id_str, host, action_params)
+            command = commands.get_command(
+                action_id_str,
+                host,
+                action_params,
+                exec_mode=ceph_exec_mode,
+                container_name=ceph_container_name,
+            )
         except ExecutorError as exc:
             logger.warning(
                 "_execute_approved_action: no Command for action_id=%s on host=%s "

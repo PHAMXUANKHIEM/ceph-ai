@@ -832,6 +832,34 @@ def test_rbd_trash_move_and_restore_commands_are_guarded_and_post_checked():
     assert scratch.startswith("rbd trash mv volumes/_ceph_aiops_perf_probe")
 
 
+def test_rbd_commands_run_inside_cephadm_shell_for_cephadm_clusters():
+    command = commands_module.get_command(
+        "rbd_trash_move_volume",
+        params={"pool_name": "volumes", "image": "_ceph_aiops_perf_probe"},
+        exec_mode="cephadm",
+    )
+
+    assert command == (
+        "cephadm shell -- bash -lc "
+        "'rbd trash mv volumes/_ceph_aiops_perf_probe && "
+        "rbd trash ls volumes --format json'"
+    )
+
+
+def test_compound_ceph_commands_are_wrapped_inside_docker_or_podman_container():
+    command = commands_module.get_command(
+        "rbd_trash_move_volume",
+        params={"pool_name": "volumes", "image": "probe"},
+        exec_mode="podman",
+        container_name="ceph-mon",
+    )
+
+    assert command == (
+        "podman exec ceph-mon sh -lc "
+        "'rbd trash mv volumes/probe && rbd trash ls volumes --format json'"
+    )
+
+
 def test_rbd_trash_purge_all_snapshots_validated_ids_and_post_checks():
     command = commands_module.get_command(
         "rbd_trash_purge_all", params={"pool_name": "vms", "trash_ids": ["id-1", "id-2"]}
