@@ -13,15 +13,8 @@
 
   var STATUS_GLYPH = { pending: "⏳", running: "🔄", done: "✅", failed: "❌" };
 
-  // Hidden-until-needed SSH host-key-mismatch recovery control (moved off
-  // the always-visible Settings-page form — see deploy_cluster.py's
-  // /deploy-cluster/forget-host-key docstring for why): paramiko raises
-  // this exact wording (BadHostKeyException.__str__) when a node's SSH
-  // host key changed (e.g. its OS was reinstalled) and cluster_deploy.py's
-  // _phase_ssh_check wraps it unchanged into the step's error message —
-  // "Host key for server '<ip>' does not match: got '...', expected
-  // '...'". Only match on that, not on every SSH failure (a plain refused/
-  // timed-out connection needs a different fix, not this button).
+  // Only show the Settings link for host-key failures. A plain refused or
+  // timed-out connection needs a different fix, not a trust-store change.
   var HOST_KEY_PROVISION_RE = /Host key for server .* does not match|Server .* not found in known_hosts/;
 
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -308,74 +301,20 @@
     box.className = "deploy-log-line status-failed";
     box.style.marginLeft = "1.5em";
     box.appendChild(document.createTextNode(
-      "⚠ Node " + host + " có SSH host key mới. Xác minh fingerprint ngoài hệ thống rồi dán public key mới. "
+      "⚠ Node " + host + " chưa có host key tin cậy. Hãy xác minh fingerprint rồi nhập key trong Settings. "
     ));
 
     if (!initialState.is_admin) {
       box.appendChild(document.createTextNode(
-        "Cần tài khoản admin để provision host key đã xác minh."
+        "Cần tài khoản admin để quản lý host key."
       ));
       logBox.appendChild(box);
       return;
     }
-
-    var input = document.createElement("input");
-    input.type = "text";
-    input.className = "form-control";
-    input.placeholder = "ssh-ed25519 AAAA...";
-    input.style.margin = "0.4em";
-    input.style.maxWidth = "42em";
-    input.setAttribute("aria-label", "SSH host public key đã xác minh cho " + host);
-
-    var btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn-sm";
-    btn.textContent = "Lưu SSH host key đã xác minh";
-    btn.addEventListener("click", function () {
-      var hostKey = input.value.trim();
-      if (!hostKey) {
-        input.focus();
-        return;
-      }
-      btn.disabled = true;
-      input.disabled = true;
-      btn.textContent = "Đang lưu...";
-      fetch("/deploy-cluster/provision-host-key", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: host, host_key: hostKey })
-      })
-        .then(function (response) {
-          return response.json().then(function (data) {
-            return { ok: response.ok, data: data };
-          });
-        })
-        .then(function (result) {
-          var resultLine = document.createElement("p");
-          resultLine.style.marginLeft = "1.5em";
-          resultLine.className = "deploy-log-line status-" + (result.ok && result.data.success ? "done" : "failed");
-          resultLine.textContent = result.data && result.data.message
-            ? result.data.message
-            : (result.ok ? "Đã xử lý." : "Có lỗi xảy ra, thử lại.");
-          box.parentNode.insertBefore(resultLine, box.nextSibling);
-          if (result.ok && result.data.success) {
-            input.remove();
-            btn.remove();
-          } else {
-            input.disabled = false;
-            btn.disabled = false;
-            btn.textContent = "Lưu SSH host key đã xác minh";
-          }
-        })
-        .catch(function () {
-          input.disabled = false;
-          btn.disabled = false;
-          btn.textContent = "Lưu SSH host key đã xác minh";
-        });
-    });
-    box.appendChild(input);
-    box.appendChild(btn);
+    var link = document.createElement("a");
+    link.href = "/settings?section=ceph-host-keys&host=" + encodeURIComponent(host);
+    link.textContent = "Mở Settings để nhập host key cho " + host;
+    box.appendChild(link);
     logBox.appendChild(box);
   }
 

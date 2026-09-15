@@ -974,7 +974,27 @@ def forget_host_key(host: str) -> bool:
         removed = host_keys.pop(host, None) is not None
         if removed:
             _write_host_keys_atomically(host_keys)
-        return removed
+    return removed
+
+
+def list_host_keys() -> list[dict[str, str]]:
+    """Return pinned Ceph node keys without exposing their key material."""
+    if not os.path.exists(KNOWN_HOSTS_PATH):
+        return []
+    try:
+        host_keys = paramiko.HostKeys()
+        host_keys.load(KNOWN_HOSTS_PATH)
+    except (OSError, paramiko.SSHException) as exc:
+        raise HostKeyProvisionError("Không đọc được kho SSH host key Ceph") from exc
+    result = []
+    for host, keys in sorted(host_keys.items()):
+        for key_type, key in sorted(keys.items()):
+            result.append({
+                "host": host,
+                "key_type": key_type,
+                "fingerprint": ":".join(f"{value:02x}" for value in key.get_fingerprint()),
+            })
+    return result
 
 
 def read_public_key(ssh_key_path: str) -> str | None:

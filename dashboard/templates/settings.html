@@ -36,13 +36,14 @@
       </section>
       {% endif %}
       <section class="settings-nav-group" data-settings-group="connections">
-        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'openstack'] else 'false' }}">
+        <button type="button" class="settings-nav-group-toggle" aria-expanded="{{ 'true' if active_section in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] else 'false' }}">
           <span>Kết nối</span><span class="settings-nav-group-caret" aria-hidden="true">⌄</span>
         </button>
-        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'openstack'] %}hidden{% endif %}>
+        <div class="settings-nav-group-items" {% if active_section not in ['router', 'cost', 'cluster', 'ceph-host-keys', 'openstack'] %}hidden{% endif %}>
           <button type="button" class="settings-nav-item {% if active_section == 'router' %}active{% endif %}" data-section="router">AI API</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cost' %}active{% endif %}" data-section="cost">Chi phí</button>
           <button type="button" class="settings-nav-item {% if active_section == 'cluster' %}active{% endif %}" data-section="cluster">Ceph Cluster</button>
+          <button type="button" class="settings-nav-item {% if active_section == 'ceph-host-keys' %}active{% endif %}" data-section="ceph-host-keys">Ceph Node SSH Keys</button>
           {% if is_admin %}<button type="button" class="settings-nav-item {% if active_section == 'openstack' %}active{% endif %}" data-section="openstack">OpenStack</button>{% endif %}
         </div>
       </section>
@@ -1222,8 +1223,26 @@
           <button type="submit" class="btn btn-primary">Lưu &amp; kiểm tra kết nối</button>
         </form>
 
-        <!-- "Xoá SSH host key cũ" moved to /deploy-cluster (only shows on
-             an actual host-key-mismatch failure there now). -->
+        <!-- Host-key management is centralized in the Ceph Node SSH Keys
+             panel below; this cluster form only configures Ceph itself. -->
+      </div>
+    </section>
+
+    <section class="card settings-panel" data-panel="ceph-host-keys" {% if active_section != 'ceph-host-keys' %}hidden{% endif %}>
+      <div class="card-header"><h2>SSH host keys của node Ceph</h2></div>
+      <div class="card-body">
+        {% if ceph_host_key_inventory_error %}<p class="error">{{ ceph_host_key_inventory_error }}</p>{% endif %}
+        {% if ceph_host_key_error %}<p class="error">{{ ceph_host_key_error }}</p>{% endif %}
+        {% if ceph_host_key_success %}<p class="success">{{ ceph_host_key_success }}</p>{% endif %}
+        <p class="hint">Đây là host key của các node MON/OSD Ceph, dùng để Dashboard xác minh đúng máy chủ khi SSH. Hãy lấy key từ console node hoặc một máy quản trị đã tin cậy và kiểm tra fingerprint trước khi lưu.</p>
+        <div class="table-wrap"><table><thead><tr><th>Node</th><th>Loại key</th><th>Fingerprint SHA-256</th><th></th></tr></thead><tbody>{% for item in ceph_host_keys %}<tr><td><code>{{ item.host }}</code></td><td>{{ item.key_type }}</td><td><code>{{ item.fingerprint }}</code></td><td><form method="post" action="/settings/ceph-host-keys/delete" class="inline-form" onsubmit="return confirm('Xoá host key của node này?');"><input type="hidden" name="host" value="{{ item.host }}"><button class="btn btn-sm btn-danger">Xoá</button></form></td></tr>{% else %}<tr><td colspan="4" class="empty-state">Chưa có host key Ceph nào được lưu.</td></tr>{% endfor %}</tbody></table></div>
+        <h3>Thêm hoặc thay thế host key</h3>
+        <form class="login-box" method="post" action="/settings/ceph-host-keys/save">
+          <label>Node host / IP<input name="host" value="{{ (ceph_host_key_values or {}).host or '' }}" required placeholder="10.3.54.152"></label>
+          <label>SSH host public key<textarea name="host_key" rows="3" required spellcheck="false" placeholder="ssh-ed25519 AAAA... node-host"></textarea></label>
+          <p class="hint">Không nhập public key của Dashboard và không nhập private key. Sau khi lưu, hãy chạy lại Deploy Ceph.</p>
+          <button class="btn btn-primary">Lưu host key đã xác minh</button>
+        </form>
       </div>
     </section>
 

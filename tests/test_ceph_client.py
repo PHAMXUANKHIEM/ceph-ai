@@ -10,6 +10,7 @@ from watcher.ceph_client import (
     forget_host_key,
     get_mon_nodes,
     get_upgrade_status,
+    list_host_keys,
     pause_upgrade,
     propose_next_version,
     query_cluster_health,
@@ -352,6 +353,21 @@ def test_provision_host_key_replaces_only_the_verified_host_entry(tmp_path, monk
     assert "10.3.55.98" in stored
     assert "10.3.55.104" in stored
     assert known_hosts.stat().st_mode & 0o777 == 0o600
+
+
+def test_list_host_keys_returns_fingerprint_without_key_material(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text(
+        "10.3.55.98 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMIyHRetVNNBYMVMTMyjE1v5/Dbn5N766jY55G3L2Q+D\n"
+    )
+    monkeypatch.setattr(ceph_client, "KNOWN_HOSTS_PATH", str(known_hosts))
+
+    rows = list_host_keys()
+
+    assert rows[0]["host"] == "10.3.55.98"
+    assert rows[0]["key_type"] == "ssh-ed25519"
+    assert rows[0]["fingerprint"]
+    assert "AAAAC3" not in str(rows[0])
 
 
 def test_provision_host_key_rejects_malformed_input_without_overwriting(tmp_path, monkeypatch):

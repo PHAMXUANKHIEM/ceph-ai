@@ -60,6 +60,10 @@ from shared.router_client import list_router_models, readable_exception_message
 from watcher.ceph_client import (
     VALID_EXEC_MODES,
     CephQueryError,
+    HostKeyProvisionError,
+    forget_host_key,
+    list_host_keys,
+    provision_host_key,
     query_cluster_health_with,
     read_public_key,
     ssh_key_path_error,
@@ -1062,6 +1066,9 @@ def _settings_context(
     database_error: str | None = None,
     database_success: str | None = None,
     database_values: dict | None = None,
+    ceph_host_key_error: str | None = None,
+    ceph_host_key_success: str | None = None,
+    ceph_host_key_values: dict | None = None,
     database_reset_error: str | None = None,
     database_reset_success: str | None = None,
     database_migrate_error: str | None = None,
@@ -1102,6 +1109,12 @@ def _settings_context(
     cleanup_success are deliberately separate variables per form so one
     form's result is never mistakenly shown on another's."""
     masked_key = _mask_key(settings.router_api_key) if settings.router_api_key else None
+    try:
+        ceph_host_keys = list_host_keys()
+        ceph_host_key_inventory_error = None
+    except HostKeyProvisionError as exc:
+        ceph_host_keys = []
+        ceph_host_key_inventory_error = str(exc)
     context = {
         "user": user,
         "is_admin": auth.is_admin_user(user),
@@ -1273,6 +1286,11 @@ def _settings_context(
     # Shown as a read-only reference so the operator can copy it straight
     # into a NEW cluster's `~/.ssh/authorized_keys`.
     context["ssh_public_key"] = read_public_key(settings.ssh_key_path)
+    context["ceph_host_keys"] = ceph_host_keys
+    context["ceph_host_key_inventory_error"] = ceph_host_key_inventory_error
+    context["ceph_host_key_error"] = ceph_host_key_error
+    context["ceph_host_key_success"] = ceph_host_key_success
+    context["ceph_host_key_values"] = ceph_host_key_values or {}
     context["active_section"] = _compute_active_section(context, is_admin=context["is_admin"])
     return context
 
@@ -1322,6 +1340,14 @@ def _compute_active_section(context: dict, *, is_admin: bool) -> str:
     if any(
         context.get(k)
         for k in (
+            "ceph_host_key_error",
+            "ceph_host_key_success",
+        )
+    ):
+        return "ceph-host-keys"
+    if any(
+        context.get(k)
+        for k in (
             "cluster_error",
             "cluster_success",
             "watcher_restart_error",
@@ -1368,14 +1394,68 @@ async def settings_form(
     user: str = Depends(require_login),
     cost_hours: str | None = None,
 ):
+    context = _settings_context(
+        user,
+        openstack_cluster_id=request.query_params.get("cluster"),
+        ai_cost_hours=_cost_hours(cost_hours),
+        ceph_host_key_values={"host": request.query_params.get("host", "")},
+    )
+    section = request.query_params.get("section", "")
+    if section in {"router", "cost", "cluster", "ceph-host-keys", "openstack", "restart-controls", "action-policy", "database", "server-log", "patch-pipeline", "log-intel", "dual-ai", "code-repair", "backup-targets", "cleanup"}:
+        context["active_section"] = section
     return templates.TemplateResponse(
         request, "settings.html",
-        _settings_context(
-            user,
-            openstack_cluster_id=request.query_params.get("cluster"),
-            ai_cost_hours=_cost_hours(cost_hours),
-        ),
+        context,
     )
+
+
+@router.post("/settings/ceph-host-keys/save", response_class=HTMLResponse)
+async def settings_ceph_host_key_save(
+    request: Request,
+    user: str = Depends(require_login),
+    host: str = Form(""),
+    host_key: str = Form(""),
+):
+    """Pin an operator-verified Ceph node host key from the Settings page."""
+    _require_admin_privilege(user)
+    host, host_key = host.strip(), host_key.strip()
+    error = None
+    if not host or not host_key:
+        error = "Cần nhập node host và SSH host public key đã xác minh."
+    else:
+        try:
+            key_type = await asyncio.to_thread(provision_host_key, host, host_key)
+        except HostKeyProvisionError as exc:
+            error = str(exc)
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user,
+        ceph_host_key_error=error,
+        ceph_host_key_success=None if error else f"Đã lưu host key {key_type} cho {host}.",
+        ceph_host_key_values={"host": host},
+    ))
+
+
+@router.post("/settings/ceph-host-keys/delete", response_class=HTMLResponse)
+async def settings_ceph_host_key_delete(
+    request: Request,
+    user: str = Depends(require_login),
+    host: str = Form(""),
+):
+    """Remove one Ceph node host key so an operator can pin a replacement."""
+    _require_admin_privilege(user)
+    host = host.strip()
+    try:
+        removed = await asyncio.to_thread(forget_host_key, host)
+        success = f"Đã xoá host key của {host}." if removed else f"Không tìm thấy host key của {host}."
+        error = None
+    except (HostKeyProvisionError, OSError) as exc:
+        success, error = None, str(exc)
+    return templates.TemplateResponse(request, "settings.html", _settings_context(
+        user,
+        ceph_host_key_error=error,
+        ceph_host_key_success=success,
+        ceph_host_key_values={"host": host},
+    ))
 
 
 @router.post("/settings/ai-budget", response_class=HTMLResponse)
@@ -2480,15 +2560,9 @@ async def cluster_settings_submit(
     )
 
 
-# The old always-visible "Xoá SSH host key cũ của 1 node" form that used to
-# live here (POST /settings/cluster/forget-host-key) moved to
-# dashboard/routes/deploy_cluster.py's POST /deploy-cluster/forget-host-key
-# — it's now a hidden control that only appears inline on the Deploy
-# Cluster page's log when _phase_ssh_check actually hits a host-key
-# mismatch, right where an operator would already be looking, instead of a
-# permanent Settings-page form for something only relevant in that one
-# specific failure. watcher/ceph_client.py::forget_host_key() itself is
-# unchanged — only which route/page calls it moved.
+# Ceph node host-key management is centralized in the Settings page's
+# "Ceph Node SSH Keys" panel. Deploy only links there when an SSH host key is
+# missing or changed; the verified key is never accepted implicitly.
 
 
 @router.post("/settings/database/test")

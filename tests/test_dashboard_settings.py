@@ -73,6 +73,8 @@ def test_authenticated_get_settings_returns_form(dashboard_client):
     assert "L2 → L3 Promotion Candidates" not in response.text
     assert "Playbook Registry" not in response.text
     assert "BẬT AUTOPILOT" in response.text or "TẮT AUTOPILOT" in response.text
+    assert 'data-panel="ceph-host-keys"' in response.text
+    assert 'action="/settings/ceph-host-keys/save"' in response.text
     assert "Autopilot theo cluster" not in response.text
     assert "Phân loại hành động AI" in response.text
     assert 'id="action-policy-search"' in response.text
@@ -1590,6 +1592,37 @@ def test_settings_page_has_no_forget_host_key_form(dashboard_client):
 
     assert response.status_code == 200
     assert 'action="/settings/cluster/forget-host-key"' not in response.text
+
+
+def test_ceph_host_key_settings_can_save_and_delete_key(dashboard_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(settings_route, "provision_host_key", lambda host, key: calls.append(("save", host, key)) or "ssh-ed25519")
+    monkeypatch.setattr(settings_route, "forget_host_key", lambda host: calls.append(("delete", host)) or True)
+    _login(dashboard_client)
+
+    saved = dashboard_client.post("/settings/ceph-host-keys/save", data={
+        "host": "10.3.54.152", "host_key": "ssh-ed25519 AAAAverified",
+    })
+    deleted = dashboard_client.post("/settings/ceph-host-keys/delete", data={"host": "10.3.54.152"})
+
+    assert saved.status_code == 200
+    assert "Đã lưu host key ssh-ed25519 cho 10.3.54.152" in saved.text
+    assert deleted.status_code == 200
+    assert "Đã xoá host key của 10.3.54.152" in deleted.text
+    assert calls == [
+        ("save", "10.3.54.152", "ssh-ed25519 AAAAverified"),
+        ("delete", "10.3.54.152"),
+    ]
+
+
+def test_ceph_host_key_settings_prefills_host_from_deploy_error_link(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.get("/settings?section=ceph-host-keys&host=10.3.54.152")
+
+    assert response.status_code == 200
+    assert 'data-panel="ceph-host-keys"' in response.text
+    assert 'value="10.3.54.152"' in response.text
 
 
 def test_9router_form_submission_does_not_leak_into_cluster_form_state(
