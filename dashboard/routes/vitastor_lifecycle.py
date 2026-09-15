@@ -27,6 +27,7 @@ DISK_RE = re.compile(r"^/dev/[A-Za-z0-9._/+:-]+$")
 VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+:~_-]{0,63}$")
 IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 SNAPSHOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+VITASTOR_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.+:~_-]{0,63}$")
 BACKUP_METHODS = {"snapshot", "full_qcow2", "incremental_qcow2", "raw", "metadata_cluster", "metadata_etcd", "metadata_antietcd"}
 IN_FLIGHT = ("PENDING_APPROVAL", "RUNNING")
 
@@ -209,13 +210,17 @@ async def propose_deploy(request: Request, user: str = Depends(require_vitastor_
     _require_admin(user); body = await request.json()
     name = str(body.get("cluster_name") or "").strip()
     if not name: raise HTTPException(400, "Tên cụm không được để trống")
+    version = str(body.get("version") or "").strip()
+    if version and not VITASTOR_VERSION_RE.fullmatch(version):
+        raise HTTPException(400, "Phiên bản Vitastor không hợp lệ")
     with db.SessionLocal() as session:
         if session.query(VitastorCluster).filter_by(name=name).first(): raise HTTPException(409, "Tên cụm đã tồn tại")
     nodes = _validate_nodes(body.get("nodes"))
-    params = {"nodes": nodes, "ssh_user": str(body.get("ssh_user") or "").strip(), "ssh_key_path": str(body.get("ssh_key_path") or "").strip(), "etcd_prefix": str(body.get("etcd_prefix") or "/vitastor").strip(), "osd_network": str(body.get("osd_network") or "").strip(), "install_packages": bool(body.get("install_packages"))}
+    params = {"nodes": nodes, "version": version, "ssh_user": str(body.get("ssh_user") or "").strip(), "ssh_key_path": str(body.get("ssh_key_path") or "").strip(), "etcd_prefix": str(body.get("etcd_prefix") or "/vitastor").strip(), "osd_network": str(body.get("osd_network") or "").strip(), "install_packages": bool(body.get("install_packages"))}
     if not params["ssh_user"] or not params["ssh_key_path"] or not params["osd_network"]: raise HTTPException(400, "SSH user, SSH key và OSD network là bắt buộc")
     disks = ", ".join(f"{n['host']}: {', '.join(n['disks'])}" for n in nodes if n["disks"])
-    package_step = "Cài gói vitastor + etcd bằng package manager" if params["install_packages"] else "Kiểm tra gói vitastor + etcd đã được cài sẵn"
+    version_text = version or "bản mới nhất từ repository"
+    package_step = f"Cấu hình repo chính thức và cài Vitastor {version_text} + etcd" if params["install_packages"] else f"Kiểm tra Vitastor {version_text} và etcd đã được cài sẵn"
     plan = f"DEPLOY CỤM VITASTOR {name}\nMonitor: {', '.join(n['host'] for n in nodes if 'mon' in n['roles'])}\nOSD: {disks}\n\n1. Preflight SSH/thiết bị (chỉ đọc)\n2. {package_step}\n3. Ghi vitastor.conf\n4. Khởi tạo Etcd và monitor\n5. vitastor-disk prepare (GHI VĨNH VIỄN lên thiết bị)\n6. Kiểm tra vitastor-cli status"
     return _create_operation("deploy", name, params, plan, user)
 

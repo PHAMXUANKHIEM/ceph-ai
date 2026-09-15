@@ -12,7 +12,7 @@ def _login(client):
 
 def _deploy_payload():
     return {
-        "cluster_name": "vita-prod", "ssh_user": "root", "ssh_key_path": "/root/.ssh/vita",
+        "cluster_name": "vita-prod", "version": "3.0.16", "ssh_user": "root", "ssh_key_path": "/root/.ssh/vita",
         "etcd_prefix": "/vitastor", "osd_network": "10.20.1.0/24",
         "nodes": [
             {"host": "10.20.1.10", "roles": ["mon"], "disks": []},
@@ -34,6 +34,12 @@ def test_deploy_page_prefills_dashboard_ssh_identity(dashboard_client, monkeypat
     assert response.status_code == 200
     assert f'value="{settings.ssh_user or "root"}"' in response.text
     assert f'value="{settings.ssh_key_path or ""}"' in response.text
+    assert 'id="vd-version"' in response.text
+    assert 'Bản mới nhất (3.2.1)' in response.text
+    assert 'value="3.2.0"' in response.text
+    assert 'value="custom"' in response.text
+    assert 'id="vd-version-custom"' in response.text
+    assert "repository chính thức Vitastor" in response.text
     assert "private key" in response.text
     assert public_key in response.text
 
@@ -56,9 +62,23 @@ def test_deploy_requires_preview_then_explicit_execute(dashboard_client, monkeyp
     assert executed.status_code == 200
     assert calls and calls[0]["nodes"][1]["disks"] == ["/dev/nvme0n1"]
     with db.SessionLocal() as session:
+        assert json.loads(session.get(VitastorOperation, operation_id).params_json)["version"] == "3.0.16"
+    with db.SessionLocal() as session:
         assert session.get(VitastorOperation, operation_id).status == "SUCCESS"
         cluster = session.query(VitastorCluster).filter_by(name="vita-prod").one()
         assert "deployment" in json.loads(cluster.last_status_json)
+
+
+def test_deploy_rejects_unsafe_version(dashboard_client):
+    _login(dashboard_client)
+
+    response = dashboard_client.post(
+        "/vitastor/deploy-cluster/propose",
+        json={**_deploy_payload(), "version": "3.0.16; reboot"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Phiên bản Vitastor không hợp lệ"
 
 
 def test_vitastor_provision_host_key_route_requires_admin_and_calls_pinner(dashboard_client, monkeypatch):

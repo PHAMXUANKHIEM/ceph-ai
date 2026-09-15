@@ -46,6 +46,52 @@ def _config_command(config: dict) -> str:
     return f"install -d -m 0755 /etc/vitastor && echo {shlex.quote(encoded)} | base64 -d > /etc/vitastor/vitastor.conf && chmod 0600 /etc/vitastor/vitastor.conf"
 
 
+def _install_command(version: str) -> str:
+    """Configure the official repo and install the requested Vitastor version."""
+    version = str(version or "").strip()
+    if version:
+        version_q = shlex.quote(version)
+        apt_package = f"vitastor={version_q}"
+        rpm_package = f"vitastor-{version_q}"
+    else:
+        apt_package = rpm_package = "vitastor"
+    return (
+        "set -eu; test -r /etc/os-release; . /etc/os-release; "
+        "if command -v apt-get >/dev/null; then "
+        "case \"${ID}:${VERSION_ID}\" in "
+        "debian:13*) vita_suite=trixie;; debian:12*) vita_suite=bookworm;; "
+        "debian:11*) vita_suite=bullseye;; debian:10*) vita_suite=buster;; "
+        "ubuntu:22.04) vita_suite=jammy;; ubuntu:24.04) vita_suite=noble;; "
+        "ubuntu:26.04) vita_suite=resolute;; "
+        "*) echo \"Unsupported Debian/Ubuntu release: ${ID} ${VERSION_ID}\" >&2; exit 2;; esac; "
+        "install -d -m 0755 /etc/apt/trusted.gpg.d /etc/apt/sources.list.d; "
+        "if command -v wget >/dev/null; then wget -q https://vitastor.io/debian/pubkey.gpg -O /etc/apt/trusted.gpg.d/vitastor.gpg; "
+        "elif command -v curl >/dev/null; then curl -fsSL https://vitastor.io/debian/pubkey.gpg -o /etc/apt/trusted.gpg.d/vitastor.gpg; "
+        "else echo 'Cần wget hoặc curl để tải signing key Vitastor' >&2; exit 2; fi; "
+        "printf 'deb https://vitastor.io/debian %s main\\n' \"$vita_suite\" > /etc/apt/sources.list.d/vitastor.list; "
+        "DEBIAN_FRONTEND=noninteractive apt-get update; "
+        f"DEBIAN_FRONTEND=noninteractive apt-get install -y {apt_package} etcd lp-solve; "
+        "elif command -v dnf >/dev/null || command -v yum >/dev/null; then "
+        "package_manager=dnf; command -v dnf >/dev/null || package_manager=yum; "
+        "vita_major=\"${VERSION_ID%%.*}\"; "
+        "case \"$vita_major\" in "
+        "7) vita_release=https://vitastor.io/rpms/centos/7/vitastor-release.rpm; "
+        "vita_extra=centos-release-scl; vita_kernel=https://www.elrepo.org/elrepo-release-7.el7.elrepo.noarch.rpm;; "
+        "8) vita_release=https://vitastor.io/rpms/centos/8/vitastor-release.rpm; "
+        "vita_extra=centos-release-advanced-virtualization; vita_kernel=https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm;; "
+        "9) vita_release=https://vitastor.io/rpms/centos/9/vitastor-release.rpm; "
+        "vita_extra=; vita_kernel=;; "
+        "10) vita_release=https://vitastor.io/rpms/centos/10/vitastor-release.rpm; "
+        "vita_extra=; vita_kernel=;; "
+        "*) echo \"Unsupported RHEL-compatible release: ${ID} ${VERSION_ID}\" >&2; exit 2;; esac; "
+        "$package_manager install -y \"$vita_release\" epel-release; "
+        "if test -n \"$vita_extra\"; then $package_manager install -y \"$vita_extra\"; fi; "
+        "if test -n \"$vita_kernel\"; then $package_manager install -y \"$vita_kernel\"; fi; "
+        f"$package_manager install -y {rpm_package} etcd lpsolve; "
+        "else echo 'Không hỗ trợ package manager trên node' >&2; exit 2; fi"
+    )
+
+
 def deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
     nodes = params["nodes"]
     ssh_user, ssh_key = params["ssh_user"], params["ssh_key_path"]
@@ -63,10 +109,10 @@ def deploy(params: dict, progress: Callable[[str, str, str], None]) -> None:
         _run(node["host"], ssh_user, ssh_key, "set -eu; " + "; ".join(checks))
     progress("preflight", "done", "Kiểm tra an toàn hoàn tất")
 
-    progress("packages", "running", "Kiểm tra/cài gói Vitastor và Etcd")
+    progress("packages", "running", "Cấu hình repository chính thức và kiểm tra/cài gói Vitastor, Etcd")
     for node in nodes:
         if params.get("install_packages"):
-            _run(node["host"], ssh_user, ssh_key, "set -eu; if command -v apt-get >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vitastor etcd; elif command -v dnf >/dev/null; then dnf install -y vitastor etcd; elif command -v yum >/dev/null; then yum install -y vitastor etcd; else echo 'Không hỗ trợ package manager trên node' >&2; exit 2; fi")
+            _run(node["host"], ssh_user, ssh_key, _install_command(params.get("version", "")))
         _run(node["host"], ssh_user, ssh_key, "command -v vitastor-cli >/dev/null && test -f /usr/lib/vitastor/mon/make-etcd")
     progress("packages", "done", "Binary Vitastor sẵn sàng")
 

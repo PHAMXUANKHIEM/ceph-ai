@@ -3,6 +3,29 @@ import pytest
 import vitastor.operations as operations
 
 
+def test_deploy_installs_requested_version(monkeypatch):
+    commands = []
+    monkeypatch.setattr(operations, "_run", lambda host, user, key, command: commands.append(command) or "ok")
+    params = {
+        "nodes": [{"host": "node-a", "roles": ["mon"], "disks": []}],
+        "version": "3.0.16", "ssh_user": "root", "ssh_key_path": "/key",
+        "etcd_prefix": "/vitastor", "osd_network": "10.0.0.0/24", "install_packages": True,
+    }
+
+    operations.deploy(params, lambda *_: None)
+
+    assert "apt-get install -y vitastor=3.0.16 etcd" in commands[1]
+    assert "https://vitastor.io/debian/pubkey.gpg" in commands[1]
+    assert "sources.list.d/vitastor.list" in commands[1]
+
+
+def test_install_command_defaults_to_repository_latest():
+    command = operations._install_command("")
+
+    assert "apt-get install -y vitastor etcd" in command
+    assert "package_manager install -y vitastor etcd" in command
+
+
 def test_upgrade_is_rolling_and_checks_health_after_each_node(monkeypatch):
     commands = []
     health_checks = []
