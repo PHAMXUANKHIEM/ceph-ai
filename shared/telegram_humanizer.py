@@ -26,6 +26,8 @@ import unicodedata
 import httpx
 
 from config.settings import settings
+from shared.claude_cli import ClaudeCLIError, run_claude_prompt
+from shared.codex_app_server import CodexAppServer, CodexAppServerError
 from shared.router_client import (
     RouterNotConfiguredError,
     build_router_client,
@@ -35,6 +37,10 @@ from shared.router_client import (
 logger = logging.getLogger(__name__)
 
 HUMANIZER_TIMEOUT_SECONDS = 8.0
+# Codex/Claude là CLI app-server: phải khởi động tiến trình rồi mới sinh chữ,
+# chậm hơn hẳn một lượt HTTP. Chỉ an toàn vì cả hai đường gọi humanizer đều
+# đẩy việc gửi alert sang executor nền.
+HUMANIZER_CLI_TIMEOUT_SECONDS = 45.0
 HUMANIZER_MAX_INPUT_CHARS = 3_500
 HUMANIZER_MAX_OUTPUT_TOKENS = 320  # 220 hay cắt cụt câu -> mất dấu chấm cuối
 HUMANIZER_MAX_SENTENCES = 3
@@ -195,33 +201,53 @@ def rejection_reason(
     return None
 
 
-async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:
-    """Return short natural Vietnamese, or compact source text on any error."""
-    fallback = _compact_input(raw_text)
-    if not fallback or not settings.telegram_ai_humanize_enabled:
-        return fallback
-    if not settings.router_enabled:
-        logger.info("telegram humanizer skipped: router is disabled")
-        return fallback
-    if not str(settings.router_model or "").strip():
-        logger.warning("telegram humanizer skipped: router model is not configured")
-        return fallback
+def _user_prompt(source_text: str, context: str) -> str:
+    return (
+        f"Loại nội dung: {str(context or 'log kỹ thuật')[:160]}\n"
+        f"Nội dung nguồn:\n{source_text}"
+    )
 
-    client = None
+
+async def _call_codex(source_text: str, context: str) -> str:
+    """Codex app-server, không cấp tool nào — humanizer chỉ cần chữ."""
+    client = CodexAppServer()
     try:
-        client = build_router_client(settings.router_api_key, settings.router_base_url)
+        async def _refuse_tools(tool_name: str, _arguments: dict) -> tuple[str, bool]:
+            return f"Humanizer không dùng tool: {tool_name}", False
+
+        result = await client.run_turn(
+            _SYSTEM_PROMPT + "\n\n" + _user_prompt(source_text, context),
+            [],
+            _refuse_tools,
+            timeout=HUMANIZER_CLI_TIMEOUT_SECONDS,
+        )
+        return str(result.get("reply_text") or "").strip()
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            logger.debug("telegram humanizer codex close failed", exc_info=True)
+
+
+async def _call_claude(source_text: str, context: str) -> str:
+    raw = await run_claude_prompt(
+        _SYSTEM_PROMPT + "\n\n" + _user_prompt(source_text, context),
+        timeout=HUMANIZER_CLI_TIMEOUT_SECONDS,
+    )
+    return str(raw or "").strip()
+
+
+async def _call_router(source_text: str, context: str) -> str:
+    if not str(settings.router_model or "").strip():
+        raise RouterNotConfiguredError("router model chưa được cấu hình")
+    client = build_router_client(settings.router_api_key, settings.router_base_url)
+    try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model=settings.router_model,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Loại nội dung: {str(context or 'log kỹ thuật')[:160]}\n"
-                            f"Nội dung nguồn:\n{fallback}"
-                        ),
-                    },
+                    {"role": "user", "content": _user_prompt(source_text, context)},
                 ],
                 max_tokens=HUMANIZER_MAX_OUTPUT_TOKENS,
                 temperature=0.1,
@@ -229,24 +255,64 @@ async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:
             ),
             timeout=HUMANIZER_TIMEOUT_SECONDS + 1,
         )
-        result = _response_text(response)
-        reason = rejection_reason(result, identity_facts=_identity_facts(fallback))
+        return _response_text(response)
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            logger.debug("telegram humanizer router close failed", exc_info=True)
+
+
+def _enabled_providers() -> list[tuple[str, object]]:
+    """Cùng thứ tự backend mà `watcher/log_analysis.py` đã dùng.
+
+    Trước đây humanizer chỉ biết ROUTER_*, nên một deployment chạy Codex/
+    Claude thì nó không bao giờ chạy được lần nào — log lặp lại "router is
+    disabled" và mọi cảnh báo rơi về log máy. Log Intelligence từng dính
+    đúng lỗi này và đã vá theo cách y hệt.
+    """
+    providers: list[tuple[str, object]] = []
+    if settings.codex_chat_enabled:
+        providers.append(("codex", _call_codex))
+    if settings.claude_chat_enabled:
+        providers.append(("claude", _call_claude))
+    if settings.router_enabled:
+        providers.append(("router", _call_router))
+    return providers
+
+
+async def humanize_log_for_telegram(raw_text: str, *, context: str) -> str:
+    """Return short natural Vietnamese, or compact source text on any error."""
+    fallback = _compact_input(raw_text)
+    if not fallback or not settings.telegram_ai_humanize_enabled:
+        return fallback
+    providers = _enabled_providers()
+    if not providers:
+        logger.info("telegram humanizer skipped: chưa bật Codex/Claude/Router nào")
+        return fallback
+
+    identity_facts = _identity_facts(fallback)
+    failures: list[str] = []
+    for name, call in providers:
+        try:
+            result = await call(fallback, context)
+        except (CodexAppServerError, ClaudeCLIError, RouterNotConfiguredError) as exc:
+            failures.append(f"{name}: {readable_exception_message(exc)}")
+            continue
+        except asyncio.TimeoutError:
+            failures.append(f"{name}: hết thời gian chờ")
+            continue
+        except Exception as exc:
+            failures.append(f"{name}: {readable_exception_message(exc)}")
+            continue
+        # Nội dung tệ thì KHÔNG thử provider tiếp theo: đó là mỗi lần một
+        # lượt gọi tính tiền, mà bằng chứng kỹ thuật vẫn được gửi kèm.
+        reason = rejection_reason(result, identity_facts=identity_facts)
         if reason is not None:
             logger.warning(
-                "telegram humanizer rejected response (%s): %r", reason, result[:200]
+                "telegram humanizer rejected %s response (%s): %r", name, reason, result[:200]
             )
             return fallback
         return result
-    except RouterNotConfiguredError as exc:
-        logger.warning("telegram humanizer skipped: %s", exc)
-    except asyncio.TimeoutError:
-        logger.warning("telegram humanizer timed out after %.1fs", HUMANIZER_TIMEOUT_SECONDS)
-    except Exception as exc:
-        logger.warning("telegram humanizer failed: %s", readable_exception_message(exc))
-    finally:
-        if client is not None:
-            try:
-                await client.close()
-            except Exception:
-                logger.debug("telegram humanizer client close failed", exc_info=True)
+    logger.warning("telegram humanizer unavailable: %s", "; ".join(failures))
     return fallback

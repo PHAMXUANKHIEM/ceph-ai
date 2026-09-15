@@ -42,7 +42,10 @@ from zoneinfo import ZoneInfo
 from config.settings import settings
 from shared.notification_channels import enqueue_external_alert
 from shared.telegram_client import TelegramSendError, send_telegram_message
-from shared.telegram_humanizer import humanize_log_for_telegram
+from shared.telegram_humanizer import (
+    HUMANIZER_CLI_TIMEOUT_SECONDS,
+    humanize_log_for_telegram,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +197,9 @@ def _humanize_sync(raw_text: str | None, *, context: str) -> str:
 
     thread = threading.Thread(target=run_in_thread, name="telegram-humanizer", daemon=True)
     thread.start()
-    thread.join(10.0)
+    # Phải rộng hơn timeout của provider, nếu không cầu nối bỏ cuộc trước cả
+    # khi Codex/Claude kịp trả lời và humanizer thành vô dụng.
+    thread.join(HUMANIZER_CLI_TIMEOUT_SECONDS + 15.0)
     if thread.is_alive():
         logger.warning("telegram humanizer bridge timed out")
         return fallback
