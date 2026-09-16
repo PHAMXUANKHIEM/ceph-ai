@@ -74,6 +74,12 @@ def test_get_telegram_alerts_shows_5_channel_cards_for_admin(dashboard_client):
     assert "Muốn tách khỏi chat Hardware?" in response.text
     assert 'href="/telegram-alerts/help#code-repair-private-chat"' in response.text
     assert "Gửi thử — AI Code Repair — sửa hệ thống" in response.text
+    assert response.text.count('class="telegram-overview-item') == 8
+    assert response.text.count('<details class="telegram-channel"') == 8
+    assert response.text.count('class="telegram-history-details"') == 8
+    assert 'id="telegram-common-title"' in response.text
+    assert 'name="bot_token"' in response.text
+    assert 'name="chat_id"' in response.text
 
 
 def test_get_telegram_alerts_rejects_non_admin(dashboard_client):

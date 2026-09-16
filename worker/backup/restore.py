@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 CONNECT_TIMEOUT_SECONDS = settings.ceph_ssh_connect_timeout
 CHUNK_SIZE = 4 * 1024 * 1024  # matches every other streaming path in worker/backup/
 
+# Restore uses a raw SSH stream because the backup bytes must be piped into
+# `rbd import`/`rbd import-diff`.  Paramiko's channel timeout only stops local
+# I/O; it does not reliably terminate the remote process.  Keep the remote
+# command bounded and serialize it with the same node-local lock used by the
+# watcher so a timed-out restore cannot leave an unbounded RBD process behind.
+RESTORE_REMOTE_LOCK_PATH = "/run/ceph-ai-cephadm.lock"
+RESTORE_REMOTE_LOCK_WAIT_SECONDS = 30
+RESTORE_REMOTE_TIMEOUT_GRACE_SECONDS = 2
+
 
 class RestoreError(Exception):
     """Raised for any unrecoverable failure inside `restore_image()` — a
@@ -238,8 +247,10 @@ def _stream_file_to_rbd(mon_ip: str, local_path: str, command: str, cluster: "Cl
     client = _ssh_connect(mon_ip, cluster)
     deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     try:
+        remaining = max(0.1, deadline - time.monotonic())
+        remote_command = _bounded_restore_command(command, remaining)
         stdin, stdout, stderr = client.exec_command(
-            command, timeout=max(0.1, deadline - time.monotonic())
+            remote_command, timeout=remaining
         )
         with open(local_path, "rb") as f:
             while True:
@@ -261,8 +272,10 @@ def _run_rbd_command(mon_ip: str, command: str, cluster: "Cluster | None" = None
     client = _ssh_connect(mon_ip, cluster)
     deadline = time.monotonic() + float(settings.ceph_backup_operation_timeout)
     try:
+        remaining = max(0.1, deadline - time.monotonic())
+        remote_command = _bounded_restore_command(command, remaining)
         _stdin, stdout, stderr = client.exec_command(
-            command, timeout=max(0.1, deadline - time.monotonic())
+            remote_command, timeout=remaining
         )
         exit_status = wait_exit_status(stdout.channel, deadline)
         if exit_status != 0:
@@ -270,6 +283,24 @@ def _run_rbd_command(mon_ip: str, command: str, cluster: "Cluster | None" = None
             raise RestoreError(f"{command} exited {exit_status}: {error_output}")
     finally:
         client.close()
+
+
+def _bounded_restore_command(command: str, timeout_seconds: float) -> str:
+    """Bound and serialize one remote RBD command.
+
+    `timeout` owns the `flock` process, so TERM followed by KILL reaches a
+    command that is still waiting for the node-local Ceph lock as well as an
+    `rbd` process already running.  The command is passed through the remote
+    login shell; all caller-controlled pool/image components are already
+    shell-quoted before reaching this helper.
+    """
+    return (
+        "timeout --signal=TERM "
+        f"--kill-after={RESTORE_REMOTE_TIMEOUT_GRACE_SECONDS}s "
+        f"{float(timeout_seconds):g}s "
+        f"flock -w {RESTORE_REMOTE_LOCK_WAIT_SECONDS} "
+        f"{shlex.quote(RESTORE_REMOTE_LOCK_PATH)} {command}"
+    )
 
 
 def restore_image(
