@@ -7,10 +7,10 @@ target:
 status: pending_review
 
 application:
-  commit_sha: 1535b9f63f892b4c94b444e57bc8faca8b48111f
-  rollback_candidate_sha: 581693b339bab2a1222f6ce2379d74f056f62cdc
+  commit_sha: 729436effed9c5c7e3d5773219700cf49119fafd
+  rollback_candidate_sha: 1535b9f63f892b4c94b444e57bc8faca8b48111f
   worktree: untracked_transfer_directory
-  release_commit: 1535b9f63f892b4c94b444e57bc8faca8b48111f
+  release_commit: 729436effed9c5c7e3d5773219700cf49119fafd
   pushed_to_origin: true
 
 migrations:
@@ -105,9 +105,10 @@ verification:
   settings_navigation_javascript_syntax: passed
   phase10_failure_concurrency_cancellation_gate: 258_passed_1_warning
   object_storage_audit_workspace_gate: 152_passed_1_warning
+  object_storage_render_guard_gate: 106_passed_1_warning
   broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
   broad_segmented_current_candidate_gate:
-    non_migration_suite: 3338_passed_3_broker_environment_failures_reproduced_then_isolated
+    non_migration_suite: 3344_passed_3_broker_environment_failures_reproduced_then_isolated
     migration_suite: 10_passed_11_warnings
     rabbitmq_isolated_vhost_suite: 3_passed_1_warning
     result: all_code_tests_passed_when_rabbitmq_gate_used_isolated_runtime_vhost

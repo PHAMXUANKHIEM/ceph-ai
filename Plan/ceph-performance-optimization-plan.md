@@ -480,6 +480,14 @@ Record before/after values for:
   tests with one existing Starlette/httpx warning; JavaScript syntax passed.
   Commit `1535b9f6` is pushed to `origin/main`; rollback candidate is
   `581693b3`.
+- 2026-09-16: Hardened the Buckets page against stale navigation paths and
+  render-state issues, added no-store headers for server-rendered inventory,
+  and preserved capability-aware controls. The focused page/API gate passed
+  106 tests with one existing Starlette/httpx warning; JavaScript syntax and
+  diff checks passed. Commit `729436ef` is pushed to `origin/main`; rollback
+  candidate is `1535b9f6`. The full regression evidence immediately before
+  this narrow follow-up was 3344 passed with only the three isolated-broker
+  environment failures.
 - 2026-09-16: Phase 1 completed. Added bounded Ceph collection settings in
   `config/settings.py` and `.env.example`, plus `shared/retry.py` with finite
   exponential backoff, jitter and retry classification. Focused tests: 8
