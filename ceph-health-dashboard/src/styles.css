@@ -127,9 +127,12 @@ html, body { min-width: 320px; margin: 0; }
 .state-banner--warning { border-color: rgba(251,191,36,.55); background: rgba(69,45,5,.72); color: #fde68a; }
 .state-banner--loading { justify-content: center; border-color: rgba(96,165,250,.55); background: rgba(10,35,69,.72); color: #bfdbfe; }
 
-.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 40px 16px; color: var(--text-faint, #6b7280); text-align: center; }
-.empty-state__message { margin: 0; color: var(--text-muted, #99a1b3); font-size: 13px; font-weight: 600; }
-.empty-state__hint { margin: 0; font-size: 12px; }
+/* Giới hạn trong gốc React: `.empty-state` cũng là class của Jinja và
+   được gắn thẳng lên <td colspan=...> ở index.html — display:flex làm ô
+   mất tư cách table cell, colspan bị bỏ qua và dòng bị ép vào cột đầu. */
+#ceph-dashboard-root .empty-state, #pools-dashboard-root .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 40px 16px; color: var(--text-faint, #6b7280); text-align: center; }
+#ceph-dashboard-root .empty-state__message, #pools-dashboard-root .empty-state__message { margin: 0; color: var(--text-muted, #99a1b3); font-size: 13px; font-weight: 600; }
+#ceph-dashboard-root .empty-state__hint, #pools-dashboard-root .empty-state__hint { margin: 0; font-size: 12px; }
 
 /* One card body for status, metric, health and placement — they differed
    only by value size and tint. */

@@ -24,7 +24,7 @@
   <div class="topbar-inner">
     <button type="button" class="sidebar-collapse" aria-label="Thu gọn thanh điều hướng" aria-expanded="true" title="Thu gọn thanh điều hướng">‹</button>
     <a href="/" class="brand"><span class="brand-mark">CA</span> Ceph AIOps</a>
-    <div class="topbar-context"><span class="topbar-breadcrumb">Ceph / {{ nav_path == "/" and "Dashboard" or nav_path|replace("/", " / ") }}</span>{% if selected_cluster %}<span class="topbar-cluster-name">{{ selected_cluster.name }}</span>{% endif %}</div>
+    <div class="topbar-context"><span class="topbar-breadcrumb">Ceph / {{ nav_path == "/" and "Dashboard" or nav_path.lstrip("/")|replace("/", " / ") }}</span>{% if selected_cluster %}<span class="topbar-cluster-name">{{ selected_cluster.name }}</span>{% endif %}</div>
     <nav class="main-nav">
       <div class="sidebar-section-title">Overview & Monitoring</div>
       <a href="/" class="nav-link{{ ' active' if nav_path == '/' else '' }}">Dashboard</a>
@@ -54,7 +54,7 @@
       <a href="/backups" class="nav-link{{ ' active' if nav_path == '/backups' else '' }}">Backup</a>
       <a href="/cinder-backups" class="nav-link nav-cinder-backups{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>
       <a href="/restore-cluster" class="nav-link{{ ' active' if nav_path == '/restore-cluster' else '' }}">Restore Cluster</a>
-      <div class="sidebar-section-title">Storage &amp; Lifecycle</div>
+      <div class="sidebar-section-title">Object &amp; OpenStack</div>
       <div class="nav-dropdown">
         <button type="button" class="nav-link nav-dropdown-toggle{{ ' active' if object_storage_group_active else '' }}">Object Storage <span class="nav-dropdown-caret">&#9662;</span></button>
         <div class="nav-dropdown-menu">

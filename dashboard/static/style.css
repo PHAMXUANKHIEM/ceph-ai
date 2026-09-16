@@ -470,9 +470,10 @@ code {
   font-weight: 800;
   letter-spacing: 0.02em;
 }
-/* flex-wrap: nowrap (not "wrap") — .topbar-inner has a FIXED height: 52px
-   (.chat-panel's `top: 53px`/`height: calc(100vh - 53px)` depends on that
-   exact number, see its own comment below), so a wrapped second row of
+/* flex-wrap: nowrap (not "wrap") — .topbar-inner used to have a FIXED
+   height of 52px as a horizontal bar; roadmap item 1 turned it into a
+   vertical sidebar and .chat-panel no longer offsets for it, so a wrapped
+   second row of
    links would overflow that fixed height and float on top of the page
    content underneath instead of pushing it down — verified live, this is
    exactly what happened once enough top-level links existed to not fit in
@@ -1445,12 +1446,12 @@ tbody tr:hover td { background: var(--bg-surface-2); }
 
 /* ===== Chat panel — right side, Dashboard page only =====
    position:sticky (not fixed): it's still a normal flex-row item (so main
-   content reflows around it), but stays pinned between the topbar's bottom
-   edge and the viewport bottom while the main content scrolls past it.
-   `top: 53px` matches .topbar's exact rendered height (52px .topbar-inner +
-   1px border-bottom) — once the topbar itself is stuck at top:0 (it's
-   already position:sticky/top:0), the panel sits flush right below it with
-   no gap or overlap. */
+   content reflows around it), but stays pinned to the viewport while the
+   main content scrolls past it.
+   `top: 0`/`height: 100vh` since roadmap item 1 turned .topbar into a left
+   sidebar. It used to offset by 53px to clear a horizontal topbar that no
+   longer exists — leaving a dead gap at the top and 53px of overflow at the
+   bottom. */
 .chat-panel {
   flex: 0 0 380px;
   width: 380px;
@@ -1458,9 +1459,9 @@ tbody tr:hover td { background: var(--bg-surface-2); }
   display: flex;
   flex-direction: column;
   position: sticky;
-  top: 53px;
+  top: 0;
   align-self: flex-start;
-  height: calc(100vh - 53px);
+  height: 100vh;
   background: var(--bg);
   border-left: 1px solid var(--border);
   overflow: hidden;
@@ -3683,11 +3684,12 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
 .brand{padding:4px 10px 16px;border-bottom:1px solid #2a3040;color:#e7e9ee;font-weight:700}.brand-mark{display:inline-grid;place-items:center;width:30px;height:30px;margin-right:8px;border-radius:8px;background:#1d4ed8;color:#fff;font-size:11px}
 .main-nav{display:flex;flex:1;flex-direction:column;gap:3px;overflow:auto}.nav-link{display:flex;align-items:center;justify-content:space-between;width:100%;padding:9px 10px;border:0;border-radius:7px;color:#a0a9ba;text-decoration:none;background:transparent;font-size:13px;text-align:left}.nav-link:hover,.nav-link.active{background:#1b1f2a;color:#e7e9ee}.nav-link.active{box-shadow:inset 3px 0 #3f7efe}.nav-dropdown{display:block}.nav-dropdown-menu{display:none;padding:3px 0 5px 12px}.nav-dropdown:hover .nav-dropdown-menu,.nav-dropdown:focus-within .nav-dropdown-menu{display:block}.nav-dropdown-item{display:block;padding:7px 9px;border-radius:6px;color:#a0a9ba;font-size:12px;text-decoration:none}.nav-dropdown-item:hover,.nav-dropdown-item-active{background:rgba(29,78,216,.16);color:#e7e9ee}.nav-dropdown-caret{font-size:10px}.topbar-cluster-switcher select{width:100%;height:34px;border:1px solid #2a3040;border-radius:7px;background:#0f1117;color:#e7e9ee;padding:0 8px}.topbar-user{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid #2a3040;padding-top:12px}.user-chip{max-width:120px;overflow:hidden;color:#a0a9ba;font:12px ui-monospace,monospace;text-overflow:ellipsis}
 body{display:flex;min-height:100vh;background:#0f1117}.app-body{flex:1;min-width:0}.page{max-width:none;padding:24px 28px}.mon-strip{position:fixed;left:240px;right:0;top:0;z-index:20;height:0;overflow:visible;background:transparent}.mon-strip-inner{display:none}
-@media(max-width:900px){.topbar{position:sticky;top:0;width:64px;padding:12px 8px}.brand{padding:4px 0 14px;text-align:center}.brand-mark{margin:0}.brand:not(:has(.brand-mark)){font-size:0}.main-nav{overflow-x:hidden}.nav-link{justify-content:center;padding:10px 4px;font-size:0}.nav-link::first-letter{font-size:16px}.nav-dropdown-caret,.nav-dropdown-menu,.topbar-cluster-switcher,.topbar-user .user-chip{display:none}.topbar-user{justify-content:center}.topbar-user .btn{font-size:0;padding:8px}.topbar-user .btn::before{content:"↪";font-size:16px}.page{padding:18px}.mon-strip{left:64px}}
+@media(max-width:900px){.topbar{position:sticky;top:0;width:64px;padding:12px 8px}.brand{padding:4px 0 14px;text-align:center}.brand-mark{margin:0}.brand:not(:has(.brand-mark)){font-size:0}.main-nav{overflow-x:hidden}.nav-link{justify-content:flex-start;padding:10px 6px;font-size:11px;overflow:hidden;white-space:nowrap}.nav-dropdown-caret,.nav-dropdown-menu,.topbar-cluster-switcher,.topbar-user .user-chip{display:none}.topbar-user{justify-content:center}.topbar-user .btn{font-size:0;padding:8px}.topbar-user .btn::before{content:"↪";font-size:16px}.page{padding:18px}.mon-strip{left:64px}}
 @media(max-width:560px){body{display:block}.topbar{position:sticky;width:100%;min-height:auto;padding:8px}.topbar-inner{min-height:auto}.brand{border:0;padding:0}.main-nav{display:flex;flex-direction:row;overflow-x:auto}.nav-link{width:auto;flex:none;font-size:12px;white-space:nowrap}.nav-dropdown-menu{position:absolute;left:8px;right:8px;z-index:40;background:#161922;border:1px solid #2a3040;border-radius:8px}.topbar-cluster-switcher{display:block}.topbar-user{border:0;padding:0}.mon-strip{display:none}.page{padding:12px}}
 :root{--ops-bg:#0f1117;--ops-surface:#161922;--ops-raised:#1b1f2a;--ops-border:#2a3040;--ops-text:#e7e9ee;--ops-muted:#a0a9ba;--ops-brand:#1d4ed8;--ops-brand-hover:#3f7efe;--ops-healthy:#78d79a;--ops-warning:#f4c15d;--ops-critical:#ff7887}
 .sidebar-collapse{align-self:flex-end;width:28px;height:28px;border:1px solid var(--ops-border);border-radius:7px;background:transparent;color:var(--ops-muted);font-size:20px;line-height:1;cursor:pointer}.sidebar-collapse:hover,.sidebar-collapse:focus-visible{border-color:var(--ops-brand-hover);color:var(--ops-text);background:var(--ops-raised)}
-.sidebar-collapsed .topbar{width:64px}.sidebar-collapsed .brand{font-size:0;text-align:center}.sidebar-collapsed .brand-mark{margin:0}.sidebar-collapsed .topbar-inner{align-items:center}.sidebar-collapsed .main-nav{width:100%}.sidebar-collapsed .nav-link{justify-content:center;font-size:0}.sidebar-collapsed .nav-link::first-letter{font-size:16px}.sidebar-collapsed .nav-dropdown-caret,.sidebar-collapsed .nav-dropdown-menu,.sidebar-collapsed .topbar-cluster-switcher,.sidebar-collapsed .user-chip{display:none}.sidebar-collapsed .topbar-user{justify-content:center}.sidebar-collapsed .sidebar-collapse{align-self:center}.sidebar-collapsed .mon-strip{left:64px}
+@media(min-width:561px){.sidebar-collapsed .topbar{width:64px}}.sidebar-collapsed .brand{font-size:0;text-align:center}.sidebar-collapsed .brand-mark{margin:0}.sidebar-collapsed .topbar-inner{align-items:center}.sidebar-collapsed .main-nav{width:100%}.sidebar-collapsed .nav-link{justify-content:flex-start;font-size:11px;overflow:hidden;white-space:nowrap}.sidebar-collapsed .nav-dropdown-caret,.sidebar-collapsed .nav-dropdown-menu,.sidebar-collapsed .topbar-cluster-switcher,.sidebar-collapsed .user-chip{display:none}.sidebar-collapsed .topbar-user{justify-content:center}.sidebar-collapsed .sidebar-collapse{align-self:center}.sidebar-collapsed .mon-strip{left:64px}
+@media(max-width:560px){.sidebar-collapsed .topbar{width:100%}.sidebar-collapsed .main-nav{flex-direction:row}.sidebar-collapsed .nav-link{width:auto;font-size:12px}.sidebar-collapsed .topbar-inner{align-items:stretch}}
 :focus-visible{outline:2px solid var(--ops-brand-hover);outline-offset:2px}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
 .sidebar-section-title{margin:10px 10px 3px;color:#6f7b90;font:700 10px/1.2 Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase}.topbar-context{display:grid;gap:4px;padding:0 10px 10px;border-bottom:1px solid var(--ops-border)}.topbar-breadcrumb{overflow:hidden;color:var(--ops-muted);font:11px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}.topbar-cluster-name{overflow:hidden;color:var(--ops-text);font-size:13px;font-weight:700;text-overflow:ellipsis;white-space:nowrap}.sidebar-collapsed .topbar-context{display:none}@media(max-width:560px){.sidebar-section-title{display:none}.topbar-context{display:flex;align-items:center;justify-content:space-between;padding:0 6px;border:0}.topbar-breadcrumb{max-width:48%}.topbar-cluster-name{max-width:45%}}
 
@@ -3731,3 +3733,46 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
    bảng; giá trị đầy đủ vẫn còn trong title để hover xem được. */
 td.truncate { max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+
+/* ---- AI Assistant panel (frontend roadmap item 5) --------------------
+   Câu trả lời của AI trước đây là một khối textContent phẳng, nên bảng và
+   lệnh nhiều dòng dính thành một đoạn chữ. Bộ render dựng DOM (không dùng
+   innerHTML — nội dung từ mô hình là dữ liệu không tin cậy) nên cần lớp
+   trình bày riêng ở đây. */
+.chat-md-p { margin: 0 0 8px; }
+.chat-md-p:last-child { margin-bottom: 0; }
+.chat-md-list { margin: 0 0 8px; padding-left: 20px; }
+.chat-md-list li { margin: 2px 0; }
+.chat-md-code { padding: 1px 5px; border-radius: 5px; background: rgba(148,163,184,.16); font-family: var(--font-mono); font-size: .86em; }
+.chat-md-codeblock { margin: 8px 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); background: rgba(3,9,17,.45); }
+.chat-md-codeblock-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--border); color: var(--text-faint); font: 600 .68rem/1 var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
+.chat-md-copy { padding: 3px 8px; border: 1px solid var(--border-strong, var(--border)); border-radius: 6px; background: transparent; color: var(--text-muted); font-size: .68rem; font-weight: 600; cursor: pointer; }
+.chat-md-copy:hover, .chat-md-copy:focus-visible { border-color: var(--accent); color: var(--text); }
+.chat-md-codeblock pre { margin: 0; padding: 9px 10px; overflow-x: auto; }
+.chat-md-codeblock code { font-family: var(--font-mono); font-size: .78rem; line-height: 1.5; white-space: pre; }
+/* Bảng cuộn ngang TRONG khung của nó, không đẩy cả panel rộng ra. */
+.chat-md-table-wrap { margin: 8px 0; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm, 8px); }
+.chat-md-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.chat-md-table th, .chat-md-table td { padding: 6px 9px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.chat-md-table th { background: rgba(3,9,17,.34); color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+.chat-md-table tbody tr:last-child td { border-bottom: 0; }
+
+/* Trên màn hình hẹp, panel 380px cạnh sidebar 240px làm trang tràn ngang.
+   Chuyển sang phủ toàn màn hình, và thu nhỏ vẫn phải bấm lại được. */
+@media (max-width: 900px) {
+  .chat-panel {
+    position: fixed; z-index: 60; inset: 0;
+    flex: none; width: 100%; height: 100dvh;
+    border-left: 0;
+  }
+  .chat-panel.is-minimized {
+    inset: auto 0 0 auto; width: auto; height: auto;
+    border-top: 1px solid var(--border); border-left: 1px solid var(--border);
+    border-radius: var(--radius-md, 11px) 0 0 0;
+  }
+}
+
+/* Trang không có wrapper .app-body vẫn phải chiếm hết chiều ngang;
+   nếu không, Settings/Restore hiện thành một cột hẹp giữa hai lề trống
+   trong khi Dashboard lại đầy khung — trông như hai sản phẩm khác nhau. */
+body > .page { flex: 1 1 auto; min-width: 0; }

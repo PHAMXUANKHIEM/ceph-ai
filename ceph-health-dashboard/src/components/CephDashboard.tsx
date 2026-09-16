@@ -155,8 +155,8 @@ export function CephDashboard() {
         actions={
           <>
             <StatusBadge
-              tone={health.stale ? "warning" : "healthy"}
-              label={health.stale ? "Dữ liệu cũ" : "Đang kết nối"}
+              tone={loadError ? "critical" : health.stale ? "warning" : "healthy"}
+              label={loadError ? "Mất kết nối" : health.stale ? "Dữ liệu cũ" : "Đang kết nối"}
               icon={Wifi}
             />
             <span className="snapshot-time">{formatAge(health.age_seconds)}</span>
