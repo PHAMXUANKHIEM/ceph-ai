@@ -1,9 +1,11 @@
 import json
+import threading
 from contextlib import contextmanager
 
 import pytest
 
 from shared import ceph_query_cache
+from shared.request_context import get_request_id, reset_request_id, set_request_id
 
 
 def test_persistent_cache_survives_memory_reset(monkeypatch, tmp_path):
@@ -29,6 +31,30 @@ def test_cache_metrics_distinguish_load_and_hit(monkeypatch, tmp_path):
     after = ceph_query_cache.get_metrics()
     assert after["cache_load_total"] >= before["cache_load_total"] + 1
     assert after["cache_hit_total"] >= before["cache_hit_total"] + 1
+
+
+def test_background_refresh_propagates_request_correlation(monkeypatch, tmp_path):
+    monkeypatch.setattr(ceph_query_cache, "_cache_dir", tmp_path)
+    monkeypatch.setattr(ceph_query_cache, "_memory", {})
+    observed = []
+    completed = threading.Event()
+
+    def loader():
+        observed.append(get_request_id())
+        completed.set()
+        return {"ok": True}
+
+    ceph_query_cache.store("metrics", "background", {"ok": False})
+    token = set_request_id("refresh-trace")
+    try:
+        assert ceph_query_cache.get_or_load(
+            "metrics", "background", loader, ttl_seconds=0, stale_ttl_seconds=60
+        ) == {"ok": False}
+    finally:
+        reset_request_id(token)
+
+    assert completed.wait(2)
+    assert observed == ["refresh-trace"]
 
 
 def test_persistent_cache_keeps_recent_value_when_live_query_fails(monkeypatch, tmp_path):

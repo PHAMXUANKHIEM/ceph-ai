@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from contextvars import copy_context
 from threading import RLock
 from time import monotonic
 from typing import Callable, TypeVar
@@ -38,7 +39,7 @@ def _schedule_refresh(cache_key: tuple[str, str], loader: Callable[[], T]) -> No
         if cache_key in _refreshing:
             return
         _refreshing.add(cache_key)
-    _refresh_executor.submit(_refresh, cache_key, loader)
+    _refresh_executor.submit(copy_context().run, _refresh, cache_key, loader)
 
 
 def get_or_load(

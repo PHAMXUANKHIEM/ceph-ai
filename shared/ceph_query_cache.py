@@ -6,6 +6,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import copy_context
 from pathlib import Path
 from threading import RLock
 from time import monotonic, sleep, time
@@ -341,7 +342,14 @@ def _schedule_refresh(
         if cache_key in _refreshing:
             return False
         _refreshing.add(cache_key)
-    _refresh_executor.submit(_refresh, namespace, key, loader, ttl_seconds)
+    _refresh_executor.submit(
+        copy_context().run,
+        _refresh,
+        namespace,
+        key,
+        loader,
+        ttl_seconds,
+    )
     _record_cache_metric("cache_refresh_enqueued_total")
     return True
 

@@ -3,6 +3,7 @@ import threading
 import pytest
 
 from shared import ceph_query_cache
+from shared.request_context import get_request_id, reset_request_id, set_request_id
 from watcher import cluster_snapshot_collector
 
 
@@ -152,9 +153,12 @@ def test_inventory_sections_run_in_parallel_with_a_bounded_worker_count(monkeypa
     barrier = threading.Barrier(2)
     started = []
 
+    observed_request_ids = []
+
     def loader(section, result):
         def collect(_cluster):
             started.append(section)
+            observed_request_ids.append(get_request_id())
             barrier.wait(timeout=2)
             return result
 
@@ -173,7 +177,12 @@ def test_inventory_sections_run_in_parallel_with_a_bounded_worker_count(monkeypa
         lambda _cluster: {"nodes": [], "total": 0},
     )
 
-    result = cluster_snapshot_collector.CephSnapshotCollector(max_workers=2).collect_inventory(cluster)
+    token = set_request_id("inventory-trace")
+    try:
+        result = cluster_snapshot_collector.CephSnapshotCollector(max_workers=2).collect_inventory(cluster)
+    finally:
+        reset_request_id(token)
 
     assert set(started) == {"pools", "pgs"}
     assert set(result) == {"pools", "pgs", "crush", "nodes"}
+    assert observed_request_ids == ["inventory-trace", "inventory-trace"]

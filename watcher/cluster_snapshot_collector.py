@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from contextvars import copy_context
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from time import monotonic
@@ -285,7 +286,7 @@ class CephSnapshotCollector:
                     thread_name_prefix="ceph-inventory",
                 ) as executor:
                     futures = {
-                        executor.submit(loader, cluster): (section, empty_data)
+                        executor.submit(copy_context().run, loader, cluster): (section, empty_data)
                         for section, (loader, empty_data) in loaders.items()
                     }
                     for future in as_completed(futures):
