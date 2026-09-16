@@ -57,7 +57,7 @@
           {% elif pgs or cache_loading %}
           <div class="card-body table-wrap">
             <table id="pg-list">
-              <thead><tr><th>PG ID</th><th>State</th><th>Pool</th><th>Acting</th><th>Up</th><th>Primary</th><th>Last scrub</th><th>Last deep scrub</th></tr></thead>
+              <thead><tr><th>PG ID</th><th>State</th><th>Pool</th><th>Acting</th><th>Up</th><th class="num">Primary</th><th>Last scrub</th><th>Last deep scrub</th></tr></thead>
               <tbody>
                 {% for pg in pgs %}
                 <tr data-pgid="{{ pg.pgid }}" data-pool="{{ pg.pool }}">
@@ -66,7 +66,7 @@
                   <td>{{ pg.pool }}</td>
                   <td><code>[{{ pg.acting|join(', ') }}]</code></td>
                   <td><code>[{{ pg.up|join(', ') }}]</code></td>
-                  <td><code>{{ pg.primary }}</code></td>
+                  <td class="num"><code>{{ pg.primary }}</code></td>
                   <td>{{ pg.last_scrub }}</td>
                   <td>{{ pg.last_deep_scrub }}</td>
                 </tr>

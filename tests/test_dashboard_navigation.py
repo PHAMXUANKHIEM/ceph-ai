@@ -125,3 +125,24 @@ def test_section_titles_are_siblings_not_nested_in_a_dropdown():
         assert "sidebar-section-title" not in chunk, (
             "tiêu đề nhóm nằm trong .nav-dropdown sẽ render lọt vào bên trong dropdown"
         )
+
+
+NUMERIC_TABLE_PAGES = (
+    "volumes.html", "block_storage.html", "backups.html", "pgs.html",
+    "object_storage_buckets.html", "object_storage_users.html",
+)
+
+
+def test_numeric_columns_declare_the_shared_alignment_class():
+    """Số liệu canh trái với chữ số không đều bề ngang thì mắt không so được
+    theo cột. `th.num`/`td.num` là một quy ước dùng chung, định nghĩa đúng
+    một chỗ trong style.css."""
+    for name in NUMERIC_TABLE_PAGES:
+        markup = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+        assert 'class="num"' in markup, f"{name} chưa dùng quy ước canh số"
+
+
+def test_shared_table_classes_are_defined_once():
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    assert css.count("th.num, td.num {") == 1
+    assert css.count("td.truncate {") == 1

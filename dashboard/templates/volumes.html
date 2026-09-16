@@ -83,7 +83,7 @@
         <p class="error" id="volume-inventory-error" hidden></p>
         <div class="table-wrap volume-inventory-table-wrap">
           <table id="volume-inventory-table">
-            <thead><tr><th>Volume</th><th>Image ID</th><th>Đã dùng</th><th>Logic</th><th>Snapshot</th><th></th></tr></thead>
+            <thead><tr><th>Volume</th><th>Image ID</th><th class="num">Đã dùng</th><th class="num">Logic</th><th class="num">Snapshot</th><th></th></tr></thead>
             <tbody><tr><td colspan="6" class="hint">Đang tải inventory…</td></tr></tbody>
           </table>
         </div>
@@ -210,7 +210,7 @@
         <p class="hint metrics-panel-desc">Dung lượng logic là capacity đã provision. Ceph không cung cấp chính xác allocated bytes theo từng image đã nằm trong Trash, nên cột “Đã dùng” hiển thị “—” thay vì một con số ước lượng sai.</p>
         {% if trash_pool_summaries %}
         <div class="table-wrap"><table id="trash-pool-list">
-          <thead><tr><th>Pool</th><th>Số Volume trong Trash</th><th>Đã dùng</th><th>Logic</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Pool</th><th class="num">Số Volume trong Trash</th><th class="num">Đã dùng</th><th class="num">Logic</th><th>Thao tác</th></tr></thead>
           <tbody>{% for summary in trash_pool_summaries %}
             <tr class="{% if summary.pool == selected_pool %}progress-item-failed{% endif %}">
               <td><code>{{ summary.pool }}</code></td>
@@ -219,7 +219,7 @@
               {% elif summary.entry_count is none %}
               <td colspan="3"><span class="hint">Chọn “Xem Trash” để tải dữ liệu của pool này</span></td>
               {% else %}
-              <td>{{ summary.entry_count }}</td><td>{{ summary.total_used_size_human }}</td><td>{{ summary.total_provisioned_size_human }}</td>
+              <td class="num">{{ summary.entry_count }}</td><td class="num">{{ summary.total_used_size_human }}</td><td class="num">{{ summary.total_provisioned_size_human }}</td>
               {% endif %}
               <td>
                 <a class="btn btn-ghost btn-sm" href="/trash?pool={{ summary.pool }}">{{ "Đang xem" if summary.pool == selected_pool else "Xem Trash" }}</a>

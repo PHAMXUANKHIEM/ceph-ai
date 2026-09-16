@@ -42,14 +42,14 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Bucket</th><th>Owner</th><th>Objects</th><th>Dung lượng</th><th>Quota</th><th>Ngày tạo</th><th>Trạng thái</th></tr></thead>
+          <thead><tr><th>Bucket</th><th>Owner</th><th class="num">Objects</th><th class="num">Dung lượng</th><th class="num">Quota</th><th>Ngày tạo</th><th>Trạng thái</th></tr></thead>
           <tbody>
           {% for row in inventory["items"] %}
             <tr>
               <td><a href="/object-storage/buckets/{{ quote_bucket(row.name) }}?cluster={{ selected_cluster.id }}"><strong>{{ row.name }}</strong></a></td>
               {% if row.stats_available %}
-                <td>{{ row.owner or "—" }}</td><td>{{ row.num_objects }}</td><td data-sort-value="{{ row.size_bytes }}">{{ row.size }}</td>
-                <td>{% if row.quota_enabled %}{{ row.quota_size }} / {{ row.quota_max_objects if row.quota_max_objects is not none else "—" }} objects{% else %}<span class="muted-value">Không giới hạn</span>{% endif %}</td>
+                <td class="truncate" title="{{ row.owner or '' }}">{{ row.owner or "—" }}</td><td class="num">{{ row.num_objects }}</td><td class="num" data-sort-value="{{ row.size_bytes }}">{{ row.size }}</td>
+                <td class="num">{% if row.quota_enabled %}{{ row.quota_size }} / {{ row.quota_max_objects if row.quota_max_objects is not none else "—" }} objects{% else %}<span class="muted-value">Không giới hạn</span>{% endif %}</td>
                 <td>{% if row.creation_time %}<time datetime="{{ row.creation_time }}">{{ row.creation_time }}</time>{% else %}—{% endif %}</td><td><span class="status-badge healthy">Sẵn sàng</span></td>
               {% else %}
                 <td colspan="5"><span class="muted-value">Không lấy được metadata{% if row.stats_error %}: {{ row.stats_error }}{% endif %}</span></td><td><span class="status-badge warning">Chưa đầy đủ</span></td>

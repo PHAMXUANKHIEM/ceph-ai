@@ -80,10 +80,10 @@
       code.textContent = item.name;
       nameCell.textContent = "";
       nameCell.appendChild(code);
-      cell(row, item.image_id || "—");
-      cell(row, bytes(item.used_size));
-      cell(row, bytes(item.provisioned_size));
-      cell(row, String(item.snapshot_count || 0));
+      cell(row, item.image_id || "—", "truncate").title = item.image_id || "";
+      cell(row, bytes(item.used_size), "num");
+      cell(row, bytes(item.provisioned_size), "num");
+      cell(row, String(item.snapshot_count || 0), "num");
       var action = cell(row, "");
       var button = document.createElement("button");
       button.type = "button";

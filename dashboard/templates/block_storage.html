@@ -41,10 +41,10 @@
       </div>
       <div class="table-wrap">
         <table class="block-storage-table" id="block-storage-table">
-          <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th>Size</th>{% if is_admin %}<th>Thao tác</th>{% endif %}</tr></thead>
+          <thead><tr><th>Name</th><th>Pool</th><th>Namespace</th><th class="num">Size</th>{% if is_admin %}<th>Thao tác</th>{% endif %}</tr></thead>
           <tbody>
           {% for image in images %}
-            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}&image={{ image.name }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td>{% if is_admin %}<td>{% if not image.namespace %}<button type="button" class="btn btn-reject btn-sm block-storage-trash-btn" data-pool="{{ image.pool }}" data-image="{{ image.name }}">Đề xuất xoá (Trash)</button>{% else %}<span class="hint">Namespace riêng — chưa hỗ trợ</span>{% endif %}</td>{% endif %}</tr>
+            <tr class="block-storage-image-row" data-name="{{ image.name }}" data-pool="{{ image.pool }}" data-namespace="{{ image.namespace or 'default' }}"><td><a href="/volumes?pool={{ image.pool }}&cluster={{ selected_cluster.id }}&image={{ image.name }}"><strong>{{ image.name }}</strong></a></td><td><code>{{ image.pool }}</code></td><td>{% if image.namespace %}<code>{{ image.namespace }}</code>{% else %}<span class="muted-value">Default</span>{% endif %}</td><td class="num" data-sort-value="{{ image.size_bytes }}">{{ image.size }}</td>{% if is_admin %}<td>{% if not image.namespace %}<button type="button" class="btn btn-reject btn-sm block-storage-trash-btn" data-pool="{{ image.pool }}" data-image="{{ image.name }}">Đề xuất xoá (Trash)</button>{% else %}<span class="hint">Namespace riêng — chưa hỗ trợ</span>{% endif %}</td>{% endif %}</tr>
           {% else %}
             <tr class="empty-row"><td colspan="{{ 5 if is_admin else 4 }}"><div class="empty-state"><span class="empty-icon">▱</span>Không tìm thấy RBD image trên cụm đang chọn.</div></td></tr>
           {% endfor %}

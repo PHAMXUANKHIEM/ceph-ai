@@ -41,6 +41,8 @@ html, body { min-width: 320px; margin: 0; }
 .pools-panel th, .pools-panel tbody td { border-bottom: 1px solid var(--border, rgba(148,163,184,.13)); }
 .pools-panel tbody tr:last-child td { border-bottom: 0; }
 .pools-panel tbody td { color: var(--text-muted, #99a1b3); }
+/* Cùng quy ước canh số với bảng Jinja (`th.num`/`td.num`). */
+.pools-panel th.text-right, .pools-panel td.text-right { font-variant-numeric: tabular-nums; }
 .pools-panel tbody td.font-semibold { color: var(--text, #e7e9ee); }
 .pools-panel tbody .bg-slate-100 { border: 1px solid var(--border-strong, #343b4c); background: var(--bg-surface-2, #1b1f2a) !important; color: var(--text-muted, #99a1b3) !important; }
 .pools-panel input, .pools-panel select { border-color: var(--border-strong, #343b4c) !important; background: var(--bg, #0f1117) !important; color: var(--text, #e7e9ee) !important; }
