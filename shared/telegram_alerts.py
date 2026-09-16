@@ -161,12 +161,36 @@ _IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]+")
 # đó nói gì về health check đang cảnh báo, nhưng chúng dài hàng nghìn ký tự
 # và đẩy phần bằng chứng thật ra khỏi giới hạn.
 _ROCKSDB_STATS_LINE_RE = re.compile(
-    r"^\s*(?:\*\*\s|-{6,}|L\d+\s+\d|Sum\s+\d|Int\s+\d|Level\s+Files\s+Size|"
-    r"(?:Cumulative|Interval)\s+(?:writes|WAL|stall|compaction)\b|"
-    r"Uptime\(secs\)|Flush\(GB\)|AddFile\(|Stalls\(count\)|"
-    r"Block\s+cache\b|Sum\s+of\b)",
+    r"^\s*(?:\*\*\s|-{6,}|"
+    r"(?:Cumulative|Interval)\s+(?:writes|WAL|stall|compaction)\b)",
     re.IGNORECASE,
 )
+# Từ khoá chỉ xuất hiện trong bảng thống kê RocksDB, dù ở đầu hay giữa dòng.
+_ROCKSDB_TOKEN_RE = re.compile(
+    r"\b(?:W-Amp|Rnp1\(GB\)|Rblob\(GB\)|Wblob\(GB\)|KeyIn|KeyDrop|CompMergeCPU|"
+    r"Comp\(sec\)|Comp\(cnt\)|Uptime\(secs\)|Stalls?\(count\)|AddFile\(|"
+    r"Blob file count|space amp|Compaction Stats|Block cache)\b",
+    re.IGNORECASE,
+)
+_NUMERIC_TOKEN_RE = re.compile(r"^[-+]?[\d.,/:%]+$")
+_STATS_ROW_MIN_TOKENS = 8
+_STATS_ROW_NUMERIC_RATIO = 0.6
+
+
+def _is_stats_noise(line: str) -> bool:
+    """Nhận ra một dòng thống kê RocksDB trong log của MON.
+
+    Bảng này có nhiều biến thể (Level/Priority, L0/Sum/Int/User, dòng Blob),
+    nên kể tên từng tiền tố là đuổi không xuể. Hai luật bền hơn: từ khoá chỉ
+    RocksDB mới có, và mật độ token thuần số của một hàng số liệu.
+    """
+    if _ROCKSDB_STATS_LINE_RE.match(line) or _ROCKSDB_TOKEN_RE.search(line):
+        return True
+    tokens = line.split()
+    if len(tokens) < _STATS_ROW_MIN_TOKENS:
+        return False
+    numeric = sum(1 for token in tokens if _NUMERIC_TOKEN_RE.match(token))
+    return numeric / len(tokens) >= _STATS_ROW_NUMERIC_RATIO
 _MONOTONIC_CLOCK_RE = re.compile(r"\s*\bm=\+[0-9.]+")
 _LONG_HEX_ID_RE = re.compile(r"\b[0-9a-f]{32,}\b")
 
@@ -510,7 +534,7 @@ def _strip_container_label_noise(value: str) -> str:
                 kept.append(f"{key.strip()}={attribute.strip()}")
         return f" ({', '.join(kept)})" if kept else ""
 
-    kept = [line for line in value.splitlines() if not _ROCKSDB_STATS_LINE_RE.match(line)]
+    kept = [line for line in value.splitlines() if not _is_stats_noise(line)]
     text = "\n".join(kept)
     text = _CONTAINER_ATTRS_RE.sub(_keep_known_attributes, text)
     text = _IMAGE_DIGEST_RE.sub("", text)

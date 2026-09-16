@@ -1111,3 +1111,33 @@ def test_multiline_rationale_does_not_run_two_sentences_together(monkeypatch):
     )
 
     assert "khóa mã hóa mặc định. Phát hiện ba lỗi liên tiếp." in calls[0]
+
+
+def test_every_rocksdb_table_variant_is_recognised_as_noise():
+    """Bảng thống kê RocksDB có nhiều biến thể — Level/Priority ở header,
+    L0/Sum/Int/User ở hàng số liệu, cộng dòng Blob riêng — nên kể tên từng
+    tiền tố là đuổi không xuể. Hai luật bền hơn: từ khoá chỉ RocksDB mới có,
+    và mật độ token thuần số của một hàng số liệu."""
+    noise = [
+        "Priority Files Size Score Read(GB) Rn(GB) Rnp1(GB) Write(GB) W-Amp KeyIn KeyDrop",
+        "User 0/0 0.00 KB 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 24.2 0.03 1 0.032 0 0 0.0",
+        "Blob file count: 0, total size: 0.0 GB, garbage size: 0.0 GB, space amp: 0.0",
+        "L0      2/0   1.00 KB   0.5      0.0     0.0      0.0       0.1      0.1",
+        "** Compaction Stats [default] **",
+        "Cumulative WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB",
+    ]
+    for line in noise:
+        assert telegram_alerts._is_stats_noise(line), line
+
+
+def test_real_log_lines_are_not_mistaken_for_statistics():
+    """Luật mật độ số không được ăn nhầm bằng chứng thật."""
+    kept = [
+        "Sep 04 15:49:46 rnd-khiempx-lab-ceph1 ceph-mon[1782072]: starting mon.rnd rank 0 "
+        "at public addrs [v2:10.20.1.39:3300/0]",
+        "- OSD áp lực: osd.1 trên rnd-khiempx-lab-ceph2 87.26%",
+        "osd.7 down since 2026-09-15 08:12:03, last heartbeat no reply from 10.10.20.13:6802 osd.9",
+        "--- 10.3.53.1 (mon.rnd-khiempx-lab-ceph1) ---",
+    ]
+    for line in kept:
+        assert not telegram_alerts._is_stats_noise(line), line
