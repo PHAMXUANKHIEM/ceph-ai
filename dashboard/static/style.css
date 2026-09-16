@@ -3907,3 +3907,59 @@ body > .page { flex: 1 1 auto; min-width: 0; }
 .ai-claim-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(240,167,46,.16); color: #f4c15d; font-size: .6rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .ai-evidence th { border-left: 3px solid rgba(58,190,102,.55); }
 .ai-evidence-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(58,190,102,.14); color: #78d79a; font-size: .6rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+
+/* ---- Thanh phân trang: lưới 3 cột ------------------------------------
+   Trước đây là flex + justify-content:center, nên số trang chỉ được căn
+   giữa PHẦN CÒN LẠI sau các nút. Khi nút "Sau" vắng mặt (trang cuối), số
+   trang bị đẩy lệch hẳn sang phải.
+
+   `1fr auto 1fr` giữ cột giữa đúng tâm thanh bất kể hai bên có gì. Vai trò
+   được gán tường minh chứ không dựa vào thứ tự, vì nút Trước/Sau là có
+   điều kiện: thiếu một nút thì :first-child/:last-child trỏ sang nhầm
+   phần tử. */
+.pagination,
+.pg-pagination,
+.action-policy-pagination,
+.crush-history-pagination,
+.trash-pagination {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+}
+.pagination > *,
+.pg-pagination > *,
+.action-policy-pagination > *,
+.crush-history-pagination > *,
+.trash-pagination > * { grid-row: 1; }
+.pagination > :first-child,
+.pg-pagination > :first-child,
+.action-policy-pagination > :first-child,
+.crush-history-pagination > :first-child,
+.trash-pagination > :first-child { grid-column: 1; justify-self: start; }
+.pagination > :last-child,
+.pg-pagination > :last-child,
+.action-policy-pagination > :last-child,
+.crush-history-pagination > :last-child,
+.trash-pagination > :last-child { grid-column: 3; justify-self: end; }
+/* Đặt SAU hai rule trên để thắng thế khi số trang cũng là phần tử đầu hoặc
+   cuối — đúng trường hợp một trong hai nút vắng mặt. */
+.pagination > .pagination-status,
+.pg-pagination > .pagination-status,
+.action-policy-pagination > .pagination-status,
+.crush-history-pagination > .pagination-status,
+.trash-pagination > .pagination-status { grid-column: 2; justify-self: center; white-space: nowrap; }
+/* Cột phải chứa nhiều phần tử (nút Sau + nhãn "N mỗi trang"). */
+.pagination-end { display: flex; align-items: center; gap: 12px; }
+
+@media (max-width: 560px) {
+  .pagination,
+  .pg-pagination,
+  .action-policy-pagination,
+  .crush-history-pagination,
+  .trash-pagination { gap: 8px; min-height: 52px; font-size: .78rem; }
+  /* Nhãn "N mỗi trang" là thông tin phụ; ở bề ngang này nó đẩy nút ra
+     ngoài màn hình nên ẩn đi thay vì làm vỡ thanh. */
+  .pg-page-size, .trash-page-size { display: none; }
+}

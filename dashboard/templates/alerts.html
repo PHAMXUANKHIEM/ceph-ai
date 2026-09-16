@@ -91,7 +91,7 @@
         </div>
         {% if total_pages > 1 %}<nav class="pagination" aria-label="Phân trang cảnh báo">
           {% if page > 1 %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page - 1 }}&{{ filter_query }}">← Trước</a>{% endif %}
-          <span class="hint">Trang {{ page }} / {{ total_pages }}</span>
+          <span class="hint pagination-status">Trang {{ page }} / {{ total_pages }}</span>
           {% if page < total_pages %}<a class="btn btn-ghost btn-sm" href="/alerts?page={{ page + 1 }}&{{ filter_query }}">Sau →</a>{% endif %}
         </nav>{% endif %}
         <p class="hint alert-center-note">Gom nhóm chỉ thay đổi cách hiển thị. Incident gốc và toàn bộ bằng chứng vẫn được giữ trong timeline; hệ thống không tự xoá hay bỏ qua cảnh báo.</p>

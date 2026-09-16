@@ -77,9 +77,8 @@
           </div>
           <div id="pg-pagination" class="card-body pg-pagination" aria-label="Phân trang Placement Groups">
             <button id="pg-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
-            <span id="pg-page-status" role="status" aria-live="polite">Trang 1 / 1</span>
-            <button id="pg-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button>
-            <span class="pg-page-size">10 PGs mỗi trang</span>
+            <span id="pg-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / 1</span>
+            <div class="pagination-end"><button id="pg-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button><span class="pg-page-size">10 PGs mỗi trang</span></div>
           </div>
           {% elif cache_loading %}
           <div class="card-body"><div class="empty-state">Đang tải dữ liệu Placement Groups từ snapshot nền…</div></div>

@@ -89,7 +89,7 @@
         </div>
         <div class="trash-pagination volume-inventory-pagination" id="volume-inventory-pagination" hidden>
           <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-prev">← Trang trước</button>
-          <span id="volume-inventory-page-status"></span>
+          <span id="volume-inventory-page-status" class="pagination-status"></span>
           <button type="button" class="btn btn-ghost btn-sm" id="volume-inventory-next">Trang sau →</button>
         </div>
         <div id="volume-inventory-detail" class="empty-node-state" hidden></div>
@@ -313,9 +313,8 @@
         <div id="trash-filter-empty" class="empty-state trash-filter-empty" hidden>Không tìm thấy Trash có Volume ID phù hợp.</div>
         <div id="trash-pagination" class="trash-pagination" aria-label="Phân trang Trash">
           <button id="trash-page-prev" type="button" class="btn btn-ghost btn-sm" aria-label="Trang trước">← Trang trước</button>
-          <span id="trash-page-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
-          <button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button>
-          <span class="trash-page-size">10 Trash mỗi trang</span>
+          <span id="trash-page-status" class="pagination-status" role="status" aria-live="polite">Trang 1 / {{ ((trash_entries|length + 9) // 10) }}</span>
+          <div class="pagination-end"><button id="trash-page-next" type="button" class="btn btn-ghost btn-sm" aria-label="Trang sau">Trang sau →</button><span class="trash-page-size">10 Trash mỗi trang</span></div>
         </div>
         {% else %}<p class="hint">Trash của pool <code>{{ selected_pool }}</code> đang trống.</p>{% endif %}
       </div>
