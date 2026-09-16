@@ -264,3 +264,11 @@ def test_mobile_drawer_exposes_keyboard_and_focus_return_contract():
     assert 'event.key !== "Tab"' in source
     assert 'event.shiftKey && document.activeElement === first' in source
     assert 'document.activeElement === last' in source
+
+
+def test_block_storage_create_panel_does_not_repeat_action_policy_copy():
+    markup = (TEMPLATE_DIR / "block_storage.html").read_text(encoding="utf-8")
+
+    assert "Action RISKY" not in markup
+    assert "cần phê duyệt trước khi thực thi" not in markup
+    assert "Đề xuất tạo Volume" in markup

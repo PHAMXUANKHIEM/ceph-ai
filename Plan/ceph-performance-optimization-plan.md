@@ -413,7 +413,7 @@ Record before/after values for:
 
 | Measurement | Baseline | After | Method |
 | --- | ---: | ---: | --- |
-| `/api/dashboard/health` p50/p95 | — | — | warm cache, repeated requests |
+| `/api/dashboard/health` p50/p95 | one direct Ceph sample: 3465.6 ms | 22.01 / 27.62 ms | 50 warm-cache TestClient requests; local app/DB snapshot, no Ceph call |
 | Dashboard initial load | — | — | browser timing |
 | Nodes/pools response | — | — | cached and cold/heavy path |
 | SSH connections per cycle | — | — | runner metric |
@@ -533,3 +533,9 @@ Record before/after values for:
   validation and unchanged message payloads/retry behavior. Current focused
   wave gate: 215 passed, 1 deselected, 1 warning. Commit `d89b1861` is pushed
   to `origin/main`.
+- 2026-09-16: Phase 11 benchmark increment: the real FastAPI route was
+  exercised with local snapshot/cache data and dependency-overridden test
+  authentication. Across 50 warm requests, `/api/dashboard/health` measured
+  p50 22.01 ms, p95 27.62 ms and max 56.60 ms. This is a local
+  application/cache measurement, not a production HTTP or live-Ceph
+  benchmark; the unauthenticated curl sample was discarded.

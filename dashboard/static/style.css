@@ -3144,7 +3144,27 @@ tbody tr:hover td { background: rgba(85, 167, 255, 0.045); }
   body.app-shell.sidebar-collapsed .topbar-inner { align-items: stretch !important; padding-inline: 0; }
   body.app-shell.sidebar-collapsed .brand { justify-content: center; padding-inline: 0; }
   body.app-shell.sidebar-collapsed .bizfly-logo-plate { width: 34px; height: 34px; }
+  body.app-shell.sidebar-collapsed .bizfly-brand-logo { display: none; }
+  body.app-shell.sidebar-collapsed .bizfly-logo-plate::before {
+    content: "B";
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #55a7ff, #7768ff);
+    color: #07101d;
+    font-size: .82rem;
+    font-weight: 850;
+  }
   body.app-shell.sidebar-collapsed .main-nav { align-self: stretch !important; width: 100% !important; }
+  body.app-shell.sidebar-collapsed .shell-workspace,
+  body.app-shell.sidebar-collapsed .shell-product-status,
+  body.app-shell.sidebar-collapsed .topbar-context,
+  body.app-shell.sidebar-collapsed .topbar-cluster-switcher,
+  body.app-shell.sidebar-collapsed .topbar-user .user-chip { display: none; }
+  body.app-shell.sidebar-collapsed .topbar-user { justify-content: center; }
+  body.app-shell.sidebar-collapsed .sidebar-collapse { align-self: center; margin-inline: auto; }
   .sidebar-collapsed .nav-section-toggle { display: none; }
   .sidebar-collapsed .nav-section-items[hidden] { display: flex; }
   body.app-shell.sidebar-collapsed .nav-link::before { content: none; }

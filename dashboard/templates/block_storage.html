@@ -18,7 +18,7 @@
       {% if cache_loading %}<div class="card-body"><p class="hint">Đang tải dữ liệu Block Storage từ cụm… trang sẽ tự cập nhật.</p></div>{% endif %}
       {% if is_admin and create_pools %}
       <div class="card-body volume-inventory-create">
-        <div><strong>Tạo volume mới</strong><span class="hint">Action RISKY, cần phê duyệt trước khi thực thi.</span></div>
+        <div><strong>Tạo volume mới</strong></div>
         <form class="audit-filters" id="block-storage-create-form">
           <label>Pool<select name="pool" required>{% for pool in create_pools %}<option value="{{ pool }}">{{ pool }}</option>{% endfor %}</select></label>
           <label>Tên Volume<input name="image" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="vm-disk-01"></label>
