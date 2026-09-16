@@ -121,6 +121,9 @@ class RepairConfig:
     # Optional bounded command for the second, host-level candidate gate.
     # Empty retains that script's default regression command.
     candidate_test_command: str = ""
+    # Runner used for focused tests. Normal repairs retain the historical
+    # console-script path; isolated nightly candidates use `python -m pytest`.
+    test_runner_command: str = ".venv/bin/pytest"
     # Proactive changes must demonstrate coverage in the candidate diff.
     # Incident repair retains the historical permissive behaviour because a
     # focused test can be impractical for an infrastructure-only correction.
@@ -622,6 +625,16 @@ def _prepare_candidate_venv(config: RepairConfig, worktree: Path) -> None:
         # files. The normal repair path keeps the historical symlink for
         # speed; nightly full-access candidates get their own writable copy.
         shutil.copytree(source, destination, symlinks=True)
+        source_bin = str(source.resolve() / "bin")
+        destination_bin = str(destination / "bin")
+        old_prefix = f"#!{source_bin}/".encode()
+        new_prefix = f"#!{destination_bin}/".encode()
+        for executable in (destination / "bin").iterdir():
+            if executable.is_symlink() or not executable.is_file():
+                continue
+            content = executable.read_bytes()
+            if content.startswith(old_prefix):
+                executable.write_bytes(content.replace(old_prefix, new_prefix, 1))
     else:
         os.symlink(source, destination, target_is_directory=True)
 
@@ -669,6 +682,7 @@ def _validate_proactive_test_changes(worktree: Path, files: list[str]) -> None:
 
 def _focused_test_command(
     files: list[str], *, unset_env: tuple[str, ...] = (), env_file: str = "",
+    runner_command: str = ".venv/bin/pytest",
 ) -> str | None:
     tests = _changed_test_files(files)
     if not tests:
@@ -680,7 +694,7 @@ def _focused_test_command(
         if env_file:
             env_parts.append(f"CEPH_AI_ENV_FILE={shlex.quote(env_file)}")
         env_prefix = " ".join(env_parts) + " "
-    return env_prefix + "PYTHONPATH=. .venv/bin/pytest -q " + " ".join(shlex.quote(path) for path in tests)
+    return env_prefix + "PYTHONPATH=. " + runner_command + " -q " + " ".join(shlex.quote(path) for path in tests)
 
 
 _INFRA_TEST_RE = re.compile(
@@ -877,6 +891,7 @@ Observed application failure (credentials already redacted):
                 _validate_proactive_test_changes(worktree, result.changed_files)
             focused_command = _focused_test_command(
                 result.changed_files, unset_env=config.test_env_unset, env_file=config.test_env_file,
+                runner_command=config.test_runner_command,
             )
             if focused_command:
                 notifier.update(40, "Patch hợp lệ; đang chạy test theo phạm vi thay đổi")
@@ -1006,6 +1021,7 @@ If changes are needed, list precise actionable corrections before that line.
                 _validate_proactive_test_changes(worktree, result.changed_files)
             correction_focused_command = _focused_test_command(
                 result.changed_files, unset_env=config.test_env_unset, env_file=config.test_env_file,
+                runner_command=config.test_runner_command,
             )
             if correction_focused_command:
                 notifier.update(60, "Implementer đã sửa theo review; đang chạy lại test theo phạm vi thay đổi")

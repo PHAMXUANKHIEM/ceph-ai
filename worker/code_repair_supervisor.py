@@ -60,7 +60,7 @@ NIGHTLY_REGRESSION_TEST_COMMAND = (
     "-u AI_NIGHTLY_MULTI_AGENT_MAX_PARALLEL "
     "-u AI_NIGHTLY_MULTI_AGENT_TIMEOUT_SECONDS "
     "CEPH_AI_ENV_FILE=/dev/null "
-    "PYTHONPATH=. .venv/bin/pytest -q "
+    "PYTHONPATH=. .venv/bin/python -m pytest -q "
     "tests/test_code_repair.py "
     "tests/test_code_repair_supervisor.py "
     "--deselect=tests/test_code_repair_supervisor.py::test_nightly_improvement_runs_once_and_uses_test_deploy_pipeline "
@@ -493,6 +493,7 @@ def _run_nightly_ai_improvement_locked(
             require_changed_tests=False,
             test_env_unset=NIGHTLY_TEST_ENV_UNSET,
             test_env_file="/dev/null",
+            test_runner_command=".venv/bin/python -m pytest",
             timeout_seconds=min(settings.code_repair_timeout_seconds, NIGHTLY_AI_STEP_TIMEOUT_SECONDS),
             # Nightly produces an uncommitted candidate for human review.
             # Do not inherit the production repair pipeline's promotion
