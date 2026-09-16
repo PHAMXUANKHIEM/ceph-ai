@@ -202,3 +202,26 @@ def test_ai_hypotheses_are_marked_apart_from_measured_evidence():
     assert 'class="ai-evidence"' in markup
     css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
     assert ".ai-claim td {" in css and ".ai-evidence th {" in css
+
+
+def test_every_nav_entry_carries_an_initial_for_the_narrow_rail():
+    """Ở sidebar 64px, nhãn bị ẩn và chỉ còn chữ viết tắt do `::before` sinh
+    ra. Thiếu `data-initial` thì mục đó thành ô trống — đúng lỗi mà hai lần
+    vá trước đều dính: `::first-letter` không áp dụng cho flex container,
+    còn cắt tràn thì ra ký tự lẻ vô nghĩa."""
+    import re
+
+    markup = _main_nav_block()
+    entries = re.findall(r'<(?:a|button)\b[^>]*class="nav-link[^"]*"[^>]*>', markup)
+    assert entries, "không tìm thấy mục điều hướng nào"
+    missing = [e for e in entries if "data-initial=" not in e]
+    assert not missing, f"{len(missing)} mục thiếu data-initial: {missing[:2]}"
+
+
+def test_narrow_rail_uses_generated_content_not_first_letter():
+    """`::first-letter` không bao giờ áp dụng cho `.nav-link` vì nó là flex
+    container; `::before` thì tạo ra một flex item thật — đúng cách mà nút
+    logout trong file này vẫn dùng được."""
+    css = Path("dashboard/static/style.css").read_text(encoding="utf-8")
+    assert "nav-link::first-letter" not in css
+    assert "content:attr(data-initial)" in css

@@ -27,10 +27,10 @@
     <div class="topbar-context"><span class="topbar-breadcrumb">Ceph / {{ nav_path == "/" and "Dashboard" or nav_path.lstrip("/")|replace("/", " / ") }}</span>{% if selected_cluster %}<span class="topbar-cluster-name">{{ selected_cluster.name }}</span>{% endif %}</div>
     <nav class="main-nav">
       <div class="sidebar-section-title">Overview & Monitoring</div>
-      <a href="/" class="nav-link{{ ' active' if nav_path == '/' else '' }}">Dashboard</a>
+      <a href="/" data-initial="D" class="nav-link{{ ' active' if nav_path == '/' else '' }}">Dashboard</a>
       <div class="sidebar-section-title">Storage &amp; Lifecycle</div>
       <div class="nav-dropdown">
-        <button type="button" class="nav-link nav-dropdown-toggle{{ ' active' if cluster_group_active else '' }}">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
+        <button type="button" data-initial="C" class="nav-link nav-dropdown-toggle{{ ' active' if cluster_group_active else '' }}">Cluster <span class="nav-dropdown-caret">&#9662;</span></button>
         <div class="nav-dropdown-menu">
           <a href="/nodes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/nodes' else '' }}">Cluster Metrics</a>
           <a href="/volumes" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path in ('/volumes', '/trash', '/volume-performance') else '' }}">Volumes</a>
@@ -51,12 +51,12 @@
         </div>
       </div>
       <div class="sidebar-section-title">Data Protection</div>
-      <a href="/backups" class="nav-link{{ ' active' if nav_path == '/backups' else '' }}">Backup</a>
-      <a href="/cinder-backups" class="nav-link nav-cinder-backups{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>
-      <a href="/restore-cluster" class="nav-link{{ ' active' if nav_path == '/restore-cluster' else '' }}">Restore Cluster</a>
+      <a href="/backups" data-initial="B" class="nav-link{{ ' active' if nav_path == '/backups' else '' }}">Backup</a>
+      <a href="/cinder-backups" data-initial="CB" class="nav-link nav-cinder-backups{{ ' active' if nav_path == '/cinder-backups' else '' }}">Cinder Volume Backups</a>
+      <a href="/restore-cluster" data-initial="R" class="nav-link{{ ' active' if nav_path == '/restore-cluster' else '' }}">Restore Cluster</a>
       <div class="sidebar-section-title">Object &amp; OpenStack</div>
       <div class="nav-dropdown">
-        <button type="button" class="nav-link nav-dropdown-toggle{{ ' active' if object_storage_group_active else '' }}">Object Storage <span class="nav-dropdown-caret">&#9662;</span></button>
+        <button type="button" data-initial="OS" class="nav-link nav-dropdown-toggle{{ ' active' if object_storage_group_active else '' }}">Object Storage <span class="nav-dropdown-caret">&#9662;</span></button>
         <div class="nav-dropdown-menu">
           <a href="/object-storage/buckets" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path.startswith('/object-storage/buckets') else '' }}">Buckets</a>
           <a href="/object-storage/users" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path.startswith('/object-storage/users') or nav_path == '/object-storage/user-settings' else '' }}">S3 Users</a>
@@ -64,18 +64,18 @@
         </div>
       </div>
       <div class="nav-dropdown">
-        <button type="button" class="nav-link nav-dropdown-toggle{{ ' active' if openstack_group_active else '' }}">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
+        <button type="button" data-initial="OP" class="nav-link nav-dropdown-toggle{{ ' active' if openstack_group_active else '' }}">OpenStack <span class="nav-dropdown-caret">&#9662;</span></button>
         <div class="nav-dropdown-menu">
           <a href="/openstack/auth-pool" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path.startswith('/openstack/auth') else '' }}">Auth-Pool</a>
           {% if is_admin %}<a href="/openstack/config-dump" class="nav-dropdown-item{{ ' nav-dropdown-item-active' if nav_path == '/openstack/config-dump' else '' }}">Config Dump</a>{% endif %}
         </div>
       </div>
       <div class="sidebar-section-title">Administration & Integrations</div>
-      <a href="/settings" class="nav-link{{ ' active' if nav_path in ('/settings', '/ai-cost') else '' }}">Settings</a>
-      {% if is_admin %}<a href="/telegram-alerts" class="nav-link{{ ' active' if nav_path.startswith('/telegram-alerts') else '' }}">Alert Telegram</a>{% endif %}
-      {% if is_admin %}<a href="/users" class="nav-link{{ ' active' if nav_path == '/users' else '' }}">Users</a>{% endif %}
-      {% if is_admin %}<a href="/clusters" class="nav-link{{ ' active' if nav_path == '/clusters' else '' }}">Clusters</a>{% endif %}
-      {% if is_admin %}<a href="/crush-map" class="nav-link{{ ' active' if nav_path == '/crush-map' else '' }}">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" class="nav-link{{ ' active' if nav_path == '/capability-matrix' else '' }}">Capability Matrix</a>{% endif %}
+      <a href="/settings" data-initial="S" class="nav-link{{ ' active' if nav_path in ('/settings', '/ai-cost') else '' }}">Settings</a>
+      {% if is_admin %}<a href="/telegram-alerts" data-initial="AT" class="nav-link{{ ' active' if nav_path.startswith('/telegram-alerts') else '' }}">Alert Telegram</a>{% endif %}
+      {% if is_admin %}<a href="/users" data-initial="U" class="nav-link{{ ' active' if nav_path == '/users' else '' }}">Users</a>{% endif %}
+      {% if is_admin %}<a href="/clusters" data-initial="CL" class="nav-link{{ ' active' if nav_path == '/clusters' else '' }}">Clusters</a>{% endif %}
+      {% if is_admin %}<a href="/crush-map" data-initial="CM" class="nav-link{{ ' active' if nav_path == '/crush-map' else '' }}">CRUSH Map</a>{% endif %}{% if is_admin %}<a href="/capability-matrix" data-initial="CX" class="nav-link{{ ' active' if nav_path == '/capability-matrix' else '' }}">Capability Matrix</a>{% endif %}
     </nav>
     {% if clusters|length > 1 %}
     <!-- Multi-cluster observability Phase 1: only shown once a 2nd
