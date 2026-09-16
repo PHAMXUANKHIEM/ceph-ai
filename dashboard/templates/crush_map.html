@@ -9,7 +9,13 @@
 <body>
   {% include "_nav.html" %}
 
-  <main class="page">
+  <main class="page crush-map-page">
+    <header class="crush-map-page-header">
+      <div class="crush-map-heading">
+        <div class="crush-map-eyebrow">Ceph Operations Console</div>
+        <h1>CRUSH Map</h1>
+        <p>Khám phá topology, rule phân phối và lịch sử thay đổi của cluster.</p>
+      </div>
     {% if clusters|length > 1 %}
     <form method="get" action="/crush-map" class="cluster-selector-form">
       <label for="crush-cluster">Cluster</label>
@@ -18,14 +24,24 @@
       </select>
     </form>
     {% endif %}
+    </header>
     <nav class="bucket-feature-tabs" role="tablist" aria-label="Nội dung CRUSH Map">
-      <button id="crush-tree-tab" type="button" class="bucket-feature-tab is-active" role="tab" aria-selected="true" aria-controls="crush-tree-panel" data-crush-tab="crush-tree-panel">Cây CRUSH</button>
-      <button id="crush-rules-tab" type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="crush-rules-panel" data-crush-tab="crush-rules-panel">CRUSH Rules</button>
-      <button id="crush-history-tab" type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="crush-history-panel" data-crush-tab="crush-history-panel">Lịch sử</button>
+      <button id="crush-tree-tab" type="button" class="bucket-feature-tab is-active" role="tab" aria-selected="true" aria-controls="crush-tree-panel" data-crush-tab="crush-tree-panel"><span class="crush-tab-icon" aria-hidden="true">⌘</span>Cây CRUSH</button>
+      <button id="crush-rules-tab" type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="crush-rules-panel" data-crush-tab="crush-rules-panel"><span class="crush-tab-icon" aria-hidden="true">≡</span>CRUSH Rules</button>
+      <button id="crush-history-tab" type="button" class="bucket-feature-tab" role="tab" aria-selected="false" aria-controls="crush-history-panel" data-crush-tab="crush-history-panel"><span class="crush-tab-icon" aria-hidden="true">◷</span>Lịch sử</button>
     </nav>
 
     <section id="crush-tree-panel" class="card bucket-feature-panel" role="tabpanel" aria-labelledby="crush-tree-tab">
-      <div class="card-header"><h2>Cây CRUSH — {{ selected_cluster.name }}</h2></div>
+      <div class="card-header crush-card-header">
+        <div>
+          <div class="crush-card-kicker">Topology</div>
+          <h2>Cây CRUSH <span class="crush-cluster-inline">{{ selected_cluster.name }}</span></h2>
+        </div>
+        <div class="crush-snapshot-actions">
+          <span id="crush-snapshot-badge" class="crush-snapshot-badge" hidden></span>
+          <button id="crush-tree-refresh" class="btn btn-ghost btn-sm" type="button" title="Đọc lại snapshot hiện tại">↻ Làm mới</button>
+        </div>
+      </div>
       <div class="card-body">
         <div id="crush-map-empty-no-snapshot" class="empty-state" hidden>
           <span class="empty-icon">&#8987;</span>
@@ -39,13 +55,25 @@
           <span class="empty-icon">&#9888;</span>
           Không tải được dữ liệu CRUSH Map — trang sẽ tự thử lại.
         </div>
-        <p id="crush-map-meta" class="hint" hidden></p>
+        <div class="crush-tree-toolbar">
+          <p id="crush-map-meta" class="hint" hidden></p>
+          <label id="crush-root-picker-wrap" class="crush-root-picker" hidden>
+            <span>Root đang xem</span>
+            <select id="crush-root-picker" aria-label="Chọn root CRUSH"></select>
+          </label>
+        </div>
         <div id="crush-map-tree" class="crush-tree" data-cluster-id="{{ selected_cluster.id }}" hidden></div>
       </div>
     </section>
 
     <section id="crush-rules-panel" class="card bucket-feature-panel" role="tabpanel" aria-labelledby="crush-rules-tab" hidden>
-      <div class="card-header"><h2>CRUSH Rules</h2></div>
+      <div class="card-header crush-card-header">
+        <div>
+          <div class="crush-card-kicker">Placement policy</div>
+          <h2>CRUSH Rules</h2>
+        </div>
+        <span class="crush-panel-note">Rules từ snapshot hiện tại</span>
+      </div>
       <div class="card-body">
         <div id="crush-rules-empty" class="empty-state" hidden>Chưa có CRUSH rule trong snapshot hiện tại.</div>
         <div id="crush-rules-list" class="crush-rules-list" hidden></div>
@@ -53,13 +81,21 @@
     </section>
 
     <section id="crush-history-panel" class="card bucket-feature-panel" role="tabpanel" aria-labelledby="crush-history-tab" hidden>
+      <div class="card-header crush-card-header">
+        <div>
+          <div class="crush-card-kicker">Audit trail</div>
+          <h2>Lịch sử thay đổi CRUSH</h2>
+        </div>
+        <button id="crush-history-purge" class="btn btn-ghost btn-sm crush-purge-btn" type="button">Xóa lịch sử</button>
+      </div>
       <div class="card-body">
         <div id="crush-history-empty" class="empty-state" hidden>
           Chưa có lần thay đổi cấu trúc CRUSH nào được ghi nhận.
         </div>
         <div class="crush-history-columns" role="row">
-          <span>Thời gian ngày đổi</span>
+          <span title="Thời gian ngày đổi">Thời gian</span>
           <span>Thay đổi</span>
+          <span>Chi tiết</span>
         </div>
         <ul id="crush-history-list" class="crush-history-list"></ul>
         <div class="crush-history-toolbar">
@@ -68,7 +104,7 @@
             <span id="crush-history-page" class="hint pagination-status">Trang 1</span>
             <button id="crush-history-next" class="btn btn-ghost btn-sm" type="button" disabled>Trang sau</button>
           </div>
-          <button id="crush-history-purge" class="btn btn-danger btn-sm" type="button">Xóa tất cả lịch sử</button>
+          <span id="crush-history-count" class="hint crush-history-count">Hiển thị tối đa 10 mục/trang</span>
         </div>
       </div>
     </section>

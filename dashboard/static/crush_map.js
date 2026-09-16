@@ -1,17 +1,12 @@
 (function () {
-  // Epic 12, Story 12.3 (F2) — CRUSH tree: lightweight fetch polling that
-  // rebuilds/updates the DOM (AD-29), deliberately NOT the app.js WebSocket
-  // + window.location.reload() mechanism (that would wipe every expand/
-  // collapse the admin just clicked on every new Snapshot). First tree/graph
-  // UI in this app — no canvas chart precedent to reuse for the tree itself,
-  // only the fetch/interval shape (mirrors backups.js's poll()).
+  "use strict";
 
-  // CRUSH/distribution data is collected on a much slower Watcher cadence;
-  // polling every 5 seconds only rebuilt thousands of DOM nodes repeatedly.
+  // CRUSH distribution changes less frequently than health data. Keep the
+  // existing lightweight poll, but only rebuild the selected root when the
+  // snapshot payload changes.
   var POLL_INTERVAL_MS = 15000;
   var COLLAPSED_STORAGE_KEY = "crushMapCollapsedNodes";
   var CRUSH_WEIGHT_SCALE = 65536;
-
   var treeEl = document.getElementById("crush-map-tree");
   var noSnapshotEl = document.getElementById("crush-map-empty-no-snapshot");
   var emptyClusterEl = document.getElementById("crush-map-empty-cluster");
@@ -19,121 +14,181 @@
   var metaEl = document.getElementById("crush-map-meta");
   var rulesEl = document.getElementById("crush-rules-list");
   var rulesEmptyEl = document.getElementById("crush-rules-empty");
+  var snapshotBadgeEl = document.getElementById("crush-snapshot-badge");
+  var refreshBtn = document.getElementById("crush-tree-refresh");
+  var rootPickerWrap = document.getElementById("crush-root-picker-wrap");
+  var rootPicker = document.getElementById("crush-root-picker");
 
-  if (!treeEl) {
-    return; // not on the CRUSH Map page
-  }
-
+  if (!treeEl) return;
 
   var clusterId = treeEl.dataset.clusterId || "";
+  var rootItems = [];
+  var selectedRootIndex = 0;
+
   function loadCollapsed() {
     try {
       var raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
       return raw ? new Set(JSON.parse(raw)) : new Set();
     } catch (e) {
-      return new Set(); // private mode/quota — just won't persist
+      return new Set();
     }
   }
 
   function saveCollapsed(collapsedSet) {
     try {
       localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(Array.from(collapsedSet)));
-    } catch (e) {
-      // ignore — state just won't survive a reload
-    }
+    } catch (e) { /* private mode or quota — state remains in this render */ }
   }
 
-  function fmtWeight(w) {
-    return typeof w === "number" ? (w / CRUSH_WEIGHT_SCALE).toFixed(3) : "—";
+  function fmtWeight(value) {
+    return typeof value === "number" ? (value / CRUSH_WEIGHT_SCALE).toFixed(3) : "—";
   }
 
-  function buildNodeEl(node, collapsedSet) {
+  function nodeType(node) {
+    return String(node.type || "unknown").toLowerCase();
+  }
+
+  function nodeIcon(type) {
+    if (type === "root") return "⌂";
+    if (type === "host") return "▦";
+    if (type === "osd") return "◉";
+    return "•";
+  }
+
+  function utilization(node) {
+    if (!node.has_distribution_data || typeof node.bytes_total !== "number" || node.bytes_total <= 0) return null;
+    return Math.max(0, Math.min(100, (node.bytes_used / node.bytes_total) * 100));
+  }
+
+  function utilizationClass(value) {
+    if (value == null) return "is-unknown";
+    if (value > 80) return "is-critical";
+    if (value >= 60) return "is-warning";
+    return "is-healthy";
+  }
+
+  function appendMetric(parent, label, value, className) {
+    var item = document.createElement("span");
+    item.className = "crush-metric " + (className || "");
+    var labelEl = document.createElement("span");
+    labelEl.className = "crush-metric-label";
+    labelEl.textContent = label;
+    var valueEl = document.createElement("strong");
+    valueEl.textContent = value;
+    item.appendChild(labelEl);
+    item.appendChild(valueEl);
+    parent.appendChild(item);
+  }
+
+  function buildUsage(parent, node) {
+    var value = utilization(node);
+    var usage = document.createElement("div");
+    usage.className = "crush-utilization " + utilizationClass(value);
+    var head = document.createElement("div");
+    head.className = "crush-utilization-head";
+    var label = document.createElement("span");
+    label.textContent = "Utilization";
+    var valueEl = document.createElement("strong");
+    valueEl.textContent = value == null ? "Chưa có dữ liệu" : value.toFixed(1) + "%";
+    head.appendChild(label);
+    head.appendChild(valueEl);
+    usage.appendChild(head);
+    var track = document.createElement("span");
+    track.className = "crush-utilization-track";
+    var fill = document.createElement("span");
+    fill.className = "crush-utilization-fill";
+    fill.style.width = value == null ? "0%" : value.toFixed(1) + "%";
+    track.appendChild(fill);
+    usage.appendChild(track);
+    parent.appendChild(usage);
+  }
+
+  function buildNodeEl(node, collapsedSet, depth) {
     var wrap = document.createElement("div");
-    wrap.className = "crush-node";
+    var type = nodeType(node);
+    wrap.className = "crush-node crush-node--" + type;
+    wrap.dataset.nodeId = String(node.id == null ? (node.name || "unknown") : node.id);
 
+    var hasChildren = Array.isArray(node.children) && node.children.length > 0;
+    var nodeKey = String(node.id);
+    var isCollapsed = hasChildren && collapsedSet.has(nodeKey);
     var row = document.createElement("div");
     row.className = "crush-node-row";
 
-    var hasChildren = !!(node.children && node.children.length);
-    var nodeKey = String(node.id);
-    var isCollapsed = hasChildren && collapsedSet.has(nodeKey);
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "crush-node-toggle";
+    toggle.disabled = !hasChildren;
+    toggle.setAttribute("aria-label", hasChildren ? (isCollapsed ? "Mở nhánh " : "Thu gọn nhánh ") + (node.name || "node") : "Node lá");
+    toggle.setAttribute("aria-expanded", String(!isCollapsed));
+    toggle.textContent = hasChildren ? (isCollapsed ? "▸" : "▾") : "";
+    row.appendChild(toggle);
 
-    var toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.className = "crush-node-toggle";
-    toggleBtn.textContent = hasChildren ? (isCollapsed ? "▶" : "▼") : "";
-    toggleBtn.disabled = !hasChildren;
-    row.appendChild(toggleBtn);
+    var icon = document.createElement("span");
+    icon.className = "crush-node-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = nodeIcon(type);
+    row.appendChild(icon);
 
+    var main = document.createElement("div");
+    main.className = "crush-node-main";
+    var titleLine = document.createElement("div");
+    titleLine.className = "crush-node-title-line";
     var typeEl = document.createElement("span");
     typeEl.className = "crush-node-type";
-    typeEl.textContent = node.type || "?";
-    row.appendChild(typeEl);
-
-    var nameEl = document.createElement("span");
+    typeEl.textContent = type.toUpperCase();
+    titleLine.appendChild(typeEl);
+    var nameEl = document.createElement("strong");
     nameEl.className = "crush-node-name";
     nameEl.textContent = node.name || ("#" + node.id);
-    row.appendChild(nameEl);
+    nameEl.title = node.name || ("#" + node.id);
+    titleLine.appendChild(nameEl);
+    main.appendChild(titleLine);
 
-    var weightEl = document.createElement("span");
-    weightEl.className = "crush-node-weight";
-    weightEl.textContent = "W=" + fmtWeight(node.weight);
-    row.appendChild(weightEl);
-
-    if (node.has_distribution_data) {
-      var usageEl = document.createElement("span");
-      usageEl.className = "crush-node-usage" + (node.partial_distribution_data ? " is-partial" : "");
-      var pct = (typeof node.bytes_total === "number" && node.bytes_total > 0)
-        ? ((node.bytes_used / node.bytes_total) * 100).toFixed(1) + "%"
-        : "—";
-      var pgsText = typeof node.pgs === "number" ? node.pgs + " PG" : "— PG";
-      usageEl.textContent = pct + " · " + pgsText;
-      row.appendChild(usageEl);
-    } else {
-      var noDataEl = document.createElement("span");
-      noDataEl.className = "crush-node-nodata";
-      noDataEl.textContent = "chưa có dữ liệu";
-      row.appendChild(noDataEl);
+    var metrics = document.createElement("div");
+    metrics.className = "crush-node-metrics";
+    appendMetric(metrics, "Weight", node.weight_normalized == null ? "—" : Number(node.weight_normalized).toFixed(3), "is-mono");
+    appendMetric(metrics, "PG", typeof node.pgs === "number" ? String(node.pgs) : "—", "is-mono");
+    if (node.partial_distribution_data) {
+      var partial = document.createElement("span");
+      partial.className = "crush-partial-note";
+      partial.textContent = "Một phần dữ liệu";
+      metrics.appendChild(partial);
     }
+    main.appendChild(metrics);
+    row.appendChild(main);
+
+    if (type === "osd") buildUsage(row, node);
 
     if (node.recent_change) {
       var badge = document.createElement("span");
       var kind = node.recent_change.kind;
       badge.className = "crush-node-badge " + (kind === "added" ? "is-added" : "is-reweighted");
-      var changeDesc = kind === "added"
+      badge.textContent = kind === "added"
         ? "Mới thêm"
-        : "Đổi Weight " + fmtWeight(node.recent_change.old_weight) + " → " + fmtWeight(node.recent_change.new_weight);
-      var changedAt = node.recent_change.changed_at
-        ? " (" + new Date(node.recent_change.changed_at).toLocaleString("vi-VN") + ")"
-        : "";
-      badge.textContent = changeDesc + changedAt;
+        : "Weight " + fmtWeight(node.recent_change.old_weight) + " → " + fmtWeight(node.recent_change.new_weight);
+      badge.title = node.recent_change.changed_at ? "Thay đổi lúc " + new Date(node.recent_change.changed_at).toLocaleString("vi-VN") : "";
       row.appendChild(badge);
     }
-
     wrap.appendChild(row);
 
     if (hasChildren) {
-      var childrenEl = document.createElement("div");
-      childrenEl.className = "crush-node-children";
-      childrenEl.hidden = isCollapsed;
+      var children = document.createElement("div");
+      children.className = "crush-node-children";
+      children.hidden = isCollapsed;
       node.children.forEach(function (child) {
-        childrenEl.appendChild(buildNodeEl(child, collapsedSet));
+        children.appendChild(buildNodeEl(child, collapsedSet, depth + 1));
       });
-      wrap.appendChild(childrenEl);
-
-      toggleBtn.addEventListener("click", function () {
-        var willCollapse = !childrenEl.hidden;
-        childrenEl.hidden = willCollapse;
-        toggleBtn.textContent = willCollapse ? "▶" : "▼";
-        if (willCollapse) {
-          collapsedSet.add(nodeKey);
-        } else {
-          collapsedSet.delete(nodeKey);
-        }
+      wrap.appendChild(children);
+      toggle.addEventListener("click", function () {
+        var nextCollapsed = !children.hidden;
+        children.hidden = nextCollapsed;
+        toggle.setAttribute("aria-expanded", String(!nextCollapsed));
+        toggle.textContent = nextCollapsed ? "▸" : "▾";
+        if (nextCollapsed) collapsedSet.add(nodeKey); else collapsedSet.delete(nodeKey);
         saveCollapsed(collapsedSet);
       });
     }
-
     return wrap;
   }
 
@@ -143,35 +198,94 @@
     });
   }
 
+  function setSnapshotStatus(meta) {
+    if (!snapshotBadgeEl) return;
+    var stale = !meta || meta.stale;
+    snapshotBadgeEl.hidden = !meta || !meta.available;
+    snapshotBadgeEl.className = "crush-snapshot-badge " + (stale ? "is-stale" : "is-live");
+    snapshotBadgeEl.textContent = stale ? "⚠ Dữ liệu cũ" : "● Live";
+    snapshotBadgeEl.title = stale ? "Snapshot đã quá thời hạn mới nhất" : "Snapshot đang trong thời hạn";
+  }
+
+  function renderRootPicker(roots) {
+    rootItems = roots || [];
+    if (!rootPicker || !rootPickerWrap) return;
+    rootPicker.replaceChildren();
+    rootItems.forEach(function (root, index) {
+      var option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = (root.name || ("Root #" + root.id)) + (root.children && root.children.length ? " · " + root.children.length + " nhánh" : "");
+      rootPicker.appendChild(option);
+    });
+    selectedRootIndex = Math.min(selectedRootIndex, Math.max(0, rootItems.length - 1));
+    rootPicker.value = String(selectedRootIndex);
+    rootPickerWrap.hidden = rootItems.length <= 1;
+  }
+
+  function renderSelectedRoot() {
+    if (!rootItems.length) return;
+    var collapsedSet = loadCollapsed();
+    treeEl.replaceChildren(buildNodeEl(rootItems[selectedRootIndex], collapsedSet, 0));
+    treeEl.hidden = false;
+  }
+
   function renderRules(rules) {
     if (!rulesEl || !rulesEmptyEl) return;
-    rulesEl.innerHTML = "";
-    rulesEmptyEl.hidden = !!(rules && rules.length);
-    rulesEl.hidden = !(rules && rules.length);
+    rulesEl.replaceChildren();
+    var hasRules = Array.isArray(rules) && rules.length > 0;
+    rulesEmptyEl.hidden = hasRules;
+    rulesEl.hidden = !hasRules;
     (rules || []).forEach(function (rule) {
       var card = document.createElement("article");
       card.className = "crush-rule";
       var header = document.createElement("div");
       header.className = "crush-rule-header";
+      var title = document.createElement("div");
+      title.className = "crush-rule-title";
       var name = document.createElement("strong");
       name.textContent = rule.rule_name || ("Rule #" + rule.rule_id);
-      header.appendChild(name);
-      var meta = document.createElement("span");
-      meta.className = "crush-rule-meta";
-      meta.textContent = "ID " + (rule.rule_id == null ? "—" : rule.rule_id) + " · " + (rule.type || "—")
-        + " · size " + (rule.min_size == null ? "—" : rule.min_size) + "–" + (rule.max_size == null ? "—" : rule.max_size);
-      header.appendChild(meta);
+      title.appendChild(name);
+      var id = document.createElement("span");
+      id.className = "crush-rule-id";
+      id.textContent = "ID " + (rule.rule_id == null ? "—" : rule.rule_id);
+      title.appendChild(id);
+      header.appendChild(title);
+      var tags = document.createElement("div");
+      tags.className = "crush-rule-tags";
+      [["type", rule.type], ["min", rule.min_size], ["max", rule.max_size]].forEach(function (pair) {
+        var tag = document.createElement("span");
+        tag.className = "crush-rule-tag";
+        tag.textContent = pair[0] + " " + (pair[1] == null ? "—" : pair[1]);
+        tags.appendChild(tag);
+      });
+      header.appendChild(tags);
       card.appendChild(header);
+
       var steps = document.createElement("ol");
       steps.className = "crush-rule-steps";
-      (rule.steps || []).forEach(function (step) {
-        var parts = [step.op || "?"];
-        if (step.item_name) parts.push(step.item_name);
-        else if (typeof step.item === "number") parts.push(String(step.item));
-        if (typeof step.num === "number") parts.push("num=" + step.num);
-        if (step.type) parts.push("type=" + step.type);
+      (rule.steps || []).forEach(function (step, index) {
         var item = document.createElement("li");
-        item.textContent = parts.join(" · ");
+        item.className = "crush-rule-step";
+        var number = document.createElement("span");
+        number.className = "crush-rule-step-number";
+        number.textContent = String(index + 1).padStart(2, "0");
+        item.appendChild(number);
+        var copy = document.createElement("div");
+        copy.className = "crush-rule-step-copy";
+        var op = document.createElement("strong");
+        op.textContent = step.op || "?";
+        copy.appendChild(op);
+        var parameters = [];
+        if (step.item_name) parameters.push(step.item_name);
+        else if (typeof step.item === "number") parameters.push("item=" + step.item);
+        if (typeof step.num === "number") parameters.push("num=" + step.num);
+        if (step.type) parameters.push("type=" + step.type);
+        if (parameters.length) {
+          var detail = document.createElement("span");
+          detail.textContent = parameters.join(" · ");
+          copy.appendChild(detail);
+        }
+        item.appendChild(copy);
         steps.appendChild(item);
       });
       card.appendChild(steps);
@@ -181,48 +295,37 @@
 
   function renderTree(data) {
     hideAllStates();
+    var meta = data.meta || {};
+    setSnapshotStatus(meta);
+    var collectedAt = meta.collected_at || data.created_at;
+    var metaText = collectedAt ? "Snapshot lúc " + new Date(collectedAt).toLocaleString("vi-VN") : "Chưa có snapshot";
+    if (meta.stale) metaText += " · dữ liệu cũ";
+    if (meta.last_error) metaText += " · lỗi: " + meta.last_error;
+    metaEl.textContent = metaText;
+    metaEl.hidden = false;
 
     if (data.state === "no_snapshot_yet") {
       renderRules([]);
-      metaEl.hidden = false;
-      var noSnapshotMeta = data.meta || {};
-      var noSnapshotText = noSnapshotMeta.collected_at
-        ? "Snapshot lúc " + new Date(noSnapshotMeta.collected_at).toLocaleString("vi-VN")
-        : "Chưa có snapshot";
-      if (noSnapshotMeta.last_error) noSnapshotText += " · lỗi: " + noSnapshotMeta.last_error;
-      metaEl.textContent = noSnapshotText;
+      renderRootPicker([]);
+      setSnapshotStatus({ available: false, stale: true });
       noSnapshotEl.hidden = false;
       return;
     }
 
     renderRules(data.rules || []);
-
-    metaEl.hidden = false;
-    var snapshotMeta = data.meta || {};
-    var collectedAt = snapshotMeta.collected_at || data.created_at;
-    var metaText = collectedAt
-      ? "Snapshot lúc " + new Date(collectedAt).toLocaleString("vi-VN")
-      : "Chưa có snapshot";
-    if (snapshotMeta.stale) metaText += " · stale";
-    if (snapshotMeta.last_error) metaText += " · lỗi: " + snapshotMeta.last_error;
-    metaEl.textContent = metaText;
-
     if (data.state === "empty_cluster") {
+      renderRootPicker([]);
       emptyClusterEl.hidden = false;
       return;
     }
 
-    // state === "ok" — re-apply the collapse state fresh every poll tick so
-    // a re-render never resets what the admin already had open (AD-29).
-    var collapsedSet = loadCollapsed();
-    treeEl.innerHTML = "";
-    var fragment = document.createDocumentFragment();
-    (data.roots || []).forEach(function (root) {
-      fragment.appendChild(buildNodeEl(root, collapsedSet));
-    });
-    // One DOM insertion avoids layout work after every individual root.
-    treeEl.appendChild(fragment);
-    treeEl.hidden = false;
+    var roots = Array.isArray(data.roots) ? data.roots : [];
+    renderRootPicker(roots);
+    if (!roots.length) {
+      emptyClusterEl.hidden = false;
+      return;
+    }
+    renderSelectedRoot();
   }
 
   var lastPayload = null;
@@ -235,15 +338,14 @@
   }
 
   function poll() {
-    // Background tabs do no useful visual work. A visibilitychange listener
-    // below refreshes immediately when the operator comes back.
     if (document.hidden || requestInFlight) {
       schedulePoll();
       return;
     }
     requestInFlight = true;
+    if (refreshBtn) refreshBtn.disabled = true;
     var url = "/api/crush-map/tree?cluster_id=" + encodeURIComponent(clusterId);
-    fetch(url, { credentials: "same-origin" })
+    fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
@@ -251,38 +353,47 @@
       .then(function (data) {
         errorEl.hidden = true;
         var payload = JSON.stringify(data);
-        // Building a large nested tree is the expensive part. Keep the
-        // current DOM untouched when neither structure nor usage changed.
         if (payload !== lastPayload) {
           renderTree(data);
           lastPayload = payload;
         }
       })
       .catch(function () {
-        // Keep the last good tree visible during a transient failure. Hiding
-        // and rebuilding it caused a noticeable flash and extra layout work.
         errorEl.hidden = false;
+        if (snapshotBadgeEl) {
+          snapshotBadgeEl.hidden = false;
+          snapshotBadgeEl.className = "crush-snapshot-badge is-stale";
+          snapshotBadgeEl.textContent = "⚠ Không đồng bộ";
+        }
       })
       .finally(function () {
         requestInFlight = false;
+        if (refreshBtn) refreshBtn.disabled = false;
         schedulePoll();
       });
   }
 
-  poll();
+  if (rootPicker) rootPicker.addEventListener("change", function () {
+    selectedRootIndex = Number(rootPicker.value) || 0;
+    renderSelectedRoot();
+  });
+  if (refreshBtn) refreshBtn.addEventListener("click", function () {
+    lastPayload = null;
+    poll();
+  });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && !requestInFlight) {
       window.clearTimeout(pollTimer);
       poll();
     }
   });
+  poll();
 })();
 
 (function () {
   var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-crush-tab]"));
   if (!tabs.length) return;
   var panels = Array.prototype.slice.call(document.querySelectorAll(".crush-feature-panel, .bucket-feature-panel"));
-
   function activate(tab) {
     tabs.forEach(function (item) {
       var active = item === tab;
@@ -294,7 +405,6 @@
       if (panel.id.indexOf("crush-") === 0) panel.hidden = panel.id !== tab.dataset.crushTab;
     });
   }
-
   tabs.forEach(function (tab, index) {
     tab.addEventListener("click", function () { activate(tab); });
     tab.addEventListener("keydown", function (event) {
@@ -310,13 +420,11 @@
 })();
 
 (function () {
-  // Change-history list + detail panel (FR-5/FR62) — independent of the
-  // live tree poll above; loaded once, "Xem thêm" paginates via the
-  // `before` cursor the API hands back.
-
   var listEl = document.getElementById("crush-history-list");
+  if (!listEl) return;
   var emptyEl = document.getElementById("crush-history-empty");
   var pageEl = document.getElementById("crush-history-page");
+  var countEl = document.getElementById("crush-history-count");
   var prevBtn = document.getElementById("crush-history-prev");
   var nextBtn = document.getElementById("crush-history-next");
   var purgeBtn = document.getElementById("crush-history-purge");
@@ -324,70 +432,20 @@
   var detailTitleEl = document.getElementById("crush-history-detail-title");
   var detailBodyEl = document.getElementById("crush-history-detail-body");
   var detailCloseBtn = document.getElementById("crush-history-detail-close");
-
-  if (!listEl) {
-    return; // not on the CRUSH Map page
-  }
-
-  var CRUSH_WEIGHT_SCALE = 65536;
   var treePageEl = document.getElementById("crush-map-tree");
   var clusterId = treePageEl ? treePageEl.dataset.clusterId : "";
   var currentPage = 1;
   var pageCursors = [null];
   var requestInFlight = false;
+  var CRUSH_WEIGHT_SCALE = 65536;
 
-  function fmtTime(iso) {
-    return new Date(iso).toLocaleString("vi-VN");
-  }
+  function fmtTime(iso) { return new Date(iso).toLocaleString("vi-VN"); }
+  function fmtWeight(value) { return typeof value === "number" ? (value / CRUSH_WEIGHT_SCALE).toFixed(3) : "—"; }
 
-  function fmtWeight(w) {
-    return typeof w === "number" ? (w / CRUSH_WEIGHT_SCALE).toFixed(3) : "—";
-  }
-
-  function openDetail(id) {
-    fetch("/api/crush-map/history/" + encodeURIComponent(id) + "?cluster_id=" + encodeURIComponent(clusterId), { credentials: "same-origin" })
-      .then(function (response) {
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        return response.json();
-      })
-      .then(function (data) {
-        detailTitleEl.textContent = fmtTime(data.created_at);
-        detailBodyEl.innerHTML = "";
-
-        var groups = [
-          renderDiffGroup("Thêm mới", data.added, function (i) {
-            return (i.type || "?") + " " + (i.name || ("#" + i.id)) + " (Weight " + fmtWeight(i.weight) + ")";
-          }),
-          renderDiffGroup("Đã xoá", data.removed, function (i) {
-            return (i.type || "?") + " " + (i.name || ("#" + i.id)) + " (Weight " + fmtWeight(i.weight) + ")";
-          }),
-          renderDiffGroup("Đổi Weight", data.reweighted, function (i) {
-            return (i.type || "?") + " " + (i.name || ("#" + i.id)) + ": " + fmtWeight(i.old_weight) + " → " + fmtWeight(i.new_weight);
-          }),
-        ];
-
-        var anyGroup = false;
-        groups.forEach(function (group) {
-          if (group) {
-            detailBodyEl.appendChild(group);
-            anyGroup = true;
-          }
-        });
-        if (!anyGroup) {
-          detailBodyEl.textContent = "Không có chi tiết thay đổi.";
-        }
-
-        detailEl.hidden = false;
-      })
-      .catch(function () {
-        // ignore — leave detail panel closed rather than show a broken one
-      });
-  }
-
-  function renderDiffGroup(title, items, formatter) {
+  function renderDiffGroup(title, items, formatter, className) {
     if (!items || !items.length) return null;
     var group = document.createElement("div");
-    group.className = "crush-history-detail-group";
+    group.className = "crush-history-detail-group " + className;
     var h4 = document.createElement("h4");
     h4.textContent = title + " (" + items.length + ")";
     group.appendChild(h4);
@@ -401,32 +459,61 @@
     return group;
   }
 
-  function renderItems(items, append) {
-    if (!append) {
-      listEl.innerHTML = "";
-    }
-    items.forEach(function (item) {
+  function openDetail(id) {
+    fetch("/api/crush-map/history/" + encodeURIComponent(id) + "?cluster_id=" + encodeURIComponent(clusterId), { credentials: "same-origin", cache: "no-store" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        detailTitleEl.textContent = "Chi tiết thay đổi · " + fmtTime(data.created_at);
+        detailBodyEl.replaceChildren();
+        [["Thêm mới", data.added, "is-added", function (i) { return (i.type || "?") + " " + (i.name || ("#" + i.id)) + " · Weight " + fmtWeight(i.weight); }],
+          ["Đã xoá", data.removed, "is-removed", function (i) { return (i.type || "?") + " " + (i.name || ("#" + i.id)) + " · Weight " + fmtWeight(i.weight); }],
+          ["Đổi Weight", data.reweighted, "is-reweighted", function (i) { return (i.type || "?") + " " + (i.name || ("#" + i.id)) + ": " + fmtWeight(i.old_weight) + " → " + fmtWeight(i.new_weight); }]
+        ].forEach(function (groupData) {
+          var group = renderDiffGroup(groupData[0], groupData[1], groupData[3], groupData[2]);
+          if (group) detailBodyEl.appendChild(group);
+        });
+        if (!detailBodyEl.children.length) detailBodyEl.textContent = "Không có chi tiết thay đổi.";
+        detailEl.hidden = false;
+      })
+      .catch(function () { window.alert("Không tải được chi tiết lịch sử CRUSH Map."); });
+  }
+
+  function appendCount(parent, count, label, className) {
+    if (!count) return;
+    var badge = document.createElement("span");
+    badge.className = "crush-change-badge " + className;
+    badge.textContent = count + " " + label;
+    parent.appendChild(badge);
+  }
+
+  function renderItems(items) {
+    listEl.replaceChildren();
+    (items || []).forEach(function (item) {
       var li = document.createElement("li");
       li.className = "crush-history-item";
-
-      var timeEl = document.createElement("span");
-      timeEl.className = "crush-history-time";
-      timeEl.textContent = fmtTime(item.created_at);
-      li.appendChild(timeEl);
-
-      var summaryEl = document.createElement("span");
-      summaryEl.className = "crush-history-summary";
-      var parts = [];
-      if (item.added_count) parts.push(item.added_count + " thêm");
-      if (item.removed_count) parts.push(item.removed_count + " xoá");
-      if (item.reweighted_count) parts.push(item.reweighted_count + " đổi Weight");
-      summaryEl.textContent = parts.length ? parts.join(", ") : "Không có thay đổi rõ rệt";
-      li.appendChild(summaryEl);
-
-      li.addEventListener("click", function () {
-        openDetail(item.id);
-      });
-
+      var time = document.createElement("time");
+      time.className = "crush-history-time";
+      time.dateTime = item.created_at;
+      time.textContent = fmtTime(item.created_at);
+      li.appendChild(time);
+      var summary = document.createElement("div");
+      summary.className = "crush-history-summary";
+      appendCount(summary, item.added_count, "thêm", "is-added");
+      appendCount(summary, item.removed_count, "xoá", "is-removed");
+      appendCount(summary, item.reweighted_count, "đổi Weight", "is-reweighted");
+      if (!summary.children.length) summary.textContent = "Không có thay đổi rõ rệt";
+      li.appendChild(summary);
+      var action = document.createElement("button");
+      action.type = "button";
+      action.className = "btn btn-ghost btn-sm crush-history-detail-btn";
+      action.textContent = "Xem chi tiết";
+      action.setAttribute("aria-label", "Xem chi tiết thay đổi lúc " + fmtTime(item.created_at));
+      action.addEventListener("click", function () { openDetail(item.id); });
+      li.appendChild(action);
+      li.addEventListener("dblclick", function () { openDetail(item.id); });
       listEl.appendChild(li);
     });
   }
@@ -435,6 +522,7 @@
     prevBtn.disabled = requestInFlight || currentPage <= 1;
     nextBtn.disabled = requestInFlight || !nextBefore;
     pageEl.textContent = "Trang " + currentPage;
+    if (countEl) countEl.textContent = "Tối đa 10 mục · dùng nút để xem trang tiếp theo";
   }
 
   function loadPage(page) {
@@ -443,62 +531,41 @@
     updatePagination(null);
     var before = pageCursors[page - 1];
     var url = "/api/crush-map/history?cluster_id=" + encodeURIComponent(clusterId) + "&limit=10" + (before ? "&before=" + encodeURIComponent(before) : "");
-    fetch(url, { credentials: "same-origin" })
+    fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then(function (response) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
       .then(function (data) {
         currentPage = page;
-        renderItems(data.items, false);
-        if (data.next_before) pageCursors[page] = data.next_before;
-        else pageCursors.length = page;
-        emptyEl.hidden = data.items.length > 0 || page !== 1;
-        listEl.hidden = data.items.length === 0;
+        renderItems(data.items || []);
+        if (data.next_before) pageCursors[page] = data.next_before; else pageCursors.length = page;
+        emptyEl.hidden = (data.items || []).length > 0 || page !== 1;
+        listEl.hidden = (data.items || []).length === 0;
         updatePagination(data.next_before);
       })
-      .catch(function () {
-        console.error("Không tải được lịch sử CRUSH Map");
-        updatePagination(pageCursors[page]);
-      })
+      .catch(function () { console.error("Không tải được lịch sử CRUSH Map"); })
       .finally(function () {
         requestInFlight = false;
         updatePagination(pageCursors[currentPage]);
       });
   }
 
-  prevBtn.addEventListener("click", function () {
-    loadPage(currentPage - 1);
-  });
-
-  nextBtn.addEventListener("click", function () {
-    loadPage(currentPage + 1);
-  });
-
+  prevBtn.addEventListener("click", function () { loadPage(currentPage - 1); });
+  nextBtn.addEventListener("click", function () { loadPage(currentPage + 1); });
   purgeBtn.addEventListener("click", function () {
     if (!window.confirm("Xóa toàn bộ lịch sử thay đổi cấu trúc CRUSH của cluster này? Không thể hoàn tác.")) return;
     purgeBtn.disabled = true;
-    fetch("/api/crush-map/history/purge?cluster_id=" + encodeURIComponent(clusterId), {method: "POST", credentials: "same-origin"})
+    fetch("/api/crush-map/history/purge?cluster_id=" + encodeURIComponent(clusterId), { method: "POST", credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) return response.json().then(function (body) { throw new Error(body.detail || "Xóa thất bại"); });
         return response.json();
       })
-      .then(function (data) {
-        pageCursors = [null];
-        currentPage = 1;
-        loadPage(1);
-      })
-      .catch(function (error) {
-        window.alert("Không xóa được lịch sử CRUSH Map: " + error.message);
-      })
-      .finally(function () {
-        purgeBtn.disabled = false;
-      });
+      .then(function () { pageCursors = [null]; currentPage = 1; loadPage(1); })
+      .catch(function (error) { window.alert("Không xóa được lịch sử CRUSH Map: " + error.message); })
+      .finally(function () { purgeBtn.disabled = false; });
   });
-
-  detailCloseBtn.addEventListener("click", function () {
-    detailEl.hidden = true;
-  });
-
+  detailCloseBtn.addEventListener("click", function () { detailEl.hidden = true; });
+  detailEl.addEventListener("click", function (event) { if (event.target === detailEl) detailEl.hidden = true; });
   loadPage(1);
 })();
