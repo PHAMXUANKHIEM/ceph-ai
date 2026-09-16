@@ -617,3 +617,12 @@ Record before/after values for:
   until dependency checks pass. Focused usage/snapshot gate: 4 passed, 224
   deselected and one existing Starlette/httpx warning. Commits `3ad0ca62` and
   `2330c8a8` are pushed to `origin/main`.
+- 2026-09-16: Completed the current-candidate segmented repository gate.
+  The non-migration suite reported 3338 passed and three failures, all from
+  `tests/test_mq.py` using the stale `.env` default `guest@localhost`; the
+  same three tests passed on a disposable RabbitMQ vhost using the runtime
+  `ceph_ai` credential. The migration suite passed 10 tests with 11 expected
+  reflection warnings. This is recorded as a segmented pass with 13
+  deselected tests; no application code was changed for the broker-environment
+  mismatch. Deployment remains blocked by the untracked `transfer/` directory
+  and pending runtime ownership approval.

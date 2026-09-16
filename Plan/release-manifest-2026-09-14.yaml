@@ -92,6 +92,13 @@ verification:
   cache_metadata_chat_layout_gate: 8_passed_1_warning
   trash_usage_telemetry_gate: 4_passed_224_deselected_1_warning
   broad_current_candidate_gate: not_counted_concurrent_transfer_overlay_invalidated_run
+  broad_segmented_current_candidate_gate:
+    non_migration_suite: 3338_passed_3_broker_environment_failures_reproduced_then_isolated
+    migration_suite: 10_passed_11_warnings
+    rabbitmq_isolated_vhost_suite: 3_passed_1_warning
+    result: all_code_tests_passed_when_rabbitmq_gate_used_isolated_runtime_vhost
+    deselected: 13
+    non_migration_elapsed: 1306.45_seconds
 
 deployment_gate:
   deterministic_tests: passed
