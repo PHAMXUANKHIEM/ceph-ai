@@ -61,7 +61,25 @@ def test_warm_only_hydrates_snapshots(monkeypatch):
         "_warm_cluster_snapshots",
         lambda selected: calls.append(selected) or 1,
     )
+    monkeypatch.setattr(
+        cache_warmup,
+        "_warm_block_storage",
+        lambda selected: calls.append(("block-storage", selected)) or 1,
+    )
 
     cache_warmup._warm()
 
-    assert calls == [clusters]
+    assert calls == [clusters, ("block-storage", clusters)]
+
+
+def test_block_storage_warmup_schedules_one_background_refresh_per_cluster(monkeypatch):
+    clusters = [SimpleNamespace(id="cluster-a"), SimpleNamespace(id="cluster-b")]
+    calls = []
+    monkeypatch.setattr(cache_warmup, "get_or_load", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    assert cache_warmup._warm_block_storage(clusters) == 2
+    assert [call[0][:2] for call in calls] == [
+        ("block-storage", "cluster-a:inventory"),
+        ("block-storage", "cluster-b:inventory"),
+    ]
+    assert all(call[1]["background_on_miss"] is True for call in calls)

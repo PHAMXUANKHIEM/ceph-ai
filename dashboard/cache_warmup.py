@@ -17,6 +17,7 @@ from threading import Lock, Thread
 from shared import db
 from shared.clusters import list_active_clusters
 from shared.cluster_snapshot import read_snapshot
+from shared.object_storage_cache import get_or_load
 
 logger = logging.getLogger(__name__)
 _started = False
@@ -72,6 +73,31 @@ def _warm_cluster_snapshots(clusters) -> int:
     return warmed
 
 
+def _warm_block_storage(clusters) -> int:
+    """Start inventory refreshes before an operator opens Block Storage.
+
+    The inventory is intentionally loaded in the cache's background executor;
+    Dashboard startup and the first browser request stay non-blocking. The
+    existing route uses the same cache key and loader, so it immediately sees
+    the warmed result when the Ceph query finishes.
+    """
+    from dashboard.routes.block_storage import _query_block_storage
+
+    scheduled = 0
+    for cluster in clusters:
+        cache_key = f"{cluster.id}:inventory"
+        get_or_load(
+            "block-storage",
+            cache_key,
+            lambda cluster=cluster: _query_block_storage(cluster),
+            stale_ttl_seconds=1800,
+            background_on_miss=True,
+            fallback=[],
+        )
+        scheduled += 1
+    return scheduled
+
+
 def _warm() -> None:
     try:
         with db.SessionLocal() as session:
@@ -79,5 +105,6 @@ def _warm() -> None:
             session.expunge_all()
 
         _warm_cluster_snapshots(clusters)
+        _warm_block_storage(clusters)
     except Exception:
         logger.exception("Dashboard cache warmup could not start")

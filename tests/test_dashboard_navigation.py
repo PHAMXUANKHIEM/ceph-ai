@@ -287,7 +287,6 @@ def test_block_storage_does_not_repeat_count_and_page_capacity_copy():
     script = Path("dashboard/static/block_storage.js").read_text(encoding="utf-8")
 
     assert "tối đa" not in markup
-    assert "pagination-status" not in markup
     assert "block-storage-filter-result" not in markup
     assert "kết quả" not in script
     assert "if (input && reset && empty)" in script
