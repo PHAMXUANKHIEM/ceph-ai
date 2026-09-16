@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import threading
 
 import pytest
@@ -104,6 +105,33 @@ def test_collect_and_publish_health_uses_explicit_cluster_connection(monkeypatch
         {"update_sticky_fallback": False},
     )]
     assert cluster_snapshot_collector.read_snapshot("cluster-a")["health"] == health
+
+
+def test_health_collection_lock_has_bounded_acquisition(monkeypatch):
+    captured = {}
+
+    @contextmanager
+    def unavailable_lock(namespace, key, *, timeout_seconds=None):
+        captured.update(
+            namespace=namespace,
+            key=key,
+            timeout_seconds=timeout_seconds,
+        )
+        raise ceph_query_cache.CacheLockError("lock is busy")
+        yield
+
+    monkeypatch.setattr(ceph_query_cache, "key_lock", unavailable_lock)
+    monkeypatch.setattr(cluster_snapshot_collector.settings, "ceph_health_timeout", 8)
+
+    with pytest.raises(TimeoutError, match="health collection lock acquisition"):
+        with cluster_snapshot_collector.health_collection_lock("cluster-a"):
+            pass
+
+    assert captured == {
+        "namespace": cluster_snapshot_collector.COLLECTION_LOCK_NAMESPACE,
+        "key": "cluster-a",
+        "timeout_seconds": 8.0,
+    }
 
 
 def test_collector_metrics_include_success_failure_and_command_breakdown():

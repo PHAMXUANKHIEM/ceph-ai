@@ -63,12 +63,26 @@ def collection_timestamp() -> str:
 
 @contextmanager
 def health_collection_lock(cluster_id: str | None):
-    """Serialize health queries for one cluster across all app processes."""
+    """Serialize health queries for one cluster across all app processes.
+
+    Lock acquisition is bounded by the health poll budget. A stuck peer must
+    not turn a dashboard refresh or watcher loop into an unbounded wait.
+    """
     if not cluster_id:
         yield
         return
-    with ceph_query_cache.key_lock(COLLECTION_LOCK_NAMESPACE, cluster_id):
-        yield
+    lock_timeout = min(max(float(settings.ceph_health_timeout), 1.0), 10.0)
+    try:
+        with ceph_query_cache.key_lock(
+            COLLECTION_LOCK_NAMESPACE,
+            cluster_id,
+            timeout_seconds=lock_timeout,
+        ):
+            yield
+    except ceph_query_cache.CacheLockError as exc:
+        raise TimeoutError(
+            f"health collection lock acquisition exceeded {lock_timeout:g}s"
+        ) from exc
 
 
 @contextmanager
