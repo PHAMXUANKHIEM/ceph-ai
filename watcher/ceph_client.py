@@ -1,6 +1,5 @@
 import fcntl
 import base64
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 import json
 import logging
@@ -1333,7 +1332,12 @@ def query_cluster_health_with(
     DEFAULT cluster's log collection depends on. Defaults to True so every
     pre-existing caller (the default cluster's own health poll, and the
     Dashboard's own "test connection before saving" forms for the default
-    cluster) keeps its exact original behavior unchanged."""
+    cluster) keeps its exact original behavior unchanged.
+
+    Query one MON at a time and use sequential fallback on failure. Fan-out
+    to every MON makes each health poll start several cephadm shells. That is
+    unnecessarily expensive on the small Ceph nodes and can amplify CPU
+    stalls. The total deadline still bounds a failed health query."""
     if not mon_nodes:
         raise CephQueryError("no MON nodes configured")
 
@@ -1342,18 +1346,10 @@ def query_cluster_health_with(
     deadline = time.monotonic() + settings.ceph_health_timeout
     global last_successful_mon_node
     errors: list[str] = []
-
-    def collect_from_node(host: str) -> dict:
-        """Run one bounded health probe without extending the total deadline."""
+    for host in ordered_mon_nodes(mon_nodes):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise CephQueryError(
-                f"{host}: health poll exceeded {settings.ceph_health_timeout:g} seconds"
-            )
-        # A dedicated one-host pool lets Paramiko's connect/banner/auth
-        # deadlines shrink with the remaining health budget. The previous
-        # sequential fallback could spend the full budget on each MON and
-        # leave the Watcher heartbeat stale while a healthy peer was available.
+            break
         pool = CephConnectionPool(
             CephSSHConfig(
                 user=ssh_user,
@@ -1374,58 +1370,20 @@ def query_cluster_health_with(
                 min(command_timeout, max(0.01, remaining)),
                 pool=pool,
             )
-            return _parse_health_payload(output)
+            payload = _parse_health_payload(output)
+        except Exception as exc:
+            logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
+            errors.append(f"{host}: {exc}")
+            continue
         finally:
             pool.close()
 
-    executor = ThreadPoolExecutor(
-        max_workers=min(settings.ceph_max_concurrency, len(mon_nodes)),
-        thread_name_prefix="ceph-health",
-    )
-    futures = {executor.submit(collect_from_node, host): host for host in mon_nodes}
-    pending = set(futures)
-    selected_host: str | None = None
-    selected_payload: dict | None = None
-    try:
-        while pending:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            done, pending = wait(
-                pending,
-                timeout=remaining,
-                return_when=FIRST_COMPLETED,
-            )
-            for future in done:
-                host = futures[future]
-                try:
-                    payload = future.result()
-                except Exception as exc:
-                    logger.warning("query_cluster_health_with: %s failed: %s", host, exc)
-                    errors.append(f"{host}: {exc}")
-                    continue
-                if selected_payload is None:
-                    selected_host = host
-                    selected_payload = payload
-        for future in pending:
-            host = futures[future]
-            future.cancel()
-            errors.append(
-                f"{host}: health poll exceeded {settings.ceph_health_timeout:g} seconds"
-            )
-    finally:
-        # Drain all started probes before returning. They have bounded
-        # connect/channel deadlines and close their private pool on completion;
-        # leaving a probe behind would let it outlive a request/test fixture
-        # and could reuse restored SSH globals after teardown.
-        for future in pending:
-            future.cancel()
-        executor.shutdown(wait=True, cancel_futures=True)
-    if selected_payload is not None:
-        if update_sticky_fallback and selected_host is not None:
-            last_successful_mon_node = selected_host
-        return selected_payload
-    raise CephQueryError(f"All MON nodes failed: {'; '.join(errors)}")
+        if update_sticky_fallback:
+            last_successful_mon_node = host
+        return payload
+
+    detail = "; ".join(errors) if errors else "deadline exceeded"
+    raise CephQueryError(f"All MON nodes failed: {detail}")
 
 
 # --- Cluster Upgrade feature (2026-07-23) ----------------------------------

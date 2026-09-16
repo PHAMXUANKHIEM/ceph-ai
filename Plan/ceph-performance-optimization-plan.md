@@ -507,3 +507,10 @@ Record before/after values for:
   and API diagnostics. Queue-wait and retry counters still need explicit
   production integration; no latency claim is made until benchmark data is
   collected.
+- 2026-09-16: Phase 10 is in progress. Host-level SSH lease acquisition is
+  now bounded by the command deadline; queue wait and queue-wait timeout are
+  recorded separately. Focused timeout, cache, collector, health and debug
+  coverage passed 149 tests. A full repository run was stopped after reaching
+  97% because unrelated long-running tests exceeded the verification window;
+  it had exposed stale test doubles for the new Paramiko timeout signature,
+  including `tests/test_rgw_log.py`, which has now been updated and passes.

@@ -217,13 +217,11 @@ def test_query_cluster_health_with_falls_back_to_next_node(fake_ssh):
     assert result["status"] == "HEALTH_WARN"
 
 
-def test_query_cluster_health_with_probes_mons_in_parallel(monkeypatch):
+def test_query_cluster_health_with_falls_back_sequentially(monkeypatch):
     started = []
-    barrier = threading.Barrier(2)
 
     def fake_run(host, command, user, key, timeout=None, *, pool=None):
         started.append(host)
-        barrier.wait(timeout=1)
         if host == "10.9.9.1":
             raise CephQueryError("first MON unavailable")
         return json.dumps({"status": "HEALTH_OK", "checks": {}})
@@ -234,7 +232,7 @@ def test_query_cluster_health_with_probes_mons_in_parallel(monkeypatch):
     )
 
     assert result["status"] == "HEALTH_OK"
-    assert set(started) == {"10.9.9.1", "10.9.9.2"}
+    assert started == ["10.9.9.1", "10.9.9.2"]
 
 
 def test_query_cluster_health_with_raises_when_all_nodes_fail(fake_ssh):
