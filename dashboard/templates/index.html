@@ -79,9 +79,9 @@
     <div class="tabbed-page">
     <nav class="tabbed-sidebar">
       {% if not telegram_approval_configured %}
-      <label class="pending-tab-autoswitch" title="Khi tắt, trang sẽ nhớ tab bạn đang xem thay vì tự nhảy về Chờ duyệt mỗi lần có Incident/Action mới">
+      <label class="pending-tab-autoswitch" title="Khi tắt, trang sẽ nhớ tab bạn đang xem thay vì tự nhảy về Chờ duyệt khi có yêu cầu mới">
         <input type="checkbox" id="pending-tab-autoswitch" checked>
-        Tự động mở tab này khi có Risky Action mới
+        Tự động mở khi có yêu cầu duyệt mới
       </label>
       <button type="button" class="tabbed-nav-item {% if active_tab == 'pending' %}active{% endif %}" data-section="pending">Chờ duyệt{% if pending_actions %} ({{ pending_actions|length }}){% endif %}</button>
       {% endif %}
@@ -92,7 +92,7 @@
     {% if not telegram_approval_configured %}
     <section class="card tabbed-panel" data-panel="pending" {% if active_tab != 'pending' %}hidden{% endif %}>
       <div class="card-header">
-        <h2>Chờ duyệt — Risky Action</h2>
+        <h2>Chờ duyệt</h2>
         <button type="button" class="card-toggle-btn" id="pending-actions-toggle" aria-label="Ẩn danh sách" title="Ẩn danh sách">&#8722;</button>
       </div>
       <div class="card-body pending-actions" id="pending-actions-body">
@@ -148,7 +148,7 @@
     <section class="card tabbed-panel" data-panel="incidents" {% if active_tab != 'incidents' %}hidden{% endif %}>
       <div class="card-header"><h2>Incident Feed</h2></div>
       {% if telegram_approval_configured %}
-      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối Risky Action đã chuyển hẳn sang Telegram (xem {% if is_admin %}<a href="/telegram-alerts">Alert Telegram</a>{% else %}Telegram{% endif %}) — không còn danh sách chờ duyệt riêng trên trang này.</p>
+      <p class="hint" style="padding: 0 1rem;">Duyệt/Từ chối đã chuyển sang {% if is_admin %}<a href="/telegram-alerts">Telegram</a>{% else %}Telegram{% endif %} — trang này chỉ hiển thị sự cố.</p>
       {% endif %}
       <div class="card-body table-wrap">
         <table id="incident-feed">

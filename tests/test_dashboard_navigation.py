@@ -272,3 +272,11 @@ def test_block_storage_create_panel_does_not_repeat_action_policy_copy():
     assert "Action RISKY" not in markup
     assert "cần phê duyệt trước khi thực thi" not in markup
     assert "Đề xuất tạo Volume" in markup
+
+
+def test_dashboard_approval_copy_uses_the_short_vietnamese_label():
+    markup = (TEMPLATE_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert "Chờ duyệt</h2>" in markup
+    assert "Risky Action" not in markup
+    assert "Tự động mở khi có yêu cầu duyệt mới" in markup

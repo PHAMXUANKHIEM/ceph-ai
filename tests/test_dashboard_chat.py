@@ -1518,7 +1518,7 @@ def test_confirm_action_risky_action_routes_to_pending_approval(dashboard_client
     # Browser approval controls are intentionally absent; Telegram owns the
     # second approval step for risky actions.
     home = dashboard_client.get("/")
-    assert "Risky Action" in home.text
+    assert "Duyệt/Từ chối đã chuyển sang" in home.text
     assert "Telegram" in home.text
     assert "restart_osd_daemon" not in home.text
 
@@ -1612,7 +1612,7 @@ def test_confirm_action_delete_pool_now_waits_for_a_second_approval(dashboard_cl
         assert "pool_bo_di" in (action.proposed_command or "")
 
     home = dashboard_client.get("/")
-    assert "Risky Action" in home.text
+    assert "Duyệt/Từ chối đã chuyển sang" in home.text
     assert "Telegram" in home.text
     assert "delete_pool" not in home.text
 
