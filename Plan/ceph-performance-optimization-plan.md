@@ -593,3 +593,10 @@ Record before/after values for:
   JavaScript syntax and diff checks passed. Commit `10a7ea43` is pushed to
   `origin/main`; deployment remains blocked by runtime ownership approval and
   concurrent uncommitted worktree changes.
+- 2026-09-16: Extended Block Storage inventory with provisioned/used bytes and
+  usage percentage from bounded `rbd du` reads, kept usage scans sequential to
+  avoid an OSD burst, capped parallel JSON batches at eight commands, and
+  refined the dashboard AI chat drawer controls and scrolling behavior. The
+  focused Block Storage/chat gate passed 7 tests with one existing
+  Starlette/httpx warning; Python compile, JavaScript syntax and Node 20
+  frontend build passed. Commit `78a3dfe3` is pushed to `origin/main`.
