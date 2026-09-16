@@ -133,6 +133,7 @@ class RepairConfig:
     create_commit: bool = True
     preserve_candidate: bool = False
     candidate_root: Path | None = None
+    isolate_venv: bool = False
     push: bool = False
     deploy_staging: bool = False
     promote_main: bool = False
@@ -612,6 +613,19 @@ def _worktree_status(worktree: Path) -> str:
     return _run(["git", "status", "--porcelain"], cwd=worktree).stdout
 
 
+def _prepare_candidate_venv(config: RepairConfig, worktree: Path) -> None:
+    """Provide tests with an environment that full-access AI cannot share."""
+    source = config.repo / ".venv"
+    destination = worktree / ".venv"
+    if config.isolate_venv:
+        # Preserve symlinks inside the venv (python/lib64) but copy package
+        # files. The normal repair path keeps the historical symlink for
+        # speed; nightly full-access candidates get their own writable copy.
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        os.symlink(source, destination, target_is_directory=True)
+
+
 def _ensure_uncommitted_candidate(worktree: Path, base_revision: str) -> None:
     """Reject an AI-created commit in a review-only candidate worktree."""
     current_revision = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
@@ -807,8 +821,9 @@ Additional task constraints:
         notifier.update(25, "Đã có kế hoạch; đang tạo worktree Implementer")
         _run(["git", "worktree", "add", "-b", branch, str(worktree), f"{config.remote}/{config.base_branch}"], cwd=config.repo)
         candidate_base_revision = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-        # Reuse the tested environment without copying credentials into the worktree.
-        os.symlink(config.repo / ".venv", worktree / ".venv", target_is_directory=True)
+        # Reuse the tested environment without copying credentials into the
+        # worktree; full-access nightly candidates receive an isolated copy.
+        _prepare_candidate_venv(config, worktree)
         default_instructions = """You are repairing the Ceph AIOps application in an isolated Git worktree.
 
 Find the root cause and make the smallest production-quality code fix. Add or update a regression test.

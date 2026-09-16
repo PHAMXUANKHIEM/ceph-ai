@@ -489,6 +489,7 @@ def _run_nightly_ai_improvement_locked(
             create_commit=False,
             preserve_candidate=True,
             candidate_root=state_path.parent / "nightly-ai-improvement-candidates",
+            isolate_venv=True,
             require_changed_tests=False,
             test_env_unset=NIGHTLY_TEST_ENV_UNSET,
             test_env_file="/dev/null",

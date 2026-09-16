@@ -118,6 +118,23 @@ def test_review_only_candidate_rejects_ai_created_commit(monkeypatch, tmp_path):
         code_repair._ensure_uncommitted_candidate(tmp_path, "base-revision")
 
 
+def test_prepare_candidate_venv_copies_for_isolated_mode(tmp_path):
+    source = tmp_path / "source" / ".venv"
+    worktree = tmp_path / "candidate"
+    source.mkdir(parents=True)
+    worktree.mkdir()
+    (source / "marker.txt").write_text("source")
+
+    code_repair._prepare_candidate_venv(
+        code_repair.RepairConfig(repo=tmp_path / "source", isolate_venv=True), worktree
+    )
+
+    copied = worktree / ".venv" / "marker.txt"
+    assert copied.read_text() == "source"
+    copied.write_text("candidate")
+    assert (source / "marker.txt").read_text() == "source"
+
+
 def test_repair_config_has_separate_candidate_test_gate():
     config = code_repair.RepairConfig(repo=Path("/tmp/repo"), candidate_test_command="pytest tests/test_ai.py")
 
